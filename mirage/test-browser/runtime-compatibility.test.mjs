@@ -47,7 +47,11 @@ test("header dropdowns open once with a captured native bundle, duplicate jQuery
     res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   assert.equal((pages["/native"].match(/bootstrap-plugins-compat/g) ?? []).length, 0);
@@ -93,7 +97,11 @@ test("local jQuery UI dialogs render the widget DOM that portal confirm dialogs 
     res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const page = await browser.newPage();

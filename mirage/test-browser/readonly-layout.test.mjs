@@ -21,7 +21,11 @@ test("source-filled spacer and readonly controls preserve native two-column form
   });
   const server = http.createServer((_req, res) => res.end(`<!doctype html><style>.zero-cell{display:none}table{width:800px}td{vertical-align:top}input{width:90%}</style>${html}`));
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const page = await browser.newPage();
