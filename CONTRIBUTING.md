@@ -13,3 +13,9 @@ The release allowlist and `scripts/project-boundary.mjs` protect the distributio
 Keep personal configuration and storage ignored. Do not commit session discovery, tokens, browser cookies or live captures. Retain upstream license notices. Contributions to original Paqvilo code use AGPL-3.0-only; third-party assets retain their original terms. The project license permits commercial distribution subject to source and notice obligations.
 
 Use `npm run release:check` and `npm pack --ignore-scripts` to prepare a distribution locally. Publishing a package, pushing a repository or changing the hosting environment is a separate action.
+
+## Continuous integration and releases
+
+GitHub Actions mirrors `azure-pipelines.yml`. [CI](.github/workflows/ci.yml) runs on pushes to `main` and on pull requests: syntax and boundary checks, release check, dependency audit, Lense and Mirage unit and loopback browser tests on Node 22/24 (Chromium), unit tests on Windows, and an installed-package smoke test. Require the `CI gate` check in branch protection; it fails if any job fails.
+
+[Release](.github/workflows/release.yml) publishes to npm only from a pushed `v<version>` tag that matches `package.json`, after the full CI run. Prerelease versions publish under the `next` dist-tag. It publishes with provenance through npm trusted publishing (configure the `release.yml` workflow and `npm` environment on npmjs.com) or, for the first publish, an `NPM_TOKEN` secret in the `npm` environment. A manual run takes an existing tag and defaults to `npm publish --dry-run`.
