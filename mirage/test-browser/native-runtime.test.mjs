@@ -112,6 +112,7 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   await page.locator("#fullname").fill("Ada Lovelace");
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
+  await page.evaluate(() => document.addEventListener("click", (event) => { if (event.target.closest?.(".launchentitylookup")) window.lookupClicks = (window.lookupClicks || 0) + 1; }, true));
   await page.getByRole("button", { name: "Organisation Launch lookup modal" }).click();
   const modal = page.locator("#parentcustomerid_lookupmodal section.modal-lookup");
   try {
@@ -121,6 +122,9 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
       const modal = document.querySelector("#parentcustomerid_lookupmodal section.modal-lookup");
       return {
         shown: window.lookupShown,
+        clicks: window.lookupClicks,
+        scroll: [window.scrollX, window.scrollY],
+        active: document.activeElement?.id || document.activeElement?.className,
         responses: window.gridResponses,
         modal: { classes: modal?.className, hidden: modal?.hidden, display: modal?.style.display, text: modal?.textContent },
       };
