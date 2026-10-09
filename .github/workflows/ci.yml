@@ -102,6 +102,7 @@ jobs:
           name: browser-evidence-node${{ matrix.node }}
           path: .paqvilo/ci-evidence-*/
           if-no-files-found: ignore
+          include-hidden-files: true
           retention-days: 14
 
   windows:

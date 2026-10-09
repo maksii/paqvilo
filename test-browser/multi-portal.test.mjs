@@ -74,6 +74,9 @@ test('headless checks preserve the saved headed window placement in owned and se
   }
 });
 
+// Toolkit profiles keep Edge at its historical path; other channels live under default/<channel>/.
+const toolkitProfile = (work, channel, name) => (channel === 'msedge' ? path.join(work, 'profiles', name) : path.join(work, 'profiles', 'default', channel, name));
+
 test('one catalogue browser isolates lazy portal sessions, environments, panels, APIs and source refreshes', { timeout: 180_000 }, async (t) => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-multi-portal-'));
   const alpha = createFixture();
@@ -121,7 +124,7 @@ test('one catalogue browser isolates lazy portal sessions, environments, panels,
   browser = await openBrowser(selection.initial);
   chromium.launchPersistentContext = launch;
   assert.equal(launches.length, 1);
-  assert.equal(launches[0], path.join(work, 'profiles', 'catalogue'), 'all-portal mode uses a dedicated catalogue profile');
+  assert.equal(launches[0], toolkitProfile(work, channel, 'catalogue'), 'all-portal mode uses a dedicated catalogue profile');
   const { context } = browser;
   context.setDefaultTimeout(20_000);
   const contextPageListeners = context.listenerCount('page');
@@ -386,8 +389,8 @@ test('actual dev CLI activates catalogue navigation and agent stop tears down th
   assert.equal(status.browserScope.mode, 'all');
   assert.equal(status.browserScope.targets.length, 2);
   assert.equal(status.browserScope.stopScope, 'browser');
-  assert.ok(fs.existsSync(path.join(work, 'profiles', 'catalogue')));
-  assert.equal(fs.existsSync(path.join(work, 'profiles', 'alpha-dev')), false);
+  assert.ok(fs.existsSync(toolkitProfile(work, channel, 'catalogue')));
+  assert.equal(fs.existsSync(toolkitProfile(work, channel, 'alpha-dev')), false);
   assert.ok(alpha.requests.some((request) => request.pathname === '/'), 'the configured start page opened first');
   assert.ok(beta.requests.some((request) => request.pathname === '/'), 'a normal browser navigation activated the other source');
   const stopped = await promisify(execFile)(process.execPath, ['lense/cli.mjs', 'agent', 'stop', '--session', betaAgent.file], { cwd: toolkit, env, windowsHide: true, timeout: 15_000 });
