@@ -75,7 +75,8 @@ export const ONLINE_HOME = [
 function git(cwd, ...args) {
   const env = { ...process.env };
   for (const key of Object.keys(env)) if (/^GIT_/i.test(key)) delete env[key];
-  execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', ...args], { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 });
+  // No detached auto-maintenance: it writes .git/objects/maintenance.lock while tests copy the repository.
+  execFileSync('git', ['-c', 'core.autocrlf=false', '-c', 'core.hooksPath=', '-c', 'commit.gpgsign=false', '-c', 'maintenance.auto=false', '-c', 'gc.auto=0', ...args], { cwd, env, stdio: 'ignore', windowsHide: true, timeout: 30_000 });
 }
 
 export function createFixture() {

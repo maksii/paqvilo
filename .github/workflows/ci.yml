@@ -73,6 +73,11 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
+      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
+      - name: Disable Git auto-maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
       - name: Mirage offline unit regressions
@@ -118,6 +123,11 @@ jobs:
         run: |
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
+      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
+      - name: Disable Git auto-maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
       - name: Mirage offline unit regressions
