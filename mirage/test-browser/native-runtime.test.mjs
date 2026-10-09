@@ -110,14 +110,12 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   assert.equal(await page.evaluate(() => { ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), false); return Page_ClientValidate(""); }), true);
   await page.evaluate(() => ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), true));
   await page.locator("#fullname").fill("Ada Lovelace");
+  // Commit the field before clicking elsewhere: its change event re-validates and hides the
+  // inline required message, and that layout shift between mousedown and mouseup would move
+  // the release off the lookup button so no click fires.
+  await page.locator("#fullname").blur();
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
-  await page.evaluate(() => {
-    const describe = (node) => (node?.id ? `#${node.id}` : `${node?.tagName ?? "?"}.${String(node?.className ?? "").replace(/\s+/g, ".")}`);
-    window.lookupPointer = [];
-    for (const type of ["mousedown", "mouseup", "click"])
-      document.addEventListener(type, (event) => window.lookupPointer.push({ type, target: describe(event.target), x: event.clientX, y: event.clientY, scrollY: window.scrollY }), true);
-  });
   await page.getByRole("button", { name: "Organisation Launch lookup modal" }).click();
   const modal = page.locator("#parentcustomerid_lookupmodal section.modal-lookup");
   try {
@@ -127,11 +125,6 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
       const modal = document.querySelector("#parentcustomerid_lookupmodal section.modal-lookup");
       return {
         shown: window.lookupShown,
-        pointer: window.lookupPointer,
-        button: document.querySelector(".launchentitylookup")?.getBoundingClientRect().toJSON(),
-        tooltips: [...document.querySelectorAll(".tooltip")].map((tip) => tip.getBoundingClientRect().toJSON()),
-        scroll: [window.scrollX, window.scrollY],
-        active: document.activeElement?.id || document.activeElement?.className,
         responses: window.gridResponses,
         modal: { classes: modal?.className, hidden: modal?.hidden, display: modal?.style.display, text: modal?.textContent },
       };
