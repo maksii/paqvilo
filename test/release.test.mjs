@@ -9,7 +9,7 @@ import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata } fr
 test('release allowlist includes Mirage runtime and excludes tests, state, profiles and live evidence', () => {
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
   assert.equal(validateReleaseFiles(required), required.length);
-  for (const file of ['.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs']) {
+  for (const file of ['.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'docs/assets/live.png', 'docs/assets/private.svg', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs']) {
     assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);

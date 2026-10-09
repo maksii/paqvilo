@@ -1,7 +1,19 @@
 {
   "name": "paqvilo",
   "version": "0.9.2",
-  "description": "Paqvilo: Lense source overlays and inspection, Mirage local Power Pages rendering",
+  "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
+  "keywords": [
+    "power-pages",
+    "power-platform",
+    "pro-code",
+    "local-first",
+    "dataverse",
+    "liquid",
+    "developer-tools",
+    "local-development",
+    "simulation",
+    "testing"
+  ],
   "repository": {
     "type": "git",
     "url": "git+https://github.com/maksii/paqvilo.git"

@@ -1,6 +1,20 @@
 # Contributing to Paqvilo
 
-Install Node.js 22/24, Git and Edge/Chrome, then run `npm run setup`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
+Help make the Power Pages feedback loop clearer and more reliable. Reproducible bug reports, documentation improvements and reusable platform fixes are welcome. For everyday portal development, use the [project installation guide](docs/getting-started.md); contributions use a toolkit checkout.
+
+## Set up a contribution
+
+Install Node.js 22/24, Git and Edge/Chrome, then clone the repository and run `npm run setup`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
+
+```sh
+git clone https://github.com/maksii/paqvilo.git
+cd paqvilo
+npm run setup
+```
+
+When reporting a bug, include the toolkit version, export format, command, expected behavior and relevant redacted diagnostics. A minimal invented fixture is more useful than a private portal export. For a documentation change, check that linked guides and copyable commands still match the CLI.
+
+## Validate and keep the project boundary
 
 Run `npm run validate` before proposing a change. It checks first-party syntax, Lense unit/browser regressions, Mirage unit/browser regressions and the release boundary. Browser tests run only against synthetic loopback fixtures. Runtime changes need relevant regressions; do not use a live portal as a test prerequisite.
 

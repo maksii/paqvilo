@@ -1,76 +1,89 @@
 # Paqvilo
 
-Paqvilo is a Power Pages development toolkit with two workflows:
+### Power Pages development. Unbound.
 
-- **Lense** overlays local JavaScript, CSS, images and supported literal HTML edits in a dedicated browser on your live portal. It inspects source mappings, resources and browser sessions.
-- **Mirage** renders exported portal sources on loopback with Liquid, simulated Dataverse and a local administration workspace at `/_sim/`. Its browser panel includes **Inspect** and **Tweaks**.
+**A local-first, pro-code development toolkit for Microsoft Power Pages.** Preview local changes on live sites with **Lense**. Run exported pages on your machine with **Mirage**, using Liquid and simulated Dataverse.
 
-`paqvilo lense` and `paqvilo mirage` share configuration and browser integration. Portal exports, business data, project presets and acceptance tests belong in your own project. Paqvilo ships no organisation-specific catalogue or data pack.
+![Paqvilo architecture: project-owned exports feed Lense browser overlays on a live portal or Mirage local rendering with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/overview.svg)
 
-## Install
+[Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) | [Documentation](https://github.com/maksii/paqvilo/blob/main/docs/index.md) | [npm package](https://www.npmjs.com/package/paqvilo)
 
-Requires Node.js 22 or later (24 LTS recommended), Git, and Edge, Chrome or Playwright Chromium.
+## Choose your workflow
 
-```sh
-# From a source checkout:
-npm run setup
-node bin/paqvilo.mjs --help
+| | Lense | Mirage |
+| --- | --- | --- |
+| Use it to | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change | Develop independently with local rendering, identities and test data |
+| How it works | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online | Renders exported sources locally; simulates Dataverse, forms, lists and permissions |
+| Inspect and compare | Source mappings, applied changes, diagnostics and **Online / Local** comparison | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
+| Learn more | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
 
-# Install a reviewed local distribution into your portal project:
-npm install /path/to/paqvilo
-npx paqvilo --help
-```
+Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
 
-The source checkout's setup installs both locked dependency sets without lifecycle scripts. The distributable declares all runtime dependencies, so a normal project installation can run both products. Nothing is published to npm by installing locally.
+## Beyond Fiddler and DevTools overrides
 
-## Connect your portal
+Paqvilo is a Power Pages-specific alternative for developers who need source mapping, live reload and local portal simulation alongside resource overrides.
 
-Copy [paqvilo.config.yml](paqvilo.config.yml) to your portal project. Change `sourceRoot`, the site's `source` and environment URLs to your exported sources and references. Paths are resolved relative to the catalogue; `--repo` overrides the checkout root. Standard, enhanced and code-site exports are supported. Unpacked Dataverse Solutions can be listed in `mirage.solutionRoots`.
+| Existing workflow | What it provides | What Paqvilo adds |
+| --- | --- | --- |
+| [Fiddler Classic AutoResponder](https://www.telerik.com/fiddler/fiddler-classic/documentation/knowledge-base/autoresponder) / [Fiddler Everywhere rules](https://www.telerik.com/fiddler/fiddler-everywhere/documentation/rules-presets/modify-traffic/modify-reponse-body) | Request matching, local file responses and response modification | Power Pages export mapping, Git baseline comparisons and refresh on source saves |
+| [Chrome DevTools Local Overrides](https://developer.chrome.com/docs/devtools/overrides) / [Edge Overrides](https://learn.microsoft.com/en-us/microsoft-edge/devtools-guide-chromium/javascript/overrides) | Replace browser resources with local copies | Portal record and field identity, supported inline edits and integrated Online / Local comparison |
+| [Power Platform CLI and VS Code](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) | Source editing and portal download/upload | A local Liquid and Dataverse simulation for independent development and repeatable tests |
 
-```sh
-npx paqvilo lense list --config ./paqvilo.config.yml --json
-npx paqvilo lense doctor --config ./paqvilo.config.yml --all --json
-npx paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
-npx paqvilo mirage init --config ./paqvilo.config.yml --site portal
-npx paqvilo mirage dev --config ./paqvilo.config.yml --site portal
-```
+Use Lense for live portal previews and Mirage for isolated local environments. DevTools and Fiddler remain useful for general browser and HTTP debugging.
 
-From the Paqvilo checkout replace `npx paqvilo` with `node bin/paqvilo.mjs` or use `npm run lense -- …` and `npm run mirage -- …`.
+## Try a local portal
 
-Lense saves refresh relevant pages; **Online / Local** compares sources and **Alt+Shift+P** opens the panel. The default HEAD baseline is captured when a target activates. Select an actual deployed Git ref explicitly for deployment comparisons. Sign in through the portal's own sign-in action using your intended work account; SSO may complete automatically.
+No Power Pages account or portal export is needed for this example.
 
-Mirage starts with exported configuration and empty business tables. Generate deterministic rows from Solution metadata or add a project-owned [data pack](mirage/docs/data-packs.md). Portal requests remain anonymous until this browser signs in as a local persona; each runtime has its own session cookie. **Inspect** shows the page's templates, forms, tables, columns, permissions, snippets and settings. **Tweaks** controls local identity, permission enforcement and scenarios.
+**1. Install [Node.js 24 LTS](https://nodejs.org/en/download).** It includes npm, which downloads the toolkit. Paqvilo requires Node.js 22 or later. Open a terminal in VS Code using **Terminal > New Terminal**, or use Command Prompt.
+
+**2. Create a working folder and install Paqvilo.** Enter these commands one line at a time:
 
 ```sh
-npx paqvilo mirage data scaffold --config ./paqvilo.config.yml --site portal --profile smoke --state .paqvilo/state.json
-npx paqvilo mirage status --json
-npx paqvilo mirage stop --config ./paqvilo.config.yml --site portal
+mkdir paqvilo-demo
+cd paqvilo-demo
+npm init -y
+npm install --save-dev paqvilo
 ```
 
-Several portals can share a catalogue with `portals: all`; each Mirage runtime uses its own port and state. `--portals selected` limits a session to the selected site. [Configuration](docs/configuration.md) covers multi-source projects and personal settings.
-
-## Keep your project separate
-
-Use [the project starter](examples/project/README.md) for an exported synthetic portal, an external data pack and a project-owned test. Register modules explicitly in `mirage.dataPacks` or a Mirage project's `dataPacks`. Packs contain your personas, business rules, generators and acceptance scenarios. Core validation never runs your project tests or accesses your portal.
-
-See [project extensions and tests](docs/project-extensions.md), [architecture](docs/architecture.md), [Lense](docs/lense.md), and [Mirage documentation](mirage/docs/README.md). [Migration](docs/migration.md) explains the command, configuration and state naming changes.
-
-## Scope and evidence
-
-Lense changes local browser responses; Liquid, permissions and Dataverse still execute online. Browser actions can affect live data and require task-specific authorization. Mirage binds to loopback and defaults to local providers; reference reads and cached platform assets are separate explicit operations. No command authorizes deployment, PAC, source synchronization or live writes. The explicit live-write flag remains opt-in.
-
-An export inventory or local rendering does not prove parity. Use recorded comparisons and inspect diagnostics, skipped checks and runtime errors. Keep browser storage, agent discovery files (which contain bearer tokens), state and business evidence under ignored `.paqvilo/`. Legacy state remains ignored during migration.
-
-## Develop and distribute
+**3. Start the included example.** `npx` runs the installed toolkit:
 
 ```sh
-npm run validate
-npm run release:check
-npm pack --ignore-scripts
+npx --no-install paqvilo mirage serve --source ./node_modules/paqvilo/examples/project/portal --state .paqvilo/demo-state.json --port 8787
 ```
 
-Tests use synthetic loopback fixtures without a portal account. The release check rejects private project content and verifies packaged files, documentation and editor tasks. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Open [the local portal](http://127.0.0.1:8787), then [local administration](http://127.0.0.1:8787/_sim/). The example uses invented sources and starts anonymous. Keep the terminal open while using it; press **Ctrl+C** to stop.
 
-## License
+## Use your own site
 
-Paqvilo's original code is licensed under [GNU AGPLv3](LICENSE) (AGPL-3.0-only). Commercial use and selling copies are permitted; distribution must preserve notices and provide corresponding source, and modified versions used over a network must offer their corresponding source to interacting users. Private development does not require publishing every internal change. Using Paqvilo to inspect or render independent portal sources does not by itself relicense those sources. See the license for the precise conditions on combined works. Third-party assets retain their own licenses and notices in [NOTICE](NOTICE).
+Start with an existing Power Pages export. [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#2-connect-your-site) explains where to place it, how to create your configuration, and how to open the integrated browser.
+
+```sh
+# Local rendering with Inspect and Tweaks:
+npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
+
+# Local source previews against your online development environment:
+npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
+```
+
+Run one development command at a time. **Alt+Shift+P** opens the panel. Add `.paqvilo/` and personal configuration to your project's ignore file.
+
+## Scope
+
+Paqvilo supports standard and enhanced portal exports and imports `.powerpages-site` code-site exports. Its local Liquid simulation is intended for traditional portal development; code-site import does not provide SPA build tooling.
+
+Lense interactions use the live portal's backend and can change live data. Mirage uses a local simulation; verify behavior against Power Pages before release. Exporting, uploading and deploying remain part of your existing [Power Platform CLI workflow](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/pages). Paqvilo is an independent project with no Microsoft affiliation.
+
+## Documentation
+
+| Task | Guide |
+| --- | --- |
+| Set up your first project | [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) |
+| Configure sources, browsers and several sites | [Configuration](https://github.com/maksii/paqvilo/blob/main/docs/configuration.md) |
+| Add personas, datasets and acceptance tests | [Project starter](https://github.com/maksii/paqvilo/blob/main/examples/project/README.md), [extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md) |
+| Understand runtime support and evidence | [Mirage reference](https://github.com/maksii/paqvilo/blob/main/mirage/docs/README.md), [architecture](https://github.com/maksii/paqvilo/blob/main/docs/architecture.md) |
+| Contribute or upgrade | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md), [migration](https://github.com/maksii/paqvilo/blob/main/docs/migration.md) |
+
+## About and license
+
+Paqvilo combines PAC, Virtual and Local. Its original code uses [GNU AGPLv3](https://github.com/maksii/paqvilo/blob/main/LICENSE), with third-party notices in [NOTICE](https://github.com/maksii/paqvilo/blob/main/NOTICE). Your independent portal sources retain their own licensing.

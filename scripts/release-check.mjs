@@ -4,6 +4,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 
+const DOCUMENTATION_ASSETS = new Set([
+  'docs/assets/overview.svg',
+  'docs/assets/lense-icon.png', 'docs/assets/mirage-icon.png',
+  'docs/assets/lense-visual.png', 'docs/assets/mirage-visual.png',
+]);
+
 export const REQUIRED_RELEASE_FILES = [
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',
   'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
@@ -23,12 +29,14 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/docs/data-packs.md', 'mirage/docs/parity-evidence.md',
   'mirage/docs/README.md', 'mirage/docs/forms-lists-parity.md',
   'mirage/testing/session.mjs', 'docs/project-extensions.md', 'docs/architecture.md',
+  'docs/index.md', 'docs/getting-started.md', ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs', 'examples/project/test/portal.test.mjs', 'examples/project/gitignore.template',
 ];
 export function validateReleaseFiles(files) {
   const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|MIGRATION\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md))$/;
   const paths = new Set(files.map((file) => file.path));
-  for (const name of paths) if (!allowed.test(name)) throw new Error(`Unexpected release file: ${name}`);
+  // Allow only named product illustrations, never arbitrary screenshots or evidence.
+  for (const name of paths) if (!allowed.test(name) && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }
@@ -51,7 +59,7 @@ function checkEditorTasks(root) {
 }
 
 function checkDocumentation(root) {
-  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'mirage/README.md', 'mirage/MIGRATION.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md']) {
+  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/lense.md', 'docs/configuration.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/MIGRATION.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md']) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];

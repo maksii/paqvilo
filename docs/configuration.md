@@ -1,6 +1,8 @@
 # Configuration
 
-Pass `--config /path/to/your-project/paqvilo.config.yml`. Without it the toolkit uses its bundled example catalogue. The example URL is an inert placeholder and must be replaced before connecting to a live portal.
+Your catalogue connects the toolkit to your sources and environments. Keep it in your portal project so the same configuration works with an installed package or a separate toolkit checkout. If this is your first setup, follow [getting started](getting-started.md).
+
+Pass `--config /path/to/your-project/paqvilo.config.yml`. Without it the toolkit uses the working directory's `paqvilo.config.yml` when present, otherwise its bundled example catalogue. The bundled example URL is an inert placeholder and must be replaced before connecting to a live portal.
 
 CLI choices override shell `PAQVILO_*` variables, then `.env` next to the selected catalogue, then `paqvilo.config.local.yml`, then the shared catalogue. The local catalogue and `.env` must be ignored in your project. Use `paqvilo lense list --settings` for supported settings and their resolved origins. Unknown settings fail rather than silently changing behavior.
 

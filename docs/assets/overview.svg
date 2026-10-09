@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="440" viewBox="0 0 1200 440" fill="none" role="img" aria-labelledby="title description">
+  <title id="title">Paqvilo development workflows</title>
+  <desc id="description">Your project's exported Power Pages sources feed two workflows. Lense previews local resources in a live portal browser while its backend stays online. Mirage renders Liquid locally with simulated Dataverse, identities and test data.</desc>
+  <rect width="1200" height="440" fill="#F5F3ED"/>
+  <g font-family="Segoe UI, Arial, sans-serif">
+    <text x="40" y="42" font-size="13" font-weight="600" letter-spacing="2" fill="#596255">PAQVILO / POWER PAGES DEVELOPMENT</text>
+    <text x="40" y="84" font-size="30" font-weight="600" fill="#222921">One source project. Two development workflows.</text>
+    <rect x="40" y="124" width="300" height="240" rx="4" fill="#FFFFFF" stroke="#CCCFC5"/>
+    <rect x="40" y="124" width="4" height="240" fill="#314C40"/>
+    <text x="64" y="158" font-size="12" font-weight="600" letter-spacing="1.5" fill="#596255">YOUR PROJECT</text>
+    <text x="64" y="191" font-size="25" font-weight="600" fill="#222921">Exported sources</text>
+    <path d="M64 211h252" stroke="#DADDD4"/>
+    <text x="64" y="240" font-size="18" fill="#424C40">JavaScript, CSS and HTML</text>
+    <text x="64" y="270" font-size="18" fill="#424C40">Liquid and configuration</text>
+    <text x="64" y="300" font-size="18" fill="#424C40">Solutions (optional)</text>
+    <text x="64" y="340" font-size="14" fill="#596255">Files remain in your repository.</text>
+    <path d="M340 244h38m0 0v-64h29m-29 64v64h29" stroke="#707B6B" stroke-width="1.5"/>
+    <path d="m401 175 6 5-6 5m0 118 6 5-6 5" stroke="#707B6B" stroke-width="1.5" stroke-linecap="square"/>
+    <rect x="420" y="124" width="740" height="112" rx="4" fill="#FFFFFF" stroke="#CCCFC5"/>
+    <text x="444" y="158" font-size="24" font-weight="600" fill="#314C40">Lense</text>
+    <text x="1136" y="154" font-size="12" font-weight="600" text-anchor="end" letter-spacing="1.5" fill="#596255">LIVE PORTAL</text>
+    <text x="444" y="187" font-size="19" fill="#222921">Preview local JS, CSS and supported HTML.</text>
+    <text x="444" y="216" font-size="16" fill="#596255">Browser overlays. Liquid and Dataverse stay online.</text>
+    <rect x="420" y="252" width="740" height="112" rx="4" fill="#EDF0E7" stroke="#CCCFC5"/>
+    <text x="444" y="286" font-size="24" font-weight="600" fill="#314C40">Mirage</text>
+    <text x="1136" y="282" font-size="12" font-weight="600" text-anchor="end" letter-spacing="1.5" fill="#596255">LOCAL SIMULATION</text>
+    <text x="444" y="315" font-size="19" fill="#222921">Render Liquid with simulated Dataverse.</text>
+    <text x="444" y="344" font-size="16" fill="#596255">Local identities, forms, lists and test data.</text>
+    <path d="M40 396h1120" stroke="#CCCFC5"/>
+    <text x="40" y="424" font-size="14" fill="#596255">Preview locally. Validate on Power Pages.</text>
+    <text x="1160" y="424" font-size="14" text-anchor="end" fill="#596255">Sources / Browser / Runtime</text>
+  </g>
+</svg>

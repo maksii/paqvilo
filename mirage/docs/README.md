@@ -1,5 +1,11 @@
 # Mirage documentation
 
+Reference for source imports, simulated platform behavior and verification evidence.
+
+For setup, use [getting started](../../docs/getting-started.md). For daily work, read [browser integration](toolkit-integration.md), [local administration](sim-administration.md) and [data packs](data-packs.md).
+
+## Find a guide
+
 | Topic | Guide |
 | --- | --- |
 | Browser integration and lifecycle | [Toolkit integration](toolkit-integration.md) |
@@ -15,3 +21,5 @@
 | Atomic simulation state writes | [State integrity](state-write-integrity.md) |
 
 These guides describe reusable contracts. Organisation-specific observations, datasets, parity results and business backlogs belong to the separate portal project. Store evidence under ignored `.paqvilo/`.
+
+Return to the [Paqvilo documentation index](../../docs/index.md) for Lense, shared configuration and contribution guidance.
