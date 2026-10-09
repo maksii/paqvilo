@@ -1,0 +1,61 @@
+# TEMPORARY: branch-only stress run to surface intermittent test failures. Remove before merge.
+name: Stress
+
+on:
+  push:
+    branches: [claude/upbeat-bell-ugjk02]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stress-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  stress:
+    name: Stress (Node ${{ matrix.node }}, round ${{ matrix.round }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24]
+        round: [1, 2, 3, 4]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mirage --ignore-scripts
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+          node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Lense unit
+        if: always()
+        timeout-minutes: 5
+        run: npm test
+      - name: Mirage unit
+        if: always()
+        timeout-minutes: 5
+        run: npm --prefix mirage run test
+      - name: Lense browser
+        if: always()
+        timeout-minutes: 8
+        run: npm run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Mirage browser
+        if: always()
+        timeout-minutes: 10
+        run: npm --prefix mirage run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
