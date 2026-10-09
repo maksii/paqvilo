@@ -96,7 +96,10 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal(methods.filter((method) => method === 'POST').length, 1, 'API reload never repeats a submitted POST');
   const lateGet = page.waitForRequest((request) => request.isNavigationRequest() && request.url().startsWith(origin + '/chapter/'));
   const detach = await step('interceptOrigin', () => interceptOrigin(context, origin, (route) => route.fallback()));
-  assert.equal((await step('late GET retry', () => lateGet)).method(), 'GET', 'late interception retry requests GET even for a POST document with a fragment');
+  const lateRequest = await step('late GET retry', () => lateGet);
+  assert.equal(lateRequest.method(), 'GET', 'late interception retry requests GET even for a POST document with a fragment');
+  // Let the retried document arrive; waitForLoadState alone can still see the POST document.
+  assert.equal((await step('late GET response', () => lateRequest.response()))?.status(), 200);
   await step('waitForLoadState', () => page.waitForLoadState('load'));
   assert.equal(methods.filter((method) => method === 'POST').length, 1);
   assert.equal(new URL(page.url()).hash, '#posted');
