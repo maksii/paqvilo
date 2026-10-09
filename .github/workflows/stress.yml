@@ -61,6 +61,7 @@ jobs:
             fi
           done
           echo "Lense browser failures: $failed/6"
+          echo "Unanswered DevTools commands reported:"; grep -h "did not answer" lense-*.log || echo none
           [ "$failed" -eq 0 ]
       - name: Mirage browser x3
         if: always()
