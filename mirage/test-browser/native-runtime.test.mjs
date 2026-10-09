@@ -112,7 +112,12 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   await page.locator("#fullname").fill("Ada Lovelace");
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
-  await page.evaluate(() => document.addEventListener("click", (event) => { if (event.target.closest?.(".launchentitylookup")) window.lookupClicks = (window.lookupClicks || 0) + 1; }, true));
+  await page.evaluate(() => {
+    const describe = (node) => (node?.id ? `#${node.id}` : `${node?.tagName ?? "?"}.${String(node?.className ?? "").replace(/\s+/g, ".")}`);
+    window.lookupPointer = [];
+    for (const type of ["mousedown", "mouseup", "click"])
+      document.addEventListener(type, (event) => window.lookupPointer.push({ type, target: describe(event.target), x: event.clientX, y: event.clientY, scrollY: window.scrollY }), true);
+  });
   await page.getByRole("button", { name: "Organisation Launch lookup modal" }).click();
   const modal = page.locator("#parentcustomerid_lookupmodal section.modal-lookup");
   try {
@@ -122,7 +127,9 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
       const modal = document.querySelector("#parentcustomerid_lookupmodal section.modal-lookup");
       return {
         shown: window.lookupShown,
-        clicks: window.lookupClicks,
+        pointer: window.lookupPointer,
+        button: document.querySelector(".launchentitylookup")?.getBoundingClientRect().toJSON(),
+        tooltips: [...document.querySelectorAll(".tooltip")].map((tip) => tip.getBoundingClientRect().toJSON()),
         scroll: [window.scrollX, window.scrollY],
         active: document.activeElement?.id || document.activeElement?.className,
         responses: window.gridResponses,
