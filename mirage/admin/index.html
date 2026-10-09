@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light" />
+    <title>Portal Studio · Local simulator</title>
+    <link rel="stylesheet" href="/__sim/style.css" />
+  </head>
+  <body>
+    <a class="skip-link" href="#main">Skip to workspace</a>
+    <div class="shell">
+      <aside class="sidebar" aria-label="Workspace navigation">
+        <a class="brand" href="/__sim/"
+          ><span class="brand-symbol" aria-hidden="true">P</span
+          ><span>Portal Studio<small>LOCAL SIMULATOR</small></span></a
+        >
+        <div class="nav-label">WORKSPACE</div>
+        <nav id="navigation"></nav>
+        <div class="sidebar-bottom">
+          <span class="status-dot" id="connection-dot"></span
+          ><span id="connection-label">Connecting…</span
+          ><small>Manage your simulator workspace.</small>
+        </div>
+      </aside>
+      <div class="workspace">
+        <header class="topbar">
+          <span class="breadcrumb"
+            >Workspace <span aria-hidden="true">/</span>
+            <strong id="breadcrumb">Overview</strong></span
+          >
+          <div class="top-actions">
+            <button id="refresh" class="button quiet" type="button">
+              ↻ Refresh</button
+            ><a class="button" href="/" target="_blank" rel="noopener"
+              >Open portal <span aria-hidden="true">↗</span></a
+            >
+          </div>
+        </header>
+        <main id="main" tabindex="-1">
+          <div id="content">
+            <div class="loading" role="status">
+              Loading your simulator workspace…
+            </div>
+          </div>
+        </main>
+        <footer>
+          Portal source + simulated services
+          <span
+            >Local rendering is verified through evidence, not
+            configuration.</span
+          >
+        </footer>
+      </div>
+    </div>
+    <div
+      id="notification"
+      class="notification"
+      role="status"
+      aria-live="polite"
+      hidden
+    ></div>
+    <dialog id="editor" aria-labelledby="editor-title">
+      <form id="editor-form">
+        <div class="dialog-heading">
+          <div>
+            <span class="eyebrow" id="editor-category">CONFIGURATION</span>
+            <h2 id="editor-title">Edit item</h2>
+          </div>
+          <button
+            class="icon-button"
+            id="editor-close"
+            type="button"
+            aria-label="Close editor"
+          >
+            ×
+          </button>
+        </div>
+        <p id="editor-description" class="muted"></p>
+        <label for="editor-json">JSON definition</label
+        ><textarea
+          id="editor-json"
+          class="code-editor"
+          spellcheck="false"
+          required
+        ></textarea>
+        <p id="editor-error" class="form-error" role="alert" hidden></p>
+        <div class="dialog-actions">
+          <button class="button" id="editor-cancel" type="button">Cancel</button
+          ><button class="button primary" type="submit">Save changes</button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="confirm" aria-labelledby="confirm-title">
+      <form id="confirm-form">
+        <h2 id="confirm-title">Delete this item?</h2>
+        <p id="confirm-message"></p>
+        <div class="dialog-actions">
+          <button type="button" class="button" id="confirm-cancel">
+            Cancel</button
+          ><button type="submit" class="button danger" id="confirm-submit">
+            Delete
+          </button>
+        </div>
+      </form>
+    </dialog>
+    <dialog id="inspection" aria-labelledby="inspection-title">
+      <div class="panel-heading">
+        <h2 id="inspection-title">Request details</h2>
+        <button
+          class="button small"
+          id="inspection-close"
+          aria-label="Close request details"
+        >
+          Close
+        </button>
+      </div>
+      <pre class="json-view" id="inspection-json"></pre>
+      <div class="dialog-actions">
+        <button class="button" id="inspection-correlated" hidden>
+          Show correlated requests
+        </button>
+        <button class="button" id="inspection-copy">
+          Copy request details
+        </button>
+      </div>
+    </dialog>
+    <script type="module" src="/__sim/app.mjs"></script>
+  </body>
+</html>

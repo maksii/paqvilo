@@ -1,0 +1,8 @@
+<powerpagesites>
+  <powerpagesite powerpagesiteid="e1000000-0000-4000-8000-000000000001">
+    <content>{
+  "datamodelversion": "2.0"
+}</content>
+    <name>Enhanced fixture</name>
+  </powerpagesite>
+</powerpagesites>

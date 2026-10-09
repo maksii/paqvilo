@@ -1,0 +1,293 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "paqvilo: setup",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "scripts/ensure-dependencies.mjs"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "paqvilo: dev",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "dev"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": {
+        "owner": "paqvilo",
+        "pattern": {
+          "regexp": "^paqvilo: (.+)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^(portals|browser|site)\\s",
+          "endsPattern": "^edit a file under the sources"
+        }
+      },
+      "dependsOn": "paqvilo: setup",
+      "isBackground": true
+    },
+    {
+      "label": "paqvilo: dev + debugger",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "dev",
+        "--debug-port",
+        "9222"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": {
+        "owner": "paqvilo",
+        "pattern": {
+          "regexp": "^paqvilo: (.+)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^(portals|browser|site)\\s",
+          "endsPattern": "^edit a file under the sources"
+        }
+      },
+      "dependsOn": "paqvilo: setup",
+      "isBackground": true
+    },
+    {
+      "label": "paqvilo: mirage dev",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "mirage",
+        "dev"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: mirage dev + debugger",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "mirage",
+        "dev",
+        "--debug-port",
+        "9222"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": {
+        "owner": "paqvilo",
+        "pattern": {
+          "regexp": "^paqvilo: (.+)$",
+          "message": 1
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^(portals|browser|site)\\s",
+          "endsPattern": "^edit a file under the sources"
+        }
+      },
+      "dependsOn": "paqvilo: setup",
+      "isBackground": true
+    },
+    {
+      "label": "paqvilo: mirage init",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "mirage",
+        "init"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: mirage status",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "mirage",
+        "status"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: mirage stop",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "mirage",
+        "stop"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: choose portal",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "use"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "focus": true
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: list",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "list"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: doctor",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "doctor",
+        "--all"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: verify",
+      "type": "process",
+      "command": "node",
+      "args": [
+        "bin/paqvilo.mjs",
+        "lense",
+        "verify",
+        "--headed",
+        "--signed-in",
+        "--strict",
+        "--path",
+        "${input:verifyPath}"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated"
+      },
+      "problemMatcher": [],
+      "dependsOn": "paqvilo: setup"
+    },
+    {
+      "label": "paqvilo: validate",
+      "type": "npm",
+      "script": "validate",
+      "group": "test",
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [
+    {
+      "id": "verifyPath",
+      "description": "Page to test in a temporary source copy; close dev first",
+      "type": "promptString",
+      "default": "/"
+    }
+  ]
+}

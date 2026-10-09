@@ -1,0 +1,57 @@
+trigger:
+  branches:
+    include: [main]
+
+# Azure Repos PR validation uses a build-validation branch policy, not a YAML pr trigger.
+pool:
+  vmImage: ubuntu-latest
+
+strategy:
+  matrix:
+    node22:
+      nodeVersion: 22.x
+    node24:
+      nodeVersion: 24.x
+
+steps:
+  - checkout: self
+    fetchDepth: 1
+  - task: NodeTool@0
+    inputs:
+      versionSpec: $(nodeVersion)
+    displayName: Use supported Node.js
+  - script: npm ci --ignore-scripts
+    displayName: Install locked dependencies
+  - script: npm ci --prefix mirage --ignore-scripts
+    displayName: Install Mirage locked dependencies
+  - script: npm run check
+    displayName: Check module syntax
+  - script: npm test
+    displayName: Offline unit regressions
+  - script: node node_modules/playwright-core/cli.js install --with-deps chromium
+    displayName: Install matching Chromium
+  - script: npm run test:browser
+    env:
+      PAQVILO_BROWSER: chromium
+    displayName: Loopback browser acceptance
+  - script: npm --prefix mirage run test
+    displayName: Mirage offline unit regressions
+  - script: npm --prefix mirage run test:browser
+    env:
+      PAQVILO_BROWSER: chromium
+    displayName: Mirage loopback browser acceptance
+  - script: npm audit --audit-level=moderate
+    displayName: Audit production dependencies
+  - script: npm audit --prefix mirage --audit-level=moderate
+    displayName: Audit Mirage production dependencies
+  - script: npm run release:check
+    displayName: Validate distributable files and documentation
+  - script: node scripts/collect-evidence.mjs --azure
+    condition: always()
+    displayName: Collect only synthetic evidence
+  - task: PublishPipelineArtifact@1
+    condition: always()
+    inputs:
+      targetPath: $(paqviloEvidence)
+      artifact: browser-evidence-$(nodeVersion)
+    displayName: Preserve synthetic browser evidence

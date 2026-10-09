@@ -1,0 +1,8 @@
+adx_websiteaccess_webrole:
+- 5c0de51e-0000-4000-8000-000000000062
+id: 5c0de51e-0000-4000-8000-000000000075
+managecontentsnippets: true
+managesitemarkers: true
+manageweblinksets: true
+name: Administrative permissions
+previewunpublishedentities: true

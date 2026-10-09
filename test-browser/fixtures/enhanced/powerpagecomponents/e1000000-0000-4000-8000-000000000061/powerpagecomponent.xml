@@ -1,0 +1,15 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000061">
+  <content>{
+  "webtemplateid": "e1000000-0000-4000-8000-000000000081",
+  "usewebsiteheaderandfooter": false,
+  "type": 756150001
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Main</name>
+  <powerpagecomponenttype>6</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,13 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000091">
+  <content>{
+  "mspp_value": "on"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Feature/Banner</name>
+  <powerpagecomponenttype>9</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,79 @@
+{
+  "name": "paqvilo",
+  "version": "1.2.0",
+  "description": "Paqvilo: Lense source overlays and inspection, Mirage local Power Pages rendering",
+  "private": false,
+  "files": [
+    "bin/",
+    "lense/",
+    "mirage/*.mjs",
+    "mirage/lib/",
+    "mirage/admin/",
+    "mirage/testing/",
+    "mirage/package.json",
+    "mirage/package-lock.json",
+    "mirage/README.md",
+    "mirage/MIGRATION.md",
+    "mirage/docs/",
+    "scripts/ensure-dependencies.mjs",
+    "paqvilo.config.yml",
+    ".env.example",
+    "AGENTS.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "NOTICE",
+    "docs/",
+    "examples/",
+    "npm-shrinkwrap.json"
+  ],
+  "type": "module",
+  "bin": {
+    "paqvilo": "bin/paqvilo.mjs"
+  },
+  "scripts": {
+    "setup": "node scripts/ensure-dependencies.mjs",
+    "dev": "node bin/paqvilo.mjs lense dev",
+    "dev:pick": "node bin/paqvilo.mjs lense dev --pick",
+    "list": "node bin/paqvilo.mjs lense list",
+    "use": "node bin/paqvilo.mjs lense use",
+    "map": "node bin/paqvilo.mjs lense map",
+    "status": "node bin/paqvilo.mjs lense status",
+    "verify": "node bin/paqvilo.mjs lense verify",
+    "doctor": "node bin/paqvilo.mjs lense doctor",
+    "audit:resources": "node bin/paqvilo.mjs lense audit",
+    "resources": "node bin/paqvilo.mjs lense resources",
+    "mirage": "node bin/paqvilo.mjs mirage",
+    "agent": "node bin/paqvilo.mjs lense agent",
+    "benchmark": "node scripts/benchmark.mjs",
+    "test": "node --test --test-concurrency=4 test/*.test.mjs",
+    "test:browser": "node --test --test-concurrency=2 test-browser/*.test.mjs",
+    "check": "node scripts/check.mjs && npm run check:boundary",
+    "validate": "npm run check && npm test && npm run test:browser && npm --prefix mirage run validate && npm run release:check",
+    "release:check": "node scripts/release-check.mjs",
+    "release:smoke": "node scripts/package-smoke.mjs",
+    "ci:evidence": "node scripts/collect-evidence.mjs",
+    "demo": "node scripts/demo.mjs",
+    "demo:evidence": "node scripts/demo.mjs --evidence",
+    "lense": "node bin/paqvilo.mjs lense",
+    "check:boundary": "node scripts/project-boundary.mjs"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "chokidar": "5.0.0",
+    "playwright-core": "1.63.0",
+    "yaml": "2.9.1",
+    "jquery": "3.7.1",
+    "moment": "2.31.0",
+    "parse5": "8.0.1",
+    "pixelmatch": "8.0.0",
+    "pngjs": "7.0.0"
+  },
+  "license": "AGPL-3.0-only",
+  "exports": {
+    "./package.json": "./package.json",
+    "./lense/*": "./lense/*",
+    "./mirage/*": "./mirage/*"
+  }
+}

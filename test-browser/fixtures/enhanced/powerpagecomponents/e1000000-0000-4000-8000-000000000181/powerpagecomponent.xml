@@ -1,0 +1,23 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000181">
+  <content>{
+  "entitylogicalname": "contact",
+  "scope": 756150000,
+  "read": true,
+  "write": false,
+  "create": false,
+  "delete": false,
+  "append": false,
+  "appendto": false,
+  "adx_entitypermission_webrole": [
+    "e1000000-0000-4000-8000-000000000111"
+  ]
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Members read contacts</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

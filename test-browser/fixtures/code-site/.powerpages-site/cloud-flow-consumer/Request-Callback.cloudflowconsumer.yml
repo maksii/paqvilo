@@ -1,0 +1,8 @@
+adx_CloudFlowConsumer_adx_webrole:
+- 5c0de51e-0000-4000-8000-000000000060
+flowapiurl: /_api/cloudflow/v1.0/trigger/5c0de51e-0000-4000-8000-000000000082
+flowtriggerurl: ''
+id: 5c0de51e-0000-4000-8000-000000000081
+metadata: ''
+name: Request Callback
+processid: 5c0de51e-0000-4000-8000-000000000082

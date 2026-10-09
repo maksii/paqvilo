@@ -1,0 +1,62 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "paqvilo: dev browser + debugger",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}",
+      "timeout": 60000,
+      "skipFiles": [
+        "https://content.powerapps.com/**",
+        "**/xrm-adx/**",
+        "**/*.min.js"
+      ],
+      "preLaunchTask": "paqvilo: dev + debugger"
+    },
+    {
+      "name": "paqvilo: mirage browser + debugger",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}",
+      "timeout": 60000,
+      "skipFiles": [
+        "https://content.powerapps.com/**",
+        "**/xrm-adx/**",
+        "**/*.min.js"
+      ],
+      "preLaunchTask": "paqvilo: mirage dev + debugger"
+    },
+    {
+      "name": "paqvilo: attach to running dev browser",
+      "type": "pwa-chrome",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}",
+      "timeout": 60000,
+      "skipFiles": [
+        "https://content.powerapps.com/**",
+        "**/xrm-adx/**",
+        "**/*.min.js"
+      ]
+    },
+    {
+      "name": "paqvilo: debug toolkit",
+      "type": "node",
+      "request": "launch",
+      "cwd": "${workspaceFolder}",
+      "program": "${workspaceFolder}/bin/paqvilo.mjs",
+      "args": [
+        "lense",
+        "dev"
+      ],
+      "console": "integratedTerminal",
+      "skipFiles": [
+        "<node_internals>/**",
+        "**/node_modules/**"
+      ]
+    }
+  ]
+}

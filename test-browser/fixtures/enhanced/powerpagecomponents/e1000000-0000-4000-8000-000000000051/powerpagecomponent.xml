@@ -1,0 +1,15 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000051">
+  <content>{
+  "mspp_weblinksetid": "e1000000-0000-4000-8000-000000000041",
+  "pageid": "e1000000-0000-4000-8000-000000000023",
+  "displayorder": 1
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Secure link</name>
+  <powerpagecomponenttype>5</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

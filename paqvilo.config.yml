@@ -1,0 +1,23 @@
+# Copy this catalogue into your project and pass --config <path>.
+# Portal and Solution sources belong to your project, outside Paqvilo.
+sourceRoot: ../my-portals
+defaultSite: portal
+portals: selected
+sites:
+  portal:
+    source: portal-export
+    defaultEnv: dev
+    environments:
+      dev: https://portal.example.test
+    mirage:
+      port: 8787
+      # Paths below resolve relative to sourceRoot.
+      solutionRoots: []
+      # Modules resolve relative to this catalogue. Load only trusted project code.
+      dataPacks: []
+defaults:
+  scope: all
+  markup:
+    baseline: HEAD
+browser:
+  channel: msedge

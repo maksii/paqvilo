@@ -1,0 +1,28 @@
+{
+  "name": "paqvilo-mirage",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Mirage: local Power Pages rendering, Liquid, simulated Dataverse and parity tools",
+  "scripts": {
+    "start": "node cli.mjs serve",
+    "inspect": "node cli.mjs inspect",
+    "test": "node --test --test-concurrency=4 --test-timeout=180000 test/*.test.mjs",
+    "test:browser": "node --test --test-concurrency=2 --test-timeout=300000 test-browser/*.test.mjs",
+    "validate": "npm test && npm run test:browser"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "chokidar": "5.0.0",
+    "jquery": "3.7.1",
+    "moment": "2.31.0",
+    "parse5": "8.0.1",
+    "pixelmatch": "8.0.0",
+    "playwright-core": "1.63.0",
+    "pngjs": "7.0.0",
+    "yaml": "2.9.1"
+  },
+  "license": "AGPL-3.0-only"
+}

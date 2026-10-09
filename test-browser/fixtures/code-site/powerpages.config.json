@@ -1,0 +1,5 @@
+{
+  "siteName": "Synthetic Code Site",
+  "defaultLandingPage": "index.html",
+  "compiledPath": "./dist"
+}

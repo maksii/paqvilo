@@ -1,0 +1,20 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000024">
+  <content>{
+  "isroot": false,
+  "rootwebpageid": "e1000000-0000-4000-8000-000000000023",
+  "partialurl": "secure",
+  "parentpageid": "e1000000-0000-4000-8000-000000000021",
+  "pagetemplateid": "e1000000-0000-4000-8000-000000000061",
+  "publishingstateid": "e1000000-0000-4000-8000-000000000101",
+  "title": "Secure",
+  "copy": "&lt;p&gt;Members only content&lt;/p&gt;"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Secure</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

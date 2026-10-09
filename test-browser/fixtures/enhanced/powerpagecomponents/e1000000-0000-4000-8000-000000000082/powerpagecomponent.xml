@@ -1,0 +1,13 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000082">
+  <content>{
+  "source": "&lt;p id=\"partial\"&gt;Partial from a web template&lt;/p&gt;"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Partial</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,16 @@
+node_modules/
+# toolkit-managed browser profiles (contain sign-in cookies), agent discovery, reports and evidence
+.paqvilo/
+# Previous local state remains private during migration.
+.pp-local/
+# secondary working materials at the toolkit root (see README.md)
+/artifacts/
+/metrics/
+/logs/
+/tmp/
+# personal settings (see .env.example) and personal additions to the catalogue
+.env*
+!.env.example
+paqvilo.config.local.yml
+coverage/
+*.log

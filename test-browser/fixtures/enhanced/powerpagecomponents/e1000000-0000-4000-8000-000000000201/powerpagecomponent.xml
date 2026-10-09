@@ -1,0 +1,18 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000201">
+  <content>{
+  "webpageid": "e1000000-0000-4000-8000-000000000023",
+  "right": 2,
+  "scope": 1,
+  "adx_webpageaccesscontrolrule_webrole": [
+    "e1000000-0000-4000-8000-000000000111"
+  ]
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Members only</name>
+  <powerpagecomponenttype>10</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

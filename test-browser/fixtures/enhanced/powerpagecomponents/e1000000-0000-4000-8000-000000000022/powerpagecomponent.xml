@@ -1,0 +1,19 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000022">
+  <content>{
+  "isroot": false,
+  "rootwebpageid": "e1000000-0000-4000-8000-000000000021",
+  "partialurl": "/",
+  "pagetemplateid": "e1000000-0000-4000-8000-000000000061",
+  "publishingstateid": "e1000000-0000-4000-8000-000000000101",
+  "title": "Home",
+  "copy": "&lt;p&gt;Home copy&lt;/p&gt;"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Home</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

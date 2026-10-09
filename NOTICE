@@ -1,0 +1,9 @@
+Paqvilo
+Original Paqvilo code: GNU Affero General Public License v3.0 only (see LICENSE).
+
+Third-party code and assets retain their upstream licenses:
+- Bootstrap glyphicons fonts under mirage/lib/bootstrap-fonts/: MIT; see LICENSE-bootstrap.txt.
+- npm dependencies: see each installed package's license and notices.
+- Test fixtures with upstream-derived assets: preserve the notices beside each fixture.
+
+Paqvilo is independent of Microsoft. Power Pages and Dataverse are Microsoft products.

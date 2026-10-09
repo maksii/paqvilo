@@ -1,0 +1,351 @@
+{
+  "version": 1,
+  "description": "Portal-agnostic core parity checks. Every scenario is anonymous and read-only (GET or navigation only). Paths that depend on the portal are chosen from the exported portal and the local table mappings (discover.from: portal); a scenario whose candidate does not exist is reported as not applicable.",
+  "conditions": [
+    "Core scenarios are anonymous: HTTP checks are cookie-free requests from the runner. Page captures use the runner's own headless browser, or with --anonymous-browser cdp an isolated context of the owned toolkit browser; the toolkit overlay serves that context with the toolkit profile's cookies, so the run refuses a profile signed in to the origin and blocks any anonymous capture that renders a signed-in portal user.",
+    "Discovered paths are chosen deterministically from the exported portal: the shallowest page anonymous visitors may not read, a stylesheet web file they may read, the first table enabled for the Web API (with its first listed column) and a mapped table with the same publisher prefix that is not enabled."
+  ],
+  "defaults": {
+    "delayMs": 500,
+    "settleMs": 1500,
+    "quietMs": 1200,
+    "settleTimeout": 25000
+  },
+  "scenarios": [
+    {
+      "id": "core-home",
+      "kind": "anonymous",
+      "path": "/",
+      "bodyTitle": true,
+      "cookies": true,
+      "headerNames": true,
+      "tags": [
+        "core",
+        "routing"
+      ],
+      "title": "Anonymous home page: status, redirect, body title, header names and cookies"
+    },
+    {
+      "id": "core-home-shell",
+      "kind": "page-shell",
+      "identity": "anonymous",
+      "path": "/",
+      "tags": [
+        "core",
+        "shell"
+      ],
+      "title": "Anonymous home page shell: document title, html and body attributes, script and stylesheet bundles in document order"
+    },
+    {
+      "id": "core-client-object",
+      "kind": "client-object",
+      "identity": "anonymous",
+      "path": "/",
+      "tags": [
+        "core",
+        "shell",
+        "client-object"
+      ],
+      "title": "Anonymous home page: platform client objects (Microsoft.Dynamic365.Portal, its User, Microsoft.PowerPages) by key order and value type"
+    },
+    {
+      "id": "core-protected-redirect",
+      "kind": "anonymous",
+      "path": "{protectedPage}",
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "protectedPage"
+        ]
+      },
+      "bodyTitle": true,
+      "headerNames": true,
+      "tags": [
+        "core",
+        "routing"
+      ],
+      "title": "Anonymous request for a page anonymous visitors may not read: sign-in redirect shape and ReturnUrl encoding"
+    },
+    {
+      "id": "core-protected-redirect-query",
+      "kind": "anonymous",
+      "path": "{protectedPage}?parity=1",
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "protectedPage"
+        ]
+      },
+      "tags": [
+        "core",
+        "routing"
+      ],
+      "title": "The same protected page with a query string: ReturnUrl encoding of the query"
+    },
+    {
+      "id": "core-ambiguous-url",
+      "kind": "anonymous",
+      "path": "{ambiguousPage}",
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "ambiguousPage"
+        ]
+      },
+      "bodyTitle": true,
+      "tags": [
+        "core",
+        "routing"
+      ],
+      "title": "Anonymous request for a URL that several exported pages share with different anonymous access: which page the portal serves"
+    },
+    {
+      "id": "core-not-found",
+      "kind": "anonymous",
+      "path": "/paqvilo-mirage-parity-missing-route/",
+      "bodyTitle": true,
+      "headerNames": true,
+      "tags": [
+        "core",
+        "routing"
+      ],
+      "title": "Unknown route: status and error page title"
+    },
+    {
+      "id": "core-headers-home",
+      "kind": "headers",
+      "identity": "anonymous",
+      "path": "/",
+      "headers": [
+        "content-type",
+        "cache-control",
+        "x-frame-options",
+        "content-security-policy",
+        "x-content-type-options",
+        "referrer-policy",
+        "strict-transport-security",
+        "access-control-allow-origin"
+      ],
+      "headerNames": true,
+      "tags": [
+        "core",
+        "headers"
+      ],
+      "title": "HTML response headers of the home page"
+    },
+    {
+      "id": "core-headers-webfile",
+      "kind": "headers",
+      "identity": "anonymous",
+      "path": "{publicWebFile}",
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "publicWebFile"
+        ]
+      },
+      "headers": [
+        "content-type",
+        "cache-control",
+        "content-disposition",
+        "x-content-type-options",
+        "access-control-allow-origin"
+      ],
+      "headerNames": true,
+      "conditional": true,
+      "tags": [
+        "core",
+        "headers"
+      ],
+      "title": "Response headers and conditional GET of a public stylesheet web file"
+    },
+    {
+      "id": "core-api-unknown-table",
+      "kind": "api-status",
+      "identity": "anonymous",
+      "path": "/_api/ppsimparitymissings",
+      "query": {
+        "$top": "1"
+      },
+      "tags": [
+        "core",
+        "api"
+      ],
+      "title": "Web API read of an entity set that does not exist: status and error envelope"
+    },
+    {
+      "id": "core-api-enabled-table",
+      "kind": "api-json",
+      "identity": "anonymous",
+      "path": "/_api/{enabledEntitySet}",
+      "query": {
+        "$select": "{enabledField}",
+        "$top": "1"
+      },
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "enabledEntitySet",
+          "enabledField"
+        ]
+      },
+      "tags": [
+        "core",
+        "api"
+      ],
+      "title": "Anonymous Web API read of a table enabled for the Web API: status, error envelope or response shape"
+    },
+    {
+      "id": "core-api-select-less",
+      "kind": "api-json",
+      "identity": "anonymous",
+      "path": "/_api/{enabledEntitySet}",
+      "query": {
+        "$top": "1"
+      },
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "enabledEntitySet"
+        ]
+      },
+      "tags": [
+        "core",
+        "api"
+      ],
+      "title": "Anonymous Web API read of the same table without $select"
+    },
+    {
+      "id": "core-api-config-table",
+      "kind": "api-status",
+      "identity": "anonymous",
+      "path": "/_api/adx_webpages",
+      "query": {
+        "$top": "1"
+      },
+      "tags": [
+        "core",
+        "api"
+      ],
+      "title": "Web API read of a portal configuration table"
+    },
+    {
+      "id": "core-api-not-enabled-table",
+      "kind": "api-status",
+      "identity": "anonymous",
+      "path": "/_api/{notEnabledEntitySet}",
+      "query": {
+        "$top": "1"
+      },
+      "discover": {
+        "from": "portal",
+        "keys": [
+          "notEnabledEntitySet"
+        ]
+      },
+      "tags": [
+        "core",
+        "api"
+      ],
+      "title": "Web API read of a mapped table that is not enabled for the Web API"
+    }
+  ],
+  "classifications": [
+    {
+      "id": "core-hosting-hsts",
+      "kind": "header",
+      "field": "strict-transport-security",
+      "class": "hosted-infrastructure",
+      "note": "TLS and HSTS are applied by the hosting front end; the loopback runtime is plain HTTP."
+    },
+    {
+      "id": "core-hosted-resources",
+      "kind": "/^hosted-resource-(missing|extra)$/",
+      "class": "hosted-infrastructure",
+      "note": "Application Insights (ai.*.min.js) and Power BI embed resources are hosting and tenant services, not portal output."
+    },
+    {
+      "id": "core-api-data",
+      "scenario": "/^core-api-(enabled-table|select-less)$/",
+      "kind": "/^(count|emptiness|odata-count|total-record-count|more-records)$/",
+      "class": "data-difference",
+      "note": "Row counts depend on the records each side holds (scaffolded local data)."
+    },
+    {
+      "id": "core-local-markers",
+      "scenario": "core-home-shell",
+      "kind": "attribute-extra",
+      "attribute": "/^data-sim-/",
+      "class": "harness",
+      "note": "Mirage compatibility markers on the local document (data-sim-* attributes) are not portal output."
+    },
+    {
+      "id": "core-shell-render",
+      "scenario": "core-home-shell",
+      "kind": "/^(status|shell-unavailable|page-unresponsive)$/",
+      "class": "runtime-gap",
+      "owner": "D",
+      "note": "The home page does not render the same way: status or document shell unavailable (routing or import, D)."
+    },
+    {
+      "id": "core-shell-layout",
+      "scenario": "core-home-shell",
+      "kind": "/^(body-title|attribute-missing|attribute-extra|attribute-value|class)$/",
+      "class": "runtime-gap",
+      "owner": "A",
+      "note": "The document title or html/body attributes rendered by the layout templates differ (Liquid and layout, A)."
+    },
+    {
+      "id": "core-chatbot-script",
+      "scenario": "core-home-shell",
+      "kind": "/^bundle-extra$/",
+      "path": "botframework-webchat",
+      "class": "source-deployment",
+      "note": "The chat widget script loads only locally: the deployed site does not render the chatbot (its deployed footer and deployment-profile settings differ from the export)."
+    },
+    {
+      "id": "core-shell-bundles",
+      "scenario": "core-home-shell",
+      "kind": "/^bundle-(missing|extra|order)$/",
+      "class": "runtime-gap",
+      "owner": "C",
+      "note": "Platform and page script/stylesheet bundles differ in presence or document order (platform shell, C)."
+    },
+    {
+      "id": "core-client-hosted",
+      "scenario": "core-client-object",
+      "kind": "/^client-key-missing$/",
+      "path": "/^Microsoft[.]ApplicationInsights/",
+      "class": "hosted-infrastructure",
+      "note": "Application Insights (ai.*.min.js) adds its own globals to window.Microsoft; it is hosting telemetry, not portal output."
+    },
+    {
+      "id": "core-client-object",
+      "scenario": "core-client-object",
+      "class": "runtime-gap",
+      "owner": "C",
+      "note": "The platform client objects differ in key presence, key order, value type or empty values (platform client object, C)."
+    },
+    {
+      "id": "core-routing",
+      "scenario": "/^core-(home|protected-redirect|protected-redirect-query|ambiguous-url|not-found)$/",
+      "class": "runtime-gap",
+      "owner": "D",
+      "note": "Status, redirect target shape, ReturnUrl encoding or error-page title differ (routing, D)."
+    },
+    {
+      "id": "core-response-headers",
+      "scenario": "/^core-headers-(home|webfile)$/",
+      "class": "runtime-gap",
+      "owner": "D",
+      "note": "Page or web-file response headers differ: caching, content type, disposition, ETag or conditional GET (serving, D)."
+    },
+    {
+      "id": "core-web-api",
+      "scenario": "/^core-api-/",
+      "class": "runtime-gap",
+      "owner": "B",
+      "note": "Web API status, error envelope, error code or response shape differ (B)."
+    }
+  ]
+}

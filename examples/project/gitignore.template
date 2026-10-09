@@ -1,0 +1,7 @@
+node_modules/
+.paqvilo/
+.env*
+!.env.example
+paqvilo.config.local.yml
+coverage/
+*.log

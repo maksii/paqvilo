@@ -1,0 +1,11 @@
+{
+  "name": "my-portal-project",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "lense": "paqvilo lense --config ./paqvilo.config.yml",
+    "mirage": "paqvilo mirage",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": { "paqvilo": "file:../.." }
+}

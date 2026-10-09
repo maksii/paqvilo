@@ -1,0 +1,7 @@
+adx_webpageaccesscontrolrule_webrole:
+- 5c0de51e-0000-4000-8000-000000000060
+id: 5c0de51e-0000-4000-8000-000000000071
+name: Restrict About to authenticated users
+right: 2
+scope: 1
+webpageid: 5c0de51e-0000-4000-8000-000000000013

@@ -1,0 +1,13 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000081">
+  <content>{
+  "source": "&lt;!doctype html&gt;&lt;html&gt;&lt;head&gt;&lt;title&gt;Enhanced fixture&lt;/title&gt;&lt;/head&gt;&lt;body&gt;\n&lt;h1 id=\"who\"&gt;{{ user.fullname | default: \"Anonymous\" }}&lt;/h1&gt;\n{% include 'Partial' %}\n&lt;p id=\"greeting\"&gt;{{ snippets[\"Greeting\"] }}&lt;/p&gt;\n&lt;p id=\"banner\"&gt;{{ settings[\"Feature/Banner\"] }}&lt;/p&gt;\n{% fetchxml contacts %}&lt;fetch&gt;&lt;entity name=\"contact\"&gt;&lt;attribute name=\"fullname\"/&gt;&lt;/entity&gt;&lt;/fetch&gt;{% endfetchxml %}\n&lt;p id=\"count\"&gt;{{ contacts.results.entities.size }}&lt;/p&gt;\n&lt;/body&gt;&lt;/html&gt;"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Main</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

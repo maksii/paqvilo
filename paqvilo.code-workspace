@@ -1,0 +1,8 @@
+{
+  "folders": [{ "name": "paqvilo", "path": "." }],
+  "settings": {
+    "files.exclude": { "**/.paqvilo": true },
+    "search.exclude": { "**/.paqvilo": true, "**/test-browser/fixtures": true },
+    "editor.formatOnSave": false
+  }
+}

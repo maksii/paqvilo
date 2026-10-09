@@ -1,0 +1,14 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000071">
+  <content>{
+  "value": "Hello from the enhanced model",
+  "type": 756150000
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Greeting</name>
+  <powerpagecomponenttype>7</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

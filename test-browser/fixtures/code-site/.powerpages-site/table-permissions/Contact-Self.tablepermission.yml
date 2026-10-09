@@ -1,0 +1,12 @@
+adx_entitypermission_webrole:
+- 5c0de51e-0000-4000-8000-000000000060
+append: false
+appendto: false
+create: false
+delete: false
+entitylogicalname: contact
+entityname: Contact - Self
+id: 5c0de51e-0000-4000-8000-000000000070
+read: true
+scope: 756150001
+write: true

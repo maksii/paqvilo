@@ -1,0 +1,14 @@
+<powerpagecomponent powerpagecomponentid="e1000000-0000-4000-8000-000000000101">
+  <content>{
+  "isvisible": true,
+  "isdefault": true
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Published</name>
+  <powerpagecomponenttype>1</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>e1000000-0000-4000-8000-000000000001</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>
