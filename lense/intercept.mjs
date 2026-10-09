@@ -56,7 +56,7 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
     record.closing = (async () => {
       // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
       const step = async (label, action) => {
-        if (!(await settlesWithin(action(), CDP_RELEASE_MS))) onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
+        if (!(await settlesWithin(Promise.resolve().then(action), CDP_RELEASE_MS))) onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
       };
       // Abort before disabling interception, so an in-flight POST cannot be resumed and repeated.
       await step('pending requests', () => Promise.allSettled([...record.routes].map(async (route) => {
