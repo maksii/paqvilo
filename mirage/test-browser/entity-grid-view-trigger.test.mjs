@@ -57,18 +57,24 @@ test("jQuery-triggered clicks on grid view and sort links reach the grid", async
   const page = await browser.newPage();
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
+  // Wait for the expected grid requests (a slow runner can take longer than a fixed pause), then
+  // give a duplicate request a moment to show up before the exact count is asserted.
+  const postsReach = async (count) => {
+    for (const deadline = Date.now() + 10_000; posts.length < count && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 25));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  };
   await page.goto(`http://127.0.0.1:${server.address().port}/page`);
   await page.locator(".view-select [aria-label='Second']").waitFor({ state: "attached" });
   // A deferred grid does not load until asked to.
   assert.deepEqual(posts, []);
   await page.evaluate(() => window.jQuery(".view-select [aria-label='Second']").trigger("click"));
   await page.waitForFunction(() => document.querySelector(".entity-grid").getAttribute("data-selected-view") === "view-2");
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await postsReach(1);
   assert.equal(posts.length, 1);
   assert.equal(posts[0].base64SecureConfiguration, "secure-2");
   await page.evaluate(() => window.jQuery(".view-grid table thead th a").first().trigger("click"));
   await page.waitForFunction((count) => window.__gridPosts === undefined && document.querySelectorAll(".view-grid table").length > 0, posts.length);
-  await new Promise((resolve) => setTimeout(resolve, 500));
+  await postsReach(2);
   assert.equal(posts.length, 2);
   assert.match(String(posts[1].sortExpression), /^name (ASC|DESC)$/);
   assert.deepEqual(errors, []);
