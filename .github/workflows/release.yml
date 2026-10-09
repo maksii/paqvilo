@@ -74,7 +74,8 @@ jobs:
           # Optional: an npm automation token. Without it, npm trusted publishing (OIDC) is used.
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          args=(publish "dist/paqvilo-${{ steps.version.outputs.version }}.tgz" --provenance --access public --tag "${{ steps.version.outputs.dist-tag }}" --ignore-scripts)
+          # "./" keeps npm from reading dist/<file> as GitHub owner/repo shorthand.
+          args=(publish "./dist/paqvilo-${{ steps.version.outputs.version }}.tgz" --provenance --access public --tag "${{ steps.version.outputs.dist-tag }}" --ignore-scripts)
           if [ "$DRY_RUN" = "true" ]; then args+=(--dry-run); fi
           npm "${args[@]}"
       - name: Create GitHub release
