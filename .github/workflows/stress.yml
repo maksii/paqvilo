@@ -40,22 +40,41 @@ jobs:
           git config --global gc.auto 0
           node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Lense unit
-        if: always()
         timeout-minutes: 5
         run: npm test
       - name: Mirage unit
         if: always()
         timeout-minutes: 5
         run: npm --prefix mirage run test
-      - name: Lense browser
+      - name: Lense browser x6
         if: always()
-        timeout-minutes: 8
-        run: npm run test:browser
+        timeout-minutes: 15
         env:
           PAQVILO_BROWSER: chromium
-      - name: Mirage browser
+        run: |
+          failed=0
+          for i in 1 2 3 4 5 6; do
+            if ! timeout 150 npm run test:browser > "lense-$i.log" 2>&1; then
+              failed=$((failed+1))
+              echo "::error::Lense browser iteration $i failed"
+              grep -E "^. |not ok|timed out|agent-server steps|Error" "lense-$i.log" | grep -v "^✔" | head -60
+            fi
+          done
+          echo "Lense browser failures: $failed/6"
+          [ "$failed" -eq 0 ]
+      - name: Mirage browser x3
         if: always()
-        timeout-minutes: 10
-        run: npm --prefix mirage run test:browser
+        timeout-minutes: 20
         env:
           PAQVILO_BROWSER: chromium
+        run: |
+          failed=0
+          for i in 1 2 3; do
+            if ! timeout 360 npm --prefix mirage run test:browser > "mirage-$i.log" 2>&1; then
+              failed=$((failed+1))
+              echo "::error::Mirage browser iteration $i failed"
+              grep -E "not ok|timed out|Error|✖|ℹ" "mirage-$i.log" | head -60
+            fi
+          done
+          echo "Mirage browser failures: $failed/3"
+          [ "$failed" -eq 0 ]
