@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
-import { validateReleaseFiles, REQUIRED_RELEASE_FILES } from '../scripts/release-check.mjs';
+import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata } from '../scripts/release-check.mjs';
 
 test('release allowlist includes Mirage runtime and excludes tests, state, profiles and live evidence', () => {
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
@@ -13,6 +13,12 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);
+});
+
+test('the package names its GitHub repository, which npm provenance requires', () => {
+  const pkg = JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.doesNotThrow(() => checkPackageMetadata(pkg));
+  for (const repository of [undefined, {}, { url: '' }, { url: 'https://example.com/repo' }]) assert.throws(() => checkPackageMetadata({ repository }), /repository\.url/);
 });
 
 test('CI collects only synthetic outputs and ignores profile/token/live files and links', (t) => {

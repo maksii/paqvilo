@@ -64,6 +64,11 @@ function checkDocumentation(root) {
   }
 }
 
+// npm provenance rejects a publish whose repository.url does not name the source repository.
+export function checkPackageMetadata(pkg) {
+  if (!/^git\+https:\/\/github\.com\/[\w.-]+\/[\w.-]+\.git$/.test(pkg.repository?.url ?? '')) throw new Error('package.json repository.url must be git+https://github.com/<owner>/<repo>.git for npm provenance');
+}
+
 function checkLockConsistency(root) {
   const packageLock = fs.readFileSync(path.join(root, 'package-lock.json'), 'utf8');
   const shrinkwrap = fs.readFileSync(path.join(root, 'npm-shrinkwrap.json'), 'utf8');
@@ -75,6 +80,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
     checkDocumentation(root);
     checkLockConsistency(root);
+    checkPackageMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')));
     checkEditorTasks(root);
     const npmCli = process.env.npm_execpath;
     if (!npmCli || !fs.existsSync(npmCli)) throw new Error('Run npm run release:check so the configured npm CLI is used');
