@@ -47,7 +47,11 @@ test("jQuery-triggered clicks on grid view and sort links reach the grid", async
     res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const page = await browser.newPage();
@@ -135,7 +139,11 @@ test("a grid confirmation dialog is exposed to assistive technology while shown,
     res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const tab = await browser.newPage();

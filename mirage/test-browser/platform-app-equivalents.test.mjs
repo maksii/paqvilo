@@ -47,7 +47,11 @@ test("app bundle equivalent: read-only control focus, ad and poll placements", a
     res.end();
   });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
-  t.after(() => new Promise((resolve) => server.close(resolve)));
+  t.after(() => {
+    // A preconnected socket that never sent a request would hold server.close open.
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const page = await browser.newPage();
