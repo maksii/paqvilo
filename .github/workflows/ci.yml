@@ -1,0 +1,183 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  FORCE_COLOR: '1'
+  NPM_CONFIG_FUND: 'false'
+
+jobs:
+  checks:
+    name: Static checks and release boundary
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mirage --ignore-scripts
+      - name: Check module syntax and project boundary
+        run: npm run check
+      - name: Validate distributable files, lockfiles and documentation
+        run: npm run release:check
+      - name: Audit production dependencies
+        run: |
+          npm audit --audit-level=moderate
+          npm audit --prefix mirage --audit-level=moderate
+      - name: Verify registry signatures of installed packages
+        run: npm audit signatures
+
+  test:
+    name: Tests (Node ${{ matrix.node }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        node: [22, 24]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mirage --ignore-scripts
+      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
+      - name: Disable Git auto-maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+      - name: Lense offline unit regressions
+        run: npm test
+      - name: Mirage offline unit regressions
+        run: npm --prefix mirage run test
+      - name: Install matching Chromium
+        run: node node_modules/playwright-core/cli.js install --with-deps chromium
+      - name: Lense loopback browser acceptance
+        run: npm run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Mirage loopback browser acceptance
+        run: npm --prefix mirage run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Collect only synthetic evidence
+        if: always()
+        run: node scripts/collect-evidence.mjs
+      - name: Preserve synthetic browser evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: browser-evidence-node${{ matrix.node }}
+          path: .paqvilo/ci-evidence-*/
+          if-no-files-found: ignore
+          include-hidden-files: true
+          retention-days: 14
+
+  windows:
+    name: Unit tests (Node 24, windows-latest)
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Install locked dependencies
+        run: |
+          npm ci --ignore-scripts
+          npm ci --prefix mirage --ignore-scripts
+      # Tests create and copy temporary repositories; detached auto-maintenance races with those copies.
+      - name: Disable Git auto-maintenance
+        run: |
+          git config --global maintenance.auto false
+          git config --global gc.auto 0
+      - name: Lense offline unit regressions
+        run: npm test
+      - name: Mirage offline unit regressions
+        run: npm --prefix mirage run test
+
+  package:
+    name: Package smoke test
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+          cache: npm
+          cache-dependency-path: |
+            npm-shrinkwrap.json
+            mirage/package-lock.json
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.
+      - name: Prime npm cache for the offline install
+        run: |
+          node -e "const l=require('./npm-shrinkwrap.json');for(const[k,v]of Object.entries(l.packages))if(k&&!v.dev&&!v.link)console.log(k.split('node_modules/').pop()+'@'+v.version)" \
+            | xargs npm cache add
+      - name: Install the packed distribution into the example project
+        run: npm run release:smoke
+      - name: Pack distributable
+        run: mkdir -p dist && npm pack --ignore-scripts --pack-destination dist
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: package
+          path: dist/*.tgz
+          if-no-files-found: error
+          retention-days: 14
+
+  # Single required status check for branch protection.
+  gate:
+    name: CI gate
+    if: always()
+    needs: [checks, test, windows, package]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require every job to succeed
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "Job results: $RESULTS"
+          node -e "const r=JSON.parse(process.env.RESULTS);if(r.some(x=>x!=='success'))process.exit(1)"

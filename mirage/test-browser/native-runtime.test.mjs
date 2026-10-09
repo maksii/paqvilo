@@ -110,6 +110,10 @@ test("native client runtime: WebForms validators, jQuery grid events, paging and
   assert.equal(await page.evaluate(() => { ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), false); return Page_ClientValidate(""); }), true);
   await page.evaluate(() => ValidatorEnable(document.getElementById("RequiredFieldValidatorfullname"), true));
   await page.locator("#fullname").fill("Ada Lovelace");
+  // Commit the field before clicking elsewhere: its change event re-validates and hides the
+  // inline required message, and that layout shift between mousedown and mouseup would move
+  // the release off the lookup button so no click fires.
+  await page.locator("#fullname").blur();
 
   // Lookup modal: show.bs.modal, lookup grid service, row selection and footer Select.
   await page.getByRole("button", { name: "Organisation Launch lookup modal" }).click();

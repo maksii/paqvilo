@@ -25,7 +25,7 @@ export function inspectProjectBoundary(directory = root) {
       }
     }
   };
-  for (const name of ['bin', 'lense', 'mirage', 'scripts', 'test', 'test-browser', 'docs', 'examples']) {
+  for (const name of ['bin', 'lense', 'mirage', 'scripts', 'test', 'test-browser', 'docs', 'examples', '.github']) {
     const dir = path.join(directory, name);
     if (fs.existsSync(dir)) walk(dir);
   }

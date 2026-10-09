@@ -714,10 +714,19 @@ export async function runAcceptance({
             // is attached. Assert the resulting value within the action deadline.
             const deadline = Date.now() + timeout;
             let matched = false;
+            let observed = false;
             while (Date.now() < deadline) {
-              const value = await target().inputValue({
-                timeout: Math.max(1, deadline - Date.now()),
-              });
+              let value;
+              try {
+                value = await target().inputValue({
+                  timeout: Math.max(1, deadline - Date.now()),
+                });
+              } catch (error) {
+                // A read cut short by the deadline after the control was seen is a value mismatch.
+                if (!observed) throw error;
+                break;
+              }
+              observed = true;
               matched = step.contains
                 ? value.includes(step.value)
                 : value === step.value;
