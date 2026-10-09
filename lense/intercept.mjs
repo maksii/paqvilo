@@ -8,6 +8,18 @@ const NOT_FORWARDED = new Set(['cookie', 'host', 'content-length', 'connection']
 const NOT_REPLAYED = new Set(['content-encoding', 'content-length', 'transfer-encoding']);
 const STALE_AFTER_EDIT = new Set(['etag', 'last-modified', 'content-md5', 'digest', 'content-digest', 'repr-digest', 'cache-control', 'expires']);
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+// A DevTools command sent while a tab swaps documents can go unanswered; setup and release must still end.
+const CDP_SETUP_MS = 10_000;
+const CDP_RELEASE_MS = 5_000;
+
+/** Resolves with true when `promise` settles within `ms`, or false when it does not. */
+function settlesWithin(promise, ms) {
+  let timer;
+  return Promise.race([
+    Promise.resolve(promise).then(() => true, () => true),
+    new Promise((resolve) => { timer = setTimeout(resolve, ms, false); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 /**
  * Sends the portal requests of every tab of `context` through `handler`, which gets an object with
@@ -42,17 +54,21 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
     if (record.late) record.page.off('domcontentloaded', record.late);
     record.cdp.off('Fetch.requestPaused', record.onPaused);
     record.closing = (async () => {
+      // Each DevTools answer is bounded: an unanswered command must not keep the release waiting.
+      const step = async (label, action) => {
+        if (!(await settlesWithin(action(), CDP_RELEASE_MS))) onError(new Error(`Releasing development interception: ${label} did not answer within ${CDP_RELEASE_MS} ms`));
+      };
       // Abort before disabling interception, so an in-flight POST cannot be resumed and repeated.
-      await Promise.allSettled([...record.routes].map(async (route) => {
+      await step('pending requests', () => Promise.allSettled([...record.routes].map(async (route) => {
         activeRoutes.delete(route);
         await route.abort();
         await route.disposeResponses();
-      }));
+      })));
       record.routes.clear();
       const restore = [['Fetch.disable', {}], ['Network.setCacheDisabled', { cacheDisabled: false }]];
       if (bypassCSP) restore.push(['Page.setBypassCSP', { enabled: false }]);
-      for (const [method, params] of restore) await record.cdp.send(method, params).catch(() => {});
-      await record.cdp.detach?.().catch(() => {});
+      for (const [method, params] of restore) await step(method, () => record.cdp.send(method, params));
+      await step('detach', () => record.cdp.detach?.());
     })();
     pendingClosures.add(record.closing);
     record.closing.finally(() => pendingClosures.delete(record.closing)).catch(() => {});
@@ -94,9 +110,12 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
     cdp.on('Fetch.requestPaused', record.onPaused);
     record.onClose = () => { release(record).catch(() => {}); };
     page.once('close', record.onClose);
-    const configure = (method, params) => {
+    const configure = async (method, params) => {
       if (stopped || record.closed) throw new Error('Browser page closed during interception setup');
-      return cdp.send(method, params);
+      let timer;
+      try {
+        return await Promise.race([cdp.send(method, params), new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`${method} did not answer within ${CDP_SETUP_MS} ms`)), CDP_SETUP_MS); })]);
+      } finally { clearTimeout(timer); }
     };
     try {
       mainFrameId = (await configure('Page.getFrameTree')).frameTree.frame.id;

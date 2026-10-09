@@ -167,6 +167,36 @@ test('disposing an overlay restores browser cache and CSP and stops new attachme
   assert.equal(b.sent.filter((s) => s.method === 'Fetch.enable').length, 1);
 });
 
+test('a DevTools command that never answers cannot hold the release open, and is named', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const b = fakeBrowser();
+  const tab = b.openTab();
+  const answer = tab.cdp.send;
+  tab.cdp.send = (method, params) => (method === 'Fetch.disable' ? (b.sent.push({ method }), new Promise(() => {})) : answer(method, params));
+  const errors = [];
+  const dispose = await interceptOrigin(b.context, ORIGIN, async () => {}, { onError: (error) => errors.push(error.message) });
+  let released = false;
+  const disposal = dispose().then(() => { released = true; });
+  for (let i = 0; i < 20 && !released; i++) { await setImmediate(); t.mock.timers.tick(5_000); }
+  await disposal;
+  assert.deepEqual(errors, ['Releasing development interception: Fetch.disable did not answer within 5000 ms']);
+  // the remaining restore steps still ran after the unanswered command
+  assert.ok(b.sent.some((s) => s.method === 'Network.setCacheDisabled' && s.cacheDisabled === false));
+});
+
+test('interception setup fails, instead of waiting forever, when a DevTools command never answers', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const b = fakeBrowser();
+  const tab = b.openTab();
+  const answer = tab.cdp.send;
+  tab.cdp.send = (method, params) => (method === 'Fetch.enable' ? new Promise(() => {}) : answer(method, params));
+  let outcome;
+  const ready = interceptOrigin(b.context, ORIGIN, async () => {}, { onError: () => {} }).then(() => { outcome = 'ready'; }, (error) => { outcome = error.message; });
+  for (let i = 0; i < 20 && !outcome; i++) { await setImmediate(); t.mock.timers.tick(5_000); }
+  await ready;
+  assert.match(outcome, /Could not enable development interception: Fetch\.enable did not answer within 10000 ms/);
+});
+
 test('CSP is preserved unless bypass is explicitly requested', async () => {
   const b = fakeBrowser();
   b.openTab();
