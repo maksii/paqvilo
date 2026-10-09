@@ -15,7 +15,16 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   let browser;
   let agent;
   const servers = [];
+  // Each step's name and duration; printed when the test does not finish, to name a stuck step.
+  const trail = [];
+  let finished = false;
+  const step = async (name, action) => {
+    const entry = { name, startedMs: Date.now() };
+    trail.push(entry);
+    try { return await action(); } finally { entry.ms = Date.now() - entry.startedMs; }
+  };
   t.after(async () => {
+    if (!finished) console.log(`agent-server steps: ${JSON.stringify(trail.map(({ name, ms }) => ({ name, ms: ms ?? 'unfinished' })))}`);
     await agent?.close(); await browser?.close();
     for (const server of servers) { server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); }
     fs.rmSync(work, { recursive: true, force: true, maxRetries: 5 });
@@ -43,8 +52,8 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   const session = Object.assign(new EventEmitter(), { cfg: { stateDir: work, origin, sourceDir: work, siteName: 'fixture', envName: 'loopback', site: { scope: 'all' } }, baseline: { available: true, spec: 'HEAD', commit: 'abc' }, model: { webFileByUrl: new Map(), warnings: [] }, rewriter: { activeBlocks: 0, patches: [], unsupported: [] }, changedFiles: new Set(), pageHits: new WeakMap(), rel: (file) => path.relative(work, file) });
   agent = await startAgentServer({ session, context });
   const discovery = JSON.parse(fs.readFileSync(agent.discoveryFile, 'utf8'));
-  const call = (url, body) => fetch(agent.endpoint + url, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${discovery.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
-  await page.goto(origin + '/chapter/');
+  const call = (url, body) => step(`${body === undefined ? 'GET' : 'POST'} ${url}${body?.url ? ` ${body.url}` : ''}`, () => fetch(agent.endpoint + url, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${discovery.token}`, ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+  await step('page.goto /chapter/', () => page.goto(origin + '/chapter/'));
   const rows = await (await call('/v1/pages/1/dom', { selector: 'table tr', styles: ['display', 'color'] })).json();
   assert.equal(rows.elements.length, 2);
   assert.equal(rows.elements[1].text, 'Example Ready');
@@ -64,7 +73,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.deepEqual([...hidden.subarray(0, 8)], [137, 80, 78, 71, 13, 10, 26, 10]);
   assert.equal(hidden.equals(shown), false);
   assert.equal(await page.locator('#paqvilo-panel').evaluate((node) => getComputedStyle(node).visibility), 'visible', 'screenshot style is restored');
-  assert.equal(await page.evaluate(async (endpoint) => { try { await fetch(endpoint + '/v1/session'); return true; } catch { return false; } }, agent.endpoint), false, 'browser CORS access is rejected');
+  assert.equal(await step('in-page fetch to agent', () => page.evaluate(async (endpoint) => { try { await fetch(endpoint + '/v1/session'); return true; } catch { return false; } }, agent.endpoint)), false, 'browser CORS access is rejected');
   assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/?filter=ready#table' })).status, 200);
   const getsBeforeReload = documents.filter((document) => document.method === 'GET').length;
   const reloaded = await call('/v1/pages/1/reload', {});
@@ -79,19 +88,19 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal(documents.filter((document) => document.method === 'GET').length, beforeEmptyFragment + 1, 'an empty fragment also forces a real GET');
   assert.ok(page.url().endsWith('#'));
   assert.deepEqual(new URL(page.url()).searchParams.getAll('filter'), ['ready', 'other']);
-  await Promise.all([page.waitForURL(origin + '/chapter/?filter=ready#posted'), page.locator('#submit').click()]);
+  await step('submit POST form', () => Promise.all([page.waitForURL(origin + '/chapter/?filter=ready#posted'), page.locator('#submit').click()]));
   assert.equal(methods.filter((method) => method === 'POST').length, 1);
   const refused = await call('/v1/pages/1/reload', {});
   assert.equal(refused.status, 409);
   assert.equal((await refused.json()).error.code, 'unsafe_reload');
   assert.equal(methods.filter((method) => method === 'POST').length, 1, 'API reload never repeats a submitted POST');
   const lateGet = page.waitForRequest((request) => request.isNavigationRequest() && request.url().startsWith(origin + '/chapter/'));
-  const detach = await interceptOrigin(context, origin, (route) => route.fallback());
-  assert.equal((await lateGet).method(), 'GET', 'late interception retry requests GET even for a POST document with a fragment');
-  await page.waitForLoadState('load');
+  const detach = await step('interceptOrigin', () => interceptOrigin(context, origin, (route) => route.fallback()));
+  assert.equal((await step('late GET retry', () => lateGet)).method(), 'GET', 'late interception retry requests GET even for a POST document with a fragment');
+  await step('waitForLoadState', () => page.waitForLoadState('load'));
   assert.equal(methods.filter((method) => method === 'POST').length, 1);
   assert.equal(new URL(page.url()).hash, '#posted');
-  await detach();
+  await step('detach', () => detach());
   assert.equal((await call('/v1/pages/1/navigate', { url: '/chapter/' })).status, 200);
   assert.equal((await call('/v1/pages/1/navigate', { url: external })).status, 403);
   assert.equal((await call('/v1/pages/1/navigate', { url: '/redirect' })).status, 403, 'same-origin navigation can redirect but foreign page inspection remains denied');
@@ -101,4 +110,5 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal(methods.filter((method) => method !== 'GET').length, 1, 'only the explicit loopback fixture submission used POST');
   await agent.close();
   assert.equal(fs.existsSync(agent.discoveryFile), false);
+  finished = true;
 });
