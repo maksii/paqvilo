@@ -31,6 +31,5 @@ export function collectSyntheticEvidence(stateDir) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const result = collectSyntheticEvidence(path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../.paqvilo'));
-  if (process.argv.includes('--azure')) console.log(`##vso[task.setvariable variable=paqviloEvidence]${result.output}`);
   console.log(`Collected ${result.files.length} synthetic evidence files in ${result.output}`);
 }
