@@ -13,7 +13,7 @@ async function source(t, code) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-operation-'));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const file = path.join(dir, 'logic.js'); await fs.writeFile(file, code);
-  return { dir, record: { name: 'sample', file, roleIds: [role] } };
+  return { dir, record: { name: 'sample', file: await fs.realpath(file), roleIds: [role] } };
 }
 function store() {
   return new DataStore({ state: { version: 1, mappings: { widget: { entitySet: 'widgets', idColumn: 'widgetid' } }, tables: { widget: [{ widgetid: 'one', title: 'Synthetic' }] }, permissions: [{ entity: 'widget', scope: 'global', operations: ['read'], roles: ['Reader'] }], settings: { permissionMode: 'enforce' }, plugins: [] } });

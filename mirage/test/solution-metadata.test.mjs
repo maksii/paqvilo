@@ -16,7 +16,7 @@ async function fixture(t, files) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, xml);
   }
-  return root;
+  return await fs.realpath(root);
 }
 const form = (title) =>
   `<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="tab_1" id="tab-id"><labels><label description="General" languagecode="1033"/></labels><columns><column width="100%"><sections><section name="general" showlabel="true"><labels><label description="General &gt; label" languagecode="1033"/></labels><rows><row><cell showlabel="true"><labels><label description="${title}" languagecode="1033"/></labels><control id="name-control" datafieldname="fullname" disabled="false"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>`;

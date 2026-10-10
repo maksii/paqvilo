@@ -138,6 +138,7 @@ test('local Mirage portals and live targets share one browser: the selector swit
   await choose(2, live.origin);
   await page.locator('#live').waitFor();
   await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.dataset.label === 'classic @ dev');
+  await panel('.tabs [data-act="tab"][data-v="runtime"]').waitFor();
   assert.equal(await panel('.tabs [data-act="tab"][data-v="runtime"]').count(), 1, 'live targets retain source inspection');
   assert.equal(await panel('.tabs [data-act="tab"][data-v="tweaks"]').count(), 0, 'live targets cannot change Mirage personas or scenarios');
   await openTab('runtime');
