@@ -59,7 +59,7 @@ test('scaffolded VS Code task signals readiness and attaches to its own developm
   await page.getByRole('heading', { name: 'Build it three ways. Understand every layer.' }).waitFor();
   const css = path.join(directory, 'portal/web-files/demo.css');
   await fs.appendFile(css, '\nbody{--workspace-task-proof:ready}\n');
-  await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--workspace-task-proof').trim() === 'ready');
+  await page.waitForFunction(() => document.body && getComputedStyle(document.body).getPropertyValue('--workspace-task-proof').trim() === 'ready');
   assert.equal(configuration.pathMapping['/'], '${workspaceFolder}/portal/web-files');
   const resource = await page.request.get(new URL('/demo-workspace.js', page.url()).href);
   assert.equal(resource.status(), 200);

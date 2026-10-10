@@ -26,10 +26,12 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   child.stderr.on('data', (data) => { output += data; });
   const exited = once(child, 'exit');
   const closeOwnedBrowser = async () => {
-    if (!browser) return;
+    if (!browser?.isConnected()) return;
     const cdp = await browser.newBrowserCDPSession();
-    await cdp.send('Browser.close').catch(() => {});
-    await cdp.detach().catch(() => {});
+    // Browser shutdown may disconnect CDP before the command is acknowledged.
+    const disconnected = once(browser, 'disconnected');
+    await Promise.race([cdp.send('Browser.close').catch(() => {}), disconnected]);
+    await disconnected;
   };
   t.after(async () => {
     await closeOwnedBrowser().catch(() => {});
