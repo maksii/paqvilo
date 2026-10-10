@@ -4,6 +4,6 @@
 export function csvCell(value) {
   let text = String(value ?? '');
   const trimmed = text.trimStart();
-  if (/^[=+@-]/.test(trimmed) && !/^[+-]?\d+(?:\.\d+)?$/.test(trimmed)) text = "'" + text;
+  if (/^[=+@-]/.test(trimmed) && !/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?$/.test(trimmed)) text = "'" + text;
   return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
 }

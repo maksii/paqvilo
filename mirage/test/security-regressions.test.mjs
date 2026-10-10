@@ -109,6 +109,8 @@ test('native CSV exports neutralize spreadsheet formulas while preserving signed
   for (const text of ['=1+1', '+SUM(A1:A2)', '-cmd|payload', '@SUM(A1)', '\t=1+1', '  =1+1'])
     assert.ok(csvCell(text).startsWith("'"), text);
   assert.equal(csvCell(-12.5), '-12.5'); assert.equal(csvCell('-12.50'), '-12.50');
+  for (const number of [-1e-7, '-1e+7', '+.5', '-.25', '-12.', '-1.25E-7'])
+    assert.equal(csvCell(number), String(number), 'signed numeric notation stays numeric');
   assert.equal(csvCell('+12'), '+12'); assert.equal(csvCell('a,b'), '"a,b"');
   assert.equal(csvCell('a"b'), '"a""b"'); assert.equal(csvCell('Name'), 'Name');
 });
