@@ -13,7 +13,7 @@ function api(method, route, body, { missing = false } = {}) {
     if (missing && /HTTP 404/.test(result.stderr)) return null;
     throw new Error(`${method} ${route}: ${result.stderr.trim()}`);
   }
-  return result.stdout.trim() ? JSON.parse(result.stdout) : null;
+  return result.stdout.trim() ? JSON.parse(result.stdout) : { ok: true };
 }
 const settings = {
   description: 'Local-first, pro-code tools for Microsoft Power Pages: live previews with Lense and local rendering with Mirage.',
@@ -67,9 +67,18 @@ if (!apply) {
   for (const [name, color, description] of [['bug', 'd73a4a', 'Reproducible problem'], ['enhancement', 'a2eeef', 'New capability or improvement'], ['skip-changelog', 'ededed', 'Exclude from generated release notes']]) {
     api(labels.some((label) => label.name === name) ? 'PATCH' : 'POST', `${endpoint}/labels${labels.some((label) => label.name === name) ? `/${name}` : ''}`, { name, color, description });
   }
-  // A scanning ruleset is enabled separately after the first main scan has established a baseline.
+  // Establish the main baseline before requiring this tool for future merges.
+  const analyses = api('GET', `${endpoint}/code-scanning/analyses?ref=refs%2Fheads%2Fmain&per_page=1`, undefined, { missing: true });
+  if (analyses?.length) {
+    const scanning = JSON.parse(fs.readFileSync('.github/code-scanning-ruleset.json', 'utf8'));
+    const existingScan = existingRules.find((rule) => rule.name === scanning.name);
+    api(existingScan ? 'PUT' : 'POST', `${endpoint}/rulesets${existingScan ? `/${existingScan.id}` : ''}`, scanning);
+    console.log('CodeQL merge protection enabled: error alerts and high/critical security findings.');
+  } else console.log('CodeQL main baseline pending; reapply after the first main Security run.');
   console.log('Release tags, Pages, environments, dependency security and topics configured.');
-  const report = { date: new Date().toISOString(), repository: api('GET', endpoint), protection: api('GET', `${endpoint}/branches/main/protection`), pages: api('GET', `${endpoint}/pages`), rulesets: api('GET', `${endpoint}/rulesets`) };
+  const configured = api('GET', endpoint);
+  const repository = Object.fromEntries(['full_name', 'visibility', 'homepage', 'has_discussions', 'security_and_analysis', 'allow_squash_merge', 'allow_merge_commit', 'allow_rebase_merge', 'delete_branch_on_merge'].map(key => [key, configured[key]]));
+  const report = { date: new Date().toISOString(), repository, protection: api('GET', `${endpoint}/branches/main/protection`), pages: api('GET', `${endpoint}/pages`), rulesets: api('GET', `${endpoint}/rulesets`) };
   fs.mkdirSync('.paqvilo/admin', { recursive: true });
   fs.writeFileSync('.paqvilo/admin/setup.json', JSON.stringify(report, null, 2));
   console.log('Verified settings saved under ignored .paqvilo/admin/setup.json.');

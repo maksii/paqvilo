@@ -20,7 +20,7 @@ node scripts/github-admin.mjs
 node scripts/github-admin.mjs --apply
 ```
 
-The first script invocation previews its plan. Apply uses GitHub APIs through `gh`, updates named rulesets without duplicating them, and preserves unrelated rulesets. It does not commit sources, change visibility, publish npm versions or send messages. Review the returned settings and run URLs. Merge workflow changes before expecting their required check names to appear.
+The first script invocation previews its plan. Apply uses GitHub APIs through `gh`, updates named rulesets without duplicating them, and preserves unrelated rulesets. It does not commit sources, change visibility, publish npm versions or send messages. Review the returned settings and run URLs. Merge workflow changes before expecting their required check names to appear. Reapply after the first main Security run to enable the checked-in CodeQL merge-protection ruleset; initial setup waits for that baseline.
 
 ## npm settings that require npmjs.com
 

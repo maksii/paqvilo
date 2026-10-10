@@ -13,7 +13,7 @@ body:
     id: version
     attributes:
       label: Paqvilo version
-      placeholder: '0.9.3 (npx --no-install paqvilo --version)'
+      placeholder: '0.9.3 (npm ls paqvilo --depth=0)'
     validations:
       required: true
   - type: dropdown
