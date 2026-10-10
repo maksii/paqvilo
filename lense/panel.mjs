@@ -2,6 +2,7 @@
 // The part that runs in the page is panel-ui.mjs.
 import fs from 'node:fs';
 import path from 'node:path';
+import { readLocalFileSync } from './local-file.mjs';
 import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
@@ -758,7 +759,7 @@ export function enablePanel(context, session, opts = {}) {
     try {
       if (fs.statSync(file).size > 16 * 1024 * 1024) return null;
       const needle = find.toLowerCase();
-      const index = fs.readFileSync(file, 'utf8').split(/\r?\n/).findIndex((text) => text.toLowerCase().includes(needle));
+      const index = readLocalFileSync(file, { maxBytes: 16 * 1024 * 1024, encoding: 'utf8' }).split(/\r?\n/).findIndex((text) => text.toLowerCase().includes(needle));
       return index >= 0 ? index + 1 : null;
     } catch {
       return null;
@@ -997,7 +998,7 @@ export function enablePanel(context, session, opts = {}) {
     if (BINARY_EXT.test(file)) return { ok: false, error: 'not a text file' };
     if (fs.statSync(file).size > MAX_DIFF_BYTES) return { ok: false, error: 'the file is too large to compare here' };
     const src = indexSources().inlineByRel.get(rel);
-    const local = src ? sourceText(src) : fs.readFileSync(file, 'utf8');
+    const local = src ? sourceText(src) : readLocalFileSync(file, { maxBytes: MAX_DIFF_BYTES, encoding: 'utf8' });
     if (local == null) return { ok: false, error: 'the local file cannot be read' };
     let before = null;
     let against = null;

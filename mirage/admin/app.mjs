@@ -1310,7 +1310,7 @@ function audit() {
   const result = auditResult || { items: [], total: 0, pageCount: 1 },
     settings = browserFor("audit");
   const select = (name, label, values) =>
-    `<label>${label}<select data-audit-filter="${name}"><option value="">All</option>${values.map((value) => `<option value="${value}" ${auditFilters[name] === value ? "selected" : ""}>${value}</option>`).join("")}</select></label>`;
+    `<label>${label}<select data-audit-filter="${name}"><option value="">All</option>${values.map((value) => `<option value="${escape(value)}" ${auditFilters[name] === value ? "selected" : ""}>${escape(value)}</option>`).join("")}</select></label>`;
   return (
     heading(
       "Request audit",
@@ -1524,6 +1524,27 @@ function logs() {
   );
 }
 
+function renderView(view) {
+  switch (view) {
+    case 'overview': return overview();
+    case 'records': return records();
+    case 'portal': return portal();
+    case 'endpoints': return configurationView('endpoints');
+    case 'operations': return operations();
+    case 'mappings': return configurationView('mappings');
+    case 'plugins': return configurationView('plugins');
+    case 'access': return access();
+    case 'scenarios': return scenarios();
+    case 'environment': return environment();
+    case 'connection': return connection();
+    case 'runtime': return runtimeState();
+    case 'evidence': return evidence();
+    case 'audit': return audit();
+    case 'logs': return logs();
+    default: return overview();
+  }
+}
+
 function render() {
   const focused = document.activeElement;
   const focusKey =
@@ -1542,10 +1563,7 @@ function render() {
     .join("");
   $("#breadcrumb").textContent =
     views.find(([id]) => id === activeView)?.[1] || "Overview";
-  const renderers = { overview, records, portal, operations, access, scenarios, environment, connection, runtime: runtimeState, evidence, audit, logs };
-  $("#content").innerHTML = renderers[activeView]
-    ? renderers[activeView]()
-    : configurationView(activeView);
+  $("#content").innerHTML = renderView(activeView);
   if (activeView === "connection" || activeView === "mappings")
     $("#content").insertAdjacentHTML(
       "beforeend",
@@ -2066,7 +2084,7 @@ document.addEventListener("change", (event) => {
     else render();
     return;
   }
-  if (event.target.dataset.auditFilter) {
+  if (Object.hasOwn(auditFilters, event.target.dataset.auditFilter)) {
     auditFilters[event.target.dataset.auditFilter] = event.target.value;
     browserFor("audit").page = 1;
     loadAudit();

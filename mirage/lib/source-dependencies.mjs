@@ -17,11 +17,41 @@ function strings(value, output = []) {
 
 /** jQuery core builds (jquery.js, jquery.min.js, jquery-3.6.0.min.js, jquery.slim.js),
  * not jQuery plugins such as jquery-ui or jquery.validate. */
-export const JQUERY_CORE_SCRIPT = /(?:^|\/)jquery(?:[.-](?:\d[\w.]*|min|slim))*\.js(?:[?#]|$)/i;
+export const JQUERY_CORE_SCRIPT = Object.freeze({ test: (value) => coreScript(value, "jquery", ["min", "slim"]) });
 /** Bootstrap core and bundle builds, including platform files with hashed names
  * (/resource/powerappsportal/dist/bootstrap.bundle-<hash>.js), but not Bootstrap
  * plugins such as bootstrap-datetimepicker. */
-export const BOOTSTRAP_CORE_SCRIPT = /(?:^|\/)bootstrap(?:\.bundle|\.min|[.-](?:v?\d[\w.]*|[a-f0-9]{6,}))*\.js(?:[?#]|$)/i;
+export const BOOTSTRAP_CORE_SCRIPT = Object.freeze({ test: (value) => coreScript(value, "bootstrap", ["bundle", "min"]) });
+
+// Scan the basename once. Version components may contain dots, so a repeated
+// regular expression with a dot-containing version alternative backtracks exponentially.
+function coreScript(value, library, words) {
+  const pathname = String(value).split(/[?#]/, 1)[0];
+  const name = pathname.slice(pathname.lastIndexOf("/") + 1).toLowerCase();
+  if (!name.startsWith(library) || !name.endsWith(".js")) return false;
+  const suffix = name.slice(library.length, -3);
+  let index = 0;
+  while (index < suffix.length) {
+    const separator = suffix[index++];
+    if (separator !== "." && separator !== "-") return false;
+    const start = index;
+    while (index < suffix.length && /[\w.]/.test(suffix[index])) index++;
+    const chunk = suffix.slice(start, index);
+    if (!chunk) return false;
+    // A numeric version can consume the remaining dot-separated suffix. Named
+    // modifiers and hashed Bootstrap builds are checked component by component.
+    if (/^\d/.test(chunk) || (library === "bootstrap" && /^v\d/.test(chunk))) continue;
+    const parts = chunk.split(".");
+    let version = false;
+    if (!parts.every((part) => {
+      if (version) return /^[\w]*$/.test(part);
+      if (/^\d/.test(part) || (library === "bootstrap" && /^v\d/.test(part))) { version = true; return true; }
+      return words.includes(part) || (library === "bootstrap" && /^[a-f0-9]{6,}$/.test(part));
+    })) return false;
+    if (separator === "-" && words.includes(parts[0]) && library === "bootstrap") return false;
+  }
+  return true;
+}
 const scriptSources = (html) => [...String(html).matchAll(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["']/gi)].map((match) => match[1]);
 
 /** Find browser globals used by exported code so clean local runs can supply

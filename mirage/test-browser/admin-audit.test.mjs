@@ -211,6 +211,17 @@ test(
       .last()
       .click();
     await page.getByText("0 retained", { exact: false }).waitFor();
+    const hostile = '"><img src=x onerror="window.auditInjected=true">';
+    await page.goto(app.adminUrl + '#audit?kind=' + encodeURIComponent(hostile));
+    await page.locator('[data-audit-filter="kind"]').waitFor();
+    assert.equal(await page.locator('[data-audit-filter="kind"]').inputValue(), hostile);
+    assert.equal(await page.locator('#content img').count(), 0);
+    assert.equal(await page.evaluate(() => window.auditInjected), undefined);
+    assert.ok((await page.locator('[data-audit-filter="kind"]').innerText()).includes(hostile));
+    // Invalid hash names cannot dispatch inherited Object methods or become HTML.
+    await page.goto(app.adminUrl + '#__proto__');
+    await page.reload();
+    await page.getByRole('heading', { name: 'Your local portal workspace' }).waitFor();
     assert.deepEqual(errors, []);
   },
 );

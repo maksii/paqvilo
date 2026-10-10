@@ -1,6 +1,7 @@
 import { DataError } from './data.mjs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { readLocalFile } from '../../lense/local-file.mjs';
 import { createHash } from 'node:crypto';
 import { parseSolutionXml, child, childText, descendants } from './solution-xml.mjs';
 
@@ -23,7 +24,7 @@ export async function importSolutionOperationSources(layers, website) {
       if (!entry.isDirectory() || entry.isSymbolicLink()) continue;
       const file = await fs.realpath(path.join(root, entry.name, 'powerpagecomponent.xml')).catch(() => null);
       if (!file || !inside(root, file) || (await fs.stat(file)).size > 1024 * 1024) continue;
-      const xmlSource = await fs.readFile(file, 'utf8');
+      const xmlSource = await readLocalFile(file, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
       const xml = parseSolutionXml(xmlSource);
       const type = Number(childText(xml, 'powerpagecomponenttype'));
       if (![33, 35].includes(type) || Number(childText(xml, 'statecode') ?? 0) !== 0) continue;

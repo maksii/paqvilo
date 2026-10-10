@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { readLocalFile } from '../../lense/local-file.mjs';
 import { createHash } from 'node:crypto';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
 
@@ -22,12 +23,12 @@ export async function importCodeComponents(layers = []) {
       const manifestFile = path.join(root, 'ControlManifest.xml');
       try {
         if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024) continue;
-        const manifest = await fs.readFile(manifestFile, 'utf8');
+        const manifest = await readLocalFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
         const control = descendants(parseSolutionXml(manifest), 'control')[0];
         if (!control) continue;
         const metadataFile = await fs.realpath(path.join(root, 'ControlManifest.xml.data.xml'));
         if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024) continue;
-        const metadata = await fs.readFile(metadataFile, 'utf8');
+        const metadata = await readLocalFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
         const schemaName = childText(parseSolutionXml(metadata), 'Name');
         if (!schemaName || !/^[\w.]+$/.test(schemaName)) continue;
         const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
@@ -41,11 +42,12 @@ export async function importCodeComponents(layers = []) {
           const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
           if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024) throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
           const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
-          digest.update(relative).update(await fs.readFile(file));
+          const body = await readLocalFile(file, { root, maxBytes: 8 * 1024 * 1024 });
+          digest.update(relative).update(body);
           declaredAssets.set(url, { file, root, kind: resource.name });
           resources.push({ kind: resource.name, path: relative, url, order: Number(resource.attrs.order) || 0 });
           if (resource.name === 'resx') {
-            for (const entry of descendants(parseSolutionXml(await fs.readFile(file, 'utf8')), 'data')) strings[entry.attrs.name] = childText(entry, 'value') ?? '';
+            for (const entry of descendants(parseSolutionXml(body.toString('utf8')), 'data')) strings[entry.attrs.name] = childText(entry, 'value') ?? '';
           }
         }
         if (!resources.some(resource => resource.kind === 'code')) throw new Error('PCF manifest does not declare an executable code resource');

@@ -180,6 +180,8 @@ test("entity list OData feeds publish the list view with the legacy property mod
   assert.equal(single.name, "Link A");
   assert.equal((await call("/_odata/HiddenSet")).status, 404);
   assert.equal((await call("/_odata/OrgContactSet?$filter=name eq 'x' or")).status, 400);
+  for (const filter of ['role/Value eq ' + '0'.repeat(100000) + 'x', 'role/Value eq -' + '0'.repeat(100000) + '.', ' '.repeat(100000) + '!'])
+    assert.equal((await call('/_odata/OrgContactSet?$filter=' + encodeURIComponent(filter))).status, 400);
   assert.equal((await call("/_odata/OrgContactSet", { accept: "application/atom+xml" })).status, 406);
   assert.equal((await call("/other")).handled, false);
 });

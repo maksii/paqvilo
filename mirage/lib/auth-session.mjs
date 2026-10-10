@@ -19,14 +19,14 @@ const decode = (value) => JSON.parse(Buffer.from(value, "base64url").toString("u
 
 /** Cookie header to { name: value } (first occurrence wins). */
 export function parseCookies(header = "") {
-  const cookies = {};
+  const cookies = new Map();
   for (const part of String(header ?? "").split(";")) {
     const index = part.indexOf("=");
     if (index < 1) continue;
     const name = part.slice(0, index).trim();
-    if (name && !Object.hasOwn(cookies, name)) cookies[name] = part.slice(index + 1).trim();
+    if (name && !cookies.has(name)) cookies.set(name, part.slice(index + 1).trim());
   }
-  return cookies;
+  return Object.fromEntries(cookies);
 }
 
 /** `name`: the cookie name, or a function returning it (known once the runtime listens). */

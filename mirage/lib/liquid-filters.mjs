@@ -8,6 +8,7 @@
 // (default, round, ceil, floor, concat, where). Parameter handling follows DotLiquid's
 // Strainer: IConvertible arguments are converted with Convert.ChangeType and other
 // mismatches raise the .NET exception that renders as "Liquid error: ...".
+import sanitize from "sanitize-html";
 import {
   LiquidError,
   NetDecimal,
@@ -535,12 +536,32 @@ function formatNumberString(value, format) {
 // html_safe_escape: closest local equivalent of the managed HTML sanitizer.
 // ---------------------------------------------------------------------------
 function sanitizeHtml(input) {
-  return String(input)
-    // Unsafe elements are dropped with their content, then any unpaired unsafe tag.
-    .replace(/<(script|style|iframe|object|embed|applet|frame|frameset)\b[^>]*>[\s\S]*?<\/\1\s*>/gi, "")
-    .replace(/<\/?(script|style|iframe|object|embed|applet|frame|frameset|meta|link|base)\b[^>]*>/gi, "")
-    .replace(/\s+on[a-z]+\s*=\s*(?:"[^"]*"|'[^']*'|[^\s>]+)/gi, "")
-    .replace(/\s+(href|src|action|formaction)\s*=\s*(["']?)\s*(?:javascript|vbscript|data):[^"'>\s]*\2/gi, "");
+  return sanitize(String(input), {
+    allowedTags: [...sanitize.defaults.allowedTags, "img"],
+    allowedAttributes: {
+      "*": ["class", "id", "title", "lang", "dir", "style", "aria-*", "data-*"],
+      a: ["href", "name", "target", "rel"],
+      img: ["src", "alt", "width", "height", "loading"],
+      td: ["colspan", "rowspan", "headers"], th: ["colspan", "rowspan", "scope", "headers"],
+      ol: ["start", "reversed", "type"], li: ["value"],
+    },
+    nonTextTags: ["script", "style", "textarea", "option", "iframe", "object", "embed", "applet", "frame", "frameset"],
+    allowedSchemes: ["http", "https", "ftp", "mailto", "tel"],
+    allowedStyles: {
+      '*': {
+        color: [/^(?:#[\da-f]{3,8}|[a-z]+|(?:rgb|rgba|hsl|hsla)\([\d\s.,%+-]+\))$/i],
+        'background-color': [/^(?:#[\da-f]{3,8}|[a-z]+|(?:rgb|rgba|hsl|hsla)\([\d\s.,%+-]+\))$/i],
+        'font-family': [/^[\p{L}\p{N}\s,'"-]+$/u],
+        'font-size': [/^(?:\d+(?:\.\d+)?(?:px|em|rem|%|pt)|[a-z-]+)$/i],
+        'font-weight': [/^(?:normal|bold|bolder|lighter|[1-9]00)$/i],
+        'font-style': [/^(?:normal|italic|oblique)$/i],
+        'text-align': [/^(?:left|right|center|justify|start|end)$/i],
+        'text-decoration': [/^[a-z -]+$/i],
+        'white-space': [/^(?:normal|nowrap|pre|pre-wrap|pre-line|break-spaces)$/i],
+        'vertical-align': [/^[a-z-]+$/i],
+      },
+    },
+  });
 }
 
 // ---------------------------------------------------------------------------

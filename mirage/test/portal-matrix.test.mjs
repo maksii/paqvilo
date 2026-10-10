@@ -339,6 +339,9 @@ test("problems and Markdown name unexplained imports, failed requests and failed
   assert.match(markdown, /distinct CSRF tokens \| FAIL/);
   assert.match(markdown, /component:30 \(redirect\)/);
   assert.match(markdown, /liquid stage failed: boom/);
+  const unsafe = formatMatrix({ ...matrix, portals: matrix.portals.map((portal) => ({ ...portal,
+    import: { ...portal.import, website: { name: 'path\\|<img>[link](x)`' } } })) });
+  assert.ok(unsafe.includes('path&#92;&#124;&#60;img&#62;&#91;link&#93;(x)&#96;'));
 });
 
 /** Minimal unpacked solution: complete account and contact definitions, so the scaffold can create persona contacts. */

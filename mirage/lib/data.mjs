@@ -1502,10 +1502,9 @@ export class DataStore {
       return { value: r.entities, "@odata.count": r.total_record_count };
     }
     const dialect = options.dialect ?? "extended";
-    const aliases = {};
+    const aliases = Object.fromEntries(Object.entries(p).filter(([key]) => key.startsWith('@')));
     for (const key of Object.keys(p)) {
       if (key.startsWith("@")) {
-        aliases[key] = p[key];
         continue;
       }
       if (
@@ -2871,19 +2870,19 @@ function boundedInt(value, name) {
 }
 function project(row, select) {
   if (!select || select === "*") return clone(row);
-  const out = {};
+  const out = new Map();
   for (const key of Array.isArray(select) ? select : splitTop(select)) {
-    out[key] = field(row, key) ?? null;
+    out.set(key, field(row, key) ?? null);
     if (key.startsWith("_") && key.endsWith("_value")) {
       const lookup = row[key.slice(1, -6)];
       if (lookup && typeof lookup === "object" && own(lookup, "id")) {
-        out[key + formattedAnnotation] = lookup.name ?? "";
+        out.set(key + formattedAnnotation, lookup.name ?? "");
         if (lookup.logical_name)
-          out[key + lookupAnnotation] = lookup.logical_name;
+          out.set(key + lookupAnnotation, lookup.logical_name);
       }
     }
   }
-  return out;
+  return Object.fromEntries(out);
 }
 
 /**

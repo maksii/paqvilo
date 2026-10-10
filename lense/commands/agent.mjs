@@ -2,6 +2,7 @@
 // ignored discovery file and are never printed or forwarded through HTTP redirects.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { readLocalFile } from '../local-file.mjs';
 
 const MAX_JSON = 4 * 1024 * 1024;
 const MAX_IMAGE = 32 * 1024 * 1024;
@@ -16,10 +17,8 @@ function integer(value, name, fallback, min, max) {
 }
 
 export async function readDiscovery(file) {
-  const stat = await fs.stat(file);
-  if (!stat.isFile() || stat.size > 64 * 1024) throw new Error('Session discovery must be a JSON file smaller than 64 KiB');
   let value;
-  try { value = JSON.parse(await fs.readFile(file, 'utf8')); } catch { throw new Error('Invalid session discovery JSON'); }
+  try { value = JSON.parse(await readLocalFile(file, { maxBytes: 64 * 1024, encoding: 'utf8' })); } catch { throw new Error('Invalid session discovery JSON or file exceeds 64 KiB'); }
   let endpoint;
   try { endpoint = new URL(value.endpoint); } catch { throw new Error('Invalid session endpoint'); }
   if (value.schemaVersion !== 1 || typeof value.id !== 'string' || !value.id ||

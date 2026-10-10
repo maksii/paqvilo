@@ -1,0 +1,1695 @@
+{
+  "baselineCommit": "ffbdefb5f1ba9ab94f25b7d223d41391d1929975",
+  "cases": [
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.min..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.slim..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.bundle..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-min..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-bundle..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-3.6..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.v3..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-abcdef..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.3.min..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.ui..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x-min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery-1x..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery..ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery.-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "jquery",
+      "input": "/scripts/jquery...js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.min..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.slim..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.bundle..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-min..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-bundle..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-3.6..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.v3..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-abcdef..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.3.min..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui.ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.ui..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.slim.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.bundle.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x-3.6.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.v3.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x-abcdef.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.3.min.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x.ui.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x-1x.js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap-1x..js?v=1",
+      "expected": true
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..slim.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.-min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.-bundle.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.-3.6.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..v3.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.-abcdef.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..3.min.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap..ui.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap.-1x.js?v=1",
+      "expected": false
+    },
+    {
+      "library": "bootstrap",
+      "input": "/scripts/bootstrap...js?v=1",
+      "expected": false
+    }
+  ]
+}

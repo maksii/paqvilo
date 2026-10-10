@@ -444,17 +444,21 @@ test('committing a local edit removes its changed-scope override without another
 test('startup reconciles markup and URL metadata saved during async source prefetch', async (t) => {
   const local = createFixture();
   t.after(() => local.cleanup());
-  const read = fs.promises.readFile;
+  const open = fs.promises.open;
   let edited = false;
-  t.mock.method(fs.promises, 'readFile', async function(file, ...args) {
-    const text = await read.call(this, file, ...args);
-    if (!edited && String(file).endsWith('.webpage.custom_css.css')) {
-      edited = true;
-      local.write('content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html', 'All rights reserved by the local team.');
-      const metadata = 'web-pages/scripts/Scripts.webpage.yml';
-      local.write(metadata, local.read(metadata).replace('adx_partialurl: scripts', 'adx_partialurl: updated-scripts'));
-    }
-    return text;
+  t.mock.method(fs.promises, 'open', async function(file, ...args) {
+    const handle = await open.call(this, file, ...args), read = handle.read.bind(handle);
+    handle.read = async (...input) => {
+      const result = await read(...input);
+      if (!edited && String(file).endsWith('.webpage.custom_css.css')) {
+        edited = true;
+        local.write('content-snippets/footer-text/Footer-Text.en-US.contentsnippet.value.html', 'All rights reserved by the local team.');
+        const metadata = 'web-pages/scripts/Scripts.webpage.yml';
+        local.write(metadata, local.read(metadata).replace('adx_partialurl: scripts', 'adx_partialurl: updated-scripts'));
+      }
+      return result;
+    };
+    return handle;
   });
   const s = await OverlaySession.create({ origin: ORIGIN, sourceDir: local.dir, site: SITE });
   assert.equal(edited, true);

@@ -1,6 +1,7 @@
 // Source-only inspection for a live Lense tab. No runtime, data pack or live request is started.
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { readLocalFile } from './local-file.mjs';
 import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/importer.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
@@ -336,7 +337,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       try {
         const real = await fs.realpath(file.file);
         if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
-          const text = await fs.readFile(real, 'utf8');
+          const text = await readLocalFile(real, { root: portal.sourceDir, maxBytes: 1024 * 1024, encoding: 'utf8' });
           sourceBodies.push(text);
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
