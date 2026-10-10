@@ -1186,7 +1186,7 @@
         "end_column": 60
       },
       "disposition": "fix",
-      "evidence": "Cookie names wrote into a plain object, invoking the inherited __proto__ setter rather than storing an own cookie entry. Build in a null-prototype dictionary and return Object.fromEntries to preserve the ordinary public object shape and first-occurrence behavior.",
+      "evidence": "Cookie names previously wrote through an ordinary object setter. Collect first-occurrence values in a Map and return Object.fromEntries, preserving ordinary public object shape while retaining __proto__/constructor/toString as own data fields without invoking setters.",
       "verification": "mirage/test/security-regressions.test.mjs: __proto__/constructor/toString/duplicates; mirage/test/auth-session.test.mjs",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/74"
     },
@@ -1218,7 +1218,7 @@
         "end_column": 20
       },
       "disposition": "fix",
-      "evidence": "Alias keys already must start with @ and cannot equal __proto__/constructor/prototype. Use a null-prototype alias dictionary as explicit hardening without changing alias values or query semantics.",
+      "evidence": "Alias names are constrained to @-prefixed parameters. Construct the alias dictionary directly with filtered Object.entries and Object.fromEntries instead of dynamic property assignment; preserve all parameter values and supported OData alias behavior.",
       "verification": "mirage OData/data alias regressions; full validation",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/76"
     },
@@ -1234,7 +1234,7 @@
         "end_column": 12
       },
       "disposition": "fix",
-      "evidence": "Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect fields in a null-prototype dictionary and return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.",
+      "evidence": "Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect selected fields and lookup annotations in a Map, then return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.",
       "verification": "mirage/test/security-regressions.test.mjs: own __proto__ selected column and unaffected name; data/OData projections",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/77"
     },
@@ -1959,9 +1959,25 @@
           "end_column": 35
         },
         "disposition": "fix",
-        "evidence": "Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a null-prototype collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.",
+        "evidence": "Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a Map collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.",
         "verification": "mirage/test/security-regressions.test.mjs: own __proto__ field and ordinary object shape; data/OData tests",
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/122"
+      },
+      {
+        "number": 123,
+        "rule": "js/remote-property-injection",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/lib/auth-session.mjs",
+          "start_line": 27,
+          "end_line": 27,
+          "start_column": 56,
+          "end_column": 60
+        },
+        "disposition": "fix",
+        "evidence": "The complete branch analysis also flagged cookie assignment inside the null-prototype collector. Replace dynamic property writes with Map.has/Map.set and convert to Object.fromEntries at the public boundary. First duplicate wins, special names remain own data and no inherited setter runs.",
+        "verification": "mirage/test/security-regressions.test.mjs: prototype-sensitive cookie names and duplicate handling; mirage/test/auth-session.test.mjs",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/123"
       }
     ]
   }

@@ -608,7 +608,7 @@ Validation: test/source-edit.test.mjs: fixture ownership, unchanged write count 
 
 Rule: `js/remote-property-injection`; original [`mirage/lib/auth-session.mjs:27`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/lib/auth-session.mjs#L27).
 
-Cookie names wrote into a plain object, invoking the inherited __proto__ setter rather than storing an own cookie entry. Build in a null-prototype dictionary and return Object.fromEntries to preserve the ordinary public object shape and first-occurrence behavior.
+Cookie names previously wrote through an ordinary object setter. Collect first-occurrence values in a Map and return Object.fromEntries, preserving ordinary public object shape while retaining __proto__/constructor/toString as own data fields without invoking setters.
 
 Validation: mirage/test/security-regressions.test.mjs: __proto__/constructor/toString/duplicates; mirage/test/auth-session.test.mjs.
 
@@ -624,7 +624,7 @@ Validation: mirage/admin/app.mjs: auditFilters/applyRoute; mirage/test-browser/a
 
 Rule: `js/remote-property-injection`; original [`mirage/lib/data.mjs:1508`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/lib/data.mjs#L1508).
 
-Alias keys already must start with @ and cannot equal __proto__/constructor/prototype. Use a null-prototype alias dictionary as explicit hardening without changing alias values or query semantics.
+Alias names are constrained to @-prefixed parameters. Construct the alias dictionary directly with filtered Object.entries and Object.fromEntries instead of dynamic property assignment; preserve all parameter values and supported OData alias behavior.
 
 Validation: mirage OData/data alias regressions; full validation.
 
@@ -632,7 +632,7 @@ Validation: mirage OData/data alias regressions; full validation.
 
 Rule: `js/remote-property-injection`; original [`mirage/lib/data.mjs:2876`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/lib/data.mjs#L2876).
 
-Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect fields in a null-prototype dictionary and return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.
+Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect selected fields and lookup annotations in a Map, then return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.
 
 Validation: mirage/test/security-regressions.test.mjs: own __proto__ selected column and unaffected name; data/OData projections.
 
@@ -952,7 +952,7 @@ Validation: mirage/test-browser/solution-form.test.mjs: passive message assertio
 
 ## Full branch scan follow-up
 
-The first full branch analysis (1928710822 at `3373ada`) reproduced the 71 reviewed baseline false positives, removed the 44 fix-classified baseline findings, and reported seven new findings. All seven are addressed through further implementation/test changes; none is dismissed. This extra full scan is separate from PR diff analysis. Windows CI also exposed canonical-path spelling differences in two prefetch mocks; those mocks now compare canonical filenames and explicitly assert that the intended save occurred.
+The first full branch analysis (1928710822 at `3373ada`) reproduced 69 reviewed baseline false positives, removed 43 fix-classified baseline findings, retained the alias-key warning (#76), and reported eight new findings. Two intentional discovery-file request paths (#81–82) were no longer modeled after the descriptor-read change; their main-baseline dismissal evidence still applies. All eight new findings and the retained alias warning are addressed through further implementation/test changes; none is dismissed. This extra full scan is separate from PR diff analysis. Windows CI also exposed canonical-path spelling differences in two prefetch mocks; those mocks now compare canonical filenames and explicitly assert that the intended save occurred.
 
 ### [116](https://github.com/maksii/paqvilo/security/code-scanning/116) — fix
 
@@ -1006,6 +1006,14 @@ Validation: test/local-file.test.mjs: synchronous path replacement, limits and r
 
 Rule: `js/remote-property-injection`; first revision: `mirage/lib/data.mjs:2876`.
 
-Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a null-prototype collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.
+Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a Map collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.
 
 Validation: mirage/test/security-regressions.test.mjs: own __proto__ field and ordinary object shape; data/OData tests.
+
+### [123](https://github.com/maksii/paqvilo/security/code-scanning/123) — fix
+
+Rule: `js/remote-property-injection`; first revision: `mirage/lib/auth-session.mjs:27`.
+
+The complete branch analysis also flagged cookie assignment inside the null-prototype collector. Replace dynamic property writes with Map.has/Map.set and convert to Object.fromEntries at the public boundary. First duplicate wins, special names remain own data and no inherited setter runs.
+
+Validation: mirage/test/security-regressions.test.mjs: prototype-sensitive cookie names and duplicate handling; mirage/test/auth-session.test.mjs.
