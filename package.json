@@ -87,7 +87,7 @@
   },
   "dependencies": {
     "chokidar": "5.0.0",
-    "jquery": "3.7.1",
+    "jquery": "4.0.0",
     "moment": "2.31.0",
     "parse5": "8.0.1",
     "pixelmatch": "8.0.0",
