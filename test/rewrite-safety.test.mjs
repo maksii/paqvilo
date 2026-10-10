@@ -447,13 +447,14 @@ test('async construction preloads stable sources with bounded concurrency and sh
 
 test('async construction retries a source that finishes saving during prefetch', async () => {
   script('form.js', 'original();', 'firstLocal();');
+  const openedFile = fs.realpathSync(sources[0].file);
   const open = fs.promises.open;
   let saved = false;
   fs.promises.open = async (...args) => {
     const handle = await open(...args), read = handle.read.bind(handle);
     handle.read = async (...input) => {
       const result = await read(...input);
-      if (!saved && args[0] === sources[0].file) {
+      if (!saved && args[0] === openedFile) {
         saved = true;
         fs.writeFileSync(sources[0].file, 'finishedSavingTheLatestVersion();');
       }
@@ -464,6 +465,7 @@ test('async construction retries a source that finishes saving during prefetch',
   try {
     const baseline = { cache: new Map(), changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
     const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
+    assert.equal(saved, true, 'the intended descriptor read triggered the concurrent save');
     assert.equal(rewriter.rewrite('<script>original();</script>', '/').html, '<script>finishedSavingTheLatestVersion();</script>');
   } finally {
     fs.promises.open = open;
@@ -473,6 +475,7 @@ test('async construction retries a source that finishes saving during prefetch',
 test('async construction revalidates early files after other reads finish', async () => {
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
+  const openedFiles = sources.map((source) => fs.realpathSync(source.file));
   const open = fs.promises.open;
   const realpath = fs.promises.realpath;
   let firstClosed = false;
@@ -485,10 +488,10 @@ test('async construction revalidates early files after other reads finish', asyn
   };
   fs.promises.open = async (...args) => {
     const handle = await open(...args), read = handle.read.bind(handle), close = handle.close.bind(handle);
-    handle.close = async () => { await close(); if (args[0] === sources[0].file) firstClosed = true; };
+    handle.close = async () => { await close(); if (args[0] === openedFiles[0]) firstClosed = true; };
     handle.read = async (...input) => {
       const result = await read(...input);
-      if (args[0] === sources[1].file) {
+      if (args[0] === openedFiles[1]) {
         await firstReady;
         fs.writeFileSync(sources[0].file, 'latestSavedWhileAnotherSourceWasLoading();');
       }
@@ -499,6 +502,7 @@ test('async construction revalidates early files after other reads finish', asyn
   try {
     const baseline = { changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
     const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
+    assert.equal(firstClosed, true, 'the early source read completed before the later save');
     assert.equal(rewriter.rewrite('<script>firstOriginal();</script>', '/').html, '<script>latestSavedWhileAnotherSourceWasLoading();</script>');
   } finally {
     fs.promises.open = open;

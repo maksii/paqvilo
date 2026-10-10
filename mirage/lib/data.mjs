@@ -2871,9 +2871,9 @@ function boundedInt(value, name) {
 }
 function project(row, select) {
   if (!select || select === "*") return clone(row);
-  const out = {};
+  const out = Object.create(null);
   for (const key of Array.isArray(select) ? select : splitTop(select)) {
-    Object.defineProperty(out, key, { value: field(row, key) ?? null, enumerable: true, writable: true, configurable: true });
+    out[key] = field(row, key) ?? null;
     if (key.startsWith("_") && key.endsWith("_value")) {
       const lookup = row[key.slice(1, -6)];
       if (lookup && typeof lookup === "object" && own(lookup, "id")) {
@@ -2883,7 +2883,7 @@ function project(row, select) {
       }
     }
   }
-  return out;
+  return Object.fromEntries(Object.entries(out));
 }
 
 /**

@@ -120,7 +120,7 @@ Validation: mirage/test/parity-suite.test.mjs.
 
 Rule: `js/xss`; original [`mirage/admin/app.mjs:1546`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/admin/app.mjs#L1546).
 
-The traced view name is allowlisted at initial load and hashchange, but review found a separate real injection in the same rendering path: audit kind values from the deep link were inserted into option HTML without escaping. Escape both option attributes and text; replace object renderer dispatch with Map and restrict audit-filter writes to own keys.
+The traced view name is allowlisted at initial load and hashchange, but review found a separate real injection in the same rendering path: audit kind values from the deep link were inserted into option HTML without escaping. Escape both option attributes and text; use literal switch cases for renderer dispatch and restrict audit-filter writes to own keys.
 
 Validation: mirage/test-browser/admin-audit.test.mjs: hostile kind deep link and invalid prototype hash; existing admin browser tests.
 
@@ -632,7 +632,7 @@ Validation: mirage OData/data alias regressions; full validation.
 
 Rule: `js/remote-property-injection`; original [`mirage/lib/data.mjs:2876`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/lib/data.mjs#L2876).
 
-Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Define an enumerable writable own data property instead, preserving ordinary result object shape and selected field values.
+Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect fields in a null-prototype dictionary and return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.
 
 Validation: mirage/test/security-regressions.test.mjs: own __proto__ selected column and unaffected name; data/OData projections.
 
@@ -648,7 +648,7 @@ Validation: mirage/lib/data.mjs: project/formattedAnnotation; data and OData loo
 
 Rule: `js/remote-property-injection`; original [`mirage/lib/data.mjs:2882`](https://github.com/maksii/paqvilo/blob/ffbdefb5f1ba9ab94f25b7d223d41391d1929975/mirage/lib/data.mjs#L2882).
 
-The selected lookup key is suffixed with the nonempty constant @Microsoft.Dynamics.CRM.lookuplogicalname before assignment. That key cannot invoke any prototype setter; only the fresh row result receives a logical-name annotation. The unsuffixed selected field now uses an own data property.
+The selected lookup key is suffixed with the nonempty constant @Microsoft.Dynamics.CRM.lookuplogicalname before assignment. That key cannot invoke any prototype setter; only the fresh row result receives a logical-name annotation. The unsuffixed selected field is collected without a prototype setter and returned as an own data property.
 
 Validation: mirage/lib/data.mjs: project/lookupAnnotation; data and OData lookup annotation regressions.
 
@@ -949,3 +949,63 @@ Validation: mirage/test-browser/solution-form.test.mjs: passive message assertio
 - [DOMParser inert document and adoption boundary](https://developer.mozilla.org/en-US/docs/Web/API/DOMParser/parseFromString).
 - [WHATWG script tokenizer](https://html.spec.whatwg.org/multipage/parsing.html#script-data-escaped-dash-dash-state).
 - [DotLiquid standard filters](https://github.com/dotliquid/dotliquid/blob/master/src/DotLiquid/StandardFilters.cs).
+
+## Full branch scan follow-up
+
+The first full branch analysis (1928710822 at `3373ada`) reproduced the 71 reviewed baseline false positives, removed the 44 fix-classified baseline findings, and reported seven new findings. All seven are addressed through further implementation/test changes; none is dismissed. This extra full scan is separate from PR diff analysis. Windows CI also exposed canonical-path spelling differences in two prefetch mocks; those mocks now compare canonical filenames and explicitly assert that the intended save occurred.
+
+### [116](https://github.com/maksii/paqvilo/security/code-scanning/116) — fix
+
+Rule: `js/redos`; first revision: `mirage/test/security-regressions.test.mjs:62`.
+
+The first regression compared bounded synthetic filenames with the old vulnerable jQuery regex. Replace executable legacy regexes with 338 saved baseline outcomes, retaining differential coverage without shipping an exponential expression.
+
+Validation: mirage/test/fixtures/dependency-filenames.json: outcomes from baseline ffbdefb; mirage/test/security-regressions.test.mjs: matching and bounded adversarial inputs.
+
+### [117](https://github.com/maksii/paqvilo/security/code-scanning/117) — fix
+
+Rule: `js/redos`; first revision: `mirage/test/security-regressions.test.mjs:63`.
+
+The first regression retained the old vulnerable Bootstrap regex for short comparisons. Store its bounded baseline outcomes as fixture data instead; the runtime remains a forward scanner.
+
+Validation: mirage/test/fixtures/dependency-filenames.json; mirage/test/security-regressions.test.mjs.
+
+### [118](https://github.com/maksii/paqvilo/security/code-scanning/118) — fix
+
+Rule: `js/xss`; first revision: `mirage/admin/app.mjs:1547`.
+
+The analyzer still traced the view name through dynamic Map dispatch into the HTML sink. Replace dispatch with explicit switch cases and fixed configuration-view literals; the hash selects only known renderer branches and never supplies a renderer argument or HTML fragment. Retain escaped audit option values.
+
+Validation: mirage/test-browser/admin-audit.test.mjs; existing admin navigation/configuration browser tests.
+
+### [119](https://github.com/maksii/paqvilo/security/code-scanning/119) — fix
+
+Rule: `js/unvalidated-dynamic-method-call`; first revision: `mirage/admin/app.mjs:1548`.
+
+Remove the dynamic renderer invocation entirely. Explicit switch cases call fixed function identifiers; unknown views return Overview. This preserves the supported navigation without runtime method-name dispatch.
+
+Validation: mirage/admin/app.mjs: renderView; admin browser navigation tests.
+
+### [120](https://github.com/maksii/paqvilo/security/code-scanning/120) — fix
+
+Rule: `js/file-system-race`; first revision: `lense/local-file.mjs:23`.
+
+Remove the pre-open path stat. Open first, validate size and identity with that descriptor, compare the current resolved pathname/inode before reading, read only bounded descriptor bytes, and revalidate after reading. This avoids using path metadata as an open authorization gate.
+
+Validation: test/local-file.test.mjs: replacement/growth/root bounds; test/rewrite-safety.test.mjs: save during prefetch; test/session.test.mjs: startup reconciliation.
+
+### [121](https://github.com/maksii/paqvilo/security/code-scanning/121) — fix
+
+Rule: `js/file-system-race`; first revision: `lense/local-file.mjs:48`.
+
+Apply the same descriptor-first design to synchronous reads: no pre-open stat, bounded fstat/read bytes, and pathname/inode/version verification before and after reading.
+
+Validation: test/local-file.test.mjs: synchronous path replacement, limits and root confinement; full validation.
+
+### [122](https://github.com/maksii/paqvilo/security/code-scanning/122) — fix
+
+Rule: `js/remote-property-injection`; first revision: `mirage/lib/data.mjs:2876`.
+
+Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a null-prototype collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.
+
+Validation: mirage/test/security-regressions.test.mjs: own __proto__ field and ordinary object shape; data/OData tests.

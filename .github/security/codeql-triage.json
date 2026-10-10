@@ -210,7 +210,7 @@
         "end_column": 36
       },
       "disposition": "fix",
-      "evidence": "The traced view name is allowlisted at initial load and hashchange, but review found a separate real injection in the same rendering path: audit kind values from the deep link were inserted into option HTML without escaping. Escape both option attributes and text; replace object renderer dispatch with Map and restrict audit-filter writes to own keys.",
+      "evidence": "The traced view name is allowlisted at initial load and hashchange, but review found a separate real injection in the same rendering path: audit kind values from the deep link were inserted into option HTML without escaping. Escape both option attributes and text; use literal switch cases for renderer dispatch and restrict audit-filter writes to own keys.",
       "verification": "mirage/test-browser/admin-audit.test.mjs: hostile kind deep link and invalid prototype hash; existing admin browser tests",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/13"
     },
@@ -1234,7 +1234,7 @@
         "end_column": 12
       },
       "disposition": "fix",
-      "evidence": "Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Define an enumerable writable own data property instead, preserving ordinary result object shape and selected field values.",
+      "evidence": "Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Collect fields in a null-prototype dictionary and return Object.fromEntries, preserving ordinary result object shape and selected field values without invoking prototype setters.",
       "verification": "mirage/test/security-regressions.test.mjs: own __proto__ selected column and unaffected name; data/OData projections",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/77"
     },
@@ -1266,7 +1266,7 @@
         "end_column": 37
       },
       "disposition": "false-positive",
-      "evidence": "The selected lookup key is suffixed with the nonempty constant @Microsoft.Dynamics.CRM.lookuplogicalname before assignment. That key cannot invoke any prototype setter; only the fresh row result receives a logical-name annotation. The unsuffixed selected field now uses an own data property.",
+      "evidence": "The selected lookup key is suffixed with the nonempty constant @Microsoft.Dynamics.CRM.lookuplogicalname before assignment. That key cannot invoke any prototype setter; only the fresh row result receives a logical-name annotation. The unsuffixed selected field is collected without a prototype setter and returned as an own data property.",
       "verification": "mirage/lib/data.mjs: project/lookupAnnotation; data and OData lookup annotation regressions",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/79"
     },
@@ -1846,5 +1846,123 @@
       "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
       "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/115"
     }
-  ]
+  ],
+  "followUpReview": {
+    "analysisId": 1928710822,
+    "commit": "3373ada2ee83ceb2c719e2ea73406facf0fc09b9",
+    "entries": [
+      {
+        "number": 116,
+        "rule": "js/redos",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/test/security-regressions.test.mjs",
+          "start_line": 62,
+          "end_line": 62,
+          "start_column": 32,
+          "end_column": 38
+        },
+        "disposition": "fix",
+        "evidence": "The first regression compared bounded synthetic filenames with the old vulnerable jQuery regex. Replace executable legacy regexes with 338 saved baseline outcomes, retaining differential coverage without shipping an exponential expression.",
+        "verification": "mirage/test/fixtures/dependency-filenames.json: outcomes from baseline ffbdefb; mirage/test/security-regressions.test.mjs: matching and bounded adversarial inputs",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/116"
+      },
+      {
+        "number": 117,
+        "rule": "js/redos",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/test/security-regressions.test.mjs",
+          "start_line": 63,
+          "end_line": 63,
+          "start_column": 52,
+          "end_column": 58
+        },
+        "disposition": "fix",
+        "evidence": "The first regression retained the old vulnerable Bootstrap regex for short comparisons. Store its bounded baseline outcomes as fixture data instead; the runtime remains a forward scanner.",
+        "verification": "mirage/test/fixtures/dependency-filenames.json; mirage/test/security-regressions.test.mjs",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/117"
+      },
+      {
+        "number": 118,
+        "rule": "js/xss",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/admin/app.mjs",
+          "start_line": 1547,
+          "end_line": 1549,
+          "start_column": 29,
+          "end_column": 36
+        },
+        "disposition": "fix",
+        "evidence": "The analyzer still traced the view name through dynamic Map dispatch into the HTML sink. Replace dispatch with explicit switch cases and fixed configuration-view literals; the hash selects only known renderer branches and never supplies a renderer argument or HTML fragment. Retain escaped audit option values.",
+        "verification": "mirage/test-browser/admin-audit.test.mjs; existing admin navigation/configuration browser tests",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/118"
+      },
+      {
+        "number": 119,
+        "rule": "js/unvalidated-dynamic-method-call",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/admin/app.mjs",
+          "start_line": 1548,
+          "end_line": 1548,
+          "start_column": 7,
+          "end_column": 15
+        },
+        "disposition": "fix",
+        "evidence": "Remove the dynamic renderer invocation entirely. Explicit switch cases call fixed function identifiers; unknown views return Overview. This preserves the supported navigation without runtime method-name dispatch.",
+        "verification": "mirage/admin/app.mjs: renderView; admin browser navigation tests",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/119"
+      },
+      {
+        "number": 120,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "lense/local-file.mjs",
+          "start_line": 23,
+          "end_line": 23,
+          "start_column": 24,
+          "end_column": 102
+        },
+        "disposition": "fix",
+        "evidence": "Remove the pre-open path stat. Open first, validate size and identity with that descriptor, compare the current resolved pathname/inode before reading, read only bounded descriptor bytes, and revalidate after reading. This avoids using path metadata as an open authorization gate.",
+        "verification": "test/local-file.test.mjs: replacement/growth/root bounds; test/rewrite-safety.test.mjs: save during prefetch; test/session.test.mjs: startup reconciliation",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/120"
+      },
+      {
+        "number": 121,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "lense/local-file.mjs",
+          "start_line": 48,
+          "end_line": 48,
+          "start_column": 22,
+          "end_column": 95
+        },
+        "disposition": "fix",
+        "evidence": "Apply the same descriptor-first design to synchronous reads: no pre-open stat, bounded fstat/read bytes, and pathname/inode/version verification before and after reading.",
+        "verification": "test/local-file.test.mjs: synchronous path replacement, limits and root confinement; full validation",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/121"
+      },
+      {
+        "number": 122,
+        "rule": "js/remote-property-injection",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/lib/data.mjs",
+          "start_line": 2876,
+          "end_line": 2876,
+          "start_column": 32,
+          "end_column": 35
+        },
+        "disposition": "fix",
+        "evidence": "Object.defineProperty safely creates an own field but was still flagged as a remote property write. Use a null-prototype collector, then Object.fromEntries to create the ordinary result object. User field names cannot invoke a prototype setter and the public object shape stays unchanged.",
+        "verification": "mirage/test/security-regressions.test.mjs: own __proto__ field and ordinary object shape; data/OData tests",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/122"
+      }
+    ]
+  }
 }

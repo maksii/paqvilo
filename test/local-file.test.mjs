@@ -13,7 +13,7 @@ test('descriptor reads preserve bytes and reject oversize, directories and escap
   for (const read of [readLocalFile, readLocalFileSync]) {
     assert.equal((await read(file, { root: source, maxBytes: 20, encoding: 'utf8' })), '\uFEFFsafe\r\n');
     await assert.rejects(async () => read(file, { maxBytes: 2 }), /read limit/);
-    await assert.rejects(async () => read(source), /regular/);
+    await assert.rejects(async () => read(source), (error) => /regular/.test(error.message) || ['EISDIR', 'EACCES', 'EPERM'].includes(error.code));
     await assert.rejects(async () => read(file, { root: path.join(root, 'other') }), /ENOENT/);
   }
   const outside = path.join(root, 'outside.txt'); fs.writeFileSync(outside, 'outside');

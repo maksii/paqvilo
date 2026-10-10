@@ -57,17 +57,13 @@ test('FetchXML scanner keeps quoted brackets, namespaces, instructions and decod
     assert.throws(() => parseXmlDocument(source), /Malformed|Unterminated|complete/);
 });
 
-test('dependency filename scanners preserve short legacy version/hash/modifier combinations', () => {
-  const legacy = [
-    /(?:^|\/)jquery(?:[.-](?:\d[\w.]*|min|slim))*\.js(?:[?#]|$)/i,
-    /(?:^|\/)bootstrap(?:\.bundle|\.min|[.-](?:v?\d[\w.]*|[a-f0-9]{6,}))*\.js(?:[?#]|$)/i,
-  ];
-  const pieces = ['.min', '.slim', '.bundle', '-min', '-bundle', '-3.6', '.v3', '-abcdef', '.3.min', '.ui', '-1x', '.'];
-  for (const [index, [name, matcher]] of [['jquery', JQUERY_CORE_SCRIPT], ['bootstrap', BOOTSTRAP_CORE_SCRIPT]].entries())
-    for (const a of ['', ...pieces]) for (const b of ['', ...pieces]) {
-      const value = '/scripts/' + name + a + b + '.js?v=1';
-      assert.equal(matcher.test(value), legacy[index].test(value), value);
-    }
+test('dependency filename scanners preserve short legacy version/hash/modifier combinations', async () => {
+  const { cases } = JSON.parse(await fs.readFile(new URL('./fixtures/dependency-filenames.json', import.meta.url), 'utf8'));
+  assert.equal(cases.length, 338);
+  for (const { library, input, expected } of cases) {
+    const matcher = library === 'jquery' ? JQUERY_CORE_SCRIPT : BOOTSTRAP_CORE_SCRIPT;
+    assert.equal(matcher.test(input), expected, input);
+  }
   assert.equal(JQUERY_CORE_SCRIPT.test('/page?next=/jquery.js'), false);
 });
 

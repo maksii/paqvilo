@@ -1524,6 +1524,27 @@ function logs() {
   );
 }
 
+function renderView(view) {
+  switch (view) {
+    case 'overview': return overview();
+    case 'records': return records();
+    case 'portal': return portal();
+    case 'endpoints': return configurationView('endpoints');
+    case 'operations': return operations();
+    case 'mappings': return configurationView('mappings');
+    case 'plugins': return configurationView('plugins');
+    case 'access': return access();
+    case 'scenarios': return scenarios();
+    case 'environment': return environment();
+    case 'connection': return connection();
+    case 'runtime': return runtimeState();
+    case 'evidence': return evidence();
+    case 'audit': return audit();
+    case 'logs': return logs();
+    default: return overview();
+  }
+}
+
 function render() {
   const focused = document.activeElement;
   const focusKey =
@@ -1542,11 +1563,7 @@ function render() {
     .join("");
   $("#breadcrumb").textContent =
     views.find(([id]) => id === activeView)?.[1] || "Overview";
-  const renderers = new Map(Object.entries({ overview, records, portal, operations, access, scenarios, environment, connection, runtime: runtimeState, evidence, audit, logs }));
-  const renderer = renderers.get(activeView);
-  $("#content").innerHTML = renderer
-    ? renderer()
-    : configurationView(activeView);
+  $("#content").innerHTML = renderView(activeView);
   if (activeView === "connection" || activeView === "mappings")
     $("#content").insertAdjacentHTML(
       "beforeend",

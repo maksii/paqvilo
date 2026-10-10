@@ -18,13 +18,12 @@ function checkSize(stat, maxBytes) {
 export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, encoding } = {}) {
   const real = await fs.promises.realpath(file);
   if (root && !inside(await fs.promises.realpath(root), real)) throw new Error('Local file is outside its source root');
-  const expected = await fs.promises.stat(real);
-  checkSize(expected, maxBytes);
   const handle = await fs.promises.open(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const before = await handle.stat();
     checkSize(before, maxBytes);
-    if (identity(before) !== identity(expected)) throw new Error('Local file changed before opening');
+    if (await fs.promises.realpath(file) !== real || identity(await fs.promises.stat(real)) !== identity(before))
+      throw new Error('Local file changed before reading');
     const buffer = Buffer.allocUnsafe(before.size + 1);
     let size = 0;
     while (size < buffer.length) {
@@ -43,13 +42,12 @@ export async function readLocalFile(file, { root, maxBytes = 32 * 1024 * 1024, e
 export function readLocalFileSync(file, { root, maxBytes = 32 * 1024 * 1024, encoding } = {}) {
   const real = fs.realpathSync(file);
   if (root && !inside(fs.realpathSync(root), real)) throw new Error('Local file is outside its source root');
-  const expected = fs.statSync(real);
-  checkSize(expected, maxBytes);
   const descriptor = fs.openSync(real, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0));
   try {
     const before = fs.fstatSync(descriptor);
     checkSize(before, maxBytes);
-    if (identity(before) !== identity(expected)) throw new Error('Local file changed before opening');
+    if (fs.realpathSync(file) !== real || identity(fs.statSync(real)) !== identity(before))
+      throw new Error('Local file changed before reading');
     const buffer = Buffer.allocUnsafe(before.size + 1);
     let size = 0;
     while (size < buffer.length) {
