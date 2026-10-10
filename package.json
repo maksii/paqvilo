@@ -51,7 +51,8 @@
   },
   "scripts": {
     "setup": "node scripts/ensure-dependencies.mjs",
-    "setup:repo": "npm run setup && npm run hooks:install",
+    "setup:repo": "npm run setup && npm run cache:package && npm run hooks:install",
+    "cache:package": "node scripts/prime-package-cache.mjs",
     "hooks:install": "node scripts/git-hooks.mjs install",
     "hooks:check": "node scripts/git-hooks.mjs pre-commit",
     "check:contribution": "node scripts/conventional-commit.mjs --title",

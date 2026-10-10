@@ -39,9 +39,11 @@ function preCommit() {
     // Git's hook environment otherwise leaks the original index into synthetic test repositories.
     const env = { ...process.env };
     for (const name of Object.keys(env)) if (name.startsWith('GIT_')) delete env[name];
-    console.log('Validating staged sources: syntax, boundary, unit/browser tests and package contents.');
-    const result = spawnSync(process.execPath, [npmCli, 'run', 'validate'], { cwd: snapshot, env, stdio: 'inherit', windowsHide: true });
-    if (result.status !== 0) throw new Error(result.error?.message ?? 'Staged validation failed. Commit stopped.');
+    console.log('Validating staged sources: syntax, boundary, unit/browser tests and installed-package smoke.');
+    for (const script of ['validate', 'release:smoke']) {
+      const result = spawnSync(process.execPath, [npmCli, 'run', script], { cwd: snapshot, env, stdio: 'inherit', windowsHide: true });
+      if (result.status !== 0) throw new Error(result.error?.message ?? `Staged validation failed (${script}). Commit stopped.`);
+    }
     if (git(['write-tree']) !== stagedTree) throw new Error('The staged index changed during validation. Review the index and commit again.');
   } finally {
     // Only remove the owned snapshot; rm does not follow the node_modules junctions.

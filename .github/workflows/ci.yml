@@ -204,9 +204,7 @@ jobs:
         run: npm ci --ignore-scripts
       # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.
       - name: Prime npm cache for the offline install
-        run: |
-          node -e "const l=require('./npm-shrinkwrap.json');for(const[k,v]of Object.entries(l.packages))if(k&&!v.dev&&!v.link)console.log(k.split('node_modules/').pop()+'@'+v.version)" \
-            | xargs npm cache add
+        run: npm run cache:package
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Install the packed distribution into the example project
