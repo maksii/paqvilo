@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest>
+  <control namespace="ExamplePages" constructor="ExamplePhone" version="0.1.1" display-name-key="ExamplePhone" description-key="Phone column." control-type="standard">
+    <external-service-usage enabled="false">
+    </external-service-usage>
+    <property name="controlValue" display-name-key="Control Value" description-key="Column value." of-type="SingleLine.Phone" usage="bound" required="false" />
+    <resources>
+      <code path="index.ts" order="1"/>
+      <css path="css/ExamplePhone.css" order="1"/>
+    <resx path="strings/ExamplePhone.1033.resx" version="1.0.0"/></resources>
+  </control>
+</manifest>

@@ -36,6 +36,8 @@ for (const product of ['lense', 'mirage']) {
   const help = spawnSync(process.execPath, [installed, product, '--help'], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   if (help.status !== 0 || !help.stdout.toLowerCase().includes(product)) throw new Error(`Installed ${product} help failed: ${help.stderr}`);
 }
+const demoHelp = spawnSync(process.execPath, [installed, 'mirage', 'demo', '--help'], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
+if (demoHelp.status !== 0 || !demoHelp.stdout.includes('Copies a populated')) throw new Error(`Installed demo command is missing: ${demoHelp.stderr}`);
 const initialized = cli('mirage', 'init', '--site', 'example', '--json');
 const stateRoot = path.join(project, '.paqvilo') + path.sep;
 if (!initialized.file.startsWith(stateRoot)) throw new Error('Project initialization wrote inside the installed toolkit.');
@@ -45,7 +47,7 @@ try {
   if (!session.stateFile.startsWith(stateRoot)) throw new Error('Runtime state did not stay in the portal project.');
   if (!cli('mirage', 'status', '--json').sessions.some((item) => item.pid === session.pid && item.ready)) throw new Error('Project-scoped status did not discover its runtime.');
   const response = await fetch(session.url);
-  if (!response.ok || !(await response.text()).includes('Anonymous')) throw new Error('Installed lifecycle did not render the project.');
+  if (!response.ok || !(await response.text()).includes('Build it three ways')) throw new Error('Installed lifecycle did not render the project.');
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }

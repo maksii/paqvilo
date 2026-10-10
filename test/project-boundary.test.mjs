@@ -56,8 +56,8 @@ test('default Mirage discovery has no project packs and embedded registration is
   t.after(() => simulator.close());
   const anonymous = await fetch(simulator.url);
   assert.equal(anonymous.status, 200);
-  assert.match(await anonymous.text(), /Anonymous/);
-  const response = await fetch(simulator.url, { headers: signInHeaders(simulator, '11111111-1111-4111-8111-111111111111') });
+  assert.match(await anonymous.text(), /Sign in/);
+  const response = await fetch(simulator.url, { headers: signInHeaders(simulator, store.snapshot().tables.contact[0].contactid) });
   assert.match(await response.text(), /Alex Example/);
   assert.deepEqual(await discoverPacks(), [], 'loading a project does not change global discovery');
 });
@@ -77,7 +77,7 @@ test('an external preset library persists compactly and resolves after restart w
   assert.equal(saved.presets['example-demo'].tables, undefined);
   const restarted = await new DataStore({ file, presetLibrary: library }).init();
   await restarted.applyPreset('example-demo');
-  assert.equal(restarted.snapshot().tables.contact[0].fullname, 'Alex Example');
+  assert.equal(restarted.snapshot().tables.contact[0].fullname, library['example-demo'].tables.contact[0].fullname);
   const edited = structuredClone(library['example-demo']);
   edited.tables.contact[0].fullname = 'Project-specific edit';
   const current = { presets: { 'example-demo': library['example-demo'], mine: edited }, tables: {} };

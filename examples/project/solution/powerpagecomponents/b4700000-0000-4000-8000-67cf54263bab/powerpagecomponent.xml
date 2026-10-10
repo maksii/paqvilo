@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-67cf54263bab">
+  <content>{"entityform":"b4700000-0000-4000-8000-9abf530078c2","type":100000005,"notes_settings":"{\"CreateEnabled\":true,\"EditEnabled\":true,\"DeleteEnabled\":true,\"DisplayAttachFile\":true,\"DisplayPrivacyOptionField\":false,\"PageSize\":10}"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Account Edit </name>
+  <powerpagecomponenttype>16</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

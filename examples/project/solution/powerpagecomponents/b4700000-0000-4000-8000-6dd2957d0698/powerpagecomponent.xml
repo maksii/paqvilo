@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-6dd2957d0698">
+  <content>{"append":true,"appendto":true,"create":true,"delete":true,"entitylogicalname":"annotation","entityname":"Notes","read":true,"scope":756150000,"write":true,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-6087a4a82e5f","b4700000-0000-4000-8000-5475a884bd48"]}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Notes</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,26 +1,32 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { fileURLToPath } from 'node:url';
-import { createSimulator } from 'paqvilo/mirage/server.mjs';
-import { DataStore } from 'paqvilo/mirage/lib/data.mjs';
-import { discoverPacks, presetLibrary } from 'paqvilo/mirage/lib/preset-registry.mjs';
-import { signInHeaders } from 'paqvilo/mirage/testing/session.mjs';
-
-test('our portal renders anonymous and signed-in sessions with our registered pack', async (t) => {
-  const module = fileURLToPath(new URL('../pack/pack.mjs', import.meta.url));
-  const packs = await discoverPacks({ explicit: [{ module }] });
-  const store = new DataStore();
-  await store.applyPreset('example-demo', { generatedPresets: presetLibrary({ packs }) });
-  const simulator = await createSimulator({
-    sourceDir: fileURLToPath(new URL('../portal/', import.meta.url)),
-    initial: store.snapshot(), dataPacks: [{ module }], port: 0, watch: false,
-  });
-  t.after(() => simulator.close());
-  const anonymous = await fetch(simulator.url);
-  assert.equal(anonymous.status, 200);
-  assert.match(await anonymous.text(), /Anonymous/);
-  const headers = signInHeaders(simulator, '11111111-1111-4111-8111-111111111111');
-  const signedIn = await fetch(simulator.url, { headers });
-  assert.equal(signedIn.status, 200);
-  assert.match(await signedIn.text(), /Alex Example/);
+import test from 'node:test';import assert from 'node:assert/strict';import {fileURLToPath} from 'node:url';
+import {createSimulator} from 'paqvilo/mirage/server.mjs';import {DataStore} from 'paqvilo/mirage/lib/data.mjs';import {discoverPacks,presetLibrary} from 'paqvilo/mirage/lib/preset-registry.mjs';import {signInHeaders} from 'paqvilo/mirage/testing/session.mjs';
+const file=name=>fileURLToPath(new URL('../'+name,import.meta.url));
+test('account demo renders source metadata, enforces sign-in and supports related CRUD',async t=>{
+ const module=file('pack/pack.mjs'),packs=await discoverPacks({explicit:[{module}]});const store=new DataStore();await store.applyPreset('example-demo',{generatedPresets:presetLibrary({packs})});
+ const sim=await createSimulator({sourceDir:file('portal'),solutionRoots:[file('metadata'),file('code-solution'),file('solution')],solutionOrder:'explicit',dataPacks:[{module}],initial:store.snapshot(),port:0,watch:false});t.after(()=>sim.close());
+ await sim.applyPreset('example-demo');
+ const contact='a4300000-0000-4000-8000-000000002001',account='a4300000-0000-4000-8000-000000001001';const signed=signInHeaders(sim,contact);
+ const read=async route=>{const r=await fetch(sim.url+route,{headers:signed});assert.equal(r.status,200,route+': '+await r.clone().text());return r;};
+ const home=await(await fetch(sim.url)).text();assert.match(home,/Build it three ways/);assert.match(home,/Sign in to try CRUD/);assert.match(await(await fetch(sim.url+'/SignIn')).text(),/Alex Example 01/);
+ const native=await(await read('/approach/out-of-the-box/account/?id='+account+'&mode=edit')).text();assert.ok(native.includes('entity-subgrid-data'),'native Contacts grid must be bound to its service');assert.ok(native.includes('Service score'));
+ for(const route of ['/approach/web-api/','/approach/pcf/','/extended/'])await read(route);
+ const write=async(set,method,body,headers=signed)=>fetch(sim.url+'/_api/'+set,{method,headers:{...headers,'Content-Type':'application/json',__RequestVerificationToken:sim.state().csrf},body:body===undefined?undefined:JSON.stringify(body)});
+ assert.equal((await write('accounts','POST',{name:'Anonymous attempt'},{})).status,403);
+ const reader=signInHeaders(sim,'a4300000-0000-4000-8000-000000002002');
+ const readerPage=await(await fetch(sim.url+'/approach/web-api/',{headers:reader})).text();assert.match(readerPage,/data-demo-can-write="false"/);assert.match(readerPage,/Readers can view accounts/);
+ assert.equal((await fetch(sim.url+'/_api/accounts',{headers:reader})).status,200);
+ assert.equal((await write('accounts('+account+')','PATCH',{name:'Reader attempt'},reader)).status,403);
+ assert.equal((await write('contacts','POST',{lastname:'Reader attempt','parentcustomerid_account@odata.bind':'/accounts('+account+')'},reader)).status,403);
+ const readerNotesResponse=await fetch(sim.url+'/_api/annotations?$select=annotationid',{headers:reader});assert.equal(readerNotesResponse.status,200);const readerNotes=await readerNotesResponse.json();assert.equal(readerNotes.value.length,2);
+ const orphan=await write('contacts','POST',{firstname:'Unlinked',lastname:'Acceptance'});assert.equal(orphan.status,204);const orphanId=orphan.headers.get('entityid');const hidden=await(await fetch(sim.url+'/_api/contacts?$select=contactid&$filter='+encodeURIComponent('contactid eq '+orphanId),{headers:reader})).json();assert.equal(hidden.value.length,0,'parent-scoped reader grants must exclude an unlinked contact');assert.equal((await write('contacts('+orphanId+')','DELETE')).status,204);
+ const rows=await(await read('/_api/accounts?$select=accountid,name,statecode')).json();assert.equal(rows.value.length,12);assert.equal(rows.value.filter(r=>r.statecode===1).length,2);
+ const created=await write('accounts','POST',{name:'Acceptance account',numberofemployees:27,creditlimit:900.5,pqvd_decimal:81.25,pqvd_float:12.345,industrycode:33,donotemail:true,pqvd_dateonly:'2026-11-15T00:00:00Z',pqvd_datetime:'2026-12-16T10:30:00Z','transactioncurrencyid@odata.bind':'/transactioncurrencies(a4300000-0000-4000-8000-000000000001)'});assert.equal(created.status,204,await created.text());const id=created.headers.get('entityid');assert.match(id,/^[0-9a-f-]{36}$/);
+ const related=await write('contacts','POST',{firstname:'Sam',lastname:'Acceptance',jobtitle:'Director','parentcustomerid_account@odata.bind':'/accounts('+id+')'});assert.equal(related.status,204,await related.text());const relatedId=related.headers.get('entityid');
+ const found=await(await read('/_api/contacts?$select=contactid,fullname&$filter='+encodeURIComponent('_parentcustomerid_value eq '+id))).json();assert.equal(found.value.length,1);assert.equal(found.value[0].fullname,'Sam Acceptance');
+ assert.equal((await write('accounts('+id+')','PATCH',{statecode:1,statuscode:2,address1_city:'York'})).status,204);
+ const saved=await(await read('/_api/accounts('+id+')')).json();assert.equal(saved.statecode,1);assert.equal(saved.address1_city,'York');assert.equal(saved.pqvd_decimal,81.25);assert.equal(saved._transactioncurrencyid_value,'a4300000-0000-4000-8000-000000000001');
+ const note=await write('annotations','POST',{subject:'Acceptance attachment',notetext:'*WEB*Local note',filename:'acceptance.txt',isdocument:true,mimetype:'text/plain',documentbody:Buffer.from('Local attachment').toString('base64'),'objectid_account@odata.bind':'/accounts('+id+')'});assert.equal(note.status,204,await note.text());const noteId=note.headers.get('entityid');const attachment=await(await read('/_api/annotations('+noteId+')?$select=documentbody')).json();assert.equal(Buffer.from(attachment.documentbody,'base64').toString(),'Local attachment');
+ for(const set of ['annotations('+noteId+')','contacts('+relatedId+')','accounts('+id+')'])assert.equal((await write(set,'DELETE')).status,204);
+ assert.equal((await fetch(sim.url+'/_api/accounts('+id+')',{headers:signed})).status,404);
+ await sim.applyPreset('example-empty');assert.equal((await(await read('/_api/accounts')).json()).value.length,0);await sim.applyPreset('example-demo');assert.equal((await(await read('/_api/accounts')).json()).value.length,12);
 });

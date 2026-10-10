@@ -1,0 +1,4 @@
+.ExamplePortalWebApi { display: flex; flex-direction: column; gap: 0.5rem; }
+.ExamplePortalWebApi input, .ExamplePortalWebApi select { width: 100%; box-sizing: border-box; }
+.ExamplePortalWebApi button { margin-right: 0.5rem; }
+.ExamplePortalWebApi .result { white-space: pre-wrap; }

@@ -1,0 +1,101 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{a4200000-0000-4000-8000-000000000102}</formid>
+    <IntroducedVersion>1.1.0.0</IntroducedVersion>
+    <FormPresentation>1</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="DEMO_TAB" id="{b4700000-0000-4000-8000-2f6f984f612e}" IsUserDefined="1" showlabel="false" expanded="true">
+          <labels>
+            <label description="Paqvilo Contact" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="Contact_details" id="{b4700000-0000-4000-8000-b507537ecfad}" showlabel="true" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="160">
+                  <labels>
+                    <label description="Contact details" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-fbd74f7a4b53}" showlabel="true">
+                        <labels>
+                          <label description="First name" languagecode="1033" />
+                        </labels>
+                        <control id="firstname" classid="{4273edbd-ac1d-40d3-9fb2-095c621b552d}" datafieldname="firstname" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-2828084673d1}" showlabel="true">
+                        <labels>
+                          <label description="Last name" languagecode="1033" />
+                        </labels>
+                        <control id="lastname" classid="{4273edbd-ac1d-40d3-9fb2-095c621b552d}" datafieldname="lastname" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-b8bf41ad404a}" showlabel="true">
+                        <labels>
+                          <label description="Email" languagecode="1033" />
+                        </labels>
+                        <control id="emailaddress1" classid="{ada2203e-b4cd-49be-9ddf-234642b43b52}" datafieldname="emailaddress1" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-e49d4c2b6086}" showlabel="true">
+                        <labels>
+                          <label description="Phone" languagecode="1033" />
+                        </labels>
+                        <control id="telephone1" classid="{8c10015a-b339-4982-9474-a95fe05631a5}" datafieldname="telephone1" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-5613efcc8052}" showlabel="true">
+                        <labels>
+                          <label description="Job title" languagecode="1033" />
+                        </labels>
+                        <control id="jobtitle" classid="{4273edbd-ac1d-40d3-9fb2-095c621b552d}" datafieldname="jobtitle" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-12ef7c363d48}" showlabel="true">
+                        <labels>
+                          <label description="Account" languagecode="1033" />
+                        </labels>
+                        <control id="parentcustomerid" classid="{270bd3db-d9af-4782-9025-509e298dec0a}" datafieldname="parentcustomerid" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{b4700000-0000-4000-8000-00ebd7fbcb50}" showlabel="true">
+                        <labels>
+                          <label description="Description" languagecode="1033" />
+                        </labels>
+                        <control id="description" classid="{e0dece4b-6fc8-4a8f-a065-082708572369}" datafieldname="description" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+      <header id="{b4700000-0000-4000-8000-55a0cc25a6fd}">
+        <rows />
+      </header>
+      <footer id="{b4700000-0000-4000-8000-6448af423c8c}">
+        <rows />
+      </footer>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Paqvilo Contact" languagecode="1033" />
+    </LocalizedNames>
+    <Descriptions>
+      <Description description="Full field coverage for the Paqvilo demo portal." languagecode="1033" />
+    </Descriptions>
+  </systemform>
+</forms>

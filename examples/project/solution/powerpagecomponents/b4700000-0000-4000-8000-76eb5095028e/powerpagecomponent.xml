@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-76eb5095028e">
+  <content>{"appendto":true,"entitylogicalname":"transactioncurrency","entityname":"Demo currency read","read":true,"scope":756150000,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-2b18ee4c8b18","b4700000-0000-4000-8000-5475a884bd48"],"append":true}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Demo currency read</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

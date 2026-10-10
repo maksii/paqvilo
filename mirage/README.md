@@ -6,7 +6,7 @@ Mirage is Paqvilo's local-first Power Pages simulation engine. Run exported Liqu
 
 Mirage derives forms, lists, settings and permissions from exported sources and Solution metadata. Your project's registered data packs supply personas, datasets and simulated business rules.
 
-[First local portal](../docs/getting-started.md#try-the-included-example) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
+[Interactive demo](../docs/getting-started.md#try-the-demo) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
 
 ## Start your workspace
 
@@ -25,6 +25,7 @@ New states contain exported configuration and empty business tables. Use [data s
 
 | Command | Session behavior |
 | --- | --- |
+| `demo` | Copy a populated, editable example and open the development browser |
 | `init` | Write a per-site runtime project from your catalogue |
 | `dev` | Start local runtimes and open the integrated browser; stop newly started runtimes when this dev session ends |
 | `start` | Start owned runtimes in the background |

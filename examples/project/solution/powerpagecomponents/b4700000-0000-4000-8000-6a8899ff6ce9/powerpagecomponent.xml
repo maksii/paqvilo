@@ -1,0 +1,16 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-6a8899ff6ce9">
+  <content>{
+  "entityform": "b4700000-0000-4000-8000-9e60dac3145b",
+  "subgrid_name": "Contacts",
+  "subgrid_settings": "{\"$type\":\"Adxstudio.Xrm.Web.UI.CrmEntityListView.GridMetadata, Adxstudio.Xrm\",\"ViewFormats\":[],\"ViewActions\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.CrmEntityListView.GridMetadata+CreateAction, Adxstudio.Xrm\",\"EntityFormId\":\"b4700000-0000-4000-8000-820f8b2db709\",\"TargetType\":0,\"ButtonLabel\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.WebForms.LanguageResources, Adxstudio.Xrm\",\"LCID\":1033,\"Value\":\"New contact\"}]}],\"ItemActions\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.CrmEntityListView.GridMetadata+DetailsAction, Adxstudio.Xrm\",\"EntityFormId\":\"b4700000-0000-4000-8000-a60d601cabaa\",\"TargetType\":0,\"RecordIdQueryStringParameterName\":\"id\",\"ButtonLabel\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.WebForms.LanguageResources, Adxstudio.Xrm\",\"LCID\":1033,\"Value\":\"View\"}]},{\"$type\":\"Adxstudio.Xrm.Web.UI.CrmEntityListView.GridMetadata+EditAction, Adxstudio.Xrm\",\"EntityFormId\":\"b4700000-0000-4000-8000-f69fd77deeee\",\"TargetType\":0,\"RecordIdQueryStringParameterName\":\"id\",\"ButtonLabel\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.WebForms.LanguageResources, Adxstudio.Xrm\",\"LCID\":1033,\"Value\":\"Edit\"}]},{\"$type\":\"Adxstudio.Xrm.Web.UI.CrmEntityListView.GridMetadata+DeleteAction, Adxstudio.Xrm\",\"ButtonLabel\":[{\"$type\":\"Adxstudio.Xrm.Web.UI.WebForms.LanguageResources, Adxstudio.Xrm\",\"LCID\":1033,\"Value\":\"Delete\"}]}],\"ExtendedViewActions\":[],\"ExtendedItemActions\":[],\"GridCssClass\":\"\"}",
+  "type": 100000003
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Account Read Contacts</name>
+  <powerpagecomponenttype>16</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

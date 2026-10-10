@@ -1,0 +1,19 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-e2308da213f0">
+  <content>{
+  "flowapiurl": "/_api/cloudflow/v1.0/trigger/b4700000-0000-4000-8000-ce1f8f984154",
+  "flowtriggerurl": "",
+  "metadata": "",
+  "processid": "b4700000-0000-4000-8000-ce1f8f984154",
+  "adx_CloudFlowConsumer_adx_webrole": [
+    "b4700000-0000-4000-8000-2b18ee4c8b18"
+  ]
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Example Location</name>
+  <powerpagecomponenttype>33</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

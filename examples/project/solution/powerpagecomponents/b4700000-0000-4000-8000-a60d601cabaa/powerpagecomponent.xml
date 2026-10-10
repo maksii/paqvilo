@@ -1,0 +1,30 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-a60d601cabaa">
+  <content>{
+  "appendquerystring": false,
+  "associatecurrentportaluser": false,
+  "attachfile": false,
+  "captcharequired": false,
+  "entityname": "contact",
+  "entitypermissionsenabled": true,
+  "entitysourcetype": 756150001,
+  "formname": "Paqvilo Contact",
+  "geolocation_displaymap": false,
+  "geolocation_enabled": false,
+  "geolocation_maptype": 756150000,
+  "mode": 100000002,
+  "recordidquerystringparametername": "id",
+  "referencequerystringisprimarykey": true,
+  "showcaptchaforauthenticatedusers": false,
+  "showunsupportedfields": true,
+  "submitbuttontext": "[{\"LCID\":1033,\"Value\":\"Save contact\"}]",
+  "tabname": "DEMO_TAB"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Contact Read</name>
+  <powerpagecomponenttype>15</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

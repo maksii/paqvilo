@@ -1,0 +1,14 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-1c4d17048649">
+  <content>{"display_name":"Head/Bottom","type":756150000,"value":"&lt;script src=\"/demo-jquery.js\"&gt;&lt;/script&gt;\n"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Head/Bottom</name>
+  <powerpagecomponenttype>7</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <powerpagesitelanguageid>
+    <powerpagesitelanguageid>b4700000-0000-4000-8000-93e55d9fa295</powerpagesitelanguageid>
+  </powerpagesitelanguageid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

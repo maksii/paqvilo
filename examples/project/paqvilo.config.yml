@@ -2,12 +2,15 @@ sourceRoot: .
 defaultSite: example
 sites:
   example:
+    markup: {enabled: false}
     source: portal
     defaultEnv: local
     environments:
       local: http://127.0.0.1:8787
     mirage:
       port: 8787
+      solutionRoots: [./metadata, ./code-solution, ./solution]
+      solutionOrder: explicit
       dataPacks:
-        - { id: example, module: ./pack/pack.mjs }
+        - {id: example, module: ./pack/pack.mjs}
       preset: example-demo

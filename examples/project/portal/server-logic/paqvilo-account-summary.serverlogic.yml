@@ -1,0 +1,6 @@
+adx_description: Paqvilo demo server operation
+adx_display_name: Account summary
+adx_name: paqvilo-account-summary
+adx_serverlogic_adx_webrole:
+- b4700000-0000-4000-8000-2b18ee4c8b18
+adx_serverlogicid: b4700000-0000-4000-8000-f961033a715b

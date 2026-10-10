@@ -1,0 +1,18 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-885f74463976">
+  <content>{
+  "excludefromsearch": true,
+  "hiddenfromsitemap": true,
+  "parentpageid": "b4700000-0000-4000-8000-f4ad73ee7f5f",
+  "partialurl": "demo.css",
+  "publishingstateid": "b4700000-0000-4000-8000-73c49e548d0c"
+}</content>
+  <filecontent mimetype="text/css">demo.css</filecontent>
+  <iscustomizable>1</iscustomizable>
+  <name>demo.css</name>
+  <powerpagecomponenttype>3</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-036f8d60eadb">
+  <content>{"append":false,"appendto":false,"create":false,"delete":false,"entitylogicalname":"contact","entityname":"Example contact self","read":true,"scope":756150001,"write":false,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-2b18ee4c8b18"]}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Example contact self</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

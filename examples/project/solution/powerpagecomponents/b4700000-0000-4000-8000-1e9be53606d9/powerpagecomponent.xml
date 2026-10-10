@@ -1,0 +1,12 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-1e9be53606d9">
+  <content>{"name":"demo-runtime.js","partialurl":"demo-runtime.js","mimetype":"application/javascript","publishingstateid":"b4700000-0000-4000-8000-73c49e548d0c","enabletracking":false,"hiddenfromsitemap":true,"parentpageid":"b4700000-0000-4000-8000-f4ad73ee7f5f"}</content>
+  <filecontent mimetype="application/javascript">demo-runtime.js</filecontent>
+  <iscustomizable>1</iscustomizable>
+  <name>demo-runtime.js</name>
+  <powerpagecomponenttype>3</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

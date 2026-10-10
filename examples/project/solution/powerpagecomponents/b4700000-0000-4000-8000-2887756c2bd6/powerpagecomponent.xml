@@ -1,0 +1,23 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-2887756c2bd6">
+  <content>{
+  "copy": "&lt;div class=\"demo demo-native\"&gt;&lt;p class=\"demo-kicker\"&gt;Approach / 01&lt;/p&gt;&lt;h1&gt;Out of the box&lt;/h1&gt;&lt;p class=\"demo-lead\"&gt;A native Power Pages list. Actions, views, search and permissions come from exported metadata.&lt;/p&gt;&lt;nav class=\"demo-pathways\" aria-label=\"Implementation\"&gt;&lt;a href=\"/approach/out-of-the-box/\" aria-current=\"page\"&gt;Out of the box&lt;/a&gt;&lt;a href=\"/approach/web-api/\"&gt;Web API&lt;/a&gt;&lt;a href=\"/approach/pcf/\"&gt;PCF&lt;/a&gt;&lt;/nav&gt;&lt;div class=\"demo-note\"&gt;Select an account name to open its form. The form includes 14 field types, lookups, a Contacts grid and notes with attachments.&lt;/div&gt;{% include 'entity_list' key: 'b4700000-0000-4000-8000-7194d58d3aa1' %}&lt;/div&gt;",
+  "displayorder": 1,
+  "hiddenfromsitemap": false,
+  "isroot": true,
+  "pagetemplateid": "b4700000-0000-4000-8000-2546863c3d7d",
+  "parentpageid": "b4700000-0000-4000-8000-602c5631122a",
+  "partialurl": "out-of-the-box",
+  "publishingstateid": "b4700000-0000-4000-8000-73c49e548d0c",
+  "sharedpageconfiguration": false,
+  "title": "Out of the box"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Out of the box</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,15 @@
+adx_append: true
+adx_appendto: true
+adx_create: true
+adx_delete: true
+adx_entitylogicalname: contact
+adx_entityname: Contact by account
+adx_entitypermission_webrole:
+- b4700000-0000-4000-8000-5475a884bd48
+- b4700000-0000-4000-8000-6087a4a82e5f
+adx_entitypermissionid: b4700000-0000-4000-8000-0be262ec7900
+adx_parententitypermission: b4700000-0000-4000-8000-3f33ac00477a
+adx_parentrelationship: contact_customer_accounts
+adx_read: true
+adx_scope: 756150003
+adx_write: true

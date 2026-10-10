@@ -1,0 +1,20 @@
+<powerpagesites>
+  <powerpagesite powerpagesiteid="b4700000-0000-4000-8000-d31ddbcbde91">
+    <content>{
+  "defaultbotconsumerid": null,
+  "defaultlanguage": "b4700000-0000-4000-8000-93e55d9fa295",
+  "enhancedauthorization": 0,
+  "footerwebtemplateid": "b4700000-0000-4000-8000-51215c324bb6",
+  "headerwebtemplateid": "b4700000-0000-4000-8000-d00060b5c83c",
+  "parentwebsiteid": "b4700000-0000-4000-8000-d31ddbcbde91",
+  "website_language": 1033
+}</content>
+    <datamodelversion>2.0</datamodelversion>
+    <enhancedauthorization>0</enhancedauthorization>
+    <iscustomizable>1</iscustomizable>
+    <name>Paqvilo demo</name>
+    <primarydomainname />
+    <statecode>0</statecode>
+    <statuscode>1</statuscode>
+  </powerpagesite>
+</powerpagesites>

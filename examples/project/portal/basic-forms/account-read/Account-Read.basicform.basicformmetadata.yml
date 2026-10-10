@@ -1,0 +1,78 @@
+- adx_entityform: b4700000-0000-4000-8000-9e60dac3145b
+  adx_entityformmetadataid: b4700000-0000-4000-8000-6a8899ff6ce9
+  adx_name: Account Read Contacts
+  adx_subgrid_name: Contacts
+  adx_subgrid_settings: >-
+    {
+      "Type": "CrmEntityFormView-GridMetadata",
+      "ViewFormats": [],
+      "ViewActions": [
+        {
+          "Type": "CrmEntityFormView-CreateAction",
+          "EntityFormId": "b4700000-0000-4000-8000-820f8b2db709",
+          "TargetType": 0,
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "New contact"
+            }
+          ]
+        }
+      ],
+      "ItemActions": [
+        {
+          "Type": "CrmEntityFormView-DetailsAction",
+          "EntityFormId": "b4700000-0000-4000-8000-a60d601cabaa",
+          "TargetType": 0,
+          "RecordIdQueryStringParameterName": "id",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "View"
+            }
+          ]
+        },
+        {
+          "Type": "CrmEntityFormView-EditAction",
+          "EntityFormId": "b4700000-0000-4000-8000-f69fd77deeee",
+          "TargetType": 0,
+          "RecordIdQueryStringParameterName": "id",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Edit"
+            }
+          ]
+        },
+        {
+          "Type": "CrmEntityFormView-DeleteAction",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Delete"
+            }
+          ]
+        }
+      ],
+      "ExtendedViewActions": [],
+      "ExtendedItemActions": [],
+      "GridCssClass": ""
+    }
+  adx_type: 100000003
+- adx_entityform: b4700000-0000-4000-8000-9e60dac3145b
+  adx_entityformmetadataid: b4700000-0000-4000-8000-bef56417b7ed
+  adx_name: 'Account Read '
+  adx_notes_settings: >-
+    {
+      "CreateEnabled": true,
+      "EditEnabled": true,
+      "DeleteEnabled": true,
+      "DisplayAttachFile": true,
+      "DisplayPrivacyOptionField": false,
+      "PageSize": 10
+    }
+  adx_type: 100000005

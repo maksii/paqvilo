@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const t={d:(e,i)=>{for(var u in i)t.o(i,u)&&!t.o(e,u)&&Object.defineProperty(e,u,{enumerable:!0,get:i[u]})},o:(t,e)=>Object.prototype.hasOwnProperty.call(t,e),r:t=>{Object.defineProperty(t,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(t,"__esModule",{value:!0})}};let e={};t.r(e),t.d(e,{ExampleDecimal:()=>i});class i{constructor(){this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=""===this.input.value?void 0:Number(this.input.value),this._notifyOutputChanged()}}init(t,e,i,u){this._notifyOutputChanged=e;var n=t.parameters.controlValue.raw;this._value=null===n||Number.isNaN(n)?void 0:n,this.input=document.createElement("input"),this.input.type="number",this.input.step="any",this.input.className="ExampleDecimal",this.input.value=void 0===this._value?"":String(this._value),this.input.addEventListener("input",this.onInput),u.appendChild(this.input)}updateView(t){if(document.activeElement!==this.input){var e=t.parameters.controlValue.raw,i=null===e||Number.isNaN(e)?void 0:e;i!==this._value&&(this._value=i,this.input.value=void 0===i?"":String(i))}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=e})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExampleDecimal', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleDecimal);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExampleDecimal = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleDecimal;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

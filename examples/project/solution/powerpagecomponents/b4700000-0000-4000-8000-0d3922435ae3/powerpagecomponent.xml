@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-0d3922435ae3">
+  <content>{"display_name":"Demo/Native guidance","type":756150000,"value":"&lt;div class=\"demo-note\"&gt;Open an account to explore typed fields, lookups, a Contacts grid and notes. Page CSS styles native controls; basic-form JavaScript counts description characters.&lt;/div&gt;\n","contentsnippetlanguageid":"b4700000-0000-4000-8000-93e55d9fa295"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Demo/Native guidance</name>
+  <powerpagecomponenttype>7</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

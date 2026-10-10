@@ -1,0 +1,15 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-6e4142e621cf">
+  <content>{"copy":"{% include 'Approach PCF' %}","hiddenfromsitemap":false,"isroot":false,"pagetemplateid":"b4700000-0000-4000-8000-2546863c3d7d","parentpageid":"b4700000-0000-4000-8000-602c5631122a","partialurl":"pcf","publishingstateid":"b4700000-0000-4000-8000-73c49e548d0c","rootwebpageid":"b4700000-0000-4000-8000-213053d7da82","sharedpageconfiguration":false,"title":"Custom via PCF"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Custom via PCF</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <powerpagesitelanguageid>
+    <powerpagesitelanguageid>b4700000-0000-4000-8000-93e55d9fa295</powerpagesitelanguageid>
+  </powerpagesitelanguageid>
+
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,13 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-51215c324bb6">
+  <content>{
+  "source": "&lt;footer class=\"demo-footer\"&gt;&lt;div&gt;&lt;span&gt;Paqvilo · Power Pages development&lt;/span&gt;&lt;span&gt;One portal. Three approaches. Real Dataverse workflows.&lt;/span&gt;&lt;/div&gt;&lt;/footer&gt;"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Footer</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

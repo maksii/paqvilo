@@ -1,0 +1,31 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-820f8b2db709">
+  <content>{
+  "appendquerystring": false,
+  "associatecurrentportaluser": false,
+  "attachfile": false,
+  "captcharequired": false,
+  "entityname": "contact",
+  "entitypermissionsenabled": true,
+  "formname": "Paqvilo Contact",
+  "geolocation_displaymap": false,
+  "geolocation_enabled": false,
+  "geolocation_maptype": 756150000,
+  "hideformonsuccess": false,
+  "mode": 100000000,
+  "onsuccess": 756150000,
+  "registerstartupscript": "$(function () {\n  var accountId = new URLSearchParams(window.location.search).get(\"accountid\");\n  if (!accountId) return;\n  $(\"[id$='parentcustomerid']\").val(accountId);\n  $(\"[id$='parentcustomerid_name']\").val(\"Account\");\n  $(\"[id$='parentcustomerid_entityname']\").val(\"account\");\n});\n",
+  "showcaptchaforauthenticatedusers": false,
+  "showunsupportedfields": true,
+  "submitbuttontext": "[{\"LCID\":1033,\"Value\":\"Save contact\"}]",
+  "tabname": "DEMO_TAB",
+  "validationsummarylinksenabled": true
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Contact Create</name>
+  <powerpagecomponenttype>15</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,5 +1,14 @@
-adx_webpageid: 00000000-0000-4000-8000-000000000002
+adx_displayorder: 1
+adx_enablerating: false
+adx_enabletracking: false
+adx_excludefromsearch: false
+adx_feedbackpolicy: 756150005
+adx_hiddenfromsitemap: false
+adx_isroot: true
 adx_name: Home
-adx_title: Example home
+adx_pagetemplateid: b4700000-0000-4000-8000-2546863c3d7d
 adx_partialurl: /
-adx_pagetemplateid: 00000000-0000-4000-8000-000000000003
+adx_publishingstateid: b4700000-0000-4000-8000-73c49e548d0c
+adx_sharedpageconfiguration: false
+adx_title: Home
+adx_webpageid: b4700000-0000-4000-8000-f4ad73ee7f5f

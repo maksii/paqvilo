@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-d00060b5c83c">
+  <content>{"source":"&lt;link rel=\"stylesheet\" href=\"/demo.css?v=a0786cc81a53g\"&gt;\n&lt;header class=\"demo-header\"&gt;&lt;a class=\"demo-skip\" href=\"#mainContent\"&gt;Skip to content&lt;/a&gt;&lt;div class=\"demo-nav\"&gt;&lt;a class=\"demo-wordmark\" href=\"/\"&gt;paqvilo&lt;span&gt;Demo portal&lt;/span&gt;&lt;/a&gt;&lt;nav aria-label=\"Main navigation\"&gt;&lt;a href=\"/\"&gt;Home&lt;/a&gt;&lt;details&gt;&lt;summary&gt;Approach&lt;/summary&gt;&lt;div class=\"demo-dropdown\"&gt;&lt;a href=\"/approach/out-of-the-box/\"&gt;Out of the box&lt;/a&gt;&lt;a href=\"/approach/web-api/\"&gt;Web API&lt;/a&gt;&lt;a href=\"/approach/pcf/\"&gt;PCF&lt;/a&gt;&lt;/div&gt;&lt;/details&gt;&lt;a href=\"/extended/\"&gt;Extended&lt;/a&gt;&lt;/nav&gt;&lt;div class=\"demo-identity\"&gt;{% if user %}{{ user.fullname | escape }}&lt;a href=\"/Account/Login/LogOff?returnUrl=%2F\"&gt;Sign out&lt;/a&gt;{% else %}&lt;a href=\"/SignIn?returnUrl=%2F\"&gt;Sign in to try CRUD&lt;/a&gt;{% endif %}&lt;/div&gt;&lt;/div&gt;&lt;/header&gt;&lt;script src=\"/demo-runtime.js\" defer&gt;&lt;/script&gt;"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Header</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

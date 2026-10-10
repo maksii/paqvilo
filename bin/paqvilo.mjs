@@ -10,7 +10,7 @@ Usage: paqvilo lense <command> [options]
   lense   Overlay local sources, inspect resources and browser sessions.
           dev, list, use, doctor, map, status, audit, resources, verify, agent
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
-          init, dev, start, status, stop, serve, inspect, data, presets
+          demo, init, dev, start, status, stop, serve, inspect, data, presets
           bootstrap-report, render-sweep, liquid-inventory, webapi-inventory,
           portal-matrix, parity-suite, liquid-conformance, acceptance
 
@@ -30,13 +30,15 @@ if (!product || ['--help', '-h'].includes(product)) {
   let program, forwarded;
   if (product === 'lense') {
     program = '../lense/cli.mjs'; forwarded = args;
+  } else if (args[0] === 'demo') {
+    program = '../lense/commands/demo.mjs'; forwarded = args.slice(1);
   } else if (lifecycle.has(args[0])) {
     program = '../lense/cli.mjs'; forwarded = ['mirage', ...args];
   } else if (tools.has(args[0])) {
     program = `../mirage/${args[0]}.mjs`; forwarded = args.slice(1);
   } else {
     program = '../mirage/cli.mjs'; forwarded = args.length ? args : ['--help'];
-    if (args.includes('--help') || args.includes('-h')) console.log('Mirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).');
+    if (args.includes('--help') || args.includes('-h')) console.log('Mirage demo: paqvilo mirage demo (editable sample and development browser).\nMirage lifecycle: init, dev, start, status, stop (catalogue and browser options: paqvilo lense --help).');
   }
   const child = spawn(process.execPath, [fileURLToPath(new URL(program, import.meta.url)), ...forwarded], { stdio: 'inherit', windowsHide: true });
   child.on('error', (error) => { console.error(`paqvilo: ${error.message}`); process.exitCode = 1; });

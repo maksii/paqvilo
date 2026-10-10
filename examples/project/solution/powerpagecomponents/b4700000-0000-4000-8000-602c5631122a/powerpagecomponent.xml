@@ -1,0 +1,23 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-602c5631122a">
+  <content>{
+  "copy": "&lt;div class=\"demo\"&gt;&lt;p class=\"demo-kicker\"&gt;Approach&lt;/p&gt;&lt;h1&gt;The same workflow.&lt;br&gt;Three implementation choices.&lt;/h1&gt;&lt;p class=\"demo-lead\"&gt;Browse active and inactive accounts, open a complete form, and manage related contacts. Compare configuration, a custom Web API interface and PCF field components.&lt;/p&gt;&lt;div class=\"demo-cards\"&gt;&lt;a class=\"demo-card\" href=\"/approach/out-of-the-box/\"&gt;&lt;span class=\"demo-index\"&gt;01 / CONFIGURATION&lt;/span&gt;&lt;h2&gt;Out of the box&lt;/h2&gt;&lt;p&gt;Native lists, basic forms, lookups and contact modals. Built from Power Pages configuration.&lt;/p&gt;&lt;span&gt;Explore native controls →&lt;/span&gt;&lt;/a&gt;&lt;a class=\"demo-card\" href=\"/approach/web-api/\"&gt;&lt;span class=\"demo-index\"&gt;02 / PRO-CODE&lt;/span&gt;&lt;h2&gt;Web API&lt;/h2&gt;&lt;p&gt;The same accounts and contacts. A custom interface with explicit portal Web API requests.&lt;/p&gt;&lt;span&gt;Explore the custom interface →&lt;/span&gt;&lt;/a&gt;&lt;a class=\"demo-card\" href=\"/approach/pcf/\"&gt;&lt;span class=\"demo-index\"&gt;03 / COMPONENTS&lt;/span&gt;&lt;h2&gt;PCF&lt;/h2&gt;&lt;p&gt;The same workflow, with 14 reusable Power Apps code components as field editors.&lt;/p&gt;&lt;span&gt;Explore code components →&lt;/span&gt;&lt;/a&gt;&lt;/div&gt;&lt;/div&gt;",
+  "displayorder": 2,
+  "hiddenfromsitemap": false,
+  "isroot": true,
+  "pagetemplateid": "b4700000-0000-4000-8000-2546863c3d7d",
+  "parentpageid": "b4700000-0000-4000-8000-f4ad73ee7f5f",
+  "partialurl": "approach",
+  "publishingstateid": "b4700000-0000-4000-8000-73c49e548d0c",
+  "sharedpageconfiguration": false,
+  "title": "Approach"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Approach</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

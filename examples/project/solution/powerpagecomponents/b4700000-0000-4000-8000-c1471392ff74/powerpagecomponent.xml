@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-c1471392ff74">
+  <content>{"display_name":"Demo/Access guidance","type":756150000,"value":"&lt;div class=\"demo-note\" data-demo-access&gt;Readers can view accounts and their related contacts and notes. Workspace Editors can also create, edit and delete. Local demo: Alex Example 01 is an editor; Blair Demo 01 is a reader.&lt;/div&gt;\n","contentsnippetlanguageid":"b4700000-0000-4000-8000-93e55d9fa295"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Demo/Access guidance</name>
+  <powerpagecomponenttype>7</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

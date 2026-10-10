@@ -1,0 +1,12 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: account
+adx_entityname: Account workspace read
+adx_entitypermission_webrole:
+- b4700000-0000-4000-8000-2b18ee4c8b18
+adx_entitypermissionid: b4700000-0000-4000-8000-ebc8fed28c0a
+adx_read: true
+adx_scope: 756150000
+adx_write: false

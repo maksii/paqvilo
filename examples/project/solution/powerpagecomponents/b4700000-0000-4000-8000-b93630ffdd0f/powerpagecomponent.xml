@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-b93630ffdd0f">
+  <content>{"appendquerystring":false,"associatecurrentportaluser":false,"attachfile":true,"attachfileaccept":"*/*","attachfilemaxsize":1024,"captcharequired":false,"entityname":"account","entitypermissionsenabled":true,"formname":"Paqvilo Account","geolocation_displaymap":false,"geolocation_enabled":false,"geolocation_maptype":756150000,"hideformonsuccess":false,"mode":100000000,"onsuccess":756150001,"showcaptchaforauthenticatedusers":false,"showunsupportedfields":false,"submitbuttontext":"[{\"LCID\":1033,\"Value\":\"Save account\"}]","tabname":"DEMO_TAB","validationsummarylinksenabled":true,"redirectwebpage":"b4700000-0000-4000-8000-309d83826d44","redirecturlappendentityidquerystring":true,"recordidquerystringparametername":"id","registerstartupscript":"(function(){'use strict';const setup=()=&gt;{const field=document.getElementById('description');if(!field||document.getElementById('demo-description-count'))return;const count=document.createElement('small');count.id='demo-description-count';count.className='demo-description-count';field.after(count);field.setAttribute('aria-describedby',[field.getAttribute('aria-describedby'),count.id].filter(Boolean).join(' '));const update=()=&gt;count.textContent=field.value.length+' characters in account description';field.addEventListener('input',update);update();};if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',setup);else setup();})();\n"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Account Create</name>
+  <powerpagecomponenttype>15</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

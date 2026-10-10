@@ -46,13 +46,23 @@ npm init -y
 npm install --save-dev paqvilo
 ```
 
-**3. Start the included example.** `npx` runs the installed toolkit:
+**3. Open the demo.** `npx` runs the installed toolkit:
 
 ```sh
-npx --no-install paqvilo mirage serve --source ./node_modules/paqvilo/examples/project/portal --state .paqvilo/demo-state.json --port 8787
+npx --no-install paqvilo mirage demo
 ```
 
-Open [the local portal](http://127.0.0.1:8787), then [local administration](http://127.0.0.1:8787/_sim/). The example uses invented sources and starts anonymous. Keep the terminal open while using it; press **Ctrl+C** to stop.
+The command copies an editable portal into `paqvilo-example/`, loads sample records and opens a dedicated development browser on a free local port. Keep the terminal open. Close the browser or press **Ctrl+C** to stop.
+
+| Try it | What you should see |
+| --- | --- |
+| Sign in as **Alex Example 01** | 12 accounts, 24 contacts and a populated account workspace |
+| Open **Web API → Arcwell Services** | Typed fields, lookups, contact CRUD, notes and an attachment |
+| Compare **Out of the box** | Native views, basic forms and contact modals using the same local data |
+| Press **Alt+Shift+P** | **Inspect** traces sources and permissions; **Tweaks** switches identity |
+| Edit `portal/web-files/demo.css` and save | The browser applies your local source edit |
+
+The page includes a short walkthrough. PCF editors and server operations require Power Pages; the local demo explains its current coverage. [Demo setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#try-the-demo) covers browsers, data scenarios and restarting.
 
 ## Use your own site
 

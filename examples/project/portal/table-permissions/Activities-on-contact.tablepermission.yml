@@ -1,0 +1,15 @@
+adx_append: true
+adx_appendto: true
+adx_create: true
+adx_delete: true
+adx_entitylogicalname: activitypointer
+adx_entityname: Activities on contact
+adx_entitypermission_webrole:
+- b4700000-0000-4000-8000-5475a884bd48
+- b4700000-0000-4000-8000-6087a4a82e5f
+adx_entitypermissionid: b4700000-0000-4000-8000-72f4656edeba
+adx_parententitypermission: b4700000-0000-4000-8000-8b4ce3821cf6
+adx_parentrelationship: Contact_ActivityPointers
+adx_read: true
+adx_scope: 756150003
+adx_write: true

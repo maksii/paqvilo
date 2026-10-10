@@ -1,0 +1,26 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-f4ad73ee7f5f">
+  <content>{
+  "copy": "&lt;div class=\"demo\"&gt;&lt;section class=\"demo-hero\"&gt;&lt;div&gt;&lt;p class=\"demo-kicker\"&gt;The Paqvilo development portal&lt;/p&gt;&lt;h1&gt;Build it three ways.&lt;br&gt;Understand every layer.&lt;/h1&gt;&lt;p class=\"demo-lead\"&gt;A working Power Pages portal for exploring forms, data and pro-code. Compare the same account workflow across three implementations.&lt;/p&gt;&lt;div class=\"demo-actions\"&gt;&lt;a class=\"demo-button\" href=\"/approach/out-of-the-box/\"&gt;Open the demo&lt;/a&gt;&lt;a class=\"demo-button secondary\" href=\"/extended/\"&gt;Explore server logic&lt;/a&gt;&lt;/div&gt;&lt;p class=\"demo-footnote\"&gt;Start with an account. Open its form. Add and edit a related contact.&lt;/p&gt;&lt;/div&gt;&lt;aside class=\"demo-specimen\" aria-label=\"Demo workflow\"&gt;&lt;p class=\"demo-kicker\"&gt;Shared Dataverse records&lt;/p&gt;&lt;h2&gt;One task. Your approach.&lt;/h2&gt;&lt;div class=\"demo-mini-record\"&gt;&lt;div&gt;&lt;strong&gt;Account workspace&lt;/strong&gt;&lt;small&gt;Create · read · edit · delete&lt;/small&gt;&lt;/div&gt;&lt;span&gt;Native&lt;/span&gt;&lt;/div&gt;&lt;div class=\"demo-mini-record\"&gt;&lt;div&gt;&lt;strong&gt;Account workspace&lt;/strong&gt;&lt;small&gt;Forms · contacts · attachments&lt;/small&gt;&lt;/div&gt;&lt;span&gt;Web API&lt;/span&gt;&lt;/div&gt;&lt;div class=\"demo-mini-record\"&gt;&lt;div&gt;&lt;strong&gt;Account workspace&lt;/strong&gt;&lt;small&gt;14 field components · the same records&lt;/small&gt;&lt;/div&gt;&lt;span&gt;PCF&lt;/span&gt;&lt;/div&gt;&lt;/aside&gt;&lt;/section&gt;&lt;div class=\"demo-section-heading\"&gt;&lt;h2&gt;Choose an implementation&lt;/h2&gt;&lt;p&gt;Switch approaches. Keep the same account.&lt;/p&gt;&lt;/div&gt;&lt;div class=\"demo-cards\"&gt;&lt;a class=\"demo-card\" href=\"/approach/out-of-the-box/\"&gt;&lt;span class=\"demo-index\"&gt;01 / CONFIGURATION&lt;/span&gt;&lt;h2&gt;Out of the box&lt;/h2&gt;&lt;p&gt;Native lists, basic forms, lookups and contact modals. Built from Power Pages configuration.&lt;/p&gt;&lt;span&gt;Explore native controls →&lt;/span&gt;&lt;/a&gt;&lt;a class=\"demo-card\" href=\"/approach/web-api/\"&gt;&lt;span class=\"demo-index\"&gt;02 / PRO-CODE&lt;/span&gt;&lt;h2&gt;Web API&lt;/h2&gt;&lt;p&gt;The same accounts and contacts. A custom interface with explicit portal Web API requests.&lt;/p&gt;&lt;span&gt;Explore the custom interface →&lt;/span&gt;&lt;/a&gt;&lt;a class=\"demo-card\" href=\"/approach/pcf/\"&gt;&lt;span class=\"demo-index\"&gt;03 / COMPONENTS&lt;/span&gt;&lt;h2&gt;PCF&lt;/h2&gt;&lt;p&gt;The same workflow, with 14 reusable Power Apps code components as field editors.&lt;/p&gt;&lt;span&gt;Explore code components →&lt;/span&gt;&lt;/a&gt;&lt;/div&gt;&lt;p class=\"demo-note\"&gt;On this online portal, changes are saved to Dataverse. Use the supplied demo accounts or create a disposable test account. In Mirage, the same export uses local simulated data.&lt;/p&gt;&lt;/div&gt;",
+  "displayorder": 1,
+  "enablerating": false,
+  "enabletracking": false,
+  "excludefromsearch": false,
+  "feedbackpolicy": 756150005,
+  "hiddenfromsitemap": false,
+  "isroot": true,
+  "pagetemplateid": "b4700000-0000-4000-8000-2546863c3d7d",
+  "partialurl": "/",
+  "publishingstateid": "b4700000-0000-4000-8000-73c49e548d0c",
+  "sharedpageconfiguration": false,
+  "title": "Home"
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Home</name>
+  <powerpagecomponenttype>2</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

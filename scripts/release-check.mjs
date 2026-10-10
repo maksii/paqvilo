@@ -12,7 +12,7 @@ const DOCUMENTATION_ASSETS = new Set([
 
 export const REQUIRED_RELEASE_FILES = [
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',
-  'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
+  'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'lense/commands/demo.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
   'mirage/cli.mjs', 'mirage/server.mjs', 'mirage/lib/importer.mjs',
   'mirage/lib/project-config.mjs', 'mirage/admin/index.html',
   'mirage/lib/bootstrap-plugins-compat.js', 'mirage/lib/datetimepicker-compat.js',
@@ -31,12 +31,20 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/testing/session.mjs', 'docs/project-extensions.md', 'docs/architecture.md',
   'docs/index.md', 'docs/getting-started.md', ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs', 'examples/project/test/portal.test.mjs', 'examples/project/gitignore.template',
+  'examples/project/paqvilo.config.yml', 'examples/project/portal/sitesetting.yml', 'examples/project/portal/webrole.yml',
+  'examples/project/portal/web-files/demo.css', 'examples/project/portal/web-files/demo-workspace.js',
+  'examples/project/portal/web-files/demo.css.webfile.yml', 'examples/project/portal/web-files/demo-workspace.js.webfile.yml',
+  'examples/project/pack/fixtures.json', 'examples/project/solution/Entities/Account/Entity.xml',
+  'examples/project/metadata/Other/Relationships.xml',
 ];
 export function validateReleaseFiles(files) {
+  const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
+  const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
   const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|MIGRATION\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md))$/;
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
-  for (const name of paths) if (!allowed.test(name) && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
+  for (const name of paths) if (!allowed.test(name) && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && name !== 'examples/project/pack/fixtures.json' && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

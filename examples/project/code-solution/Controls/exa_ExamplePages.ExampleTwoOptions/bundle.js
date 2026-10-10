@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const t={d:(e,i)=>{for(var n in i)t.o(i,n)&&!t.o(e,n)&&Object.defineProperty(e,n,{enumerable:!0,get:i[n]})},o:(t,e)=>Object.prototype.hasOwnProperty.call(t,e),r:t=>{Object.defineProperty(t,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(t,"__esModule",{value:!0})}};let e={};t.r(e),t.d(e,{ExampleTwoOptions:()=>i});class i{constructor(){this._value=!1,this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=this.input.checked,this.label.textContent=String(this._value),this._notifyOutputChanged()}}init(t,e,i,n){this._notifyOutputChanged=e,this._value=t.parameters.controlValue.raw,this.input=document.createElement("input"),this.input.type="checkbox",this.input.className="ExampleTwoOptions",this.input.checked=this._value,this.input.addEventListener("input",this.onInput),this.label=document.createElement("span"),this.label.textContent=String(this._value);var a=document.createElement("label");a.append(this.input,this.label),n.appendChild(a)}updateView(t){if(document.activeElement!==this.input){var e=t.parameters.controlValue.raw;e!==this._value&&(this._value=e,this.input.checked=e,this.label.textContent=String(e))}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=e})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExampleTwoOptions', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleTwoOptions);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExampleTwoOptions = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleTwoOptions;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const e={d:(t,a)=>{for(var i in a)e.o(a,i)&&!e.o(t,i)&&Object.defineProperty(t,i,{enumerable:!0,get:a[i]})},o:(e,t)=>Object.prototype.hasOwnProperty.call(e,t),r:e=>{Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})}};let t={};e.r(t),e.d(t,{ExampleTextArea:()=>a});class a{constructor(){this._value="",this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=this.input.value,this._notifyOutputChanged()}}init(e,t,a,i){var n;this._notifyOutputChanged=t,this._value=null!==(n=e.parameters.controlValue.raw)&&void 0!==n?n:"";var u=document.createElement("textarea");this.input=u,u.className="ExampleTextArea",u.value=this._value,u.addEventListener("input",this.onInput),i.appendChild(u)}updateView(e){var t;if(document.activeElement!==this.input){var a=null!==(t=e.parameters.controlValue.raw)&&void 0!==t?t:"";a!==this._value&&(this._value=a,this.input.value=a)}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=t})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExampleTextArea', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleTextArea);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExampleTextArea = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleTextArea;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

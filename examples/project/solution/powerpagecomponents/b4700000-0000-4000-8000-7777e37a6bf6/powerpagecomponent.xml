@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-7777e37a6bf6">
+  <content>{"value":"accountid,name,accountnumber,emailaddress1,telephone1,websiteurl,tickersymbol,description,numberofemployees,creditlimit,pqvd_decimal,pqvd_float,industrycode,donotemail,pqvd_dateonly,pqvd_datetime,address1_line1,address1_city,address1_postalcode,statecode,statuscode,createdon,modifiedon,parentaccountid,primarycontactid,transactioncurrencyid,_parentaccountid_value,_primarycontactid_value,_transactioncurrencyid_value"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Webapi/account/fields</name>
+  <powerpagecomponenttype>9</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

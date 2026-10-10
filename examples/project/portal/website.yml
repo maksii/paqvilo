@@ -1,2 +1,9 @@
-adx_websiteid: 00000000-0000-4000-8000-000000000001
-adx_name: Example portal
+adx_defaultbotconsumerid:
+adx_defaultlanguage: b4700000-0000-4000-8000-93e55d9fa295
+adx_enhancedauthorization: 0
+adx_footerwebtemplateid: b4700000-0000-4000-8000-51215c324bb6
+adx_headerwebtemplateid: b4700000-0000-4000-8000-d00060b5c83c
+adx_name: Paqvilo demo
+adx_parentwebsiteid: b4700000-0000-4000-8000-d31ddbcbde91
+adx_website_language: 1033
+adx_websiteid: b4700000-0000-4000-8000-d31ddbcbde91
