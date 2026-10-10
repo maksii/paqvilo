@@ -342,7 +342,7 @@ export function enablePanel(context, session, opts = {}) {
 
   // ------------------------------------------------------------------------------ what a tab shows
   const pageInfo = (pathname) => {
-    const key = pageKey(pathname);
+    const key = pageKey(pathname, session.model);
     const index = indexSources();
     if (pageInfoCache.has(key)) return pageInfoCache.get(key);
     const entry = index.pagesByKey.get(key);

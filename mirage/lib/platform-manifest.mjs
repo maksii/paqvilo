@@ -258,7 +258,7 @@ export const PLATFORM_BUNDLE_ROOT = "/resource/powerappsportal/";
 /** The platform's default Bootstrap stylesheet, linked when the site has no Head/Bootstrap snippet or bootstrap.min.css content style. */
 export const PLATFORM_BOOTSTRAP_STYLESHEET = '<link rel="stylesheet" href="/css/bootstrap.min.css">';
 const both = (name) => ({ BootstrapV3: name, BootstrapV5: name });
-const PCF_REASON = "The Power Apps component framework host is not simulated; configured managed controls use lib/managed-controls.mjs.";
+const PCF_REASON = "The hosted PCF bundle is not included locally. Mirage's standard-control adapter uses exported manifests and declared resources; React and platform-library dependencies require live verification.";
 const TELEMETRY_REASON = "Platform telemetry is hosted infrastructure that is not simulated.";
 /**
  * The platform bundles. Fields:

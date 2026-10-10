@@ -1,0 +1,7 @@
+**/node_modules/
+**/.paqvilo/
+**/.pp-local/
+**/obj/
+**/out/
+**/coverage/
+**/*.log

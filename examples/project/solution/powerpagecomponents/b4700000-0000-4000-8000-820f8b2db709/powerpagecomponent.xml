@@ -13,7 +13,7 @@
   "hideformonsuccess": false,
   "mode": 100000000,
   "onsuccess": 756150000,
-  "registerstartupscript": "$(function () {\n  var accountId = new URLSearchParams(window.location.search).get(\"accountid\");\n  if (!accountId) return;\n  $(\"[id$='parentcustomerid']\").val(accountId);\n  $(\"[id$='parentcustomerid_name']\").val(\"Account\");\n  $(\"[id$='parentcustomerid_entityname']\").val(\"account\");\n});\n",
+  "registerstartupscript": "$(function () {\n  var accountId = new URLSearchParams(window.location.search).get(\"accountid\");\n  if (!accountId) return;\n  $(\"[id$='parentcustomerid']\").val(accountId);\n  $(\"[id$='parentcustomerid_name']\").val(\"Account\");\n  $(\"[id$='parentcustomerid_entityname']\").val(\"account\");\n});\n\n// The native form is hosted in an iframe with its own document and theme.\n(function(){\n document.body.classList.add('demo-native','demo-native-frame');\n if(!document.querySelector('link[data-demo-form-theme]')){const theme=document.createElement('link');theme.rel='stylesheet';theme.href='/demo.css';theme.dataset.demoFormTheme='true';document.head.appendChild(theme);}\n})();\n",
   "showcaptchaforauthenticatedusers": false,
   "showunsupportedfields": true,
   "submitbuttontext": "[{\"LCID\":1033,\"Value\":\"Save contact\"}]",

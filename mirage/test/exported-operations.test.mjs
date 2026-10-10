@@ -31,15 +31,41 @@ test('server-logic exported code uses invocation context, local role-scoped read
   assert.throws(() => assertOperationRole({roleIds:[]}, {roleIds:[role]}), /web roles/);
 });
 
-test('exported server code is bounded and unsupported connectors do not change local records', async t => {
+test('exported server code is bounded and read requests cannot change local records', async t => {
   const fixture = await source(t, 'function get(){while(true){}}');
   await assert.rejects(runExportedServerLogic({ record:fixture.record, portal:{}, store:store(), timeout:100 }), /time|timed out/);
   await fs.writeFile(fixture.record.file, `function get(){return Server.Connector.Dataverse.DeleteRecord('widgets','one');}`);
   const data = store();
-  await assert.rejects(runExportedServerLogic({record:fixture.record,portal:{},store:data}), /reads only/);
+  const denied = JSON.parse(await runExportedServerLogic({record:fixture.record,portal:{},store:data}));
+  assert.equal(denied.StatusCode, 403);
   assert.equal(data.get('widgets','one',{roles:['Reader']}).title, 'Synthetic');
   await fs.writeFile(fixture.record.file, 'function get(){return Promise.resolve("async result");}');
   assert.equal(await runExportedServerLogic({record:fixture.record,portal:{},store:data}), 'async result');
+});
+
+test('exported server CRUD uses local permissions, projection and the DELETE del convention', async t => {
+  const fixture = await source(t, `function post(){return Server.Connector.Dataverse.CreateRecord('widgets',Server.Context.Body);}function put(){return Server.Connector.Dataverse.UpdateRecord('widgets',Server.Context.QueryParameters.id,Server.Context.Body);}function del(){return Server.Connector.Dataverse.DeleteRecord('widgets',Server.Context.QueryParameters.id);}function get(){return Server.Connector.Dataverse.RetrieveRecord('widgets','one','$select=title');}`);
+  const data = store();
+  const state = data.snapshot();
+  state.permissions.push({entity:'widget',scope:'global',operations:['create','update','delete','read'],roles:['Editor']});
+  await data.replaceState(state);
+  const context = {record:fixture.record,portal:{},store:data,identity:{id:'local',roles:['Editor']}};
+  const created = JSON.parse(await runExportedServerLogic({...context,method:'POST',body:'{"title":"Created"}'}));
+  assert.equal(created.StatusCode,201);
+  const id = JSON.parse(created.Body).widgetid;
+  assert.ok(id);
+  const updated = JSON.parse(await runExportedServerLogic({...context,method:'PUT',query:{id},body:'{"title":"Updated"}'}));
+  assert.equal(updated.StatusCode,204);
+  assert.equal(data.get('widgets',id,context.identity).title,'Updated');
+  const selected = JSON.parse(await runExportedServerLogic(context));
+  assert.equal(selected.StatusCode,200);
+  assert.equal(JSON.parse(selected.Body).title,'Synthetic');
+  const removed = JSON.parse(await runExportedServerLogic({...context,method:'DELETE',query:{id}}));
+  assert.equal(removed.StatusCode,204);
+  assert.equal(data.get('widgets',id,context.identity),null);
+  const denied = JSON.parse(await runExportedServerLogic({...context,identity:{roles:['Reader']},method:'POST',body:'{"title":"Forbidden"}'}));
+  assert.equal(denied.StatusCode,403);
+  assert.equal(data.rows('widget',context.identity).length,1);
 });
 
 test('operation registrations are explicit, validated and ambiguous names fail closed', () => {
@@ -60,6 +86,13 @@ test('flow definition is selected by exported process id and evaluates only the 
   assert.deepEqual(runExportedCloudFlow(context), {status:200,body:{City:'London'}});
   assert.throws(() => runExportedCloudFlow({...context,input:{}}), /required/);
   assert.throws(() => runExportedCloudFlow({...context,input:{City:42}}), /invalid type/);
+  definition.properties.definition.triggers.manual.inputs.schema = { type:'object', additionalProperties:false, required:['items'], properties:{items:{type:'array',items:{type:'object',required:['count'],additionalProperties:false,properties:{count:{type:'integer'},choice:{enum:['A','B']}}}}} };
+  workflows.get(role).definition=definition;
+  assert.deepEqual(runExportedCloudFlow({...context,input:{items:[{count:2,choice:'A'}]}}).body, {City:null});
+  assert.throws(() => runExportedCloudFlow({...context,input:{items:[{count:2.5}]}}), /invalid type/);
+  assert.throws(() => runExportedCloudFlow({...context,input:{items:[{}]}}), /required/);
+  assert.throws(() => runExportedCloudFlow({...context,input:{items:[{count:2,extra:true}]}}), /undeclared/);
+  assert.throws(() => runExportedCloudFlow({...context,input:{items:[{count:2,choice:'C'}]}}), /allowed|enum/);
   definition.properties.definition.actions.connector={type:'OpenApiConnection'};
   workflows.get(role).definition=definition;
   assert.throws(() => runExportedCloudFlow(context), /Request and one Response/);

@@ -237,7 +237,7 @@ export default async function verify(cfg, args) {
     });
     const onTarget = () => {
       const u = new URL(page.url());
-      return u.origin === cfg.origin && pageKey(u.pathname) === pageKey(new URL(startPath, cfg.origin).pathname);
+      return u.origin === cfg.origin && pageKey(u.pathname, session.model) === pageKey(new URL(startPath, cfg.origin).pathname, session.model);
     };
     // 'load' can take very long on data-heavy pages; the document itself is what matters here
     const open = async () => {
@@ -275,7 +275,7 @@ export default async function verify(cfg, args) {
     const cssFile = used.find((w) => /\.css$/i.test(w.url) && !/\.min\.css$/i.test(w.url)) ?? used.find((w) => /\.css$/i.test(w.url));
     const jsFile = used.find((w) => /\.js$/i.test(w.url) && !/\.min\.js$/i.test(w.url));
     const imgFile = used.find((w) => /\.(?:png|jpe?g|gif|svg|ico)$/i.test(w.url));
-    const docKey = pageKey(new URL(startPath, cfg.origin).pathname);
+    const docKey = pageKey(new URL(startPath, cfg.origin).pathname, model);
     const editable = model.inlineSources;
     const pageSources = editable.filter((s) => s.pageUrl && pageKey(s.pageUrl) === docKey);
     const preferLang = (a, b) => Number(b.rel.includes('/content-pages/')) - Number(a.rel.includes('/content-pages/'));

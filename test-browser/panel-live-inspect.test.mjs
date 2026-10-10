@@ -15,6 +15,13 @@ import { inspectionFixture, addNativeInspectionFixture } from '../test/source-in
 test('live Inspect works without Mirage and opens exact project Solution sources, locates controls and refreshes navigation', { timeout: 90_000 }, async (t) => {
   const fx = inspectionFixture();
   addNativeInspectionFixture(fx);
+  const nativeFormFile = path.join(fx.solution, 'Entities/fx_widget/FormXml/main/widget-form.xml');
+  fs.writeFileSync(nativeFormFile, fs.readFileSync(nativeFormFile, 'utf8').replace('id="fx_title"', 'id="fx_title" uniqueid="native-editor"').replace('</tabs>', '</tabs><controlDescriptions><controlDescription forControl="native-editor"><customControl name="fx_Example.Editor" formFactor="0"><parameters><value>fx_title</value></parameters></customControl></controlDescription></controlDescriptions>'));
+  fs.writeFileSync(path.join(fx.portal, 'basic-forms/Native-editor.basicformmetadata.yml'), 'adx_entityformmetadataid: native-editor-metadata\nadx_entityform: widget-edit\nadx_type: 100000000\nadx_attributelogicalname: fx_title\nadx_controlstyle: 756150001');
+  const nativeControlDir = path.join(fx.solution, 'Controls/fx_Example.Editor'); fs.mkdirSync(nativeControlDir, { recursive: true });
+  fs.writeFileSync(path.join(nativeControlDir, 'ControlManifest.xml'), '<manifest><control namespace="Example" constructor="Editor" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>');
+  fs.writeFileSync(path.join(nativeControlDir, 'ControlManifest.xml.data.xml'), '<CustomControl><Name>fx_Example.Editor</Name></CustomControl>');
+  fs.writeFileSync(path.join(nativeControlDir, 'bundle.js'), 'window.Example = {};');
   const assetCode = "window.widgetFeature = true; function api(path) { return fetch('/_api/' + path); } api('fx_widgets(record-private-id)?$filter=private-filter');";
   fs.writeFileSync(path.join(fx.portal, 'web-files/widget.js'), assetCode);
   const requests = [], opened = [], errors = [];
@@ -58,6 +65,13 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('[data-group="runtime-api"]').getByText('table fx_widget · observed request; IDs and query values excluded').waitFor();
   await scope.locator('[data-group="runtime-native"]').getByText('Child records', { exact: true }).waitFor();
   await scope.locator('[data-group="runtime-forms"]').getByText('Read child', { exact: true }).waitFor();
+  await scope.locator('[data-group="runtime-pcf"]').getByText('fx_Example.Editor', { exact: true }).waitFor();
+  await scope.locator('[data-group="runtime-pcf"] [data-rel$="ControlManifest.xml"] [data-act="open"]').first().click();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(opened.at(-1)[1], path.join(nativeControlDir, 'ControlManifest.xml'));
+  await scope.locator('[data-group="runtime-pcf"] [data-rel*="FormXml"] [data-act="open"]').first().click();
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  assert.equal(opened.at(-1)[1], nativeFormFile);
   if (process.env.PAQVILO_EVIDENCE_DIR) {
     fs.mkdirSync(process.env.PAQVILO_EVIDENCE_DIR, { recursive: true });
     await page.screenshot({ path: path.join(process.env.PAQVILO_EVIDENCE_DIR, 'lense-inspect-live.png') });

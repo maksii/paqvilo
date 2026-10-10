@@ -22,7 +22,7 @@ const norm = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-const FORM_PARSER_ID = "metadata-form@2";
+const FORM_PARSER_ID = "metadata-form@3";
 const VIEW_PARSER_ID = "metadata-view@1";
 const IO_CONCURRENCY = 24;
 
@@ -264,6 +264,30 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   if (dependencyDepth > 8)
     throw new Error("Quick form dependency nesting exceeds eight levels");
   const tree = parseSolutionXml(form.xml);
+  const customControls = new Map(descendants(tree, 'controlDescription').map(description => {
+    const variants = descendants(description, 'customControl').filter(control => control.attrs.name).map(control => {
+      const parameters = Object.create(null);
+      for (const parameter of child(control, 'parameters')?.children ?? []) {
+        const key = parameter.name === 'data-set' ? parameter.attrs.name : parameter.name;
+        if (!key) continue;
+        const value = parameter.text.trim(), type = parameter.attrs.type;
+        let binding;
+        if (parameter.name === 'data-set') binding = { kind: 'dataset', viewId: norm(text(parameter, 'ViewId')) || null, entity: norm(text(parameter, 'TargetEntityType')) || null, xml: serialize(parameter) };
+        else if (parameter.attrs.static === 'true') binding = { kind: 'static', value, type };
+        else if (!parameter.children.length && /^[a-z_][a-z\d_]*$/i.test(value)) binding = { kind: 'binding', column: norm(value), type };
+        else binding = { kind: 'unresolved', value, type, xml: serialize(parameter) };
+        parameters[key] = Object.hasOwn(parameters, key) ? { kind: 'unresolved', reason: 'Duplicate exported property binding' } : binding;
+      }
+      return { name: control.attrs.name, id: norm(control.attrs.id) || null, formFactor: control.attrs.formFactor ?? null, parameters, boundAttributes: [...new Set(Object.values(parameters).filter(value => value.kind === 'binding').map(value => value.column))], sourceFile: form.file, controlId: norm(description.attrs.forControl) };
+    });
+    return [norm(description.attrs.forControl), variants];
+  }));
+  const componentBindings = control => {
+    const variants = customControls.get(norm(control?.attrs.uniqueid)) ?? customControls.get(norm(control?.attrs.id));
+    if (!variants?.length) return {};
+    const codeComponent = variants.find(component => component.formFactor === '0' && component.name !== 'MscrmControls.RichTextEditor.RichTextEditorControl');
+    return { codeComponents: variants, ...(codeComponent ? { codeComponent } : {}) };
+  };
   const richTextControls = new Map(
     descendants(tree, "controlDescription").flatMap((description) => {
       const custom = descendants(description, "customControl").find(
@@ -341,6 +365,9 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 entity,
                 viewId,
                 relationship: text(parameters, "RelationshipName"),
+                searchEnabled: text(parameters, 'EnableQuickFind') === 'true',
+                recordsPerPage: Number(text(parameters, 'RecordsPerPage')) || undefined,
+                ...componentBindings(control),
                 fields: (view?.fields ?? []).map((f) => ({
                   ...metadata.entities[entity]?.fields[f.name],
                   ...f,
@@ -407,6 +434,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               hidden: cell.attrs.visible === "false",
               showLabel: cell.attrs.showlabel !== "false",
               controlClassId: norm(control.attrs.classid),
+              ...componentBindings(control),
               ...(richTextControls.has(norm(control.attrs.uniqueid))
                 ? {
                     richText: richTextControls.get(

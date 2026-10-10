@@ -25,7 +25,7 @@ function source(rel, base, text, props = {}) {
 }
 function makeRewriter(options = {}) {
   const baseline = { cache: new Map(), changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
-  return new HtmlRewriter({ model: { inlineSources: sources }, site: SITE, baseline, ...options });
+  return new HtmlRewriter({ model: { inlineSources: sources, languageCodes: new Set(['en-us', 'pl-pl']) }, site: SITE, baseline, ...options });
 }
 const rewrite = (body, url = '/', options = {}) => makeRewriter(options).rewrite(body, url);
 const script = (rel, before, after) => source(rel, before, after, { kind: 'basic-form-js', mode: 'block', tag: 'script' });

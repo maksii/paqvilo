@@ -39,9 +39,10 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
   const code = await fs.readFile(record.file, 'utf8');
   const bound = Math.max(100, Math.min(Number(timeout) || 2000, 5000));
   const settings = Object.fromEntries(Object.entries(portal.settings ?? {}).map(([name, value]) => [name, value?.value ?? value]));
-  const context = { ActivityId: randomUUID(), Body: body, FunctionName: operation ?? method.toLowerCase(), HttpMethod: method, Input: input, QueryParameters: query, ServerLogicName: record.name, Headers: {}, Url: `/_api/serverlogics/${encodeURIComponent(record.name)}` };
+  const context = { ActivityId: randomUUID(), Body: body, FunctionName: operation ?? (method === 'DELETE' ? 'del' : method.toLowerCase()), HttpMethod: method, Input: input, QueryParameters: query, ServerLogicName: record.name, Headers: {}, Url: `/_api/serverlogics/${encodeURIComponent(record.name)}` };
   return new Promise((resolve, reject) => {
-    const worker = new Worker(new URL('./exported-operation-worker.mjs', import.meta.url), { workerData: { code, operation: context.FunctionName, context, user: identity ?? null, website: { Id: portal.website?.id, Name: portal.website?.name }, settings, timeout: bound }, resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8 } });
+    const user = identity?.id || identity?.contactId ? { ...identity, contactid: identity.contactId ?? identity.id, fullname: identity.name ?? null } : null;
+    const worker = new Worker(new URL('./exported-operation-worker.mjs', import.meta.url), { workerData: { code, operation: context.FunctionName, context, user, website: { ...portal.website, Id: portal.website?.id, Name: portal.website?.name }, settings, timeout: bound }, resourceLimits: { maxOldGenerationSizeMb: 32, maxYoungGenerationSizeMb: 8 } });
     let complete = false;
     const finish = (error, value) => {
       if (complete) return;
@@ -51,18 +52,38 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
     const timer = setTimeout(() => finish(failure('Server-logic execution exceeded its local time limit.', 504, 'LocalOperationTimeout')), bound + 300);
     worker.on('error', error => finish(failure(error.message)));
     worker.on('exit', code => { if (!complete) finish(failure(`Server-logic worker stopped before returning a result (${code}).`)); });
-    worker.on('message', message => {
+    worker.on('message', async message => {
       if (message.kind === 'result') return finish(null, message.raw);
       if (message.kind === 'failure') return finish(failure(message.message));
-      if (!['query', 'get'].includes(message.kind)) return;
+      if (!['query', 'get', 'create', 'update', 'delete'].includes(message.kind)) return;
       const flags = new Int32Array(message.control);
       let answer;
       try {
         const params = new URLSearchParams(String(message.options ?? '').replace(/^\?/, ''));
-        const data = message.kind === 'query'
-          ? store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' })
-          : store.get(message.entitySet, message.id, identity);
-        answer = { value: { StatusCode: data ? 200 : 404, Body: JSON.stringify(data ?? {}), IsSuccessStatusCode: Boolean(data), ReasonPhrase: data ? 'OK' : 'Not Found', ServerError: false, ServerErrorMessage: null, Headers: {} } };
+        let data, status = 200;
+        if (message.kind === 'query') data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' });
+        else if (message.kind === 'get') {
+          const row = store.get(message.entitySet, message.id, identity);
+          if (row && params.size) {
+            const mapping = store.resolveMapping(message.entitySet);
+            const requested = params.get('$filter');
+            const idFilter = `${mapping.idColumn} eq '${String(message.id).replace(/'/g, "''")}'`;
+            params.set('$filter', requested ? `(${requested}) and (${idFilter})` : idFilter);
+            data = store.query(message.entitySet, params, identity, undefined, { dialect: 'dataverse' }).value[0];
+          } else data = row;
+        } else {
+          if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
+          let payload;
+          if (message.kind !== 'delete') {
+            payload = JSON.parse(message.payload);
+            if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
+          }
+          if (message.kind === 'create') { data = await store.create(message.entitySet, payload, identity); status = 201; }
+          if (message.kind === 'update') { await store.update(message.entitySet, message.id, payload, identity); status = 204; }
+          if (message.kind === 'delete') { await store.remove(message.entitySet, message.id, identity); status = 204; }
+        }
+        if (['query', 'get'].includes(message.kind) && !data) status = 404;
+        answer = { value: { StatusCode: status, Body: data === undefined ? '' : JSON.stringify(data), IsSuccessStatusCode: status < 400, ReasonPhrase: status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK', ServerError: false, ServerErrorMessage: null, Headers: {} } };
       } catch (error) {
         answer = { value: { StatusCode: error.status ?? 500, Body: '{}', IsSuccessStatusCode: false, ReasonPhrase: error.message, ServerError: true, ServerErrorMessage: error.message, Headers: {} } };
       }
@@ -93,7 +114,7 @@ export async function importOperationWorkflows(layers = []) {
       const xml = parseSolutionXml(contained[0]);
       const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
-      result.set(id, { file: files[1], definition: JSON.parse(contained[1]) });
+      result.set(id, { file: files[1], name: xml.attrs.Name ?? descendants(xml, 'Workflow')[0]?.attrs.Name ?? null, definition: JSON.parse(contained[1]) });
     }
   }
   return result;
@@ -108,12 +129,23 @@ export function runExportedCloudFlow({ record, workflows, input }) {
   const actions = Object.values(definition?.actions ?? {});
   if (triggers.length !== 1 || triggers[0].type !== 'Request' || triggers[0].kind !== 'powerpages' || actions.length !== 1 || actions[0].type !== 'Response' || actions[0].kind !== 'powerpages') throw failure('This local cloud-flow adapter supports a Power Pages Request and one Response only. Register a project handler for other actions.');
   if (!input || typeof input !== 'object' || Array.isArray(input)) throw failure('The cloud-flow input must be an object.', 400, 'InvalidRequest');
-  const schema = triggers[0].inputs?.schema ?? {};
-  for (const name of schema.required ?? []) if (input[name] == null) throw failure(`Cloud-flow input ${name} is required.`, 400, 'InvalidRequest');
-  for (const [name, property] of Object.entries(schema.properties ?? {})) {
-    if (input[name] == null) continue;
-    if (['string', 'boolean', 'number', 'integer'].includes(property.type) && (typeof input[name] !== (property.type === 'integer' ? 'number' : property.type) || property.type === 'integer' && !Number.isInteger(input[name]))) throw failure(`Cloud-flow input ${name} has an invalid type.`, 400, 'InvalidRequest');
-  }
+  const validate = (value, schema, name = 'body', depth = 0) => {
+    if (depth > 32) throw failure('The cloud-flow input schema exceeds the local nesting limit.');
+    const invalid = message => { throw failure(`Cloud-flow input ${name} ${message}.`, 400, 'InvalidRequest'); };
+    const types = schema.type ? [schema.type].flat() : [];
+    const matches = type => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? Boolean(value && typeof value === 'object' && !Array.isArray(value)) : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type;
+    if (types.length && !types.some(matches)) invalid('has an invalid type');
+    if (Array.isArray(schema.enum) && !schema.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) invalid('is not an allowed value');
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) invalid(`is missing required property ${key}`);
+      for (const [key, item] of Object.entries(value)) {
+        if (schema.properties?.[key]) validate(item, schema.properties[key], `${name}.${key}`, depth + 1);
+        else if (schema.additionalProperties === false) invalid(`contains undeclared property ${key}`);
+      }
+    }
+    if (Array.isArray(value) && schema.items) value.forEach((item, index) => validate(item, schema.items, `${name}[${index}]`, depth + 1));
+  };
+  validate(input, triggers[0].inputs?.schema ?? {});
   const resolve = value => {
     if (Array.isArray(value)) return value.map(resolve);
     if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item)]));

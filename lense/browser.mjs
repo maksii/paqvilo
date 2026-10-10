@@ -327,11 +327,11 @@ export function planRefresh(session, files) {
   return plan;
 }
 
-const pageKeyOf = (address) => { try { return pageKey(new URL(address).pathname); } catch { return null; } };
+const pageKeyOf = (address, model) => { try { return pageKey(new URL(address).pathname, model); } catch { return null; } };
 
 /** Files which can affect this tab. Global sources and unindexed/deleted files affect every tab. */
 export function filesForPage(session, files, address) {
-  const key = pageKeyOf(address);
+  const key = pageKeyOf(address, session.model);
   return files.filter((file) => {
     if (session.rel && session.disabled?.has(session.rel(file))) return false;
     const sources = (session.model.inlineSources ?? []).filter((source) => source.file === file);
@@ -396,7 +396,7 @@ export async function refreshPages(context, session, files, { force = false, out
   let swapped = false;
   await Promise.all(
     pages.map(async (p) => {
-      const key = pageKeyOf(p.url());
+      const key = pageKeyOf(p.url(), session.model);
       const outcome = outcomes.get(p);
       if (plan.reloadKeys.has(key)) {
         if (await refreshDocument(p, signal)) { reloaded = true; outcome.how = 'reload'; }

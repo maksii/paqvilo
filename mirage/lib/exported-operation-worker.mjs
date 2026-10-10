@@ -3,21 +3,24 @@ import vm from 'node:vm';
 
 // This is an execution boundary for explicitly trusted project code, not a
 // security sandbox for arbitrary downloads. The parent terminates the worker.
-const connectorRead = (kind, entitySet, id, options) => {
+const connectorCall = (kind, entitySet, id, options, payload) => {
   const bytes = new SharedArrayBuffer(1024 * 1024);
   const control = new SharedArrayBuffer(8);
   const flags = new Int32Array(control);
-  parentPort.postMessage({ kind, entitySet, id, options, bytes, control });
-  if (Atomics.wait(flags, 0, 0, workerData.timeout) === 'timed-out') throw new Error('Local Dataverse read timed out');
+  parentPort.postMessage({ kind, entitySet, id, options, payload, bytes, control });
+  if (Atomics.wait(flags, 0, 0, workerData.timeout) === 'timed-out') throw new Error('Local Dataverse operation timed out');
   const answer = JSON.parse(new TextDecoder().decode(new Uint8Array(bytes, 0, flags[1])));
   if (answer.error) throw new Error(answer.error);
   return JSON.stringify(answer.value);
 };
-const unsupported = () => { throw new Error('This local server-logic adapter supports Dataverse reads only. Register a project handler for writes or external services.'); };
+const unsupported = () => { throw new Error('This connector is not available in the local server-logic adapter. Register a project handler for external services or custom APIs.'); };
 const connector = {
-  RetrieveMultipleRecords: (entitySet, options = '') => connectorRead('query', entitySet, null, options),
-  RetrieveRecord: (entitySet, id, options = '') => connectorRead('get', entitySet, id, options),
-  CreateRecord: unsupported, UpdateRecord: unsupported, DeleteRecord: unsupported,
+  RetrieveMultipleRecords: (entitySet, options = '') => connectorCall('query', entitySet, null, options),
+  RetrieveRecord: (entitySet, id, options = '') => connectorCall('get', entitySet, id, options),
+  CreateRecord: (entitySet, payload) => connectorCall('create', entitySet, null, '', payload),
+  UpdateRecord: (entitySet, id, payload) => connectorCall('update', entitySet, id, '', payload),
+  DeleteRecord: (entitySet, id) => connectorCall('delete', entitySet, id),
+  InvokeCustomApi: unsupported,
 };
 const siteSettings = workerData.settings;
 const Server = {

@@ -27,7 +27,6 @@ const sourceCacheKey = (file) => {
   return process.platform === 'win32' ? absolute.toLowerCase() : absolute;
 };
 const sameStamp = (a, b) => a.dev === b.dev && a.ino === b.ino && a.size === b.size && a.mtimeMs === b.mtimeMs && a.ctimeMs === b.ctimeMs;
-const LANG_PREFIX = /^\/[a-z]{2}(?:-[a-z]{2,4})?(?=\/|$)/i;
 const MAX_CONTEXT = 8;
 // the longest text a {{ value }} is expected to render to
 const MAX_VALUE_LENGTH = 50_000;
@@ -43,10 +42,12 @@ function readText(file) {
 }
 
 /** URL path without the optional language segment (/en-US/...), as a lookup key. */
-export function pageKey(urlPath) {
+export function pageKey(urlPath, model = null) {
   const key = urlKey(urlPath);
-  const stripped = key.replace(LANG_PREFIX, '');
-  return stripped === '' ? '/' : stripped;
+  if (model?.pagePaths?.has(key)) return key;
+  const prefix = key.split('/')[1];
+  if (!model?.languageCodes?.has(prefix)) return key;
+  return key.slice(prefix.length + 1) || '/';
 }
 
 // ---------------------------------------------------------------------------------- block sources
@@ -250,7 +251,7 @@ function differentLocalizedVariants(a, b) {
   const bLocale = sourceLocale(b);
   if (aLocale == null || bLocale == null || aLocale === bLocale || a.kind !== b.kind) return false;
   if (a.lcid != null || b.lcid != null) return a.file === b.file && a.field === b.field && JSON.stringify(a.fieldPath) === JSON.stringify(b.fieldPath);
-  if (a.kind.startsWith('page-')) return a.pageUrl != null && b.pageUrl != null && pageKey(a.pageUrl) === pageKey(b.pageUrl);
+  if (a.kind.startsWith('page-')) return a.pageUrl != null && b.pageUrl != null && urlKey(a.pageUrl) === urlKey(b.pageUrl);
   return a.kind === 'content-snippet' && a.snippetName && b.snippetName && a.snippetName.toLowerCase() === b.snippetName.toLowerCase();
 }
 
@@ -719,7 +720,7 @@ export class HtmlRewriter {
         const baseLines = baseNorm != null && baseNorm !== norm ? previous?.base === base && previous.baseLines ? previous.baseLines : lineSet(baseNorm) : null;
         this.blockCache.set(src.rel, { text, norm, lines, base, baseLines });
         if (partial?.has(sourceCacheKey(src.file)) && previous?.text !== text) {
-          this.blockChanges.set(src.rel, { kind: src.kind, tag: src.tag, pageKey: src.pageUrl ? pageKey(src.pageUrl) : null, before: previous?.text ?? null, after: text });
+          this.blockChanges.set(src.rel, { kind: src.kind, tag: src.tag, pageKey: src.pageUrl ? urlKey(src.pageUrl) : null, before: previous?.text ?? null, after: text });
         }
         for (const line of lines) frequency.set(line, (frequency.get(line) ?? 0) + 1);
         this.blocks.push({
@@ -730,8 +731,8 @@ export class HtmlRewriter {
           baseLines,
           active: (!restrict || isChanged) && !this.disabled.has(src.rel),
           isNew: isChanged && !(base && base.trim()),
-          pageKey: src.pageUrl ? pageKey(src.pageUrl) : null,
-          usedKeys: new Set((src.usedOn ?? []).map(pageKey)),
+          pageKey: src.pageUrl ? urlKey(src.pageUrl) : null,
+          usedKeys: new Set((src.usedOn ?? []).map(urlKey)),
         });
       } else if (markupKinds.has(src.kind) && isChanged && !this.disabled.has(src.rel)) {
         const text = read(src);
@@ -856,7 +857,7 @@ export class HtmlRewriter {
 
   #rewriteBlocks(html, urlPath, applied, matched, notes) {
     if (!this.blocks.length) return html;
-    const docKey = pageKey(urlPath);
+    const docKey = pageKey(urlPath, this.model);
     const minSim = this.site.inline?.minSimilarity ?? 0.5;
     const candidates = this.blocks.filter((b) => !b.pageKey || b.pageKey === docKey);
     if (!candidates.length) return html;
@@ -995,7 +996,7 @@ export class HtmlRewriter {
     let out = body;
     for (const patch of this.patches) {
       if (!isHtml && patch.kind !== 'web-template') continue;
-      if (patch.pageUrl && pageKey(patch.pageUrl) !== pageKey(urlPath)) continue;
+      if (patch.pageUrl && urlKey(patch.pageUrl) !== pageKey(urlPath, this.model)) continue;
       // each file is applied to the result of the previous one, so two files changing the same
       // spot (a template line and the snippet printed on it) both take effect
       const { text, original, crlf } = normalise(out);

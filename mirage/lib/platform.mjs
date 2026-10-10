@@ -539,7 +539,7 @@ function validatorStartupScript(validators, summaryId, summaryHeader) {
   return `<script type="text/javascript">//<![CDATA[\n${lines.join("\n")}\n//]]></script>`;
 }
 
-const LOOKUP_GRID_MESSAGES = `<div aria-label="There are no records to display." aria-live="polite" class="view-empty message" role="status" tabindex="-1"><div class="alert alert-block alert-warning">There are no records to display.</div></div><div class="view-access-denied message" role="presentation" tabindex="0"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message" role="presentation" tabindex="0"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center" role="presentation" tabindex="0"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>`;
+const LOOKUP_GRID_MESSAGES = `<div aria-label="There are no records to display." aria-live="polite" class="view-empty message" role="status" tabindex="-1" style="display:none"><div class="alert alert-block alert-warning">There are no records to display.</div></div><div class="view-access-denied message" role="presentation" tabindex="0" style="display:none"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message" role="presentation" tabindex="0" style="display:none"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center" role="presentation" tabindex="0" style="display:none"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>`;
 const PAGINATION = '<div class="view-pagination" data-current-page="1" data-pages="1" data-pagesize=""></div>';
 
 function nativeModal({ className, title, body, footer = "", size = "", label }) {
@@ -818,7 +818,13 @@ async function renderEntityList(name, context, options) {
   const key = options.args?.key;
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
   const builtin = pageControl || (key != null && options.args?.id == null && options.args?.name == null && context.key != null && String(context.key) === String(key));
-  return { context: { entitylist: drop }, html: builtin ? await renderListGrid(model, context, options) : "" };
+  let notice = '';
+  if (builtin && truthy(fieldOf(list.metadata, 'iscodecomponent'))) {
+    const message = `List ${list.name} uses a configured dataset code component. Its hosted list binding is not implemented locally; the native grid below is a fallback. Use an explicit exported view/table binding with a standard Liquid code component for local dataset development.`;
+    options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', component: 'entitylist', list: list.id, message });
+    notice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
+  }
+  return { context: { entitylist: drop }, html: builtin ? notice + await renderListGrid(model, context, options) : "" };
 }
 
 async function renderEntityView(name, context, options) {
@@ -1232,7 +1238,7 @@ async function renderForm(kind, name, context, options) {
       }
     return options;
   };
-  const input = async (field) => {
+  const nativeInput = async (field) => {
     const current = value(field);
     const scalar = scalarValue(current);
     const disabled = field.readOnly;
@@ -1286,7 +1292,7 @@ async function renderForm(kind, name, context, options) {
           title: "Lookup records",
           label: "Lookup records Dialog",
           size: "modal-lg",
-          body: `<div aria-hidden="true" class="modal-error message"><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" data-mobile-view-enabled="true" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div>`,
+          body: `<div aria-hidden="true" class="modal-error message" style="display:none"><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" data-mobile-view-enabled="true" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div>`,
           footer: `${createForm ? '<button type="button" class="btn btn-default pull-left new-value" title="New">New</button>' : ""}<button aria-label="Select" class="primary btn btn-primary" tabindex="0" title="Select" type="button">Select</button><button aria-label="Cancel" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Cancel" type="button">Cancel</button><button class="btn btn-default pull-right remove-value" title="Remove value" type="button">Remove value</button>`,
         })}${createForm ? nativeModal({ className: "modal-form modal-form-insert modal-lookup-create-form", title: "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create", body: formModalBody(`/_portal/modal-form-template-path/${websiteId}`), size: "modal-lg", label: "Create" }) : ""}</div></div>`;
       }
@@ -1368,6 +1374,36 @@ async function renderForm(kind, name, context, options) {
     }
   };
 
+  const input = async (field) => {
+    const original = await nativeInput(field);
+    // The portal's attribute metadata explicitly enables the desktop PCF from
+    // FormXml. Model-driven defaults alone do not activate a portal component.
+    if (field.controlStyle !== 756150001 || field.richText || field.hidden) return original;
+    const component = field.codeComponent;
+    const unsupported = message => {
+      options.diagnostic?.({ code: 'PCF_NATIVE_BINDING_UNSUPPORTED', form: definition?.id, field: field.name, sourceFile: component?.sourceFile, message });
+      return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>${original}`;
+    };
+    if (!component || !options.codeComponent) return unsupported(`The enabled code component for ${field.label} requires its exported desktop FormXml binding and solution control sources.`);
+    if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name) return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
+    const args = { disabled: field.readOnly };
+    const properties = [];
+    for (const [name, parameter] of Object.entries(component.parameters)) {
+      if (parameter.kind === 'static') args[name] = parameter.value;
+      else if (parameter.kind === 'binding' && parameter.column === field.name) {
+        const current = value(field);
+        args[name] = field.control === 'lookup'
+          ? current ? [{ id: canonicalId(scalarValue(current)), entityType: current.logical_name ?? field.targets?.[0], name: current.name ?? '' }] : []
+          : field.control === 'multiselect' ? (Array.isArray(current) ? current.map(scalarValue) : String(scalarValue(current) ?? '').split(',').filter(Boolean)) : scalarValue(current);
+        properties.push(name);
+      } else return unsupported(`Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`);
+    }
+    const host = await options.codeComponent({ name: component.name, args, nativeBinding: { id: field.id, control: field.control, properties } });
+    // Original inputs retain validators, names and the native form postback.
+    // The client hides them after a successful mount and reveals them on failure.
+    return `<div data-pcf-native-field="${attr(field.id)}"><div data-pcf-native-input>${original}</div>${host}</div>`;
+  };
+
   // Subgrids, quick views and notes cells.
   const extraControls = new Map();
   const cells = formCells(schema);
@@ -1403,6 +1439,13 @@ async function renderForm(kind, name, context, options) {
       continue;
     }
     const model = subgridModel({ portal, schemas, metadata, store, kind, formId: definition?.id ?? name, stepId: schema.stepId, gridId: cell.id });
+    const gridMetadata = metadataFor(metadataRows, 100000003, row => fieldOf(row, 'subgrid_name') === cell.id);
+    let codeComponentNotice = '';
+    if (Number(fieldOf(gridMetadata, 'controlstyle')) === 756150001) {
+      const message = `Subgrid ${label} uses a configured dataset code component. Its hosted relationship binding is not implemented locally; the native related grid below is a fallback.`;
+      options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', component: kind, form: definition?.id, grid: cell.id, message });
+      codeComponentNotice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
+    }
     if (!model.relationship || !model.relationship.many || canonicalId(model.relationship.entity) !== canonicalId(cell.entity))
       throw componentError(`Subgrid ${cell.id} requires exported relationship ${cell.relationship}`, 501, "SUBGRID_RELATIONSHIP_REQUIRED");
     const actions = actionLinks(model.settings, { portal, requestUrl: context.request?.url ?? "http://localhost/", website: websiteId });
@@ -1418,14 +1461,14 @@ async function renderForm(kind, name, context, options) {
         className: "modal-associate",
         title: formLabel(model.settings?.LookupDialog?.Title, "Associate"),
         size: "modal-lg",
-        body: `<div class="modal-error message" aria-hidden="true"><div class="alert alert-block alert-danger">We're sorry, an error has occurred.</div></div><div class="entity-grid associate-lookup" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-defer-loading="true" data-enable-actions="false" data-select-mode="Multiple" data-column-width-style="Percent" data-grid-class="" data-selected-view="${attr(associateLayouts[0]?.Id ?? "")}" data-view-layouts="${base64Json(associateLayouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div><div class="panel panel-default content-panel"><div class="panel-heading"><h4>Selected records</h4></div><div class="panel-body selected-records"></div></div>`,
+        body: `<div class="modal-error message" aria-hidden="true" style="display:none"><div class="alert alert-block alert-danger">We're sorry, an error has occurred.</div></div><div class="entity-grid associate-lookup" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-defer-loading="true" data-enable-actions="false" data-select-mode="Multiple" data-column-width-style="Percent" data-grid-class="" data-selected-view="${attr(associateLayouts[0]?.Id ?? "")}" data-view-layouts="${base64Json(associateLayouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div><div class="panel panel-default content-panel"><div class="panel-heading"><h4>Selected records</h4></div><div class="panel-body selected-records"></div></div>`,
         footer: `<button class="primary btn btn-primary" type="button">${escape(formLabel(model.settings?.LookupDialog?.PrimaryButtonText, "Add"))}</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>`,
       })}</div>`;
     }
     const settings = model.settings ?? {};
     extraControls.set(
       cell.id,
-      `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${escape(label)}</label></h3><div class="control"><div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="true" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage)}${associateHtml}</div></div></div>`,
+      `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${escape(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="true" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {

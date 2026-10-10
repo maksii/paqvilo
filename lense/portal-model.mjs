@@ -3,6 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
+import { portalLanguage } from '../mirage/lib/portal-languages.mjs';
 
 const MIME_BY_EXT = {
   '.js': 'application/javascript; charset=utf-8',
@@ -514,6 +515,7 @@ export class PortalModel {
     this.inactiveSources = [];
     if (this.format === 'enhanced') {
       this.#loadEnhanced();
+      this.#loadLanguages();
       this.yamlCache.clear();
       return;
     }
@@ -524,9 +526,44 @@ export class PortalModel {
     this.#loadPages();
     this.#loadWebFiles();
     this.#loadInlineSources();
+    this.#loadLanguages();
     for (const file of this.yamlCache.keys()) {
       if (!this.currentYaml.has(file)) this.yamlCache.delete(file);
     }
+  }
+
+  // Language prefixes come from exported metadata or explicit localized source names.
+  // Never assume that an arbitrary two-letter page slug denotes a language.
+  #loadLanguages() {
+    this.languageCodes = new Set();
+    this.pagePaths = new Set([...this.pages.values()].map((page) => this.pagePath(page.id)).filter(Boolean).map(urlKey));
+    const add = (code) => { if (typeof code === 'string' && /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code)) this.languageCodes.add(code.toLowerCase()); };
+    const field = (row, key) => row?.[`adx_${key}`] ?? row?.[`mspp_${key}`] ?? row?.[key];
+    const languageRows = [];
+    const portalRows = [];
+    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => entry.isFile() ? [path.join(this.sourceDir, entry.name)] : entry.isDirectory() && /^(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?$/i.test(entry.name) ? this.#files(path.join(this.sourceDir, entry.name)) : []);
+    for (const file of candidates) {
+      const name = path.basename(file);
+      if (/^(?:websitelanguage|portallanguage)\.yml$/i.test(name) || /\.(?:websitelanguage|portallanguage)\.ya?ml$/i.test(name)) {
+        const rows = [this.#readYaml(file, true)].flat().filter((row) => row && !row.__error && Number(field(row, 'statecode') ?? 0) !== 1);
+        (/portallanguage/i.test(name) ? portalRows : languageRows).push(...rows);
+      }
+      if (name.toLowerCase() === 'powerpagesitelanguages.xml' && isSourceFile(this.sourceDir, file)) {
+        const xml = fs.readFileSync(file, 'utf8');
+        for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
+          if (/<statecode>\s*1\s*</.test(match[1])) continue;
+          const content = componentContent(match[1]) ?? {};
+          languageRows.push({ ...content, languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode, name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name });
+        }
+      }
+    }
+    for (const row of languageRows) {
+      const reference = String(field(row, 'portallanguageid')?.id ?? field(row, 'portallanguageid') ?? '').replace(/[{}]/g, '').toLowerCase();
+      const linked = portalRows.find((item) => String(field(item, 'portallanguageid') ?? item.id ?? '').replace(/[{}]/g, '').toLowerCase() === reference);
+      add(field(row, 'languagecode') ?? field(linked, 'languagecode') ?? portalLanguage({ name: field(row, 'name') })?.code);
+    }
+    // Some PAC extracts omit language records but retain explicit en-US/fr-FR filenames.
+    for (const source of this.inlineSources) add(/\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(source.rel)?.[1] ?? /\/content-pages\/([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\//i.exec(source.rel)?.[1]);
   }
 
   #files(dir) {

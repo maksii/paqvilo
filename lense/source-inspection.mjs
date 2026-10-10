@@ -1,7 +1,7 @@
 // Source-only inspection for a live Lense tab. No runtime, data pack or live request is started.
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { importPortal, portalField } from '../mirage/lib/importer.mjs';
+import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/importer.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
@@ -11,6 +11,26 @@ import { importCodeComponents } from '../mirage/lib/code-components.mjs';
 const norm = (value) => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const unique = (rows, key) => [...new Map(rows.map((row) => [key(row), row])).values()];
 const inside = (root, file) => { const rel = path.relative(root, file); return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
+
+// Resolve declared browser resources against their browser URL, never a source directory.
+function assetPaths(text, basePath) {
+  const values = [];
+  const patterns = [
+    /\b(?:src|href)\s*=\s*['"]([^'"]+)['"]/gi,
+    /\burl\(\s*['"]?([^'"\s)]+)['"]?\s*\)/gi,
+    /@import\s+['"]([^'"]+)['"]/gi,
+    /\b(?:import|export)\s+(?:[^;'"\n]*?\s+from\s+)?['"]([^'"]+)['"]/gi,
+    /\bimport\(\s*['"]([^'"]+)['"]\s*\)/gi,
+  ];
+  for (const pattern of patterns) for (const match of String(text ?? '').matchAll(pattern)) {
+    try {
+      if (!match[1] || match[1].includes('{{') || match[1].startsWith('#')) continue;
+      const url = new URL(match[1], new URL(basePath, 'http://inspect.invalid'));
+      if (url.origin === 'http://inspect.invalid') values.push(decodeURIComponent(url.pathname));
+    } catch {}
+  }
+  return values;
+}
 
 /** Only configured roots are used. An unrelated project default never replaces this site. */
 export async function inspectionSources(cfg) {
@@ -49,7 +69,7 @@ export function inspectRenderedPage() {
     try { const url = new URL(value, location.href); return url.origin === location.origin ? url.pathname : null; } catch { return null; }
   };
   const assets = [...document.querySelectorAll('script[src],link[href],img[src]')].filter(own).slice(0, 300).map((node) => ({ kind: node.tagName.toLowerCase(), path: pathname(node.getAttribute('src') ?? node.getAttribute('href')) })).filter((row) => row.path);
-  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],.entity-grid[data-selected-view],iframe.quickform[data-controlid]')].filter(own).slice(0, 300).map((node) => {
+  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],.entity-grid[data-selected-view],iframe.quickform[data-controlid]')].filter(own).slice(0, 300).map((node) => {
     let layout = {};
     try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch {}
     return {
@@ -57,6 +77,7 @@ export function inspectRenderedPage() {
     entity: String(node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '').slice(0, 160),
     formId: String(node.getAttribute('data-formid') ?? layout.Id ?? '').slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? '').slice(0, 160),
     gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '', controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
+    schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160), nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
   }; });
   const apiSets = [...new Set(performance.getEntriesByType('resource').slice(-300).flatMap((entry) => {
     const route = pathname(entry.name);
@@ -81,6 +102,7 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
   const queue = [...(report.forms ?? [])];
   const visited = new Set();
   report.nativeComponents = [];
+  report.nativeCodeBindings = [];
   const addEntity = (entity) => {
     if (!entity || report.tables.some((row) => row.logicalName === entity)) return;
     const table = metadata.entities?.[entity];
@@ -135,7 +157,16 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
       if (!current || depth > 5) return;
       addFields(current.entity, current.fields, form.evidence ?? 'form-source');
       for (const step of current.steps ?? []) walk(step, depth + 1);
-      for (const cell of current.layout?.flatMap((tab) => tab.columns.flatMap((column) => column.sections.flatMap((section) => section.rows.flat()))) ?? []) {
+      const cells = current.layout?.flatMap((tab) => tab.columns.flatMap((column) => column.sections.flatMap((section) => section.rows.flat()))) ?? [];
+      for (const field of [...(current.fields ?? []), ...cells]) for (const component of field.codeComponents ?? []) {
+        const owner = `${form.name}.${field.name ?? field.id}`;
+        if (report.nativeCodeBindings.some((row) => row.owner === owner && row.name === component.name && row.formFactor === component.formFactor)) continue;
+        const settings = portal.records.filter((record) => ['basicformmetadata', 'advancedformmetadata'].includes(record.kind) && Number(portalField(record, 'statecode', 0)) !== 1 && Number(portalField(record, 'type')) === 100000000 && portalField(record, 'attributelogicalname') === field.name && (current.stepId ? norm(portalField(record, 'webformstep')) === norm(current.stepId) : norm(portalField(record, 'entityform')) === norm(definition?.id)));
+        const style = settings.length === 1 ? Number(portalField(settings[0], 'controlstyle')) : null;
+        const observed = (rendered.controls ?? []).some((row) => norm(row.schemaName) === norm(component.name) && (!row.nativeField || row.nativeField === field.name));
+        report.nativeCodeBindings.push({ ...component, owner, entity: current.entity, field: field.name ?? null, formId: form.id, formSourceFile: component.sourceFile ?? current.sourceFile, selectedDesktop: field.codeComponent === component, enablement: settings.length > 1 ? 'ambiguous' : style === 756150001 ? 'configured' : 'not-enabled', metadataSources: settings.map((record) => ({ name: 'Code component settings', sourceFile: record._file })), evidence: observed ? 'rendered-and-form-source' : 'form-source' });
+      }
+      for (const cell of cells) {
         if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
           if (cell.lookupViewId) addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
           continue;
@@ -173,6 +204,79 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
       }
     };
     walk(schema);
+  }
+}
+
+function inspectCodeComponents(report, body, metadata, observed, catalogue) {
+  const literal = (text) => {
+    const value = /^\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/.exec(text);
+    const name = value?.[1] ?? value?.[2] ?? value?.[3] ?? '';
+    return { name, dynamic: !value || Boolean(value[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name)) };
+  };
+  report.codeComponents = unique([...body.matchAll(/{%[-]?\s*codecomponent\b([^%]*)%}/gi)].map((match) => {
+    const nameParameter = /\bname\s*:\s*/i.exec(match[1]);
+    const { name, dynamic } = literal(nameParameter ? match[1].slice(nameParameter.index + nameParameter[0].length) : '');
+    const direct = !dynamic && [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(name));
+    const schemaName = dynamic ? null : direct ?? observed?.codeComponents?.[norm(name)] ?? null;
+    const row = { name, dynamic, schemaName, expression: match[0], evidence: dynamic ? 'dynamic-reference' : 'static-reference', binding: direct ? 'declared-schema-name' : schemaName ? 'observed-component-mapping' : 'unknown' };
+    const control = catalogue?.controls.get(schemaName);
+    if (!control) {
+      report.unresolved.push({ kind: 'code-component', expression: row.expression, reason: dynamic ? 'Code component name is dynamic and cannot be resolved from a static export.' : schemaName ? 'The code component manifest is absent from selected Solution sources.' : 'No exact Solution schema name or observed component mapping resolves this reference.' });
+      return row;
+    }
+    Object.assign(row, { sourceFile: control.file, resources: control.resources.map((resource) => ({ name: resource.kind, url: resource.url, sourceFile: catalogue.assets.get(resource.url)?.file })), properties: control.properties, datasets: [] });
+    for (const dataset of control.datasets ?? []) {
+      const argument = new RegExp(`\\b${dataset.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*:\\s*`, 'i').exec(match[1]);
+      const binding = literal(argument ? match[1].slice(argument.index + argument[0].length) : '');
+      const item = { name: dataset.name, binding: binding.name, evidence: binding.dynamic ? 'dynamic-reference' : 'static-reference', resolved: false };
+      row.datasets.push(item);
+      if (binding.dynamic) {
+        report.unresolved.push({ kind: 'code-component-dataset', expression: binding.name || dataset.name, owner: schemaName, reason: 'Dataset binding is missing or dynamic; no exported table or view is inferred.' }); continue;
+      }
+      const views = (metadata.views ?? []).filter((view) => norm(view.id) === norm(binding.name) || norm(view.name) === norm(binding.name));
+      const view = views.length === 1 ? views[0] : null;
+      const entity = view?.entity ?? (views.length ? null : norm(binding.name));
+      const table = entity && metadata.entities?.[entity];
+      if (!table) {
+        report.unresolved.push({ kind: 'code-component-dataset', expression: binding.name, owner: schemaName, reason: views.length > 1 ? 'Multiple exported views match this name; use the exact view ID.' : 'The dataset table or view is absent from selected Solution sources.' }); continue;
+      }
+      Object.assign(item, { resolved: true, entity, viewId: view?.id ?? null, viewName: view?.name ?? null, sourceFile: view?.file ?? table.sources?.[0], fields: view?.fields?.length ? view.fields : Object.keys(table.fields ?? {}).map((name) => ({ name })) });
+      if (!report.tables.some((entry) => entry.logicalName === entity)) report.tables.push({ kind: 'table', name: entity, logicalName: entity, sourceFile: table.sources?.[0], sourceFiles: table.sources ?? [], fieldCount: Object.keys(table.fields ?? {}).length, evidence: 'code-component-dataset' });
+      if (view && !report.views.some((entry) => norm(entry.id) === norm(view.id))) report.views.push({ id: view.id, name: view.name, entity, sourceFile: view.file, fields: view.fields, evidence: 'code-component-dataset' });
+      for (const field of item.fields) if (field.name && !report.columns.some((entry) => entry.entity === entity && entry.name === field.name)) {
+        const definition = table.fields?.[field.name];
+        report.columns.push({ entity, name: field.name, sourceFile: definition?.source ?? table.sources?.[0], resolved: Boolean(definition), label: definition?.label, type: definition?.dataverseType ?? definition?.type, evidence: 'code-component-dataset' });
+      }
+    }
+    return row;
+  }), (row) => row.expression);
+  for (const binding of report.nativeCodeBindings ?? []) {
+    const schemaName = [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(binding.name)) ?? observed?.codeComponents?.[norm(binding.name)] ?? null;
+    const control = catalogue?.controls.get(schemaName);
+    const row = { ...binding, schemaName, expression: `${binding.owner} · FormXml factor ${binding.formFactor ?? 'unknown'}`, binding: 'native-formxml', sourceFile: control?.file ?? binding.formSourceFile, formSource: { name: binding.owner, sourceFile: binding.formSourceFile }, resources: control?.resources.map((resource) => ({ name: resource.kind, url: resource.url, sourceFile: catalogue.assets.get(resource.url)?.file })) ?? [] };
+    report.codeComponents.push(row);
+    if (!control) report.unresolved.push({ kind: 'native-code-component', expression: binding.name, owner: binding.owner, reason: 'The FormXml custom control manifest is absent from selected Solution sources.' });
+    if (binding.enablement === 'ambiguous') report.unresolved.push({ kind: 'native-code-component-settings', expression: binding.field, owner: binding.owner, reason: 'Multiple attribute metadata records configure this control; portal enablement is ambiguous.' });
+    for (const [name, parameter] of Object.entries(binding.parameters ?? {})) {
+      if (parameter.kind === 'unresolved') report.unresolved.push({ kind: 'native-code-component-property', expression: name, owner: binding.owner, reason: parameter.reason ?? 'The exported native property binding cannot be resolved.' });
+      if (parameter.kind === 'binding') {
+        const table = metadata.entities?.[binding.entity], field = table?.fields?.[parameter.column];
+        if (!report.columns.some((item) => item.entity === binding.entity && item.name === parameter.column)) report.columns.push({ entity: binding.entity, name: parameter.column, sourceFile: field?.source ?? table?.sources?.[0], resolved: Boolean(field), label: field?.label, type: field?.dataverseType ?? field?.type, evidence: 'native-code-component-binding' });
+      }
+      if (parameter.kind === 'dataset') {
+        const view = parameter.viewId && metadata.views?.find((item) => norm(item.id) === norm(parameter.viewId) && (!parameter.entity || item.entity === parameter.entity));
+        if (view) {
+          (row.datasets ??= []).push({ name, binding: parameter.viewId, entity: view.entity, viewId: view.id, viewName: view.name, sourceFile: view.file, fields: view.fields, resolved: true, evidence: 'form-source' });
+          if (!report.views.some((item) => norm(item.id) === norm(view.id))) report.views.push({ id: view.id, name: view.name, entity: view.entity, sourceFile: view.file, fields: view.fields, evidence: 'native-code-component-dataset' });
+          const table = metadata.entities?.[view.entity];
+          if (!report.tables.some((item) => item.logicalName === view.entity)) report.tables.push({ kind: 'table', name: view.entity, logicalName: view.entity, sourceFile: table?.sources?.[0], sourceFiles: table?.sources ?? [], evidence: 'native-code-component-dataset' });
+          for (const column of view.fields ?? []) if (column.name && !report.columns.some((item) => item.entity === view.entity && item.name === column.name)) {
+            const field = table?.fields?.[column.name];
+            report.columns.push({ entity: view.entity, name: column.name, sourceFile: field?.source ?? table?.sources?.[0], resolved: Boolean(field), label: field?.label, type: field?.dataverseType ?? field?.type, evidence: 'native-code-component-dataset' });
+          }
+        } else report.unresolved.push({ kind: 'native-code-component-dataset', expression: parameter.viewId ?? name, owner: binding.owner, reason: 'The exported native dataset view is absent or its table binding does not match selected Solution sources.' });
+      }
+    }
   }
 }
 
@@ -217,19 +321,24 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   }
   inspectFormDependencies(report, portal, metadata, rendered);
   const sourceBodies = [page?.html, page?.js, page?.css, ...(report.webTemplates ?? []).map((row) => portal.templates?.[row.name]?.source), ...(report.snippets ?? []).map((row) => portal.snippets?.[row.name])].filter(Boolean);
+  const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
+  const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
   const observedPaths = new Set((rendered.assets ?? []).map((row) => row.path));
   const matchedFiles = new Map();
   // Follow only exported assets. Reads stay bounded; no URL is fetched.
   for (let round = 0; round < 8; round++) {
-    const body = sourceBodies.join('\n');
-    const pending = (portal.webFiles ?? []).filter((file) => file.url && !matchedFiles.has(file.url) && (observedPaths.has(file.url) || body.includes(file.url)));
+    const pending = (portal.webFiles ?? []).filter((file) => file.url && !matchedFiles.has(file.url) && (observedPaths.has(file.url) || referencedPaths.has(file.url)));
     if (!pending.length) break;
     for (const file of pending) {
       matchedFiles.set(file.url, file);
       if (!/\.(?:m?js|css)$/i.test(file.file ?? '') || matchedFiles.size > 100) continue;
       try {
         const real = await fs.realpath(file.file);
-        if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) sourceBodies.push(await fs.readFile(real, 'utf8'));
+        if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
+          const text = await fs.readFile(real, 'utf8');
+          sourceBodies.push(text);
+          for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
+        }
       } catch {}
     }
   }
@@ -247,6 +356,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     }
     return { name, entity: entity?.[0] ?? null, sourceFile: entity?.[1].sources?.[0] ?? null, evidence: observedApiSets.has(name) ? 'observed-api-request' : 'static-reference' };
   });
+  inspectCodeComponents(report, body, metadata, observed, codeCatalogue);
   const permissionState = { tables: {}, mappings: {}, permissions: [], settings: {}, simulator: {} };
   const permissions = buildPermissionModel(portal, permissionState, { source: 'exported', relationships: metadata.relationships ?? {} }).permissions;
   const needed = new Set((report.tables ?? []).map((row) => row.logicalName));
@@ -285,18 +395,6 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     ...(portal.serverLogics ?? []).filter((row) => body.includes(row.name)).map((row) => ({ ...row, sourceFile: row.file, kind: 'server-logic', evidence: 'static-reference' })),
     ...(portal.cloudFlows ?? []).filter((row) => row.path && body.includes(row.path) || row.processId && body.toLowerCase().includes(row.processId.toLowerCase())).map((row) => ({ ...row, sourceFile: portal.records.find((record) => norm(record.id) === norm(row.id))?._file, kind: 'cloud-flow', evidence: 'static-reference' })),
   ];
-  report.codeComponents = unique([...body.matchAll(/{%[-]?\s*codecomponent\b([^%]*)%}/gi)].map((match) => {
-    const parameter = /\bname\s*:\s*(?:'([^']+)'|"([^"]+)"|([^\s,]+))/i.exec(match[1]);
-    const name = parameter?.[1] ?? parameter?.[2] ?? parameter?.[3] ?? '';
-    const dynamic = !parameter || Boolean(parameter[3] && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(name));
-    return { name, dynamic, schemaName: dynamic ? null : observed?.codeComponents?.[norm(name)] ?? null, expression: match[0], evidence: dynamic ? 'dynamic-reference' : 'static-reference' };
-  }), (row) => row.expression);
-  report.unresolved ??= [];
-  for (const row of report.codeComponents) {
-    const control = codeCatalogue?.controls.get(row.schemaName);
-    if (control) Object.assign(row, { sourceFile: control.file, resources: control.resources.map((resource) => ({ name: resource.kind, url: resource.url, sourceFile: codeCatalogue.assets.get(resource.url)?.file })), properties: control.properties });
-    else report.unresolved.push({ kind: 'code-component', expression: row.expression, reason: row.dynamic ? 'Code component name is dynamic and cannot be resolved from a static export.' : row.schemaName ? 'The configured code component manifest is absent from selected Solution sources.' : 'No observed component ID to Solution schema mapping is configured.' });
-  }
   return report;
 }
 
@@ -304,20 +402,47 @@ export function createSourceInspector(cfg) {
   let loading = null;
   const load = () => loading ??= (async () => {
     const sources = await inspectionSources(cfg);
-    const portal = await importPortal(sources.sourceDir, { lcid: sources.lcid, ...(sources.dataModel ? { dataModel: sources.dataModel } : {}) });
-    const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { portal, lcid: sources.lcid, order: sources.order }) : {};
-    const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
-    return { sources, portal, metadata, codeCatalogue };
+    const variants = new Map();
+    const variant = async (language = null) => {
+      const key = language?.id ?? '';
+      if (!variants.has(key)) variants.set(key, (async () => {
+        const lcid = language?.lcid ?? sources.lcid;
+        const imported = await importPortal(sources.sourceDir, { lcid, ...(language ? { languageId: language.id } : {}), ...(sources.dataModel ? { dataModel: sources.dataModel } : {}) });
+        // The importer chooses the last selected-language snippet. The shared resource
+        // graph chooses the first matching record, so expose that same winner first.
+        const selectedLanguage = norm(language?.id ?? portalField(imported.website, 'defaultlanguage'));
+        const chosenSnippets = new Map();
+        for (const record of imported.records.filter((row) => row.kind === 'contentsnippet' && Number(portalField(row, 'statecode', 0)) !== 1).sort((a, b) => Number(norm(portalField(a, 'contentsnippetlanguageid')) === selectedLanguage) - Number(norm(portalField(b, 'contentsnippetlanguageid')) === selectedLanguage))) chosenSnippets.set(record.name?.toLowerCase(), record);
+        const portal = { ...imported, records: [...chosenSnippets.values(), ...imported.records.filter((row) => row.kind !== 'contentsnippet')] };
+        const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { portal, lcid, order: sources.order }) : {};
+        const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
+        return { portal, metadata, codeCatalogue };
+      })());
+      return variants.get(key);
+    };
+    const initial = await variant();
+    const select = async (route) => {
+      const pathname = String(route ?? '/').split(/[?#]/)[0];
+      const prefix = pathname.split('/')[1];
+      const direct = initial.portal.pages.some((page) => normalizePortalPath(page.url) === normalizePortalPath(pathname));
+      const language = !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
+      return { ...(language ? await variant(language) : initial), language, route: language ? pathname.slice(prefix.length + 1) || '/' : pathname, requestPath: pathname };
+    };
+    return { sources, select };
   })().catch((error) => { loading = null; throw error; });
   return {
     invalidate() { loading = null; },
     async enrich(report, rendered = {}) {
-      const { sources, portal, metadata, codeCatalogue } = await load();
+      const { sources, select } = await load();
+      const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
       return enrichInspection(report, portal, { metadata, rendered, observed: sources.observed, codeCatalogue });
     },
     async inspect(route, rendered = {}) {
-      const { sources, portal, metadata, codeCatalogue } = await load();
-      const report = inspectPage(portal, route, { solutionMetadata: metadata });
+      const { sources, select } = await load();
+      const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = await select(route);
+      const report = inspectPage(portal, sourceRoute, { solutionMetadata: metadata });
+      report.requestPath = requestPath;
+      if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };
       await enrichInspection(report, portal, { metadata, rendered, live: true, observed: sources.observed, codeCatalogue });
       report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
       return { report, roots: [sources.sourceDir, ...sources.roots], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };

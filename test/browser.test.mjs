@@ -146,13 +146,24 @@ test('failed CSS evaluation falls back to a bounded document reload', async () =
 test('page-specific changes refresh language variants while preserving unrelated tabs', async () => {
   const about = page(`${origin}/en-US/about-us/`);
   const home = page(origin);
-  const s = { ...session, model: { webFiles: [], inlineSources: [{ file: 'about.js', kind: 'page-js', pageUrl: '/about-us' }] } };
+  const s = { ...session, model: { webFiles: [], languageCodes: new Set(['en-us']), inlineSources: [{ file: 'about.js', kind: 'page-js', pageUrl: '/about-us' }] } };
   const outcomes = new Map();
   assert.equal(await refreshPages({ pages: () => [home, about] }, s, ['about.js'], { outcomes }), 'reload');
   assert.deepEqual([home.reloads, about.reloads], [0, 1]);
   assert.equal(outcomes.get(home).how, 'skipped');
   assert.deepEqual(outcomes.get(home).files, []);
   assert.equal(await refreshPages({ pages: () => [home] }, s, ['about.js']), 'skipped');
+});
+
+test('refresh keeps native short routes distinct from home and exported language variants', async () => {
+  const home = page(`${origin}/`), native = page(`${origin}/it`), localized = page(`${origin}/fr-FR/it`), unknown = page(`${origin}/zz-ZZ/`);
+  const model = { webFiles: [], languageCodes: new Set(['fr-fr']), pagePaths: new Set(['/', '/it', '/ui']), inlineSources: [{ file: 'it.js', kind: 'page-js', pageUrl: '/it' }, { file: 'home.js', kind: 'page-js', pageUrl: '/' }] };
+  const s = { ...session, model };
+  const tabs = { pages: () => [home, native, localized, unknown] };
+  await refreshPages(tabs, s, ['it.js']);
+  assert.deepEqual([home.reloads, native.reloads, localized.reloads, unknown.reloads], [0, 1, 1, 0]);
+  await refreshPages(tabs, s, ['home.js']);
+  assert.deepEqual([home.reloads, native.reloads, localized.reloads, unknown.reloads], [1, 1, 1, 0]);
 });
 
 test('failed document GETs are left pending and online mode does not change page styles', async () => {

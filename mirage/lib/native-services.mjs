@@ -692,7 +692,11 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
       Number(settings?.PageSize ?? cell.recordsPerPage ?? 0) ||
       Number(portalField(portal.settings ?? {}, "Grid/PageSize", 0)) ||
       10,
-    search: { enabled: false },
+    search: {
+      enabled: cell.searchEnabled === true,
+      placeholder: 'Search',
+      tooltip: 'To search on partial text, use the asterisk (*) wildcard character.',
+    },
   };
 }
 

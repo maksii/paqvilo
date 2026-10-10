@@ -209,6 +209,28 @@ test("rich text controls resolve their per-control managed configuration from sy
     configUrl: "/WebResources/custom-rte.json",
   });
 });
+test('native PCF bindings preserve desktop selection, static values and sibling form factors from exported FormXml', async t => {
+  const customForm = form('Profile')
+    .replace('datafieldname="fullname" disabled="false"', 'datafieldname="fullname" disabled="false" uniqueid="{pcf-control}"')
+    .replace('</tabs>', '</tabs><controlDescriptions><controlDescription forControl="{pcf-control}"><customControl id="{4273edbd-ac1d-40d3-9fb2-095c621b552d}"><parameters><datafieldname>fullname</datafieldname></parameters></customControl><customControl name="tst_Synthetic.Editor" formFactor="0"><parameters><value type="SingleLine.Text">fullname</value><caption static="true" type="SingleLine.Text">Exported caption</caption><rows><complex/></rows></parameters></customControl><customControl name="tst_Synthetic.TabletEditor" formFactor="1"><parameters><value>fullname</value></parameters></customControl></controlDescription></controlDescriptions>');
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/{form-id}.xml': customForm });
+  const result = await importSolutionMetadata(root, { portal: portal() });
+  const field = result.componentSchemas['basic-form'].fields[0];
+  assert.equal(field.codeComponent.name, 'tst_Synthetic.Editor');
+  assert.equal(field.codeComponent.formFactor, '0');
+  assert.equal(field.codeComponent.controlId, 'pcf-control');
+  assert.equal(field.codeComponent.sourceFile, path.join(root, 'Entities/Contact/FormXml/main/{form-id}.xml'));
+  assert.deepEqual(field.codeComponent.parameters.value, { kind: 'binding', column: 'fullname', type: 'SingleLine.Text' });
+  assert.deepEqual(field.codeComponent.parameters.caption, { kind: 'static', value: 'Exported caption', type: 'SingleLine.Text' });
+  assert.equal(field.codeComponent.parameters.rows.kind, 'unresolved');
+  assert.deepEqual(field.codeComponent.boundAttributes, ['fullname']);
+  assert.deepEqual(field.codeComponents.map(component => component.name), ['tst_Synthetic.Editor', 'tst_Synthetic.TabletEditor']);
+  const mobileOnly = customForm.replace('formFactor="0"', 'formFactor="2"');
+  await fs.writeFile(path.join(root, 'Entities/Contact/FormXml/main/{form-id}.xml'), mobileOnly);
+  const second = await importSolutionMetadata(root, { portal: portal() });
+  assert.equal(second.componentSchemas['basic-form'].fields[0].codeComponent, undefined);
+  assert.equal(second.componentSchemas['basic-form'].fields[0].codeComponents.length, 2);
+});
 
 test("metadata-only save attributes and Web API column views import their actual table definitions", async (t) => {
   const contactEntity = entity.replace(
@@ -311,7 +333,7 @@ test("imports actual unpacked solution shapes and maps portal form tab and saved
 test("quick form bindings and subgrid metadata remain separate from editable payload fields", async (t) => {
   const xml = form("Name").replace(
     "</row>",
-    '<cell><control id="CustomerDetails" datafieldname="fullname"><parameters><QuickForms>&lt;QuickFormIds&gt;&lt;QuickFormId entityname="account"&gt;quick-form&lt;/QuickFormId&gt;&lt;/QuickFormIds&gt;</QuickForms></parameters></control></cell><cell><control id="Children" indicationOfSubgrid="true"><parameters><TargetEntityType>contact</TargetEntityType><RelationshipName>contact_children</RelationshipName><ViewId>view-id</ViewId></parameters></control></cell></row>',
+    '<cell><control id="CustomerDetails" datafieldname="fullname"><parameters><QuickForms>&lt;QuickFormIds&gt;&lt;QuickFormId entityname="account"&gt;quick-form&lt;/QuickFormId&gt;&lt;/QuickFormIds&gt;</QuickForms></parameters></control></cell><cell><control id="Children" indicationOfSubgrid="true"><parameters><TargetEntityType>contact</TargetEntityType><RelationshipName>contact_children</RelationshipName><ViewId>view-id</ViewId><EnableQuickFind>true</EnableQuickFind><RecordsPerPage>4</RecordsPerPage></parameters></control></cell></row>',
   );
   const root = await fixture(t, {
     "Solution/Entities/Contact/FormXml/main/{form-id}.xml": xml,
@@ -330,6 +352,8 @@ test("quick form bindings and subgrid metadata remain separate from editable pay
   assert.equal(cells[1].schema.fields[0].label, "Quick name");
   assert.equal(cells[2].type, "subgrid");
   assert.equal(cells[2].relationship, "contact_children");
+  assert.equal(cells[2].searchEnabled, true);
+  assert.equal(cells[2].recordsPerPage, 4);
   assert.match(cells[2].fetchXml, /<entity name="contact">/);
 });
 test("explicit last root wins with recorded source layer conflict and no deployed inference", async (t) => {

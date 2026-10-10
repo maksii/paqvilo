@@ -35,9 +35,9 @@ export class ExampleAccountFields implements ComponentFramework.StandardControl<
       const legend=document.createElement("legend");legend.textContent=group;section.appendChild(legend);
       const grid=document.createElement("div");grid.className="demo-form-grid";section.appendChild(grid);this.root.appendChild(section);
       for(const [name,label,type,editor] of fields.filter(field=>field[4]===group)){
-        const host=document.createElement("div");host.className="demo-field"+(editor?" demo-pcf-field":"")+(type==="textarea"?" wide":"");host.dataset.field=name;grid.appendChild(host);
+        const host=document.createElement("div");host.className="demo-field"+(type==="lookup"?" demo-pcf-lookup":"")+(editor?" demo-pcf-field":"")+(type==="textarea"?" wide":"");host.dataset.field=name;grid.appendChild(host);
         const caption=document.createElement("label");caption.htmlFor="pcf-"+name;caption.textContent=label+(name==="name"?" *":"");host.appendChild(caption);
-        const detail=document.createElement("span");detail.className="demo-field-type";detail.textContent=editor?"PCF · "+editor:type==="lookup"?"Lookup":"Text";host.appendChild(detail);
+        const detail=document.createElement("span");detail.className="demo-field-type";detail.textContent=editor?"PCF · "+editor:type==="lookup"?"PCF lookup · search and paging":"Text";host.appendChild(detail);
         if(editor){
           const target=document.createElement("div");host.appendChild(target);
           const child=new editors[editor]() as Editor;
@@ -68,7 +68,7 @@ export class ExampleAccountFields implements ComponentFramework.StandardControl<
   }
   public updateView(): void { /* The Web API controller owns record loading and read-only state. */ }
   public getOutputs(): IOutputs {
-    const record: Record<string,string|boolean>={};for(const input of Array.from(this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>("input,select,textarea")))record[input.name]=input instanceof HTMLInputElement&&input.type==="checkbox"?input.checked:input.value;
+    const record: Record<string,string|boolean>={};for(const input of Array.from(this.root.querySelectorAll<HTMLInputElement|HTMLSelectElement|HTMLTextAreaElement>("input[name],select[name],textarea[name]")))record[input.name]=input instanceof HTMLInputElement&&input.type==="checkbox"?input.checked:input.value;
     this.lastOutput=JSON.stringify(record);return {controlValue:this.lastOutput};
   }
   public destroy(): void {for(const child of this.children)child.destroy();this.children=[];this.root.replaceChildren();}

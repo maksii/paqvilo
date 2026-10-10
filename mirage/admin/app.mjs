@@ -16,6 +16,7 @@ const views = [
   ["records", "Data records", "▤"],
   ["portal", "Portal configuration", "✎"],
   ["endpoints", "Endpoints", "⇄"],
+  ["operations", "Server logic & flows", ""],
   ["mappings", "Entity mappings", "◇"],
   ["plugins", "Plugins & presets", "⌘"],
   ["access", "Identity & permissions", "♙"],
@@ -753,6 +754,17 @@ function records() {
             })
             .join("")}</tbody></table></div>`)
   );
+}
+
+function operations() {
+  const items = config().operations ?? [];
+  return heading('Server logic & flows', 'Discovered from the selected portal and solution exports. Responses and execution choices stay in local simulator state.') +
+    '<div class="notice section-gap">Supported Request/Response flows run locally. Other operations start as explicit placeholders. Choose a mock response, a trusted project handler, or opt in to executing the exported server code against local data. External connectors are never contacted by this adapter.</div>' +
+    (items.length ? items.map((item, index) => {
+      const value = item.configuration ?? { mode: item.mode, status: 200, body: {} };
+      const disabled = !item.configurable ? ' disabled' : '';
+      return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge(item.kind)}${badge(item.mode)}</div><p class="muted">${item.path ? escape(item.path) : 'No exported portal consumer. Add a consumer with its web-role grants before invoking this workflow.'}</p>${item.sourceFile ? `<p class="field-help">Source: ${escape(item.sourceFile)}</p>` : '<p class="field-help">No executable definition in the selected sources.</p>'}${item.contract ? lazyJson('Input schema and exported actions', item.contract) : ''}<form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid"><div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${[['placeholder','Placeholder (501)'],['mock','Configured response'],['exported','Execute exported definition'],['handler','Trusted project handler']].map(([mode,label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${mode === 'handler' && !item.registered || mode === 'exported' && !item.definitionAvailable ? ' disabled' : ''}>${label}</option>`).join('')}</select></div><div><label for="operation-status-${index}">Mock response status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="field-help">Server logic uses its native success envelope; status 400 or above simulates failure.</p></div><div><label for="operation-body-${index}">Mock response body (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(Object.hasOwn(value, 'body') ? value.body : {}))}</textarea></div><div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div></form><p class="field-help">Exported web-role grants still apply. A mock response does not test the flow's business logic or connector behavior.</p></section>`;
+    }).join('') : empty('No exported operations', 'Include server logic, cloud-flow consumers or unpacked solution Workflows in the selected sources.'));
 }
 
 const definitions = {
@@ -1512,7 +1524,7 @@ function render() {
     .join("");
   $("#breadcrumb").textContent =
     views.find(([id]) => id === activeView)?.[1] || "Overview";
-  const renderers = { overview, records, portal, access, scenarios, environment, connection, runtime: runtimeState, evidence, audit, logs };
+  const renderers = { overview, records, portal, operations, access, scenarios, environment, connection, runtime: runtimeState, evidence, audit, logs };
   $("#content").innerHTML = renderers[activeView]
     ? renderers[activeView]()
     : configurationView(activeView);
@@ -1647,6 +1659,15 @@ async function saveConfig(patch, { form } = {}) {
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("button");
   if (!target) return;
+  if (target.dataset.operationReset) {
+    try {
+      await request(`/operations/${encodeURIComponent(target.dataset.operationReset)}`, { method: 'DELETE' });
+      drafts.clear();
+      await refresh();
+      notify('Source operation default restored.');
+    } catch (error) { notify(error.message, true); }
+    return;
+  }
   if (target.dataset.inspect !== undefined) {
     const value = lazyValues.get(target.dataset.inspect);
     $("#inspection-json").textContent = json(value);
@@ -2246,14 +2267,20 @@ document.addEventListener("submit", async (event) => {
       "create-persona-form",
       "enrichment-form",
       "session-override-form",
-    ].includes(event.target.id)
+    ].includes(event.target.id) && !event.target.matches('form[data-operation-key]')
   )
     return;
   event.preventDefault();
   const button = event.submitter;
   button.disabled = true;
   try {
-    if (event.target.id === "session-override-form") {
+    if (event.target.matches('form[data-operation-key]')) {
+      const form = event.target;
+      await request(`/operations/${encodeURIComponent(form.dataset.operationKey)}`, { method: 'PATCH', body: JSON.stringify({ mode: form.elements.mode.value, status: Number(form.elements.status.value), body: JSON.parse(form.elements.body.value) }) });
+      drafts.delete(form.id);
+      await refresh();
+      notify('Local operation saved.');
+    } else if (event.target.id === "session-override-form") {
       const roles = $("#override-roles")
         .value.split(",")
         .map((role) => role.trim())
