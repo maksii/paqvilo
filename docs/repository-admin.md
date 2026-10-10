@@ -36,7 +36,7 @@ Pages uses GitHub Actions and the `github-pages` environment, restricted to `mai
 
 ## Before promotion
 
-1. Run `npm run setup` in each contributor checkout. This activates local hooks; Git cannot distribute local configuration automatically. Run `npm run validate` and `npm run release:smoke` with a supported browser installed.
+1. Run `npm run setup:repo` in each contributor checkout. This activates local hooks; Git cannot distribute local configuration automatically. Run `npm run validate` and `npm run release:smoke` with a supported browser installed.
 2. Confirm main and the readiness PR are green across CI, security and Pages; review/dismiss CodeQL alerts only with a documented reason. Do not treat a successful scan job alone as absence of findings.
 3. Confirm npm trusted publishing and account 2FA in npm settings. Run Release manually with an existing tag and `dry_run=true`; create a new matching version tag only when an actual release is intended.
 4. Open the deployed marketing site on mobile and desktop; verify demo commands and coverage against the release. The npm README/homepage update reaches npm on the next version publish.

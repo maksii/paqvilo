@@ -4,15 +4,15 @@ Help make the Power Pages feedback loop clearer and more reliable. Reproducible 
 
 ## Set up a contribution
 
-Install Node.js 22/24, Git and Edge/Chrome, then clone the repository and run `npm run setup`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
+Install Node.js 22/24, Git and Edge/Chrome, then clone the repository and run `npm run setup:repo`. Linux CI installs matching Chromium with `node node_modules/playwright-core/cli.js install --with-deps chromium` and selects it using `PAQVILO_BROWSER=chromium`.
 
 ```sh
 git clone https://github.com/maksii/paqvilo.git
 cd paqvilo
-npm run setup
+npm run setup:repo
 ```
 
-Setup installs repository-local Git hooks. If you use `npm ci --ignore-scripts` instead, also install Mirage dependencies and run `npm run hooks:install`. Hooks are tracked in `.githooks/` and configured only in this checkout. No consumer package-install lifecycle changes Git configuration.
+Repository setup installs local Git hooks. If you use `npm ci --ignore-scripts` instead, also install Mirage dependencies and run `npm run hooks:install`. Hooks are tracked in `.githooks/` and configured only in this checkout. `npm run setup` retains the distribution dependency bootstrap; `setup:repo` adds contributor configuration. No consumer package-install lifecycle changes Git configuration.
 
 Use [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/), for example `fix(lense): preserve language identity` or `feat(mirage)!: change session contract`. Separate any body/footer from the subject with a blank line; explain breaking changes with `!` or a `BREAKING CHANGE:` footer. PR titles use the same convention because merges are squashed.
 

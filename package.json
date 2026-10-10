@@ -50,7 +50,8 @@
     "paqvilo": "bin/paqvilo.mjs"
   },
   "scripts": {
-    "setup": "node scripts/ensure-dependencies.mjs && npm run hooks:install",
+    "setup": "node scripts/ensure-dependencies.mjs",
+    "setup:repo": "npm run setup && npm run hooks:install",
     "hooks:install": "node scripts/git-hooks.mjs install",
     "hooks:check": "node scripts/git-hooks.mjs pre-commit",
     "check:contribution": "node scripts/conventional-commit.mjs --title",

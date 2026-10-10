@@ -22,6 +22,7 @@ function install() {
 
 // Export the index instead of testing unstaged edits. Never stash or mutate contributor files.
 function preCommit() {
+  const stagedTree = git(['write-tree']);
   const parent = path.join(root, '.paqvilo', 'hooks');
   fs.mkdirSync(parent, { recursive: true });
   const snapshot = fs.mkdtempSync(path.join(parent, 'staged-'));
@@ -41,6 +42,7 @@ function preCommit() {
     console.log('Validating staged sources: syntax, boundary, unit/browser tests and package contents.');
     const result = spawnSync(process.execPath, [npmCli, 'run', 'validate'], { cwd: snapshot, env, stdio: 'inherit', windowsHide: true });
     if (result.status !== 0) throw new Error(result.error?.message ?? 'Staged validation failed. Commit stopped.');
+    if (git(['write-tree']) !== stagedTree) throw new Error('The staged index changed during validation. Review the index and commit again.');
   } finally {
     // Only remove the owned snapshot; rm does not follow the node_modules junctions.
     fs.rmSync(snapshot, { recursive: true, force: true });
