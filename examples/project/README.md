@@ -26,13 +26,11 @@ Native customization lives in page HTML, page CSS/JavaScript and basic-form Java
 | Area | Current local coverage |
 |---|---|
 | Web API | Account/contact CRUD, views, lookups, typed fields, notes and attachments |
-| Native | Account list, fields, lookups and Contacts grid with modal actions |
-| PCF | Shared list, contacts and notes; the 14 typed editors require Power Pages |
-| Extended | Exported server-logic and cloud-flow examples; execution requires Power Pages |
+| Native | Account list, fields, lookups, Contacts modal CRUD and native notes with attachments |
+| PCF | Imported standard-control bundle with 14 typed editors; account, contact and notes CRUD |
+| Extended | Registered exported calculations, role-scoped local Dataverse reads and Example Location request/response |
 
-Mirage currently omits the native notes control. The portal directs you to the Web API workspace for local notes and attachments. PCF and Extended pages explain their execution limits without presenting simulated results as real operations.
-
-The demo includes a guarded jQuery web file for native controls. The installed runtime currently reports a missing dependency in the contact-create modal; account saving and contact CRUD still complete. This toolkit issue is recorded separately from the demo's acceptance checks.
+Try the same account in all three approaches. On **Extended**, calculate an estimate, read the account overview and send a location through the imported flow definition. Mirage executes the explicitly registered local operations; it does not call Power Automate or a live Dataverse environment. Unsupported connector calls and flow actions require a project handler. The PCF host covers standard controls; dataset and React hosts require further support.
 
 `portal/` contains the sanitized PAC portal export. `solution/` contains unpacked solution sources. `components/` includes editable PCF projects. `deployment/` includes the importable solution, PAC-cloned project and sample data export. Follow the [deployment instructions](deployment/README.md) to run the same sample in your own Power Pages environment. `metadata/` supplements standard Dataverse metadata omitted from solution exports. `pack/` owns the invented dataset and presets. The default catalogue points only to loopback.
 

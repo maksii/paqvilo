@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
 import { normalizePortalPath, portalField } from "./importer.mjs";
@@ -1392,8 +1393,8 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
 // Local equivalents of the platform bundles (lib/platform-manifest.mjs PLATFORM_BUNDLES):
 // the named sources concatenated in order. Library files keep their own licence headers.
 const BUNDLE_SOURCES = {
-  jquery: new URL("../node_modules/jquery/dist/jquery.min.js", import.meta.url),
-  moment: new URL("../node_modules/moment/min/moment.min.js", import.meta.url),
+  jquery: createRequire(import.meta.url).resolve("jquery/dist/jquery.min.js"),
+  moment: createRequire(import.meta.url).resolve("moment/min/moment.min.js"),
 };
 // default-<lcid>.moment bundle: the site language's moment locale (moment ships "en").
 const MOMENT_LOCALE = "(function(){var m=window.moment;if(m&&typeof m.locale==='function'){m.locale((document.documentElement.getAttribute('lang')||'en').toLowerCase());}})();";
@@ -1418,7 +1419,7 @@ async function bundleSource(source) {
   if (source === "moment-locale") return MOMENT_LOCALE;
   if (source.startsWith("provided:")) return `/* Provided by ${source.slice("provided:".length)}. */`;
   const [file, part] = source.split("#");
-  const text = String(await fs.readFile(fileURLToPath(BUNDLE_SOURCES[file] ?? new URL(`./${file}`, import.meta.url))));
+  const text = String(await fs.readFile(BUNDLE_SOURCES[file] ?? new URL(`./${file}`, import.meta.url)));
   if (!part) return text;
   const sections = text.split(/^\/\/ @part (\w+)$/m);
   const index = sections.indexOf(part, 1);

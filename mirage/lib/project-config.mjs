@@ -57,9 +57,19 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (value.codeComponents != null) {
+    if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents)) throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
+    observed.codeComponents = {};
+    for (const [raw, schema] of Object.entries(value.codeComponents)) {
+      const id = raw.replace(/[{}]/g, '').toLowerCase();
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) || typeof schema !== 'string' || !/^[\w.]+$/.test(schema)) throw new Error(`${label}.codeComponents requires GUID keys and schema names`);
+      if (Object.hasOwn(observed.codeComponents, id)) throw new Error(`${label}.codeComponents has a duplicate component GUID`);
+      observed.codeComponents[id] = schema;
+    }
+  }
   if (value.loginPath != null) {
     const loginPath = String(value.loginPath).trim();
     if (!/^\/(?!\/)[^?#\s]*$/.test(loginPath))

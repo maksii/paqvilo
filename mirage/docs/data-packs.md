@@ -37,3 +37,22 @@ paqvilo mirage data generate --pack customer-demo --pack-module ./pack/pack.mjs 
 `smoke` generates minimal rows; `dev` fills writable columns from metadata. Generated data is deterministic, including IDs and relationship links. Review scaffold summaries, schema violations and dangling lookups. Project generators define their own realistic datasets and counts. See [project-owned tests](../../docs/project-extensions.md) and the [starter](../../examples/project/README.md).
 
 Use repeatable `--count NAME=N` options for pack-defined dataset dimensions, for example `--count customers=5 --count orders=20`. Names and meanings belong to your generator; core passes the validated nonnegative integers as `counts` without assuming business entities.
+
+Register local server operations by their exported names:
+
+```js
+serverLogics: {
+  'sample-estimate': ({ runExportedServerLogic }) => runExportedServerLogic(),
+},
+cloudFlows: {
+  'Sample request': ({ runExportedCloudFlow }) => runExportedCloudFlow(),
+},
+```
+
+These optional pack properties are explicit trust decisions. Mirage checks the exported operation and its web roles before calling a handler. HTTP writes require the portal verification token. Unregistered operations retain their unsupported response; server logic is never forwarded to a live site.
+
+`runExportedServerLogic()` runs trusted exported JavaScript in a separate worker with a time and memory limit. It supplies invocation context, site settings, user information and permission-scoped **local** Dataverse reads. The adapter supports `RetrieveRecord` and `RetrieveMultipleRecords`; connector writes and external HTTP/flow calls require a project handler. The worker is a resource boundary, not a security sandbox for untrusted code. Liquid `serverlogic` uses the same registration and returns `success`, `status_code`, `data` and `raw_result`.
+
+`runExportedCloudFlow()` reads the selected solution's workflow by exported process ID. It supports one Power Pages Request trigger and one Response action, including `@triggerBody()?['field']`. Other actions and expressions fail explicitly. A custom handler can model those operations using its `input`, local `store` and `identity`; keep its behavior and acceptance tests in the project.
+
+Standard PCF controls use the selected solution's manifests and declared resources. Configure `observed.codeComponents` as a component GUID-to-schema-name map with `observed.evidence` explaining the verified binding. The host provides lifecycle calls, parameters, output events (`paqvilo:pcf-output`), basic context and permission-scoped Web API operations. Dataset and React hosts, framework-specific services and undeclared resources remain unsupported.

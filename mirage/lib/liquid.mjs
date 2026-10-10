@@ -558,8 +558,8 @@ class ManifestTag extends RawBlock {
 /**
  * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (Learn,
  * liquid-objects "serverlogic": the output object has success, status_code, data and raw_result).
- * Server logic never runs locally (lib/server-logic.mjs): the output receives an unsuccessful
- * result with status code 501 and a SERVER_LOGIC_UNSUPPORTED diagnostic names the call.
+ * Registered operations use the host's local adapter; unregistered calls receive a 501
+ * result and a SERVER_LOGIC_UNSUPPORTED diagnostic.
  */
 class ServerLogicTag extends Tag {
   parse() {
@@ -570,7 +570,14 @@ class ServerLogicTag extends Tag {
     const name = await value("name");
     const operation = await value("operation");
     const output = this.attributes.get("output")?.value?.trim();
-    context.diagnostic("SERVER_LOGIC_UNSUPPORTED", `Server logic "${name}" (operation "${operation}") is not run by the Mirage; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
+    if (context.engine.portalHost.serverLogic) {
+      const result = await context.engine.portalHost.serverLogic({ name, operation, input: await value('input'), context: context.snapshot() });
+      if (result) {
+        if (output) context.assignGlobal(output, result);
+        return;
+      }
+    }
+    context.diagnostic("SERVER_LOGIC_UNSUPPORTED", `Server logic "${name}" (operation "${operation}") has no active local handler; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
     if (output) context.assignGlobal(output, { success: false, status_code: 501, data: null, raw_result: "" });
   }
 }
@@ -588,6 +595,10 @@ function componentTag(tag) {
     }
     async render(context, out) {
       const args = await evaluateAttributes(this.markup, context);
+      if (tag === 'codecomponent' && args.name == null) {
+        const literal = tagAttributes(this.markup).get('name')?.value;
+        if (GUID_KEY.test(literal ?? '')) args.name = literal.replace(/[{}]/g, '').toLowerCase();
+      }
       if (["entityform", "webform", "entitylist"].includes(tag) && args.name == null && args.id == null && args.key == null) return;
       const host = context.engine.portalHost;
       if (!host.renderComponent) {
@@ -830,6 +841,7 @@ export function createPortalRenderer(portal, options = {}) {
   };
   const portalHost = {
     portal,
+    get serverLogic() { return options.serverLogic; },
     get fetchXml() {
       return options.fetchXml;
     },

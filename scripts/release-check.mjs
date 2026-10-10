@@ -15,6 +15,8 @@ export const REQUIRED_RELEASE_FILES = [
   'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'lense/commands/demo.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
   'mirage/cli.mjs', 'mirage/server.mjs', 'mirage/lib/importer.mjs',
   'mirage/lib/project-config.mjs', 'mirage/admin/index.html',
+  'lense/source-inspection.mjs', 'mirage/lib/code-components.mjs', 'mirage/lib/code-components-client.js',
+  'mirage/lib/exported-operations.mjs', 'mirage/lib/exported-operation-worker.mjs',
   'mirage/lib/bootstrap-plugins-compat.js', 'mirage/lib/datetimepicker-compat.js',
   'mirage/lib/jqueryui-dialog-compat.js', 'mirage/lib/date-format-compat.js',
   'mirage/lib/footer-spacing-compat.js',

@@ -1,9 +1,10 @@
-import test from 'node:test';import assert from 'node:assert/strict';import {fileURLToPath} from 'node:url';
+import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import {fileURLToPath} from 'node:url';
 import {createSimulator} from 'paqvilo/mirage/server.mjs';import {DataStore} from 'paqvilo/mirage/lib/data.mjs';import {discoverPacks,presetLibrary} from 'paqvilo/mirage/lib/preset-registry.mjs';import {signInHeaders} from 'paqvilo/mirage/testing/session.mjs';
 const file=name=>fileURLToPath(new URL('../'+name,import.meta.url));
 test('account demo renders source metadata, enforces sign-in and supports related CRUD',async t=>{
  const module=file('pack/pack.mjs'),packs=await discoverPacks({explicit:[{module}]});const store=new DataStore();await store.applyPreset('example-demo',{generatedPresets:presetLibrary({packs})});
- const sim=await createSimulator({sourceDir:file('portal'),solutionRoots:[file('metadata'),file('code-solution'),file('solution')],solutionOrder:'explicit',dataPacks:[{module}],initial:store.snapshot(),port:0,watch:false});t.after(()=>sim.close());
+ const component=/codecomponent name:([0-9a-f-]{36})/.exec(await fs.readFile(file('portal/web-pages/pcf-account/PCF-account.webpage.copy.html'),'utf8'))[1];
+ const sim=await createSimulator({sourceDir:file('portal'),solutionRoots:[file('metadata'),file('code-solution'),file('solution')],solutionOrder:'explicit',observed:{codeComponents:{[component]:'exa_ExamplePages.ExampleAccountFields'},evidence:'Sample PCF tag and solution manifest'},dataPacks:[{module}],initial:store.snapshot(),port:0,watch:false});t.after(()=>sim.close());
  await sim.applyPreset('example-demo');
  const contact='a4300000-0000-4000-8000-000000002001',account='a4300000-0000-4000-8000-000000001001';const signed=signInHeaders(sim,contact);
  const read=async route=>{const r=await fetch(sim.url+route,{headers:signed});assert.equal(r.status,200,route+': '+await r.clone().text());return r;};
@@ -11,6 +12,13 @@ test('account demo renders source metadata, enforces sign-in and supports relate
  const native=await(await read('/approach/out-of-the-box/account/?id='+account+'&mode=edit')).text();assert.ok(native.includes('entity-subgrid-data'),'native Contacts grid must be bound to its service');assert.ok(native.includes('Service score'));
  for(const route of ['/approach/web-api/','/approach/pcf/','/extended/'])await read(route);
  const write=async(set,method,body,headers=signed)=>fetch(sim.url+'/_api/'+set,{method,headers:{...headers,'Content-Type':'application/json',__RequestVerificationToken:sim.state().csrf},body:body===undefined?undefined:JSON.stringify(body)});
+ const pcf=await(await read('/approach/pcf/account/?id='+account)).text();assert.match(pcf,/data-pcf-schema="exa_ExamplePages.ExampleAccountFields"/);
+ const extended=await(await read('/extended/')).text();assert.match(extended,/388\.8/);
+ const estimate=await write('serverlogics/paqvilo-estimate','POST',{units:3,price:120,discount:10,tax:20});assert.equal(estimate.status,200);assert.equal(JSON.parse((await estimate.json()).data).total,388.8);
+ const overview=await(await read('/_api/serverlogics/paqvilo-account-summary')).json();assert.equal(JSON.parse(overview.data).accountsRead,12);
+ const flow=sim.portal.cloudFlows?.[0];
+ const flowPath=flow?.path??'/_api/cloudflow/v1.0/trigger/b4700000-0000-4000-8000-ce1f8f984154';
+ const flowReply=await fetch(sim.url+flowPath,{method:'POST',headers:{...signed,'Content-Type':'application/x-www-form-urlencoded',__RequestVerificationToken:sim.state().csrf},body:new URLSearchParams({eventData:JSON.stringify({Location:'Amsterdam'})})});assert.equal(flowReply.status,200);assert.equal((await flowReply.json()).Location,'Amsterdam');
  assert.equal((await write('accounts','POST',{name:'Anonymous attempt'},{})).status,403);
  const reader=signInHeaders(sim,'a4300000-0000-4000-8000-000000002002');
  const readerPage=await(await fetch(sim.url+'/approach/web-api/',{headers:reader})).text();assert.match(readerPage,/data-demo-can-write="false"/);assert.match(readerPage,/Readers can view accounts/);

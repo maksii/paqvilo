@@ -146,6 +146,11 @@ export function validatePack(pack, source = "data pack") {
   const operators = dataProperty(pack, "expressionOperators")?.value;
   if (operators !== undefined && (!operators || typeof operators !== "object" || Array.isArray(operators) || Object.values(operators).some((value) => typeof value !== "function")))
     fail("expressionOperators must be an object of functions");
+  for (const kind of ['serverLogics', 'cloudFlows']) {
+    const entries = dataProperty(pack, kind)?.value;
+    if (entries !== undefined && (!entries || typeof entries !== 'object' || Array.isArray(entries) || Object.entries(entries).some(([name, handler]) => !name.trim() || typeof handler !== 'function')))
+      fail(`${kind} must map exported names to functions`);
+  }
   try {
     validateEndpoints(pack.id, dataProperty(pack, "endpoints")?.value);
   } catch (error) {

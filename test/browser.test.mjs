@@ -7,8 +7,19 @@ import { EventEmitter } from 'node:events';
 import { chromium } from 'playwright-core';
 import { openBrowser, refreshPages, keepSessionCookies, safeDownloadName, browserProfileDir } from '../lense/browser.mjs';
 import { refreshUrl } from '../lense/navigation.mjs';
+import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-profile.mjs';
 
 const origin = 'https://portal.example.com';
+
+test('Edge normal storage fails early with actionable attachment options without reading profile data', () => {
+  assert.ok(defaultEdgeDataDirs().length >= 3);
+  for (const userDataDir of defaultEdgeDataDirs()) {
+    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 5' }), /--profile work.*--cdp-url/);
+  }
+  assert.doesNotThrow(() => validateBrowserProfile({ kind: 'attached', channel: 'msedge' }));
+  assert.doesNotThrow(() => validateBrowserProfile({ kind: 'named', channel: 'msedge' }));
+  assert.deepEqual(defaultEdgeDataDirs({ platform: 'linux', home: '/home/test', env: { XDG_CONFIG_HOME: '/custom' } }), ['microsoft-edge', 'microsoft-edge-beta', 'microsoft-edge-dev'].map(name => path.join('/custom', name)));
+});
 
 test('external browser storage stays in the selected child without exporting session credentials', async (t) => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'pp-external-browser-'));

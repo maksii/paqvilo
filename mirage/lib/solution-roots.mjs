@@ -78,13 +78,13 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
   return { roots: await discoverSolutionRoots(sourceDir, { cacheFile }), order: "derived", source: "discovered" };
 }
 
-const RELEVANT_TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions)$/i;
+const RELEVANT_TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|controls|workflows)$/i;
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
 /**
- * chokidar `ignored` predicate limiting solution watching to table metadata:
- * inside a known solution tree only Entities, Other, OptionSets and
- * environmentvariabledefinitions (XML/JSON files); elsewhere under a root only
+ * chokidar `ignored` predicate limiting solution watching to metadata and declared runtime sources:
+ * inside a known solution tree Entities, Other, OptionSets, environment variables,
+ * Controls and Workflows; elsewhere under a root only
  * candidate solution directories and their Other/Solution.xml (new layers).
  */
 export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclude = [] }) {
@@ -130,7 +130,7 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
       if (skipped(full, tree)) return true;
       const segments = full.slice(tree.length + 1).split(sep);
       if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
-      return Boolean(stats?.isFile()) && !/\.(?:xml|json)$/i.test(full);
+      return Boolean(stats?.isFile()) && !(/^(?:controls)$/i.test(segments[0]) ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i : /\.(?:xml|json)$/i).test(full);
     }
     const root = rootKeys.find((dir) => within(full, dir));
     if (!root) return false;

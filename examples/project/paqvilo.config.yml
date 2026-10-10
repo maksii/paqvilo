@@ -14,3 +14,7 @@ sites:
       dataPacks:
         - {id: example, module: ./pack/pack.mjs}
       preset: example-demo
+      observed:
+        codeComponents:
+          b4700000-0000-4000-8000-85a64d82e04f: exa_ExamplePages.ExampleAccountFields
+        evidence: Exported PCF page tag mapped to the ExampleAccountFields manifest; deployment helper refreshes the environment-specific GUID.

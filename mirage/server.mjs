@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
+import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AuditLog } from "./lib/audit-log.mjs";
 import chokidar from "chokidar";
@@ -26,6 +27,8 @@ import { LiveBridge, normalizeLiveRecord } from "./lib/live.mjs";
 import { AssetCache } from "./lib/asset-cache.mjs";
 import { capturePortalShell } from "./lib/shell-capture.mjs";
 import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs";
+import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
+import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
 import { mergeShellProfile } from "./lib/shell-profile.mjs";
 import { captureRichTextAssets } from "./lib/richtext-assets.mjs";
 import { captureObservedSnippetComposition } from "./lib/observed-snippet-composition.mjs";
@@ -264,12 +267,16 @@ export async function createSimulator({
   const solutionCacheFile = stateFile
     ? path.join(path.dirname(path.resolve(stateFile)), "cache", "solution-sources.json")
     : null;
+  let operationWorkflows = new Map();
+  let codeComponents = { controls: new Map(), assets: new Map(), diagnostics: [] };
   async function loadSolutions() {
     if (!solutionRoots.length) return;
     const started = performance.now();
     const cache = await SolutionFileCache.open(solutionCacheFile);
     const scan = await scanSolutionSources(solutionRoots, { cache, order: solutionOrder });
     const schema = buildSolutionSchema(scan);
+    operationWorkflows = await importOperationWorkflows(scan.layers);
+    codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
       importSolutionMetadata(solutionRoots, { portal, scan, schema }),
       importSolutionData(solutionRoots, { scan, schema }),
@@ -283,6 +290,7 @@ export async function createSimulator({
   const projectPacks = project?.dataPacks?.length || dataPacks.length ? await discoverPacks({ project, portal: sourcePortal, explicit: dataPacks }) : undefined;
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
+  const registeredOperations = operationHandlers(projectPacks ?? []);
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
   let generatedPresets = initialState(portal, bootstrapOptions()).presets;
   const runtimeFingerprint = implementationFingerprint;
@@ -292,6 +300,8 @@ export async function createSimulator({
       .update(await (digest ?? sourceDirectoryDigest(sourceDir)))
       .update(solutionMetadata.fingerprint ?? "")
       .update(solutionData.fingerprint ?? JSON.stringify(solutionData))
+      .update(JSON.stringify([...operationWorkflows]))
+      .update(JSON.stringify([...codeComponents.controls].map(([name, control]) => [name, control.fingerprint])))
       .digest("hex");
   let fingerprint = await calculateFingerprint(sourceDigest);
   let appliedPermissionModel;
@@ -735,15 +745,35 @@ export async function createSimulator({
       );
     return { [mapping.idColumn]: recordId };
   };
+  const executeServerLogic = async ({ name, method = 'GET', operation, body = '', input = '', query = {} }) => {
+    const record = portal.serverLogics.find(record => record.name.toLowerCase() === String(name).toLowerCase());
+    const handler = registeredOperations.serverLogics.get(record?.name.toLowerCase());
+    if (!handler || config().mode === 'live') return null;
+    const identity = currentIdentity();
+    assertOperationRole(record, identity);
+    const context = { record, portal, store, identity, method, operation, body, input, query };
+    return String(await handler({ ...context, runExportedServerLogic: () => runExportedServerLogic(context) }));
+  };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
+      serverLogic: async ({ name, operation, input }) => {
+        try {
+          const raw = await executeServerLogic({ name, operation, input });
+          if (raw === null) return null;
+          let data; try { data = JSON.parse(raw); } catch { data = raw; }
+          return { success: true, status_code: 200, data, raw_result: raw };
+        } catch (cause) {
+          recordDiagnostic({ code: cause.code ?? 'SERVER_LOGIC_FAILED', name, message: cause.message });
+          return { success: false, status_code: cause.status ?? 500, data: null, raw_result: '' };
+        }
+      },
       observationOrigin: live.origin,
       sourceDependencies,
       fetchXml: async (xml) => readProvider.fetchXml(xml, currentIdentity()),
       entity: async (entity, id) =>
         readProvider.get(entity, id, currentIdentity()),
       renderComponent: async (kind, args, context) =>
-        renderComponent(
+        kind === 'codecomponent' ? renderCodeComponent({ name: args?.name ?? args?.id, args, portal, catalog: codeComponents, identity: currentIdentity(), mappings: store.snapshot({ sections: ['mappings'] }).mappings, diagnostic: entry => recordDiagnostic({ ...entry, path: context?.request?.path }) }) : renderComponent(
           kind,
           typeof args === "string"
             ? args
@@ -2590,13 +2620,55 @@ export async function createSimulator({
       }
       return json(res, Number(endpoint.status) || 200, endpoint.body ?? {});
     }
-    // Server logic is imported but never run or forwarded: a documented unsupported answer
-    // (lib/server-logic.mjs). A configured endpoint above can mock it.
+    // Only explicitly registered exported operations run locally. Unregistered calls
+    // retain their unsupported answer; a configured endpoint above can mock it.
+    if (url.pathname === '/__sim-static/pcf-host.js') {
+      if (!['GET', 'HEAD'].includes(req.method)) throw error('PCF host resources require GET or HEAD.', 405);
+      res.writeHead(200, { 'content-type': 'text/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(new URL('./lib/code-components-client.js', import.meta.url)));
+    }
+    if (url.pathname.startsWith('/__sim-static/pcf/')) {
+      if (!['GET', 'HEAD'].includes(req.method)) throw error('PCF resources require GET or HEAD.', 405);
+      const asset = codeComponents.assets.get(url.pathname);
+      if (!asset) throw error('This PCF resource is not declared in a selected manifest.', 404);
+      const real = await fs.realpath(asset.file);
+      if (real !== asset.file || (await fs.stat(real)).size > 8 * 1024 * 1024) throw error('The declared PCF resource changed outside its source boundary.', 404);
+      const type = asset.kind === 'code' ? 'text/javascript; charset=utf-8' : asset.kind === 'css' ? 'text/css; charset=utf-8' : asset.kind === 'resx' ? 'application/xml; charset=utf-8' : 'application/octet-stream';
+      res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
+      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(real));
+    }
     const serverLogic = serverLogicName(url.pathname);
     if (serverLogic !== null) {
+      if (registeredOperations.serverLogics.has(serverLogic.toLowerCase()) && config().mode !== 'live') {
+        try {
+          if (!['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) throw error('This method cannot execute server logic.', 405);
+          if (isWrite(req.method) && req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+          const raw = await executeServerLogic({ name: serverLogic, method: req.method, body: isWrite(req.method) ? (await rawBody(req)).toString('utf8') : '', query: Object.fromEntries(url.searchParams) });
+          if (raw !== null) return json(res, 200, { requestId: randomUUID(), success: true, serverLogicName: serverLogic, data: raw, error: null }, { 'x-sim-route': 'server-logic-local', 'cache-control': 'no-store' });
+        } catch (cause) {
+          recordDiagnostic({ code: cause.code ?? 'SERVER_LOGIC_FAILED', name: serverLogic, path: url.pathname, message: cause.message });
+          return json(res, cause.status ?? 500, { requestId: randomUUID(), success: false, serverLogicName: serverLogic, data: null, error: { code: cause.code ?? 'ServerLogicFailed', message: cause.message } }, { 'x-sim-route': 'server-logic-local', 'cache-control': 'no-store' });
+        }
+      }
       const answer = serverLogicUnsupported(portal, serverLogic, req.method);
       recordDiagnostic({ ...answer.diagnostic, path: url.pathname });
       return json(res, answer.status, answer.body, answer.headers);
+    }
+    const flow = portal.cloudFlows.find(record => record.path && record.path.replace(/\/$/, '').toLowerCase() === url.pathname.replace(/\/$/, '').toLowerCase());
+    const flowHandler = flow && registeredOperations.cloudFlows.get(flow.name.toLowerCase());
+    if (flowHandler && config().mode !== 'live') {
+      if (req.method !== 'POST') throw error('Cloud-flow triggers require POST.', 405);
+      if (req.headers.__requestverificationtoken !== csrf) throw error('Missing portal verification token.', 403);
+      const identity = currentIdentity(); assertOperationRole(flow, identity);
+      const bytes = (await rawBody(req)).toString('utf8');
+      let input;
+      try {
+        const parsed = String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded') ? Object.fromEntries(new URLSearchParams(bytes)) : JSON.parse(bytes || '{}');
+        input = typeof parsed.eventData === 'string' ? JSON.parse(parsed.eventData) : (parsed.eventData ?? parsed);
+      } catch { throw error('Cloud-flow input must be valid JSON.', 400); }
+      const context = { record: flow, workflows: operationWorkflows, input, identity, store, portal };
+      const answer = await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
+      return json(res, answer.status ?? 200, answer.body ?? answer, { 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
     if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
@@ -2798,8 +2870,8 @@ export async function createSimulator({
       );
     }
     const localRuntimeAssets = new Map([
-      ["/__sim-static/vendor/jquery.min.js", new URL("./node_modules/jquery/dist/jquery.min.js", import.meta.url)],
-      ["/__sim-static/vendor/moment.min.js", new URL("./node_modules/moment/min/moment.min.js", import.meta.url)],
+      ["/__sim-static/vendor/jquery.min.js", createRequire(import.meta.url).resolve('jquery/dist/jquery.min.js')],
+      ["/__sim-static/vendor/moment.min.js", createRequire(import.meta.url).resolve('moment/min/moment.min.js')],
       ["/__sim-static/vendor/datetimepicker-compat.js", new URL("./lib/datetimepicker-compat.js", import.meta.url)],
       ["/__sim-static/vendor/bootstrap-plugins-compat.js", new URL("./lib/bootstrap-plugins-compat.js", import.meta.url)],
       ["/__sim-static/vendor/jqueryui-dialog-compat.js", new URL("./lib/jqueryui-dialog-compat.js", import.meta.url)],
@@ -3155,6 +3227,8 @@ export async function createSimulator({
           generatedPresets,
           solutionMetadata,
           solutionData,
+          operationWorkflows,
+          codeComponents,
           fingerprint,
           renderer,
         };
@@ -3195,6 +3269,8 @@ export async function createSimulator({
           store.presetLibrary = generatedPresets;
           solutionMetadata = previous.solutionMetadata;
           solutionData = previous.solutionData;
+          operationWorkflows = previous.operationWorkflows;
+          codeComponents = previous.codeComponents;
           fingerprint = previous.fingerprint;
           renderer = previous.renderer;
           recordDiagnostic({ code: "RELOAD_FAILED", message: err.message });

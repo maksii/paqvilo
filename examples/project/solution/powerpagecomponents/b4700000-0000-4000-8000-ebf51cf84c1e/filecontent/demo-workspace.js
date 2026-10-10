@@ -5,7 +5,6 @@
   const approach = app.dataset.demoWorkspace;
   const canWrite = app.dataset.demoCanWrite === 'true';
   function applyAccess(){if(canWrite)return;app.querySelectorAll('[data-delete-account],[data-delete-contact],[data-delete-note],[data-delete-record],[data-toggle-state],[data-edit-account],[data-create-contact],[data-save-account],a[href*="mode=create"],a[href*="mode=edit"],[data-contact][data-mode=edit],[data-note-form]').forEach(node=>node.hidden=true);}
-  const localPcf = approach === 'pcf' && Boolean(document.querySelector('script[data-paqvilo-mirage-runtime]'));
   const base = '/approach/' + approach + '/';
   const find = selector => app.querySelector(selector);
   const status = find('[data-status]');
@@ -104,7 +103,7 @@
     if(account){await contacts();await notes();}find('[data-save-account]').disabled=!editable;initialForm.dataset.ready='true';initialForm.setAttribute('aria-busy','false');message('');applyAccess();
   }
   async function waitForControls() {
-    if(approach!=='pcf'||localPcf)return;
+    if(approach!=='pcf')return;
     for(let attempt=0;attempt<100;attempt++){if(accountFields.every(name=>field(name)))break;await new Promise(resolve=>setTimeout(resolve,100));}
     for(const name of accountFields){const input=field(name);if(!input)throw new Error('The PCF control for '+name+' did not load.');input.name=name;input.id='pcf-'+name;const label=find('[data-field="'+name+'"]>label');if(label)label.htmlFor=input.id;}
     const industry=field('industrycode');if(industry?.tagName==='INPUT'){industry.setAttribute('aria-label','Industry');industry.setAttribute('list','demo-industries');}
@@ -127,5 +126,5 @@
   find('[data-confirm-delete]')?.addEventListener('click',event=>busy(event.currentTarget,async()=>{if(!pendingDelete)return;const deleted=pendingDelete;await api(deleted.set+'('+deleted.id+')',{method:'DELETE'});find('[data-delete-dialog]').close();pendingDelete=null;if(deleted.set==='accounts'){if(account)window.location.assign(base);else await listAccounts();}else if(deleted.set==='contacts')await contacts();else await notes();message('Record deleted.');}));
   find('[data-contact-form]')?.addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,async()=>{const form=event.currentTarget;const body={};for(const input of form.querySelectorAll('[name]'))body[input.name]=input.value.trim()||null;body['parentcustomerid_account@odata.bind']='/accounts('+account.accountid+')';await api('contacts'+(form.dataset.id?'('+form.dataset.id+')':''),{method:form.dataset.id?'PATCH':'POST',body});find('[data-contact-dialog]').close();await contacts();message('Contact saved.');});});
   find('[data-note-form]')?.addEventListener('submit',event=>{event.preventDefault();busy(event.submitter,async()=>{const form=event.currentTarget;const body={subject:form.elements.subject.value.trim()||'Account note',notetext:"*WEB*"+form.elements.notetext.value.trim(),'objectid_account@odata.bind':'/accounts('+account.accountid+')'};const file=form.elements.attachment.files[0];if(file){if(file.size>1024*1024)throw new Error('Choose a file smaller than 1 MB for this demo.');const bytes=new Uint8Array(await file.arrayBuffer());let binary='';for(const byte of bytes)binary+=String.fromCharCode(byte);Object.assign(body,{isdocument:true,filename:file.name,mimetype:file.type||'application/octet-stream',documentbody:btoa(binary)});}await api('annotations',{method:'POST',body});form.reset();await notes();message('Note saved.');});});
-  (async()=>{try{if(find('[data-account-form]')){message('Loading account and controls…');await waitForControls();await openAccount();if(localPcf){initialForm.hidden=true;const link='/approach/web-api/account/'+window.location.search;find('[data-edit-account]').hidden=true;const notice=document.createElement('div');notice.className='demo-status';notice.innerHTML='PCF editors run in Power Pages. Mirage currently imports their source without hosting the component runtime. <a href="'+escape(link)+'">Open this account in the Web API workspace</a> to edit its fields locally.';initialForm.before(notice);}}else await listAccounts();}catch(error){message(error.message,true);}})();
+  (async()=>{try{if(find('[data-account-form]')){message('Loading account and controls…');await waitForControls();await openAccount();}else await listAccounts();}catch(error){message(error.message,true);}})();
 })();

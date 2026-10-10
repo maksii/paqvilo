@@ -11,6 +11,7 @@ import { pageKey, INLINE_PREFIX } from './html-rewriter.mjs';
 import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
+import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
 
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
@@ -209,6 +210,7 @@ export function enablePanel(context, session, opts = {}) {
   const problems = new WeakMap();
   const runtimeByPage = new WeakMap();
   const runtimeFilesByPage = new WeakMap();
+  const sourceInspector = createSourceInspector(cfg);
   const activity = [];
   /** files changed since the tabs last loaded (only grows while live reload is off) */
   const pending = new WeakMap();
@@ -298,7 +300,7 @@ export function enablePanel(context, session, opts = {}) {
     const index = indexSources();
     const source = index.inlineByRel.get(rel);
     const webFile = index.webByRel.get(rel);
-    const runtimeFile = cfg.mirage ? runtimeFilesByPage.get(page)?.get(rel) : null;
+    const runtimeFile = runtimeFilesByPage.get(page)?.get(rel) ?? null;
     if (cfg.mirage && !source && !webFile && !runtimeFile) return null;
     const file = source?.file ?? webFile?.file ?? runtimeFile ?? path.resolve(cfg.sourceDir, rel);
     const roots = [...(source || webFile ? [cfg.sourceDir] : []), ...(cfg.site.routes ?? []).filter((r) => r.dir).map((r) => path.resolve(cfg.sourceDir, r.dir)), ...(runtimeFile ? (runtimeByPage.get(page)?.roots ?? []) : [])];
@@ -513,6 +515,14 @@ export function enablePanel(context, session, opts = {}) {
     const pathname = typeof requestedPath === 'string' && requestedPath.startsWith('/') ? requestedPath : pathOf(page.url()) ?? '/';
     if (adminPage(new URL(pathname, cfg.origin).href)) return;
     try {
+      if (!cfg.mirage) {
+        const result = await sourceInspector.inspect(pathname);
+        if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
+        const roots = result.roots.map(realNative);
+        runtimeByPage.set(page, { active: true, mode: 'live-sources', status: result.status, summary: summarize(result.report), report: result.report, roots, path: pathname, version: ++runtimeVersion, error: null });
+        runtimeFilesByPage.set(page, annotateRuntime(result.report, roots));
+        return;
+      }
       // Every navigation asks for a small summary; the Inspect tab loads the full report on demand.
       // Page inspection and the session read carry this browser's session cookie.
       const [status, summaryResponse, session] = await Promise.all([
@@ -552,7 +562,7 @@ export function enablePanel(context, session, opts = {}) {
   };
   /** One inspection per tab at a time; requests arriving meanwhile collapse into one rerun. */
   const refreshRuntime = (page, requestedPath) => {
-    if (!cfg.mirage || disposed || !page || page.isClosed()) return Promise.resolve();
+    if (disposed || !page || page.isClosed()) return Promise.resolve();
     let job = runtimeJobs.get(page);
     if (!job) runtimeJobs.set(page, (job = { running: null, again: false, path: undefined }));
     job.path = requestedPath;
@@ -566,6 +576,7 @@ export function enablePanel(context, session, opts = {}) {
         const path = job.path;
         job.path = undefined;
         await loadRuntime(page, path);
+        schedule(page);
       } while (job.again && !disposed && !page.isClosed());
     })().finally(() => { job.running = null; });
     return job.running;
@@ -586,6 +597,7 @@ export function enablePanel(context, session, opts = {}) {
     const s = runtime.status ?? {};
     return {
       active: true,
+      mode: runtime.mode ?? 'local-runtime',
       version: runtime.version,
       error: runtime.error,
       path: runtime.path,
@@ -605,6 +617,7 @@ export function enablePanel(context, session, opts = {}) {
         permissionMode: s.permissionMode ?? null,
         permissionSource: s.permissionSource ?? null,
         activeScenario: s.activeScenario ?? null,
+        solutionCount: s.solutionRoots?.length ?? 0,
       },
     };
   };
@@ -771,6 +784,7 @@ export function enablePanel(context, session, opts = {}) {
       token,
       origin: cfg.origin,
       mirage: cfg.mirage ? mirageSummary(page) : null,
+      inspection: mirageSummary(page),
       site: cfg.siteName,
       env: cfg.envName,
       targets: (cfg.devTargets ?? [{ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin, startPath: cfg.site.startPath ?? '/', caution: cfg.caution }]).map(({ siteName, envName, origin, startPath, caution }) => ({ siteName, envName, origin, startPath, caution: Boolean(caution) })),
@@ -879,7 +893,7 @@ export function enablePanel(context, session, opts = {}) {
     listen('domcontentloaded', () => {
       schedule(page);
       // A tab whose report describes another address (history navigation, a missed hit) is re-inspected.
-      if (cfg.mirage && !adminPage(page.url()) && runtimeByPage.get(page)?.path !== pathOf(page.url())) refreshRuntime(page).catch(() => {});
+      if (!adminPage(page.url()) && runtimeByPage.get(page)?.path !== pathOf(page.url())) refreshRuntime(page).catch(() => {});
     });
     listen('load', () => schedule(page));
     listen('close', () => {
@@ -910,6 +924,7 @@ export function enablePanel(context, session, opts = {}) {
   on(session, 'online-state', scheduleAll);
   on(session, 'head', scheduleAll);
   on(session, 'refreshed', ({ files, how, baselineChanged = false, pageResults }) => {
+    sourceInspector.invalidate();
     catalogVersion++;
     changed = session.changedFiles ?? session.baseline.changedFiles();
     pageInfoCache.clear();
@@ -925,7 +940,7 @@ export function enablePanel(context, session, opts = {}) {
       pageChanges.set(page, { ...lastChange, how: pageHow, files: pageRels });
       if (pageHow === 'none') for (const rel of pageRels) pendingFor(page).add(rel);
       else if (pageHow === 'reload') pendingFor(page).clear();
-      if (cfg.mirage) refreshRuntime(page).catch(() => {});
+      refreshRuntime(page).catch(() => {});
       if (pageHow === 'css') for (const rel of pageRels) pendingFor(page).delete(rel);
       if (baselineChanged && pageHow !== 'reload') pendingBaseline.add(page);
       else if (pageHow === 'reload') pendingBaseline.delete(page);
@@ -1067,8 +1082,10 @@ export function enablePanel(context, session, opts = {}) {
     catalog: () => ({ ok: true, entries: catalog() }),
     // ---- Mirage inspection and tweaks (local runtime only)
     inspect: async (body, page) => {
+      if (body.refresh === true) sourceInspector.invalidate();
+      if (body.refresh === true || !runtimeByPage.get(page)) await refreshRuntime(page);
       const runtime = runtimeByPage.get(page);
-      if (!cfg.mirage || !runtime?.active) return { ok: false, error: runtime?.error ?? 'Mirage inspection is not available on this page.' };
+      if (!runtime?.active) return { ok: false, error: runtime?.error ?? 'Source inspection is not available on this page.' };
       if (!runtime.report && runtime.summary) {
         // Loaded once per page version, when the Inspect tab asks for it.
         runtime.loading ??= (async () => {
@@ -1085,6 +1102,17 @@ export function enablePanel(context, session, opts = {}) {
           return { ok: false, error: error.message.split('\n')[0] };
         }
       }
+      const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
+      if (!cfg.mirage) {
+        const answer = await sourceInspector.inspect(runtime.path, rendered);
+        runtime.report = answer.report;
+      } else {
+        // Supplement runtime evidence with source paths without changing its access verdicts.
+        await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
+          (runtime.report.unresolved ??= []).push({ kind: 'source-inspection', reason: error.message.split('\n')[0] });
+        });
+      }
+      runtimeFilesByPage.set(page, annotateRuntime(runtime.report, runtime.roots));
       // The flat dependency list repeats the typed groups; it stays indexed here for opening files.
       const { dependencies, ...visible } = runtime.report ?? {};
       return { ok: true, version: runtime.version, report: runtime.report ? visible : null, status: publicStatus(runtime.status), error: runtime.error };

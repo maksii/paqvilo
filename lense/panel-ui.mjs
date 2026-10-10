@@ -121,6 +121,13 @@ export function panelUi(data) {
       .src { color: var(--link); font-size: 12.5px; }
       .src:hover { text-decoration: underline; }
       .src.none { color: var(--muted); }
+      .inspect-nav { gap: 6px; }
+      .inspect-nav .f { padding: 4px 8px; font-size: 11.5px; }
+      .inspection-help { white-space: normal; margin-top: 8px; line-height: 1.45; }
+      .card > .sub { white-space: normal; overflow-wrap: anywhere; margin-top: 4px; }
+      .inspect-tools { gap: 6px; }
+      .inspect-tools .src { padding: 5px 8px; border: 1px solid var(--line); border-radius: var(--radius); }
+      .inspect-tools .src:hover { background: var(--tint); text-decoration: none; }
       .banner { display: flex; align-items: center; gap: 8px; border-radius: var(--radius); padding: 7px 10px; margin-bottom: 8px; background: var(--warn-bg); border-left: 4px solid var(--warn); color: var(--fg); }
       .banner.grey { background: var(--tint); border-left-color: var(--primary); }
       .banner .grow { flex: 1; }
@@ -164,6 +171,7 @@ export function panelUi(data) {
       .c.st { background: var(--danger-bg); color: var(--danger); }
       .acts { display: none; gap: 1px; flex: none; }
       .row:hover .acts, .row:focus-within .acts { display: flex; }
+      .group[data-group^="runtime-"] .acts { display: flex; }
       .time { color: var(--muted); font-size: 11.5px; flex: none; font-variant-numeric: tabular-nums; }
 
       .empty { text-align: center; color: var(--muted); padding: 26px 20px; }
@@ -247,7 +255,7 @@ export function panelUi(data) {
       ['activity', 'Activity'],
       ['explore', 'Explore'],
     ];
-    const MIRAGE_TABS = ['runtime', 'tweaks'];
+    const MIRAGE_TABS = ['tweaks'];
     const PLACEHOLDER = { overrides: 'Filter overrides', runtime: 'Filter tables, templates, settings ...', issues: 'Filter issues', activity: 'Filter activity', explore: 'Find a page, file, template, snippet ...' };
 
     const S = {
@@ -270,6 +278,9 @@ export function panelUi(data) {
       more: {},
       pick: {},
       confirm: null,
+      inspectSection: 'all',
+      selectedElement: null,
+      pickingElement: false,
     };
     const nativeFetch = window.fetch.bind(window);
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -616,7 +627,7 @@ export function panelUi(data) {
         <div class="acts">${acts}${ref ? `<button class="ib" data-act="open" title="Open in the editor">${icon('code')}</button><button class="ib" data-act="copy" title="Copy the file path">${icon('copy')}</button>` : ''}</div>
       </div>`;
     };
-    const simButton = (hash, title) => `<button class="ib" data-act="sim" data-hash="${esc(hash)}" title="${esc(title)}">${icon('go')}</button>`;
+    const simButton = (hash, title) => S.d.mirageMode ? `<button class="ib" data-act="sim" data-hash="${esc(hash)}" title="${esc(title)}">${icon('go')}</button>` : '';
     const pageRecordId = () => {
       try { return new URLSearchParams(location.search).get('id'); } catch { return null; }
     };
@@ -636,24 +647,37 @@ export function panelUi(data) {
     };
 
     const runtimeHtml = () => {
-      const runtime = S.d.mirage;
-      if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', 'Page inspection appears when the local runtime has answered.');
-      if (!runtime?.active) return emptyState('Mirage is not active', runtime?.error ? esc(runtime.error) : 'Start the local runtime with <code>paqvilo mirage dev</code> to inspect page dependencies here.');
-      let out = mirageStatusCard(runtime);
+      const runtime = S.d.inspection ?? S.d.mirage;
+      if (!runtime) return emptyState('Loading source inspection ...', 'The current address is being matched to the selected export.');
+      if (!runtime?.active) return emptyState('Source inspection unavailable', esc(runtime?.error ?? 'The selected export could not be read.'));
+      const live = runtime.mode === 'live-sources';
+      let out = live ? `<div class="card"><div class="path">Live portal · local source inspection</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>` : mirageStatusCard(runtime);
       if (!S.inspect || S.inspect.version < runtime.version) return out + emptyState('Loading page inspection ...', '');
       if (S.inspect.error && !S.inspect.report) return out + emptyState('Dependency inspection unavailable', esc(S.inspect.error));
       const report = S.inspect.report;
-      if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'The Mirage returned no page report.'));
+      if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
+      const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
+      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
+      if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
+      if (S.selectedElement) {
+        const selected = S.selectedElement;
+        const matching = (report.columns ?? []).filter((column) => column.name === selected.id || column.name === selected.name);
+        const field = matching.length === 1 ? matching[0] : null;
+        const candidates = field ? [field] : matching.length ? matching : (report.pageSources ?? []);
+        out += `<div class="card"><div class="path">Selected: ${esc(selected.tag)}${selected.id ? `#${esc(selected.id)}` : ''}</div><div class="sub">${esc(selected.name ? `name ${selected.name}` : selected.classes || 'No field identifier')} · ${field ? 'exported field match' : 'No direct source binding. Start with the page sources below.'}</div>${candidates.map((item) => rrow(item, { code: field ? 'COL' : 'SRC', title: field ? `${field.entity}.${field.name}` : item.name, sub: item.ref ?? '' })).join('')}</div>`;
+      }
       const page = report.page;
       if (page) {
         const access = page.access ?? {};
         const verdict = access.allowed === true ? '<span class="c new">allowed</span>' : access.allowed === false ? `<span class="c st" title="${esc(access.code ?? '')}">denied</span>` : '';
         out += `<div class="card"><div class="path">${esc(page.pageName ?? page.name ?? location.pathname)} <span class="dim">${esc(page.url ?? '')}</span></div>
           <div class="srcs"><span class="lbl2">Template</span><span class="dim">${esc(page.pageTemplateName ?? 'none')}</span><span class="lbl2">Publishing</span><span class="dim">${esc(page.publishingState?.name ?? 'not set')}${page.publishingState?.visible === false ? ' (not visible)' : ''}</span>${page.parent ? `<span class="lbl2">Parent</span><span class="dim">${esc(page.parent.name ?? page.parent.url)}</span>` : ''}</div>
-          <div class="srcs"><span class="lbl2">Current persona</span>${verdict}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${page.ref ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>` : ''}</div></div>`;
+          <div class="srcs"><span class="lbl2">${live ? 'Live access' : 'Current persona'}</span>${verdict || (live ? '<span class="dim">unknown</span>' : '')}<span class="dim">${esc(access.reason ?? access.code ?? '')}</span>${page.ref ? `<button class="src" data-act="open" data-rel="${esc(page.ref)}">Page source</button>` : ''}</div></div>`;
       } else out += `<div class="card"><div class="path">${esc(location.pathname)} <span class="dim">&nbsp;no exported page matches this address</span></div></div>`;
       const keep = (...texts) => matches(...texts.map((text) => String(text ?? '')));
       const groups = [];
+      const sourceRows = (report.pageSources ?? []).filter((item) => keep(item.name, item.ref));
+      groups.push(rgroup('runtime-page-sources', 'Page source files', sourceRows, (item) => rrow(item, { code: 'SRC', title: item.name, sub: item.ref ?? item.fieldPath ?? '' })));
       const rules = (page?.access?.rules ?? []).filter((rule) => keep(rule.name, rule.rightLabel, rule.page?.url, ...(rule.roles ?? []).map((role) => role.name ?? role.id)));
       groups.push(rgroup('runtime-access', 'Page access rules', rules, (rule) => rrow(rule, {
         code: rule.right === 1 ? 'GRANT' : 'RULE',
@@ -685,15 +709,18 @@ export function panelUi(data) {
         return rrow(table, {
           code: 'TBL',
           title: `${table.logicalName}${table.displayName ? ` (${table.displayName})` : ''}`,
-          sub: `${table.entitySet ? `entity set ${table.entitySet}${table.entitySetInferred ? ' (inferred)' : ''}` : 'no local mapping'} · ${table.fieldCount ?? 0} fields${table.permissions?.mode === 'permissive' ? ' · permissions not enforced' : ''}${reasons ? ` · ${reasons}` : ''}`,
+          sub: `${table.entitySet ? `entity set ${table.entitySet}${table.entitySetInferred ? ' (inferred)' : ''}` : 'entity set unavailable'} · ${table.fieldCount ?? 0} exported fields${live ? ' · effective live access unknown' : table.permissions?.mode === 'permissive' ? ' · permissions not enforced' : ''}${reasons ? ` · ${reasons}` : ''}`,
           chips,
           wrap: true,
           acts: layers + simButton(recordsHash(table.logicalName), `Open ${table.logicalName} records in _sim`),
         });
       }));
+      const grants = (report.permissionRules ?? []).filter((rule) => keep(rule.name, rule.entity, rule.scope, ...(rule.roles ?? [])));
+      groups.push(rgroup('runtime-permissions', 'Table permissions and web roles', grants, (rule) => rrow(rule, { code: 'RULE', title: rule.name, sub: `${rule.entity} · ${rule.scope} · ${(rule.operations ?? []).join(', ') || 'no operations'} · roles ${(rule.roles ?? []).join(', ') || 'none'}${rule.relationshipName ? ` · relationship ${rule.relationshipName}` : ''}${rule.parentPermissionId ? ` · parent ${rule.parentPermissionId}` : ''}${live ? ' · exported grant; live access unknown' : ''}`, wrap: true })));
       const forms = (report.forms ?? []).filter((form) => keep(form.name, form.entity, form.formName, form.kind, ...(form.steps ?? []).map((step) => step.name)));
       groups.push(rgroup('runtime-forms', 'Forms', forms, (form) => [
-        rrow(form, { code: form.kind === 'advanced-form' ? 'ADV' : 'FORM', title: form.name, sub: `${form.kind === 'advanced-form' ? 'advanced form' : 'basic form'}${FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : ''} · table ${form.entity ?? 'unknown'}${form.formName ? ` · form ${form.formName}` : ''}`, acts: form.entity ? simButton(recordsHash(form.entity), `Open ${form.entity} records in _sim`) : '' }),
+        rrow(form, { code: form.kind === 'advanced-form' ? 'ADV' : 'FORM', title: form.name, sub: `${form.kind === 'advanced-form' ? 'advanced form' : 'basic form'}${FORM_MODE[form.mode] ? ` · ${FORM_MODE[form.mode]}` : ''} · table ${form.entity ?? 'unknown'}${form.formName ? ` · form ${form.formName}` : ''}${form.evidence === 'rendered-component-id' ? ' · observed form ID' : form.evidence === 'configured-modal-form' ? ' · configured modal source' : ''}`, acts: form.entity ? simButton(recordsHash(form.entity), `Open ${form.entity} records in _sim`) : '' }),
+        ...(report.components ?? []).filter((component) => component.recordId === form.id && component.kind === 'basic-form' && component.ref !== form.ref).map((component) => rrow(component, { code: 'JS', title: 'Form JavaScript', sub: component.ref ?? 'Custom script source', depth: 1 })),
         ...(form.formXml?.ref ? [rrow(form.formXml, { code: 'XML', title: form.formXml.name ?? 'FormXml', sub: `Solution FormXml · ${form.formXml.ref}`, depth: 1 })] : []),
         ...(form.steps ?? []).flatMap((step) => [
           rrow(step, { code: 'STEP', title: step.name ?? step.id, sub: `${step.entity ?? 'no table'}${FORM_MODE[step.mode] ? ` · ${FORM_MODE[step.mode]}` : ''}${step.formName ? ` · form ${step.formName}` : ''}`, depth: 1 }),
@@ -701,7 +728,13 @@ export function panelUi(data) {
         ]),
       ].join('')));
       const views = (report.views ?? []).filter((view) => keep(view.name, view.entity, ...(view.fields ?? []).map((field) => field.name)));
-      groups.push(rgroup('runtime-views', 'Views', views, (view) => rrow(view, { code: 'VIEW', title: view.name, sub: `${view.entity} · ${(view.fields ?? []).length} columns: ${(view.fields ?? []).map((field) => field.name).join(', ')}`, wrap: true })));
+      groups.push(rgroup('runtime-views', 'Views', views, (view) => rrow(view, { code: 'VIEW', title: view.name, sub: `${view.entity} · ${(view.fields ?? []).length} columns: ${(view.fields ?? []).map((field) => field.name).join(', ')}${view.usedBy?.length ? ` · used by ${[...new Set(view.usedBy)].join(', ')}` : ''}${view.evidence === 'rendered-view-id' ? ' · observed view ID' : ''}`, wrap: true })));
+      const native = (report.nativeComponents ?? []).filter((item) => keep(item.name, item.id, item.kind, item.entity, item.owner, item.relationship));
+      groups.push(rgroup('runtime-native', 'Native grids, quick views and notes', native, (item) => [
+        rrow(item, { code: item.kind === 'subgrid' ? 'GRID' : item.kind === 'quickform' ? 'QUICK' : 'NOTES', title: item.name, sub: `${item.owner} · table ${item.entity ?? 'unknown'}${item.relationship ? ` · relationship ${item.relationship}` : ''}${item.lookup ? ` · lookup ${item.lookup}` : ''} · ${item.evidence === 'rendered-control-id' ? 'observed control ID' : 'exported form control'}${item.hidden ? ' · hidden in FormXml' : ''}`, wrap: true }),
+        ...(item.metadataSources ?? []).map((source) => rrow(source, { code: 'META', title: source.name, sub: source.ref ?? '', depth: 1 })),
+        ...(item.actions ?? []).map((action) => rrow(action, { code: 'ACTION', title: `${action.name}${action.formName ? `: ${action.formName}` : ''}`, sub: `exported action${action.formId ? ` · modal form ${action.formId}` : ''}${action.conditional ? ' · conditional visibility' : ''}`, depth: 1, wrap: true })),
+      ].join('')));
       const columns = (report.columns ?? []).filter((column) => keep(column.entity, column.name, column.label, column.type));
       groups.push(rgroup('runtime-columns', 'Fields and columns', columns, (column) => rrow(column, {
         code: 'COL',
@@ -709,6 +742,7 @@ export function panelUi(data) {
         sub: column.resolved === false ? 'not described by the selected Solution metadata' : `${column.label ?? column.name} · ${column.type ?? 'unknown type'}${column.required ? ' · required' : ''}${column.maxLength ? ` · max ${column.maxLength}` : ''}${column.optionCount ? ` · ${column.optionCount} options: ${(column.options ?? []).map((option) => option.label).join(', ')}${column.optionCount > (column.options ?? []).length ? ' ...' : ''}` : ''}`,
         chips: column.required ? '<span class="c edited">required</span>' : '',
         find: `<LogicalName>${column.name}</LogicalName>`,
+        acts: `<button class="ib" data-act="inspect-locate" data-field="${esc(column.name)}" title="Find this field on the page">${icon('go')}</button>`,
       }), { collapsed: columns.length > 25 }));
       const USAGE_CODE = { entityform: 'FORM', entitylist: 'LIST', webform: 'ADV', entityview: 'VIEW', editable: 'EDIT', include: 'INC', snippet: 'SNIP', fetchxml: 'FXML' };
       const lists = (report.components ?? []).filter((component) => component.kind === 'list' && keep(component.name, component.entity, 'list'));
@@ -716,6 +750,12 @@ export function panelUi(data) {
       groups.push(rgroup('runtime-components', 'Components and controls', [...lists.map((list) => ({ list })), ...usages.map((usage) => ({ usage }))], ({ list, usage }) => list
         ? rrow(list, { code: 'LIST', title: list.name, sub: `list${list.entity ? ` · table ${list.entity}` : ''}` })
         : rrow({}, { code: USAGE_CODE[usage.kind] ?? 'USE', title: `${usage.kind}${usage.reference ? `: ${usage.reference}` : ' (dynamic)'}`, sub: `${usage.expression} · in ${usage.owner}`, wrap: true }), { collapsed: usages.length > 40 }));
+      const controls = (report.renderedControls ?? []).filter((item) => keep(item.id, item.name, item.field, item.entity));
+      groups.push(rgroup('runtime-rendered', 'Rendered controls', controls, (item) => rrow(item, { code: 'DOM', title: item.field ?? item.name ?? item.id ?? item.tag, sub: `${item.tag}${item.type ? ` · ${item.type}` : ''} · ${item.evidence === 'rendered-and-source' ? 'observed with source match' : 'observed; source binding unknown'}`, acts: item.id || item.name ? `<button class="ib" data-act="inspect-locate" data-field="${esc(item.id || item.name)}" title="Find on the page">${icon('go')}</button>` : '' }), { collapsed: controls.length > 25 }));
+      groups.push(rgroup('runtime-api', 'Web API references', (report.apiReferences ?? []).filter((item) => keep(item.name, item.entity)), (item) => rrow(item, { code: 'API', title: `/_api/${item.name}`, sub: `${item.entity ? `table ${item.entity}` : 'Entity set binding is absent from selected Solution metadata'} · ${item.evidence === 'observed-api-request' ? 'observed request; IDs and query values excluded' : 'literal source reference'}` })));
+      groups.push(rgroup('runtime-logic', 'Server logic and cloud flows', (report.logic ?? []).filter((item) => keep(item.name, item.ref)), (item) => rrow(item, { code: item.kind === 'cloud-flow' ? 'FLOW' : 'LOGIC', title: item.name, sub: `${item.description ?? item.path ?? ''} · static reference`, wrap: true })));
+      groups.push(rgroup('runtime-pcf', 'Code components', (report.codeComponents ?? []).filter((item) => keep(item.name, item.schemaName)), (item) => [rrow(item, { code: 'PCF', title: item.schemaName ?? item.name, sub: `${item.expression} · ${item.schemaName ? 'configured component mapping' : 'Solution binding unknown'}`, wrap: true }), ...(item.resources ?? []).map((resource) => rrow(resource, { code: resource.name.toUpperCase(), title: resource.ref ?? resource.url, sub: 'Declared component resource', depth: 1 }))].join('')));
+      groups.push(rgroup('runtime-assets', 'Web files used on this page', (report.assets ?? []).filter((item) => keep(item.name, item.url, item.ref)), (item) => rrow(item, { code: /\.css$/i.test(item.url) ? 'CSS' : /\.m?js$/i.test(item.url) ? 'JS' : 'FILE', title: item.url, sub: `${item.evidence === 'rendered-asset' ? 'observed in rendered DOM' : 'static source reference'} · ${item.ref ?? 'attachment source unavailable'}` })));
       const snippets = (report.snippets ?? []).filter((snippet) => keep(snippet.name, snippet.value, snippet.ref));
       groups.push(rgroup('runtime-snippets', 'Content snippets', snippets, (snippet) => rrow(snippet, {
         code: 'SNIP',
@@ -749,8 +789,9 @@ export function panelUi(data) {
             : rrow(item, { code: 'SHORT', title: item.title ?? item.name, sub: 'shortcut', find: item.id })));
       const unresolved = (report.unresolved ?? []).filter((item) => keep(item.name, item.expression, item.kind, item.reason, item.owner));
       groups.push(rgroup('runtime-unresolved', 'Unresolved dependencies', unresolved, (item) => `<div class="row wrapt"><span class="ico k-warn">?</span><div class="main"><div class="name"><span>${hl(item.expression ?? item.name ?? item.kind ?? 'Dependency')}</span><span class="what">${esc(item.kind ?? '')}</span></div><div class="sub">${hl(item.reason ?? item.message ?? '')}${item.owner ? ` · in ${esc(item.owner)}` : ''}</div></div></div>`, { collapsed: unresolved.length > 20 }));
-      const listed = groups.join('');
-      return out + (listed || emptyState(S.q ? 'Nothing matches' : 'No dependencies were reported', S.q ? 'Clear the filter to see the page inspection.' : 'Visit a Mirage page and reload to refresh its inspection.'));
+      const sectionOf = { 'runtime-page-sources': 'source', 'runtime-chain': 'source', 'runtime-access': 'data', 'runtime-tables': 'data', 'runtime-permissions': 'data', 'runtime-api': 'data', 'runtime-forms': 'components', 'runtime-views': 'components', 'runtime-native': 'components', 'runtime-columns': 'components', 'runtime-components': 'components', 'runtime-rendered': 'components', 'runtime-logic': 'components', 'runtime-pcf': 'components', 'runtime-assets': 'assets', 'runtime-snippets': 'assets', 'runtime-settings': 'assets', 'runtime-related': 'source', 'runtime-unresolved': 'unresolved' };
+      const listed = groups.filter((group) => S.inspectSection === 'all' || sectionOf[/data-group="([^"]+)"/.exec(group)?.[1]] === S.inspectSection).join('');
+      return out + (listed || emptyState(S.q ? 'Nothing matches' : 'No dependencies in this section', S.q ? 'Clear the filter to see the page inspection.' : 'Choose another section or refresh after navigating.'));
     };
 
     const tweaksHtml = () => {
@@ -951,7 +992,8 @@ export function panelUi(data) {
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,
       );
-      const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: d.mirage?.active ? `<span class="n ${d.mirage.page?.allowed === false ? 'warn' : 'ok'}" title="${d.mirage.page?.allowed === false ? 'the current persona cannot open this page' : 'templates, snippets, settings, forms, views and tables of this page'}">${d.mirage.counts?.total ?? 0}</span>` : '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
+      const inspection = d.inspection ?? d.mirage;
+      const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: inspection?.active ? `<span class="n ${inspection.page?.allowed === false ? 'warn' : 'ok'}" title="Page sources and component dependencies">${inspection.counts?.total ?? 0}</span>` : '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
       set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length < 2 ? 'disabled' : ''} title="${S.targets.length < 2 ? 'Start dev with --portals all to enable other configured portals' : 'Open the selected configured portal in this tab'}">${S.targets.map((target, index) => `<option value="${index}" title="${esc(target.origin)}" ${target.origin === location.origin ? 'selected' : ''}>${esc(target.siteName)} @ ${esc(target.envName)}${target.origin === location.origin ? ' · CURRENT' : ''}${target.caution ? ' · REAL DATA' : ''}</option>`).join('')}</select>`);
       set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
       set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}">${label}${tabCount[id]}</button>`).join(''));
@@ -1026,7 +1068,7 @@ export function panelUi(data) {
     };
     /** The Inspect report is requested once per runtime version, outside of every redraw. */
     const ensureInspect = () => {
-      const c = S.d?.mirage;
+      const c = S.d?.inspection ?? S.d?.mirage;
       if (!c?.active || !c.version || (S.inspect && S.inspect.version >= c.version) || S.inspectLoading === c.version) return;
       const version = c.version;
       S.inspectLoading = version;
@@ -1056,13 +1098,66 @@ export function panelUi(data) {
       S.catalog = r.ok ? r.entries : [];
       render();
     };
+    const stopPicking = () => {
+      if (S.pickHandler) document.removeEventListener('click', S.pickHandler, true);
+      if (S.pickEscape) document.removeEventListener('keydown', S.pickEscape, true);
+      S.pickHandler = null;
+      S.pickEscape = null;
+      S.pickingElement = false;
+    };
+    const locateElement = (field) => {
+      const nodes = [...document.querySelectorAll('input,select,textarea,[id],[name]')];
+      const node = nodes.find((item) => !item.closest('#paqvilo-panel') && (item.id === field || item.getAttribute('name') === field));
+      if (!node) return toast('This field is not present in the rendered page.', true);
+      node.scrollIntoView({ block: 'center', behavior: 'smooth' });
+      const prior = { outline: node.style.outline, offset: node.style.outlineOffset };
+      node.style.outline = '3px solid #c38a2e';
+      node.style.outlineOffset = '4px';
+      setTimeout(() => { node.style.outline = prior.outline; node.style.outlineOffset = prior.offset; }, 2500);
+    };
     const act = async (name, t) => {
       const row = t.closest('[data-rel]');
       const rel = t.dataset.rel || row?.dataset.rel || '';
       const url = row?.dataset.url || '';
       const d = S.d;
       switch (name) {
+        case 'inspect-section':
+          S.inspectSection = t.dataset.v;
+          render();
+          break;
+        case 'inspect-fold':
+          for (const key of Object.keys(S.defaults).filter((key) => key.startsWith('runtime-'))) S.ui.collapsed[key] = t.dataset.v === 'closed';
+          saveUi();
+          render();
+          break;
+        case 'inspect-refresh': {
+          const answer = await api('inspect', { refresh: true });
+          if (answer.ok) S.inspect = { version: answer.version, report: answer.report, status: answer.status, error: answer.error };
+          else toast(answer.error ?? 'Inspection failed.', true);
+          fresh();
+          break;
+        }
+        case 'inspect-locate':
+          locateElement(t.dataset.field);
+          break;
+        case 'inspect-pick': {
+          if (S.pickingElement) { stopPicking(); render(); break; }
+          S.pickingElement = true;
+          S.pickHandler = (event) => {
+            const node = event.target instanceof Element ? event.target : event.target?.parentElement;
+            if (!node || node.closest('#paqvilo-panel, #paqvilo-handle')) return;
+            event.preventDefault(); event.stopImmediatePropagation();
+            S.selectedElement = { tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), classes: String(node.className ?? '').slice(0, 160) };
+            stopPicking(); render();
+          };
+          S.pickEscape = (event) => { if (event.key === 'Escape') { stopPicking(); render(); } };
+          document.addEventListener('click', S.pickHandler, true);
+          document.addEventListener('keydown', S.pickEscape, true);
+          render();
+          break;
+        }
         case 'tab':
+          stopPicking();
           S.ui.tab = t.dataset.v;
           S.diff = null;
           if (S.ui.tab === 'explore' && !S.catalog) loadCatalog();
@@ -1299,6 +1394,7 @@ export function panelUi(data) {
     return {
       get token() { return S.d?.token; },
       dispose() {
+        stopPicking();
         lifetime.abort();
         clearTimeout(toastTimer);
         clearTimeout(floatTimer);

@@ -7,6 +7,7 @@ import {
   importSolutionMetadata,
   parseSolutionXml,
 } from "../lib/solution-metadata.mjs";
+import { formCells } from "../lib/native-services.mjs";
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-metadata-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -425,4 +426,15 @@ test("lookup DefaultViewId imports its dependent table and preserves the exact s
   assert.equal(field.lookupView.id, "country-view");
   assert.equal(field.lookupView.fields[0].name, "shortname");
   assert.match(field.lookupView.fetchXml, /<entity name="country">/);
+});
+
+test('notes cells without datafieldname survive exported systemform parsing', async t => {
+  const notes = '<row><cell colspan="2"><labels><label description="Related notes" languagecode="1033"/></labels><control id="notescontrol" classid="{06375649-C143-495E-A496-C962E5B4488E}"/></cell></row>';
+  const root = await fixture(t, {'Entities/contact/Entity.xml': entity, 'Entities/contact/FormXml/main/{form-id}.xml': form('Name').replace('</rows>', notes + '</rows>')});
+  const metadata = await importSolutionMetadata(root, {portal: portal()});
+  const cell = formCells(metadata.componentSchemas['basic-form']).find(c => c.type === 'notes');
+  assert.equal(cell.id, 'notescontrol');
+  assert.equal(cell.label, 'Related notes');
+  assert.equal(cell.colspan, 2);
+  assert.equal(metadata.componentSchemas['basic-form'].fields.length, 1);
 });

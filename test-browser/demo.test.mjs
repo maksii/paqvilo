@@ -90,7 +90,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.locator('[data-account-rows] tr').first().waitFor();
   assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
   await page.getByRole('link', { name: 'Arcwell Services', exact: true }).click();
-  const ready = () => page.waitForFunction(() => document.querySelector('[data-account-form]')?.dataset.ready === 'true');
+  const ready = () => page.waitForFunction(() => document.querySelector('[data-account-form]')?.dataset.ready === 'true').catch(async cause => { console.log('Workspace diagnostic:', await page.locator('[data-status]').textContent(), await page.locator('[data-mirage-component="codecomponent"]').allTextContents(), errors); throw cause; });
   await ready();
   assert.equal(await page.locator('[data-field]').count(), 21);
   assert.equal(await page.locator('[data-contact-rows] tr').count(), 2);
@@ -200,12 +200,52 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.locator('.modal-delete:visible').getByRole('button', { name: 'Delete', exact: true }).click();
   await nativeRow.waitFor({ state: 'hidden' });
   assert.equal(await page.locator('#Contacts tbody tr[data-id]').count(), 2);
+  const nativeNotes = page.locator('#notescontrol .entity-notes');
+  await nativeNotes.locator('.note').first().waitFor();
+  await nativeNotes.getByRole('link', { name: 'Add a note', exact: true }).click();
+  const addNote = nativeNotes.locator('.modal-addnote:visible');
+  await addNote.locator('#note-text').fill('Native browser note');
+  await addNote.locator('#note-file').setInputFiles({ name: 'native.txt', mimeType: 'text/plain', buffer: Buffer.from('Native attachment') });
+  await addNote.getByRole('button', { name: 'Add Note', exact: true }).click();
+  const nativeNote = nativeNotes.locator('.note').filter({ hasText: 'Native browser note' });
+  await nativeNote.waitFor();
+  const nativeDownloadEvent = page.waitForEvent('download');
+  await nativeNote.getByRole('link', { name: /native.txt/ }).click();
+  const nativeDownload = await nativeDownloadEvent;
+  assert.equal(await fs.readFile(await nativeDownload.path(), 'utf8'), 'Native attachment');
+  await nativeNote.getByRole('link', { name: 'Edit', exact: true }).click();
+  const editNote = nativeNotes.locator('.modal-editnote:visible');
+  await editNote.locator('#note-edit-text').fill('Native browser note updated');
+  await editNote.getByRole('button', { name: 'Update Note', exact: true }).click();
+  await nativeNote.getByText('Native browser note updated', { exact: true }).waitFor();
+  await nativeNote.getByRole('link', { name: 'Delete', exact: true }).click();
+  await nativeNotes.locator('.modal-deletenote:visible').getByRole('button', { name: 'Delete', exact: true }).click();
+  await nativeNote.waitFor({ state: 'hidden' });
   await evidence('demo-native');
   await page.goto(url + '/approach/pcf/account/?id=a4300000-0000-4000-8000-000000001001');
   await ready();
-  await page.getByRole('link', { name: 'Open this account in the Web API workspace' }).waitFor();
+  assert.equal(await page.locator('[data-pcf-ready=true]').count(), 1);
+  assert.equal(await page.locator('.demo-pcf-field').count(), 14);
+  assert.equal(await page.locator('[name=address1_city]').inputValue(), 'Bristol');
+  await page.getByRole('link', { name: 'Edit account', exact: true }).click();
+  await ready();
+  await page.locator('[name=pqvd_decimal]').fill('73.25');
+  await page.getByRole('button', { name: 'Save account', exact: true }).click();
+  await page.waitForURL(current => !current.searchParams.has('mode'));
+  await ready();
+  assert.equal(await page.locator('[name=pqvd_decimal]').inputValue(), '73.25');
+  assert.ok(await page.locator('[name=pqvd_decimal]').isDisabled());
   await page.goto(url + '/extended/');
-  assert.ok(await page.getByRole('button', { name: 'Calculate on server', exact: true }).isDisabled());
+  await page.getByRole('button', { name: 'Calculate on server', exact: true }).click();
+  await page.waitForFunction(() => document.querySelector('[data-estimate-result]')?.textContent.includes('"total"'));
+  await page.locator('[data-load-overview]').click();
+  await page.waitForFunction(() => document.querySelector('[data-overview-result]')?.textContent.includes('"accountsRead"'));
+  assert.equal(JSON.parse(await page.locator('[data-overview-result]').textContent()).accountsRead, 12);
+  await page.locator('[data-flow-form] [name=Location]').fill('Amsterdam');
+  await page.locator('[data-flow-form] button[type=submit]').click();
+  await page.waitForFunction(() => document.querySelector('[data-flow-result]')?.textContent.includes('Amsterdam'));
+  assert.equal(JSON.parse(await page.locator('[data-flow-result]').textContent()).Location, 'Amsterdam');
+  assert.equal(JSON.parse(await page.locator('[data-liquid-result]').textContent()).total, 388.8);
   await evidence('demo-extended');
   await page.goto(url + '/approach/web-api/');
   await page.locator('[data-account-rows] tr').first().waitFor();
@@ -231,15 +271,8 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.setViewportSize({ width: 390, height: 844 });
   await evidence('demo-mobile');
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile demo must not overflow');
-  // The installed runtime's modal preform bundle has a known dependency gap. The
-  // observed contact-create callback errors do not prevent its verified CRUD.
-  // Keep that evidence distinct from new errors; the runtime fix is outside this demo.
-  const knownModalDependency = error => error.message === '$ is not defined'
-    && error.resource?.startsWith('/_portal/modal-form-template-path/')
-    && error.form === formIds.create;
-  assert.deepEqual(errors.filter(error => !knownModalDependency(error)), []);
-  if (errors.length) console.log('Known native modal dependency diagnostics:', JSON.stringify(errors));
-  if (process.env.PAQVILO_EVIDENCE_DIR) await fs.writeFile(path.join(process.env.PAQVILO_EVIDENCE_DIR, 'demo-browser-diagnostics.json'), JSON.stringify({ known: errors.filter(knownModalDependency), unexpected: errors.filter(error => !knownModalDependency(error)) }, null, 2));
+  assert.deepEqual(errors, []);
+  if (process.env.PAQVILO_EVIDENCE_DIR) await fs.writeFile(path.join(process.env.PAQVILO_EVIDENCE_DIR, 'demo-browser-diagnostics.json'), JSON.stringify({ errors }, null, 2));
 
   await closeOwnedBrowser();
   const [code] = await exited;

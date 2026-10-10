@@ -14,4 +14,6 @@ export default {
   'example-empty':{name:'Empty account workspace',description:'No accounts or notes; editor and reader remain available for local sign-in',mappings,tables:{...tables,account:[],annotation:[],contact:tables.contact.slice(0,2).map(({parentcustomerid,_parentcustomerid_value,...contact})=>contact)},permissions,plugins,personaRoles,permissionSource:'exported',settings:{permissionMode:'enforce'}},
  }),
  generators:{},personas:[],plugins:[],
+ serverLogics:{'paqvilo-estimate':({runExportedServerLogic})=>runExportedServerLogic(),'paqvilo-account-summary':({runExportedServerLogic})=>runExportedServerLogic()},
+ cloudFlows:{'Example Location':({runExportedCloudFlow})=>runExportedCloudFlow()},
 };

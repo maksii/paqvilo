@@ -1387,7 +1387,13 @@ async function renderForm(kind, name, context, options) {
       continue;
     }
     if (cell.type === "notes") {
-      extraControls.set(cell.id, renderNotesControl({ record, id, entity: schema.entity, websiteId, settings: cell.settings ?? {}, label: cell.label, language: formLanguage }));
+      const row = metadataFor(metadataRows, 100000005, () => true);
+      const settings = { ...cell.settings, ...settingsJson(fieldOf(row, "notes_settings")) };
+      const target = { objectid: { id, logical_name: schema.entity } };
+      for (const [flag, operation] of [["CreateEnabled", "create"], ["EditEnabled", "update"], ["DeleteEnabled", "delete"]]) {
+        if (!store.allowed("annotation", operation, target, identity)) settings[flag] = false;
+      }
+      extraControls.set(cell.id, renderNotesControl({ record, id, entity: schema.entity, websiteId, settings, label: cell.label, language: formLanguage }));
       continue;
     }
     const label = cell.label ?? cell.id;

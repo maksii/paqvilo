@@ -27,6 +27,8 @@ sites:
 
 `sourceRoot` resolves from the catalogue directory. `source` and `solutionRoots` resolve from that root. `--repo` overrides `sourceRoot` and resolves from the invoking working directory. `mirage.project` and data-pack modules resolve from the catalogue directory. A generated Mirage project records its own relative inputs. Explicit `--source` selects an exported portal directly.
 
+Live Lense **Inspect** also reads `mirage.solutionRoots` or the matching portal's sources in `mirage.project`. No local runtime or data-pack code is started for inspection. Without Solution sources, portal dependencies remain inspectable and missing form/view/field definitions are reported explicitly.
+
 Use `portals: all` to support every configured target in one browser. Origins activate on visit, and `--site` selects the first portal. Each Mirage site has its own port and state; choose distinct ports or `0` for a free one. `--portals selected` limits lifecycle operations to one site. `--port`, `--state`, `--preset` and repeated `--solution-root` overrides apply to the selected site.
 
 Mirage projects use `version: 2`, `primaryPortal`, `portals`, `solutions`, `references` and `dataPacks`. Each portal specifies `{ id, path, origin?, solutions?, reference?, deploymentProfile?, observed?, dataModel? }`; Solutions specify `{ id, path }`; references specify `{ id, origin, default? }`. Paths are project-relative and every portal gets isolated state. References provide explicit selection context and never authorize network reads or writes. Solution sets are layered in dependency order; `solutionOrder: explicit` preserves a deliberately ordered list.

@@ -55,12 +55,12 @@ Follow the walkthrough on the page:
 1. **Choose a local persona.** Click **Sign in**, then **Sign in** beside **Alex Example 01**.
 2. **Open a populated account.** Choose **Web API**, then **Arcwell Services**. Its form includes typed fields, lookups, two contacts and two notes.
 3. **Try CRUD.** Edit the service score or review date, save, then add a related contact. View, edit and delete that contact in its dialog. Download the service brief or attach a small file.
-4. **Compare the native approach.** Open **Out of the box**. Try Active, All and Inactive views, the basic form and its Contacts modal.
+4. **Compare approaches.** Open **Out of the box** for native views, contact modals and notes. Open **PCF** to edit the same account through 14 typed controls. On **Extended**, calculate an estimate, read the local account overview and try the location flow.
 5. **Inspect sources.** Press **Alt+Shift+P**, then select **Inspect**. Check the template, tables and permission rules. **Tweaks** also lets you switch persona.
 6. **Edit locally.** In VS Code, open `paqvilo-example/portal/web-files/demo.css`. Change a style and save. The browser should refresh with your edit.
 7. **Try an empty state.** Open **Manage data and personas**, select **Plugins & presets**, apply **Empty account workspace** and confirm. Refresh the portal. Apply **Populated account workspace** to restore the sample rows.
 
-The demo includes the portal, solution sources and standard field metadata. PCF editors, native notes and server operations have current Mirage limits explained on their pages. Use the Web API workspace for complete local account/contact CRUD, notes and attachments. [Demo coverage](../examples/project/README.md) lists the available areas.
+The demo includes editable portal and solution sources, PCF projects and importable deployment archives. All three approaches support local account/contact CRUD and notes. Extended uses explicitly registered local server logic and a request/response flow simulation. [Demo coverage](../examples/project/README.md) lists supported host features; the sample's [deployment guide](../examples/project/deployment/README.md) takes it to your own Power Pages environment.
 
 Keep the terminal running. Close the demo browser or press **Ctrl+C** to stop. Running the demo again preserves source edits and restores its sample dataset. Local sign-in uses invented contacts, without a password or Microsoft account.
 

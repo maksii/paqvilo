@@ -14,7 +14,7 @@ pac pages upload --path ./portal --modelVersion 2
 pac data import --data ./deployment/demo-data.zip
 ```
 
-The configuration command resolves the PCF component ID created in your environment and updates its Liquid tag. It reads Dataverse through your selected PAC identity. It changes local source files; the upload command applies them online.
+The configuration command resolves the PCF component ID created in your environment and updates its Liquid tag and local Inspect/Mirage binding. It reads Dataverse through your selected PAC identity. It changes local source files; the upload command applies them online.
 
 Open [Power Pages](https://make.powerpages.microsoft.com), select your environment, then **Inactive sites → Paqvilo demo → Reactivate**. Choose its address and open it. See Microsoft's [site reactivation instructions](https://learn.microsoft.com/power-pages/admin/reactivate-website).
 

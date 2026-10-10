@@ -68,8 +68,8 @@ Opening the development browser. Keep this terminal running.
 4. Press Alt+Shift+P for Inspect and Tweaks; use /_sim/ for data and personas.
 5. Edit portal/web-files/demo.css and save to see the local change.
 
-PCF editors and server operations run online in Power Pages. The local demo explains
-their current Mirage limits and links back to working local CRUD.
+6. Open PCF to edit with 14 typed controls. On Extended, calculate an estimate,
+   read the local account overview and try the Example Location flow simulation.
 
 Each demo start restores the sample dataset. Source edits stay in the demo folder.
 Close the browser or press Ctrl+C to stop.\n`);

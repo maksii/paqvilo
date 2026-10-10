@@ -22,7 +22,7 @@ const norm = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-const FORM_PARSER_ID = "metadata-form@1";
+const FORM_PARSER_ID = "metadata-form@2";
 const VIEW_PARSER_ID = "metadata-view@1";
 const IO_CONCURRENCY = 24;
 
@@ -318,6 +318,17 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
           for (const cell of row.children) {
             const control = child(cell, "control");
             const parameters = child(control, "parameters");
+            if (norm(control?.attrs.classid) === "06375649-c143-495e-a496-c962e5b4488e" || control?.attrs.indicationOfNotes === "true") {
+              cells.push({
+                type: "notes",
+                id: control.attrs.id,
+                label: label(child(cell, "labels")) || "Notes",
+                hidden: cell.attrs.visible === "false",
+                colspan: Number(cell.attrs.colspan) || 1,
+                rowspan: Number(cell.attrs.rowspan) || 1,
+              });
+              continue;
+            }
             if (control?.attrs.indicationOfSubgrid === "true") {
               const entity = norm(text(parameters, "TargetEntityType"));
               const viewId = norm(text(parameters, "ViewId"));

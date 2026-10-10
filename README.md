@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Use it to | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change | Develop independently with local rendering, identities and test data |
 | How it works | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online | Renders exported sources locally; simulates Dataverse, forms, lists and permissions |
-| Inspect and compare | Source mappings, applied changes, diagnostics and **Online / Local** comparison | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
+| Inspect and compare | **Inspect** traces page sources, components and exported access rules; **Online / Local** compares responses | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
 | Learn more | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
@@ -59,10 +59,11 @@ The command copies an editable portal into `paqvilo-example/`, loads sample reco
 | Sign in as **Alex Example 01** | 12 accounts, 24 contacts and a populated account workspace |
 | Open **Web API → Arcwell Services** | Typed fields, lookups, contact CRUD, notes and an attachment |
 | Compare **Out of the box** | Native views, basic forms and contact modals using the same local data |
+| Open **PCF** and **Extended** | 14 typed editors, a local server estimate, account overview and location flow simulation |
 | Press **Alt+Shift+P** | **Inspect** traces sources and permissions; **Tweaks** switches identity |
 | Edit `portal/web-files/demo.css` and save | The browser applies your local source edit |
 
-The page includes a short walkthrough. PCF editors and server operations require Power Pages; the local demo explains its current coverage. [Demo setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#try-the-demo) covers browsers, data scenarios and restarting.
+The page includes a short walkthrough and deployable portal, solution and PCF sources. [Demo setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#try-the-demo) covers browsers, data scenarios and restarting; the sample's deployment guide explains how to run it in your own Power Pages environment.
 
 ## Use your own site
 
