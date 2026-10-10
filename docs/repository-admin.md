@@ -22,11 +22,11 @@ node scripts/github-admin.mjs --apply
 
 The first script invocation previews its plan. Apply uses GitHub APIs through `gh`, updates named rulesets without duplicating them, and preserves unrelated rulesets. It does not commit sources, change visibility, publish npm versions or send messages. Review the returned settings and run URLs. Merge workflow changes before expecting their required check names to appear. Reapply after the first main Security run to enable the checked-in CodeQL merge-protection ruleset; initial setup waits for that baseline.
 
-## npm settings that require npmjs.com
+## Existing npm trusted publisher
 
-GitHub CLI cannot administer npm package publishing access or trusted publishers. On the [paqvilo package settings](https://www.npmjs.com/package/paqvilo), configure a GitHub Actions trusted publisher with owner `maksii`, repository `paqvilo`, workflow filename `release.yml`, environment `npm`. Use npm 11.5.1 or newer (the selected Node 24 runner provides a newer version); trusted publishing automatically provides provenance. Then select the package publishing-access option that requires 2FA and disallows traditional tokens. Verify an OIDC release before revoking an existing `NPM_TOKEN`; remove that GitHub environment secret after migration. Never put credentials in files or command arguments.
+The [paqvilo package](https://www.npmjs.com/package/paqvilo) already releases through its configured GitHub Actions trusted publisher: owner `maksii`, repository `paqvilo`, workflow filename `release.yml`, environment `npm`. The maintainer confirmed the existing release process and npm's **Valid** publisher status on 2026-10-10. No publisher setup or token migration is needed for repository readiness. Keep this workflow filename and environment aligned with npm's configuration; trusted publishing provides provenance. GitHub CLI cannot administer npm package access or trusted publishers; future changes to those settings belong on npmjs.com.
 
-The `npm` GitHub environment restricts releases to `v*` tags. Consider a required reviewer once another maintainer can approve; requiring the sole author's review blocks releases. A first publish or a publisher migration may require npm's interactive authentication. No npm version is published by repository setup.
+The `npm` GitHub environment restricts releases to `v*` tags. Consider a required reviewer once another maintainer can approve; requiring the sole author's review blocks releases. No npm version is published by repository setup.
 
 ## Discussions and Pages
 
@@ -38,7 +38,7 @@ Pages uses GitHub Actions and the `github-pages` environment, restricted to `mai
 
 1. Run `npm run setup:repo` in each contributor checkout. This activates local hooks; Git cannot distribute local configuration automatically. Run `npm run validate` and `npm run release:smoke` with a supported browser installed.
 2. Confirm main and the readiness PR are green across CI, security and Pages; review/dismiss CodeQL alerts only with a documented reason. Do not treat a successful scan job alone as absence of findings.
-3. Confirm npm trusted publishing and account 2FA in npm settings. Run Release manually with an existing tag and `dry_run=true`; create a new matching version tag only when an actual release is intended.
+3. Validate the updated Release gates with `dry_run=true` and a tag containing the updated workflows; create a new matching version tag only when an actual release is intended. The npm trusted publisher is already configured and used for releases.
 4. Open the deployed marketing site on mobile and desktop; verify demo commands and coverage against the release. The npm README/homepage update reaches npm on the next version publish.
 5. Add another maintainer and required review before expanding write access. Set up a release/support cadence when you can commit to it; avoid promising service levels in the security policy.
 
