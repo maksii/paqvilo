@@ -500,6 +500,9 @@
     }
 
     openFormModal(modal, src) {
+      let address;
+      try { address = new URL(src, location.href); } catch { return; }
+      if (address.origin !== location.origin || !["http:", "https:"].includes(address.protocol)) return;
       const frame = modal.querySelector("iframe");
       const loading = modal.querySelector(".form-loading");
       if (loading) loading.style.display = "";
@@ -512,7 +515,7 @@
           /* cross-origin frames are not inspected */
         }
       };
-      frame.setAttribute("src", src);
+      frame.setAttribute("src", address.href);
       modal.setAttribute("aria-hidden", "false");
       showModal(modal);
     }

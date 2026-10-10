@@ -1,4 +1,5 @@
 import fs from 'node:fs/promises';
+import { readLocalFile } from '../../lense/local-file.mjs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
@@ -36,7 +37,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
   if (!record?.file) throw failure('The exported server-logic code file is missing.');
   if (await fs.realpath(record.file) !== record.file) throw failure('The exported server-logic file changed outside its imported source path.');
   if ((await fs.stat(record.file)).size > 1024 * 1024) throw failure('The exported server-logic code exceeds the local limit.');
-  const code = await fs.readFile(record.file, 'utf8');
+  const code = await readLocalFile(record.file, { root: path.dirname(record.file), maxBytes: 1024 * 1024, encoding: 'utf8' });
   const bound = Math.max(100, Math.min(Number(timeout) || 2000, 5000));
   const settings = Object.fromEntries(Object.entries(portal.settings ?? {}).map(([name, value]) => [name, value?.value ?? value]));
   const context = { ActivityId: randomUUID(), Body: body, FunctionName: operation ?? (method === 'DELETE' ? 'del' : method.toLowerCase()), HttpMethod: method, Input: input, QueryParameters: query, ServerLogicName: record.name, Headers: {}, Url: `/_api/serverlogics/${encodeURIComponent(record.name)}` };
@@ -108,7 +109,7 @@ export async function importOperationWorkflows(layers = []) {
       const contained = await Promise.all(files.map(async file => {
         const real = await fs.realpath(file).catch(() => null);
         if (!real || path.dirname(real) !== root || (await fs.stat(real)).size > 1024 * 1024) return null;
-        return fs.readFile(real, 'utf8');
+        return readLocalFile(real, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
       }));
       if (contained.some(value => value === null)) continue;
       const xml = parseSolutionXml(contained[0]);

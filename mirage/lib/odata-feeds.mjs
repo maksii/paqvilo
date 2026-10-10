@@ -106,9 +106,11 @@ function propertyValue(column, value) {
 // ---- $filter ---------------------------------------------------------------------------
 function tokenize(text) {
   const tokens = [];
-  const pattern = /\s*(?:(guid'([0-9a-fA-F-]{36})')|(datetime'([^']*)')|('((?:[^']|'')*)')|(-?\d+(?:\.\d+)?)(?![\w.])|(\()|(\))|(,)|([A-Za-z_][\w.\-/]*))/y;
+  const pattern = /(?:(guid'([0-9a-fA-F-]{36})')|(datetime'([^']*)')|('((?:[^']|'')*)')|(-?\d+(?:\.\d+)?)|(\()|(\))|(,)|([A-Za-z_][\w.\-/]*))/y;
   let index = 0;
   while (index < text.length) {
+    while (index < text.length && /\s/.test(text[index])) index++;
+    if (index === text.length) break;
     pattern.lastIndex = index;
     const match = pattern.exec(text);
     if (!match || match[0].length === 0) {
@@ -116,6 +118,8 @@ function tokenize(text) {
       throw new ODataError(`Unsupported $filter syntax near '${text.slice(index, index + 20)}'.`);
     }
     index = pattern.lastIndex;
+    if (match[7] && /[\w.]/.test(text[index] ?? ""))
+      throw new ODataError(`Unsupported $filter syntax near '${text.slice(index, index + 20)}'.`);
     if (match[2]) tokens.push({ type: "literal", value: canonical(match[2]) });
     else if (match[3]) tokens.push({ type: "literal", value: new Date(match[4]).getTime() });
     else if (match[5]) tokens.push({ type: "literal", value: match[6].replace(/''/g, "'") });

@@ -1502,7 +1502,7 @@ export class DataStore {
       return { value: r.entities, "@odata.count": r.total_record_count };
     }
     const dialect = options.dialect ?? "extended";
-    const aliases = {};
+    const aliases = Object.create(null);
     for (const key of Object.keys(p)) {
       if (key.startsWith("@")) {
         aliases[key] = p[key];
@@ -2873,7 +2873,7 @@ function project(row, select) {
   if (!select || select === "*") return clone(row);
   const out = {};
   for (const key of Array.isArray(select) ? select : splitTop(select)) {
-    out[key] = field(row, key) ?? null;
+    Object.defineProperty(out, key, { value: field(row, key) ?? null, enumerable: true, writable: true, configurable: true });
     if (key.startsWith("_") && key.endsWith("_value")) {
       const lookup = row[key.slice(1, -6)];
       if (lookup && typeof lookup === "object" && own(lookup, "id")) {

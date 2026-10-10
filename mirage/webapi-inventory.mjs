@@ -104,7 +104,9 @@ async function collectSources(portal, root) {
   }
   for (const file of portal.webFiles) {
     const mime = String(file.mimeType ?? "");
-    if (/^image\/|font|octet-stream|pdf|zip/i.test(mime) && !/svg/i.test(mime)) continue;
+    // Inventory classification, not a URL/sanitization allowlist: font and binary
+    // subtypes occur under both font/* and application/* media types.
+    if ((/^image\//i.test(mime) || /font|octet-stream|pdf|zip/i.test(mime)) && !/svg/i.test(mime)) continue;
     if (path.extname(file.file) && !TEXT_EXTENSIONS.test(file.file) && !/text|javascript|json|xml|html/i.test(mime)) continue;
     const text = await readText(file.file);
     if (text != null) add("webfile", file.name, file.file, text);

@@ -8,6 +8,7 @@
 //     for changes in literal text, and tells you when a change needs a real deployment.
 import fs from 'node:fs';
 import path from 'node:path';
+import { readLocalFile } from './local-file.mjs';
 import { diffLines } from './line-diff.mjs';
 import { urlKey, sourceText, isSourceFile } from './portal-model.mjs';
 
@@ -571,7 +572,7 @@ export class HtmlRewriter {
           if (root && (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative))) throw new Error('outside source root');
           const before = await fs.promises.stat(file);
           if (!before.isFile()) throw new Error('not a regular source file');
-          const text = await fs.promises.readFile(file, 'utf8');
+          const text = await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER, encoding: 'utf8' });
           const after = await fs.promises.stat(file);
           if (!sameStamp(before, after) || await fs.promises.realpath(file) !== real) throw new Error('source changed during startup');
           raw.set(key, text.replace(/^﻿/, ''));

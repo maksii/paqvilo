@@ -260,13 +260,16 @@
       setTimeout(() => document.querySelector("fieldset .control")?.firstChild?.focus?.());
     }
     const linkify = (input, href, text, target) => {
+      let address;
+      try { address = new URL(href, location.href); } catch { return; }
+      if (!["http:", "https:", "ftp:", "ftps:", "onenote:", "tel:", "mailto:"].includes(address.protocol)) return;
       const container = document.createElement("div");
       container.className = "control";
       const link = document.createElement("a");
       link.className = "text-primary";
       link.style.cursor = "pointer";
-      link.setAttribute("href", href);
-      if (target) link.setAttribute("target", target);
+      link.setAttribute("href", address.href);
+      if (target) { link.setAttribute("target", target); link.setAttribute("rel", "noopener noreferrer"); }
       link.setAttribute("readonly", "readonly");
       link.textContent = text;
       input.style.display = "none";

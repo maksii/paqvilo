@@ -251,7 +251,7 @@ test("string and escape filters match .NET encoders", async () => {
     await render("{{ s | text_to_html }}", { s: "Line one\nLine two\n\nhttp://example.com x" }),
     '<p>Line one<br />Line two</p><p><a href="http://example.com/" rel="nofollow">http://example.com/</a> x</p>',
   );
-  assert.equal(await render("{{ s | html_safe_escape }}", { s: '<img src="images/myimage.jpg" onerror="alert(1);">' }), '<img src="images/myimage.jpg">');
+  assert.equal(await render("{{ s | html_safe_escape }}", { s: '<img src="images/myimage.jpg" onerror="alert(1);">' }), '<img src="images/myimage.jpg" />');
   assert.equal(await render("{{ s | html_safe_escape }}", { s: '<p onclick="x()">ok<script>bad()</script></p>' }), "<p>ok</p>");
   // DotLiquid20 replace/replace_first use .NET regular expressions.
   assert.equal(await render("{{ 'a.b' | replace: '.', '-' }}|{{ 'a.b' | replace_first: '.', '-' }}|{{ 'aXbX' | remove: 'X' }}|{{ 'aXbX' | remove_first: 'X' }}"), "---|-.b|ab|abX");

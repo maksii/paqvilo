@@ -7,6 +7,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -336,8 +337,7 @@ export function redactUrl(value, { origins = [], base, keepPaging = false } = {}
       }
       return decoded.replace(GUID, "{guid}").replace(/^\d{3,}$/, "{n}").replace(TOKENISH, "{token}");
     })
-    .join("/")
-    .replace(/\(\{guid\}\)/g, "({guid})");
+    .join("/");
   const names = [...new Set([...parsed.searchParams.keys()])].sort();
   const shown = (name) => {
     const valueOf = parsed.searchParams.get(name);
@@ -400,19 +400,15 @@ export async function loadSourceCorpus(sourceDir, { maxFileBytes = 4 * 1024 * 10
       if (entry.isDirectory()) await walk(file);
       else if (entry.isFile() && /\.(?:html?|ya?ml|js|json|xml|txt|liquid)$/i.test(entry.name)) {
         const stat = await fs.stat(file);
-        if (stat.size <= maxFileBytes) parts.push(await fs.readFile(file, "utf8"));
+        if (stat.size <= maxFileBytes) parts.push(await readLocalFile(file, { root: sourceDir, maxBytes: maxFileBytes, encoding: 'utf8' }));
       }
     }
   }
   if (sourceDir) await walk(sourceDir);
   const decode = (text) =>
     text
-      .replace(/&nbsp;|&#160;/gi, " ")
-      .replace(/&amp;/gi, "&")
-      .replace(/&quot;/gi, '"')
-      .replace(/&#39;|&apos;/gi, "'")
-      .replace(/&lt;/gi, "<")
-      .replace(/&gt;/gi, ">");
+      .replace(/&(?:nbsp|#160|amp|quot|#39|apos|lt|gt);/gi,
+        (entity) => ({ '&nbsp;': ' ', '&#160;': ' ', '&amp;': '&', '&quot;': '"', '&#39;': "'", '&apos;': "'", '&lt;': '<', '&gt;': '>' })[entity.toLowerCase()]);
   const corpus = decode(parts.join("\n")).replace(/\s+/g, " ");
   const lower = corpus.toLowerCase();
   return {
@@ -2519,7 +2515,17 @@ function shellFacts() {
 const PLATFORM_BUNDLE_CDN = "https://content.powerapps.com";
 const PLATFORM_BUNDLE_PATH = "/resource/powerappsportal/";
 /** Hosting and tenant services that portal pages load (Application Insights, Power BI embeds). */
-export const HOSTED_RESOURCES = Object.freeze([/\/\/js\.monitor\.azure\.com\/.*\bai\.\d+(?:\.\d+)*\.min\.js$/i, /\/\/(?:[a-z0-9-]+\.)*powerbi\.com\//i, /\/powerbi(?:-client|loader)?(?:\.min)?\.js$/i]);
+export const HOSTED_RESOURCES = Object.freeze([
+  { test: (value) => hostedResource(value, (url) => url.hostname === 'js.monitor.azure.com' && /\bai\.\d+(?:\.\d+)*\.min\.js$/i.test(url.pathname)) },
+  { test: (value) => hostedResource(value, (url) => url.hostname === 'powerbi.com' || url.hostname.endsWith('.powerbi.com')) },
+  { test: (value) => /(?:^|\/)powerbi(?:-client|loader)?(?:\.min)?\.js$/i.test(String(value)) },
+]);
+function hostedResource(value, matches) {
+  try {
+    const url = new URL(String(value).startsWith('//') ? `https:${value}` : value);
+    return ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && matches(url);
+  } catch { return false; }
+}
 
 /**
  * Comparable key of a page resource: CDN platform bundles and the local copies share the

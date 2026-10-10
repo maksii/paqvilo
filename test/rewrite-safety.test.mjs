@@ -216,6 +216,13 @@ test('HTML double-escaped script text does not end the executable block early', 
   assert.equal(rewrite(`<script>${before}</script>`).html, `<script>${after}</script>`);
 });
 
+test('script double-escaped --!> stays script text rather than using normal comment recovery', () => {
+  const before = "const a = '<!--<script>--!>';\nconst b = '</script>';\nwindow.probe = 1;";
+  const after = before.replace('probe = 1', 'probe = 2');
+  script('form.js', before, after);
+  assert.equal(rewrite(`<script>${before}</script><p>After</p>`).html, `<script>${after}</script><p>After</p>`);
+});
+
 test('local inline code cannot close its HTML element early or hide its closing tag', () => {
   for (const after of ['const label = "</script>";', 'const label = "<!--<script>";']) {
     sources = [];
@@ -411,14 +418,18 @@ test('async construction preloads stable sources with bounded concurrency and sh
   for (let i = 0; i < 40; i++) script(`form-${i}.js`, `original${i}();`, `local${i}();`);
   const changed = new Set(versions.keys());
   const baseline = { cache: new Map(), changedFiles: () => { throw new Error('shared changed state must avoid another Git scan'); }, show: (file) => versions.get(file) };
-  const read = fs.promises.readFile;
+  const open = fs.promises.open;
   const syncRead = fs.readFileSync;
   let running = 0;
   let maximum = 0;
   let synchronous = 0;
-  fs.promises.readFile = async (...args) => {
+  fs.promises.open = async (...args) => {
     maximum = Math.max(maximum, ++running);
-    try { return await read(...args); } finally { running--; }
+    let handle;
+    try { handle = await open(...args); } catch (error) { running--; throw error; }
+    const close = handle.close.bind(handle);
+    handle.close = async () => { try { return await close(); } finally { running--; } };
+    return handle;
   };
   fs.readFileSync = (...args) => { synchronous++; return syncRead(...args); };
   try {
@@ -429,59 +440,68 @@ test('async construction preloads stable sources with bounded concurrency and sh
     rewriter.refresh([]);
     assert.equal(synchronous, 0);
   } finally {
-    fs.promises.readFile = read;
+    fs.promises.open = open;
     fs.readFileSync = syncRead;
   }
 });
 
 test('async construction retries a source that finishes saving during prefetch', async () => {
   script('form.js', 'original();', 'firstLocal();');
-  const read = fs.promises.readFile;
+  const open = fs.promises.open;
   let saved = false;
-  fs.promises.readFile = async (...args) => {
-    const text = await read(...args);
-    if (!saved && args[0] === sources[0].file) {
-      saved = true;
-      fs.writeFileSync(sources[0].file, 'finishedSavingTheLatestVersion();');
-    }
-    return text;
+  fs.promises.open = async (...args) => {
+    const handle = await open(...args), read = handle.read.bind(handle);
+    handle.read = async (...input) => {
+      const result = await read(...input);
+      if (!saved && args[0] === sources[0].file) {
+        saved = true;
+        fs.writeFileSync(sources[0].file, 'finishedSavingTheLatestVersion();');
+      }
+      return result;
+    };
+    return handle;
   };
   try {
     const baseline = { cache: new Map(), changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
     const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
     assert.equal(rewriter.rewrite('<script>original();</script>', '/').html, '<script>finishedSavingTheLatestVersion();</script>');
   } finally {
-    fs.promises.readFile = read;
+    fs.promises.open = open;
   }
 });
 
 test('async construction revalidates early files after other reads finish', async () => {
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
-  const read = fs.promises.readFile;
+  const open = fs.promises.open;
   const realpath = fs.promises.realpath;
-  let firstChecks = 0;
+  let firstClosed = false;
   let releaseFirst;
   const firstReady = new Promise((resolve) => { releaseFirst = resolve; });
   fs.promises.realpath = async (...args) => {
     const result = await realpath(...args);
-    if (args[0] === sources[0].file && ++firstChecks === 2) setImmediate(releaseFirst);
+    if (args[0] === sources[0].file && firstClosed) setImmediate(releaseFirst);
     return result;
   };
-  fs.promises.readFile = async (...args) => {
-    const text = await read(...args);
-    if (args[0] === sources[1].file) {
-      await firstReady;
-      fs.writeFileSync(sources[0].file, 'latestSavedWhileAnotherSourceWasLoading();');
-    }
-    return text;
+  fs.promises.open = async (...args) => {
+    const handle = await open(...args), read = handle.read.bind(handle), close = handle.close.bind(handle);
+    handle.close = async () => { await close(); if (args[0] === sources[0].file) firstClosed = true; };
+    handle.read = async (...input) => {
+      const result = await read(...input);
+      if (args[0] === sources[1].file) {
+        await firstReady;
+        fs.writeFileSync(sources[0].file, 'latestSavedWhileAnotherSourceWasLoading();');
+      }
+      return result;
+    };
+    return handle;
   };
   try {
     const baseline = { changedFiles: () => new Set(versions.keys()), show: (file) => versions.get(file) };
     const rewriter = await HtmlRewriter.create({ model: { sourceDir: dir, inlineSources: sources }, site: SITE, baseline });
     assert.equal(rewriter.rewrite('<script>firstOriginal();</script>', '/').html, '<script>latestSavedWhileAnotherSourceWasLoading();</script>');
   } finally {
-    fs.promises.readFile = read;
+    fs.promises.open = open;
     fs.promises.realpath = realpath;
   }
 });

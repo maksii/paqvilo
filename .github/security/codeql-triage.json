@@ -1,0 +1,1850 @@
+{
+  "schemaVersion": 1,
+  "reviewedAt": "2026-10-10",
+  "repository": "maksii/paqvilo",
+  "baselineCommit": "ffbdefb5f1ba9ab94f25b7d223d41391d1929975",
+  "analysisId": 1928618620,
+  "querySuite": "security-extended",
+  "entries": [
+    {
+      "number": 1,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/fetchxml-engine.mjs",
+        "start_line": 151,
+        "end_line": 151,
+        "start_column": 5,
+        "end_column": 96
+      },
+      "disposition": "fix",
+      "evidence": "Unanchored XML token/attribute regexes can retry across overlapping malformed input received through FetchXML requests. Replaced token matching with a forward-only quote-aware scanner and sticky attribute parsing; unterminated input now fails explicitly. XML entity/declaration and depth behavior remains guarded.",
+      "verification": "mirage/test/security-regressions.test.mjs; mirage/test/fetchxml-limits.test.mjs; mirage/test/fetchxml-parity.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/1"
+    },
+    {
+      "number": 2,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/fetchxml-engine.mjs",
+        "start_line": 161,
+        "end_line": 161,
+        "start_column": 21,
+        "end_column": 65
+      },
+      "disposition": "fix",
+      "evidence": "Unanchored XML token/attribute regexes can retry across overlapping malformed input received through FetchXML requests. Replaced token matching with a forward-only quote-aware scanner and sticky attribute parsing; unterminated input now fails explicitly. XML entity/declaration and depth behavior remains guarded.",
+      "verification": "mirage/test/security-regressions.test.mjs; mirage/test/fetchxml-limits.test.mjs; mirage/test/fetchxml-parity.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/2"
+    },
+    {
+      "number": 3,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/fetchxml-engine.mjs",
+        "start_line": 164,
+        "end_line": 167,
+        "start_column": 23,
+        "end_column": 9
+      },
+      "disposition": "fix",
+      "evidence": "Unanchored XML token/attribute regexes can retry across overlapping malformed input received through FetchXML requests. Replaced token matching with a forward-only quote-aware scanner and sticky attribute parsing; unterminated input now fails explicitly. XML entity/declaration and depth behavior remains guarded.",
+      "verification": "mirage/test/security-regressions.test.mjs; mirage/test/fetchxml-limits.test.mjs; mirage/test/fetchxml-parity.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/3"
+    },
+    {
+      "number": 4,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/odata-feeds.mjs",
+        "start_line": 113,
+        "end_line": 113,
+        "start_column": 19,
+        "end_column": 37
+      },
+      "disposition": "fix",
+      "evidence": "The sticky OData tokenizer combines whitespace and numeric matching with a trailing boundary check. Whitespace is now consumed separately and the boundary is checked after maximal numeric matching, avoiding repeated numeric alternatives without accepting invalid trailing syntax.",
+      "verification": "mirage/test/odata-parity.test.mjs; full validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/4"
+    },
+    {
+      "number": 5,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/platform.mjs",
+        "start_line": 278,
+        "end_line": 278,
+        "start_column": 10,
+        "end_column": 35
+      },
+      "disposition": "fix",
+      "evidence": "An unterminated <head prefix can cause the unanchored [^>]* expression to repeatedly scan the rest of the document. Restricting the tag body to [^<>]* with a head word boundary keeps matching linear and avoids treating <header> as <head>.",
+      "verification": "mirage/test/portal-client-object.test.mjs; mirage/test-browser/platform-shell.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/5"
+    },
+    {
+      "number": 6,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/platform.mjs",
+        "start_line": 279,
+        "end_line": 279,
+        "start_column": 7,
+        "end_column": 50
+      },
+      "disposition": "fix",
+      "evidence": "An unterminated <head prefix can cause the unanchored [^>]* expression to repeatedly scan the rest of the document. Restricting the tag body to [^<>]* with a head word boundary keeps matching linear and avoids treating <header> as <head>.",
+      "verification": "mirage/test/portal-client-object.test.mjs; mirage/test-browser/platform-shell.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/6"
+    },
+    {
+      "number": 7,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/source-dependencies.mjs",
+        "start_line": 141,
+        "end_line": 141,
+        "start_column": 72,
+        "end_column": 140
+      },
+      "disposition": "fix",
+      "evidence": "Numeric filename alternatives contain dots inside a repeated dot-separated group, allowing exponential backtracking and repeated matching of .min. Replaced the core-library expressions with deterministic basename scanners retaining the .test interface. Query text cannot impersonate a filename.",
+      "verification": "mirage/test/security-regressions.test.mjs: bounded subprocess and legacy short-input differential cases; mirage/test/runtime-compatibility.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/7"
+    },
+    {
+      "number": 8,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/source-dependencies.mjs",
+        "start_line": 166,
+        "end_line": 166,
+        "start_column": 134,
+        "end_column": 167
+      },
+      "disposition": "fix",
+      "evidence": "Numeric filename alternatives contain dots inside a repeated dot-separated group, allowing exponential backtracking and repeated matching of .min. Replaced the core-library expressions with deterministic basename scanners retaining the .test interface. Query text cannot impersonate a filename.",
+      "verification": "mirage/test/security-regressions.test.mjs: bounded subprocess and legacy short-input differential cases; mirage/test/runtime-compatibility.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/8"
+    },
+    {
+      "number": 9,
+      "rule": "js/polynomial-redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/server.mjs",
+        "start_line": 3098,
+        "end_line": 3098,
+        "start_column": 40,
+        "end_column": 103
+      },
+      "disposition": "fix",
+      "evidence": "Adapter header extraction splits an ambiguous path/name regex into one maximal path match followed by basename and suffix operations. This preserves adapter names while eliminating repeated repartition of long dash/dot filenames.",
+      "verification": "mirage/test-browser/local-compatibility.test.mjs; full browser validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/9"
+    },
+    {
+      "number": 10,
+      "rule": "js/redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/source-dependencies.mjs",
+        "start_line": 20,
+        "end_line": 20,
+        "start_column": 62,
+        "end_column": 68
+      },
+      "disposition": "fix",
+      "evidence": "Numeric filename alternatives contain dots inside a repeated dot-separated group, allowing exponential backtracking and repeated matching of .min. Replaced the core-library expressions with deterministic basename scanners retaining the .test interface. Query text cannot impersonate a filename.",
+      "verification": "mirage/test/security-regressions.test.mjs: bounded subprocess and legacy short-input differential cases; mirage/test/runtime-compatibility.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/10"
+    },
+    {
+      "number": 11,
+      "rule": "js/redos",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/source-dependencies.mjs",
+        "start_line": 24,
+        "end_line": 24,
+        "start_column": 85,
+        "end_column": 91
+      },
+      "disposition": "fix",
+      "evidence": "Numeric filename alternatives contain dots inside a repeated dot-separated group, allowing exponential backtracking and repeated matching of .min. Replaced the core-library expressions with deterministic basename scanners retaining the .test interface. Query text cannot impersonate a filename.",
+      "verification": "mirage/test/security-regressions.test.mjs: bounded subprocess and legacy short-input differential cases; mirage/test/runtime-compatibility.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/11"
+    },
+    {
+      "number": 12,
+      "rule": "js/identity-replacement",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 340,
+        "end_line": 340,
+        "start_column": 14,
+        "end_column": 29
+      },
+      "disposition": "fix",
+      "evidence": "The final GUID URL replacement is an identity operation with no normalization effect. Removed it without changing URL output.",
+      "verification": "mirage/test/parity-suite.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/12"
+    },
+    {
+      "number": 13,
+      "rule": "js/xss",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/admin/app.mjs",
+        "start_line": 1546,
+        "end_line": 1548,
+        "start_column": 29,
+        "end_column": 36
+      },
+      "disposition": "fix",
+      "evidence": "The traced view name is allowlisted at initial load and hashchange, but review found a separate real injection in the same rendering path: audit kind values from the deep link were inserted into option HTML without escaping. Escape both option attributes and text; replace object renderer dispatch with Map and restrict audit-filter writes to own keys.",
+      "verification": "mirage/test-browser/admin-audit.test.mjs: hostile kind deep link and invalid prototype hash; existing admin browser tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/13"
+    },
+    {
+      "number": 14,
+      "rule": "js/xss-through-dom",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "examples/project/components/pcf-field-control/ExampleLinearInput/index.ts",
+        "start_line": 42,
+        "end_line": 42,
+        "start_column": 28,
+        "end_column": 44
+      },
+      "disposition": "fix",
+      "evidence": "The flagged range-input value is constrained by the browser, but adjacent init/updateView paths wrote externally formatted PCF values through innerHTML. All three label writes now use textContent. Rebuilt the checked-in sample bundle from TypeScript with the existing PCF tooling in production mode, including its license sidecar.",
+      "verification": "mirage/test-browser/security-compatibility.test.mjs: real built sample init/update/input/getOutputs/destroy with hostile formatted values; PCF production compiler and ESLint",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/14"
+    },
+    {
+      "number": 15,
+      "rule": "js/xss-through-dom",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/crmentityformview-compat.js",
+        "start_line": 268,
+        "end_line": 268,
+        "start_column": 33,
+        "end_column": 37
+      },
+      "disposition": "fix",
+      "evidence": "Readonly URL values reached href without a scheme gate. Resolve URLs and permit the supported HTTP(S), FTP(S), OneNote, tel and mailto protocols; executable javascript/data schemes remain visible as non-link inputs. Target=_blank links also receive noopener/noreferrer.",
+      "verification": "mirage/test-browser/security-compatibility.test.mjs: executable, newline, data, relative, FTP and email URLs; native form browser tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/15"
+    },
+    {
+      "number": 16,
+      "rule": "js/xss-through-dom",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/entity-grid-compat.js",
+        "start_line": 515,
+        "end_line": 515,
+        "start_column": 33,
+        "end_column": 36
+      },
+      "disposition": "fix",
+      "evidence": "Modal frame src could accept an executable URL from action/DOM metadata. Resolve the address and require HTTP(S) plus the current origin before opening the frame; real local forms still load.",
+      "verification": "mirage/test-browser/security-compatibility.test.mjs; mirage/test-browser/solution-form.test.mjs; mirage/test-browser/grid-action-menu.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/16"
+    },
+    {
+      "number": 17,
+      "rule": "js/xss-through-dom",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/richtext-actions.mjs",
+        "start_line": 92,
+        "end_line": 92,
+        "start_column": 30,
+        "end_column": 34
+      },
+      "disposition": "false-positive",
+      "evidence": "richtext-actions parses the hidden JSON string into a detached DOMParser document and reads body.textContent.includes(text). No node or markup from that document is inserted into the active page, so this path cannot execute script or handlers. This is a text assertion helper, not a sanitizer. Detached parsing can fetch resources; that separate browser behavior is not an XSS dismissal rationale.",
+      "verification": "mirage/lib/richtext-actions.mjs: waitForRichText; mirage/test-browser/richtext-form.test.mjs; DOMParser specification/MDN",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/17"
+    },
+    {
+      "number": 18,
+      "rule": "js/xss-through-dom",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/test-browser/local-compatibility.test.mjs",
+        "start_line": 179,
+        "end_line": 179,
+        "start_column": 63,
+        "end_column": 117
+      },
+      "disposition": "false-positive",
+      "evidence": "The exact DOMParser sink reads textContent solely to compare the invented editor value \"Compatibility formatted text\" in a browser assertion. The detached tree is never adopted into the live DOM and scripts cannot execute through this path.",
+      "verification": "mirage/test-browser/local-compatibility.test.mjs: rich-text assertion; DOMParser inert-document semantics",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/18"
+    },
+    {
+      "number": 19,
+      "rule": "js/unsafe-jquery-plugin",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/lib/jquery-blockui-compat.js",
+        "start_line": 120,
+        "end_line": 120,
+        "start_column": 51,
+        "end_column": 58
+      },
+      "disposition": "fix",
+      "evidence": "The reported plugin $() call handles an existing node/jQuery object, not a string. Make that contract explicit with typeof message !== string before passing it to $(). The separate append(message) API intentionally accepts trusted authored HTML like blockUI; it is not an untrusted-text sanitizer.",
+      "verification": "mirage/test-browser/platform-app-equivalents.test.mjs; mirage/test-browser/local-compatibility.test.mjs; full browser validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/19"
+    },
+    {
+      "number": 20,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/html-rewriter.mjs",
+        "start_line": 147,
+        "end_line": 147,
+        "start_column": 21,
+        "end_column": 57
+      },
+      "disposition": "false-positive",
+      "evidence": "rawEnd is a script raw-text lexer, not an HTML comment sanitizer. HTML script escaped-dash-dash and double-escaped-dash-dash states end on > after --; --!> follows the script escaped state transitions and is not the normal HTML comment-close transition. The normal comment lexer separately supports malformed comment endings. Adding --!> here would change browser script boundaries.",
+      "verification": "lense/html-rewriter.mjs: rawEnd/readTag; test/rewrite-safety.test.mjs: HTML malformed-comment recovery and script comment/double-escape cases; WHATWG script tokenizer states",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/20"
+    },
+    {
+      "number": 21,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 692,
+        "end_line": 692,
+        "start_column": 25,
+        "end_column": 90
+      },
+      "disposition": "false-positive",
+      "evidence": "strip_html implements the DotLiquid/Power Pages text-transform contract. Its replacement result is returned as a string; it is not the html_safe_escape security filter and promises no HTML sanitization. Preserve its parity behavior and document using escape for literal text or html_safe_escape for formatted untrusted HTML. No query coverage is removed.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html parity; mirage/docs/liquid-parity.md; DotLiquid StandardFilters.StripHtml",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/21"
+    },
+    {
+      "number": 22,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 97,
+        "end_line": 97,
+        "start_column": 15,
+        "end_column": 51
+      },
+      "disposition": "false-positive",
+      "evidence": "signInDocument removes comment/script/style ranges only from a temporary head string used to extract a title and decide whether reference capture is a sign-in page. It returns a boolean, and never serves the replacement string as HTML. Imperfect range classification does not create an HTML execution sink.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/22"
+    },
+    {
+      "number": 23,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/test/header-notification-capture.test.mjs",
+        "start_line": 134,
+        "end_line": 134,
+        "start_column": 37,
+        "end_column": 63
+      },
+      "disposition": "false-positive",
+      "evidence": "The regular expression is assert.doesNotMatch for a fixed malicious literal whose HTML-escaped representation is asserted immediately beforehand. It neither removes tags nor outputs HTML. Upper-case SCRIPT is irrelevant to this exact lower-case test input.",
+      "verification": "mirage/test/header-notification-capture.test.mjs: literal notification escaping regression",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/23"
+    },
+    {
+      "number": 24,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/webapi-inventory.mjs",
+        "start_line": 603,
+        "end_line": 603,
+        "start_column": 49,
+        "end_column": 76
+      },
+      "disposition": "false-positive",
+      "evidence": "The script-range regex only assigns original source offsets to classify literal FetchXML as Web API, metadata or Liquid include input. It never sanitizes/re-emits HTML. Returned XML goes to the non-resolving FetchXML planner, not browser execution.",
+      "verification": "mirage/webapi-inventory.mjs: collect fetchSources; mirage/test/webapi-inventory-wrappers.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/24"
+    },
+    {
+      "number": 25,
+      "rule": "js/bad-tag-filter",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "test/reporting.test.mjs",
+        "start_line": 30,
+        "end_line": 30,
+        "start_column": 34,
+        "end_column": 54
+      },
+      "disposition": "false-positive",
+      "evidence": "assert.doesNotMatch checks exact <img>/<script>/<div> literals supplied by the synthetic test, after assertions for numeric HTML entities in the markdown output. It is an assertion, not a case-insensitive sanitizer.",
+      "verification": "test/reporting.test.mjs: mapping markdown escaping test",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/25"
+    },
+    {
+      "number": 26,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/audit-json.mjs",
+        "start_line": 29,
+        "end_line": 29,
+        "start_column": 23,
+        "end_column": 83
+      },
+      "disposition": "false-positive",
+      "evidence": "inspectComponentJson removes XML comment/CDATA spans only for counting paired content elements against componentContentSpan. The temporary string is not emitted; the result is parsed JSON plus inventory diagnostics. It cannot become injected HTML.",
+      "verification": "lense/audit-json.mjs: inspectComponentJson; test/audit-json.test.mjs and resource inventory regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/26"
+    },
+    {
+      "number": 27,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/form-service.mjs",
+        "start_line": 584,
+        "end_line": 585,
+        "start_column": 13,
+        "end_column": 55
+      },
+      "disposition": "false-positive",
+      "evidence": "The replacement feeds empty(...), a required-field boolean predicate. It is not stored or rendered as sanitized HTML. The actual rich-text value follows the existing native form contract. A malformed comment may affect emptiness classification but cannot execute through this sink.",
+      "verification": "mirage/lib/form-service.mjs: requiredEmpty; native/rich-text form validation tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/27"
+    },
+    {
+      "number": 28,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 538,
+        "end_line": 542,
+        "start_column": 10,
+        "end_column": 68
+      },
+      "disposition": "fix",
+      "evidence": "html_safe_escape was a real security sanitizer implemented as successive regex deletions. Nested malformed tags, encoded/control-character URLs and foreign-content markup could bypass it. Use pinned maintained sanitize-html 2.18.0 with explicit safe tags, attributes and URI schemes. No unsafe-tag or URL regex is used as the sanitizer.",
+      "verification": "mirage/test/security-regressions.test.mjs: parser-based payload inspection and stable sanitization; Liquid parity tests; new dependency audits/signatures and package smoke",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/28"
+    },
+    {
+      "number": 29,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 538,
+        "end_line": 541,
+        "start_column": 10,
+        "end_column": 106
+      },
+      "disposition": "fix",
+      "evidence": "html_safe_escape was a real security sanitizer implemented as successive regex deletions. Nested malformed tags, encoded/control-character URLs and foreign-content markup could bypass it. Use pinned maintained sanitize-html 2.18.0 with explicit safe tags, attributes and URI schemes. No unsafe-tag or URL regex is used as the sanitizer.",
+      "verification": "mirage/test/security-regressions.test.mjs: parser-based payload inspection and stable sanitization; Liquid parity tests; new dependency audits/signatures and package smoke",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/29"
+    },
+    {
+      "number": 30,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 538,
+        "end_line": 540,
+        "start_column": 10,
+        "end_column": 105
+      },
+      "disposition": "fix",
+      "evidence": "html_safe_escape was a real security sanitizer implemented as successive regex deletions. Nested malformed tags, encoded/control-character URLs and foreign-content markup could bypass it. Use pinned maintained sanitize-html 2.18.0 with explicit safe tags, attributes and URI schemes. No unsafe-tag or URL regex is used as the sanitizer.",
+      "verification": "mirage/test/security-regressions.test.mjs: parser-based payload inspection and stable sanitization; Liquid parity tests; new dependency audits/signatures and package smoke",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/30"
+    },
+    {
+      "number": 31,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/liquid-filters.mjs",
+        "start_line": 692,
+        "end_line": 692,
+        "start_column": 14,
+        "end_column": 98
+      },
+      "disposition": "false-positive",
+      "evidence": "strip_html implements the DotLiquid/Power Pages text-transform contract. Its replacement result is returned as a string; it is not the html_safe_escape security filter and promises no HTML sanitization. Preserve its parity behavior and document using escape for literal text or html_safe_escape for formatted untrusted HTML. No query coverage is removed.",
+      "verification": "mirage/test/liquid-portal-parity.test.mjs: strip_html parity; mirage/docs/liquid-parity.md; DotLiquid StandardFilters.StripHtml",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/31"
+    },
+    {
+      "number": 32,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/native-services.mjs",
+        "start_line": 1991,
+        "end_line": 1991,
+        "start_column": 54,
+        "end_column": 119
+      },
+      "disposition": "false-positive",
+      "evidence": "The flagged replacement strips label markup before csvCell and serves text/csv with an explicit CSV download format. It cannot create an HTML element sink. Review additionally found spreadsheet-formula interpretation in csvCell; that is fixed independently by prefixing formula-like text while retaining ordinary signed numbers.",
+      "verification": "mirage/lib/native-services.mjs: download-as-csv/excel; mirage/lib/csv.mjs; mirage/test/security-regressions.test.mjs: spreadsheet formula regression",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/32"
+    },
+    {
+      "number": 33,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 94,
+        "end_line": 98,
+        "start_column": 16,
+        "end_column": 57
+      },
+      "disposition": "false-positive",
+      "evidence": "signInDocument removes comment/script/style ranges only from a temporary head string used to extract a title and decide whether reference capture is a sign-in page. It returns a boolean, and never serves the replacement string as HTML. Imperfect range classification does not create an HTML execution sink.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/33"
+    },
+    {
+      "number": 34,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 94,
+        "end_line": 97,
+        "start_column": 16,
+        "end_column": 59
+      },
+      "disposition": "false-positive",
+      "evidence": "signInDocument removes comment/script/style ranges only from a temporary head string used to extract a title and decide whether reference capture is a sign-in page. It returns a boolean, and never serves the replacement string as HTML. Imperfect range classification does not create an HTML execution sink.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/34"
+    },
+    {
+      "number": 35,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/shell-capture.mjs",
+        "start_line": 94,
+        "end_line": 96,
+        "start_column": 16,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "evidence": "signInDocument removes comment/script/style ranges only from a temporary head string used to extract a title and decide whether reference capture is a sign-in page. It returns a boolean, and never serves the replacement string as HTML. Imperfect range classification does not create an HTML execution sink.",
+      "verification": "mirage/lib/shell-capture.mjs: signInDocument; mirage/test/shell-capture.test.mjs and capture tests; reviewed boolean return and all callers",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/35"
+    },
+    {
+      "number": 36,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/platform.mjs",
+        "start_line": 549,
+        "end_line": 550,
+        "start_column": 10,
+        "end_column": 29
+      },
+      "disposition": "false-positive",
+      "evidence": "plainText is used for modal title/aria-label attributes, and both call sites pass its result to attr(), which HTML-encodes ampersand, angle brackets and both quotes. The unescaped title/body slots are authored native markup. A residual <script from plainText is encoded at the actual attribute sink.",
+      "verification": "mirage/lib/platform.mjs: plainText/nativeModal/attr/escape; platform native-modal browser regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/36"
+    },
+    {
+      "number": 37,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/sign-in-flow.mjs",
+        "start_line": 594,
+        "end_line": 596,
+        "start_column": 11,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "evidence": "registrationDisabledMessage constructs a plain error string, then passes it via SignInProblem to renderSignIn. The render path calls the sign-in page error renderer that escapes the error text; it does not insert the temporary stripped string as trusted HTML.",
+      "verification": "mirage/lib/sign-in-flow.mjs: registrationDisabledMessage/fail; mirage/server.mjs: renderSignIn; sign-in page error escaping and sign-in tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/37"
+    },
+    {
+      "number": 38,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/query-inventory.mjs",
+        "start_line": 15,
+        "end_line": 16,
+        "start_column": 18,
+        "end_column": 39
+      },
+      "disposition": "false-positive",
+      "evidence": "inventoryBlock drops comments solely to count literal FetchXML entities/links and produce numeric coverage summaries. No replacement result is served as HTML; dynamic/unsupported queries are reported separately.",
+      "verification": "mirage/query-inventory.mjs: inventoryBlock; mirage/test/query-inventory.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/38"
+    },
+    {
+      "number": 39,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/query-inventory.mjs",
+        "start_line": 60,
+        "end_line": 61,
+        "start_column": 20,
+        "end_column": 39
+      },
+      "disposition": "false-positive",
+      "evidence": "inventoryPortalTemplates removes source comments before collecting template names, file paths and query coverage counts. This analysis does not render the replacement string into a browser.",
+      "verification": "mirage/query-inventory.mjs: inventoryPortalTemplates; query-inventory tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/39"
+    },
+    {
+      "number": 40,
+      "rule": "js/incomplete-multi-character-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/webapi-inventory.mjs",
+        "start_line": 257,
+        "end_line": 265,
+        "start_column": 10,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "evidence": "concreteFetch removes Liquid/comment syntax to make an approximate query for static inventory. The result is fed to the XML query parser for diagnostics/coverage, never to an HTML sink, and unresolved substitutions are marked dynamic.",
+      "verification": "mirage/webapi-inventory.mjs: concreteFetch; mirage/test/webapi-inventory-wrappers.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/40"
+    },
+    {
+      "number": 41,
+      "rule": "js/double-escaping",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 409,
+        "end_line": 411,
+        "start_column": 5,
+        "end_column": 31
+      },
+      "disposition": "fix",
+      "evidence": "Source-corpus entity replacements could decode &amp;lt; twice and overstate source-derived reveal matches. Decode the supported entities in one replacement pass so each input entity is decoded once, preserving ordinary encoded source text.",
+      "verification": "mirage/test/parity-suite.test.mjs; loadSourceCorpus entity regression in security-regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/41"
+    },
+    {
+      "number": 42,
+      "rule": "js/incomplete-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/footer-capture.mjs",
+        "start_line": 197,
+        "end_line": 197,
+        "start_column": 62,
+        "end_column": 74
+      },
+      "disposition": "fix",
+      "evidence": "Footer class names are already restricted by registerShellConventions to ASCII CSS identifiers, excluding regex metacharacters. Use a complete regex-escape nevertheless so future extensions cannot widen that implicit assumption.",
+      "verification": "mirage/lib/extensions.mjs: registerShellConventions; footer capture tests; full validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/42"
+    },
+    {
+      "number": 43,
+      "rule": "js/incomplete-sanitization",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/portal-matrix.mjs",
+        "start_line": 1565,
+        "end_line": 1565,
+        "start_column": 88,
+        "end_column": 109
+      },
+      "disposition": "fix",
+      "evidence": "Backslash-plus-pipe markdown escaping is ambiguous when input already contains backslashes. Encode backslash, pipe, HTML delimiters, backticks and brackets as numeric entities for table cells and normalize newlines; ordinary text stays readable.",
+      "verification": "mirage/test/portal-matrix.test.mjs; report cell escaping regression",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/43"
+    },
+    {
+      "number": 44,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/lib/portal-client-object.mjs",
+        "start_line": 86,
+        "end_line": 86,
+        "start_column": 205,
+        "end_column": 209
+      },
+      "disposition": "false-positive",
+      "evidence": "The specifically reported improperly-sanitized value is JSON.stringify(PORTAL_OBJECT_KEYS), a frozen constant array of fixed names. Dynamic values are separately JSON.stringify-encoded and < is escaped before inline script embedding. JSON strings/arrays are complete JS literals, not raw source fragments.",
+      "verification": "mirage/lib/portal-client-object.mjs; mirage/test/portal-client-object.test.mjs; security-regressions hostile code-construction VM test",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/44"
+    },
+    {
+      "number": 45,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 1425,
+        "end_line": 1425,
+        "start_column": 46,
+        "end_column": 79
+      },
+      "disposition": "false-positive",
+      "evidence": "loadingProbe embeds JSON.stringify(LOADING_SELECTORS), a module constant array, as a JS array literal. It has no request, portal or user-derived code fragment. The expression is evaluated by browser automation rather than interpolated in an HTML script element.",
+      "verification": "mirage/parity-suite.mjs: LOADING_SELECTORS/loadingProbe; parity suite tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/45"
+    },
+    {
+      "number": 46,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 2632,
+        "end_line": 2632,
+        "start_column": 72,
+        "end_column": 105
+      },
+      "disposition": "false-positive",
+      "evidence": "discover.selector is inserted only as JSON.stringify(selector), a complete quoted JS string literal passed to querySelector. Quotes, backslashes, newlines and closing-script text remain data in the evaluated expression; there is no HTML embedding.",
+      "verification": "mirage/test/security-regressions.test.mjs: actual discoverTarget generated expression in VM with hostile selector",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/46"
+    },
+    {
+      "number": 47,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 2632,
+        "end_line": 2632,
+        "start_column": 143,
+        "end_column": 187
+      },
+      "disposition": "false-positive",
+      "evidence": "discover.attribute is inserted only as JSON.stringify(attribute), a complete quoted JS string literal passed to getAttribute. The browser expression is not HTML and cannot be terminated by </script>; no raw attribute code is interpolated.",
+      "verification": "mirage/test/security-regressions.test.mjs: actual discoverTarget expression with hostile attribute",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/47"
+    },
+    {
+      "number": 48,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 3178,
+        "end_line": 3178,
+        "start_column": 70,
+        "end_column": 116
+      },
+      "disposition": "false-positive",
+      "evidence": "derivePersona uses JSON.stringify for the configured selector inside a browser expression. The selector stays data and may only affect which DOM node is read; script metacharacters cannot create a statement.",
+      "verification": "mirage/test/security-regressions.test.mjs: actual derivePersona generated expression executed with hostile selector",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/48"
+    },
+    {
+      "number": 49,
+      "rule": "js/bad-code-sanitization",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/test/preset-registry.test.mjs",
+        "start_line": 36,
+        "end_line": 36,
+        "start_column": 170,
+        "end_column": 195
+      },
+      "disposition": "false-positive",
+      "evidence": "writePack generates executable pack code deliberately in an owned temporary fixture directory. Its ids/names/matchNames are fixed synthetic literals supplied by this test file and JSON.stringify-encoded. The presets argument is deliberate trusted source code from test literals, not any remote or user input. Packs are explicitly trusted modules by contract.",
+      "verification": "mirage/test/preset-registry.test.mjs: all writePack callers and temporary fixture cleanup",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/49"
+    },
+    {
+      "number": 50,
+      "rule": "js/unvalidated-dynamic-method-call",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/admin/app.mjs",
+        "start_line": 1547,
+        "end_line": 1547,
+        "start_column": 7,
+        "end_column": 28
+      },
+      "disposition": "fix",
+      "evidence": "The view name was already checked against the constant views array on every assignment, so inherited names were unreachable. Map dispatch now additionally removes inherited-property lookup, preserving all allowed view handlers.",
+      "verification": "mirage/test-browser/admin-audit.test.mjs; existing admin-navigation/admin-workspace tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/50"
+    },
+    {
+      "number": 51,
+      "rule": "js/client-side-request-forgery",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "examples/project/portal/web-files/demo-workspace.js",
+        "start_line": 33,
+        "end_line": 33,
+        "start_column": 28,
+        "end_column": 446
+      },
+      "disposition": "false-positive",
+      "evidence": "api constructs a URL and rejects origin !== location.origin or pathname outside /_api/ before fetch. Query-controlled table/record selectors cannot select an external origin or non-API route. Mutations also require canWrite and the same-origin verification token. This is the deliberate portal API interface, not unconstrained request forgery.",
+      "verification": "examples/project/portal/web-files/demo-workspace.js: api; installed demo browser/API tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/51"
+    },
+    {
+      "number": 52,
+      "rule": "js/client-side-request-forgery",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "examples/project/solution/powerpagecomponents/b4700000-0000-4000-8000-ebf51cf84c1e/filecontent/demo-workspace.js",
+        "start_line": 33,
+        "end_line": 33,
+        "start_column": 28,
+        "end_column": 446
+      },
+      "disposition": "false-positive",
+      "evidence": "The enhanced export contains the identical api guard: parsed URL must have the current origin and /_api/ prefix before fetch; write access and verification-token checks remain. This is the second exported representation of the same constrained demo API.",
+      "verification": "examples/project/solution/powerpagecomponents/b4700000-0000-4000-8000-ebf51cf84c1e/filecontent/demo-workspace.js: api; installed demo tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/52"
+    },
+    {
+      "number": 53,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/commands/agent.mjs",
+        "start_line": 22,
+        "end_line": 22,
+        "start_column": 34,
+        "end_column": 59
+      },
+      "disposition": "fix",
+      "evidence": "Discovery stat and path-based read were separate, allowing growth or replacement after the 64 KiB check. Open/validate/read one bounded descriptor; reject size, identity/version and path changes, then validate the schema and loopback endpoint before use. Never print the token.",
+      "verification": "test/local-file.test.mjs: growth/replacement/bounds; agent command/server regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/53"
+    },
+    {
+      "number": 54,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/commands/use.mjs",
+        "start_line": 36,
+        "end_line": 36,
+        "start_column": 3,
+        "end_column": 31
+      },
+      "disposition": "false-positive",
+      "evidence": "The exists checks select an explicitly configured owner-writable .env versus its example and format the created/updated notice. They are not a privilege or confinement gate. The CLI performs a user-requested write to that exact trusted config path without elevated privileges; an attacker controlling that directory already controls the config/catalogue. Concurrent owner edits remain a coordination concern, not this CWE security boundary.",
+      "verification": "lense/commands/use.mjs: run/rememberSelection; test CLI/config selection regressions; repository local-source trust boundary",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/54"
+    },
+    {
+      "number": 55,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/file-cache.mjs",
+        "start_line": 51,
+        "end_line": 51,
+        "start_column": 28,
+        "end_column": 49
+      },
+      "disposition": "false-positive",
+      "evidence": "The pre-read stat is a freshness/cache-key check, not an authorization gate. The cache reads selected local source bytes with caller privileges and stats again after reading; it stores bytes only if the complete identity/size/mtime/ctime stamp remains equal. Concurrent saves cannot leave a stale cached version. Source confinement is handled by the resolver before this cache.",
+      "verification": "lense/file-cache.mjs: FileBodyCache.read; test/file-cache.test.mjs and resolver confinement tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/55"
+    },
+    {
+      "number": 56,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/commands/mirage.mjs",
+        "start_line": 551,
+        "end_line": 551,
+        "start_column": 30,
+        "end_column": 54
+      },
+      "disposition": "false-positive",
+      "evidence": "The related check is the startup fs.open(log, a) for the owned child log, not a permission decision. A later read retrieves diagnostic text only after that child exits, from its ignored runtime work directory, without executing it or accessing a privileged file. The existing process lifecycle owns and closes the log descriptor.",
+      "verification": "lense/commands/mirage.mjs: owned startup log and failure path; Mirage lifecycle tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/56"
+    },
+    {
+      "number": 57,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/html-rewriter.mjs",
+        "start_line": 574,
+        "end_line": 574,
+        "start_column": 30,
+        "end_column": 64
+      },
+      "disposition": "fix",
+      "evidence": "Async source prefetch checked realpath/regular-file and later read by filename. The descriptor helper now checks the opened identity, bounds growth and validates path/version afterward. Existing outer source-stamp revalidation and synchronous retry behavior remain; race tests now interpose descriptor reads.",
+      "verification": "test/local-file.test.mjs; test/rewrite-safety.test.mjs; test/session.test.mjs concurrent-save regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/57"
+    },
+    {
+      "number": 58,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/panel.mjs",
+        "start_line": 761,
+        "end_line": 761,
+        "start_column": 21,
+        "end_column": 50
+      },
+      "disposition": "fix",
+      "evidence": "The line search size gate previously preceded a separate path read. It now reads one stable descriptor bounded by the existing 16 MiB limit and safely returns no line on unstable input.",
+      "verification": "test/local-file.test.mjs; panel/source inspection tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/58"
+    },
+    {
+      "number": 59,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/panel.mjs",
+        "start_line": 1000,
+        "end_line": 1000,
+        "start_column": 43,
+        "end_column": 72
+      },
+      "disposition": "fix",
+      "evidence": "The panel comparison size check preceded a separate path read. Its non-inline branch now uses a stable descriptor bounded by the existing MAX_DIFF_BYTES limit; inline sourceText retains its source-aware decoding behavior.",
+      "verification": "test/local-file.test.mjs; panel diff tests; browser panel regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/59"
+    },
+    {
+      "number": 60,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "lense/source-inspection.mjs",
+        "start_line": 339,
+        "end_line": 339,
+        "start_column": 30,
+        "end_column": 55
+      },
+      "disposition": "fix",
+      "evidence": "Inspection asset realpath/size checks preceded filename reads. Keep the original export-root and 1 MiB constraints on the descriptor itself and reject changes during reading.",
+      "verification": "test/local-file.test.mjs; test/source-inspection.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/60"
+    },
+    {
+      "number": 61,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/code-components.mjs",
+        "start_line": 25,
+        "end_line": 25,
+        "start_column": 32,
+        "end_column": 65
+      },
+      "disposition": "fix",
+      "evidence": "PCF manifests and paired metadata were checked for source-root containment/1 MiB size before separate path reads. Read each through a confined bounded descriptor, so swapped/growing files cannot bypass those checks.",
+      "verification": "test/local-file.test.mjs; mirage/test/code-components.test.mjs; mirage/test-browser/code-components.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/61"
+    },
+    {
+      "number": 62,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/code-components.mjs",
+        "start_line": 30,
+        "end_line": 30,
+        "start_column": 32,
+        "end_column": 65
+      },
+      "disposition": "fix",
+      "evidence": "PCF manifests and paired metadata were checked for source-root containment/1 MiB size before separate path reads. Read each through a confined bounded descriptor, so swapped/growing files cannot bypass those checks.",
+      "verification": "test/local-file.test.mjs; mirage/test/code-components.test.mjs; mirage/test-browser/code-components.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/62"
+    },
+    {
+      "number": 63,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/code-components.mjs",
+        "start_line": 44,
+        "end_line": 44,
+        "start_column": 48,
+        "end_column": 65
+      },
+      "disposition": "fix",
+      "evidence": "Declared PCF resources had root/8 MiB checks before independent hash and RESX reads. Read one confined stable buffer once and reuse it for both hashing and RESX parsing; resource registration and declared-path restrictions remain.",
+      "verification": "test/local-file.test.mjs; mirage/test/code-components.test.mjs; native PCF browser tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/63"
+    },
+    {
+      "number": 64,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/code-components.mjs",
+        "start_line": 48,
+        "end_line": 48,
+        "start_column": 68,
+        "end_column": 93
+      },
+      "disposition": "fix",
+      "evidence": "Declared PCF resources had root/8 MiB checks before independent hash and RESX reads. Read one confined stable buffer once and reuse it for both hashing and RESX parsing; resource registration and declared-path restrictions remain.",
+      "verification": "test/local-file.test.mjs; mirage/test/code-components.test.mjs; native PCF browser tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/64"
+    },
+    {
+      "number": 65,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/exported-operations.mjs",
+        "start_line": 39,
+        "end_line": 39,
+        "start_column": 22,
+        "end_column": 54
+      },
+      "disposition": "fix",
+      "evidence": "Exported server-logic code had imported-realpath and 1 MiB checks before a separate read. Use a descriptor with the same directory and limit; worker CPU/lifetime limits and operation permission checks stay intact.",
+      "verification": "test/local-file.test.mjs; exported operations tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/65"
+    },
+    {
+      "number": 66,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/exported-operations.mjs",
+        "start_line": 111,
+        "end_line": 111,
+        "start_column": 16,
+        "end_column": 41
+      },
+      "disposition": "fix",
+      "evidence": "Workflow metadata and JSON had paired-path/1 MiB checks before path reads. Use confined stable descriptors for both while preserving the paired WorkflowId requirement.",
+      "verification": "test/local-file.test.mjs; operation catalogue/exported workflow tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/66"
+    },
+    {
+      "number": 67,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/data.mjs",
+        "start_line": 807,
+        "end_line": 807,
+        "start_column": 20,
+        "end_column": 46
+      },
+      "disposition": "false-positive",
+      "evidence": "The related check is exclusive creation of the save lock with wx/0600. The flagged read verifies the fresh random owner token before cleanup, and no other cooperating save may acquire that lock while it exists. No stale lock is inferred/deleted and state updates use wx temporary files plus digest conflict checks and rename. Another owner-level process maliciously replacing the lock already controls the state file; no privilege boundary is crossed.",
+      "verification": "mirage/lib/data.mjs: save; state persistence/conflict/lock regressions in mirage/test/data.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/67"
+    },
+    {
+      "number": 68,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/operation-catalogue.mjs",
+        "start_line": 26,
+        "end_line": 26,
+        "start_column": 31,
+        "end_column": 56
+      },
+      "disposition": "fix",
+      "evidence": "Enhanced operation components had root/1 MiB checks before filename reads. The descriptor now enforces those constraints and identity stability before XML/JSON parsing.",
+      "verification": "test/local-file.test.mjs; operation-catalogue tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/68"
+    },
+    {
+      "number": 69,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/page-resources.mjs",
+        "start_line": 411,
+        "end_line": 411,
+        "start_column": 21,
+        "end_column": 50
+      },
+      "disposition": "false-positive",
+      "evidence": "The stat is exclusively a display-name cache timestamp/size key. The data read from selected Solution XML becomes a string label that is escaped at render sinks; it does not grant file permission, execute code or write data. A concurrent edit may make a label cache stale until the next changed stamp, not cross a security gate.",
+      "verification": "mirage/lib/page-resources.mjs: tableDisplayName; page-resource display metadata/render regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/69"
+    },
+    {
+      "number": 70,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 403,
+        "end_line": 403,
+        "start_column": 57,
+        "end_column": 82
+      },
+      "disposition": "fix",
+      "evidence": "The reveal-policy corpus size gate preceded a filename read. Read one descriptor with the existing maxFileBytes limit and sourceDir confinement to prevent raced/growing input from bypassing the reveal source selection.",
+      "verification": "test/local-file.test.mjs; source corpus regression; parity suite tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/70"
+    },
+    {
+      "number": 71,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/server.mjs",
+        "start_line": 2682,
+        "end_line": 2682,
+        "start_column": 64,
+        "end_column": 81
+      },
+      "disposition": "fix",
+      "evidence": "Serving a declared PCF asset checked its canonical path/8 MiB size before a separate filename read. Enforce asset.root and the same size on a stable descriptor; undeclared resources remain 404 and GET/HEAD rules stay unchanged.",
+      "verification": "mirage/test-browser/code-components.test.mjs; security compatibility and local-file regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/71"
+    },
+    {
+      "number": 72,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/server.mjs",
+        "start_line": 3018,
+        "end_line": 3018,
+        "start_column": 29,
+        "end_column": 46
+      },
+      "disposition": "fix",
+      "evidence": "Serving an exported web asset used realpath root checks and a later filename read. Read the same canonical asset through a root-confined stable descriptor. Retain original uncapped asset sizes rather than imposing a new limit on existing exports.",
+      "verification": "mirage browser asset/native tests; test/local-file.test.mjs; installed package smoke",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/72"
+    },
+    {
+      "number": 73,
+      "rule": "js/file-system-race",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "test/source-edit.test.mjs",
+        "start_line": 27,
+        "end_line": 27,
+        "start_column": 22,
+        "end_column": 50
+      },
+      "disposition": "false-positive",
+      "evidence": "The test stats a temporary source file to assert editSource makes zero writes when its transform returns unchanged bytes, then reads the same owned fixture to compare bytes. The stat is not a security decision and the file is not attacker-shared; this is a deliberate regression for byte-preserving source edits.",
+      "verification": "test/source-edit.test.mjs: fixture ownership, unchanged write count and timestamp assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/73"
+    },
+    {
+      "number": 74,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/auth-session.mjs",
+        "start_line": 27,
+        "end_line": 27,
+        "start_column": 56,
+        "end_column": 60
+      },
+      "disposition": "fix",
+      "evidence": "Cookie names wrote into a plain object, invoking the inherited __proto__ setter rather than storing an own cookie entry. Build in a null-prototype dictionary and return Object.fromEntries to preserve the ordinary public object shape and first-occurrence behavior.",
+      "verification": "mirage/test/security-regressions.test.mjs: __proto__/constructor/toString/duplicates; mirage/test/auth-session.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/74"
+    },
+    {
+      "number": 75,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/admin/app.mjs",
+        "start_line": 250,
+        "end_line": 250,
+        "start_column": 20,
+        "end_column": 23
+      },
+      "disposition": "false-positive",
+      "evidence": "applyRoute iterates Object.keys(auditFilters), a constant own-key filter dictionary. URLSearchParams supplies only values, never the property names written. The unrelated DOM change handler now separately checks Object.hasOwn and option rendering escapes values; no remote key reaches this assignment.",
+      "verification": "mirage/admin/app.mjs: auditFilters/applyRoute; mirage/test-browser/admin-audit.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/75"
+    },
+    {
+      "number": 76,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/data.mjs",
+        "start_line": 1508,
+        "end_line": 1508,
+        "start_column": 17,
+        "end_column": 20
+      },
+      "disposition": "fix",
+      "evidence": "Alias keys already must start with @ and cannot equal __proto__/constructor/prototype. Use a null-prototype alias dictionary as explicit hardening without changing alias values or query semantics.",
+      "verification": "mirage OData/data alias regressions; full validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/76"
+    },
+    {
+      "number": 77,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/data.mjs",
+        "start_line": 2876,
+        "end_line": 2876,
+        "start_column": 9,
+        "end_column": 12
+      },
+      "disposition": "fix",
+      "evidence": "Selecting a __proto__ own field from an imported row wrote via the ordinary object setter and could alter the projected result prototype. Define an enumerable writable own data property instead, preserving ordinary result object shape and selected field values.",
+      "verification": "mirage/test/security-regressions.test.mjs: own __proto__ selected column and unaffected name; data/OData projections",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/77"
+    },
+    {
+      "number": 78,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/data.mjs",
+        "start_line": 2880,
+        "end_line": 2880,
+        "start_column": 13,
+        "end_column": 38
+      },
+      "disposition": "false-positive",
+      "evidence": "The property name is a validated selected lookup key plus the nonempty constant @OData.Community.Display.V1.FormattedValue suffix. It cannot equal __proto__, constructor or prototype, and the assignment stores a string annotation on a fresh query-result object. The unsuffixed setter path is separately fixed.",
+      "verification": "mirage/lib/data.mjs: project/formattedAnnotation; data and OData lookup annotation regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/78"
+    },
+    {
+      "number": 79,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/data.mjs",
+        "start_line": 2882,
+        "end_line": 2882,
+        "start_column": 15,
+        "end_column": 37
+      },
+      "disposition": "false-positive",
+      "evidence": "The selected lookup key is suffixed with the nonempty constant @Microsoft.Dynamics.CRM.lookuplogicalname before assignment. That key cannot invoke any prototype setter; only the fresh row result receives a logical-name annotation. The unsuffixed selected field now uses an own data property.",
+      "verification": "mirage/lib/data.mjs: project/lookupAnnotation; data and OData lookup annotation regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/79"
+    },
+    {
+      "number": 80,
+      "rule": "js/remote-property-injection",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/lib/odata-query.mjs",
+        "start_line": 726,
+        "end_line": 726,
+        "start_column": 15,
+        "end_column": 18
+      },
+      "disposition": "false-positive",
+      "evidence": "parseExpand rejects every option key except the literal allowlist $select/$filter/$orderby/$top/$expand before writing options[key]. None is a prototype-sensitive key. Untrusted input only supplies option values after a validated key.",
+      "verification": "mirage/lib/odata-query.mjs: parseExpand allowlist; mirage OData nested expand regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/80"
+    },
+    {
+      "number": 81,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "lense/commands/agent.mjs",
+        "start_line": 50,
+        "end_line": 50,
+        "start_column": 28,
+        "end_column": 59
+      },
+      "disposition": "false-positive",
+      "evidence": "The file supplies only the owned agent discovery endpoint. readDiscovery requires HTTP, literal 127.0.0.1, a port, no userinfo, root path and no query/hash; agentRequest restricts /v1/ routes and sets redirect:error. The request cannot exfiltrate to a remote origin through this path.",
+      "verification": "lense/commands/agent.mjs: readDiscovery/agentRequest; test/agent-client.test.mjs and agent-server tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/81"
+    },
+    {
+      "number": 82,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "lense/commands/agent.mjs",
+        "start_line": 52,
+        "end_line": 52,
+        "start_column": 16,
+        "end_column": 133
+      },
+      "disposition": "false-positive",
+      "evidence": "The token is intentionally loaded from the owned ignored discovery file and sent as Authorization only to its validated literal-loopback agent. Endpoint validation and redirect:error prevent forwarding the token to another host. This is the explicit authentication protocol, not accidental file-data disclosure.",
+      "verification": "lense/commands/agent.mjs: discovery schema and agentRequest headers; token isolation/redirect rejection regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/82"
+    },
+    {
+      "number": 83,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/reference-parity.mjs",
+        "start_line": 71,
+        "end_line": 71,
+        "start_column": 38,
+        "end_column": 74
+      },
+      "disposition": "false-positive",
+      "evidence": "The plan file contributes a contract.path checked by validateLivePath and a fixed loopback local.origin. compareReferenceContracts accepts GET reads only, uses redirect:manual locally, and the live side uses the separately configured signed-in browser bridge. Sending the explicitly selected query path is the requested contract comparison.",
+      "verification": "mirage/reference-parity.mjs: contract validation/local URL checks; mirage/test/reference-parity.test.mjs",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/83"
+    },
+    {
+      "number": 84,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/reference-parity.mjs",
+        "start_line": 71,
+        "end_line": 71,
+        "start_column": 143,
+        "end_column": 193
+      },
+      "disposition": "false-positive",
+      "evidence": "The plan contributes the Prefer value, restricted to ^odata.maxpagesize=[1-9]digits before use; the destination is the validated loopback origin and redirects are manual. No file body or credentials are forwarded to arbitrary hosts.",
+      "verification": "mirage/reference-parity.mjs: Prefer validation and loopback fetch; reference-parity regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/84"
+    },
+    {
+      "number": 85,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 1534,
+        "end_line": 1534,
+        "start_column": 19,
+        "end_column": 94
+      },
+      "disposition": "false-positive",
+      "evidence": "The tainted plan contributes mocked response/status parameters to the explicitly attached browser CDP WebSocket. Both the configured debugging endpoint and returned socket hostname are validated as loopback; JSON CDP commands drive the owned observation tab. This is deliberate local browser control rather than outbound disclosure.",
+      "verification": "mirage/parity-suite.mjs: openToolkitDriver endpoint/socket checks and send; parity driver tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/85"
+    },
+    {
+      "number": 86,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 2135,
+        "end_line": 2135,
+        "start_column": 13,
+        "end_column": 113
+      },
+      "disposition": "false-positive",
+      "evidence": "The plan contributes contactId/roles used to mirror a persona into the local simulator session. createIdentityController restricts the destination hostname to loopback, uses the fixed /__sim/api/session/sign-in route and retrieves the local CSRF token. The request is the explicit synthetic session setup protocol.",
+      "verification": "mirage/parity-suite.mjs: createIdentityController; persona mirroring/isolation regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/86"
+    },
+    {
+      "number": 87,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/test-browser/parity.test.mjs",
+        "start_line": 436,
+        "end_line": 436,
+        "start_column": 41,
+        "end_column": 77
+      },
+      "disposition": "false-positive",
+      "evidence": "The file contains only the port reported by an owned spawned loopback fixture. The request hostname and route are literal http://127.0.0.1:<port>/section/list, and the test inspects the invented local output; no arbitrary file body or real data is sent.",
+      "verification": "mirage/test-browser/parity.test.mjs: owned fixture readiness file and teardown",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/87"
+    },
+    {
+      "number": 88,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test/agent-server.test.mjs",
+        "start_line": 38,
+        "end_line": 38,
+        "start_column": 130,
+        "end_column": 259
+      },
+      "disposition": "false-positive",
+      "evidence": "The source is a discovery JSON written by the owned synthetic agent fixture under its temporary work directory. This test deliberately sends that fixture token to its loopback API to exercise authentication, state or lifecycle behavior. It does not load a private discovery file or a remote URL; server/browser cleanup is registered by the test.",
+      "verification": "test/agent-server.test.mjs: fixture construction, agent discovery and cleanup",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/88"
+    },
+    {
+      "number": 89,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test/agent-server.test.mjs",
+        "start_line": 118,
+        "end_line": 118,
+        "start_column": 93,
+        "end_column": 178
+      },
+      "disposition": "false-positive",
+      "evidence": "The source is a discovery JSON written by the owned synthetic agent fixture under its temporary work directory. This test deliberately sends that fixture token to its loopback API to exercise authentication, state or lifecycle behavior. It does not load a private discovery file or a remote URL; server/browser cleanup is registered by the test.",
+      "verification": "test/agent-server.test.mjs: fixture construction, agent discovery and cleanup",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/89"
+    },
+    {
+      "number": 90,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/agent-lifecycle.test.mjs",
+        "start_line": 40,
+        "end_line": 40,
+        "start_column": 114,
+        "end_column": 231
+      },
+      "disposition": "false-positive",
+      "evidence": "The source is a discovery JSON written by the owned synthetic agent fixture under its temporary work directory. This test deliberately sends that fixture token to its loopback API to exercise authentication, state or lifecycle behavior. It does not load a private discovery file or a remote URL; server/browser cleanup is registered by the test.",
+      "verification": "test-browser/agent-lifecycle.test.mjs: fixture construction, agent discovery and cleanup",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/90"
+    },
+    {
+      "number": 91,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/agent-server.test.mjs",
+        "start_line": 55,
+        "end_line": 55,
+        "start_column": 209,
+        "end_column": 326
+      },
+      "disposition": "false-positive",
+      "evidence": "The source is a discovery JSON written by the owned synthetic agent fixture under its temporary work directory. This test deliberately sends that fixture token to its loopback API to exercise authentication, state or lifecycle behavior. It does not load a private discovery file or a remote URL; server/browser cleanup is registered by the test.",
+      "verification": "test-browser/agent-server.test.mjs: fixture construction, agent discovery and cleanup",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/91"
+    },
+    {
+      "number": 92,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 226,
+        "end_line": 226,
+        "start_column": 38,
+        "end_column": 70
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages and configured-origin confinement. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/92"
+    },
+    {
+      "number": 93,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 226,
+        "end_line": 226,
+        "start_column": 83,
+        "end_column": 129
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages and configured-origin confinement. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/93"
+    },
+    {
+      "number": 94,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 229,
+        "end_line": 229,
+        "start_column": 39,
+        "end_column": 73
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/session and browser-scope assertions. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/94"
+    },
+    {
+      "number": 95,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 229,
+        "end_line": 229,
+        "start_column": 86,
+        "end_column": 132
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/session and browser-scope assertions. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/95"
+    },
+    {
+      "number": 96,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 234,
+        "end_line": 234,
+        "start_column": 36,
+        "end_column": 75
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is cross-session token rejection (401). The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/96"
+    },
+    {
+      "number": 97,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 234,
+        "end_line": 234,
+        "start_column": 88,
+        "end_column": 139
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is cross-session token rejection (401). The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/97"
+    },
+    {
+      "number": 98,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 245,
+        "end_line": 245,
+        "start_column": 67,
+        "end_column": 101
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is rejection after the owned API listener closes. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/98"
+    },
+    {
+      "number": 99,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 245,
+        "end_line": 245,
+        "start_column": 114,
+        "end_column": 160
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is rejection after the owned API listener closes. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/99"
+    },
+    {
+      "number": 100,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 380,
+        "end_line": 380,
+        "start_column": 39,
+        "end_column": 71
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages for the second owned portal. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/100"
+    },
+    {
+      "number": 101,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 380,
+        "end_line": 380,
+        "start_column": 75,
+        "end_column": 82
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages for the second owned portal. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/101"
+    },
+    {
+      "number": 102,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 384,
+        "end_line": 384,
+        "start_column": 39,
+        "end_column": 88
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages/<id>/state for local resource coverage. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/102"
+    },
+    {
+      "number": 103,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 384,
+        "end_line": 384,
+        "start_column": 92,
+        "end_column": 99
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/pages/<id>/state for local resource coverage. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/103"
+    },
+    {
+      "number": 104,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 388,
+        "end_line": 388,
+        "start_column": 37,
+        "end_column": 71
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/session for catalogue browser-scope verification. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/104"
+    },
+    {
+      "number": 105,
+      "rule": "js/file-access-to-http",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "test-browser/multi-portal.test.mjs",
+        "start_line": 388,
+        "end_line": 388,
+        "start_column": 75,
+        "end_column": 82
+      },
+      "disposition": "false-positive",
+      "evidence": "The discovery file is generated by the test's owned runtime/child for invented alpha/beta loopback portals; the tested operation is GET /v1/session for catalogue browser-scope verification. The endpoint/token are the intended local authentication protocol. Both discovery cleanup and fixture GET-only traffic are asserted. Duplicate findings separately trace endpoint and header data, not separate exfiltration destinations.",
+      "verification": "test-browser/multi-portal.test.mjs: synthetic HTTP servers, owned child/runtime, origin/token isolation and cleanup assertions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/105"
+    },
+    {
+      "number": 106,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/acceptance.mjs",
+        "start_line": 969,
+        "end_line": 969,
+        "start_column": 17,
+        "end_column": 63
+      },
+      "disposition": "false-positive",
+      "evidence": "Only JSON audit response contents are tainted. The write destination is the caller-selected outputDir plus a fixed numbered -request-audit.json name, not a remote-controlled filename; JSON serialization makes response text data in an explicit evidence artifact. No remote response is evaluated or installed.",
+      "verification": "mirage/acceptance.mjs: auditFile/writeFile; loopback acceptance regressions and redacted evidence contract",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/106"
+    },
+    {
+      "number": 107,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/acceptance.mjs",
+        "start_line": 1014,
+        "end_line": 1014,
+        "start_column": 39,
+        "end_column": 70
+      },
+      "disposition": "false-positive",
+      "evidence": "Remote observations are serialized into the requested outputDir/report.json evidence file. Network fields cannot choose the path or cause execution; browsers/proxy are closed before report writing. This is the explicit acceptance report feature, not an unsolicited file write.",
+      "verification": "mirage/acceptance.mjs: outputDir/report/finally; acceptance report/cleanup tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/107"
+    },
+    {
+      "number": 108,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/cli.mjs",
+        "start_line": 474,
+        "end_line": 474,
+        "start_column": 40,
+        "end_column": 44
+      },
+      "disposition": "false-positive",
+      "evidence": "mirage render --output explicitly fetches its just-created local simulator, rejects target.origin changes and redirects, and saves the resulting HTML to path.resolve(args.output). The HTTP response controls bytes only, never the path or execution. This is the user-requested exported render artifact.",
+      "verification": "mirage/cli.mjs: render branch; CLI render/output regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/108"
+    },
+    {
+      "number": 109,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/reference-parity.mjs",
+        "start_line": 95,
+        "end_line": 95,
+        "start_column": 37,
+        "end_column": 68
+      },
+      "disposition": "false-positive",
+      "evidence": "The taint path carries local source/implementation fingerprint fields into JSON.stringify(report). The destination is caller-chosen outputDir/reference-parity.json, with no response-derived path. The report stores projected hashes/counts/status, not executable code.",
+      "verification": "mirage/reference-parity.mjs: fixed report path, normalization/hash projection; reference-parity tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/109"
+    },
+    {
+      "number": 110,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 3280,
+        "end_line": 3280,
+        "start_column": 37,
+        "end_column": 68
+      },
+      "disposition": "false-positive",
+      "evidence": "Local simulator fingerprints and redacted observations are saved as JSON data in the caller-selected outDir/report.json. The path is not derived from response data and no saved content is executed. This is the explicit parity evidence output.",
+      "verification": "mirage/parity-suite.mjs: runParitySuite/localState/redaction/report path; parity suite and redactor regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/110"
+    },
+    {
+      "number": 111,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 3281,
+        "end_line": 3281,
+        "start_column": 55,
+        "end_column": 78
+      },
+      "disposition": "false-positive",
+      "evidence": "summary.md is an explicit human-readable parity report under caller-selected outDir. Network state/fingerprint values influence report text only; response data cannot select another destination or executable module. This alert models intentional evidence persistence, not arbitrary path control.",
+      "verification": "mirage/parity-suite.mjs: runParitySuite/summaryMarkdown/redactor; parity report tests",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/111"
+    },
+    {
+      "number": 112,
+      "rule": "js/http-to-file-access",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/verify.mjs",
+        "start_line": 645,
+        "end_line": 645,
+        "start_column": 7,
+        "end_column": 38
+      },
+      "disposition": "false-positive",
+      "evidence": "verify serializes collected observations into outputDir/report.json in its finally block after owned pages/browser cleanup. The HTTP response contributes diagnostic data, not the report filename, filesystem location or any executed source.",
+      "verification": "mirage/verify.mjs: artifacts.report/writeFile; verification evidence and cleanup regressions",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/112"
+    },
+    {
+      "number": 113,
+      "rule": "js/regex/missing-regexp-anchor",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/parity-suite.mjs",
+        "start_line": 2522,
+        "end_line": 2522,
+        "start_column": 113,
+        "end_column": 151
+      },
+      "disposition": "fix",
+      "evidence": "Hosted-resource classification matched host text anywhere in a URL, so a foreign host path could be excluded from meaningful shell comparisons. Parse actual HTTP(S) URLs, reject userinfo, and compare hostname equality/subdomain suffix. Preserve the separate local library filename classifier.",
+      "verification": "mirage/test/security-regressions.test.mjs: hostile path/userinfo/suffix URLs; mirage/test/parity-suite.test.mjs shell resource comparisons",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/113"
+    },
+    {
+      "number": 114,
+      "rule": "js/regex/missing-regexp-anchor",
+      "securitySeverity": "high",
+      "originalLocation": {
+        "path": "mirage/webapi-inventory.mjs",
+        "start_line": 107,
+        "end_line": 107,
+        "start_column": 9,
+        "end_column": 46
+      },
+      "disposition": "fix",
+      "evidence": "This is a MIME-type inventory classifier, not a URL/host allowlist. Split the anchored image/* prefix check from deliberate font/binary subtype searches to express the original precedence clearly while preserving SVG inventory and legacy application/font variants.",
+      "verification": "mirage/test/webapi-inventory-wrappers.test.mjs; full validation",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/114"
+    },
+    {
+      "number": 115,
+      "rule": "js/missing-origin-check",
+      "securitySeverity": "medium",
+      "originalLocation": {
+        "path": "mirage/test-browser/solution-form.test.mjs",
+        "start_line": 317,
+        "end_line": 317,
+        "start_column": 41,
+        "end_column": 46
+      },
+      "disposition": "false-positive",
+      "evidence": "The handler records every message into a temporary test-page array solely to assert native modal postback communication. It never authorizes an action, inserts markup or executes received data. The actual entity-grid runtime message handler separately checks event.origin === location.origin and data === Success before refreshing grids.",
+      "verification": "mirage/test-browser/solution-form.test.mjs: passive message assertion; mirage/lib/entity-grid-compat.js: actual modal completion origin gate",
+      "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/115"
+    }
+  ]
+}

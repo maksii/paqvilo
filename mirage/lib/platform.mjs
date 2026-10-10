@@ -275,8 +275,8 @@ export function injectRuntime(
     html = /<\/body>/i.test(html)
       ? html.replace(/<\/body>(?![\s\S]*<\/body>)/i, `${grid}$&`)
       : html + grid;
-  return /<head[^>]*>/i.test(html)
-    ? html.replace(/<head[^>]*>/i, "$&" + script)
+  return /<head\b[^<>]*>/i.test(html)
+    ? html.replace(/<head\b[^<>]*>/i, "$&" + script)
     : script + html;
 }
 

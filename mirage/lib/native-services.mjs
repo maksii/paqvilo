@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
+import { csvCell } from './csv.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
 import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
@@ -1724,10 +1725,6 @@ async function handleAnnotation(req, res, id, context) {
 }
 
 const downloads = new Map();
-function csvCell(value) {
-  const text = String(value ?? "");
-  return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
-}
 
 /** The signed-in contact's row (token claims read it regardless of table permissions). */
 function contactRow(context) {

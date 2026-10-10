@@ -1,6 +1,7 @@
 import http from "node:http";
 import fs from "node:fs/promises";
 import path from "node:path";
+import { readLocalFile } from '../lense/local-file.mjs';
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
 import { createRequire } from 'node:module';
@@ -2679,7 +2680,7 @@ export async function createSimulator({
       if (real !== asset.file || (await fs.stat(real)).size > 8 * 1024 * 1024) throw error('The declared PCF resource changed outside its source boundary.', 404);
       const type = asset.kind === 'code' ? 'text/javascript; charset=utf-8' : asset.kind === 'css' ? 'text/css; charset=utf-8' : asset.kind === 'resx' ? 'application/xml; charset=utf-8' : 'application/octet-stream';
       res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' });
-      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(real));
+      return res.end(req.method === 'HEAD' ? undefined : await readLocalFile(real, { root: asset.root, maxBytes: 8 * 1024 * 1024 }));
     }
     const serverLogic = serverLogicName(url.pathname);
     if (serverLogic !== null) {
@@ -3015,7 +3016,7 @@ export async function createSimulator({
           "x-sim-source-sha256": observed.baseline.sourceSha256,
           "x-sim-observed-sha256": observed.baseline.sha256,
         });
-      return sendFile(await fs.readFile(file), asset.mimeType || mime(file));
+      return sendFile(await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER }), asset.mimeType || mime(file));
     }
     if (cache && !deniedRoute) {
       const cached = await cache.get(url.pathname + url.search, {
@@ -3095,7 +3096,10 @@ export async function createSimulator({
     // Local compatibility adapters in the document are reported here, not as page attributes;
     // their runtime modes are in window.__portalSimulation.compatibility.
     if (isDocument) {
-      const adapters = [...new Set([...html.matchAll(/\/__sim-static\/[\w/.-]*?([\w.-]+)-compat\.js/g)].map((match) => match[1]))];
+      const adapters = [...new Set([...html.matchAll(/\/__sim-static\/([\w/.-]+)/g)]
+        .map((match) => match[1].slice(match[1].lastIndexOf("/") + 1))
+        .filter((name) => name.endsWith("-compat.js"))
+        .map((name) => name.slice(0, -10)))];
       if (adapters.length) headers["x-sim-compatibility"] = adapters.join(", ");
     }
     res.writeHead(route?.status ?? rendered.status ?? 200, headers);

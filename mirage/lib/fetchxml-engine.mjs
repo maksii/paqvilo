@@ -147,9 +147,7 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
     fail("FetchXML declarations and external entities are not supported", 400, "InvalidRequest");
   const document = { name: "#document", attrs: {}, children: [] };
   const stack = [document];
-  const tokens =
-    String(source).match(/<!--[\s\S]*?-->|<\?[\s\S]*?\?>|<(?:[^'">]|"[^"]*"|'[^']*')+>|[^<]+/g) ?? [];
-  for (const token of tokens) {
+  for (const token of xmlTokens(String(source))) {
     if (token.startsWith("<!--") || token.startsWith("<?")) continue;
     if (token.startsWith("</")) {
       const name = token.slice(2, -1).trim();
@@ -158,17 +156,26 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
       continue;
     }
     if (token.startsWith("<")) {
-      const match = token.match(/^<([\w:-]+)([\s\S]*?)\/?\s*>$/);
+      const match = /^<([\w:-]+)/.exec(token);
       if (!match) fail("Malformed FetchXML element", 400, "InvalidRequest");
       const attrs = Object.create(null);
-      const residue = match[2].replace(/([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g, (_all, key, _quote, value) => {
-        attrs[key] = xmlDecode(value);
-        return "";
-      });
-      if (residue.trim()) fail(`Malformed attributes on ${match[1]}`, 400, "InvalidRequest");
+      const content = token.slice(match[0].length, -1).trimEnd();
+      const selfClosing = content.endsWith("/");
+      const attributeText = selfClosing ? content.slice(0, -1) : content;
+      const attribute = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/y;
+      let at = 0;
+      while (at < attributeText.length) {
+        while (at < attributeText.length && /\s/.test(attributeText[at])) at++;
+        if (at === attributeText.length) break;
+        attribute.lastIndex = at;
+        const parsed = attribute.exec(attributeText);
+        if (!parsed) fail(`Malformed attributes on ${match[1]}`, 400, "InvalidRequest");
+        attrs[parsed[1]] = xmlDecode(parsed[2] ?? parsed[3]);
+        at = attribute.lastIndex;
+      }
       const node = { name: match[1], attrs, children: [], text: "" };
       stack.at(-1).children.push(node);
-      if (!/\/\s*>$/.test(token)) {
+      if (!selfClosing) {
         if (stack.length >= maxDepth)
           fail(`FetchXML nesting exceeds ${maxDepth} levels`, 400, "UnsupportedQuery");
         stack.push(node);
@@ -186,6 +193,35 @@ export function parseXmlDocument(source, { root, maxDepth = FETCH_LIMITS.xmlDept
       "InvalidRequest",
     );
   return document.children[0];
+}
+
+// Never restart matching inside an unterminated tag/comment. Each input character
+// is scanned once, including quoted '>' values and malformed adversarial XML.
+function* xmlTokens(source) {
+  let at = 0;
+  while (at < source.length) {
+    const start = at;
+    if (source[at] !== "<") {
+      const next = source.indexOf("<", at);
+      at = next < 0 ? source.length : next;
+    } else if (source.startsWith("<!--", at) || source.startsWith("<?", at)) {
+      const comment = source.startsWith("<!--", at);
+      const end = source.indexOf(comment ? "-->" : "?>", at + (comment ? 4 : 2));
+      if (end < 0) fail("Unterminated FetchXML comment or instruction", 400, "InvalidRequest");
+      at = end + (comment ? 3 : 2);
+    } else {
+      let quote = null;
+      for (at++; at < source.length; at++) {
+        const char = source[at];
+        if (quote) { if (char === quote) quote = null; }
+        else if (char === '"' || char === "'") quote = char;
+        else if (char === ">") { at++; break; }
+        else if (char === "<") fail("Malformed FetchXML element", 400, "InvalidRequest");
+      }
+      if (source[at - 1] !== ">" || quote) fail("Unterminated FetchXML element", 400, "InvalidRequest");
+    }
+    yield source.slice(start, at);
+  }
 }
 
 /**

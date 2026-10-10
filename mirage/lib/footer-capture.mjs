@@ -194,7 +194,7 @@ export function observedFooterLayout({ path, sourceCss, observedCss }) {
   const rules = [
     ...clean.matchAll(
       new RegExp(
-        String.raw`(?:^|})\s*\.(?:${classNames.map((name) => name.replace(/[-]/g, "\\-")).join("|")})\s+svg\s*\{([^{}]*)\}`,
+        String.raw`(?:^|})\s*\.(?:${classNames.map((name) => name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("|")})\s+svg\s*\{([^{}]*)\}`,
         "g",
       ),
     ),

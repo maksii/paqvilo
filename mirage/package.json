@@ -22,6 +22,7 @@
     "pixelmatch": "8.0.0",
     "playwright-core": "1.63.0",
     "pngjs": "7.0.0",
+    "sanitize-html": "2.18.0",
     "yaml": "2.9.1"
   },
   "license": "AGPL-3.0-only"

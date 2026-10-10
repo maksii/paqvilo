@@ -1562,7 +1562,8 @@ export function matrixProblems(matrix) {
 }
 
 // ---------------------------------------------------------------------------------- Markdown
-const cell = (value) => (value === undefined || value === null || value === "" ? "–" : String(value).replace(/\|/g, "\\|").replace(/\r?\n/g, " "));
+const cell = (value) => (value === undefined || value === null || value === "" ? "–" : String(value)
+  .replace(/[&<>\\|`\[\]]/g, (char) => `&#${char.codePointAt(0)};`).replace(/\r?\n/g, " "));
 const statuses = (byStatus) =>
   byStatus && Object.keys(byStatus).length
     ? Object.entries(byStatus)

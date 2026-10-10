@@ -31,7 +31,7 @@ export class ExampleLinearInput implements ComponentFramework.StandardControl<II
     this.label.className = "linear-range-label";
     this._value = context.parameters.controlValue.raw ?? 0;
     this.input.value = context.parameters.controlValue.formatted ?? "0";
-    this.label.innerHTML = context.parameters.controlValue.formatted ?? "0";
+    this.label.textContent = context.parameters.controlValue.formatted ?? "0";
     this._container.appendChild(this.input);
     this._container.appendChild(this.label);
     container.appendChild(this._container);
@@ -39,7 +39,7 @@ export class ExampleLinearInput implements ComponentFramework.StandardControl<II
 
   public refreshData(): void {
     this._value = Number(this.input.value);
-    this.label.innerHTML = this.input.value;
+    this.label.textContent = this.input.value;
     this._notifyOutputChanged();
   }
 
@@ -47,7 +47,7 @@ export class ExampleLinearInput implements ComponentFramework.StandardControl<II
     this._value = context.parameters.controlValue.raw ?? 0;
     const formatted = context.parameters.controlValue.formatted ?? "";
     this.input.value = formatted;
-    this.label.innerHTML = formatted;
+    this.label.textContent = formatted;
   }
 
   public getOutputs(): IOutputs {

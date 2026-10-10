@@ -117,7 +117,7 @@
       for (const layer of [layer1, layer2, layer3]) layer.appendTo(parent);
       if (message) {
         layer3.append(message);
-        if (message.jquery || message.nodeType) $(message).show();
+        if (typeof message !== "string" && (message.jquery || message.nodeType)) $(message).show();
       }
       const done = opts.onBlock || noop;
       if (opts.fadeIn) {
