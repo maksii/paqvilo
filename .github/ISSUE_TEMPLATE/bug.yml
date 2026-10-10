@@ -1,0 +1,59 @@
+name: Bug report
+description: Report a reproducible Lense or Mirage problem.
+labels: [bug]
+body:
+  - type: dropdown
+    id: workflow
+    attributes:
+      label: Affected workflow
+      options: [Lense, Mirage, Both, Installation or CLI]
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Paqvilo version
+      placeholder: '0.9.3 (npx --no-install paqvilo --version)'
+    validations:
+      required: true
+  - type: dropdown
+    id: model
+    attributes:
+      label: Portal source and data model
+      options: [Standard model (PAC paportal export), Enhanced model (PAC export), Code site / SPA (.powerpages-site), Mixed, Unknown or not applicable]
+    validations:
+      required: true
+  - type: input
+    id: portal-version
+    attributes:
+      label: Online portal version
+      description: Build/version from your portal's About page or admin center; Unknown is fine. Do not include the tenant or URL.
+      placeholder: '9.x.x.x or Unknown / local demo only'
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment and related platform components
+      description: OS, Node, browser; Dataverse/Solution metadata, forms/lists, Liquid, PCF, server logic, plugins, cloud flows, Power Automate or other integrations involved.
+      placeholder: 'Windows 11, Node 24, Edge; enhanced export with FormXml and a PCF field'
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Reproduction, expected result and actual result
+      description: Minimal steps/command and invented fixture if possible. Include whether it happens online, locally or both.
+      placeholder: '1. Run ...\n2. Open ...\nExpected: ...\nActual: ...'
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Redacted diagnostics (optional)
+      description: Relevant errors, unmatched patches or needsDeploy. Never include query values, discovery files, cookies, bearer tokens, portal exports or live business data.
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: Before submitting
+      options:
+        - label: I removed credentials, tenant/customer data and live evidence from this report.
+          required: true

@@ -1,5 +1,14 @@
 # Paqvilo
 
+[![CI](https://github.com/maksii/paqvilo/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/maksii/paqvilo/actions/workflows/ci.yml)
+[![Security](https://github.com/maksii/paqvilo/actions/workflows/security.yml/badge.svg?branch=main)](https://github.com/maksii/paqvilo/actions/workflows/security.yml)
+[![npm version](https://img.shields.io/npm/v/paqvilo)](https://www.npmjs.com/package/paqvilo)
+[![Node.js](https://img.shields.io/node/v/paqvilo)](https://nodejs.org/)
+[![License](https://img.shields.io/npm/l/paqvilo)](https://github.com/maksii/paqvilo/blob/main/LICENSE)
+[![Pages](https://github.com/maksii/paqvilo/actions/workflows/pages.yml/badge.svg?branch=main)](https://maksii.github.io/paqvilo/)
+
+[Website](https://maksii.github.io/paqvilo/) · [Discussions](https://github.com/maksii/paqvilo/discussions)
+
 ### Power Pages development. Unbound.
 
 **A local-first, pro-code development toolkit for Microsoft Power Pages.** Preview local changes on live sites with **Lense**. Run exported pages on your machine with **Mirage**, using Liquid and simulated Dataverse.

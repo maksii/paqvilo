@@ -1,0 +1,2 @@
+#!/bin/sh
+exec node scripts/conventional-commit.mjs --file "$1"

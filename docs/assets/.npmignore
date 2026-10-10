@@ -1,0 +1,7 @@
+# Publish only the named product assets audited by release:check.
+*
+!overview.svg
+!lense-icon.png
+!mirage-icon.png
+!lense-visual.png
+!mirage-visual.png

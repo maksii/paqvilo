@@ -1,0 +1,20 @@
+# package.json files is the primary allowlist; never depend on local Git ignores.
+**/node_modules/
+**/.paqvilo/
+**/.pp-local/
+**/.git/
+**/obj/
+**/bin/
+!bin/paqvilo.mjs
+**/out/
+**/coverage/
+**/*.log
+**/.env
+**/.env.local
+**/paqvilo.config.local.yml
+docs/assets/*
+!docs/assets/overview.svg
+!docs/assets/lense-icon.png
+!docs/assets/mirage-icon.png
+!docs/assets/lense-visual.png
+!docs/assets/mirage-visual.png

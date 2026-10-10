@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and workflow help
+    url: https://github.com/maksii/paqvilo/discussions
+    about: Ask questions, share ideas and compare workflows.
+  - name: Private security report
+    url: https://github.com/maksii/paqvilo/security/advisories/new
+    about: Report vulnerabilities privately; never attach tokens or live portal data.

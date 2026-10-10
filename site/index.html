@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Paqvilo — Power Pages development. Unbound.</title>
+  <meta name="description" content="Shorten your Power Pages feedback loop. Preview local changes on live portals with Lense, or develop locally with Mirage and simulated Dataverse.">
+  <meta name="theme-color" content="#182d2a">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+<a class="skip" href="#main">Skip to content</a>
+<header class="nav wrap"><a class="brand" href="index.html" aria-label="Paqvilo home"><span class="mark">p.</span> paqvilo</a><nav aria-label="Main"><a href="coverage.html">Capabilities</a><a href="https://github.com/maksii/paqvilo/blob/main/docs/index.md">Docs</a><a href="https://github.com/maksii/paqvilo">GitHub ↗</a></nav></header>
+<main id="main">
+  <section class="hero wrap">
+    <div><p class="eyebrow">LOCAL-FIRST · PRO-CODE · POWER PAGES</p><h1>Power Pages<br>development.<br><em>Unbound.</em></h1><p class="lead">Less waiting between an idea and a working page. Bring your local tools to a live portal—or bring the portal to your machine.</p><div class="actions"><a class="button" href="#demo">Try the local demo <span>↗</span></a><a class="text-link" href="https://github.com/maksii/paqvilo">Explore the source →</a></div><p class="small">Open source · Node.js 22+ · Edge / Chrome</p></div>
+    <div class="hero-art"><span class="art-label">ONE TOOLKIT. TWO WAYS TO BUILD.</span><img src="assets/overview.svg" alt="Local project sources connect to Lense browser overlays on a live portal or Mirage rendering with simulated Dataverse."><div class="art-note"><span class="dot"></span> Your sources. Your feedback loop.</div></div>
+  </section>
+  <section class="workflows wrap" aria-labelledby="workflows-title">
+    <div class="section-head"><p class="eyebrow">CHOOSE YOUR WORKFLOW</p><h2 id="workflows-title">Stay close to the platform.<br>Get closer to your code.</h2></div>
+    <article class="workflow lense"><div class="workflow-copy"><p class="number">01 / LIVE PREVIEW</p><h3>Lense</h3><p>Keep the real Power Pages backend. Overlay your local JavaScript, CSS, assets and supported literal HTML edits in a dedicated browser.</p><ul><li>Preview changes without uploading each edit</li><li>Inspect rendered elements and follow their sources</li><li>See applied patches, gaps and changes needing deployment</li></ul><a class="text-link" href="coverage.html#lense">Explore Lense capabilities →</a><p class="small">Liquid and Dataverse execute online. Browser actions can change live data.</p></div><img src="assets/lense-visual.png" alt="Illustration of Lense previewing local sources against a live portal." loading="lazy"></article>
+    <article class="workflow mirage"><div class="workflow-copy"><p class="number">02 / LOCAL DEVELOPMENT</p><h3>Mirage</h3><p>Run exported pages locally with supported Liquid rendering and simulated Dataverse. Work through identities, permissions and data scenarios on loopback.</p><ul><li>Render templates, forms, lists and exported assets</li><li>Switch local personas and explore data scenarios</li><li>Repeat scenarios with project-owned acceptance tests</li></ul><a class="text-link" href="coverage.html#mirage">Explore Mirage capabilities →</a><p class="small">Selected platform contracts are supported. Local success does not prove complete platform parity.</p></div><img src="assets/mirage-visual.png" alt="Illustration of Mirage rendering a local portal with simulated data." loading="lazy"></article>
+  </section>
+  <section class="demo" id="demo"><div class="wrap demo-grid"><div><p class="eyebrow">FROM ZERO TO A LOCAL PORTAL</p><h2>Take it for a spin.<br>No portal account needed.</h2><p>The included synthetic demo brings native forms, a Web API workspace, typed PCF controls, Liquid examples and local operation models into one editable project.</p><a class="text-link" href="https://github.com/maksii/paqvilo/blob/main/docs/demo.md">Follow the demo walkthrough →</a></div><div class="terminal"><div class="terminal-head"><span></span><span></span><span></span><b>YOUR TERMINAL / NEW FOLDER</b></div><pre><code>npm init -y
+npm install --save-dev paqvilo
+npx --no-install paqvilo mirage demo</code></pre><p>Install Node.js 22+ and Edge or Chrome first. Keep the terminal running; press Ctrl+C to stop.</p></div></div></section>
+  <section class="next wrap"><p class="eyebrow">BUILD WITH US</p><h2>A clearer development loop<br>starts with a reproducible example.</h2><div class="actions"><a class="button" href="https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md">Use your own export →</a><a class="text-link" href="https://github.com/maksii/paqvilo/discussions">Join the discussion ↗</a></div></section>
+</main>
+<footer class="wrap"><a class="brand" href="index.html">paqvilo</a><p>Independent tooling for Microsoft Power Pages. AGPL-3.0-only.</p><a href="https://www.npmjs.com/package/paqvilo">npm ↗</a><a href="https://github.com/maksii/paqvilo/issues">Issues ↗</a></footer>
+</body></html>
