@@ -236,6 +236,16 @@ export function evaluateStepCondition(expression, record) {
   return Boolean(result);
 }
 
+function appendRedirectQuery(target, query) {
+  target.search += `${target.search ? '&' : '?'}${query}`;
+}
+
+/** A missing exported name produces the native bare record identifier query. */
+export function appendRedirectRecordId(target, name, recordId) {
+  const value = canonical(recordId);
+  appendRedirectQuery(target, name ? new URLSearchParams([[name, value]]).toString() : encodeURIComponent(value));
+}
+
 /** Native redirect composition (adx_redirect* and appended query strings). */
 export function redirectTarget(settings, { portal, recordId, record, requestUrl }) {
   const origin = new URL(requestUrl ?? "http://localhost/");
@@ -249,18 +259,18 @@ export function redirectTarget(settings, { portal, recordId, record, requestUrl 
     target = new URL(page.url, origin);
   }
   if (truthy(portalField(settings, "redirecturlappendentityidquerystring")) && recordId)
-    target.searchParams.append(portalField(settings, "redirecturlquerystringname") || "id", canonical(recordId));
-  if (truthy(portalField(settings, "appendquerystring"))) for (const [key, value] of origin.searchParams) target.searchParams.append(key, value);
+    appendRedirectRecordId(target, portalField(settings, "redirecturlquerystringname"), recordId);
+  if (truthy(portalField(settings, "appendquerystring"))) for (const [key, value] of origin.searchParams) appendRedirectQuery(target, new URLSearchParams([[key, value]]).toString());
   const custom = portalField(settings, "redirecturlcustomquerystring");
-  if (custom) for (const [key, value] of new URLSearchParams(String(custom).replace(/^\?/, ""))) target.searchParams.append(key, value);
+  if (custom) for (const [key, value] of new URLSearchParams(String(custom).replace(/^\?/, ""))) appendRedirectQuery(target, new URLSearchParams([[key, value]]).toString());
   const parameter = portalField(settings, "redirecturlquerystringattributeparamname");
   const attribute = portalField(settings, "redirecturlquerystringattribute");
   if (parameter && attribute && record) {
     const raw = record[attribute];
     const value = raw && typeof raw === "object" ? (raw.id ?? raw.value) : raw;
-    if (value != null) target.searchParams.append(parameter, canonical(value) === String(value).toLowerCase() && /^[0-9a-f-]{36}$/i.test(String(value)) ? canonical(value) : String(value));
+    if (value != null) appendRedirectQuery(target, new URLSearchParams([[parameter, canonical(value) === String(value).toLowerCase() && /^[0-9a-f-]{36}$/i.test(String(value)) ? canonical(value) : String(value)]]).toString());
   }
-  return target.origin === origin.origin ? target.pathname + target.search : target.href;
+  return target.origin === origin.origin ? target.pathname + target.search + target.hash : target.href;
 }
 
 /**

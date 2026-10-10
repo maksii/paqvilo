@@ -164,8 +164,7 @@ export function resolvePortalIdentity(
   const roles = [...roleIds]
     .map((roleId) => model.roles.get(roleId)?.name)
     .filter(Boolean);
-  // Web roles of the persona's parent account are reported, not applied (agent B,
-  // lib/platform-changes.mjs accountWebRoleIds).
+  // Web roles of the persona's parent account are reported, not applied (  // lib/platform-changes.mjs accountWebRoleIds).
   const accountRoles = accountId
     ? accountWebRoleIds(state, accountId).filter((roleId) => model.roles.has(roleId) && !roleIds.has(roleId))
     : [];

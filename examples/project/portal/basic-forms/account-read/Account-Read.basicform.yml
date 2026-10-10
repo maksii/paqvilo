@@ -1,0 +1,28 @@
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_attachfileaccept: '*/*'
+adx_attachfilemaxsize: 1024
+adx_captcharequired: false
+adx_entityformid: b4700000-0000-4000-8000-9e60dac3145b
+adx_entityname: account
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Paqvilo Account
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_mode: 100000002
+adx_name: Account Read
+adx_recordidquerystringparametername: id
+adx_referencequerystringisprimarykey: true
+adx_showcaptchaforauthenticatedusers: false
+adx_showunsupportedfields: false
+adx_submitbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Save account"
+    }
+  ]
+adx_tabname: DEMO_TAB

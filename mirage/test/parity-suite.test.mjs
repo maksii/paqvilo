@@ -60,7 +60,7 @@ test("normalisers generalise identifiers, dates, tokens and origins", () => {
 });
 
 test("URL redaction keeps names and shapes but never query values", () => {
-  assert.equal(redactUrl(`https://reference.example/Applications/productselection-ro/?id=${GUID_A}&orderId=1`, { origins: ["https://reference.example"] }), "/Applications/productselection-ro/?id=…&orderId=…");
+  assert.equal(redactUrl(`https://reference.example/requests/itemselection-ro/?id=${GUID_A}&orderId=1`, { origins: ["https://reference.example"] }), "/requests/itemselection-ro/?id=…&orderId=…");
   assert.equal(redactUrl(`/_api/contacts(${GUID_A})`), "/_api/contacts({guid})");
   assert.equal(redactUrl("https://login.microsoftonline.com/tenant/oauth2/authorize?state=secret&nonce=n"), "https://login.microsoftonline.com/tenant/oauth2/authorize?nonce=…&state=…");
   assert.equal(redactUrl("javascript:alert(1)"), "javascript:");
@@ -94,7 +94,7 @@ test("read-only guards reject writes, deny-listed routes and unsafe plans", () =
   assert.throws(() => validatePlan({ ...base, scenarios: [{ id: "a", kind: "page-dom", path: "/x/?id={id}" }] }), /without discovery/);
   assert.throws(() => validatePlan({ ...base, scenarios: [{ id: "a", kind: "api-json", path: "/_api/x", prefer: "return=representation" }] }), /Prefer/);
   assert.throws(() => validatePlan({ ...base, scenarios: [base.scenarios[0], base.scenarios[0]] }), /Duplicate/);
-  assert.throws(() => validatePlan({ ...base, allowPost: [{ method: "POST", pathPrefix: "/filterproductselection/", reason: "documented read-only Liquid FetchXML page" }] }), /only GET and HEAD/);
+  assert.throws(() => validatePlan({ ...base, allowPost: [{ method: "POST", pathPrefix: "/filteritemselection/", reason: "documented read-only Liquid FetchXML page" }] }), /only GET and HEAD/);
   assert.doesNotThrow(() => validatePlan({ ...base, allowPost: [] }));
   assert.throws(() => validatePlan({ ...base, fulfil: [{ method: "GET", pathPattern: "^/x", status: 204, reason: "documented reason" }] }), /fulfilment/);
   assert.throws(() => validatePlan({ ...base, classifications: [{ class: "runtime-gap", note: "x" }] }), /owner/);
@@ -123,7 +123,7 @@ test("semantic trees collapse data rows, redact control values and report struct
   const row = (name) => element("tr", { class: "row" }, [element("td", {}, [text(name)]), element("td", {}, [element("a", { href: `/medicinalproduct-RO/?id=${GUID_A}`, title: "View" }, [text("View")])])]);
   const live = element("main", { id: "content", class: "sample b" }, [
     element("h1", {}, [text("Owned products")]),
-    element("input", { type: "hidden", id: "userroles", value: "Forms Applicant ManagerAuthenticated Users" }, [], { p: { value: "secret", checked: false, disabled: false } }),
+    element("input", { type: "hidden", id: "userroles", value: "Review ManagerAuthenticated Users" }, [], { p: { value: "secret", checked: false, disabled: false } }),
     element("input", { type: "hidden", name: "__RequestVerificationToken", value: "token-value" }),
     element("table", {}, [element("tbody", {}, Array.from({ length: 25 }, (_, index) => row(`Live product ${index}`)))]),
     element("div", { class: "live-only" }, [text("Only live")]),
@@ -208,18 +208,18 @@ test("Liquid probes classify literals, masks and concatenated roles", () => {
   assert.equal(formatMask("10/7/2026 9:41:00 PM"), "99/9/9999 9:99:99 A{2}");
   const probe = extractProbe('<input name="__RequestVerificationToken" type="hidden" value="abc" />', { regex: "(<input[^>]*>)", redactAttributes: ["value"] });
   assert.equal(probe.value, '<input name="__RequestVerificationToken" type="hidden" value="{redacted}" />');
-  const roles = ["Authenticated Users", "Forms Applicant Manager", "Forms Applicant", "Sample Catalog ExampleApp Data Steward"];
-  assert.deepEqual(segmentRoles("Forms Applicant ManagerSample Catalog ExampleApp Data StewardAuthenticated Users", roles), ["Forms Applicant Manager", "Sample Catalog ExampleApp Data Steward", "Authenticated Users"]);
+  const roles = ["Authenticated Users", "Review Manager", "Reviewer", "Demo Data Steward"];
+  assert.deepEqual(segmentRoles("Review ManagerDemo Data StewardAuthenticated Users", roles), ["Review Manager", "Demo Data Steward", "Authenticated Users"]);
   assert.equal(segmentRoles("Unknown RoleAuthenticated Users", roles), null);
   assert.deepEqual(checkPersonaAccess(["A"], [{ path: "/x/", rolesAny: ["A"], accessible: true }, { path: "/y/", rolesAny: ["B"], accessible: true }]).map((item) => item.consistent), [true, false]);
 });
 
 test("run-time identifiers fill placeholders without entering the plan; drift and probe shapes carry no values", async () => {
-  const scenario = { id: "x", kind: "page-dom", path: "/Applications/proceduralinformation/?id={id}&orderId=1&appTypeId={appTypeId}", discover: { from: "ids", key: "draft" } };
+  const scenario = { id: "x", kind: "page-dom", path: "/requests/details/?id={id}&orderId=1&categoryId={categoryId}", discover: { from: "ids", key: "draft" } };
   assert.doesNotThrow(() => validatePlan({ version: 1, scenarios: [scenario] }));
-  assert.equal(scenarioPath(scenario, { id: GUID_A, appTypeId: GUID_B }), `/Applications/proceduralinformation/?id=${GUID_A}&orderId=1&appTypeId=${GUID_B}`);
-  const ids = { draft: { live: { id: GUID_A, appTypeId: GUID_B }, local: { id: GUID_B } } };
-  assert.deepEqual(await __testing.discoverTarget({}, scenario, { side: "live", ids }), { path: `/Applications/proceduralinformation/?id=${GUID_A}&orderId=1&appTypeId=${GUID_B}` });
+  assert.equal(scenarioPath(scenario, { id: GUID_A, categoryId: GUID_B }), `/requests/details/?id=${GUID_A}&orderId=1&categoryId=${GUID_B}`);
+  const ids = { draft: { live: { id: GUID_A, categoryId: GUID_B }, local: { id: GUID_B } } };
+  assert.deepEqual(await __testing.discoverTarget({}, scenario, { side: "live", ids }), { path: `/requests/details/?id=${GUID_A}&orderId=1&categoryId=${GUID_B}` });
   assert.match((await __testing.discoverTarget({}, scenario, { side: "local", ids })).error, /every placeholder/);
   assert.match((await __testing.discoverTarget({}, scenario, { side: "live", ids: { draft: { live: { id: "x\"><script>" } } } })).error, /identifiers/);
   assert.match((await __testing.discoverTarget({}, { ...scenario, path: "/records/approve/?id={id}" }, { side: "live", ids: { draft: { live: { id: GUID_A } } } })).error, /deny list/);
@@ -725,7 +725,7 @@ test("the reference sees only GET and HEAD: the fixed allow-list is empty and no
   const origin = "https://reference.example";
   const origins = [origin];
   const allowList = [{ method: "POST", pathPrefix: "/", reason: "a plan that tries to allow every POST" }];
-  const targets = ["/_api/contacts(00000000-0000-0000-0000-000000000001)", "/_api/sample_applications", "/_services/entity-grid-data.json/1", "/filterproductselection/", "/"];
+  const targets = ["/_api/contacts(00000000-0000-0000-0000-000000000001)", "/_api/sample_applications", "/_services/entity-grid-data.json/1", "/filteritemselection/", "/"];
   for (const method of ["POST", "PUT", "PATCH", "DELETE", "MERGE", "OPTIONS"])
     for (const target of targets) {
       assert.equal(requestDecision(method, origin + target, { allowList, origins }).action, "block", `${method} ${target}`);

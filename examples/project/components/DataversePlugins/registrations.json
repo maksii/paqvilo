@@ -1,0 +1,104 @@
+{
+  "assemblyId": "b4700000-0000-4000-8000-370000000001",
+  "assemblyName": "Paqvilo.Demo.Plugins",
+  "registrations": [
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000100",
+      "typeId": "b4700000-0000-4000-8000-370000000011",
+      "typeName": "Paqvilo.Demo.Plugins.AccountRules",
+      "entity": "account",
+      "message": "Create",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": null
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000101",
+      "typeId": "b4700000-0000-4000-8000-370000000011",
+      "typeName": "Paqvilo.Demo.Plugins.AccountRules",
+      "entity": "account",
+      "message": "Create",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": null
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000102",
+      "typeId": "b4700000-0000-4000-8000-370000000011",
+      "typeName": "Paqvilo.Demo.Plugins.AccountRules",
+      "entity": "account",
+      "message": "Update",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": "name,emailaddress1"
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000103",
+      "typeId": "b4700000-0000-4000-8000-370000000011",
+      "typeName": "Paqvilo.Demo.Plugins.AccountRules",
+      "entity": "account",
+      "message": "Update",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": "name,emailaddress1"
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000104",
+      "typeId": "b4700000-0000-4000-8000-370000000012",
+      "typeName": "Paqvilo.Demo.Plugins.ContactRules",
+      "entity": "contact",
+      "message": "Create",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": null
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000105",
+      "typeId": "b4700000-0000-4000-8000-370000000012",
+      "typeName": "Paqvilo.Demo.Plugins.ContactRules",
+      "entity": "contact",
+      "message": "Create",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": null
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000106",
+      "typeId": "b4700000-0000-4000-8000-370000000012",
+      "typeName": "Paqvilo.Demo.Plugins.ContactRules",
+      "entity": "contact",
+      "message": "Update",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": "firstname,lastname,emailaddress1"
+    },
+    {
+      "stepId": "b4700000-0000-4000-8000-370000000107",
+      "typeId": "b4700000-0000-4000-8000-370000000012",
+      "typeName": "Paqvilo.Demo.Plugins.ContactRules",
+      "entity": "contact",
+      "message": "Update",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "filteringAttributes": "firstname,lastname,emailaddress1"
+    }
+  ],
+  "sdkMessages": {
+    "9ebdbb1b-ea3e-db11-86a7-000a3a5473e8": {
+      "name": "Create",
+      "evidence": "Dataverse sdkmessages read on 2026-10-10; matched the PAC-exported SdkMessageId."
+    },
+    "20bebb1b-ea3e-db11-86a7-000a3a5473e8": {
+      "name": "Update",
+      "evidence": "Dataverse sdkmessages read on 2026-10-10; matched the PAC-exported SdkMessageId."
+    }
+  }
+}

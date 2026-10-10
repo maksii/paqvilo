@@ -308,7 +308,7 @@ export function webApiPolicy(portal, store, entity) {
     if (!allowed(name)) notEnabled(name, mapping.logicalName);
   };
   const relation = (name) => mapping.relationships?.[name];
-  // A path segment before "/" must be a navigation property; reference-portal answers
+  // A path segment before "/" must be a navigation property; the platform answers
   // a path through a lookup column (for example x_listid/x_listextid) with 400 9004010A.
   const notNavigation = (name) =>
     new DataError(`${name} is not a navigation property of ${mapping.logicalName}.`, 400, "MissingRelationship", {
@@ -326,7 +326,7 @@ export function webApiPolicy(portal, store, entity) {
     assert(first);
   };
   // Lookup columns are read through _<name>_value; selecting the logical name
-  // (or a navigation property) is a malformed query on reference-portal (400 9004010A).
+  // (or a navigation property) is a malformed query on the platform (400 9004010A).
   const definitionOf = (name) => {
     for (const definitions of metadataFields) {
       const key = Object.hasOwn(definitions, name)

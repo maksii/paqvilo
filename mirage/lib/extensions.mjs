@@ -63,7 +63,9 @@ export function packEndpoints(packs = []) {
 // rendering reconciles. Without a registered class that capture is off. A pack
 // also names the web template whose JSON lists the header notifications
 // (headerNotificationQuery); rendering reproduces observed header notifications
-// only with a named template that the export contains.
+// only with a named template that the export contains. The template owns audience
+// rules and returns { notifications: [{ notificationText, severity, visible }] };
+// severity is a Bootstrap alert kind and visible is an explicit boolean.
 const footerLogos = new Map();
 const notificationQueries = new Map();
 

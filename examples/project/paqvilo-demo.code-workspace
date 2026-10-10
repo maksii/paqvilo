@@ -1,0 +1,8 @@
+{
+  "folders": [{ "name": "Paqvilo demo", "path": "." }],
+  "settings": {
+    "files.exclude": { "**/.paqvilo": true, "**/node_modules": true },
+    "search.exclude": { "**/.paqvilo": true, "**/node_modules": true, "**/obj": true, "**/out": true },
+    "debug.openDebug": "openOnDebugBreak"
+  }
+}

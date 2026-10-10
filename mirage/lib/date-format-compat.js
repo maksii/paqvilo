@@ -1,6 +1,6 @@
 /* Local fallbacks for the platform's Date extensions, in two parts:
  * - `Date.prototype.format`, which MicrosoftAjax (a ScriptResource.axd of form pages) provides;
- * - the Datejs `Date.parse` / `Date.today` of the postpreform bundle (on reference-portal `Date.parse`
+ * - the Datejs `Date.parse` / `Date.today` of the postpreform bundle (on the platform `Date.parse`
  *   returns a Date object, or null when the text does not parse, for the site culture en-US).
  * The platform bundle equivalents (lib/native-services.mjs) serve each part at its platform
  * position; documents without the platform bundles load the whole file. */

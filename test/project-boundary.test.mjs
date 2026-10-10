@@ -33,11 +33,27 @@ test('core project contains no private business dependency and the guard detects
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'mirage/packs'), { recursive: true });
-  fs.writeFileSync(path.join(fixture, 'mirage/server.mjs'), 'const table = "ema_secret";');
+  fs.writeFileSync(path.join(fixture, 'mirage/server.mjs'), 'import pack from "./packs/private/pack.mjs";');
   assert.deepEqual(inspectProjectBoundary(fixture), [
-    'mirage/server.mjs: project-specific identifier',
+    'mirage/server.mjs: project-owned dependency: ./packs/private/pack.mjs',
     'mirage/packs: project packs must be external',
   ]);
+});
+
+test('runtime dependencies reject embedded examples and outside imports in both products', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-imports-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(fixture, 'lense'), { recursive: true });
+  fs.mkdirSync(path.join(fixture, 'mirage/lib'), { recursive: true });
+  fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import pack from "../examples/project/pack.mjs";');
+  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'const pack = await import("../../../outside/pack.mjs");');
+  assert.deepEqual(inspectProjectBoundary(fixture), [
+    'lense/runtime.mjs: project-owned dependency: ../examples/project/pack.mjs',
+    'mirage/lib/runtime.mjs: project-owned dependency: ../../../outside/pack.mjs',
+  ]);
+  fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import path from "node:path"; import registry from "../mirage/lib/preset-registry.mjs";');
+  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'export const module = "../../examples/project/pack.mjs";');
+  assert.deepEqual(inspectProjectBoundary(fixture), [], 'ordinary strings and generic internal modules are not project dependencies');
 });
 
 test('default Mirage discovery has no project packs and embedded registration is explicit', async (t) => {
@@ -56,8 +72,8 @@ test('default Mirage discovery has no project packs and embedded registration is
   t.after(() => simulator.close());
   const anonymous = await fetch(simulator.url);
   assert.equal(anonymous.status, 200);
-  assert.match(await anonymous.text(), /Anonymous/);
-  const response = await fetch(simulator.url, { headers: signInHeaders(simulator, '11111111-1111-4111-8111-111111111111') });
+  assert.match(await anonymous.text(), /Sign in/);
+  const response = await fetch(simulator.url, { headers: signInHeaders(simulator, store.snapshot().tables.contact[0].contactid) });
   assert.match(await response.text(), /Alex Example/);
   assert.deepEqual(await discoverPacks(), [], 'loading a project does not change global discovery');
 });
@@ -77,7 +93,7 @@ test('an external preset library persists compactly and resolves after restart w
   assert.equal(saved.presets['example-demo'].tables, undefined);
   const restarted = await new DataStore({ file, presetLibrary: library }).init();
   await restarted.applyPreset('example-demo');
-  assert.equal(restarted.snapshot().tables.contact[0].fullname, 'Alex Example');
+  assert.equal(restarted.snapshot().tables.contact[0].fullname, library['example-demo'].tables.contact[0].fullname);
   const edited = structuredClone(library['example-demo']);
   edited.tables.contact[0].fullname = 'Project-specific edit';
   const current = { presets: { 'example-demo': library['example-demo'], mine: edited }, tables: {} };

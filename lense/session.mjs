@@ -387,7 +387,7 @@ export class OverlaySession extends EventEmitter {
       return route.fallback();
     }
 
-    const path = pageKey(url.pathname);
+    const path = pageKey(url.pathname, this.model);
     if (NEVER_REWRITE.some((re) => re.test(path))) return route.fallback();
 
     // 1. web files and explicit routes: answered from disk, the online site is not asked at all

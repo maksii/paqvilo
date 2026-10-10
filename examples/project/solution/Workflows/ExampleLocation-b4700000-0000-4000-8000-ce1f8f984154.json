@@ -1,0 +1,55 @@
+{
+  "properties": {
+    "connectionReferences": {},
+    "definition": {
+      "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+      "contentVersion": "1.0.0.0",
+      "parameters": {
+        "$connections": {
+          "defaultValue": {},
+          "type": "Object"
+        },
+        "$authentication": {
+          "defaultValue": {},
+          "type": "SecureObject"
+        }
+      },
+      "triggers": {
+        "manual": {
+          "type": "Request",
+          "kind": "powerpages",
+          "inputs": {
+            "schema": {
+              "type": "object",
+              "properties": {
+                "Location": {
+                  "title": "Location",
+                  "type": "string",
+                  "x-ms-dynamically-added": true,
+                  "description": "Place name passed from the example page.",
+                  "x-ms-content-hint": "TEXT"
+                }
+              },
+              "required": []
+            }
+          }
+        }
+      },
+      "actions": {
+        "Respond_to_Power_Pages": {
+          "type": "Response",
+          "kind": "powerpages",
+          "inputs": {
+            "statusCode": 200,
+            "body": {
+              "Location": "@triggerBody()?['Location']"
+            }
+          },
+          "runAfter": {}
+        }
+      }
+    },
+    "templateName": null
+  },
+  "schemaVersion": "1.0.0.0"
+}

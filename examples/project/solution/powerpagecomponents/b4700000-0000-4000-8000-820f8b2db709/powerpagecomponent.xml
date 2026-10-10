@@ -1,0 +1,31 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-820f8b2db709">
+  <content>{
+  "appendquerystring": false,
+  "associatecurrentportaluser": false,
+  "attachfile": false,
+  "captcharequired": false,
+  "entityname": "contact",
+  "entitypermissionsenabled": true,
+  "formname": "Paqvilo Contact",
+  "geolocation_displaymap": false,
+  "geolocation_enabled": false,
+  "geolocation_maptype": 756150000,
+  "hideformonsuccess": false,
+  "mode": 100000000,
+  "onsuccess": 756150000,
+  "registerstartupscript": "$(function () {\n  var parameters = new URLSearchParams(window.location.search);\n  var accountId = parameters.get(\"accountid\") || (parameters.get(\"refentity\") === \"account\" ? parameters.get(\"refid\") : null);\n  if (!accountId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) return;\n  var lookup = $(\"#parentcustomerid\"), label = $(\"#parentcustomerid_name\");\n  if (lookup.val() &amp;&amp; lookup.val() !== accountId) return;\n  lookup.val(accountId).trigger(\"change\");\n  $(\"#parentcustomerid_entityname\").val(\"account\");\n  try {\n    var parentId = new URLSearchParams(window.parent.location.search).get(\"id\");\n    var parentName = window.parent.document.getElementById(\"name\");\n    if (parentId === accountId &amp;&amp; parentName &amp;&amp; parentName.value) {\n      label.val(parentName.value).trigger(\"change\");\n      return;\n    }\n  } catch (_) {}\n  // Standalone accountid links resolve the actual record name through the portal API.\n  window.shell.getTokenDeferred().done(function (token) {\n    $.ajax({url:\"/_api/accounts(\" + accountId + \")?$select=name\",headers:{__RequestVerificationToken:token}}).done(function (account) {\n      if (lookup.val() === accountId) label.val(account.name || \"\").trigger(\"change\");\n    });\n  });\n});\n\n// The native form is hosted in an iframe with its own document and theme.\n(function(){\n document.body.classList.add('demo-native','demo-native-frame');\n if(!document.querySelector('link[data-demo-form-theme]')){const theme=document.createElement('link');theme.rel='stylesheet';theme.href='/demo.css';theme.dataset.demoFormTheme='true';document.head.appendChild(theme);}\n})();\n",
+  "showcaptchaforauthenticatedusers": false,
+  "showunsupportedfields": true,
+  "submitbuttontext": "[{\"LCID\":1033,\"Value\":\"Save contact\"}]",
+  "tabname": "DEMO_TAB",
+  "validationsummarylinksenabled": true
+}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Contact Create</name>
+  <powerpagecomponenttype>15</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -1,0 +1,51 @@
+<entities>
+<entity name="account" displayname="account" etc="1" primaryidfield="accountid" primarynamefield="name" disableplugins="false"><fields><field displayname="accountid" name="accountid" type="guid" primaryKey="true" updateCompare="true" />
+<field displayname="name" name="name" type="string" />
+<field displayname="accountnumber" name="accountnumber" type="string" />
+<field displayname="emailaddress1" name="emailaddress1" type="string" />
+<field displayname="telephone1" name="telephone1" type="string" />
+<field displayname="websiteurl" name="websiteurl" type="string" />
+<field displayname="tickersymbol" name="tickersymbol" type="string" />
+<field displayname="description" name="description" type="string" />
+<field displayname="numberofemployees" name="numberofemployees" type="number" />
+<field displayname="creditlimit" name="creditlimit" type="money" />
+<field displayname="pqvd_decimal" name="pqvd_decimal" type="decimal" customfield="true" />
+<field displayname="pqvd_float" name="pqvd_float" type="float" customfield="true" />
+<field displayname="industrycode" name="industrycode" type="optionsetvalue" />
+<field displayname="donotemail" name="donotemail" type="bool" />
+<field displayname="pqvd_dateonly" name="pqvd_dateonly" type="datetime" customfield="true" />
+<field displayname="pqvd_datetime" name="pqvd_datetime" type="datetime" customfield="true" />
+<field displayname="address1_line1" name="address1_line1" type="string" />
+<field displayname="address1_city" name="address1_city" type="string" />
+<field displayname="address1_postalcode" name="address1_postalcode" type="string" />
+<field displayname="statecode" name="statecode" type="state" />
+<field displayname="statuscode" name="statuscode" type="status" />
+<field displayname="primarycontactid" name="primarycontactid" type="entityreference" lookupType="contact" />
+<field displayname="transactioncurrencyid" name="transactioncurrencyid" type="entityreference" lookupType="transactioncurrency" />
+<field displayname="parentaccountid" name="parentaccountid" type="entityreference" lookupType="account" /></fields><filter>&lt;fetch&gt;&lt;entity name=&quot;account&quot;&gt;&lt;all-attributes /&gt;&lt;filter&gt;&lt;condition attribute=&quot;accountid&quot; operator=&quot;in&quot;&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001001&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001002&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001003&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001004&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001005&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001006&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001007&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001008&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001009&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001010&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001011&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000001012&lt;/value&gt;&lt;/condition&gt;&lt;/filter&gt;&lt;/entity&gt;&lt;/fetch&gt;</filter></entity>
+<entity name="contact" displayname="contact" etc="2" primaryidfield="contactid" primarynamefield="fullname" disableplugins="false"><fields><field displayname="contactid" name="contactid" type="guid" primaryKey="true" updateCompare="true" />
+<field displayname="firstname" name="firstname" type="string" />
+<field displayname="lastname" name="lastname" type="string" />
+<field displayname="emailaddress1" name="emailaddress1" type="string" />
+<field displayname="telephone1" name="telephone1" type="string" />
+<field displayname="jobtitle" name="jobtitle" type="string" />
+<field displayname="description" name="description" type="string" />
+<field displayname="statecode" name="statecode" type="state" />
+<field displayname="statuscode" name="statuscode" type="status" />
+<field displayname="parentcustomerid" name="parentcustomerid" type="entityreference" lookupType="account" /></fields><filter>&lt;fetch&gt;&lt;entity name=&quot;contact&quot;&gt;&lt;all-attributes /&gt;&lt;filter&gt;&lt;condition attribute=&quot;contactid&quot; operator=&quot;in&quot;&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002001&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002002&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002003&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002004&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002005&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002006&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002007&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002008&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002009&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002010&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002011&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002012&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002013&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002014&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002015&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002016&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002017&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002018&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002019&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002020&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002021&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002022&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002023&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000002024&lt;/value&gt;&lt;/condition&gt;&lt;/filter&gt;&lt;/entity&gt;&lt;/fetch&gt;</filter></entity>
+<entity name="annotation" displayname="annotation" etc="5" primaryidfield="annotationid" primarynamefield="subject" disableplugins="false"><fields><field displayname="annotationid" name="annotationid" type="guid" primaryKey="true" updateCompare="true" />
+<field displayname="subject" name="subject" type="string" />
+<field displayname="notetext" name="notetext" type="string" />
+<field displayname="filename" name="filename" type="string" />
+<field displayname="mimetype" name="mimetype" type="string" />
+<field displayname="documentbody" name="documentbody" type="string" />
+<field displayname="isdocument" name="isdocument" type="bool" />
+<field displayname="objectid" name="objectid" type="entityreference" lookupType="account" /></fields><filter>&lt;fetch&gt;&lt;entity name=&quot;annotation&quot;&gt;&lt;all-attributes /&gt;&lt;filter&gt;&lt;condition attribute=&quot;annotationid&quot; operator=&quot;in&quot;&gt;&lt;value&gt;a4300000-0000-4000-8000-000000003001&lt;/value&gt;&lt;value&gt;a4300000-0000-4000-8000-000000003002&lt;/value&gt;&lt;/condition&gt;&lt;/filter&gt;&lt;/entity&gt;&lt;/fetch&gt;</filter></entity>
+<entity name="transactioncurrency" displayname="transactioncurrency" etc="9105" primaryidfield="transactioncurrencyid" primarynamefield="currencyname" disableplugins="false"><fields><field displayname="transactioncurrencyid" name="transactioncurrencyid" type="guid" lookupType="transactioncurrency" primaryKey="true" updateCompare="true" />
+<field displayname="currencyname" name="currencyname" type="string" />
+<field displayname="isocurrencycode" name="isocurrencycode" type="string" />
+<field displayname="currencysymbol" name="currencysymbol" type="string" />
+<field displayname="exchangerate" name="exchangerate" type="decimal" />
+<field displayname="currencyprecision" name="currencyprecision" type="number" />
+<field displayname="statecode" name="statecode" type="state" /></fields><filter>&lt;fetch&gt;&lt;entity name=&quot;transactioncurrency&quot;&gt;&lt;all-attributes /&gt;&lt;filter&gt;&lt;condition attribute=&quot;isocurrencycode&quot; operator=&quot;eq&quot; value=&quot;EUR&quot; /&gt;&lt;/filter&gt;&lt;/entity&gt;&lt;/fetch&gt;</filter></entity>
+</entities>

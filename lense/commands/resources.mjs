@@ -28,6 +28,7 @@ export function resourceFilters(args = {}) {
 
 /** Describe only relationships established by the existing portal model, not inferred runtime use. */
 export function describeResources(cfg, model, baseline, changed, filters = resourceFilters()) {
+  filters = { ...filters, page: filters.page == null ? null : pageKey(filters.page, model) };
   if (filters.changed && !baseline.available) throw new Error('Cannot select changed resources: the requested Git baseline is unavailable');
   const relative = (file) => file ? normalizePath(path.relative(cfg.sourceDir, file)) : null;
   const changedAt = (file) => {

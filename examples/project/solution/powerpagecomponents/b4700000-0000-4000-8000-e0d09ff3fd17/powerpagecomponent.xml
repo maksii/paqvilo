@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-e0d09ff3fd17">
+  <content>{"value":"true"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Authentication/Registration/LocalLoginEnabled</name>
+  <powerpagecomponenttype>9</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

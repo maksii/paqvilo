@@ -3,7 +3,7 @@ import { contextualViewFetchXml } from "./platform.mjs";
 import { parseFetchTree, serializeFetchTree } from "./native-services.mjs";
 
 /*
- * Entity list OData feeds (agent C): lists with adx_odata_enabled publish their OData view
+ * Entity list OData feeds : lists with adx_odata_enabled publish their OData view
  * at /_odata/<adx_odata_entitysetname>. Model from the legacy EntityListODataFeedDataAdapter
  * (MIT): the primary key, the view's columns (link-entity columns named
  * "<entity>-<attribute>"), lookups as EntityReference {Id, Name}, choices as OptionSet

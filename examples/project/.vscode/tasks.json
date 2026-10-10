@@ -1,0 +1,78 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "demo: Install dependencies",
+      "type": "process",
+      "command": "npm",
+      "windows": { "command": "npm.cmd" },
+      "args": ["install", "--no-audit", "--no-fund"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "demo: Start Mirage",
+      "type": "process",
+      "command": "node",
+      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "mirage", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--port", "0"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "demo: Install dependencies",
+      "group": { "kind": "build", "isDefault": true },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "demo: Mirage + browser debugger",
+      "type": "process",
+      "command": "node",
+      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "mirage", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--port", "0", "--debug-port", "9222"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "demo: Install dependencies",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        "owner": "paqvilo-demo",
+        "pattern": { "regexp": "^paqvilo: (.+)$", "message": 1 },
+        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s", "endsPattern": "^edit a file under the sources" }
+      }
+    },
+    {
+      "label": "demo: Lense + browser debugger",
+      "type": "process",
+      "command": "node",
+      "args": ["${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs", "lense", "dev", "--config", "./paqvilo.config.yml", "--site", "example", "--env", "${input:liveEnvironment}", "--debug-port", "9222"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "demo: Install dependencies",
+      "isBackground": true,
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": {
+        "owner": "paqvilo-demo",
+        "pattern": { "regexp": "^paqvilo: (.+)$", "message": 1 },
+        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s", "endsPattern": "^edit a file under the sources" }
+      }
+    },
+    {
+      "label": "demo: Build Dataverse plugins",
+      "type": "process",
+      "command": "dotnet",
+      "args": ["build", "components/DataversePlugins/DataversePlugins.csproj", "--configuration", "Release", "-p:RestoreLockedMode=true"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": "$msCompile"
+    },
+    {
+      "label": "demo: Run acceptance tests",
+      "type": "process",
+      "command": "npm",
+      "windows": { "command": "npm.cmd" },
+      "args": ["test"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "dependsOn": "demo: Install dependencies",
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    }
+  ],
+  "inputs": [{ "id": "liveEnvironment", "type": "promptString", "description": "Environment name added to paqvilo.config.yml with your live portal URL", "default": "online" }]
+}

@@ -136,7 +136,7 @@ const escapeHtml = (value) =>
 
 /**
  * Content of the platform's sign-in page (rendered inside the site's header and footer).
- * - External providers: one form per provider, as reference-portal's /SignIn renders it (POST
+ * - External providers: one form per provider, as the platform's /SignIn renders it (POST
  *   /Account/Login/ExternalLogin?ReturnUrl=..., __RequestVerificationToken, a submit
  *   button named "provider" whose value is the provider's AuthenticationType and whose
  *   text is its Caption; capture: docs/runtime-evidence.md).

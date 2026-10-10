@@ -1,4 +1,4 @@
-// Ecosystem review items (a)-(f) for the Dataverse and Web API runtime (agent B):
+// Ecosystem review items (a)-(f) for the Dataverse and Web API runtime :
 // docs/dataverse-parity.md ("Fiscal calendar", "Token failures", "Navigation binding",
 // "Platform changes" and the decisions table) and docs/platform-internals-reference.md 7.9.
 import test from "node:test";

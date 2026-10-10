@@ -8,7 +8,7 @@ Install Paqvilo, try the included example, then connect your own Power Pages exp
 
 | Tool | Why you need it |
 | --- | --- |
-| [Node.js 24 LTS](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. Node.js 22+ is supported. |
+| [Node.js 22 or later](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. |
 | Edge or Chrome | Displays your portal and the integrated development panel. Edge is the default. |
 | [Git](https://git-scm.com/downloads) | Provides source baselines for browser overlays and change comparisons. |
 | [Visual Studio Code](https://code.visualstudio.com/download) | Recommended editor for your exported sources and configuration. |
@@ -42,17 +42,33 @@ For an existing project, open that folder in VS Code and use its terminal. Skip 
 
 Keep `package.json` and `package-lock.json` with your project. Ignore `node_modules/` and `.paqvilo/` in Git. Installation needs internet access. The example needs no npm or Power Pages account.
 
-### Try the included example
+### Try the demo
 
 ```sh
-npx --no-install paqvilo mirage serve --source ./node_modules/paqvilo/examples/project/portal --state .paqvilo/demo-state.json --port 8787
+npx --no-install paqvilo mirage demo
 ```
 
-Open [http://127.0.0.1:8787](http://127.0.0.1:8787). You should see the example home page as **Anonymous**. Open [`/_sim/`](http://127.0.0.1:8787/_sim/) for local administration.
+The command creates `paqvilo-example/` in your working folder, loads invented data and opens the development browser automatically. It chooses a free local port. You need neither a portal export nor a Power Pages account.
 
-Keep the terminal running. Stop with **Ctrl+C**. If the port is occupied, replace `--port 8787` with `--port 0` and open the printed address.
+Follow the walkthrough on the page:
 
-This example reads installed sources. To edit it and add test data, copy the [project starter](../examples/project/README.md) into your working folder.
+1. **Choose a local persona.** Click **Sign in**, then **Sign in** beside **Alex Example 01**.
+2. **Open a populated account.** Choose **Web API**, then **Arcwell Services**. Its form includes typed fields, lookups, two contacts and two notes.
+3. **Try CRUD.** Edit the service score or review date, save, then add a related contact. View, edit and delete that contact in its dialog. Download the service brief or attach a small file.
+4. **Compare approaches.** Open **Out of the box** for native views, contact modals and notes. Open **PCF** to edit the same account through 14 typed controls. On **Extended**, calculate an estimate, read the local account overview and try the location flow.
+5. **Inspect sources.** Press **Alt+Shift+P**, then select **Inspect**. Check the template, tables and permission rules. **Tweaks** also lets you switch persona.
+6. **Edit locally.** In VS Code, open `paqvilo-example/portal/web-files/demo.css`. Change a style and save. The browser should refresh with your edit.
+7. **Try an empty state.** Open **Manage data and personas**, select **Plugins & presets**, apply **Empty account workspace** and confirm. Refresh the portal. Apply **Populated account workspace** to restore the sample rows.
+
+The demo includes editable portal and solution sources, PCF projects and importable deployment archives. All three approaches support local account/contact CRUD and notes. Extended uses local server logic and a request/response flow simulation. The [demo guide](demo.md) connects each approach to its sources; [coverage](coverage.md) describes the supported platform boundary. The sample's [deployment guide](../examples/project/deployment/README.md) takes it to your own Power Pages environment.
+
+Prefer menus and **F5** for daily work? Use `npx --no-install paqvilo mirage demo --scaffold` instead, then open the generated `paqvilo-example/paqvilo-demo.code-workspace`. Its prepared tasks and browser debugger are explained in the [VS Code walkthrough](demo.md#prefer-vs-code-tasks).
+
+Keep the terminal running. Close the demo browser or press **Ctrl+C** to stop. Running the demo again preserves source edits and restores its sample dataset. Local sign-in uses invented contacts, without a password or Microsoft account.
+
+For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./another-demo`. An unrelated nonempty folder is never overwritten. The [project starter](../examples/project/README.md) explains how to adapt the example.
+
+`mirage serve` is a server-only command. It neither opens the development browser nor loads a project's data pack when given only `--source`. Use `demo` for the first trial and `dev` for your own configured project.
 
 ## 2. Connect your site
 
@@ -126,6 +142,16 @@ Close the dev browser or press **Ctrl+C** to stop runtimes started by that sessi
 
 ## 4. Preview live with Lense
 
+Lense uses a committed export as the baseline for literal markup previews and Git comparisons. If this export has no Git history, run these commands from your project folder before editing it:
+
+```sh
+git init
+git add sources/portal-export
+git commit -m "Baseline portal export"
+```
+
+Use your actual export path. In an existing repository, commit the export through your normal source review. This baseline records local files; it does not establish what is deployed online.
+
 ```sh
 npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
 ```
@@ -141,9 +167,11 @@ Lense previews supported local resources while Liquid and Dataverse execute onli
 | `node` or `npm` is not recognized | Install Node.js, then reopen the terminal and VS Code. |
 | PowerShell blocks `npm.ps1` | Choose **Command Prompt** from VS Code's terminal dropdown and run the same commands. |
 | The Paqvilo command is missing | Open the folder containing `package.json`, then run `npm install --save-dev paqvilo`. |
+| A demo folder is rejected | Choose a new folder with `--dir ./another-demo`; the command protects existing projects. |
 | Edge cannot launch | Install Edge or add `--browser chrome` to `mirage dev` or `lense dev` for installed Chrome. |
 | Exported pages are missing | Check the directory containing your exported site and run `mirage inspect` again. |
 | Mirage lists are empty or access is denied | Add simulated rows and sign this browser in as a local persona; inspect its table permissions. |
 | A saved change is missing | Check applied resources, unmatched patches, `needsDeploy` and failed requests in the panel. |
+| Inspect cannot open the editor | Set the top-level `editor` in `paqvilo.config.yml`, or `PAQVILO_EDITOR`, to your editor CLI's name or actual executable path, then restart the session. VS Code uses `code` or its installed `code.cmd`. |
 
 [Documentation index](index.md) | [Project starter](../examples/project/README.md)

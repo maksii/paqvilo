@@ -140,11 +140,11 @@
     return custom || resource("Click_Stay_To_Save_Your_Changes", "Your changes haven't been saved. Would you like to stay on the page to save your changes?");
   });
   w.onbeforeunload = w.confirmExit;
-  // The platform script replaces these built-ins on form pages: on reference-portal /contact-us/
+  // The form adapter replaces these built-ins on form pages:
   // document.getElementsByClassName returns an Array (page scripts call .forEach on it) that
   // matches word boundaries ("control" includes .form-control), while jQuery class selection
   // keeps native matching: the platform jQuery's selector engine does not use the method
-  // (support.getElementsByClassName is false; live-run11, live-run12).
+  // (support.getElementsByClassName is false).
   String.prototype.trim = function () {
     return this.replace(/^\s+|\s+$/g, "");
   };

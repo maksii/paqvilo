@@ -1,0 +1,20 @@
+{% assign preview_count = count | default: 3 | integer %}{% if preview_count < 1 %}{% assign preview_count = 1 %}{% elsif preview_count > 4 %}{% assign preview_count = 4 %}{% endif %}<section class="demo-panel" data-liquid-preview><div class="demo-section-heading"><h2>{{ title | default: 'Account preview' | escape }}</h2><p>Up to {{ preview_count }} records, ordered by name</p></div>{% if user %}{% fetchxml preview_query %}<fetch count="{{ preview_count }}" page="1"><entity name="account"><attribute name="accountid"/><attribute name="name"/><attribute name="address1_city"/><attribute name="telephone1"/><order attribute="name"/></entity></fetch>{% endfetchxml %}<div class="demo-cards">{% if preview_query.results.entities.size > 0 %}{% for preview_account in preview_query.results.entities limit:preview_count %}{% include 'Liquid account card' record:preview_account index:forloop.index eyebrow:'PREVIEW' %}{% endfor %}{% else %}<p class="demo-empty">No accounts are available for this persona.</p>{% endif %}</div>{% else %}<p class="demo-empty">Sign in to load permission-scoped account records.</p>{% endif %}</section>{% manifest %}{
+  "type": "Functional",
+  "displayName": "Account preview cards",
+  "description": "Read-only account cards with a configurable heading and bounded record count.",
+  "tables": [
+    "account"
+  ],
+  "params": [
+    {
+      "id": "title",
+      "displayName": "Title",
+      "description": "Section heading; defaults to Account preview."
+    },
+    {
+      "id": "count",
+      "displayName": "Count",
+      "description": "Number of accounts, from 1 to 4. Defaults to 3."
+    }
+  ]
+}{% endmanifest %}

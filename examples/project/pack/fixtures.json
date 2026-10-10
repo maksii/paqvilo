@@ -1,0 +1,879 @@
+{
+  "account": [
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001001",
+      "name": "Arcwell Services",
+      "accountnumber": "PV-001",
+      "emailaddress1": "accounts1@example.com",
+      "telephone1": "+44 20 7946 0400",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV1",
+      "description": "Annual service agreement with two active contacts.",
+      "numberofemployees": 12,
+      "creditlimit": 8000,
+      "pqvd_decimal": 68.25,
+      "pqvd_float": 10.125,
+      "industrycode": 6,
+      "donotemail": true,
+      "pqvd_dateonly": "2026-11-01T00:00:00Z",
+      "pqvd_datetime": "2026-12-01T10:30:00Z",
+      "address1_line1": "12 Example Street",
+      "address1_city": "Amsterdam",
+      "address1_postalcode": "1000 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002001",
+        "logical_name": "contact",
+        "name": "Alex Example 01"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001002",
+      "name": "Bellweather Supply",
+      "accountnumber": "PV-002",
+      "emailaddress1": "accounts2@example.com",
+      "telephone1": "+44 20 7946 0401",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV2",
+      "description": "Wholesale account with a scheduled credit review.",
+      "numberofemployees": 19,
+      "creditlimit": 9750,
+      "pqvd_decimal": 70.75,
+      "pqvd_float": 11.3595,
+      "industrycode": 33,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-02T00:00:00Z",
+      "pqvd_datetime": "2026-12-02T10:30:00Z",
+      "address1_line1": "15 Example Street",
+      "address1_city": "Utrecht",
+      "address1_postalcode": "1001 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002003",
+        "logical_name": "contact",
+        "name": "Morgan Example 02"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001003",
+      "name": "Calder Engineering",
+      "accountnumber": "PV-003",
+      "emailaddress1": "accounts3@example.com",
+      "telephone1": "+44 20 7946 0402",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV3",
+      "description": "Engineering partner with an upcoming site appointment.",
+      "numberofemployees": 26,
+      "creditlimit": 11500,
+      "pqvd_decimal": 73.25,
+      "pqvd_float": 12.594,
+      "industrycode": 12,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-03T00:00:00Z",
+      "pqvd_datetime": "2026-12-03T10:30:00Z",
+      "address1_line1": "18 Example Street",
+      "address1_city": "Rotterdam",
+      "address1_postalcode": "1002 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002005",
+        "logical_name": "contact",
+        "name": "Casey Example 03"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001004",
+      "name": "Cedar Commerce",
+      "accountnumber": "PV-004",
+      "emailaddress1": "accounts4@example.com",
+      "telephone1": "+44 20 7946 0403",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV4",
+      "description": "Commerce account used to explore inactive records.",
+      "numberofemployees": 33,
+      "creditlimit": 13250,
+      "pqvd_decimal": 75.75,
+      "pqvd_float": 13.8285,
+      "industrycode": 8,
+      "donotemail": true,
+      "pqvd_dateonly": "2026-11-04T00:00:00Z",
+      "pqvd_datetime": "2026-12-04T10:30:00Z",
+      "address1_line1": "21 Example Street",
+      "address1_city": "Delft",
+      "address1_postalcode": "1003 AB",
+      "statecode": 1,
+      "statuscode": 2,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002007",
+        "logical_name": "contact",
+        "name": "Jamie Example 04"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001005",
+      "name": "Coastline Logistics",
+      "accountnumber": "PV-005",
+      "emailaddress1": "accounts5@example.com",
+      "telephone1": "+44 20 7946 0404",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV5",
+      "description": "Logistics team with a parent account relationship.",
+      "numberofemployees": 40,
+      "creditlimit": 15000,
+      "pqvd_decimal": 78.25,
+      "pqvd_float": 15.062999999999999,
+      "industrycode": 30,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-05T00:00:00Z",
+      "pqvd_datetime": "2026-12-05T10:30:00Z",
+      "address1_line1": "24 Example Street",
+      "address1_city": "Haarlem",
+      "address1_postalcode": "1004 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "parentaccountid": {
+        "id": "a4300000-0000-4000-8000-000000001001",
+        "logical_name": "account",
+        "name": "Arcwell Services"
+      },
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002009",
+        "logical_name": "contact",
+        "name": "Riley Example 05"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001006",
+      "name": "Ellison Studio",
+      "accountnumber": "PV-006",
+      "emailaddress1": "accounts6@example.com",
+      "telephone1": "+44 20 7946 0405",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV6",
+      "description": "Design studio with project notes and an attachment.",
+      "numberofemployees": 47,
+      "creditlimit": 16750,
+      "pqvd_decimal": 80.75,
+      "pqvd_float": 16.2975,
+      "industrycode": 9,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-06T00:00:00Z",
+      "pqvd_datetime": "2026-12-06T10:30:00Z",
+      "address1_line1": "27 Example Street",
+      "address1_city": "Leiden",
+      "address1_postalcode": "1005 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002011",
+        "logical_name": "contact",
+        "name": "Taylor Example 06"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001007",
+      "name": "Fieldstone Consulting",
+      "accountnumber": "PV-007",
+      "emailaddress1": "accounts7@example.com",
+      "telephone1": "+44 20 7946 0406",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV7",
+      "description": "Consultancy account with a primary contact.",
+      "numberofemployees": 54,
+      "creditlimit": 18500,
+      "pqvd_decimal": 83.25,
+      "pqvd_float": 17.532,
+      "industrycode": 7,
+      "donotemail": true,
+      "pqvd_dateonly": "2026-11-07T00:00:00Z",
+      "pqvd_datetime": "2026-12-07T10:30:00Z",
+      "address1_line1": "30 Example Street",
+      "address1_city": "Eindhoven",
+      "address1_postalcode": "1006 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002013",
+        "logical_name": "contact",
+        "name": "Alex Example 07"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001008",
+      "name": "Grayford Systems",
+      "accountnumber": "PV-008",
+      "emailaddress1": "accounts8@example.com",
+      "telephone1": "+44 20 7946 0407",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV8",
+      "description": "Technology services with a decimal service score.",
+      "numberofemployees": 61,
+      "creditlimit": 20250,
+      "pqvd_decimal": 85.75,
+      "pqvd_float": 18.7665,
+      "industrycode": 6,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-08T00:00:00Z",
+      "pqvd_datetime": "2026-12-08T10:30:00Z",
+      "address1_line1": "33 Example Street",
+      "address1_city": "Breda",
+      "address1_postalcode": "1007 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002015",
+        "logical_name": "contact",
+        "name": "Morgan Example 08"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001009",
+      "name": "Linden Healthcare",
+      "accountnumber": "PV-009",
+      "emailaddress1": "accounts9@example.com",
+      "telephone1": "+44 20 7946 0408",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV9",
+      "description": "Healthcare supplier used to test contact preferences.",
+      "numberofemployees": 68,
+      "creditlimit": 22000,
+      "pqvd_decimal": 88.25,
+      "pqvd_float": 20.000999999999998,
+      "industrycode": 11,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-09T00:00:00Z",
+      "pqvd_datetime": "2026-12-09T10:30:00Z",
+      "address1_line1": "36 Example Street",
+      "address1_city": "Arnhem",
+      "address1_postalcode": "1008 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002017",
+        "logical_name": "contact",
+        "name": "Casey Example 09"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001010",
+      "name": "Northline Materials",
+      "accountnumber": "PV-010",
+      "emailaddress1": "accounts10@example.com",
+      "telephone1": "+44 20 7946 0409",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV10",
+      "description": "Materials account with floating point capacity.",
+      "numberofemployees": 75,
+      "creditlimit": 23750,
+      "pqvd_decimal": 90.75,
+      "pqvd_float": 21.235500000000002,
+      "industrycode": 32,
+      "donotemail": true,
+      "pqvd_dateonly": "2026-11-10T00:00:00Z",
+      "pqvd_datetime": "2026-12-10T10:30:00Z",
+      "address1_line1": "39 Example Street",
+      "address1_city": "Tilburg",
+      "address1_postalcode": "1009 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002019",
+        "logical_name": "contact",
+        "name": "Jamie Example 10"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001011",
+      "name": "Orchard Retail",
+      "accountnumber": "PV-011",
+      "emailaddress1": "accounts11@example.com",
+      "telephone1": "+44 20 7946 0410",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV11",
+      "description": "Retail account paused pending review.",
+      "numberofemployees": 82,
+      "creditlimit": 25500,
+      "pqvd_decimal": 93.25,
+      "pqvd_float": 22.47,
+      "industrycode": 25,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-11T00:00:00Z",
+      "pqvd_datetime": "2026-12-11T10:30:00Z",
+      "address1_line1": "42 Example Street",
+      "address1_city": "Groningen",
+      "address1_postalcode": "1010 AB",
+      "statecode": 1,
+      "statuscode": 2,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002021",
+        "logical_name": "contact",
+        "name": "Riley Example 11"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    },
+    {
+      "accountid": "a4300000-0000-4000-8000-000000001012",
+      "name": "Vale Manufacturing",
+      "accountnumber": "PV-012",
+      "emailaddress1": "accounts12@example.com",
+      "telephone1": "+44 20 7946 0411",
+      "websiteurl": "https://example.com",
+      "tickersymbol": "PV12",
+      "description": "Manufacturing account with a future appointment.",
+      "numberofemployees": 89,
+      "creditlimit": 27250,
+      "pqvd_decimal": 95.75,
+      "pqvd_float": 23.7045,
+      "industrycode": 12,
+      "donotemail": false,
+      "pqvd_dateonly": "2026-11-12T00:00:00Z",
+      "pqvd_datetime": "2026-12-12T10:30:00Z",
+      "address1_line1": "45 Example Street",
+      "address1_city": "Maastricht",
+      "address1_postalcode": "1011 AB",
+      "statecode": 0,
+      "statuscode": 1,
+      "createdon": "2026-10-01T09:00:00Z",
+      "modifiedon": "2026-10-09T14:30:00Z",
+      "primarycontactid": {
+        "id": "a4300000-0000-4000-8000-000000002023",
+        "logical_name": "contact",
+        "name": "Taylor Example 12"
+      },
+      "transactioncurrencyid": {
+        "id": "a4300000-0000-4000-8000-000000000001",
+        "logical_name": "transactioncurrency",
+        "name": "Euro"
+      }
+    }
+  ],
+  "contact": [
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002001",
+      "firstname": "Alex",
+      "lastname": "Example 01",
+      "fullname": "Alex Example 01",
+      "emailaddress1": "contact1@example.com",
+      "telephone1": "+44 20 7946 0501",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001001",
+        "logical_name": "account",
+        "name": "Arcwell Services"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002002",
+      "firstname": "Alex",
+      "lastname": "Demo 01",
+      "fullname": "Alex Demo 01",
+      "emailaddress1": "contact2@example.com",
+      "telephone1": "+44 20 7946 0502",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001001",
+        "logical_name": "account",
+        "name": "Arcwell Services"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002003",
+      "firstname": "Morgan",
+      "lastname": "Example 02",
+      "fullname": "Morgan Example 02",
+      "emailaddress1": "contact3@example.com",
+      "telephone1": "+44 20 7946 0503",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001002",
+        "logical_name": "account",
+        "name": "Bellweather Supply"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002004",
+      "firstname": "Morgan",
+      "lastname": "Demo 02",
+      "fullname": "Morgan Demo 02",
+      "emailaddress1": "contact4@example.com",
+      "telephone1": "+44 20 7946 0504",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001002",
+        "logical_name": "account",
+        "name": "Bellweather Supply"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002005",
+      "firstname": "Casey",
+      "lastname": "Example 03",
+      "fullname": "Casey Example 03",
+      "emailaddress1": "contact5@example.com",
+      "telephone1": "+44 20 7946 0505",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001003",
+        "logical_name": "account",
+        "name": "Calder Engineering"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002006",
+      "firstname": "Casey",
+      "lastname": "Demo 03",
+      "fullname": "Casey Demo 03",
+      "emailaddress1": "contact6@example.com",
+      "telephone1": "+44 20 7946 0506",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001003",
+        "logical_name": "account",
+        "name": "Calder Engineering"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002007",
+      "firstname": "Jamie",
+      "lastname": "Example 04",
+      "fullname": "Jamie Example 04",
+      "emailaddress1": "contact7@example.com",
+      "telephone1": "+44 20 7946 0507",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001004",
+        "logical_name": "account",
+        "name": "Cedar Commerce"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002008",
+      "firstname": "Jamie",
+      "lastname": "Demo 04",
+      "fullname": "Jamie Demo 04",
+      "emailaddress1": "contact8@example.com",
+      "telephone1": "+44 20 7946 0508",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001004",
+        "logical_name": "account",
+        "name": "Cedar Commerce"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002009",
+      "firstname": "Riley",
+      "lastname": "Example 05",
+      "fullname": "Riley Example 05",
+      "emailaddress1": "contact9@example.com",
+      "telephone1": "+44 20 7946 0509",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001005",
+        "logical_name": "account",
+        "name": "Coastline Logistics"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002010",
+      "firstname": "Riley",
+      "lastname": "Demo 05",
+      "fullname": "Riley Demo 05",
+      "emailaddress1": "contact10@example.com",
+      "telephone1": "+44 20 7946 0510",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001005",
+        "logical_name": "account",
+        "name": "Coastline Logistics"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002011",
+      "firstname": "Taylor",
+      "lastname": "Example 06",
+      "fullname": "Taylor Example 06",
+      "emailaddress1": "contact11@example.com",
+      "telephone1": "+44 20 7946 0511",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001006",
+        "logical_name": "account",
+        "name": "Ellison Studio"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002012",
+      "firstname": "Taylor",
+      "lastname": "Demo 06",
+      "fullname": "Taylor Demo 06",
+      "emailaddress1": "contact12@example.com",
+      "telephone1": "+44 20 7946 0512",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001006",
+        "logical_name": "account",
+        "name": "Ellison Studio"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002013",
+      "firstname": "Alex",
+      "lastname": "Example 07",
+      "fullname": "Alex Example 07",
+      "emailaddress1": "contact13@example.com",
+      "telephone1": "+44 20 7946 0513",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001007",
+        "logical_name": "account",
+        "name": "Fieldstone Consulting"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002014",
+      "firstname": "Alex",
+      "lastname": "Demo 07",
+      "fullname": "Alex Demo 07",
+      "emailaddress1": "contact14@example.com",
+      "telephone1": "+44 20 7946 0514",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001007",
+        "logical_name": "account",
+        "name": "Fieldstone Consulting"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002015",
+      "firstname": "Morgan",
+      "lastname": "Example 08",
+      "fullname": "Morgan Example 08",
+      "emailaddress1": "contact15@example.com",
+      "telephone1": "+44 20 7946 0515",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001008",
+        "logical_name": "account",
+        "name": "Grayford Systems"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002016",
+      "firstname": "Morgan",
+      "lastname": "Demo 08",
+      "fullname": "Morgan Demo 08",
+      "emailaddress1": "contact16@example.com",
+      "telephone1": "+44 20 7946 0516",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001008",
+        "logical_name": "account",
+        "name": "Grayford Systems"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002017",
+      "firstname": "Casey",
+      "lastname": "Example 09",
+      "fullname": "Casey Example 09",
+      "emailaddress1": "contact17@example.com",
+      "telephone1": "+44 20 7946 0517",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001009",
+        "logical_name": "account",
+        "name": "Linden Healthcare"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002018",
+      "firstname": "Casey",
+      "lastname": "Demo 09",
+      "fullname": "Casey Demo 09",
+      "emailaddress1": "contact18@example.com",
+      "telephone1": "+44 20 7946 0518",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001009",
+        "logical_name": "account",
+        "name": "Linden Healthcare"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002019",
+      "firstname": "Jamie",
+      "lastname": "Example 10",
+      "fullname": "Jamie Example 10",
+      "emailaddress1": "contact19@example.com",
+      "telephone1": "+44 20 7946 0519",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001010",
+        "logical_name": "account",
+        "name": "Northline Materials"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002020",
+      "firstname": "Jamie",
+      "lastname": "Demo 10",
+      "fullname": "Jamie Demo 10",
+      "emailaddress1": "contact20@example.com",
+      "telephone1": "+44 20 7946 0520",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001010",
+        "logical_name": "account",
+        "name": "Northline Materials"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002021",
+      "firstname": "Riley",
+      "lastname": "Example 11",
+      "fullname": "Riley Example 11",
+      "emailaddress1": "contact21@example.com",
+      "telephone1": "+44 20 7946 0521",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001011",
+        "logical_name": "account",
+        "name": "Orchard Retail"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002022",
+      "firstname": "Riley",
+      "lastname": "Demo 11",
+      "fullname": "Riley Demo 11",
+      "emailaddress1": "contact22@example.com",
+      "telephone1": "+44 20 7946 0522",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001011",
+        "logical_name": "account",
+        "name": "Orchard Retail"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002023",
+      "firstname": "Taylor",
+      "lastname": "Example 12",
+      "fullname": "Taylor Example 12",
+      "emailaddress1": "contact23@example.com",
+      "telephone1": "+44 20 7946 0523",
+      "jobtitle": "Account director",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001012",
+        "logical_name": "account",
+        "name": "Vale Manufacturing"
+      }
+    },
+    {
+      "contactid": "a4300000-0000-4000-8000-000000002024",
+      "firstname": "Taylor",
+      "lastname": "Demo 12",
+      "fullname": "Taylor Demo 12",
+      "emailaddress1": "contact24@example.com",
+      "telephone1": "+44 20 7946 0524",
+      "jobtitle": "Service coordinator",
+      "description": "Invented contact for the Paqvilo demonstration.",
+      "statecode": 0,
+      "statuscode": 1,
+      "parentcustomerid": {
+        "id": "a4300000-0000-4000-8000-000000001012",
+        "logical_name": "account",
+        "name": "Vale Manufacturing"
+      }
+    }
+  ],
+  "annotation": [
+    {
+      "annotationid": "a4300000-0000-4000-8000-000000003001",
+      "subject": "Service brief",
+      "notetext": "*WEB*Start with this account. Edit its field values, open a related contact and download the attached brief.",
+      "filename": "service-brief.txt",
+      "mimetype": "text/plain",
+      "documentbody": "UGFxdmlsbyBkZW1vIHNlcnZpY2UgYnJpZWYKClRoaXMgaW52ZW50ZWQgYWNjb3VudCBkZW1vbnN0cmF0ZXMgYWNjb3VudCBmaWVsZHMsIHJlbGF0ZWQgY29udGFjdHMgYW5kIG5vdGVzIHdpdGggYXR0YWNobWVudHMuCg==",
+      "isdocument": true,
+      "createdon": "2026-10-09T14:30:00Z",
+      "objectid": {
+        "id": "a4300000-0000-4000-8000-000000001001",
+        "logical_name": "account",
+        "name": "Arcwell Services"
+      }
+    },
+    {
+      "annotationid": "a4300000-0000-4000-8000-000000003002",
+      "subject": "Next review",
+      "notetext": "*WEB*Confirm the review date and appointment, then switch between the three implementations.",
+      "isdocument": false,
+      "createdon": "2026-10-09T15:00:00Z",
+      "objectid": {
+        "id": "a4300000-0000-4000-8000-000000001001",
+        "logical_name": "account",
+        "name": "Arcwell Services"
+      }
+    }
+  ],
+  "transactioncurrency": [
+    {
+      "transactioncurrencyid": "a4300000-0000-4000-8000-000000000001",
+      "currencyname": "Euro",
+      "isocurrencycode": "EUR",
+      "currencysymbol": "€",
+      "exchangerate": 1,
+      "currencyprecision": 2,
+      "statecode": 0
+    }
+  ]
+}

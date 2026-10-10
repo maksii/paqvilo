@@ -6,6 +6,25 @@ import { execFileSync } from 'node:child_process';
 import { PortalModel } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { createFixture, HOME_ID, ABOUT_ID } from './fixture.mjs';
+import { pageKey } from '../lense/html-rewriter.mjs';
+
+test('enhanced exported site languages resolve exact prefixes and preserve native short routes', (t) => {
+  const fx = createFixture(); t.after(fx.cleanup);
+  fs.unlinkSync(fx.file('website.yml'));
+  for (const folder of ['web-pages', 'web-files']) fs.rmSync(fx.file(folder), { recursive: true });
+  for (const [id, slug, parent] of [['home', '/', null], ['it', 'it', 'home'], ['ui', 'ui', 'home']]) {
+    const content = { isroot: true, partialurl: slug, ...(parent ? { parentpageid: parent } : {}), customcss: '.test { color: blue; }' };
+    fx.write(`powerpagecomponents/${id}/powerpagecomponent.xml`, `<powerpagecomponent powerpagecomponentid="${id}"><name>${id}</name><powerpagecomponenttype>2</powerpagecomponenttype><content><![CDATA[${JSON.stringify(content)}]]></content></powerpagecomponent>`);
+  }
+  fx.write('powerpagesitelanguages.xml', '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="fr"><name>French - France</name><content><![CDATA[{"languagecode":"fr-FR","lcid":1036}]]></content></powerpagesitelanguage></powerpagesitelanguages>');
+  const model = new PortalModel(fx.dir);
+  assert.deepEqual([...model.languageCodes], ['fr-fr']);
+  assert.equal(pageKey('/it', model), '/it');
+  assert.equal(pageKey('/ui', model), '/ui');
+  assert.equal(pageKey('/fr-FR/it', model), '/it');
+  assert.equal(pageKey('/fr-FR/', model), '/');
+  assert.equal(pageKey('/en-US/', model), '/en-us');
+});
 
 test('async model startup matches synchronous indexing and bounds concurrent metadata reads', async (t) => {
   const fx = createFixture();

@@ -1,0 +1,9 @@
+<powerpagecomponent powerpagecomponentid="b4800000-0000-4000-8000-000000000102">
+  <content>{"source":"&lt;a class=\"demo-card\" data-liquid-card href=\"/approach/web-api/account/?id={{ record.accountid | escape }}\"&gt;&lt;span class=\"demo-index\"&gt;{{ index | escape }} / {{ eyebrow | default: 'ACCOUNT' | escape }}&lt;/span&gt;&lt;h3&gt;{{ record.name | escape }}&lt;/h3&gt;&lt;p&gt;{{ record.address1_city | default: 'City not provided' | escape }}&lt;/p&gt;&lt;span&gt;{{ record.telephone1 | default: 'Phone not provided' | escape }}&lt;/span&gt;&lt;p class=\"demo-footnote\"&gt;Open account details&lt;/p&gt;&lt;/a&gt;\n"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Liquid account card</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid><powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid></powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -47,8 +47,35 @@ test('page custom CSS is only applied on its own page (also under a language pre
   const r = rewriter();
   assert.equal(r.rewrite(ONLINE_HOME, '/about-us').html.includes('color: green'), false);
   assert.equal(r.rewrite(ONLINE_HOME, '/en-US/').html.includes('color: green'), true);
-  assert.equal(pageKey('/en-US/About-Us/'), '/about-us');
-  assert.equal(pageKey('/en-US'), '/');
+  assert.equal(pageKey('/en-US/About-Us/', r.model), '/about-us');
+  assert.equal(pageKey('/en-US', r.model), '/');
+  assert.equal(pageKey('/unknown/'), '/unknown');
+});
+
+test('real short routes stay distinct from home and exported language prefixes for blocks and markup', () => {
+  for (const slug of ['it', 'ui']) {
+    fx.write(`web-pages/${slug}/${slug}.webpage.yml`, `adx_webpageid: route-${slug}\nadx_name: ${slug}\nadx_partialurl: ${slug}\nadx_parentpageid: 00000000-0000-0000-0000-000000000001`);
+    fx.write(`web-pages/${slug}/${slug}.webpage.custom_css.css`, fx.read(CSS));
+    fx.write(`web-pages/${slug}/${slug}.webpage.copy.html`, '<h2>Original section</h2>');
+  }
+  fx.write('websitelanguage.yml', '- adx_websitelanguageid: lang-fr\n  adx_name: French - France\n  adx_languagecode: fr-FR');
+  fx.commit();
+  fx.write(CSS, fx.read(CSS).replace('color: red', 'color: green'));
+  fx.write('web-pages/it/it.webpage.custom_css.css', fx.read(CSS).replace('color: green', 'color: navy'));
+  fx.write('web-pages/it/it.webpage.copy.html', '<h2>Edited section</h2>');
+  const r = rewriter();
+  const online = ONLINE_HOME + '<h2>Original section</h2>';
+  assert.equal(r.rewrite(online, '/').html.includes('color: green'), true);
+  assert.equal(r.rewrite(online, '/it').html.includes('color: navy'), true);
+  assert.equal(r.rewrite(online, '/it').html.includes('Edited section'), true);
+  assert.equal(r.rewrite(online, '/ui').html.includes('color: green'), false);
+  assert.equal(r.rewrite(online, '/ui').html.includes('Edited section'), false);
+  assert.equal(r.rewrite(online, '/fr-FR/it').html.includes('color: navy'), true);
+  assert.equal(r.rewrite(online, '/fr-FR/ui').html.includes('color: green'), false);
+  assert.equal(r.rewrite(online, '/zz-ZZ/').html.includes('color: green'), false);
+  assert.equal(pageKey('/it', r.model), '/it');
+  assert.equal(pageKey('/ui', r.model), '/ui');
+  assert.equal(pageKey('/fr-FR/it', r.model), '/it');
 });
 
 test('form custom JS: found by similarity on any page, `$` in the code survives', () => {

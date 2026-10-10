@@ -1,0 +1,10 @@
+adx_append: true
+adx_appendto: true
+adx_entitylogicalname: transactioncurrency
+adx_entityname: Demo currency read
+adx_entitypermission_webrole:
+- b4700000-0000-4000-8000-2b18ee4c8b18
+- b4700000-0000-4000-8000-5475a884bd48
+adx_entitypermissionid: b4700000-0000-4000-8000-76eb5095028e
+adx_read: true
+adx_scope: 756150000

@@ -2,7 +2,7 @@ import { portalField } from "./importer.mjs";
 
 /*
  * Local layouts for exported basic and advanced forms whose Dataverse systemforms are absent
- * from the configured solutions (agent C). Used by the form renderer (lib/platform.mjs) and
+ * from the configured solutions . Used by the form renderer (lib/platform.mjs) and
  * the native form service (lib/form-service.mjs) so approximated forms render and submit.
  */
 const canonicalId = (value) =>
@@ -116,7 +116,7 @@ export function approximateAdvancedFormSchema({ definition, portal, metadata, sc
       const target = portal.pages.find((page) => canonicalId(page.id) === canonicalId(fieldOf(record, "redirectwebpage")));
       const redirectUrl = target?.url ?? fieldOf(record, "redirecturl");
       if (redirectUrl)
-        steps.push({ stepId: record.id, type: "redirect", redirectUrl, appendRecordId: fieldOf(record, "redirecturlappendentityidquerystring") ?? false, recordQueryName: fieldOf(record, "redirecturlquerystringname") ?? "id", js: record.customJavascript, metadata: record });
+        steps.push({ stepId: record.id, type: "redirect", redirectUrl, appendRecordId: fieldOf(record, "redirecturlappendentityidquerystring") ?? false, recordQueryName: fieldOf(record, "redirecturlquerystringname"), js: record.customJavascript, metadata: record });
       else diagnostic?.({ code: "ADVANCEDFORM_STEP_UNRESOLVED", severity: "warning", component: "webform", form: definition.name, step: record.name ?? record.id, message: `Redirect step '${record.name ?? record.id}' of advanced form '${definition.name}' has no exported target page or URL.` });
       continue;
     }

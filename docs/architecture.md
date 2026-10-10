@@ -23,7 +23,7 @@ The two products share the catalogue, source model and browser integration. Lens
 | Standard and enhanced portal exports | Source mapping and local import of pages, templates and configuration | Incomplete or ambiguous exports produce diagnostics. |
 | `.powerpages-site` code-site exports | Source import and supported resource handling | SPA application builds and deployment use their own tooling. |
 | Liquid, FetchXML, Web API, forms and lists | Local implementations driven by export and Solution metadata | Local behavior is a simulation; use recorded comparisons for parity claims. |
-| Dataverse business behavior | Synthetic rows and explicitly registered project extensions | Real Dataverse plugins and cloud flows do not execute locally. |
+| Dataverse business behavior | Synthetic rows, supported exported operations and registered project extensions | Dataverse plugins, external connectors and complex workflows require explicit project models. |
 | Browser automation | Origin-confined session, page, event, snapshot and navigation APIs | Live browser actions still use the portal's backend. |
 
 The [Mirage reference](../mirage/docs/README.md) describes each runtime contract and its evidence. Microsoft's [developer tools](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) remain part of the source and release workflow.
@@ -35,5 +35,3 @@ The installed preset library contains only generic presets. No adjacent director
 Standard and enhanced exports provide configuration, page/template relationships and table permissions. Solution metadata provides table identities, columns, relationships, forms and views. Observed behavior that neither source provides is a site setting with evidence. Synthetic datasets and backend business rules are pack extensions; they do not claim to reproduce a particular Dataverse implementation.
 
 Keep the portal project in its own repository. Core CI never discovers or runs its tests. The publication allowlist excludes private packs, exports, state and captures; the project-boundary check scans reusable source, tests, docs and examples for inherited business dependencies. Private business tests consume the public package exports and explicitly registered packs.
-
-The current tracked tree and npm artifact are separate publication boundaries. Removing private content from the current tree does not remove it from older Git commits. Create a clean public repository from the reviewed tree if the existing repository history contains private exports or captures; do not publish that history accidentally.

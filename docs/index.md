@@ -5,6 +5,9 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | Task | Guide |
 | --- | --- |
 | Install and open your first portal | [Getting started](getting-started.md) |
+| Explore the populated sample and its sources | [Demo guide](demo.md) |
+| Compare supported workflows and their limits | [Coverage](coverage.md) |
+| Answer common setup and workflow questions | [FAQ](faq.md) |
 | Compare with Fiddler and DevTools overrides | [Workflow comparison](../README.md#beyond-fiddler-and-devtools-overrides) |
 | Preview local changes on a live portal | [Lense](lense.md) |
 | Render exported pages locally | [Mirage](../mirage/README.md) |
@@ -12,7 +15,7 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | Add personas, datasets and acceptance tests | [Project starter](../examples/project/README.md), [extensions](project-extensions.md) |
 | Use the browser agent API | [Lense automation](lense.md#automation-and-evidence) |
 | Understand support and project boundaries | [Architecture](architecture.md) |
-| Upgrade or contribute | [Migration](migration.md), [contributing](../CONTRIBUTING.md) |
+| Contribute to the toolkit | [Contributing](../CONTRIBUTING.md) |
 
 ## Runtime reference
 

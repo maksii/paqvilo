@@ -7,10 +7,6 @@ import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { createSimulator } from "../server.mjs";
 
-// The portal's own Sign in controls run the external sign-in through the runtime's local
-// identity provider and back (docs/sim-administration.md, "External sign-in"). Shapes:
-// Sample's header button that inserts a provider form posting a Microsoft authority, and
-// Second's header link to the platform's sign-in page (capture: G/signin-chain/summary.json).
 
 const TENANT = "https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/";
 const page = (id, name, partial, parent = "home") =>
@@ -164,7 +160,7 @@ test("the platform's sign-in page registers a new user through the provider, and
   const header = '<header id="site-header">{% if user %}<span id="who">{{ user.fullname }}</span> <a id="sign-out" href="{{ website.sign_out_url_substitution }}">Sign out</a>{% else %}<a id="sign-in" href="{{ website.sign_in_url_substitution }}">Sign in</a>{% endif %}</header>';
   const { app, idp, tab, errors, navigations } = await portal(t, settings, header);
   await tab.goto(app.url + "/");
-  // Second shape: the header link opens the platform's sign-in page with the provider form.
+  // Fixture with explicit sign-in link: the header link opens the platform's sign-in page with the provider form.
   await Promise.all([tab.waitForURL((url) => url.pathname === "/SignIn"), tab.locator("#sign-in").click()]);
   const provider = tab.locator("form.paqvilo-mirage-provider button[name=provider]");
   assert.equal(await provider.innerText(), "Local IdP");

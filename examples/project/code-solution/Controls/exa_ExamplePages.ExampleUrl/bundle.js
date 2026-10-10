@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const t={d:(e,a)=>{for(var u in a)t.o(a,u)&&!t.o(e,u)&&Object.defineProperty(e,u,{enumerable:!0,get:a[u]})},o:(t,e)=>Object.prototype.hasOwnProperty.call(t,e),r:t=>{Object.defineProperty(t,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(t,"__esModule",{value:!0})}};let e={};t.r(e),t.d(e,{ExampleUrl:()=>a});class a{constructor(){this._value="",this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=this.input.value,this._notifyOutputChanged()}}init(t,e,a,u){var i;this._notifyOutputChanged=e,this._value=null!==(i=t.parameters.controlValue.raw)&&void 0!==i?i:"";var n=document.createElement("input");n.type="url",this.input=n,n.className="ExampleUrl",n.value=this._value,n.addEventListener("input",this.onInput),u.appendChild(n)}updateView(t){var e;if(document.activeElement!==this.input){var a=null!==(e=t.parameters.controlValue.raw)&&void 0!==e?e:"";a!==this._value&&(this._value=a,this.input.value=a)}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=e})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExampleUrl', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleUrl);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExampleUrl = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleUrl;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

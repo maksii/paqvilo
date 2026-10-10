@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest>
+  <control namespace="ExamplePages" constructor="ExampleMultiple" version="0.1.1" display-name-key="ExampleMultiple" description-key="Multiple lines of text column." control-type="standard">
+    <external-service-usage enabled="false">
+    </external-service-usage>
+    <property name="controlValue" display-name-key="Control Value" description-key="Column value." of-type="Multiple" usage="bound" required="false" />
+    <resources>
+      <code path="index.ts" order="1"/>
+      <css path="css/ExampleMultiple.css" order="1"/>
+    <resx path="strings/ExampleMultiple.1033.resx" version="1.0.0"/></resources>
+  </control>
+</manifest>

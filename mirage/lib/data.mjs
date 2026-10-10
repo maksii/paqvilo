@@ -861,6 +861,26 @@ export class DataStore {
   setObserved(observed) {
     this.observed = observed ?? null;
   }
+  /** Exported registrations use an explicit local adapter, never compiled .NET. */
+  setPluginPipeline(provider, active = () => true) {
+    if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
+    this.pluginPipeline = provider;
+    this.pluginPipelineActive = active;
+  }
+  exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
+    if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+    const id = row[mapping.idColumn];
+    this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes });
+    if (!equal(row[mapping.idColumn], id)) throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+    if (stage !== 40 && operation !== 'delete') {
+      const normalized = this.normalizeRecord(mapping, target);
+      if (options.coerce) this.coerceRecord(mapping, normalized, options);
+      if (normalized[mapping.idColumn] !== undefined && !equal(normalized[mapping.idColumn], id)) throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
+      Object.assign(target, normalized);
+      Object.assign(row, normalized);
+      if (options.coerce) this.assertStateStatus(mapping, row, options);
+    }
+  }
   virtualTable(name) {
     const tables = this.virtualTables?.()?.tables;
     if (!tables) return null;
@@ -2128,7 +2148,7 @@ export class DataStore {
       if (id == null) continue;
       const targetMapping = this.resolveMapping(relationship.entity);
       // Polymorphic lookups (annotation objectid, customerid, regardingobjectid) have one
-      // relationship per target table: only the one naming the bound table applies (agent C).
+      // relationship per target table: only the one naming the bound table applies .
       const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
       if (bound?.logical_name && String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase())
         continue;
@@ -2334,6 +2354,7 @@ export class DataStore {
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data);
     const row = { ...this.normalizeRecord(m, input) };
     if (options.coerce) this.coerceRecord(m, row, options);
+    const pluginTarget = clone(row), changedAttributes = Object.keys(pluginTarget);
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
       if (key !== "statuscode" && !own(row, key))
         row[safeName(key)] = clone(value);
@@ -2366,6 +2387,10 @@ export class DataStore {
     row.createdon ??= isoUtc(Date.now());
     row.modifiedon ??= row.createdon;
     this.applyAutoNumbers(m, row, options);
+    // Authorization precedes all local handlers, including PreValidation. Every
+    // phase participates in the same local rollback transaction.
+    if (this.pluginPipeline && this.pluginPipelineActive({ entity: m.logicalName, operation: 'create' })) this.assertAllowed(m.logicalName, 'create', row, identity);
+    this.exportedPluginPhase(m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -2382,6 +2407,7 @@ export class DataStore {
         name: primaryNameValue(target, child) ?? "",
       };
     }
+    this.exportedPluginPhase(m, 'create', 20, pluginTarget, row, null, identity, changedAttributes, options);
     const effects = this.applyPlugins(
       m.logicalName,
       "create",
@@ -2393,7 +2419,7 @@ export class DataStore {
     rows.push(row);
     this.applySecondary(effects);
     this.assertAllowed(m.logicalName, "create", row, identity);
-    this.validateBindings(m, input, row, identity);
+    this.validateBindings(m, pluginTarget, row, identity);
     // Deep insert/bind into collection-valued navigation properties.
     for (const item of nested.filter((entry) => entry.rel.many !== false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -2431,6 +2457,7 @@ export class DataStore {
           );
         this.changeAssociationRecord(m.logicalName, row[m.idColumn], bind.navigation, reference.id, identity, true);
       }
+    this.exportedPluginPhase(m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options);
     return row;
   }
   async create(entity, data, identity = {}, options = {}) {
@@ -2458,7 +2485,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, "update", row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
-    return this.commitUpdate(m, rows, index, row, identity);
+    return this.commitUpdate(m, rows, index, row, identity, changes, options);
   }
   /**
    * Concurrency metadata that every Dataverse update sets: modifiedon is now and a
@@ -2473,11 +2500,22 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity) {
+  commitUpdate(mapping, rows, index, row, identity, target, options = {}) {
+    const previous = rows[index];
+    const authorizedWrite = target !== undefined;
+    target ??= Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
+    const changedAttributes = Object.keys(target);
+    this.exportedPluginPhase(mapping, 'update', 10, target, row, previous, identity, changedAttributes, options);
+    this.exportedPluginPhase(mapping, 'update', 20, target, row, previous, identity, changedAttributes, options);
+    if (authorizedWrite && this.pluginPipeline) {
+      this.assertAllowed(mapping.logicalName, 'update', row, identity);
+      this.validateBindings(mapping, target, row, identity, previous);
+    }
     const effects = this.applyPlugins(mapping.logicalName, "update", row, rows[index], identity);
     this.assertAlternateKeys(mapping, row, rows, index);
     rows[index] = row;
     this.applySecondary(effects);
+    this.exportedPluginPhase(mapping, 'update', 40, target, row, previous, identity, changedAttributes, options);
     return row;
   }
   /**
@@ -2554,6 +2592,9 @@ export class DataStore {
     const key = `${mapping.logicalName}\u0000${comparable(row[mapping.idColumn])}`;
     if (deleting.has(key)) return row;
     deleting.add(key);
+    const target = { [mapping.idColumn]: row[mapping.idColumn] }, attributes = Object.keys(target);
+    this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes);
+    this.exportedPluginPhase(mapping, 'delete', 20, target, row, row, identity, attributes);
     const effects = this.applyPlugins(mapping.logicalName, "delete", clone(row), row, identity);
     for (const reference of this.referencesTo(mapping.logicalName)) {
       const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
@@ -2603,6 +2644,7 @@ export class DataStore {
     const index = rows.findIndex((item) => equal(item[mapping.idColumn], row[mapping.idColumn]));
     if (index >= 0) rows.splice(index, 1);
     this.applySecondary(effects);
+    this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes);
     return row;
   }
   /**

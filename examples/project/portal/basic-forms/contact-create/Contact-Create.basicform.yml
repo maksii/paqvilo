@@ -1,0 +1,26 @@
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_captcharequired: false
+adx_entityformid: b4700000-0000-4000-8000-820f8b2db709
+adx_entityname: contact
+adx_entitypermissionsenabled: true
+adx_formname: Paqvilo Contact
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Contact Create
+adx_onsuccess: 756150000
+adx_showcaptchaforauthenticatedusers: false
+adx_showunsupportedfields: true
+adx_submitbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Save contact"
+    }
+  ]
+adx_tabname: DEMO_TAB
+adx_validationsummarylinksenabled: true

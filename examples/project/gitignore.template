@@ -4,4 +4,7 @@ node_modules/
 !.env.example
 paqvilo.config.local.yml
 coverage/
+components/**/out/
+components/**/obj/
+components/**/bin/
 *.log

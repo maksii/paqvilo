@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<manifest>
+  <control namespace="ExamplePages" constructor="ExampleDatasetGrid" version="0.0.1" display-name-key="ExampleDatasetGrid" description-key="Table bound to a view for lists and subgrids" control-type="standard">
+    <external-service-usage enabled="false">
+    </external-service-usage>
+    <data-set name="sampleDataSet" display-name-key="Records">
+    </data-set>
+    <resources>
+      <code path="index.ts" order="1"/>
+      <css path="css/ExampleDatasetGrid.css" order="1"/>
+    </resources>
+  </control>
+</manifest>

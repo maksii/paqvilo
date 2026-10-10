@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-52d08761bc8d">
+  <content>{"append":true,"appendto":true,"create":true,"delete":true,"entitylogicalname":"annotation","entityname":"Notes on account","parententitypermission":"b4700000-0000-4000-8000-3f33ac00477a","parentrelationship":"Account_Annotation","read":true,"scope":756150003,"write":true,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-6087a4a82e5f","b4700000-0000-4000-8000-5475a884bd48"]}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Notes on account</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

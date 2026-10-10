@@ -191,7 +191,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
     const site = deepMerge(deepMerge(SITE_DEFAULTS, root.defaults ?? {}), raw);
     site.environments = Object.fromEntries(
       Object.entries(site.environments ?? {})
-        // "reference-portal: https://..." is short for "reference-portal: { url: https://... }"
+        // "example-site: https://..." is short for "example-site: { url: https://... }"
         .map(([env, value]) => [env, typeof value === 'string' ? { url: value } : value])
         .filter(([, value]) => isPlainObject(value) && value.url),
     );
@@ -227,7 +227,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
     port: Number.isInteger(value.port) ? value.port : null,
     preset: value.preset ?? null,
     // Passed through as configured; the Mirage validates it (observedConfig).
-    observed: isPlainObject(value.observed) ? structuredClone(value.observed) : null,
+    observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
     // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).
     ...(value.dataModel ? { dataModel: value.dataModel } : {}),
   };

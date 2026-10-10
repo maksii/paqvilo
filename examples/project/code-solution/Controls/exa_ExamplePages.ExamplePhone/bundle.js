@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const e={d:(t,a)=>{for(var n in a)e.o(a,n)&&!e.o(t,n)&&Object.defineProperty(t,n,{enumerable:!0,get:a[n]})},o:(e,t)=>Object.prototype.hasOwnProperty.call(e,t),r:e=>{Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})}};let t={};e.r(t),e.d(t,{ExamplePhone:()=>a});class a{constructor(){this._value="",this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=this.input.value,this._notifyOutputChanged()}}init(e,t,a,n){var i;this._notifyOutputChanged=t,this._value=null!==(i=e.parameters.controlValue.raw)&&void 0!==i?i:"";var u=document.createElement("input");u.type="tel",this.input=u,u.className="ExamplePhone",u.value=this._value,u.addEventListener("input",this.onInput),n.appendChild(u)}updateView(e){var t;if(document.activeElement!==this.input){var a=null!==(t=e.parameters.controlValue.raw)&&void 0!==t?t:"";a!==this._value&&(this._value=a,this.input.value=a)}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=t})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExamplePhone', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExamplePhone);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExamplePhone = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExamplePhone;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

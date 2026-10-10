@@ -9,7 +9,7 @@ import {
 } from "../lib/portal-client-object.mjs";
 import { injectRuntime } from "../lib/platform.mjs";
 
-// Key set and order observed on sandbox (agent G, read-only capture of window.Microsoft.Dynamic365.Portal),
+// Client key set and order for window.Microsoft.Dynamic365.Portal,
 // signed in and anonymous alike.
 const REFERENCE_KEYS = [
   "User", "type", "id", "geo", "tenant", "correlationId", "orgEnvironmentId", "orgId",
@@ -52,7 +52,7 @@ test("values follow the reference shapes and the session persona", () => {
   assert.notEqual(values.tenant, values.orgId);
   assert.deepEqual(
     { type: values.type, geo: values.geo, portalProductionOrTrialType: values.portalProductionOrTrialType, timerProfileForBatching: values.timerProfileForBatching, isSpaSite: values.isSpaSite, activeLanguages: values.activeLanguages },
-    { type: "StarterPortal", geo: "EUR", portalProductionOrTrialType: "Production", timerProfileForBatching: "NEAR_REAL_TIME", isSpaSite: "False", activeLanguages: ["en-US"] },
+    { type: "", geo: "", portalProductionOrTrialType: "", timerProfileForBatching: "NEAR_REAL_TIME", isSpaSite: "False", activeLanguages: ["en-US"] },
   );
   // A local runtime sends no telemetry and has no pages client API.
   assert.equal(values.isTelemetryEnabled, "False");

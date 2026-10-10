@@ -43,10 +43,19 @@ export function defaultChromeDataDirs({ platform = process.platform, home = os.h
   return ['google-chrome', 'google-chrome-beta', 'google-chrome-unstable', 'chromium'].map((edition) => path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), edition));
 }
 
+export function defaultEdgeDataDirs({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
+  if (platform === 'win32') return ['Edge', 'Edge Beta', 'Edge Dev', 'Edge SxS'].map((edition) => path.join(env.LOCALAPPDATA ?? path.join(home, 'AppData', 'Local'), 'Microsoft', edition, 'User Data'));
+  if (platform === 'darwin') return ['Microsoft Edge', 'Microsoft Edge Beta', 'Microsoft Edge Dev', 'Microsoft Edge Canary'].map((edition) => path.join(home, 'Library', 'Application Support', edition));
+  return ['microsoft-edge', 'microsoft-edge-beta', 'microsoft-edge-dev'].map((edition) => path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), edition));
+}
+
 /** Fail before creating or opening anything when a requested existing profile cannot be used. */
 export function validateBrowserProfile(profile) {
   if (profile.kind !== 'external') return;
   const root = profile.userDataDir;
+  if (profile.channel === 'msedge' && defaultEdgeDataDirs().some((dir) => canonical(dir) === canonical(root))) {
+    throw new Error('Edge cannot be automated through launch flags in its normal user-data directory. Use --profile work for a dedicated persistent profile, or enable remote debugging in a running Edge instance and use --cdp-url with its active endpoint. No profile data has been copied.');
+  }
   if (['chrome', 'chromium'].includes(profile.channel) && defaultChromeDataDirs().some((dir) => canonical(dir) === canonical(root))) {
     throw new Error('Chrome does not support automation of its normal user-data directory. Use --profile work for a separate persistent profile, an existing profile in a non-standard --user-data-dir, or --cdp-url for a browser that already exposes a debugging endpoint. No profile data has been copied.');
   }

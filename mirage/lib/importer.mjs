@@ -1088,8 +1088,8 @@ export async function importPortal(
     };
   });
   // Server logic (component type 35, adx_serverlogic): the record, its web roles and its code
-  // file. The code is never run locally; /_api/serverlogics/<name> answers that it is
-  // unsupported (lib/server-logic.mjs).
+  // file. Execution requires an explicit trusted pack registration; imports alone
+  // keep /_api/serverlogics/<name> unsupported (lib/server-logic.mjs).
   const serverLogics = await mapLimit(byKind("serverlogic"), IO_CONCURRENCY, async (record) => {
     const folder = path.dirname(record._file);
     const stem = path.basename(record._file).replace(/\.serverlogic\.ya?ml$/i, "");
@@ -1116,7 +1116,7 @@ export async function importPortal(
     };
   });
   // Cloud flows (component type 33, adx_cloudflowconsumer): the trigger URL path, the flow and
-  // its web roles. The flows never run locally (lib/webapi-handler.mjs answers a trigger 501).
+  // its web roles. Local execution requires a trusted pack registration; otherwise a trigger is 501.
   const relationshipOf = (record, name) => {
     const found = Object.keys(record).find((key) => key.toLowerCase() === name);
     return idList(found ? record[found] : []);
@@ -1135,7 +1135,7 @@ export async function importPortal(
       roleIds: relationshipOf(record, "adx_cloudflowconsumer_adx_webrole"),
     };
   });
-  // Platform changes the runtime reports instead of modelling (agent B, lib/platform-changes.mjs).
+  // Platform changes the runtime reports instead of modelling (lib/platform-changes.mjs).
   diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates }));
   // A source with zero recognised pages is not a portal (serve, inspect and bootstrap-report
   // refuse it through assertPortalSource, lib/source-dialect.mjs).

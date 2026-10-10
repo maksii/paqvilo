@@ -11,9 +11,9 @@ function fixture() {
   const names = [
     "Authenticated Users",
     "Anonymous Users",
-    "Forms Applicant Manager",
-    "Forms Applicant Coordinator",
-    "Forms Applicant Contributor",
+    "Review Manager",
+    "Review Coordinator",
+    "Review Contributor",
     "Forms Competent Authority User",
   ];
   const roles = names.map((name, index) => ({
@@ -159,7 +159,7 @@ test("contact memberships use exported IDs/default flags and derive each company
   assert.equal(alex.accountId, "helios");
   assert.deepEqual(alex.roles, [
     "Authenticated Users",
-    "Forms Applicant Manager",
+    "Review Manager",
   ]);
   const blair = resolvePortalIdentity(portal, state, {
     contactId: "blair",
@@ -169,7 +169,7 @@ test("contact memberships use exported IDs/default flags and derive each company
   assert.equal(blair.accountId, "boreal");
   assert.deepEqual(blair.roles, [
     "Authenticated Users",
-    "Forms Applicant Coordinator",
+    "Review Coordinator",
   ]);
   state.simulator.contactRoles.push({
     contactId: "blair",
@@ -186,7 +186,7 @@ test("contact memberships use exported IDs/default flags and derive each company
     resolvePortalIdentity(portal, state, {
       contactId: "missing",
       roleSource: "memberships",
-      roles: ["Forms Applicant Manager"],
+      roles: ["Review Manager"],
     }).roles,
     ["Anonymous Users"],
   );
@@ -200,7 +200,7 @@ test("contact memberships use exported IDs/default flags and derive each company
   );
   assert.deepEqual(
     membershipsForRoles(portal, [
-      { contactId: "alex", roles: ["Forms Applicant Manager"] },
+      { contactId: "alex", roles: ["Review Manager"] },
     ]),
     [{ contactId: "alex", roleId: "role-2" }],
   );
@@ -214,7 +214,7 @@ test("contact memberships use exported IDs/default flags and derive each company
   const manual = resolvePortalIdentity(portal, state, {
     id: "alex",
     roleSource: "override",
-    roles: ["Forms Applicant Contributor"],
+    roles: ["Review Contributor"],
     roleIds: ["role-2"],
     admin: true,
   });
@@ -242,9 +242,9 @@ test("exported hierarchy compiles inherited role grants, scope metadata, append 
   );
   const products = model.permissions.find((rule) => rule.id === "products-own");
   assert.deepEqual(products.roles, [
-    "Forms Applicant Manager",
-    "Forms Applicant Coordinator",
-    "Forms Applicant Contributor",
+    "Review Manager",
+    "Review Coordinator",
+    "Review Contributor",
   ]);
   assert.equal(products.inheritedRoles, true);
   assert.deepEqual(products.relationship, {
@@ -293,7 +293,7 @@ test("ambiguous legacy imported role names cannot fall back to name-based native
   portal.records.push({
     kind: "webrole",
     id: "other-manager",
-    name: "Forms Applicant Manager",
+    name: "Review Manager",
   });
   state.permissions = [
     {
@@ -301,7 +301,7 @@ test("ambiguous legacy imported role names cannot fall back to name-based native
       entity: "application",
       scope: "global",
       operations: ["read"],
-      roles: ["Forms Applicant Manager"],
+      roles: ["Review Manager"],
       imported: true,
     },
   ];
@@ -333,7 +333,7 @@ test("ambiguous legacy imported role names cannot fall back to name-based native
           entity: "application",
           scope: "global",
           operations: ["read"],
-          roles: ["Forms Applicant Manager"],
+          roles: ["Review Manager"],
           imported: true,
         },
       ],
@@ -377,14 +377,14 @@ test("missing alternative source role IDs do not revoke exact active association
   const mixed = model.permissions.find((rule) => rule.id === "category-mixed");
   assert.equal(mixed.enabled, true);
   assert.deepEqual(mixed.roleIds, ["role-2"]);
-  assert.deepEqual(mixed.roles, ["Forms Applicant Manager"]);
+  assert.deepEqual(mixed.roles, ["Review Manager"]);
   assert.deepEqual(mixed.unresolvedRoleIds, ["missing-role"]);
   assert.equal(model.permissions.find((rule) => rule.id === "category-missing").enabled, false);
   assert.ok(model.diagnostics.some((entry) =>
     entry.id === mixed.id && entry.roleIds?.includes("missing-role")));
   const store = new DataStore({ state: { ...state, permissions: model.permissions } });
   assert.equal(store.allowed("category", "read", state.tables.category[0], resolvePortalIdentity(portal, state)), true);
-  assert.equal(store.allowed("category", "read", state.tables.category[0], { roleSource: "memberships", roleIds: ["missing-role"], roles: ["Forms Applicant Manager"] }), false);
+  assert.equal(store.allowed("category", "read", state.tables.category[0], { roleSource: "memberships", roleIds: ["missing-role"], roles: ["Review Manager"] }), false);
   assert.equal(store.allowed("category", "read", state.tables.category[0], resolvePortalIdentity(portal, state, {contactId:"sam",roleSource:"memberships"})), false);
   const recompiled = buildPermissionModel(portal, {
     ...state,
@@ -644,7 +644,7 @@ test("editable local parent grants also reject missing parents, cycles and wrong
       id: "local-a",
       entity: "application",
       scope: "parent",
-      roles: ["Forms Applicant Manager"],
+      roles: ["Review Manager"],
       operations: ["read"],
       parentPermissionId: "local-b",
       relationship: { entity: "account", from: "companyid", to: "accountid" },
@@ -653,7 +653,7 @@ test("editable local parent grants also reject missing parents, cycles and wrong
       id: "local-b",
       entity: "account",
       scope: "parent",
-      roles: ["Forms Applicant Manager"],
+      roles: ["Review Manager"],
       operations: ["read"],
       parentPermissionId: "local-a",
       relationship: {
@@ -678,7 +678,7 @@ test("editable local parent grants also reject missing parents, cycles and wrong
       id: "global",
       entity: "account",
       scope: "global",
-      roles: ["Forms Applicant Manager"],
+      roles: ["Review Manager"],
       operations: ["read"],
     },
     {

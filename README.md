@@ -6,7 +6,7 @@
 
 ![Paqvilo architecture: project-owned exports feed Lense browser overlays on a live portal or Mirage local rendering with simulated data.](https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/overview.svg)
 
-[Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) | [Documentation](https://github.com/maksii/paqvilo/blob/main/docs/index.md) | [npm package](https://www.npmjs.com/package/paqvilo)
+[Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) | [Documentation](https://github.com/maksii/paqvilo/blob/main/docs/index.md) | [Coverage](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md) | [FAQ](https://github.com/maksii/paqvilo/blob/main/docs/faq.md) | [npm package](https://www.npmjs.com/package/paqvilo)
 
 ## Choose your workflow
 
@@ -14,7 +14,7 @@
 | --- | --- | --- |
 | Use it to | Preview JavaScript, CSS, images and supported literal HTML edits without uploading each change | Develop independently with local rendering, identities and test data |
 | How it works | Overlays local sources in a dedicated browser; Liquid and Dataverse stay online | Renders exported sources locally; simulates Dataverse, forms, lists and permissions |
-| Inspect and compare | Source mappings, applied changes, diagnostics and **Online / Local** comparison | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
+| Inspect and compare | **Inspect** traces page sources, components and exported access rules; **Online / Local** compares responses | **Inspect** for page dependencies, **Tweaks** for identity and scenarios, `/_sim/` for administration |
 | Learn more | <a href="https://github.com/maksii/paqvilo/blob/main/docs/lense.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/lense-icon.png" width="96" alt="Read the Lense guide"></a> | <a href="https://github.com/maksii/paqvilo/blob/main/mirage/README.md"><img src="https://raw.githubusercontent.com/maksii/paqvilo/main/docs/assets/mirage-icon.png" width="96" alt="Read the Mirage guide"></a> |
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
@@ -35,7 +35,7 @@ Use Lense for live portal previews and Mirage for isolated local environments. D
 
 No Power Pages account or portal export is needed for this example.
 
-**1. Install [Node.js 24 LTS](https://nodejs.org/en/download).** It includes npm, which downloads the toolkit. Paqvilo requires Node.js 22 or later. Open a terminal in VS Code using **Terminal > New Terminal**, or use Command Prompt.
+**1. Install [Node.js](https://nodejs.org/en/download), version 22 or later.** It includes npm, which downloads the toolkit. Open a terminal in VS Code using **Terminal > New Terminal**, or use Command Prompt.
 
 **2. Create a working folder and install Paqvilo.** Enter these commands one line at a time:
 
@@ -46,13 +46,19 @@ npm init -y
 npm install --save-dev paqvilo
 ```
 
-**3. Start the included example.** `npx` runs the installed toolkit:
+**3. Open the demo.** `npx` runs the installed toolkit:
 
 ```sh
-npx --no-install paqvilo mirage serve --source ./node_modules/paqvilo/examples/project/portal --state .paqvilo/demo-state.json --port 8787
+npx --no-install paqvilo mirage demo
 ```
 
-Open [the local portal](http://127.0.0.1:8787), then [local administration](http://127.0.0.1:8787/_sim/). The example uses invented sources and starts anonymous. Keep the terminal open while using it; press **Ctrl+C** to stop.
+The command copies an editable portal into `paqvilo-example/`, loads sample records and opens a dedicated development browser on a free local port. Keep the terminal open. Close the browser or press **Ctrl+C** to stop.
+
+Sign in as **Alex Example 01** and open **Web API > Arcwell Services**. Compare native forms, a custom Web API workspace and 14 PCF editors using the same accounts, contacts, notes and attachments. Press **Alt+Shift+P** for Inspect and persona controls.
+
+The [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md) covers CRUD, lookups, permissions, Liquid components, plugin rules, server logic and flow simulation. It also explains the PAC exports, editable Solution/PCF/C# sources and deployment archives.
+
+Prefer VS Code? Add `--scaffold`, open the generated workspace and use **F5**. The [prepared editor workflow](https://github.com/maksii/paqvilo/blob/main/docs/demo.md#prefer-vs-code-tasks) includes tasks, browser debugging and Inspect source links.
 
 ## Use your own site
 
@@ -72,17 +78,19 @@ Run one development command at a time. **Alt+Shift+P** opens the panel. Add `.pa
 
 Paqvilo supports standard and enhanced portal exports and imports `.powerpages-site` code-site exports. Its local Liquid simulation is intended for traditional portal development; code-site import does not provide SPA build tooling.
 
-Lense interactions use the live portal's backend and can change live data. Mirage uses a local simulation; verify behavior against Power Pages before release. Exporting, uploading and deploying remain part of your existing [Power Platform CLI workflow](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/pages). Paqvilo is an independent project with no Microsoft affiliation.
+Lense interactions use the live portal's backend and can change live data. Mirage supports selected platform contracts; the [coverage guide](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md) identifies capabilities and limits. Verify important scenarios against Power Pages before release. Exporting, uploading and deploying remain part of your existing [Power Platform CLI workflow](https://learn.microsoft.com/en-us/power-platform/developer/cli/reference/pages). Paqvilo is an independent project with no Microsoft affiliation.
 
 ## Documentation
 
 | Task | Guide |
 | --- | --- |
 | Set up your first project | [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) |
+| Explore the demo and deploy its sources | [Demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md) |
 | Configure sources, browsers and several sites | [Configuration](https://github.com/maksii/paqvilo/blob/main/docs/configuration.md) |
 | Add personas, datasets and acceptance tests | [Project starter](https://github.com/maksii/paqvilo/blob/main/examples/project/README.md), [extensions](https://github.com/maksii/paqvilo/blob/main/docs/project-extensions.md) |
 | Understand runtime support and evidence | [Mirage reference](https://github.com/maksii/paqvilo/blob/main/mirage/docs/README.md), [architecture](https://github.com/maksii/paqvilo/blob/main/docs/architecture.md) |
-| Contribute or upgrade | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md), [migration](https://github.com/maksii/paqvilo/blob/main/docs/migration.md) |
+| Check support and common questions | [Coverage](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md), [FAQ](https://github.com/maksii/paqvilo/blob/main/docs/faq.md) |
+| Contribute | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md) |
 
 ## About and license
 

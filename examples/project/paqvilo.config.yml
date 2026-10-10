@@ -2,12 +2,38 @@ sourceRoot: .
 defaultSite: example
 sites:
   example:
+    markup: { enabled: false }
     source: portal
     defaultEnv: local
     environments:
       local: http://127.0.0.1:8787
     mirage:
       port: 8787
+      solutionRoots: [ ./metadata, ./code-solution, ./solution ]
+      solutionOrder: explicit
       dataPacks:
         - { id: example, module: ./pack/pack.mjs }
       preset: example-demo
+      observed:
+        codeComponents:
+          b4700000-0000-4000-8000-85a64d82e04f: exa_ExamplePages.ExampleAccountFields
+        evidence: Exported PCF page tag mapped to the ExampleAccountFields manifest;
+          deployment helper refreshes the environment-specific GUID.
+        sdkMessages:
+          9ebdbb1b-ea3e-db11-86a7-000a3a5473e8:
+            name: Create
+            evidence: Dataverse sdkmessages read on 2026-10-10; matched the PAC-exported
+              SdkMessageId.
+          20bebb1b-ea3e-db11-86a7-000a3a5473e8:
+            name: Update
+            evidence: Dataverse sdkmessages read on 2026-10-10; matched the PAC-exported
+              SdkMessageId.
+        pluginSources:
+          Paqvilo.Demo.Plugins.AccountRules:
+            path: components/DataversePlugins/AccountRules.cs
+            evidence: Explicit demo C# source mapped to its PAC-exported plugin type on
+              2026-10-10.
+          Paqvilo.Demo.Plugins.ContactRules:
+            path: components/DataversePlugins/ContactRules.cs
+            evidence: Explicit demo C# source mapped to its PAC-exported plugin type on
+              2026-10-10.

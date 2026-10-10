@@ -6,7 +6,7 @@ Mirage is Paqvilo's local-first Power Pages simulation engine. Run exported Liqu
 
 Mirage derives forms, lists, settings and permissions from exported sources and Solution metadata. Your project's registered data packs supply personas, datasets and simulated business rules.
 
-[First local portal](../docs/getting-started.md#try-the-included-example) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
+[Interactive demo](../docs/getting-started.md#try-the-demo) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
 
 ## Start your workspace
 
@@ -19,12 +19,15 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Visit `/_sim/` for local administration.
 
+**Operations** inventories exported server logic and cloud flows. Review supported defaults, set a JSON response mock or explicitly enable trusted local code. [Operation modes](docs/operations.md) explain the execution boundary. [PCF hosting](docs/code-components.md) covers standard field and explicitly bound dataset controls.
+
 New states contain exported configuration and empty business tables. Use [data scaffolding](../docs/getting-started.md#3-work-locally-with-mirage) for generated rows or a [data pack](docs/data-packs.md) for your own scenarios. The portal starts anonymous; sign in locally before testing protected pages.
 
 ## Pick the session that fits
 
 | Command | Session behavior |
 | --- | --- |
+| `demo` | Copy a populated, editable example and open the development browser |
 | `init` | Write a per-site runtime project from your catalogue |
 | `dev` | Start local runtimes and open the integrated browser; stop newly started runtimes when this dev session ends |
 | `start` | Start owned runtimes in the background |
@@ -50,4 +53,4 @@ Local identity comes from a per-runtime cookie. The `_sim` session and Lense Twe
 
 Local `_sim` changes affect simulated data, permissions, settings, scenarios and runtime providers. Live-reference reads and cached assets are explicit operations with separate provenance. Live writes remain disabled unless the runtime flag and administration switch both permit them; neither is authorization to perform a business operation.
 
-Local rendering is a simulation; claim parity only for recorded reference comparisons. See [documentation](docs/README.md), [project extension guidance](../docs/project-extensions.md), and [migration](MIGRATION.md).
+Local rendering supports selected platform contracts. Review the [coverage matrix](../docs/coverage.md); claim parity only for recorded reference comparisons. See [documentation](docs/README.md) and [project extension guidance](../docs/project-extensions.md).

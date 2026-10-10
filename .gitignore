@@ -15,3 +15,6 @@ paqvilo.config.local.yml
 coverage/
 *.log
 dist/
+examples/project/components/**/bin/
+examples/project/components/**/obj/
+examples/project/components/**/out/

@@ -2,18 +2,15 @@ import { randomUUID } from "node:crypto";
 
 /**
  * Server logic (powerpagecomponent type 35, adx_serverlogic) is imported with its web roles and
- * code file (lib/importer.mjs serverLogics) but never run: the Mirage has no server-logic
- * runtime (no sandbox for the code, no Server.Connector.Dataverse, HttpClient or CloudFlow), and
- * it never forwards these calls to a live site, because server code can change data on any verb.
+ * code file (lib/importer.mjs serverLogics). Execution requires an explicit trusted pack
+ * registration (lib/exported-operations.mjs). Calls are never forwarded to a live site.
  *
- * Every call to /_api/serverlogics/<name> (Learn, "Server logic API URL" and "Supported HTTP
- * methods": GET, POST, PUT, PATCH and DELETE) receives this documented answer instead:
+ * Unregistered calls to /_api/serverlogics/<name> receive this fallback:
  *
  * - 501 when the export has a server logic record with that name (case-insensitive), 404 when
  *   it has none;
  * - the response envelope of server logic calls, camelCase as Microsoft's samples receive it
- *   ({ requestId, success, serverLogicName, data, error }; ecosystem review
- *   docs/runtime-evidence.md, server logic), with success false, data null
+ *   ({ requestId, success, serverLogicName, data, error }), with success false, data null
  *   and error { code, message };
  * - an x-sim-route: server-logic-unsupported header.
  *
@@ -39,7 +36,7 @@ export function serverLogicUnsupported(portal, name, method = "GET") {
   const status = record ? 501 : 404;
   const code = record ? "ServerLogicNotSupportedLocally" : "ServerLogicNotFound";
   const message = record
-    ? `Server logic "${record.name}" is not run by the Mirage (no local server-logic runtime), and calls are not forwarded to a live site. Mock the response with a /_sim endpoint for this path if a page needs one.`
+    ? `Server logic "${record.name}" has no active local handler. Register it in a trusted project pack or configure a local mock response. Calls are not forwarded to a live site.`
     : `The export has no server logic named "${name}".`;
   return {
     status,

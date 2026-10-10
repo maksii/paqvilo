@@ -226,7 +226,6 @@ test("the sign-in content lists personas, labels the simulation and escapes valu
   // Anonymous visitors see the page, so "Continue anonymously" is a plain link.
   assert.match(html, /<a class="paqvilo-mirage-continue-anonymously" href="\/">Continue anonymously<\/a>/);
   assert.doesNotMatch(html, /paqvilo-mirage-provider|password|microsoftonline|b2clogin/i);
-  // External providers: the platform's provider form per provider (sandbox /SignIn shape).
   const external = signInContent({
     providers: [{ id: "https://login.windows.net/tenant/", name: "AzureAD", caption: "Sign in <ExampleApp>" }],
     showPersonas: false,
@@ -294,8 +293,6 @@ test("portal requests are anonymous without a session cookie, whoever the client
 
 test("the sign-in page renders in the site shell; sign-in validates personas and return URLs; sign-out ends the session", async (t) => {
   const { app, browser, signIn, csrf } = await simulator(t);
-  // /{code}/signin answers with a second 302 (relative Location) to the code-less sign-in
-  // path, as live Second and Third do (MultiLanguage/DisplayLanguageCodeInURL is not true).
   const hop = await browser("/en-US/signin?ReturnUrl=%2Fmembers%2F");
   assert.equal(hop.status, 302);
   assert.equal(hop.headers.get("location"), "/signin?ReturnUrl=%2Fmembers%2F");
@@ -385,8 +382,6 @@ test("the sign-in page renders in the site shell; sign-in validates personas and
   assert.equal(field(await text(await browser("/", { cookie: signedOut })), "user"), "anonymous");
   const { cookie: again2 } = await signIn("alex");
   assert.equal((await browser("/Account/Login/LogOff?returnUrl=https%3A%2F%2Fevil.example", { cookie: again2 })).headers.get("location"), "/");
-  // sandbox: LogOff needs a signed-in user; anonymous requests go to the sign-in path with
-  // the LogOff path (no query) as ReturnUrl (capture: G/signin-chain/summary.json).
   for (const cookieHeader of [undefined, signedOut]) {
     const anonymous = await browser("/Account/Login/LogOff?returnUrl=%2F", { cookie: cookieHeader });
     assert.equal(anonymous.status, 302);

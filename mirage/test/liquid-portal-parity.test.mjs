@@ -332,7 +332,6 @@ test("array filters", async () => {
 
 test("unknown filters return their input unchanged and are reported", async (t) => {
   const { render } = await setup(t);
-  // sandbox renders the date_to_is08601 typo without error text (parity baseline liquid-typo-filter).
   const result = await render("{{ '{\"a\":1}' | json_parse }}|{{ 1.5 | number }}|{{ now | date_to_is08601 }}|{{ 'r' | raw }}");
   assert.equal(result.html, '{"a":1}|1.5|1/2/2026 3:04:05 AM|r');
   assert.deepEqual(
@@ -341,10 +340,8 @@ test("unknown filters return their input unchanged and are reported", async (t) 
   );
 });
 
-test("json writes request values verbatim and serialises other values like the platform filter observed on sandbox", async (t) => {
+test("json writes request values verbatim and serialises other values like the local filter contract", async (t) => {
   const render = plain();
-  // sandbox (liquid-json-page-*, -raw): a request value passes through json verbatim, untrimmed and
-  // without JSON quoting or escaping; request output is then HTML-encoded.
   const { render: page } = await setup(t);
   const echo = async (value) =>
     (await page("{{ request.params['page'] | default: 1 | json }}", {}, value === undefined ? "/child/" : `/child/?page=${encodeURIComponent(value)}`)).html;
@@ -353,8 +350,6 @@ test("json writes request values verbatim and serialises other values like the p
   for (const input of inputs) outputs.push(await echo(input));
   assert.deepEqual(outputs, ["-", " - ", " ", "&quot;-&quot;", "&quot;&quot; &quot;&quot;", "1.50", "[]", "true"]);
   assert.deepEqual([await echo("01"), await echo("1"), await echo(undefined)], ["01", "1", "1"]);
-  // sandbox (/reports/?id=<no matching record>, liquid-json-reports-script-empty and the mask probe):
-  // the capture holds only the line breaks DotLiquid20 whitespace control leaves and renders "".
   const reports = [
     "{%- capture info -%}",
     "  {%- if id -%}",
@@ -368,9 +363,6 @@ test("json writes request values verbatim and serialises other values like the p
     "const headerHtml = {{ info | default: '' | json  }};",
   ].join("\r\n");
   assert.equal(await render(reports, { id: "00000000-0000-0000-0000-000000000000", items: [{ id: "a", info: "x" }, { id: "b", info: "y" }] }), 'const headerHtml = "";');
-  // sandbox (/reports/ configurations, mask probes): other strings are trimmed and wrapped in double
-  // quotes without escaping; a stored " " renders "" "", a backtick-delimited multi-line text keeps
-  // its inner quotes, tabs and raw newlines.
   assert.equal(await render("const headerHtml = {{ info | default: '' | json }};", { info: '    " "\r\n' }), 'const headerHtml = "" "";');
   assert.equal(await render("{{ info | json }}", { info: '        `a\n\t"b"\n`\r\n' }), '"`a\n\t"b"\n`"');
   assert.equal(await render("[{{ s | json }}]|[{{ e | json }}]|[{{ q | json }}]", { s: " \r\n\t", e: "", q: ' a"b ' }), '[""]|[""]|["a"b"]');
@@ -622,8 +614,6 @@ test("ad and poll services render one placement item with its web template or th
     panel.endsWith(`<div class="panel-body poll random" data-url="/_services/polls/${SITE}/placements/${POLL_PLACEMENT}/random" data-submit-url="/_services/polls/${SITE}/SubmitPoll?id=${POLL_PLACEMENT}"></div></div>`),
     panel,
   );
-  // sandbox (/contact-us/): an ad with only a URL renders an empty link; a poll exported with
-  // adx_active false is served; options follow adx_displayorder.
   const observed = await setup(t, {}, {
     "ad.yml": `- adx_adid: ${AD}\n  adx_name: Placeholder\n  adx_url: ~/\n  adx_openinnewwindow: false`,
     "polls/sample/Sample.poll.yml": `adx_pollid: ${POLL}\nadx_name: Sample\nadx_question: Which?\nadx_submitbuttonlabel: Vote\nadx_active: false`,
@@ -675,8 +665,6 @@ test("a snippet record without a value is nil and its editable wrapper is marked
     "content-snippets/empty/Empty.en-US.contentsnippet.yml":
       "adx_contentsnippetid: 9a4d1c2e-0000-4000-8000-000000000044\nadx_contentsnippetlanguageid: 9a4d1c2e-0000-4000-8000-0000000000ab\nadx_name: Empty/Snippet",
   });
-  // sandbox (/contact-us/, Social Share Widget Code Page Bottom): an exported snippet without a
-  // value keeps its language context and its wrapper carries no-value.
   const html = (await render("{% editable snippets 'Empty/Snippet' type: 'text' %}")).html;
   assert.deepEqual(/class="([^"]*)"/.exec(html)[1].split("&#32;").sort(), ["no-value", "xrm-attribute", "xrm-editable-text"]);
   assert.ok(html.endsWith(' data-languageContext="English"><div class="xrm-attribute-value"></div></div>'), html);
@@ -956,7 +944,7 @@ test("the platform layout carries the language attributes and links content styl
     `/child/child.css?${stamp}`,
   ]);
   // The home page has a bootstrap.min.css child, so the default is "web-file"; the observed
-  // per-site setting "platform" links the platform's Bootstrap instead (sandbox Second).
+  // per-site setting "platform" links the platform's Bootstrap instead.
   portal.observed = { bootstrapStylesheet: "platform", evidence: "synthetic" };
   const observedPlatform = (await createPortalRenderer(portal).renderPage("/child/grand/")).html;
   assert.equal((observedPlatform.match(/bootstrap\.min\.css/g) ?? []).length, 1);
@@ -1043,9 +1031,9 @@ test("website languages follow the import and the request: the wet-boew bilingua
 
 test("the observed bootstrapStylesheet setting is validated with its evidence", async () => {
   const { observedConfig } = await import("../lib/project-config.mjs");
-  assert.deepEqual(observedConfig({ bootstrapStylesheet: "platform", evidence: "sandbox Second home head" }), {
+  assert.deepEqual(observedConfig({ bootstrapStylesheet: "platform", evidence: "fixture/reports/home-stylesheet.json" }), {
     bootstrapStylesheet: "platform",
-    evidence: "sandbox Second home head",
+    evidence: "fixture/reports/home-stylesheet.json",
   });
   assert.throws(() => observedConfig({ bootstrapStylesheet: "cdn", evidence: "x" }), /bootstrapStylesheet must be platform or web-file/);
   assert.throws(() => observedConfig({ bootstrapStylesheet: "web-file" }), /evidence/);

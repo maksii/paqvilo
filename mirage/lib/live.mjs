@@ -557,7 +557,7 @@ export class LiveBridge {
         400,
       );
     if (top != null && !this.fetchXmlPath) {
-      // Observed reference-portal ignores top, but honors count/page. Request the same bounded
+      // Use count/page to bound FetchXML results; top alone is not a reliable limit. Request the bounded
       // first result page and suppress continuation to preserve FetchXML top semantics.
       const attrs = { ...fetch.attrs, count: String(top), page: "1" };
       delete attrs.top;

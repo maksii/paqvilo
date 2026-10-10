@@ -18,6 +18,19 @@ function describe(dir, args = {}, site = SITE) {
   return describeResources(cfgFor(dir, site), model, baseline, baseline.changedFiles({ refreshRef: false }), resourceFilters(args));
 }
 
+test('offline page filtering distinguishes short exported routes from localized routes and home', (t) => {
+  const fx = createFixture(); t.after(fx.cleanup);
+  fx.write('web-pages/it/IT.webpage.yml', `adx_webpageid: it-page\nadx_name: IT\nadx_partialurl: it\nadx_parentpageid: ${HOME_ID}`);
+  fx.write('web-pages/it/IT.webpage.custom_javascript.js', 'window.it = true;');
+  fx.write('websitelanguage.yml', '- adx_websitelanguageid: fr\n  adx_name: French - France\n  adx_languagecode: fr-FR');
+  const direct = describe(fx.dir, { page: '/it', limit: 500 });
+  const localized = describe(fx.dir, { page: '/fr-FR/it', limit: 500 });
+  assert.deepEqual(direct.resources.map((row) => row.id), localized.resources.map((row) => row.id));
+  assert.equal(direct.resources.some((row) => row.id === 'page:it-page'), true);
+  assert.equal(direct.resources.some((row) => row.id === `page:${HOME_ID}`), false);
+  assert.equal(describe(fx.dir, { page: '/zz-ZZ/', limit: 500 }).resources.length, 0);
+});
+
 test('offline resources expose exact classic paths and only configured page relationships', (t) => {
   const fx = createFixture(); t.after(() => fx.cleanup());
   const formId = '00000000-0000-0000-0000-000000000099';

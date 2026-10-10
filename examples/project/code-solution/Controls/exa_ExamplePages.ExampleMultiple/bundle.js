@@ -1,0 +1,9 @@
+/*! For license information please see bundle.js.LICENSE.txt */
+var pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad;(()=>{"use strict";const e={d:(t,a)=>{for(var i in a)e.o(a,i)&&!e.o(t,i)&&Object.defineProperty(t,i,{enumerable:!0,get:a[i]})},o:(e,t)=>Object.prototype.hasOwnProperty.call(e,t),r:e=>{Object.defineProperty(e,Symbol.toStringTag,{value:"Module"}),Object.defineProperty(e,"__esModule",{value:!0})}};let t={};e.r(t),e.d(t,{ExampleMultiple:()=>a});class a{constructor(){this._value="",this._notifyOutputChanged=()=>{},this.onInput=()=>{this._value=this.input.value,this._notifyOutputChanged()}}init(e,t,a,i){var u;this._notifyOutputChanged=t,this._value=null!==(u=e.parameters.controlValue.raw)&&void 0!==u?u:"";var n=document.createElement("textarea");this.input=n,n.className="ExampleMultiple",n.value=this._value,n.addEventListener("input",this.onInput),i.appendChild(n)}updateView(e){var t;if(document.activeElement!==this.input){var a=null!==(t=e.parameters.controlValue.raw)&&void 0!==t?t:"";a!==this._value&&(this._value=a,this.input.value=a)}}getOutputs(){return{controlValue:this._value}}destroy(){this.input.removeEventListener("input",this.onInput)}}pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad=t})();
+if (window.ComponentFramework && window.ComponentFramework.registerControl) {
+	ComponentFramework.registerControl('ExamplePages.ExampleMultiple', pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleMultiple);
+} else {
+	var ExamplePages = ExamplePages || {};
+	ExamplePages.ExampleMultiple = pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad.ExampleMultiple;
+	pcf_tools_652ac3f36e1e4bca82eb3c1dc44e6fad = undefined;
+}

@@ -1,7 +1,7 @@
 // DotLiquid-compatible Liquid engine with Power Pages semantics.
 //
 // Power Pages renders Liquid with DotLiquid (SyntaxCompatibility.DotLiquid20) plus portal
-// tags/filters. Observed live reference-portal HTML confirms DotLiquid20 whitespace control (`{%-`
+// tags/filters. The local engine implements DotLiquid20 whitespace control (`{%-`
 // trims spaces/tabs only; `-%}` removes one following newline or one run of spaces/tabs).
 // This module ports the DotLiquid parser and runtime semantics: regex-based tokenising and
 // markup parsing, scopes, conditions (right-to-left and/or, Convert.ChangeType equality),

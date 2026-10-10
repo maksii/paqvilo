@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-ebc8fed28c0a">
+  <content>{"entityname":"Account workspace read","entitylogicalname":"account","scope":756150000,"read":true,"write":false,"create":false,"delete":false,"append":false,"appendto":false,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-2b18ee4c8b18"]}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Account workspace read</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

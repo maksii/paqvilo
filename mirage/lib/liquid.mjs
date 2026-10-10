@@ -11,7 +11,6 @@ import { normalizePortalPath, portalField } from "./importer.mjs";
 import { pageAccess } from "./page-access.mjs";
 import { reconcileFooterLogos } from "./footer-capture.mjs";
 import { reconcileHeaderNotifications } from "./header-notification-capture.mjs";
-import { notificationVisibility } from "./notification-visibility.mjs";
 import { headerNotificationQueries } from "./extensions.mjs";
 import { resolveSnippetComposition } from "./observed-snippet-composition.mjs";
 import { resolveObservedPageCopy } from "./observed-pagecopy-layout.mjs";
@@ -106,8 +105,8 @@ const MANAGED_DISPLAY_NAMES = {
 };
 /**
  * Managed web templates whose output on the live platform differs from the embedded Adxstudio
- * template: reference-portal nests the editable wrapper inside div.page-copy (parity baseline
- * gap-page-copy-editable; lib/observed-pagecopy-layout.mjs records the same structure).
+ * template: the local contract nests the editable wrapper inside div.page-copy.
+ * lib/observed-pagecopy-layout.mjs records explicitly captured structures.
  */
 const MANAGED_SOURCES = {
   page_copy: "<div class=\"page-copy\">{% editable page 'adx_copy' type: 'html', liquid: true %}</div>",
@@ -298,7 +297,6 @@ const RESX = {
   Current_Language: "English",
   Editable_Cancel_Label: "Cancel",
   Submit_Button_Label_Text: "Submit",
-  // reference-portal /contact-us/ poll (wave 3 recheck 6, probes/contact-us-poll-labels.json): sentence case.
   Poll_Results_Label: "View results",
   Poll_Totals_Label: "Total votes:",
   Poll_Return_Label: "Return to poll",
@@ -558,8 +556,8 @@ class ManifestTag extends RawBlock {
 /**
  * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (Learn,
  * liquid-objects "serverlogic": the output object has success, status_code, data and raw_result).
- * Server logic never runs locally (lib/server-logic.mjs): the output receives an unsuccessful
- * result with status code 501 and a SERVER_LOGIC_UNSUPPORTED diagnostic names the call.
+ * Registered operations use the host's local adapter; unregistered calls receive a 501
+ * result and a SERVER_LOGIC_UNSUPPORTED diagnostic.
  */
 class ServerLogicTag extends Tag {
   parse() {
@@ -570,12 +568,19 @@ class ServerLogicTag extends Tag {
     const name = await value("name");
     const operation = await value("operation");
     const output = this.attributes.get("output")?.value?.trim();
-    context.diagnostic("SERVER_LOGIC_UNSUPPORTED", `Server logic "${name}" (operation "${operation}") is not run by the Mirage; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
+    if (context.engine.portalHost.serverLogic) {
+      const result = await context.engine.portalHost.serverLogic({ name, operation, input: await value('input'), context: context.snapshot() });
+      if (result) {
+        if (output) context.assignGlobal(output, result);
+        return;
+      }
+    }
+    context.diagnostic("SERVER_LOGIC_UNSUPPORTED", `Server logic "${name}" (operation "${operation}") has no active local handler; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
     if (output) context.assignGlobal(output, { success: false, status_code: 501, data: null, raw_result: "" });
   }
 }
 
-// ---- Component tags (forms, lists, views, search, charts). Shared with agent C: the
+// ---- Component tags (forms, lists, views, search, charts). The
 // renderComponent(tag, args, contextSnapshot, portal) contract is unchanged. ----
 const COMPONENT_TAGS = ["entityform", "webform", "entitylist", "entityview", "searchindex", "powerbi", "codecomponent", "chart"];
 const BLOCK_COMPONENTS = new Set(["entitylist", "entityview", "searchindex"]);
@@ -588,6 +593,10 @@ function componentTag(tag) {
     }
     async render(context, out) {
       const args = await evaluateAttributes(this.markup, context);
+      if (tag === 'codecomponent' && args.name == null) {
+        const literal = tagAttributes(this.markup).get('name')?.value;
+        if (GUID_KEY.test(literal ?? '')) args.name = literal.replace(/[{}]/g, '').toLowerCase();
+      }
       if (["entityform", "webform", "entitylist"].includes(tag) && args.name == null && args.id == null && args.key == null) return;
       const host = context.engine.portalHost;
       if (!host.renderComponent) {
@@ -777,7 +786,7 @@ export function createPortalRenderer(portal, options = {}) {
   };
   /**
    * Website languages and the request's language (Adxstudio ContextLanguageInfo, WebsiteDrop and
-   * LanguageDrop): the published website languages with a URL language code (agent D's import) in
+   * LanguageDrop): the published website languages with a URL language code (import) in
    * export order; the selected language is the language code that starts the URL path (sites with
    * MultiLanguage/DisplayLanguageCodeInURL keep it; the server passes a code it removed as
    * extra.languageCode), else the website default language. The session cookie and the user's
@@ -830,6 +839,7 @@ export function createPortalRenderer(portal, options = {}) {
   };
   const portalHost = {
     portal,
+    get serverLogic() { return options.serverLogic; },
     get fetchXml() {
       return options.fetchXml;
     },
@@ -874,7 +884,6 @@ export function createPortalRenderer(portal, options = {}) {
           return wrapEditable({ value: await render(defaultValue ?? ""), hasValue: defaultValue != null, editType, cssClass, escape, tag });
         }
         // An existing snippet keeps its language context; without a value it is a no-value wrapper
-        // (reference-portal, Social Share Widget Code Page Bottom on /contact-us/).
         return wrapEditable({ value: await render(source), hasValue: source !== "", editType, cssClass, escape, tag, languageName: snippetLanguageName(name, context) });
       }
       if (target && typeof target === "object" && target.__liquidEditable === "entity") {
@@ -1259,7 +1268,7 @@ export function createPortalRenderer(portal, options = {}) {
       if (pageTemplate?.webTemplateId && !template)
         diagnostics.push({ code: "missing-page-template", message: `Web template ${pageTemplate.webTemplateId} is absent` });
       // Legacy ASPX page templates render their WebForms layout with the page's attached
-      // advanced form, basic form and list (lib/platform-manifest.mjs, agent C).
+      // advanced form, basic form and list (lib/platform-manifest.mjs).
       const rewriteLayout = template ? null : rewritePageLayout(page, pageTemplate);
       const body = await renderSource(template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"), context);
       const css = page.css ? `<style>${await renderSource(page.css, context)}</style>` : "";
@@ -1293,13 +1302,17 @@ export function createPortalRenderer(portal, options = {}) {
         } else {
           const payload = JSON.parse(await renderSource(notificationTemplate.source, context));
           if (!Array.isArray(payload.notifications)) throw new Error("The exported header notification query did not return a notifications array.");
+          const notifications = payload.notifications.filter((row) => row && typeof row === "object" &&
+            typeof row.visible === "boolean" && ["success", "danger", "warning", "info"].includes(row.severity));
+          if (notifications.length !== payload.notifications.length) diagnostics.push({
+            code: "HEADER_NOTIFICATION_QUERY_INVALID",
+            message: "The registered header query must return notification rows with an explicit visible boolean and severity (success, danger, warning or info). Invalid rows were omitted; audience rules belong in the authored template.",
+            count: payload.notifications.length - notifications.length,
+          });
           const reconciled = reconcileHeaderNotifications(renderedHeader, header.source, observedNotifications, {
             origin: extra.observationOrigin ?? options.observationOrigin,
-            notifications: notificationVisibility(payload.notifications, {
-              surface: "header",
-              pathname: new URL(url, "http://localhost").pathname,
-              user: context.user,
-            }),
+            // Visibility and content are authored by the registered query template.
+            notifications,
           });
           renderedHeader = reconciled.html;
           if (reconciled.diagnostic) diagnostics.push(reconciled.diagnostic);
@@ -1331,7 +1344,7 @@ export function createPortalRenderer(portal, options = {}) {
           .join("\n");
       const urls = (paths, type) => (paths ?? []).map((value) => renderShellResource(value, type)).join("\n");
       const contentStyles = shellProfile?.stylesheets || options.shellStyles ? null : await contentStylesheets(page, context);
-      // Platform shell (lib/platform-manifest.mjs, agent C): the ResourceManager script and
+      // Platform shell (lib/platform-manifest.mjs): the ResourceManager script and
       // the platform bundles in live document order, in the Bootstrap 3 or 5 build that
       // Site/BootstrapV5Enabled selects. jQuery, moment and the compatibility adapters come
       // from the bundles' local equivalents. A captured shell supplies the deployed bundle
@@ -1355,7 +1368,7 @@ export function createPortalRenderer(portal, options = {}) {
       const encodedSuffix = htmlEscape(titleSuffix).replace(/&amp;(#x[\da-f]+|#\d+|[a-z][\w]+);/gi, "&$1;");
       // Web templates own their content structure, including main landmarks.
       const content = template ? body : `<main id="mainContent">${body}</main>`;
-      // Native platform regions (lib/platform-manifest.mjs, agent C): WebForms form and AXD
+      // Native platform regions (lib/platform-manifest.mjs): WebForms form and AXD
       // scripts only on form pages; chrome markup around the header, content and footer.
       const nativeRegions = nativePageRegions({
         content,
@@ -1458,9 +1471,8 @@ export function createPortalRenderer(portal, options = {}) {
     };
     const isBootstrap = (entry) => entry.partial.toLowerCase() === "bootstrap.min.css";
     const bootstrapSnippet = portal.snippets?.["Head/Bootstrap"];
-    // Which Bootstrap the layout links is a per-site observation (observed.bootstrapStylesheet:
-    // reference-portal reference-site-A links the platform's although it exports a bootstrap.min.css under the home
-    // page, reference-site-B its web file); the default is the web file when the home page has one.
+    // A per-site observed.bootstrapStylesheet selects the platform stylesheet or exported web file.
+    // The default is the web file when the home page has one.
     const homeHasBootstrap = styles.some((entry) => entry.offset === path.length - 1 && isBootstrap(entry));
     const bootstrapMode = portal.observed?.bootstrapStylesheet ?? (homeHasBootstrap ? "web-file" : "platform");
     const bootstrapFile = bootstrapMode === "web-file" ? styles.find(isBootstrap) : null;
@@ -1505,7 +1517,7 @@ export function createPortalRenderer(portal, options = {}) {
       "data-timeformat": timeFormat,
       "data-datetimeformat": setting("DateTime/DateTimeFormat") ?? `${dateFormat} ${timeFormat}`,
       "data-app-path": "/",
-      // The platform's rich-text designer path (lib/platform-manifest.mjs, observed on reference-portal).
+      // The platform's rich-text designer path (lib/platform-manifest.mjs).
       "data-ckeditor-basepath": CKEDITOR_BASEPATH,
       "data-case-deflection-url": `/_services/search/${String(portal.website?.id ?? "").toLowerCase()}`,
     };

@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-bafcd26138e9">
+  <content>{"value":"annotationid,subject,notetext,filename,mimetype,documentbody,isdocument,objectid,createdon,_objectid_value,objectid_account"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Webapi/annotation/fields</name>
+  <powerpagecomponenttype>9</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

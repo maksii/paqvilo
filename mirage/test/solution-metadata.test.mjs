@@ -7,6 +7,7 @@ import {
   importSolutionMetadata,
   parseSolutionXml,
 } from "../lib/solution-metadata.mjs";
+import { formCells } from "../lib/native-services.mjs";
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-metadata-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -15,7 +16,7 @@ async function fixture(t, files) {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, xml);
   }
-  return root;
+  return await fs.realpath(root);
 }
 const form = (title) =>
   `<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="tab_1" id="tab-id"><labels><label description="General" languagecode="1033"/></labels><columns><column width="100%"><sections><section name="general" showlabel="true"><labels><label description="General &gt; label" languagecode="1033"/></labels><rows><row><cell showlabel="true"><labels><label description="${title}" languagecode="1033"/></labels><control id="name-control" datafieldname="fullname" disabled="false"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>`;
@@ -188,6 +189,19 @@ test("PAC advanced steps with omitted mode retain the platform Insert default", 
   assert.equal(result.componentSchemas.wizard.steps[0].mode, 100000000);
 });
 
+test('PAC redirect step import does not invent a missing record query name', async t => {
+  const root = await fixture(t, { 'Solution/Entities/Contact/Entity.xml': entity });
+  const site = portal();
+  site.pages = [{ id: 'done', url: '/done/' }];
+  site.advancedForms = [{ id: 'wizard', name: 'Wizard', metadata: { adx_startstep: 'redirect' } }];
+  site.records = [{ kind: 'advancedformstep', id: 'redirect', adx_webform: 'wizard', adx_type: 100000003, adx_redirectwebpage: 'done', adx_redirecturlappendentityidquerystring: true }];
+  const omitted = await importSolutionMetadata(root, { portal: site });
+  assert.equal(omitted.componentSchemas.wizard.steps[0].recordQueryName, null);
+  site.records[0].adx_redirecturlquerystringname = 'record';
+  const named = await importSolutionMetadata(root, { portal: site });
+  assert.equal(named.componentSchemas.wizard.steps[0].recordQueryName, 'record');
+});
+
 test("rich text controls resolve their per-control managed configuration from systemform descriptions", async (t) => {
   const richForm = form("Narrative")
     .replace(
@@ -207,6 +221,28 @@ test("rich text controls resolve their per-control managed configuration from sy
     name: "MscrmControls.RichTextEditor.RichTextEditorControl",
     configUrl: "/WebResources/custom-rte.json",
   });
+});
+test('native PCF bindings preserve desktop selection, static values and sibling form factors from exported FormXml', async t => {
+  const customForm = form('Profile')
+    .replace('datafieldname="fullname" disabled="false"', 'datafieldname="fullname" disabled="false" uniqueid="{pcf-control}"')
+    .replace('</tabs>', '</tabs><controlDescriptions><controlDescription forControl="{pcf-control}"><customControl id="{4273edbd-ac1d-40d3-9fb2-095c621b552d}"><parameters><datafieldname>fullname</datafieldname></parameters></customControl><customControl name="tst_Synthetic.Editor" formFactor="0"><parameters><value type="SingleLine.Text">fullname</value><caption static="true" type="SingleLine.Text">Exported caption</caption><rows><complex/></rows></parameters></customControl><customControl name="tst_Synthetic.TabletEditor" formFactor="1"><parameters><value>fullname</value></parameters></customControl></controlDescription></controlDescriptions>');
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/{form-id}.xml': customForm });
+  const result = await importSolutionMetadata(root, { portal: portal() });
+  const field = result.componentSchemas['basic-form'].fields[0];
+  assert.equal(field.codeComponent.name, 'tst_Synthetic.Editor');
+  assert.equal(field.codeComponent.formFactor, '0');
+  assert.equal(field.codeComponent.controlId, 'pcf-control');
+  assert.equal(field.codeComponent.sourceFile, path.join(root, 'Entities/Contact/FormXml/main/{form-id}.xml'));
+  assert.deepEqual(field.codeComponent.parameters.value, { kind: 'binding', column: 'fullname', type: 'SingleLine.Text' });
+  assert.deepEqual(field.codeComponent.parameters.caption, { kind: 'static', value: 'Exported caption', type: 'SingleLine.Text' });
+  assert.equal(field.codeComponent.parameters.rows.kind, 'unresolved');
+  assert.deepEqual(field.codeComponent.boundAttributes, ['fullname']);
+  assert.deepEqual(field.codeComponents.map(component => component.name), ['tst_Synthetic.Editor', 'tst_Synthetic.TabletEditor']);
+  const mobileOnly = customForm.replace('formFactor="0"', 'formFactor="2"');
+  await fs.writeFile(path.join(root, 'Entities/Contact/FormXml/main/{form-id}.xml'), mobileOnly);
+  const second = await importSolutionMetadata(root, { portal: portal() });
+  assert.equal(second.componentSchemas['basic-form'].fields[0].codeComponent, undefined);
+  assert.equal(second.componentSchemas['basic-form'].fields[0].codeComponents.length, 2);
 });
 
 test("metadata-only save attributes and Web API column views import their actual table definitions", async (t) => {
@@ -310,7 +346,7 @@ test("imports actual unpacked solution shapes and maps portal form tab and saved
 test("quick form bindings and subgrid metadata remain separate from editable payload fields", async (t) => {
   const xml = form("Name").replace(
     "</row>",
-    '<cell><control id="CustomerDetails" datafieldname="fullname"><parameters><QuickForms>&lt;QuickFormIds&gt;&lt;QuickFormId entityname="account"&gt;quick-form&lt;/QuickFormId&gt;&lt;/QuickFormIds&gt;</QuickForms></parameters></control></cell><cell><control id="Children" indicationOfSubgrid="true"><parameters><TargetEntityType>contact</TargetEntityType><RelationshipName>contact_children</RelationshipName><ViewId>view-id</ViewId></parameters></control></cell></row>',
+    '<cell><control id="CustomerDetails" datafieldname="fullname"><parameters><QuickForms>&lt;QuickFormIds&gt;&lt;QuickFormId entityname="account"&gt;quick-form&lt;/QuickFormId&gt;&lt;/QuickFormIds&gt;</QuickForms></parameters></control></cell><cell><control id="Children" indicationOfSubgrid="true"><parameters><TargetEntityType>contact</TargetEntityType><RelationshipName>contact_children</RelationshipName><ViewId>view-id</ViewId><EnableQuickFind>true</EnableQuickFind><RecordsPerPage>4</RecordsPerPage></parameters></control></cell></row>',
   );
   const root = await fixture(t, {
     "Solution/Entities/Contact/FormXml/main/{form-id}.xml": xml,
@@ -329,6 +365,8 @@ test("quick form bindings and subgrid metadata remain separate from editable pay
   assert.equal(cells[1].schema.fields[0].label, "Quick name");
   assert.equal(cells[2].type, "subgrid");
   assert.equal(cells[2].relationship, "contact_children");
+  assert.equal(cells[2].searchEnabled, true);
+  assert.equal(cells[2].recordsPerPage, 4);
   assert.match(cells[2].fetchXml, /<entity name="contact">/);
 });
 test("explicit last root wins with recorded source layer conflict and no deployed inference", async (t) => {
@@ -425,4 +463,15 @@ test("lookup DefaultViewId imports its dependent table and preserves the exact s
   assert.equal(field.lookupView.id, "country-view");
   assert.equal(field.lookupView.fields[0].name, "shortname");
   assert.match(field.lookupView.fetchXml, /<entity name="country">/);
+});
+
+test('notes cells without datafieldname survive exported systemform parsing', async t => {
+  const notes = '<row><cell colspan="2"><labels><label description="Related notes" languagecode="1033"/></labels><control id="notescontrol" classid="{06375649-C143-495E-A496-C962E5B4488E}"/></cell></row>';
+  const root = await fixture(t, {'Entities/contact/Entity.xml': entity, 'Entities/contact/FormXml/main/{form-id}.xml': form('Name').replace('</rows>', notes + '</rows>')});
+  const metadata = await importSolutionMetadata(root, {portal: portal()});
+  const cell = formCells(metadata.componentSchemas['basic-form']).find(c => c.type === 'notes');
+  assert.equal(cell.id, 'notescontrol');
+  assert.equal(cell.label, 'Related notes');
+  assert.equal(cell.colspan, 2);
+  assert.equal(metadata.componentSchemas['basic-form'].fields.length, 1);
 });

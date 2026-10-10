@@ -277,14 +277,14 @@ test("portals record observed site behaviour with its evidence; observations are
   assert.deepEqual(projectSummary(project, "catalog").portals[0].observed, { loginPath: "/SignIn", evidence: "parity/live-signin-redirect.json" });
   assert.equal(observedConfig(undefined), null);
   assert.equal(observedConfig({ evidence: "only evidence" }), null);
-  // Web API and data observations (agent B) share the mechanism; absent keys stay absent.
-  assert.deepEqual(observedConfig({ webApiInnerError: "all-errors", evidence: "third-sandbox/report.json" }), { webApiInnerError: "all-errors", evidence: "third-sandbox/report.json" });
+  // Web API and data observations  share the mechanism; absent keys stay absent.
+  assert.deepEqual(observedConfig({ webApiInnerError: "all-errors", evidence: "fixture/reports/inner-errors.json" }), { webApiInnerError: "all-errors", evidence: "fixture/reports/inner-errors.json" });
   assert.deepEqual(observedConfig({ anonymousDataAccess: "blocked", loginPath: "/SignIn", evidence: "e" }), { loginPath: "/SignIn", anonymousDataAccess: "blocked", evidence: "e" });
   assert.throws(() => observedConfig({ webApiInnerError: "some", evidence: "e" }), /observed\.webApiInnerError must be all-errors or dataverse-errors/);
   assert.throws(() => observedConfig({ anonymousDataAccess: "open", evidence: "e" }), /observed\.anonymousDataAccess must be allowed or blocked/);
   assert.throws(() => observedConfig({ webApiInnerError: "all-errors" }), /observed\.evidence must name the observation behind webApiInnerError/);
   // The Web API wildcard exemption (Webapi/<table>/fields = "*") is an observation too.
-  assert.deepEqual(observedConfig({ webApiWildcard: "exempt", evidence: "second-sandbox/wildcard.json" }), { webApiWildcard: "exempt", evidence: "second-sandbox/wildcard.json" });
+  assert.deepEqual(observedConfig({ webApiWildcard: "exempt", evidence: "fixture/reports/wildcard.json" }), { webApiWildcard: "exempt", evidence: "fixture/reports/wildcard.json" });
   assert.deepEqual(observedConfig({ webApiWildcard: "enforced", evidence: "e" }), { webApiWildcard: "enforced", evidence: "e" });
   assert.throws(() => observedConfig({ webApiWildcard: "allowed", evidence: "e" }), /observed\.webApiWildcard must be enforced or exempt/);
   assert.throws(() => observedConfig({ webApiWildcard: "exempt" }), /observed\.evidence must name the observation behind webApiWildcard/);

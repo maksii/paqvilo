@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-30cb6d6f2b6e">
+  <content>{"value":"contactid,firstname,lastname,fullname,emailaddress1,telephone1,jobtitle,description,parentcustomerid,statecode,statuscode,_parentcustomerid_value,parentcustomerid_account,parentcustomerid_contact"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Webapi/contact/fields</name>
+  <powerpagecomponenttype>9</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

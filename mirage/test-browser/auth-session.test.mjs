@@ -88,8 +88,6 @@ test(
     const errors = [];
     portal.on("pageerror", (error) => errors.push(error.message));
 
-    // Anonymous: the protected page redirects to the language sign-in URL, which answers
-    // with a second redirect to the sign-in path without the code (as live Second and Third).
     const hops = [];
     portal.on("response", (response) => {
       if (response.request().isNavigationRequest() && response.status() === 302) hops.push(new URL(response.url()).pathname);

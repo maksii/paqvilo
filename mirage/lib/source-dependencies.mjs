@@ -74,7 +74,7 @@ export async function discoverSourceDependencies(portal) {
     bootstrapSourcePath: urls.find((url) => BOOTSTRAP_CORE_SCRIPT.test(url)),
     // A jQuery core build only: jquery-ui.css or jquery.validate.js cannot stand in for the
     // platform's jQuery. A web file without a parent page is not routable, so the local
-    // equivalent of the platform library is used instead (agent C, platform manifest).
+    // equivalent of the platform library is used instead (platform manifest).
     sourceJquery: has(JQUERY_CORE_SCRIPT),
     sourceMoment: has(/(?:^|\/)moment(?:[-.][\w.-]*)?\.js(?:[?#]|$)/i),
     sourceDateTimePicker: has(/datetimepicker/i),
@@ -111,7 +111,7 @@ export const isHtmlDocument = (html) => /<(?:!doctype|html|head|body)\b/i.test(S
 /** Put source-detected fallback libraries before authored page/form scripts. */
 export function injectRuntimeDependencies(html, dependencies, configuredScripts = []) {
   if (!isHtmlDocument(html)) return html;
-  // Documents with the platform bundles get jQuery, moment and Datejs from them (agent C).
+  // Documents with the platform bundles get jQuery, moment and Datejs from them.
   if (hasPlatformBundles(html)) return html;
   const existing = [...configuredScripts];
   for (const match of String(html).matchAll(/<script\b[^>]*\bsrc\s*=\s*(["'])([^"']+)\1[^>]*>/gi))

@@ -385,7 +385,7 @@ test("the portal's own repository is not a sibling solution root when reached th
   }
 });
 
-test("watching is limited to table metadata of known layers and new solution manifests", () => {
+test("watching includes selected metadata, PCF resources and workflow definitions", () => {
   const sourceDir = path.resolve("C:/portal/site");
   const root = path.resolve("C:/solutions/repo");
   const ignored = solutionWatchFilter({ sourceDir, roots: [root], layers: [{ type: "directory", dir: path.join(root, "Core") }] });
@@ -395,6 +395,9 @@ test("watching is limited to table metadata of known layers and new solution man
   assert.equal(ignored(at("Core", "Entities", "sample_item", "Entity.xml"), { isFile: () => true }), false);
   assert.equal(ignored(at("Core", "Other", "Relationships", "x.xml"), { isFile: () => true }), false);
   assert.equal(ignored(at("Core", "WebResources")), true);
+  assert.equal(ignored(at('Core', 'Controls', 'tst_Synthetic.Editor', 'bundle.js'), { isFile: () => true }), false);
+  assert.equal(ignored(at('Core', 'Controls', 'tst_Synthetic.Editor', 'source.ts'), { isFile: () => true }), true);
+  assert.equal(ignored(at('Core', 'Workflows', 'sample.json'), { isFile: () => true }), false);
   assert.equal(ignored(at("Core", "Entities", "sample_item", "notes.txt"), { isFile: () => true }), true);
   assert.equal(ignored(at("NewSolution")), false);
   assert.equal(ignored(at("NewSolution", "Other")), false);
@@ -513,8 +516,6 @@ test("solution roots resolve alike for serve and bootstrap-report: CLI, catalogu
 test("case relationships come from Learn and document management creates <table>_SharePointDocumentLocations", async (t) => {
   const managed = "<IsDocumentManagementEnabled>1</IsDocumentManagementEnabled>";
   const root = await tree(t, {
-    // Second and Third grants: case notes, activities, email, portal comments and document
-    // locations; sample_shortage and incident have document management enabled.
     "Entities/Incident/Entity.xml": entityXml("Incident", { attributes: attribute("sample_Extra", "nvarchar"), extra: managed }),
     "Entities/sample_shortage/Entity.xml": entityXml("sample_shortage", { set: "sample_shortages", full: true, extra: managed }),
     "Entities/sample_plain/Entity.xml": entityXml("sample_plain", { set: "sample_plains", full: true, extra: "<IsDocumentManagementEnabled>0</IsDocumentManagementEnabled>" }),

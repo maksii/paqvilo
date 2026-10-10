@@ -1,0 +1,14 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: annotation
+adx_entityname: Notes through readable accounts
+adx_entitypermission_webrole:
+- b4700000-0000-4000-8000-2b18ee4c8b18
+adx_entitypermissionid: b4700000-0000-4000-8000-f8046c48703c
+adx_parententitypermission: b4700000-0000-4000-8000-ebc8fed28c0a
+adx_parentrelationship: Account_Annotation
+adx_read: true
+adx_scope: 756150003
+adx_write: false

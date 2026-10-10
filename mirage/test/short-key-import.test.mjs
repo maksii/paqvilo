@@ -123,7 +123,7 @@ test("server logic paths are recognised by name", () => {
   assert.equal(serverLogicName("/_api/contacts"), null);
 });
 
-test("serve treats a code site like any export, and server logic answers the documented unsupported response", async (t) => {
+test("serve treats a code site like any export, and discovered server logic enforces roles and verification before simulation", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-code-site-serve-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const calls = [];
@@ -152,10 +152,10 @@ test("serve treats a code site like any export, and server logic answers the doc
   assert.equal(await (await fetch(app.url + "/app.js")).text(), "window.syntheticApp = 'from the web file';\n");
   for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
     const response = await fetch(app.url + "/_api/serverlogics/order-summary", { method, headers: { "content-type": "application/json" }, ...(method === "GET" ? {} : { body: "{}" }) });
-    assert.equal(response.status, 501, method);
-    assert.equal(response.headers.get("x-sim-route"), "server-logic-unsupported");
+    assert.equal(response.status, 403, method);
+    assert.equal(response.headers.get("x-sim-route"), "server-logic-local");
     const body = await response.json();
-    assert.deepEqual([body.success, body.serverLogicName, body.data, body.error.code], [false, "order-summary", null, "ServerLogicNotSupportedLocally"]);
+    assert.deepEqual([body.success, body.serverLogicName, body.data, body.error.code], [false, "order-summary", null, "Forbidden"]);
     assert.match(body.requestId, /^[0-9a-f-]{36}$/);
   }
   const unknown = await fetch(app.url + "/_api/serverlogics/missing");
@@ -175,7 +175,7 @@ test("serve treats a code site like any export, and server logic answers the doc
   assert.deepEqual([mocked.status, (await mocked.json()).success], [200, true]);
   const status = await (await fetch(app.url + "/__sim/api/status")).json();
   assert.equal(status.format, "enhanced");
-  assert.ok(status.diagnostics.byCode.SERVER_LOGIC_UNSUPPORTED >= 5);
+  assert.ok(status.diagnostics.byCode.Forbidden >= 5);
   assert.equal(status.diagnostics.byCode.DATA_MODEL_ASSUMED, 1);
   const { status: full } = await (await fetch(app.url + "/__sim/api/state?summary=1")).json();
   assert.deepEqual([full.bootstrap.sourceLayout.dialect, full.bootstrap.dataModel, full.bootstrap.dataModelSource], ["short-key-yaml", "enhanced", "assumed"]);
@@ -216,7 +216,7 @@ test("the serverlogic Liquid tag gives its output an unsuccessful result instead
   assert.equal(rendered, "[false|501|]fallback");
 });
 
-test("cloud flows import with their trigger, flow and roles; a trigger call gets the Web API's 501 unless an endpoint mocks it", async (t) => {
+test("cloud flows import with their trigger, flow and roles; source operations deny anonymous callers and explicit endpoints can mock them", async (t) => {
   const portal = await importPortal(SITE);
   assert.deepEqual(portal.cloudFlows.map((flow) => [flow.name, flow.path, flow.processId, flow.roleIds]), [["Request Callback", `/_api/cloudflow/v1.0/trigger/${g(82)}`, g(82), [ID.roleAuth]]]);
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-cloud-flow-"));
@@ -226,7 +226,7 @@ test("cloud flows import with their trigger, flow and roles; a trigger call gets
   const token = /value="([^"]+)"/.exec(await (await fetch(app.url + "/_layout/tokenhtml")).text())[1];
   const trigger = () => fetch(`${app.url}/_api/cloudflow/v1.0/trigger/${g(82)}`, { method: "POST", headers: { "content-type": "application/json", __requestverificationtoken: token }, body: JSON.stringify({ eventData: "{}" }) });
   const unsupported = await trigger();
-  assert.deepEqual([unsupported.status, (await unsupported.json()).error.code], [501, "NotImplemented"]);
+  assert.deepEqual([unsupported.status, (await unsupported.json()).error.code], [403, "Forbidden"]);
   const { csrf } = await (await fetch(app.url + "/__sim/api/state?summary=1")).json();
   const added = await fetch(app.url + "/__sim/api/endpoints/request-callback", { method: "POST", headers: { "content-type": "application/json", "x-sim-csrf": csrf }, body: JSON.stringify({ path: `/_api/cloudflow/v1.0/trigger/${g(82)}`, method: "POST", status: 202, body: {}, enabled: true }) });
   assert.equal(added.status, 201);

@@ -87,7 +87,7 @@ export function createPollsDrop(portal, { now = new Date() } = {}) {
   const pollAccepted = (record) => isActive(record) && inWindow(record);
   const pollDrop = (record) => {
     const id = guidOf(record.id);
-    // Options follow adx_displayorder (reference-portal lists "Yes" (1) before "No" (2) where the export lists
+    // Options follow adx_displayorder (the platform lists "Yes" (1) before "No" (2) where the export lists
     // No first); options without a display order keep the export order after the ordered ones.
     const related = options
       .filter((option) => guidOf(fieldOf(option, "pollid")) === id)

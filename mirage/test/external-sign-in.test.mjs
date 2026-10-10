@@ -17,9 +17,6 @@ import {
 } from "../lib/external-login.mjs";
 import { startIdentityProvider } from "../lib/identity-provider.mjs";
 
-// External sign-in (lib/external-login.mjs, lib/identity-provider.mjs, lib/sign-in-flow.mjs;
-// docs/sim-administration.md "External sign-in"). The chain follows sandbox's capture
-// (docs/runtime-evidence.md).
 
 const AUTHORITY = "https://idp.example.test/local/";
 const TENANT = "https://login.windows.net/0f0f0f0f-1111-4222-8333-444444444444/";
@@ -415,7 +412,6 @@ test("the portal's provider form runs the platform chain: ExternalLogin, the pro
   assert.equal(local.status, 400);
   assert.match(await text(local), /Local sign-in is turned off for this site/);
 
-  // ExternalLogin answers 302 to the provider's authorize endpoint with sandbox's parameters.
   const challenge = await startSignIn(browser, { returnUrl: "/members/#top" });
   assert.equal(challenge.headers.get("x-sim-route"), "external-login");
   const authorize = new URL(challenge.headers.get("location"));
@@ -694,7 +690,6 @@ test("LoginButtonAuthenticationType sends the sign-in page to its provider; LogO
   const back = await browser.request(endSession.href);
   assert.equal(back.status, 302);
   assert.equal(back.headers.get("location"), `${app.url}/_sim/#access`);
-  // Anonymous LogOff goes to the sign-in path (sandbox).
   const anonymous = await browser.request("/Account/Login/LogOff?returnUrl=%2F");
   assert.equal(anonymous.headers.get("location"), "/signin?ReturnUrl=%2FAccount%2FLogin%2FLogOff");
   // A configured PostLogoutRedirectUri is followed on the local origin.

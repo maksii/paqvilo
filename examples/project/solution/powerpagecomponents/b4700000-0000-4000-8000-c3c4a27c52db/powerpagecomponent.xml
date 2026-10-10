@@ -1,0 +1,11 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-c3c4a27c52db">
+  <content>{"append":false,"appendto":false,"create":false,"delete":false,"entitylogicalname":"account","entityname":"Account anonymous read","read":true,"scope":756150000,"write":false,"adx_entitypermission_webrole":["b4700000-0000-4000-8000-a5196d1c327f"]}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Account anonymous read</name>
+  <powerpagecomponenttype>18</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

@@ -3,8 +3,42 @@ import assert from 'node:assert/strict';
 import {DataStore} from '../lib/data.mjs';
 import {renderComponent} from '../lib/platform.mjs';
 import {deletePortalSubgridRecord,subgridActionUrl} from '../lib/subgrid-actions.mjs';
-import {subgridModel,gridData} from '../lib/native-services.mjs';
+import {subgridModel,gridData,formCells} from '../lib/native-services.mjs';
 import {model,simulatorFixture,parentId,pendingId,acceptedId,foreignId} from './fixtures/subgrid.mjs';
+
+test('configured native dataset PCF is diagnosed rather than silently presented as a supported native grid', async () => {
+  const {portal,schemas,state}=model(),store=await new DataStore({state}).init(),diagnostics=[];
+  portal.records[0].adx_type=100000003;
+  portal.records[0].kind='basicformmetadata';
+  portal.records[0].adx_controlstyle=756150001;
+  const context={request:{url:'http://localhost/?id='+parentId,params:{id:parentId}},user:state.simulator.identity};
+  const html=await renderComponent('entityform','Parent',context,{portal,store,schemas,diagnostic:entry=>diagnostics.push(entry)});
+  assert.match(html,/hosted relationship binding is not implemented locally/);
+  assert.ok(diagnostics.some(entry=>entry.code==='PCF_NATIVE_DATASET_UNSUPPORTED'));
+  assert.match(html,/data-ref-id="11111111-1111-1111-1111-111111111111"/);
+  portal.lists=[{id:'children-list',name:'Children list',entityName:'child',metadata:{adx_iscodecomponent:true}}];
+  schemas['children-list']={entity:'child',fields:[{name:'name'}]};
+  const list=await renderComponent('entitylist','Children list',{...context,key:'Children list'},{portal,store,schemas,args:{key:'Children list'},diagnostic:entry=>diagnostics.push(entry)});
+  assert.match(list.html,/hosted list binding is not implemented locally/);
+  assert.ok(diagnostics.some(entry=>entry.component==='entitylist'&&entry.code==='PCF_NATIVE_DATASET_UNSUPPORTED'));
+});
+
+test('subgrid quick search derives from the exported form control and filters related rows only', async () => {
+  const {portal,schemas,state}=model();
+  const cell=formCells(schemas.parent).find(cell=>cell.id==='Children');
+  cell.searchEnabled=true;cell.recordsPerPage=4;
+  const store=await new DataStore({state}).init(),identity=state.simulator.identity;
+  const html=await renderComponent('entityform','Parent',{request:{url:'http://localhost/?id='+parentId,params:{id:parentId}},user:identity},{portal,store,schemas});
+  const start=html.indexOf('class="entity-grid subgrid');
+  const [layout]=JSON.parse(Buffer.from(/data-view-layouts="([^"]*)"/.exec(html.slice(start))[1],'base64').toString('utf8'));
+  assert.equal(layout.Configuration.Search.Enabled,true);
+  assert.equal(layout.Configuration.PageSize,4);
+  const grid=subgridModel({portal,schemas,metadata:{},store,kind:'entityform',formId:'parent',gridId:'Children'});
+  const data=await gridData(grid,{page:1,pageSize:4,search:'Pend'},{portal,store,readProvider:store,identity,metadata:{},config:{mode:'local'},secure:{t:'subgrid',parent:parentId,view:grid.views[0].id}});
+  assert.deepEqual(data.Records.map(record=>record.Id),[pendingId]);
+  cell.searchEnabled=false;
+  assert.equal(subgridModel({portal,schemas,metadata:{},store,kind:'entityform',formId:'parent',gridId:'Children'}).search.enabled,false);
+});
 import {signInHeaders} from '../testing/session.mjs';
 
 test('exported grid redirects, labels and row filters retain source actions and declared permissions',async()=>{

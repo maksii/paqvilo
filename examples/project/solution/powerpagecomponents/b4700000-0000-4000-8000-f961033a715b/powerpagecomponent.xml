@@ -1,0 +1,12 @@
+<powerpagecomponent powerpagecomponentid="b4700000-0000-4000-8000-f961033a715b">
+  <content>{"adx_serverlogic_adx_webrole":["b4700000-0000-4000-8000-2b18ee4c8b18"],"display_name":"Account summary","description":"Paqvilo demo server operation"}</content>
+  <filecontent mimetype="application/octet-stream">paqvilo-account-summary.sl</filecontent>
+  <iscustomizable>1</iscustomizable>
+  <name>paqvilo-account-summary</name>
+  <powerpagecomponenttype>35</powerpagecomponenttype>
+  <powerpagesiteid>
+    <powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid>
+  </powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

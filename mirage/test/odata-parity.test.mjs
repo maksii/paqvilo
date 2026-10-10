@@ -194,7 +194,7 @@ test("route, Prefer and annotation helpers follow the OData conventions", () => 
   assert.equal(annotationMatcher("*")("anything"), true);
 });
 
-test("error envelope uses the Power Pages codes observed on sandbox and optional innererror", () => {
+test("error envelope uses the local Power Pages error-code contract and optional innererror", () => {
   const cds = webApiErrorResponse(new DataError("Too long", 400, "StringLengthExceeded", { innerCode: "0x80044331" }), { innerError: true });
   assert.deepEqual(cds.body, {
     error: { code: "9004010D", message: "CDS error occurred.", innererror: { code: "0x80044331", message: "Too long" } },
@@ -234,13 +234,11 @@ test("collection reads return row versions, primary keys, lookup properties and 
   const { json } = await start(t);
   const { status, body, headers, url } = await json("/_api/accounts?$select=name,revenue,industrycode,_primarycontactid_value,statecode,createdon&$filter=accountid eq " + G(1));
   assert.equal(status, 200);
-  // sandbox headers: no OData-Version or Preference-Applied; no-cache; SAMEORIGIN.
   assert.equal(headers.get("odata-version"), null);
   assert.equal(headers.get("cache-control"), "no-cache");
   assert.equal(headers.get("x-frame-options"), "SAMEORIGIN");
   assert.equal(headers.get("x-content-type-options"), "nosniff");
   assert.equal(headers.get("content-security-policy"), null, "no site policy, no header");
-  // sandbox collections carry the context and the CRM count annotations.
   assert.equal(body["@odata.context"], `${url}/_api/$metadata#accounts(name,revenue,industrycode,_primarycontactid_value,statecode,createdon)`);
   assert.equal(body["@Microsoft.Dynamics.CRM.totalrecordcount"], -1);
   assert.equal(body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"], false);
@@ -275,8 +273,6 @@ test("collection reads return row versions, primary keys, lookup properties and 
 
 test("select-less collection reads are refused; select-less record reads return the allow-listed columns", async (t) => {
   const { json } = await start(t);
-  // sandbox: a collection read without $select names the first column (in
-  // property-name order) outside Webapi/<table>/fields.
   const collection = await json("/_api/contacts");
   assert.equal(collection.status, 403);
   assert.deepEqual(collection.body.error, { code: "90040101", message: "Attribute secretnote in table contact is not enabled for Web Api." });
@@ -309,11 +305,6 @@ test("$filter grammar: logical, string, lambda and Dataverse functions; unknown 
     `/_api/validationconfigurations?$select=formname&$filter=${encodeURIComponent("formname eq 'Product-RW' and statecode eq 0 and isenabled eq true and processtype eq 100000000")}`,
   );
   assert.deepEqual(configurations.body.value.map((row) => row.formname), ["Product-RW"]);
-  // Malformed queries answer 400 9004010A with a generic message on sandbox:
-  // an unknown identifier (a script that interpolated `undefined`), an
-  // unknown column, a lookup logical name in $select, $expand of a column and
-  // a path through a non-navigation property. Real but disallowed columns
-  // stay 403 90040101.
   const malformed = [
     `/_api/validationconfigurations?$select=formname&$filter=${encodeURIComponent("processtype eq undefined")}`,
     "/_api/accounts?$select=nosuchcolumn",
@@ -343,7 +334,7 @@ test("$top, $count (capped at 5000), odata.maxpagesize paging and the $skip rest
   const counted = await json("/_api/tags?$select=name&$count=true", { headers: { Prefer: "odata.maxpagesize=2" } });
   assert.equal(counted.body["@odata.count"], 5000);
   assert.equal(counted.body.value.length, 2);
-  assert.equal(counted.headers.get("preference-applied"), null, "sandbox sends no Preference-Applied header");
+  assert.equal(counted.headers.get("preference-applied"), null, "the local response omits Preference-Applied");
   assert.match(counted.body["@odata.nextLink"], /\$skiptoken=/);
   const annotated = await json("/_api/tags?$select=name&$count=true&$top=1", {
     headers: { Prefer: 'odata.include-annotations="Microsoft.Dynamics.CRM.totalrecordcount,Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"' },
@@ -483,10 +474,6 @@ test("innererror is omitted unless Webapi/error/innererror is true", async (t) =
   assert.deepEqual(Object.keys(response.body.error).sort(), ["code", "message"]);
 });
 
-// Third sandbox and Example commondev (8 October 2026) send innererror {code, message, type}
-// with every error, code and message repeating the outer error; the type constants are
-// observed (G probes, wave4-analysis.json). Sample sandbox sends none with the same errors
-// (the default scope).
 const ALL_ERRORS = { webApiInnerError: "all-errors", evidence: "synthetic: every error carries innererror" };
 
 test("observed webApiInnerError all-errors adds innererror to every error envelope", async (t) => {
@@ -557,12 +544,10 @@ const anonymousState = (permissions) => {
 };
 
 test("the table permission check precedes the select requirement of a collection read", async (t) => {
-  // Third live: an anonymous select-less read without read permission answers 90040120.
   const denied = await start(t, { state: anonymousState([]) });
   const select = await denied.json("/_api/contacts?$top=1");
   assert.equal(select.status, 403);
   assert.deepEqual(select.body.error, { code: "90040120", message: "You don't have permission to read the contact table." });
-  // With read permission the select requirement applies (Sample sandbox: 90040101).
   const granted = await start(t, {
     state: anonymousState([{ id: "public-contacts", entity: "contact", scope: "global", roles: ["Anonymous Users"], operations: ["read"] }]),
   });
@@ -573,8 +558,6 @@ test("the table permission check precedes the select requirement of a collection
 });
 
 test("Web API responses carry the site's HTTP/* headers and X-Content-Type-Options nosniff", async (t) => {
-  // sandbox (anonymous /_api read): the site Content-Security-Policy, X-Frame-Options and
-  // nosniff although the site defines no HTTP/X-Content-Type-Options setting.
   const policy = "default-src 'self'; object-src 'none'; connect-src 'self' https://*.example.org";
   const { call } = await start(t, {
     settings: {
@@ -601,8 +584,6 @@ test("Web API responses carry the site's HTTP/* headers and X-Content-Type-Optio
 });
 
 test("Self, Contact and Account grants give anonymous visitors no read permission", async (t) => {
-  // sandbox: a Self grant on the Anonymous Users role still answers 403 90040120 to an
-  // anonymous contacts read; such scopes need a signed-in contact.
   const denied = "You don't have permission to read the contact table.";
   for (const scope of ["self", "contact", "account"]) {
     const { json } = await start(t, {
@@ -645,8 +626,6 @@ test("the OData v3 key form guid'…' is rejected while parsing the URL, before 
     (error) => error.status === 400 && error.code === "UnsupportedKeySyntax",
   );
   assert.throws(() => parseWebApiRoute(`/_api/accounts(${G(1)})/account_tags(guid'${G(21)}')/$ref`), (error) => error.status === 400);
-  // Example commondev: contacts(guid'…') 400 9004010A, contacts(<guid>) 403 90040120 for
-  // an anonymous visitor (G probes, wave4-analysis.json).
   const { json } = await start(t, { state: anonymousState([]), observed: ALL_ERRORS });
   const unexpected = "An unexpected error occurred while processing the request";
   const v3 = await json(`/_api/contacts(guid'${G(11)}')?$select=contactid`);
@@ -761,8 +740,6 @@ test("anti-forgery tokens, disabled tables, configuration tables, entity set nam
     assert.deepEqual(unknown.body.error, { code: "9004010A", message: "An unexpected error occurred while processing the request" }, route);
     assert.equal(unknown.headers.get("x-sim-error-code"), "UnknownEntitySet", route);
   }
-  // Power Pages tables every environment has answer like a known table that isn't
-  // enabled (Sample sandbox: /_api/mspp_webpages, 404 9004010C naming the logical name).
   const virtualTable = await json("/_api/mspp_webpages");
   assert.equal(virtualTable.status, 404);
   assert.deepEqual(virtualTable.body.error, { code: "9004010C", message: "Resource not found for the segment mspp_webpage." });
@@ -817,11 +794,9 @@ test("FetchXML link-entity tables need read permission; lookup names don't depen
   state.permissions = [{ id: "accounts", entity: "account", scope: "global", roles: ["Reader"], operations: ["read"] }];
   state.simulator.identity = { id: G(11), roles: ["Reader"] };
   const { json } = await start(t, { state });
-  // sandbox: reference terms carry their list name although lists are denied.
   const named = await json(`/_api/accounts?$select=name,_primarycontactid_value&$filter=accountid eq ${G(1)}`);
   assert.equal(named.status, 200);
   assert.equal(named.body.value[0][`_primarycontactid_value${FORMATTED}`], "Ada Lovelace");
-  // sandbox: 403 90040120 when a joined table has no read permission.
   const xml = '<fetch><entity name="account"><attribute name="name"/><link-entity name="contact" from="contactid" to="primarycontactid" alias="c"><attribute name="fullname"/></link-entity></entity></fetch>';
   const joined = await json(`/_api/accounts?fetchXml=${encodeURIComponent(xml)}`);
   assert.equal(joined.status, 403);
@@ -831,9 +806,6 @@ test("FetchXML link-entity tables need read permission; lookup names don't depen
 });
 
 test("$expand and navigation reads need read permission on the related table", async (t) => {
-  // sandbox: an anonymous $expand of a lookup to an unreadable table answers 403 90040120
-  // naming that table (export sets Webapi/SkipRelatedTablePermissions; G probe
-  // b-settings-sample-skip-related-expand.json).
   const state = fixture();
   state.settings = { permissionMode: "enforce" };
   state.permissions = [{ id: "accounts", entity: "account", scope: "global", roles: ["Reader"], operations: ["read"] }];

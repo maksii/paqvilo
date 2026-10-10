@@ -1,0 +1,8 @@
+adx_CloudFlowConsumer_adx_webrole:
+- b4700000-0000-4000-8000-2b18ee4c8b18
+adx_cloudflowconsumerid: b4700000-0000-4000-8000-e2308da213f0
+adx_flowapiurl: /_api/cloudflow/v1.0/trigger/b4700000-0000-4000-8000-ce1f8f984154
+adx_flowtriggerurl: ''
+adx_metadata: ''
+adx_name: Example Location
+adx_processid: b4700000-0000-4000-8000-ce1f8f984154

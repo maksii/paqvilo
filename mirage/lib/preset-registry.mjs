@@ -146,6 +146,14 @@ export function validatePack(pack, source = "data pack") {
   const operators = dataProperty(pack, "expressionOperators")?.value;
   if (operators !== undefined && (!operators || typeof operators !== "object" || Array.isArray(operators) || Object.values(operators).some((value) => typeof value !== "function")))
     fail("expressionOperators must be an object of functions");
+  for (const kind of ['serverLogics', 'cloudFlows']) {
+    const entries = dataProperty(pack, kind)?.value;
+    if (entries !== undefined && (!entries || typeof entries !== 'object' || Array.isArray(entries) || Object.entries(entries).some(([name, handler]) => !name.trim() || typeof handler !== 'function')))
+      fail(`${kind} must map exported names to functions`);
+  }
+  const pluginSteps = dataProperty(pack, 'pluginSteps')?.value;
+  if (pluginSteps !== undefined && (!pluginSteps || typeof pluginSteps !== 'object' || Array.isArray(pluginSteps) || Object.entries(pluginSteps).some(([id, handler]) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction')))
+    fail('pluginSteps must map exported step IDs to synchronous functions');
   try {
     validateEndpoints(pack.id, dataProperty(pack, "endpoints")?.value);
   } catch (error) {

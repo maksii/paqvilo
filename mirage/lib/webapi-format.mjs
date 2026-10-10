@@ -50,7 +50,7 @@ export function createWebApiFormatter({ store, identity = {}, metadata, formatti
   const names = new Map();
   /**
    * Lookup FormattedValue is the lookup's own name column, so it is returned
-   * even when the caller can't read the related table (reference-portal: anonymous
+   * even when the caller can't read the related table (the platform: anonymous
    * reference terms carry their list name although lists are denied).
    */
   const targetName = (logical, id, fallback) => {

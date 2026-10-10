@@ -166,7 +166,7 @@ test("layout pages carry the native chrome around the header, content and footer
       at = next;
     }
   };
-  // sandbox (live-run9): offline bar, header, empty anti-forgery holder, the body-start
+  // Local shell contract: offline bar, header, empty anti-forgery holder, the body-start
   // platform bundles, content, pcf-loader, native-controls root, controls host, footer (before
   // the authored cookie banner), then the after-footer bundles.
   order(home, ['<div id="offlineNotificationBar" class="displayNone">', '<header class="site-header">', '<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', "/client-telemetry.bundle-", "/preform.moment_2_29_4.bundle-", "/pcf-extended.bundle-", "<p>Home</p>", "/pcf-loader.bundle-", '<div id="pp-native-controls-react-root"></div>', "/controls/host/main.", '<footer class="site-footer">', '<div id="cookie-banner">', "/bootstrap.bundle-", "/postpreform.bundle-", "/app.bundle-", "/default-1033.moment_2_29_4.bundle-"]);
@@ -333,7 +333,7 @@ test("classic workflow execution reports its local limitation and Bootstrap glyp
   }
 });
 
-// The 17 platform bundles in live document order (Sample live-run9; Third and Example page-shell runs).
+// The 17 platform bundles in the default shell order.
 const BOOTSTRAP3_BUNDLES = [
   "dist/font-awesome.bundle-3d8a58a48f.css",
   "dist/preform.bundle-b72a6ea21d.css",
@@ -374,9 +374,6 @@ test("platform bundles follow the live order per Bootstrap build; a captured she
     "postpreform.BootstrapV5.bundle-1e48131190.js",
     "app.BootstrapV5.bundle-4299f393fc.js",
   ]);
-  // A captured shell (Second sandbox ran an earlier build) keeps its names; the ResourceManager
-  // and the bundles leave the captured lists, the stylesheets before the first platform
-  // stylesheet fill the Bootstrap slot.
   const captured = platformShell({
     websiteId: SITE,
     profile: {

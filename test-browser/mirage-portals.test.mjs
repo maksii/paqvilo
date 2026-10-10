@@ -134,11 +134,18 @@ test('local Mirage portals and live targets share one browser: the selector swit
   await choose(1, enhancedApp.url);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
 
-  // And out to the live target: an overlay session (no Mirage tabs), then back again.
+  // And out to the live target: Inspect keeps source navigation, while Mirage Tweaks stay local.
   await choose(2, live.origin);
   await page.locator('#live').waitFor();
   await page.waitForFunction(() => document.getElementById('paqvilo-panel')?.dataset.label === 'classic @ dev');
-  assert.equal(await panel('.tabs [data-act="tab"][data-v="runtime"]').count(), 0, 'live targets use the overlay panel');
+  await openTab('runtime');
+  assert.equal(await panel('.tabs [data-act="tab"][data-v="runtime"]').count(), 1, 'live targets retain source inspection');
+  assert.equal(await panel('.tabs [data-act="tab"][data-v="tweaks"]').count(), 0, 'live targets cannot change Mirage personas or scenarios');
+  await panel('.card').getByText('Live portal · local source inspection', { exact: true }).waitFor();
+  await panel('[data-group="runtime-page-sources"] .row').filter({ hasText: 'Home.en-US.webpage.custom_css.css' }).waitFor();
+  assert.equal(await panel('.card').getByText('Live access', { exact: true }).count(), 1);
+  assert.equal(await panel('.card').getByText('allowed', { exact: true }).count(), 0, 'source inspection cannot infer effective live access');
+  assert.equal(live.requests.some((route) => /^\/(?:_sim|__sim)\//.test(route)), false, 'live Inspect never probes Mirage administration on the portal');
   await choose(0, classicApp.url);
   assert.equal(await label(), 'classic Mirage @ local');
   assert.deepEqual(errors, []);

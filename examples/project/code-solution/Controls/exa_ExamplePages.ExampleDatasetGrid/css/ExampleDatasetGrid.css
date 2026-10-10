@@ -1,0 +1,3 @@
+.example-dataset-grid table { border-collapse: collapse; width: 100%; }
+.example-dataset-grid th, .example-dataset-grid td { border: 1px solid #ccc; padding: 0.25rem 0.5rem; text-align: left; }
+.example-dataset-grid button { margin-right: 0.5rem; }

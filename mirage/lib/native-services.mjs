@@ -1,5 +1,6 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
+import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
 import { normalizePortalPath, portalField } from "./importer.mjs";
@@ -17,8 +18,8 @@ import {
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
- * annotation services. Contracts follow live reference-portal observations (see
- * docs/forms-lists-parity.md): POST bodies use camelCase, responses PascalCase,
+ * annotation services. Local contracts are documented in
+ * docs/forms-lists-parity.md: POST bodies use camelCase, responses PascalCase,
  * the anti-forgery header is __RequestVerificationToken and the opaque
  * Base64SecureConfiguration is issued by the server and verified here.
  */
@@ -691,7 +692,11 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
       Number(settings?.PageSize ?? cell.recordsPerPage ?? 0) ||
       Number(portalField(portal.settings ?? {}, "Grid/PageSize", 0)) ||
       10,
-    search: { enabled: false },
+    search: {
+      enabled: cell.searchEnabled === true,
+      placeholder: 'Search',
+      tooltip: 'To search on partial text, use the asterisk (*) wildcard character.',
+    },
   };
 }
 
@@ -1337,7 +1342,7 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/css/images/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/close.png", { body: PNG_PIXEL, type: "image/png" }],
 ]);
-// Platform strings that local scripts read (values from the reference-portal en-US ResourceManager).
+// Platform strings that local scripts read (English ResourceManager defaults).
 const RESOURCE_STRINGS = {
   Home_DefaultText: "Home",
   Search_DefaultText: "Search",
@@ -1392,8 +1397,8 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
 // Local equivalents of the platform bundles (lib/platform-manifest.mjs PLATFORM_BUNDLES):
 // the named sources concatenated in order. Library files keep their own licence headers.
 const BUNDLE_SOURCES = {
-  jquery: new URL("../node_modules/jquery/dist/jquery.min.js", import.meta.url),
-  moment: new URL("../node_modules/moment/min/moment.min.js", import.meta.url),
+  jquery: createRequire(import.meta.url).resolve("jquery/dist/jquery.min.js"),
+  moment: createRequire(import.meta.url).resolve("moment/min/moment.min.js"),
 };
 // default-<lcid>.moment bundle: the site language's moment locale (moment ships "en").
 const MOMENT_LOCALE = "(function(){var m=window.moment;if(m&&typeof m.locale==='function'){m.locale((document.documentElement.getAttribute('lang')||'en').toLowerCase());}})();";
@@ -1418,7 +1423,7 @@ async function bundleSource(source) {
   if (source === "moment-locale") return MOMENT_LOCALE;
   if (source.startsWith("provided:")) return `/* Provided by ${source.slice("provided:".length)}. */`;
   const [file, part] = source.split("#");
-  const text = String(await fs.readFile(fileURLToPath(BUNDLE_SOURCES[file] ?? new URL(`./${file}`, import.meta.url))));
+  const text = String(await fs.readFile(BUNDLE_SOURCES[file] ?? new URL(`./${file}`, import.meta.url)));
   if (!part) return text;
   const sections = text.split(/^\/\/ @part (\w+)$/m);
   const index = sections.indexOf(part, 1);

@@ -6,8 +6,7 @@ import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUU
  * "External sign-in"). Each runtime starts one on its own loopback port, cross-origin to
  * the portal like an online provider. Per configured provider it serves, under the
  * provider's local authority http://<host>:<port>/<slug>/, the endpoints the portal uses
- * on reference-portal (capture: docs/runtime-evidence.md): the OpenID
- * Connect discovery document, its signing keys, oauth2/authorize and oauth2/logout; and,
+ * for external sign-in: the OpenID Connect discovery document, its signing keys, oauth2/authorize and oauth2/logout; and,
  * for the authorization code flow (Learn, "Set up an OpenID Connect provider"),
  * oauth2/token (client_secret_post or private_key_jwt, with PKCE) and openid/userinfo.
  *
