@@ -447,7 +447,7 @@ test('async construction preloads stable sources with bounded concurrency and sh
 
 test('async construction retries a source that finishes saving during prefetch', async () => {
   script('form.js', 'original();', 'firstLocal();');
-  const openedFile = fs.realpathSync(sources[0].file);
+  const openedFile = await fs.promises.realpath(sources[0].file);
   const open = fs.promises.open;
   let saved = false;
   fs.promises.open = async (...args) => {
@@ -475,7 +475,7 @@ test('async construction retries a source that finishes saving during prefetch',
 test('async construction revalidates early files after other reads finish', async () => {
   script('first.js', 'firstOriginal();', 'firstLocal();');
   script('second.js', 'secondOriginal();', 'secondLocal();');
-  const openedFiles = sources.map((source) => fs.realpathSync(source.file));
+  const openedFiles = await Promise.all(sources.map((source) => fs.promises.realpath(source.file)));
   const open = fs.promises.open;
   const realpath = fs.promises.realpath;
   let firstClosed = false;
@@ -483,7 +483,7 @@ test('async construction revalidates early files after other reads finish', asyn
   const firstReady = new Promise((resolve) => { releaseFirst = resolve; });
   fs.promises.realpath = async (...args) => {
     const result = await realpath(...args);
-    if (args[0] === sources[0].file && firstClosed) setImmediate(releaseFirst);
+    if ((args[0] === sources[0].file || args[0] === openedFiles[0]) && firstClosed) setImmediate(releaseFirst);
     return result;
   };
   fs.promises.open = async (...args) => {
