@@ -41,9 +41,10 @@ async function setup(online = {}) {
   const call = async (name, body, headers = { 'x-paqvilo-token': token }) => {
     const id = `api${++n}`;
     tab.pause(id, `${ORIGIN}/__paqvilo/api/${name}`, { type: 'Fetch', method: 'POST', headers, postData: JSON.stringify(body ?? {}) });
-    await tick();
+    const deadline = Date.now() + 5_000;
+    while (b.answers(id).length === 0 && Date.now() < deadline) await tick(5);
     const answers = b.answers(id);
-    assert.equal(answers.length, 1);
+    assert.equal(answers.length, 1, 'panel API ' + name + ' must answer once');
     assert.equal(answers[0].method, 'Fetch.fulfillRequest', 'a request of the panel is never sent to the portal');
     return { status: answers[0].responseCode, ...JSON.parse(Buffer.from(answers[0].body, 'base64').toString()) };
   };
