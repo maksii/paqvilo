@@ -4,8 +4,15 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened, edited, ready_for_review]
   workflow_dispatch:
   workflow_call:
+    inputs:
+      ref:
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -19,13 +26,43 @@ env:
   NPM_CONFIG_FUND: 'false'
 
 jobs:
+  changes:
+    name: Change scope and commit convention
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      runtime: ${{ steps.scope.outputs.runtime }}
+      package: ${{ steps.scope.outputs.package }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ inputs.ref || github.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: .node-version
+      - name: Validate the squash commit title
+        if: github.event_name == 'pull_request'
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
+        run: node scripts/conventional-commit.mjs --title
+      - name: Classify changes
+        id: scope
+        env:
+          VALIDATE_ALL: ${{ inputs.ref != '' }}
+        run: node .github/scripts/change-scope.mjs
+
   checks:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true' || needs.changes.outputs.package == 'true'
     name: Static checks and release boundary
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -39,17 +76,24 @@ jobs:
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
       - name: Check module syntax and project boundary
+        if: needs.changes.outputs.runtime == 'true'
         run: npm run check
       - name: Validate distributable files, lockfiles and documentation
         run: npm run release:check
       - name: Audit production dependencies
+        if: needs.changes.outputs.runtime == 'true'
         run: |
           npm audit --audit-level=moderate
           npm audit --prefix mirage --audit-level=moderate
       - name: Verify registry signatures of installed packages
-        run: npm audit signatures
+        if: needs.changes.outputs.runtime == 'true'
+        run: |
+          npm audit signatures
+          npm audit signatures --prefix mirage
 
   test:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Tests (Node ${{ matrix.node }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 45
@@ -61,6 +105,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -106,12 +151,15 @@ jobs:
           retention-days: 14
 
   windows:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Unit tests (Node 24, windows-latest)
     runs-on: windows-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -135,12 +183,15 @@ jobs:
         run: npm --prefix mirage run test
 
   package:
+    needs: changes
+    if: needs.changes.outputs.runtime == 'true'
     name: Package smoke test
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
+          ref: ${{ inputs.ref || github.sha }}
           persist-credentials: false
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
@@ -153,9 +204,7 @@ jobs:
         run: npm ci --ignore-scripts
       # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.
       - name: Prime npm cache for the offline install
-        run: |
-          node -e "const l=require('./npm-shrinkwrap.json');for(const[k,v]of Object.entries(l.packages))if(k&&!v.dev&&!v.link)console.log(k.split('node_modules/').pop()+'@'+v.version)" \
-            | xargs npm cache add
+        run: npm run cache:package
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Install the packed distribution into the example project
@@ -175,13 +224,20 @@ jobs:
   gate:
     name: CI gate
     if: always()
-    needs: [checks, test, windows, package]
+    needs: [changes, checks, test, windows, package]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
       - name: Require every job to succeed
         env:
           RESULTS: ${{ toJSON(needs.*.result) }}
+          SCOPE_RESULT: ${{ needs.changes.result }}
+          RUNTIME: ${{ needs.changes.outputs.runtime }}
+          PACKAGE: ${{ needs.changes.outputs.package }}
+          CHECKS: ${{ needs.checks.result }}
+          TESTS: ${{ needs.test.result }}
+          WINDOWS: ${{ needs.windows.result }}
+          SMOKE: ${{ needs.package.result }}
         run: |
           echo "Job results: $RESULTS"
-          node -e "const r=JSON.parse(process.env.RESULTS);if(r.some(x=>x!=='success'))process.exit(1)"
+          node -e "const e=process.env; const want=(required,result)=>result===(required?'success':'skipped'); if(e.SCOPE_RESULT!=='success'||!want(e.RUNTIME==='true'||e.PACKAGE==='true',e.CHECKS)||[e.TESTS,e.WINDOWS,e.SMOKE].some(r=>!want(e.RUNTIME==='true',r)))process.exit(1)"
