@@ -5,6 +5,7 @@ import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/im
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
 import { loadProjectConfig } from '../mirage/lib/project-config.mjs';
 import { inspectPage } from '../mirage/lib/page-resources.mjs';
+import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
 import { importCodeComponents } from '../mirage/lib/code-components.mjs';
 
@@ -342,7 +343,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       } catch {}
     }
   }
-  const body = sourceBodies.join('\n');
+  const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
   report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
@@ -394,7 +395,13 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   report.logic = [
     ...(portal.serverLogics ?? []).filter((row) => body.includes(row.name)).map((row) => ({ ...row, sourceFile: row.file, kind: 'server-logic', evidence: 'static-reference' })),
     ...(portal.cloudFlows ?? []).filter((row) => row.path && body.includes(row.path) || row.processId && body.toLowerCase().includes(row.processId.toLowerCase())).map((row) => ({ ...row, sourceFile: portal.records.find((record) => norm(record.id) === norm(row.id))?._file, kind: 'cloud-flow', evidence: 'static-reference' })),
+    ...(metadata.plugins?.steps ?? []).filter(step => needed.has(step.entity)).map(step => ({
+      ...step, kind: 'plugin-step', evidence: 'exported-table-registration', effective: 'unknown',
+      description: `${step.entity} ${step.message ?? 'Unknown message'} · ${step.stageName} · rank ${step.rank ?? 'unknown'} · ${step.mode === 0 ? 'synchronous' : step.mode === 1 ? 'asynchronous' : 'unknown execution mode'}${step.filteringAttributes.length ? ` · input attributes: ${step.filteringAttributes.join(', ')}` : ''} · ${step.enabled ? 'export enabled' : 'export disabled'} · live execution unknown`,
+      sources: [{ name: step.typeName ?? 'Unresolved plugin type', kind: 'plugin-type', sourceFile: step.typeSourceFile }, { name: step.assemblyName ?? 'Unresolved plugin assembly', kind: 'plugin-assembly', sourceFile: step.assemblySourceFile }, ...(step.codeSourceFile ? [{ name: step.typeName, kind: 'plugin-code', sourceFile: step.codeSourceFile, evidence: step.codeSourceEvidence }] : [])],
+    })),
   ];
+  report.pluginInventory = { assemblies: metadata.plugins?.assemblies?.length ?? 0, types: metadata.plugins?.types?.length ?? 0, steps: metadata.plugins?.steps?.length ?? 0, applicable: report.logic.filter(item => item.kind === 'plugin-step').length, effective: 'unknown' };
   return report;
 }
 
@@ -414,7 +421,7 @@ export function createSourceInspector(cfg) {
         const chosenSnippets = new Map();
         for (const record of imported.records.filter((row) => row.kind === 'contentsnippet' && Number(portalField(row, 'statecode', 0)) !== 1).sort((a, b) => Number(norm(portalField(a, 'contentsnippetlanguageid')) === selectedLanguage) - Number(norm(portalField(b, 'contentsnippetlanguageid')) === selectedLanguage))) chosenSnippets.set(record.name?.toLowerCase(), record);
         const portal = { ...imported, records: [...chosenSnippets.values(), ...imported.records.filter((row) => row.kind !== 'contentsnippet')] };
-        const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { portal, lcid, order: sources.order }) : {};
+        const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { portal, lcid, order: sources.order, observed: sources.observed }) : {};
         const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
         return { portal, metadata, codeCatalogue };
       })());
@@ -432,6 +439,10 @@ export function createSourceInspector(cfg) {
   })().catch((error) => { loading = null; throw error; });
   return {
     invalidate() { loading = null; },
+    async pluginSourceRoots(route) {
+      const { select } = await load();
+      return (await select(route)).metadata.plugins?.sourceRoots ?? [];
+    },
     async enrich(report, rendered = {}) {
       const { sources, select } = await load();
       const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
@@ -445,7 +456,7 @@ export function createSourceInspector(cfg) {
       if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };
       await enrichInspection(report, portal, { metadata, rendered, live: true, observed: sources.observed, codeCatalogue });
       report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
-      return { report, roots: [sources.sourceDir, ...sources.roots], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };
+      return { report, roots: [sources.sourceDir, ...sources.roots, ...(metadata.plugins?.sourceRoots ?? [])], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };
     },
   };
 }

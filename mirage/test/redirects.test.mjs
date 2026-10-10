@@ -116,7 +116,6 @@ test("unresolved paths follow redirects and the canonical slash before Page Not 
   assert.equal(route("/PROMO?x=1").location, "https://example.test/promo");
   assert.equal(route("/PROMO?x=1").status, 302);
   assert.equal(route("/promo?x=2").kind, "render");
-  // A trailing slash on the requested path is ignored (sandbox: /x/ follows the redirect "x").
   assert.equal(route("/go/").location, "/secure/");
   assert.equal(route("/promo/?x=1").location, "https://example.test/promo");
   assert.equal(route("/area").location, "/secure/");
@@ -127,7 +126,6 @@ test("unresolved paths follow redirects and the canonical slash before Page Not 
   assert.equal(route("/new-name?tab=2").status, 301);
   assert.equal(route("/secure", { readable: () => false }).status, 302);
   assert.equal(route("/secure", { readable: () => false }).location, "/secure/");
-  // URL history is not applied by default (sandbox answers 404) ...
   assert.equal(route("/old-name").status, 404);
   // ... and follows adx_urlhistory, also with a trailing slash or a child segment, when enabled.
   for (const [target, location] of [["/old-name", "/new-name/"], ["/old-name/", "/new-name/"], ["/old-name/child/", "/new-name/child/"]]) {
@@ -169,7 +167,7 @@ test("denied pages redirect anonymous visitors to the absolute language sign-in 
   assert.equal(deniedPageRoute(portal, url, { id: "person" }, {}).page.id, "notfound");
 });
 
-test("language prefixes and the Knowledge Article site-marker route resolve as on sandbox", async (t) => {
+test("language prefixes and the Knowledge Article site-marker route follow the configured local contract", async (t) => {
   const portal = await importPortal(await exportDir(t));
   const at = (target) => new URL(target, "http://local.invalid");
   // Website language codes are removed with a 302 (query kept); unknown codes are ordinary segments.
@@ -180,8 +178,6 @@ test("language prefixes and the Knowledge Article site-marker route resolve as o
   assert.equal(languageRoute(portal, at("/EN-us")).location, "/");
   assert.equal(languageRoute(portal, at("/fr-FR/secure/")), null);
   assert.equal(languageRoute(portal, at("/secure/")), null);
-  // /{code}/signin follows the same rule: live Second and Third answer it with a second 302
-  // (relative Location) to the sign-in path without the code, keeping the query.
   assert.deepEqual(
     (({ kind, status, location }) => ({ kind, status, location }))(languageRoute(portal, at("/en-US/signin?returnurl=%2Fsecure%2F"))),
     { kind: "redirect", status: 302, location: "/signin?returnurl=%2Fsecure%2F" },
@@ -256,8 +252,6 @@ test("a configured LoginPath is the sign-in path: its casing in both hops, its p
 });
 
 test("an observed sign-in path applies when the export sets no LoginPath; an exported LoginPath wins", async (t) => {
-  // Third and Example sandbox answer /SignIn without the setting while Sample sandbox answers /signin:
-  // the casing is a per-site observation with its evidence, never a name-based rule.
   const observed = { loginPath: "/SignIn", evidence: "docs/runtime-evidence.md" };
   const dir = await exportDir(t);
   const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, observed });
@@ -283,8 +277,8 @@ test("an observed sign-in path applies when the export sets no LoginPath; an exp
   assert.deepEqual(unset.diagnostics.filter((d) => d.code.startsWith("LOGIN_PATH_")).map((d) => d.code), ["LOGIN_PATH_OBSERVED"]);
   assert.deepEqual(signInPath(await importPortal(await exportDir(t))), { path: "/signin", source: "default" });
   // Other observations attach to the portal without sign-in diagnostics.
-  const webApi = applyObserved(await importPortal(await exportDir(t)), { webApiInnerError: "all-errors", evidence: "third-sandbox/report.json" });
-  assert.deepEqual(webApi.observed, { webApiInnerError: "all-errors", evidence: "third-sandbox/report.json" });
+  const webApi = applyObserved(await importPortal(await exportDir(t)), { webApiInnerError: "all-errors", evidence: "fixture/reports/inner-errors.json" });
+  assert.deepEqual(webApi.observed, { webApiInnerError: "all-errors", evidence: "fixture/reports/inner-errors.json" });
   assert.equal(webApi.diagnostics.some((d) => d.code.startsWith("LOGIN_PATH_")), false);
   assert.deepEqual(signInPath(webApi), { path: "/signin", source: "default" });
   assert.equal(applyObserved(await importPortal(await exportDir(t)), { evidence: "nothing observed" }).observed, undefined);
@@ -309,8 +303,6 @@ test("the runtime renders Page Not Found (404), Access Denied (403), sign-in red
   assert.match(anonymous.headers.get("content-type"), /^text\/html/);
   assert.match(await anonymous.text(), /<title>Access Denied<\/title>/);
   assert.equal((await get("/secure/doc.txt")).headers.get("location"), app.url + "/en-US/signin?ReturnUrl=%2Fsecure%2Fdoc.txt");
-  // /en-US/signin: a second 302 with a relative Location to the code-less sign-in path,
-  // as live Second and Third answer (MultiLanguage/DisplayLanguageCodeInURL is not true).
   const languageSignIn = await get("/en-US/signin?ReturnUrl=%2Fsecure%2F");
   assert.equal(languageSignIn.status, 302);
   assert.equal(languageSignIn.headers.get("location"), "/signin?ReturnUrl=%2Fsecure%2F");
@@ -500,8 +492,6 @@ test("web files are served inline or as attachments from their Content-Dispositi
 });
 
 test("headers follow the response kind: pages, web files and the token fragment, with observed headers per kind", async (t) => {
-  // Sample sandbox sends nosniff on pages and web files and Access-Control-Allow-Origin on web
-  // files without exporting either setting; the site records them as observed headers.
   const observed = {
     headers: {
       page: { "X-Content-Type-Options": "nosniff" },
@@ -526,9 +516,6 @@ test("headers follow the response kind: pages, web files and the token fragment,
   });
   const file = pick(await get("/site.css"), names);
   assert.deepEqual([file["x-content-type-options"], file["access-control-allow-origin"], file["x-frame-options"]], ["nosniff", "https://app.powerbi.com", "SAMEORIGIN"]);
-  // /_layout/tokenhtml carries the page headers: site CSP, X-Frame-Options and the observed
-  // page headers (G/wave3 headers-tokenhtml-anon lists content-security-policy and
-  // x-content-type-options among the live header names).
   assert.deepEqual(pick(await get("/_layout/tokenhtml"), names), {
     "cache-control": "no-cache, no-store, must-revalidate",
     "x-frame-options": "SAMEORIGIN",

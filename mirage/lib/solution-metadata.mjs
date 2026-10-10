@@ -15,6 +15,7 @@ import {
   tableFields,
 } from "./solution-schema.mjs";
 import { mapLimit } from "./solution-cache.mjs";
+import { importSolutionPlugins, resolvePluginSourceFiles } from './exported-plugins.mjs';
 
 export { parseSolutionXml, descendants };
 
@@ -116,7 +117,7 @@ export function portalMetadataEntities(portal) {
  */
 export async function importSolutionMetadata(
   roots,
-  { entities, portal, lcid = 1033, scan, schema, cache, cacheFile, order = "explicit" } = {},
+  { entities, portal, lcid = 1033, scan, schema, cache, cacheFile, order = "explicit", observed } = {},
 ) {
   if (portal && !entities) entities = portalMetadataEntities(portal);
   roots = Array.isArray(roots) ? roots : [roots];
@@ -229,12 +230,16 @@ export async function importSolutionMetadata(
     }
     return [...map.values()];
   };
+  const plugins = await resolvePluginSourceFiles(importSolutionPlugins(scan.layers, { sdkMessages: observed?.sdkMessages }), observed?.pluginSources, portal?.sourceDir);
+  fingerprint.update(plugins.fingerprint);
+  diagnostics.push(...plugins.diagnostics);
   const metadata = {
     roots: scan.inputs.filter((input) => !["missing", "unsupported"].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,
     forms: dedupe(forms, "form"),
     views: dedupe(views, "view"),
+    plugins,
     diagnostics,
     filesRead: candidates.length,
     fingerprint: fingerprint.digest("hex"),
@@ -661,7 +666,7 @@ export function applySolutionMetadata(portal, metadata) {
               "redirecturlappendentityidquerystring",
               false,
             ),
-            recordQueryName: field(step, "redirecturlquerystringname", "id"),
+            recordQueryName: field(step, "redirecturlquerystringname"),
             js: step.customJavascript,
           });
           continue;

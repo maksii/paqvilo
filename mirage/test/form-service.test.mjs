@@ -1,7 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore } from "../lib/data.mjs";
-import { submitPortalForm, createWebFormSessions, webFormSessionOwner, formText } from "../lib/form-service.mjs";
+import { submitPortalForm, createWebFormSessions, webFormSessionOwner, formText, redirectTarget } from "../lib/form-service.mjs";
+
+test('native redirects preserve configured and omitted record parameter names while appending exported query values', () => {
+  const id = 'D6300000-0000-4000-8000-000000000001';
+  const record = { title: 'A & B' };
+  const settings = { adx_redirecturl: '/detail/?existing=1', adx_redirecturlappendentityidquerystring: true, adx_appendquerystring: true, adx_redirecturlcustomquerystring: 'custom=two+words', adx_redirecturlquerystringattributeparamname: 'label', adx_redirecturlquerystringattribute: 'title' };
+  const args = { portal: {}, recordId: id, record, requestUrl: 'http://localhost/create/?from=page&from=other' };
+  const before = JSON.stringify({ settings, record });
+  assert.equal(redirectTarget(settings, args), `/detail/?existing=1&${id.toLowerCase()}&from=page&from=other&custom=two+words&label=A+%26+B`);
+  assert.equal(redirectTarget({ ...settings, adx_redirecturlquerystringname: 'row' }, args), `/detail/?existing=1&row=${id.toLowerCase()}&from=page&from=other&custom=two+words&label=A+%26+B`);
+  assert.equal(redirectTarget({ ...settings, adx_redirecturlquerystringname: '' }, args), redirectTarget(settings, args));
+  assert.equal(JSON.stringify({ settings, record }), before, 'redirect composition does not mutate source configuration or saved records');
+  assert.equal(redirectTarget({ adx_redirecturl: '/detail/', adx_redirecturlappendentityidquerystring: true }, args), `/detail/?${id.toLowerCase()}`);
+  assert.equal(redirectTarget({ adx_redirecturl: '/detail/#record', adx_redirecturlappendentityidquerystring: true }, args), `/detail/?${id.toLowerCase()}#record`);
+  assert.equal(redirectTarget({ ...settings, adx_redirecturlappendentityidquerystring: false }, args), '/detail/?existing=1&from=page&from=other&custom=two+words&label=A+%26+B');
+});
 
 async function setup() {
   const store = await new DataStore({
@@ -125,6 +140,21 @@ test("native forms save bound fields through table permissions independently of 
     ),
     (e) => e.code === "PermissionDenied",
   );
+});
+
+test('native create and unchanged edit submissions use their exported redirect name without assigning an id fallback', async () => {
+  const options = await setup();
+  const metadata = { adx_onsuccess: 756150001, adx_redirecturl: '/detail/', adx_redirecturlappendentityidquerystring: true };
+  for (const form of options.portal.forms) form.metadata = { ...metadata };
+  const created = await submitPortalForm('entityform', 'create', { values: { fullname: 'Native redirect record' } }, options);
+  assert.equal(created.outcome.url, `/detail/?${created.recordId}`);
+  const before = options.store.snapshot().tables.contact;
+  options.portal.forms.find(form => form.id === 'edit').metadata.adx_redirecturlquerystringname = 'row';
+  const edited = await submitPortalForm('entityform', 'edit', { recordId: created.recordId, values: { fullname: 'Native redirect record' } }, options);
+  assert.equal(edited.outcome.url, `/detail/?row=${created.recordId}`);
+  assert.equal(edited.recordId, created.recordId);
+  assert.equal(options.store.snapshot().tables.contact.length, before.length);
+  assert.equal(edited.record.fullname, created.record.fullname);
 });
 
 test("required rich text rejects markup-only values and preserves meaningful formatted HTML", async () => {
@@ -593,7 +623,7 @@ test("Allow Create If Null creates only for a record associated to the current p
 });
 
 // ---------------------------------------------------------------------------
-// Atomic units, sessions, form-level access and request languages (agent C).
+// Atomic units, sessions, form-level access and request languages .
 
 async function setupUnits() {
   const options = await setup();

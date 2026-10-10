@@ -1052,7 +1052,7 @@ async function runtimeStage(target, context) {
       await simulator.applyPreset(preset);
       result.preset = { id: preset, applyMs: elapsed(started), stateBytes: await fileSize(stateFile) };
     }
-    // Data binding: every Webapi-enabled table anonymously (cross-check with agent B's probes) and,
+    // Data binding: every Webapi-enabled table anonymously and,
     // with the all-roles persona selected, as that signed-in contact.
     try {
       result.webApiProbe = { identity: "anonymous", ...(await probeWebApi(simulator)) };

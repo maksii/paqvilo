@@ -2,7 +2,7 @@
  * Local equivalent of the document-ready behaviour of the Power Pages app bundle
  * (/resource/powerappsportal/dist/app.bundle-<hash>.js) that page scripts and the DOM rely on.
  * The bundle's entity grid, subgrid, lookup and notes runtime is lib/entity-grid-compat.js.
- * Observed on reference-portal (agent C live-run9, agent G baseline) and read from the cached bundle:
+ * Local adapter contracts covered by synthetic DOM regressions:
  * - the heading announcer appended to every .page-header that contains an h1;
  * - dropdown, label, radio, checkbox and option accessibility attributes;
  * - .crmEntityFormView role/aria-label, picklist option attributes, readonly control focus;

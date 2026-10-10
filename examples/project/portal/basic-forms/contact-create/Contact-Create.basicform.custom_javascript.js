@@ -1,9 +1,25 @@
 $(function () {
-  var accountId = new URLSearchParams(window.location.search).get("accountid");
-  if (!accountId) return;
-  $("[id$='parentcustomerid']").val(accountId);
-  $("[id$='parentcustomerid_name']").val("Account");
-  $("[id$='parentcustomerid_entityname']").val("account");
+  var parameters = new URLSearchParams(window.location.search);
+  var accountId = parameters.get("accountid") || (parameters.get("refentity") === "account" ? parameters.get("refid") : null);
+  if (!accountId || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(accountId)) return;
+  var lookup = $("#parentcustomerid"), label = $("#parentcustomerid_name");
+  if (lookup.val() && lookup.val() !== accountId) return;
+  lookup.val(accountId).trigger("change");
+  $("#parentcustomerid_entityname").val("account");
+  try {
+    var parentId = new URLSearchParams(window.parent.location.search).get("id");
+    var parentName = window.parent.document.getElementById("name");
+    if (parentId === accountId && parentName && parentName.value) {
+      label.val(parentName.value).trigger("change");
+      return;
+    }
+  } catch (_) {}
+  // Standalone accountid links resolve the actual record name through the portal API.
+  window.shell.getTokenDeferred().done(function (token) {
+    $.ajax({url:"/_api/accounts(" + accountId + ")?$select=name",headers:{__RequestVerificationToken:token}}).done(function (account) {
+      if (lookup.val() === accountId) label.val(account.name || "").trigger("change");
+    });
+  });
 });
 
 // The native form is hosted in an iframe with its own document and theme.

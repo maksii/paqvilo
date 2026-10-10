@@ -29,6 +29,7 @@ import { capturePortalShell } from "./lib/shell-capture.mjs";
 import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs";
 import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
 import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
+import { pluginHandlers, pluginCatalogue, runPluginPhase } from './lib/exported-plugins.mjs';
 import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
 import { mergeShellProfile } from "./lib/shell-profile.mjs";
 import { captureRichTextAssets } from "./lib/richtext-assets.mjs";
@@ -224,7 +225,7 @@ export async function createSimulator({
   if (dataModel != null && !DATA_MODELS.includes(dataModel)) throw error(`dataModel must be standard or enhanced, not ${JSON.stringify(dataModel)}.`);
   // A code-site project serves the site in its .powerpages-site/ folder (lib/source-dialect.mjs).
   sourceDir = portalSourceDir(sourceDir);
-  // Bootstrap (agent D): portal export + ordered solution layers -> mappings, schemas,
+  // Bootstrap : portal export + ordered solution layers -> mappings, schemas,
   // permission model. Parsed solution files are cached beside the state file and
   // reused only for files whose size/mtime/ctime/inode are unchanged.
   // Options are validated before any source read starts, so a rejected option leaves no
@@ -281,7 +282,7 @@ export async function createSimulator({
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
     codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
-      importSolutionMetadata(solutionRoots, { portal, scan, schema }),
+      importSolutionMetadata(solutionRoots, { portal, scan, schema, observed }),
       importSolutionData(solutionRoots, { scan, schema }),
     ]);
     await cache.save();
@@ -294,8 +295,10 @@ export async function createSimulator({
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
   const registeredOperations = operationHandlers(projectPacks ?? []);
+  const registeredPluginSteps = pluginHandlers(projectPacks ?? []);
   const operationPortal = () => withSolutionOperations(portal, solutionOperations);
-  const operations = () => operationCatalogue({ portal: operationPortal(), workflows: operationWorkflows, handlers: registeredOperations, overrides: config().operations });
+  const pluginSteps = () => pluginCatalogue({ plugins: solutionMetadata.plugins, handlers: registeredPluginSteps, overrides: config().operations });
+  const operations = () => [...operationCatalogue({ portal: operationPortal(), workflows: operationWorkflows, handlers: registeredOperations, overrides: config().operations }), ...pluginSteps()];
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
   let generatedPresets = initialState(portal, bootstrapOptions()).presets;
   const runtimeFingerprint = implementationFingerprint;
@@ -346,8 +349,8 @@ export async function createSimulator({
     presetLibrary: generatedPresets,
     state: applySolutions(initial ?? initialState(portal, bootstrapOptions())),
   }).init();
-  store.setVirtualTables(siteTables); // read-only site tables (agent B, see siteTables)
-  store.setObserved(observed); // observed anonymousDataAccess for table permissions (agent B)
+  store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
+  store.setObserved(observed); // observed anonymousDataAccess for table permissions
   portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
   let sourceDependencies = await discoverSourceDependencies(portal);
   await replaceCompiledState(store.snapshot());
@@ -496,7 +499,7 @@ export async function createSimulator({
       identity: { roles: [] },
       live: { origin },
     };
-  // Sign-in sessions (agent D, lib/auth-session.mjs): every portal request (pages,
+  // Sign-in sessions (lib/auth-session.mjs): every portal request (pages,
   // Liquid, FetchXML, /_api, forms, native services) takes its identity from the
   // paqvilo-mirage-auth cookie only and is anonymous without one, whoever the client is. The
   // configured identity is the default persona offered on the sign-in page and the
@@ -569,6 +572,7 @@ export async function createSimulator({
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
+  store.setPluginPipeline(context => runPluginPhase({ ...context, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => (solutionMetadata.plugins?.steps ?? []).some(step => step.enabled && step.entity === entity && String(step.message).toLowerCase() === operation));
   const liveMapping = (entity) => {
     const mapping = store.resolveMapping(entity);
     return {
@@ -1143,7 +1147,7 @@ export async function createSimulator({
       revision,
       identity: identitySummary(identity),
       permissionMode,
-      sourceRoots: [...new Set([sourceDir, ...solutionRoots, ...(report.sourceRoots ?? [])].filter(Boolean))],
+      sourceRoots: [...new Set([sourceDir, ...solutionRoots, ...(solutionMetadata.plugins?.sourceRoots ?? []), ...(report.sourceRoots ?? [])].filter(Boolean))],
     };
     inspectionCache.set(key, value);
     if (inspectionCache.size > 24) inspectionCache.delete(inspectionCache.keys().next().value);
@@ -1423,7 +1427,7 @@ export async function createSimulator({
       const key = decodeURIComponent(operationRoute[1]);
       const item = operations().find(item => item.key === key);
       if (!item) throw error('This operation is not in the current source exports.', 404);
-      if (!item.configurable) throw error('This workflow has no exported portal consumer or trigger route. Add its consumer to the portal sources first.', 409);
+      if (!item.configurable) throw error(item.kind === 'plugin-step' ? item.unsupported || 'This plugin registration is disabled in the export.' : 'This workflow has no exported portal consumer or trigger route. Add its consumer to the portal sources first.', 409);
       const state = store.snapshot();
       state.simulator ??= config();
       state.simulator.operations = { ...(state.simulator.operations ?? {}) };
@@ -2105,7 +2109,7 @@ export async function createSimulator({
     }
     throw error("Admin endpoint not found.", 404);
   }
-  // Site tables (agent B, lib/site-tables.mjs): read-only site components and web
+  // Site tables (lib/site-tables.mjs): read-only site components and web
   // role memberships derived from the export and local personas, rebuilt whenever
   // the portal or the store state object is replaced.
   // Registered on the store at load, so Liquid, FetchXML and Web API reads share them.
@@ -2122,7 +2126,7 @@ export async function createSimulator({
       context.provider = forceLocal ? "local" : config().mode;
     }
     if (!forceLocal && config().mode === "live") return forward(req, res, url);
-    // Local portals Web API (agent B): routes, query options, annotations,
+    // Local portals Web API : routes, query options, annotations,
     // writes and the documented error envelope live in lib/webapi-handler.mjs.
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
@@ -2186,7 +2190,7 @@ export async function createSimulator({
     res.writeHead(response.status, { "cache-control": "no-store", ...headers });
     res.end(bytes);
   }
-  // Local sign-in, sign-out and the session API (agent D, lib/auth-session.mjs; docs:
+  // Local sign-in, sign-out and the session API (lib/auth-session.mjs; docs:
   // sim-administration.md "Sign-in, sign-out and sessions").
   const signInPersonas = () => {
     const state = store.snapshot({ sections: ["simulator", "settings"], tables: ["contact", "account"], mappings: ["contact", "account"] });
@@ -2411,7 +2415,7 @@ export async function createSimulator({
     if (url.pathname === "/__sim" || url.pathname.startsWith("/__sim/") || url.pathname.startsWith("/__sim-"))
       res.setHeader("X-Content-Type-Options", "nosniff");
     // Power Pages resolves application-relative links even when authored inside
-    // JavaScript. Dev02 returns this same302 for /~/Applications/... navigation.
+    // JavaScript. Normalize the app-relative path before ordinary routing.
     if (
       ["GET", "HEAD"].includes(req.method) &&
       /^\/(?:~|%7e)\//i.test(url.pathname)
@@ -2566,7 +2570,7 @@ export async function createSimulator({
         );
       });
     }
-    // Browser sign-in sessions (agent D): GET /__sim/api/session, POST .../sign-in, .../sign-out.
+    // Browser sign-in sessions : GET /__sim/api/session, POST .../sign-in, .../sign-out.
     if (/^\/__sim\/api\/session(?:\/|$)/.test(url.pathname)) return sessionApi(req, res, url);
     if (url.pathname.startsWith("/__sim/api")) return admin(req, res, url);
     if (url.pathname === "/__sim/events") {
@@ -2628,7 +2632,7 @@ export async function createSimulator({
       throw error("Simulator resource not found.", 404);
     if (url.pathname === "/_layout/tokenhtml") {
       // Native: a self-closing hidden input plus the anti-forgery cookie token, with the page
-      // headers reference-portal sends on it (lib/response-headers.mjs tokenHtmlHeaders).
+      // headers the platform sends on it (lib/response-headers.mjs tokenHtmlHeaders).
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
         ...tokenHtmlHeaders(portal, { confinement: confinementPolicy() }),
@@ -2718,7 +2722,7 @@ export async function createSimulator({
     if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
-    // Routing and sign-in (agent D): repeated slashes collapse before resolution (portal
+    // Routing and sign-in : repeated slashes collapse before resolution (portal
     // navigation builds "../" + "/page" links and Power Pages resolves them); a website language code
     // prefix is removed with a 302; the local sign-in and sign-out routes answer here.
     if (url.pathname.includes("//")) url.pathname = url.pathname.replace(/\/{2,}/g, "/");
@@ -2870,7 +2874,7 @@ export async function createSimulator({
       });
       const resource = (entry, type) =>
         renderShellResource(entry, type, { localOnly: true });
-      // Native modal document (live-run4): the platform bundles in the layout's order with
+      // Native modal document: the platform bundles in the layout's order with
       // the WebForms resources inside content_form (lib/platform-manifest.mjs). Without a
       // capture the Bootstrap slot is the site's bootstrap.min.css web file, else the
       // platform's /css/bootstrap.min.css.
@@ -2953,7 +2957,7 @@ export async function createSimulator({
     const asset = pageFirst ? null : portal.webFiles.find(
       (f) => normalizePortalPath(f.url) === key,
     );
-    // Routing (agent D): a denied web file follows the denied-page outcome below.
+    // Routing : a denied web file follows the denied-page outcome below.
     const assetAccess = asset ? pageAccess(portal, asset, currentIdentity()) : null;
     const deniedRoute = assetAccess && !assetAccess.allowed ? deniedPageRoute(portal, url, currentIdentity(), assetAccess, routeOptions) : null;
     if (asset && !deniedRoute) {
@@ -3025,7 +3029,7 @@ export async function createSimulator({
         return res.end(cached.body);
       }
     }
-    // Routing (agent D, lib/redirects.mjs): page URLs end with "/" (case-insensitive);
+    // Routing (lib/redirects.mjs): page URLs end with "/" (case-insensitive);
     // the "Knowledge Article" site-marker route answers before redirects; unresolved
     // paths try redirects and the canonical slash (URL history only with
     // settings.urlHistoryRedirects = true) before the Page Not Found page (404);
@@ -3048,7 +3052,7 @@ export async function createSimulator({
     if (route) recordDiagnostic({ code: route.code ?? "PAGE_NOT_FOUND", path: url.pathname, message: `${route.message ? route.message + " " : ""}Rendered the ${route.page.name} page with HTTP ${route.status}.` });
     const rendered = await renderer.renderPage((route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search, {
       user: pageIdentity,
-      // The website language whose code the language route removed from the path (agent A).
+      // The website language whose code the language route removed from the path .
       languageCode: language?.code ?? null,
       request: {
         url: url.href,
@@ -3080,7 +3084,7 @@ export async function createSimulator({
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectRuntimeCompatibility(html, sourceDependencies);
     }
-    // reference-portal page headers: no-cache, no-store, must-revalidate and only the HTTP/* site-setting
+    // Page headers: no-cache, no-store, must-revalidate and only the HTTP/* site-setting
     // headers; the loopback policy only with config.confinePortalPages (lib/response-headers.mjs).
     const headers = {
       "content-type": contentType,
@@ -3120,7 +3124,7 @@ export async function createSimulator({
     // /_sim is the same administration surface as /__sim: never audit it as a portal page.
     if (/^\/_sim(?:\/|$)/.test(url.pathname))
       url.pathname = url.pathname.replace(/^\/_sim/, "/__sim");
-    // Browser sign-in session of this request (agent D, lib/auth-session.mjs).
+    // Browser sign-in session of this request (lib/auth-session.mjs).
     const auth = requestAuth(req, url);
     const cfg = config();
     const endpoint = (cfg.endpoints ?? []).find(
@@ -3259,7 +3263,7 @@ export async function createSimulator({
     reloadRequested = false;
   const changedPaths = new Set();
   let watchedLayers = "";
-  const layerSignature = () => JSON.stringify((solutionData.layers ?? []).map((layer) => layer.dir));
+  const layerSignature = () => JSON.stringify([(solutionData.layers ?? []).map((layer) => layer.dir), solutionMetadata.plugins?.sourceFiles ?? []]);
   async function reload() {
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
@@ -3330,7 +3334,7 @@ export async function createSimulator({
     });
     return reloadPromise;
   }
-  // Watch (agent D): the portal export plus only the table-metadata parts of each
+  // Watch : the portal export plus only the table-metadata parts of each
   // solution layer (Entities, Other, OptionSets, environment variables); a change in
   // the set of layers restarts the watcher with the new layer list.
   async function restartWatcher() {
@@ -3338,9 +3342,12 @@ export async function createSimulator({
     const layers = solutionData.layers ?? [];
     watchedLayers = layerSignature();
     let timer;
-    watcher = chokidar.watch([sourceDir, ...solutionRoots], {
+    const pluginSources = solutionMetadata.plugins?.sourceFiles ?? [];
+    const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
+    const ignoreSource = solutionWatchFilter({ sourceDir, roots: solutionRoots, layers, exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
+    watcher = chokidar.watch([sourceDir, ...solutionRoots, ...pluginSources], {
       ignoreInitial: true,
-      ignored: solutionWatchFilter({ sourceDir, roots: solutionRoots, layers, exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] }),
+      ignored: (file, stats) => pluginSourceKeys.has(path.resolve(file).toLowerCase()) ? false : ignoreSource(file, stats),
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
     });
     watcher.on("all", (_event, file) => {
@@ -3371,7 +3378,7 @@ export async function createSimulator({
     },
     state: exposedState,
     applyPreset: (name) => change(() => applySelectedPreset(name)),
-    // Sign-in for tools and tests that render portal routes as a persona (agent D):
+    // Sign-in for tools and tests that render portal routes as a persona :
     // { cookieHeader: "paqvilo-mirage-auth-<port>=…" for a Cookie request header, identity }.
     signIn: (contactId, options = {}) => {
       const session = signInSession(contactId, options);

@@ -1,0 +1,35 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { pluginFixture, pluginId } from '../test/plugin-fixture.mjs';
+
+test('backend operations exposes plugin source bindings and persists an editable local rejection', async t => {
+  const { app } = await pluginFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const page = await browser.newPage();
+  const errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  await page.route('**/*', route => route.request().url().startsWith(app.url) ? route.continue() : route.abort());
+  await page.goto(app.adminUrl + '#operations');
+  await page.getByRole('heading', { name: 'Backend operations' }).waitFor();
+  const section = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Widget step 3', exact: true }) });
+  await section.getByText('Invented.WidgetRules.Validate · Invented.WidgetRules', { exact: true }).waitFor();
+  assert.match(await section.textContent(), /PreValidation.*rank 1/);
+  assert.match(await section.textContent(), /Placeholder mode allows the write/);
+  await section.getByLabel('Local behavior', { exact: true }).selectOption('mock');
+  await section.getByLabel('Mock result (JSON)', { exact: true }).fill('{"error":{"message":"Browser configured rejection"}}');
+  await section.getByRole('button', { name: 'Save local behavior', exact: true }).click();
+  await page.getByText('Local operation saved.', { exact: true }).waitFor();
+  const operation = app.state().config.operations.find(item => item.key === `plugin-step:${pluginId(3)}`);
+  assert.equal(operation.mode, 'mock');
+  assert.equal(operation.configuration.body.error.message, 'Browser configured rejection');
+  await section.getByRole('button', { name: 'Use source default', exact: true }).click();
+  await page.getByText('Source operation default restored.', { exact: true }).waitFor();
+  assert.equal(app.state().config.operations.find(item => item.key === `plugin-step:${pluginId(3)}`).mode, 'placeholder');
+  const asyncSection = page.locator('section').filter({ has: page.getByRole('heading', { name: 'Widget step 9', exact: true }) });
+  assert.equal(await asyncSection.getByLabel('Local behavior', { exact: true }).isDisabled(), true);
+  assert.match(await asyncSection.textContent(), /Asynchronous plugin execution is not simulated/);
+  assert.deepEqual(errors, []);
+});

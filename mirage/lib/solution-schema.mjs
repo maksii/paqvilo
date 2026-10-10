@@ -11,6 +11,7 @@ import {
   pickLabel,
 } from "./solution-xml.mjs";
 import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
+import { parsePluginDocument } from './exported-plugins.mjs';
 import {
   standardTable,
   standardRelationships,
@@ -20,12 +21,12 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@8";
+export const SCHEMA_PARSER_ID = "schema@10";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
 // Directories of an unpacked solution tree that carry table metadata.
-const TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions)$/i;
+const TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
 // Every standard Dataverse table owns these columns; a definition that exports its
 // primary key and all of them is a full table export rather than a column patch.
 const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
@@ -47,6 +48,7 @@ const deepText = (node, name) => childText(node, name) ?? descendants(node, name
 export function classifySolutionPath(relative) {
   const p = String(relative).replace(/\\/g, "/");
   let m;
+  if (/(?:^|\/)(?:PluginAssemblies|PluginTypes|SdkMessageProcessingSteps|SdkMessages)\/.+\.xml$/i.test(p)) return { kind: 'plugin' };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/Entity\.xml$/i.exec(p))) return { kind: "entity", entityDir: m[1] };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/FormXml\/.+\.xml$/i.exec(p))) return { kind: "form", entityDir: m[1] };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/SavedQueries\/.+\.xml$/i.exec(p))) return { kind: "view", entityDir: m[1] };
@@ -60,7 +62,7 @@ export function classifySolutionPath(relative) {
     return { kind: "envvalue", envDir: m[1] };
   return null;
 }
-const SCHEMA_KINDS = new Set(["entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml"]);
+const SCHEMA_KINDS = new Set(["entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
 
 async function manifestOf(dir) {
   let entries;
@@ -397,6 +399,7 @@ export function parseSchemaDocument(text, info = {}) {
   }
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("XML external declarations are not supported");
   const root = parseSolutionXml(text, { recover: true });
+  if (/<(?:PluginAssembly|PluginType|SdkMessageProcessingStep|SdkMessage)[\s>]/i.test(text)) facts.plugins = parsePluginDocument(text);
   if (root.recovered) facts.recovered = root.recovered;
   if (info.kind === "solution" || root.name === "ImportExportXml" && child(root, "SolutionManifest"))
     facts.solution = solutionFacts(root);

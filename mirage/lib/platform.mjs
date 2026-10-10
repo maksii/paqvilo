@@ -22,7 +22,7 @@ import {
   executeGridQuery,
   settingsJson,
 } from "./native-services.mjs";
-import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess } from "./form-service.mjs";
+import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId } from "./form-service.mjs";
 import { deniedPageRoute } from "./redirects.mjs";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { hasPlatformBundles } from "./platform-manifest.mjs";
@@ -329,7 +329,7 @@ export function clientRichTextRuntime(settings) {
 
 // ---------------------------------------------------------------------------
 // Native component rendering (basic forms, advanced forms, lists, subgrids,
-// lookups). Markup follows live reference-portal observations recorded in
+// lookups). Local markup contracts are described in
 // docs/forms-lists-parity.md; behaviour is supplied by webforms-compat.js and
 // entity-grid-compat.js against the services in native-services.mjs.
 
@@ -644,7 +644,7 @@ function gridLayouts(model, { secureBase, websiteId, metadata, actions, selectCo
   );
 }
 
-/** The request's website language (context.__language, agent A) and the website default, for [{LCID, Value}] labels. */
+/** The request's website language (context.__language) and the website default, for [{LCID, Value}] labels. */
 function requestLanguage(context, portal) {
   return {
     lcid: context?.__language?.lcid ?? null,
@@ -928,7 +928,7 @@ async function renderForm(kind, name, context, options) {
     metadata,
     modal = false,
   } = options;
-  // Labels and messages in the request's website language (context.__language, agent A).
+  // Labels and messages in the request's website language (context.__language).
   const formLanguage = requestLanguage(context, portal);
   const formLabel = (value, fallback = "") => formText(value, fallback, formLanguage);
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
@@ -1046,11 +1046,11 @@ async function renderForm(kind, name, context, options) {
     if (schema.appendRecordId) {
       const id = params.id;
       if (!id) throw componentError("Redirect step requires the saved record identifier", 400, "ADVANCEDFORM_RECORD_REQUIRED");
-      target.searchParams.set(schema.recordQueryName || "id", id);
+      appendRedirectRecordId(target, schema.recordQueryName, id);
     }
     if (target.origin !== new URL(context.request?.url ?? "http://localhost/").origin)
       throw componentError("Advanced form redirect requires a local exported target", 501);
-    return `<script>location.replace(${json(target.pathname + target.search)});</script>`;
+    return `<script>location.replace(${json(target.pathname + target.search + target.hash)});</script>`;
   }
   if (!schema.entity) throw componentError(`Component ${name} has no mapped table`, 501, "COMPONENT_ENTITY_REQUIRED");
   const mapping = store.resolveMapping(schema.entity);

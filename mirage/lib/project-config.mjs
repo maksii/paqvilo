@@ -57,9 +57,28 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (value.pluginSources != null) {
+    if (!value.pluginSources || typeof value.pluginSources !== 'object' || Array.isArray(value.pluginSources) || Object.keys(value.pluginSources).length > 1000) throw new Error(`${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`);
+    observed.pluginSources = {};
+    for (const [name, source] of Object.entries(value.pluginSources)) {
+      const relative = typeof source?.path === 'string' ? source.path.replace(/\\/g, '/') : '';
+      if (!/^[_a-z][\w.+`]{0,249}$/i.test(name) || !source || typeof source !== 'object' || Array.isArray(source) || Object.keys(source).some(key => !['path', 'evidence', 'root'].includes(key)) || !relative.endsWith('.cs') || path.isAbsolute(relative) || /[:\x00-\x1f]/.test(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part)) || typeof source.evidence !== 'string' || !source.evidence.trim() || source.evidence.length > 2000 || source.root !== undefined && (typeof source.root !== 'string' || !path.isAbsolute(source.root))) throw new Error(`${label}.pluginSources requires exact type names, relative .cs paths, evidence and an optional absolute trusted root`);
+      observed.pluginSources[name] = { path: relative, evidence: source.evidence, ...(source.root ? { root: source.root } : {}) };
+    }
+  }
+  if (value.sdkMessages != null) {
+    if (!value.sdkMessages || typeof value.sdkMessages !== 'object' || Array.isArray(value.sdkMessages) || Object.keys(value.sdkMessages).length > 1000) throw new Error(`${label}.sdkMessages must map at most 1000 SDK message GUIDs to names with evidence`);
+    observed.sdkMessages = {};
+    for (const [raw, message] of Object.entries(value.sdkMessages)) {
+      const id = raw.replace(/[{}]/g, '').toLowerCase();
+      if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id) || !message || typeof message !== 'object' || Array.isArray(message) || Object.keys(message).some(key => !['name', 'evidence'].includes(key)) || typeof message.name !== 'string' || !/^[a-z][a-z0-9_]{0,199}$/i.test(message.name) || typeof message.evidence !== 'string' || !message.evidence.trim() || message.evidence.length > 2000) throw new Error(`${label}.sdkMessages requires GUID keys, SDK names and evidence`);
+      if (Object.hasOwn(observed.sdkMessages, id)) throw new Error(`${label}.sdkMessages has a duplicate SDK message GUID`);
+      observed.sdkMessages[id] = { name: message.name, evidence: message.evidence };
+    }
+  }
   if (value.codeComponents != null) {
     if (!value.codeComponents || typeof value.codeComponents !== 'object' || Array.isArray(value.codeComponents)) throw new Error(`${label}.codeComponents must map GUIDs to control schema names`);
     observed.codeComponents = {};
@@ -235,6 +254,7 @@ export async function loadProjectConfig(configFile) {
     if (portal.reference && !references.some((ref) => ref.id === portal.reference))
       throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
     const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) => byId.get(solutionId));
+    if (portal.observed?.pluginSources) portal.observed.pluginSources = Object.fromEntries(Object.entries(portal.observed.pluginSources).map(([name, source]) => [name, { ...source, root: source.root ?? base }]));
     return {
       ...portal,
       sourceDir: await resolveSource(portal.sourcePath, "Portal", portal.id),
@@ -349,7 +369,7 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
     }), source.observed);
     const roots = source.solutionRoots ?? project.solutionRoots;
     const { scan, schema } = await loadLayers(roots);
-    const metadata = await importSolutionMetadata(roots, { portal, lcid, scan, schema });
+    const metadata = await importSolutionMetadata(roots, { portal, lcid, scan, schema, observed: source.observed });
     const solutionData = await importSolutionData(roots, { scan, schema, lcid });
     portals.push({ ...source, portal, metadata, solutionData });
   }

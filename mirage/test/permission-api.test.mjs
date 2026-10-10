@@ -113,8 +113,6 @@ test("permission source changes apply atomically and failed reload retains the a
   assert.deepEqual(app.state().status.effectiveIdentity.roleIds, []);
   response = await fetch(app.url + "/_api/contacts");
   assert.equal(response.status, 403);
-  // sandbox answers a table read denial with 90040120;
-  // the simulator's own classification stays in X-Sim-Error-Code.
   assert.equal(response.headers.get("x-sim-error-code"), "PermissionDenied");
   assert.equal((await response.json()).error.code, "90040120");
   response = await patch({
@@ -154,7 +152,6 @@ test("permission source changes apply atomically and failed reload retains the a
   assert.deepEqual(failed.config.permissions, applied.config.permissions);
   assert.equal(failed.status.revision, applied.status.revision);
   assert.ok(failed.diagnostics.some((d) => d.code === "RELOAD_FAILED"));
-  // A $select read: select-less collection reads are refused (sandbox, 90040101).
   assert.equal((await fetch(app.url + "/_api/contacts?$select=contactid")).status, 200);
   await fs.writeFile(permissionFile, sourceGrant("contact"));
   await app.reload();

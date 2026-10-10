@@ -3,8 +3,8 @@ import { normalizePortalPath } from "./importer.mjs";
 /**
  * Request routing for paths that no exported page or web file resolves, and for
  * pages the current persona may not read. Behaviour follows the platform pipeline
- * documented in docs/platform-internals-reference.md sections 1.2-1.6, adjusted to
- * the reference-portal observations recorded in docs/bootstrap-and-sources.md:
+ * described in docs/platform-internals-reference.md sections 1.2-1.6. The local
+ * adapter uses these rules, with exported settings and explicit observations:
  *   0. A website language code as the first segment is removed with a 302 (pages,
  *      MultiLanguage/DisplayLanguageCodeInURL not "true"); /{code}/signin is the
  *      sign-in route. The "Knowledge Article" site-marker page also answers its
@@ -15,8 +15,7 @@ import { normalizePortalPath } from "./importer.mjs";
  *      URL, else web page, else site-marker page; the original query is not appended.
  *   2. Canonical slash: a page URL requested without its trailing "/" -> 301 to the
  *      page URL keeping the query (302 to path + "/" when the page is not readable).
- *   3. URL history (only with settings.urlHistoryRedirects = true; reference-portal does not
- *      apply it): a historic page path -> 301 to the page's current URL.
+ *   3. URL history (only with settings.urlHistoryRedirects = true): a historic page path -> 301 to the page's current URL.
  *   4. Otherwise the "Page Not Found" site-marker page with 404.
  * Shortcuts have no URL of their own and never resolve a request path.
  */
@@ -28,9 +27,8 @@ const ensureSlash = (url) => (url.endsWith("/") ? url : url + "/");
 const withoutSlash = (pathname) => (pathname.length > 2 && pathname.endsWith("/") ? pathname.slice(0, -1) : pathname);
 
 /**
- * RFC 3986 escaping with upper-case hex (the .NET Uri.EscapeDataString form): the
- * sign-in return parameter on reference-portal is %2Fmyworkspace%2F%3F... Only "/", "?" and "="
- * were observed; other reserved characters follow the same rule.
+ * RFC 3986 escaping with upper-case hex, matching .NET Uri.EscapeDataString.
+ * For example, /records/?id=one becomes %2Frecords%2F%3Fid%3Done.
  */
 export function escapeDataString(value) {
   return encodeURIComponent(String(value)).replace(/[!'()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
@@ -104,7 +102,7 @@ const urlLanguages = (portal) =>
  * MultiLanguage/DisplayLanguageCodeInURL is "true", GET and HEAD requests are
  * redirected (302, relative Location) to the path without the code, keeping the query;
  * other methods and display-code sites continue with the code removed. This includes
- * the sign-in path: live reference-site-A and reference-site-B answer /en-US/signin with a second 302 to
+ * the sign-in path: /en-US/signin can redirect again to
  * /signin?ReturnUrl=... Unknown codes are ordinary segments.
  */
 export function languageRoute(portal, url, method = "GET") {
@@ -122,8 +120,8 @@ export function languageRoute(portal, url, method = "GET") {
 /**
  * Site-marker application route: the "Knowledge Article" page also answers its path
  * without the trailing "/" and followed by {number} and {lang} segments (an MVC area
- * route: case-insensitive and matched before redirects). reference-portal serves
- * /GUIDANCE/ARTICLE with 200 although a redirect "guidance/article" exists.
+ * route: case-insensitive and matched before redirects). It takes precedence over
+ * an exported redirect with the same path.
  */
 export function siteMarkerRoute(portal, url) {
   const page = pageBySiteMarker(portal, "Knowledge Article");
@@ -243,8 +241,7 @@ export function resolveUnmatchedRoute(portal, url, { readable, urlHistory = fals
 /**
  * Outcome for a page or web file the persona may not read: anonymous visitors are
  * redirected (302) to the absolute <origin>/<language code>/signin?ReturnUrl=<path
- * and query, RFC 3986 escaped> with the "Access Denied" page as the response body (as
- * on reference-portal); signed-in visitors receive the "Access Denied" site-marker page with 403
+ * and query, RFC 3986 escaped> with the "Access Denied" page as the response body; signed-in visitors receive the "Access Denied" site-marker page with 403
  * (else Page Not Found with 404).
  */
 export function deniedPageRoute(portal, url, identity, access = {}, { origin = "" } = {}) {

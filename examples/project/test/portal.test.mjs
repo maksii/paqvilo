@@ -1,10 +1,11 @@
+import {sdkMessages} from '../pack/dataverse-plugins.mjs';
 import test from 'node:test';import assert from 'node:assert/strict';import fs from 'node:fs/promises';import {fileURLToPath} from 'node:url';
 import {createSimulator} from 'paqvilo/mirage/server.mjs';import {DataStore} from 'paqvilo/mirage/lib/data.mjs';import {discoverPacks,presetLibrary} from 'paqvilo/mirage/lib/preset-registry.mjs';import {signInHeaders} from 'paqvilo/mirage/testing/session.mjs';
 const file=name=>fileURLToPath(new URL('../'+name,import.meta.url));
 test('account demo renders source metadata, enforces sign-in and supports related CRUD',async t=>{
  const module=file('pack/pack.mjs'),packs=await discoverPacks({explicit:[{module}]});const store=new DataStore();await store.applyPreset('example-demo',{generatedPresets:presetLibrary({packs})});
  const component=/codecomponent name:([0-9a-f-]{36})/.exec(await fs.readFile(file('portal/web-pages/pcf-account/PCF-account.webpage.copy.html'),'utf8'))[1];
- const sim=await createSimulator({sourceDir:file('portal'),solutionRoots:[file('metadata'),file('code-solution'),file('solution')],solutionOrder:'explicit',observed:{codeComponents:{[component]:'exa_ExamplePages.ExampleAccountFields'},evidence:'Sample PCF tag and solution manifest'},dataPacks:[{module}],initial:store.snapshot(),port:0,watch:false});t.after(()=>sim.close());
+ const sim=await createSimulator({sourceDir:file('portal'),solutionRoots:[file('metadata'),file('code-solution'),file('solution')],solutionOrder:'explicit',observed:{sdkMessages,codeComponents:{[component]:'exa_ExamplePages.ExampleAccountFields'},evidence:'Sample PCF tag and solution manifest'},dataPacks:[{module}],initial:store.snapshot(),port:0,watch:false});t.after(()=>sim.close());
  await sim.applyPreset('example-demo');
  const contact='a4300000-0000-4000-8000-000000002001',account='a4300000-0000-4000-8000-000000001001';const signed=signInHeaders(sim,contact);
  const read=async route=>{const r=await fetch(sim.url+route,{headers:signed});assert.equal(r.status,200,route+': '+await r.clone().text());return r;};

@@ -18,8 +18,8 @@ import {
 
 /*
  * Local equivalents of the native Power Pages grid, lookup, subgrid, notes and
- * annotation services. Contracts follow live reference-portal observations (see
- * docs/forms-lists-parity.md): POST bodies use camelCase, responses PascalCase,
+ * annotation services. Local contracts are documented in
+ * docs/forms-lists-parity.md: POST bodies use camelCase, responses PascalCase,
  * the anti-forgery header is __RequestVerificationToken and the opaque
  * Base64SecureConfiguration is issued by the server and verified here.
  */
@@ -1342,7 +1342,7 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/css/images/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/close.png", { body: PNG_PIXEL, type: "image/png" }],
 ]);
-// Platform strings that local scripts read (values from the reference-portal en-US ResourceManager).
+// Platform strings that local scripts read (English ResourceManager defaults).
 const RESOURCE_STRINGS = {
   Home_DefaultText: "Home",
   Search_DefaultText: "Search",

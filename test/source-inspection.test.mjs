@@ -4,6 +4,30 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { createSourceInspector, inspectionSources, inspectRenderedPage } from '../lense/source-inspection.mjs';
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
+import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
+
+test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async t => {
+  const fx = inspectionFixture(); t.after(fx.cleanup);
+  const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
+  const steps = path.join(fx.solution, 'SdkMessageProcessingSteps');
+  fs.mkdirSync(path.dirname(assembly), { recursive: true }); fs.mkdirSync(steps, { recursive: true });
+  fs.writeFileSync(assembly, assemblyXml);
+  fs.writeFileSync(path.join(steps, 'update.xml'), stepXml(7, { message: 'Update', attributes: 'fx_title' }));
+  fs.writeFileSync(path.join(steps, 'unrelated.xml'), stepXml(8, { entity: 'fx_other' }));
+  const code = path.join(fx.work, 'components/Plugins/Rules.cs');
+  fs.mkdirSync(path.dirname(code), { recursive: true }); fs.writeFileSync(code, 'namespace Invented.WidgetRules { class Validate {} }');
+  const projectData = JSON.parse(JSON.stringify({ version: 2, portals: [{ id: 'fixture', path: './portal', observed: { evidence: 'Invented source mapping', pluginSources: { 'Invented.WidgetRules.Validate': { path: 'components/Plugins/Rules.cs', evidence: 'Exact source fixture' } } } }], solutions: [{ id: 'sample', path: './solution' }] }));
+  const projectFile = path.join(fx.work, 'project.json'); fs.writeFileSync(projectFile, JSON.stringify(projectData));
+  const { report, roots } = await createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: projectFile } }).inspect('/');
+  const plugin = report.logic.find(item => item.kind === 'plugin-step');
+  assert.equal(plugin.id, pluginId(7)); assert.equal(plugin.evidence, 'exported-table-registration'); assert.equal(plugin.effective, 'unknown');
+  assert.equal(report.logic.filter(item => item.kind === 'plugin-step').length, 1);
+  assert.equal(plugin.sources[0].sourceFile, assembly); assert.equal(plugin.sources[1].sourceFile, assembly);
+  assert.equal(plugin.sources[2].kind, 'plugin-code'); assert.equal(plugin.sources[2].sourceFile, code);
+  assert.ok(roots.includes(path.dirname(code))); assert.equal(roots.includes(fx.work), false, 'broad project root is not exposed');
+  assert.match(plugin.description, /input attributes: fx_title.*live execution unknown/);
+  assert.deepEqual(report.pluginInventory, { assemblies: 1, types: 1, steps: 2, applicable: 1, effective: 'unknown' });
+});
 
 test('live inspection selects exported route languages and matching snippet source identity', async (t) => {
   const fx = inspectionFixture(); t.after(fx.cleanup);
@@ -160,6 +184,23 @@ test('missing or mismatched Solution configuration preserves portal inspection a
   const mismatched = await inspectionSources({ sourceDir: other.portal, mirageConfig: { project: fx.project } });
   assert.deepEqual(mismatched.roots, []);
   assert.equal(mismatched.diagnostics[0].code, 'INSPECT_PROJECT_UNAVAILABLE');
+});
+
+test('displayed Liquid code and component manifests do not produce component or operation bindings while emitted raw assets remain discoverable', async (t) => {
+  const fx = inspectionFixture(); t.after(fx.cleanup);
+  fs.writeFileSync(path.join(fx.portal, 'web-pages/home/Home.webpage.copy.html'), `{% raw %}{% codecomponent name:'missing.Raw' %}/_api/hidden_raw {% serverlogic name:'HiddenOperation' %}<script src="/widget.js"></script>{% endraw %}{% comment %}{% codecomponent name:'missing.Comment' %}/_api/hidden_comment{% endcomment %}{% manifest %}{"description":"{% codecomponent name:'missing.Manifest' %}"}{% endmanifest %}{% codecomponent name:page.actual_component %}{% serverlogic name:'VisibleOperation' %}`);
+  const logicDir = path.join(fx.portal, 'server-logic'); fs.mkdirSync(logicDir);
+  fs.writeFileSync(path.join(logicDir, 'HiddenOperation.serverlogic.yml'), 'adx_serverlogicid: hidden-operation\nadx_name: HiddenOperation');
+  fs.writeFileSync(path.join(logicDir, 'HiddenOperation.js'), 'function get() {}');
+  fs.writeFileSync(path.join(logicDir, 'VisibleOperation.serverlogic.yml'), 'adx_serverlogicid: visible-operation\nadx_name: VisibleOperation');
+  fs.writeFileSync(path.join(logicDir, 'VisibleOperation.js'), 'function get() {}');
+  const { report } = await createSourceInspector({ sourceDir: fx.portal }).inspect('/');
+  assert.deepEqual(report.apiReferences, []);
+  assert.deepEqual(report.logic.filter(row => row.kind === 'server-logic').map(row => row.name), ['VisibleOperation']);
+  assert.equal(report.codeComponents.length, 1);
+  assert.equal(report.codeComponents[0].dynamic, true);
+  assert.equal(report.assets.some(row => row.url === '/widget.js'), true);
+  assert.equal(report.unresolved.filter(row => row.kind === 'code-component').length, 1);
 });
 
 test('unquoted literal PCF IDs open declared manifest/resources, while dynamic component expressions stay unresolved', async (t) => {

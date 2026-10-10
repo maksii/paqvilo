@@ -16,6 +16,9 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Liquid behavior and conformance | [Liquid](liquid-parity.md), [conformance](liquid-conformance.md) |
 | Queries, Web API and permissions | [Dataverse](dataverse-parity.md) |
 | Native forms, lists and client behavior | [Forms and lists](forms-lists-parity.md) |
+| Standard PCF field and dataset controls | [Code components](code-components.md) |
+| Exported server logic, cloud flows and local mocks | [Operations](operations.md) |
+| Registered Dataverse plugins and local write models | [Dataverse plugins](dataverse-plugins.md) |
 | Scripts, assets and platform adapters | [Platform resources](platform-resources.md) |
 | Reference comparison and its limits | [Parity evidence](parity-evidence.md), [runtime evidence](runtime-evidence.md) |
 | Atomic simulation state writes | [State integrity](state-write-integrity.md) |

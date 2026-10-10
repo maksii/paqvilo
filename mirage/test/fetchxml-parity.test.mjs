@@ -420,7 +420,6 @@ test("Web API FetchXML publishes the documented paging cookie wrapper and contin
   );
   const second = await read(inner);
   assert.deepEqual(second.value.map((row) => row.name), ["Gamma"]);
-  // The final page carries neither morerecords nor the cookie (page-results; sandbox).
   assert.equal(Object.hasOwn(second, "@Microsoft.Dynamics.CRM.morerecords"), false);
   assert.equal(Object.hasOwn(second, "@Microsoft.Dynamics.CRM.fetchxmlpagingcookie"), false);
   assert.ok(second["@odata.context"].endsWith("/_api/$metadata#tags(tagid,name)"), second["@odata.context"]);

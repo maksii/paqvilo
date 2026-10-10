@@ -4,8 +4,7 @@ import path from "node:path";
 /**
  * The layout ("dialect") of a portal source folder, from cheap evidence on disk. The
  * Mirage imports four of them; the others are named so that a source the importer
- * cannot read fails loudly instead of importing as an empty portal (ecosystem review,
- * docs/runtime-evidence.md, finding X1).
+ * cannot read fails loudly instead of importing as an empty portal.
  *
  * - "standard-yaml": PAC YAML with adx_ keys (website.yml adx_websiteid). Standard data
  *   model downloads, and enhanced data model downloads that keep adx_ keys.

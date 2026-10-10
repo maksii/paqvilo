@@ -37,9 +37,9 @@ test("observed intrinsic footer sizing matches native boxes and local notificati
   });
   const h = reconcileHeaderNotifications(header, header, hp, {
     notifications: [
-      { notificationText: "One" },
-      { notificationText: "Two" },
-      { notificationText: "Hidden local row", visible: false },
+      { notificationText: "One", visible: true, severity: "info" },
+      { notificationText: "Two", visible: true, severity: "warning" },
+      { notificationText: "Hidden local row", visible: false, severity: "info" },
     ],
   }).html;
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -69,7 +69,7 @@ test("observed intrinsic footer sizing matches native boxes and local notificati
     assert.equal(local[0].width, native[0].width);
     assert.equal(local[0].height, native[0].height);
     assert.equal(local[1].width, native[1].width);
-    assert.equal(await page.locator(".notificationsCount").textContent(), "3");
+    assert.equal(await page.locator(".notificationsCount").textContent(), "2");
     assert.equal(await page.locator(".description").count(), 2);
     assert.doesNotMatch(await page.content(), /PRIVATE|Hidden local/);
     await page.setContent(

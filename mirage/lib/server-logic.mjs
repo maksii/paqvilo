@@ -10,8 +10,7 @@ import { randomUUID } from "node:crypto";
  * - 501 when the export has a server logic record with that name (case-insensitive), 404 when
  *   it has none;
  * - the response envelope of server logic calls, camelCase as Microsoft's samples receive it
- *   ({ requestId, success, serverLogicName, data, error }; ecosystem review
- *   docs/runtime-evidence.md, server logic), with success false, data null
+ *   ({ requestId, success, serverLogicName, data, error }), with success false, data null
  *   and error { code, message };
  * - an x-sim-route: server-logic-unsupported header.
  *

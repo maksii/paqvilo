@@ -33,11 +33,27 @@ test('core project contains no private business dependency and the guard detects
   const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-'));
   t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
   fs.mkdirSync(path.join(fixture, 'mirage/packs'), { recursive: true });
-  fs.writeFileSync(path.join(fixture, 'mirage/server.mjs'), 'const table = "ema_secret";');
+  fs.writeFileSync(path.join(fixture, 'mirage/server.mjs'), 'import pack from "./packs/private/pack.mjs";');
   assert.deepEqual(inspectProjectBoundary(fixture), [
-    'mirage/server.mjs: project-specific identifier',
+    'mirage/server.mjs: project-owned dependency: ./packs/private/pack.mjs',
     'mirage/packs: project packs must be external',
   ]);
+});
+
+test('runtime dependencies reject embedded examples and outside imports in both products', (t) => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-boundary-imports-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(fixture, 'lense'), { recursive: true });
+  fs.mkdirSync(path.join(fixture, 'mirage/lib'), { recursive: true });
+  fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import pack from "../examples/project/pack.mjs";');
+  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'const pack = await import("../../../outside/pack.mjs");');
+  assert.deepEqual(inspectProjectBoundary(fixture), [
+    'lense/runtime.mjs: project-owned dependency: ../examples/project/pack.mjs',
+    'mirage/lib/runtime.mjs: project-owned dependency: ../../../outside/pack.mjs',
+  ]);
+  fs.writeFileSync(path.join(fixture, 'lense/runtime.mjs'), 'import path from "node:path"; import registry from "../mirage/lib/preset-registry.mjs";');
+  fs.writeFileSync(path.join(fixture, 'mirage/lib/runtime.mjs'), 'export const module = "../../examples/project/pack.mjs";');
+  assert.deepEqual(inspectProjectBoundary(fixture), [], 'ordinary strings and generic internal modules are not project dependencies');
 });
 
 test('default Mirage discovery has no project packs and embedded registration is explicit', async (t) => {

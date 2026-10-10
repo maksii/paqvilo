@@ -45,3 +45,5 @@ main.container,.page-heading{max-width:1220px}.page-heading{display:none}.demo{m
 @media(max-width:560px){.demo-native-frame{padding:16px!important}.demo-native-frame .crmEntityFormView table.section>tbody{grid-template-columns:1fr}.demo-native .entity-grid .view-search,.demo-native .entity-lookup .view-search{width:100%}}
 
 .demo-native-frame .crmEntityFormView .btn-primary,.demo-native-frame .crmEntityFormView input[type=submit]{background:var(--demo-forest)!important;border-color:var(--demo-forest)!important;color:#fff}
+
+.demo-native-frame .crmEntityFormView .control .input-group button:is(.clearlookupfield,.launchentitylookup){font-size:12px;line-height:1.4;padding:9px 8px;min-width:0;flex:0 0 auto}

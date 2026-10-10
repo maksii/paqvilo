@@ -23,7 +23,7 @@ const ROUTE = new RegExp(
   String.raw`^([A-Za-z_]\w*)(?:\(${KEY}\))?(?:/([A-Za-z_]\w*|\$count)(?:\(${KEY}\))?)?(?:/(\$ref|\$value|\$count))?$`,
 );
 const WRITE_METHODS = new Set(["POST", "PATCH", "PUT", "DELETE"]);
-// Observed on reference-portal (live parity evidence, 8 October 2026): /_api responses carry no
+// The local /_api response contract omits
 // OData-Version or Preference-Applied header; cache-control no-cache with Pragma and
 // Expires (ASP.NET's no-cache pair); the site's HTTP/* headers as portal pages carry
 // them (siteHeaders: the site Content-Security-Policy, X-Frame-Options, ...); and
@@ -40,10 +40,9 @@ const apiHeaders = (portal) => ({
   ...CACHE_HEADERS,
 });
 // Errors raised while Power Pages validates OData query options answer
-// 400 9004010A with a generic message on reference-portal (unknown columns, invalid
+// 400 9004010A with a generic message on the platform (unknown columns, invalid
 // $filter, $expand or paths through a non-navigation property), as does an
-// entity set that names no Dataverse table (reference-site-B, reference-site-A and Example live runs,
-// 8 October 2026).
+// entity set that names no Dataverse table.
 const QUERY_CODES = new Set([
   "InvalidAttribute",
   "UnsupportedQuery",
@@ -285,7 +284,7 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
         `You don't have permission to associate or disassociate table ${table} to ${details.related ?? ""}`,
         plain,
       );
-    // Read denial (reference-portal): 403 90040120, also for FetchXML link-entity tables.
+    // Read denial: 403 90040120, also for FetchXML link-entity tables.
     return respond(403, "90040120", `You don't have permission to read the ${table} table.`, plain);
   }
   // Learn lists 401 for MissingPortalRequestVerificationToken and MissingPortalSessionCookie
@@ -445,7 +444,7 @@ function resolveSet(store, set) {
   throw unknownSet(set);
 }
 
-/** The 48 portal configuration tables answer 404 9004010E (reference-portal), mapped or not. */
+/** The 48 portal configuration tables answer 404 9004010E whether mapped or not. */
 function configurationTable(store, set) {
   try {
     const logical = store.resolveMapping(set).logicalName;
@@ -512,7 +511,7 @@ function globalMetadataVersion(store) {
   }
   return metadataVersions.get(mappings);
 }
-/** OData context URL: $metadata#set(select,nav(select)) as reference-portal publishes it. */
+/** OData context URL: $metadata#set(select,nav(select)) as the platform publishes it. */
 function contextUrl(t, mapping, params, { entity = false } = {}) {
   const describe = (select, expand) => {
     const parts = [...(select ?? [])];
@@ -593,7 +592,7 @@ const readRecord = (t, mapping, id, key) => {
 // ---- reads -----------------------------------------------------------------
 
 function collectionBody(t, mapping, params, result, value, paging) {
-  // reference-portal collections always carry the context and the CRM count annotations
+  // Collections carry the context and the CRM count annotations
   // (totalrecordcount is -1 without $count), with or without a Prefer header.
   const body = { "@odata.context": contextUrl(t, mapping, params) };
   const count = result["@odata.count"];
@@ -616,7 +615,7 @@ function propertyName(mapping, name, definition) {
   return lookup ? `_${name}_value` : name;
 }
 /**
- * reference-portal answers a select-less collection read with 403 90040101 naming the
+ * The adapter answers a select-less collection read with 403 90040101 naming the
  * first column (in property-name order) outside Webapi/<table>/fields; only
  * a wildcard list returns every column.
  */
@@ -643,7 +642,7 @@ function assertSelectLessRead(t, policy, mapping) {
 }
 
 /**
- * Every table an $expand reads needs read permission. reference-portal answers an expansion of a
+ * Every table an $expand reads needs read permission. The adapter answers an expansion of a
  * related table that the caller can't read with 403 90040120 naming that table, not with
  * an empty expansion, as it does for FetchXML link-entities. That holds even on a site
  * whose export sets Webapi/SkipRelatedTablePermissions. Rows of a readable related
@@ -735,7 +734,7 @@ function getFetch(t) {
   const { url, store, deps, mapping } = t;
   const xml = url.searchParams.get("fetchXml");
   const project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName);
-  // reference-portal: 403 90040120 when any table the query reads (root or link-entity)
+  // Return 403 90040120 when any table the query reads (root or link-entity)
   // has no read permission for the caller, instead of silently empty joins.
   if (!deps.identity?.admin && store.state.settings?.permissionMode !== "permissive")
     for (const logical of fetchTables(store, xml))
@@ -757,7 +756,7 @@ function getFetch(t) {
   body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"] = fetched.total_record_count_limit_exceeded;
   body["@Microsoft.Dynamics.CRM.globalmetadataversion"] = globalMetadataVersion(store);
   // The final page carries neither morerecords nor the paging cookie
-  // (fetchxml/page-results; observed on reference-portal).
+  // (fetchxml/page-results).
   if (fetched.more_records) {
     body["@Microsoft.Dynamics.CRM.morerecords"] = true;
     if (fetched.paging_cookie)

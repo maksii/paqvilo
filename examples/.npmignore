@@ -2,6 +2,7 @@
 **/.paqvilo/
 **/.pp-local/
 **/obj/
+**/bin/
 **/out/
 **/coverage/
 **/*.log

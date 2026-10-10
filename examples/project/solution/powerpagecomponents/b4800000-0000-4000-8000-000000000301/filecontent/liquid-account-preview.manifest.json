@@ -1,0 +1,20 @@
+{
+  "type": "Functional",
+  "displayName": "Account preview cards",
+  "description": "Read-only account cards with a configurable heading and bounded record count.",
+  "tables": [
+    "account"
+  ],
+  "params": [
+    {
+      "id": "title",
+      "displayName": "Title",
+      "description": "Section heading; defaults to Account preview."
+    },
+    {
+      "id": "count",
+      "displayName": "Count",
+      "description": "Number of accounts, from 1 to 4. Defaults to 3."
+    }
+  ]
+}

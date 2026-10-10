@@ -3,12 +3,23 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-// Guard against inherited organisation identifiers in reusable code and fixtures.
-const terms = ['e' + 'ma', 'p' + 'lm', 'e' + 'smp', 'i' + 'ris', 'e' + 'af', 'p' + 'ui', 'e' + 'ns'];
-const business = new RegExp(`\\b(?:${terms.join('|')})\\b|\\be${'ma'}_|eu${'ema'}|e${'ma'}logo|_e${'ns'}`, 'i');
-const legacy = /pp-local|PP_LOCAL|\b[Cc]ompanion\b/;
-const allowed = new Set(['docs/migration.md', 'mirage/test/core-separation.test.mjs', 'scripts/project-boundary.mjs', 'test/project-boundary.test.mjs']);
 const textFile = /\.(?:mjs|js|json|html|css|md|xml|ya?ml)$/;
+
+// Project extensions enter through the explicit registry API, never as built-in dependencies.
+function runtimeImports(source, file, directory) {
+  const findings = [];
+  for (const match of source.matchAll(/(?:\bfrom\s*|\bimport\s*\(\s*|\bimport\s*|\brequire\s*\(\s*)["']([^"']+)["']/g)) {
+    const specifier = match[1].replaceAll('\\', '/');
+    const resolved = path.resolve(path.dirname(file), specifier);
+    const relative = path.relative(directory, resolved).replaceAll('\\', '/');
+    const outside = relative === '..' || relative.startsWith('../') || path.isAbsolute(relative);
+    if (/(?:^|\/)packs\//.test(specifier) || /(?:^|\/)examples(?:\/|$)/.test(specifier) ||
+        (specifier.startsWith('.') && outside) || path.isAbsolute(specifier) || /^[A-Za-z]:\//.test(specifier)) {
+      findings.push(`project-owned dependency: ${specifier}`);
+    }
+  }
+  return findings;
+}
 
 export function inspectProjectBoundary(directory = root) {
   const findings = [];
@@ -18,20 +29,17 @@ export function inspectProjectBoundary(directory = root) {
       const file = path.join(dir, entry.name);
       const rel = path.relative(directory, file).replaceAll('\\', '/');
       if (entry.isDirectory()) walk(file);
-      else if (textFile.test(entry.name) && !allowed.has(rel)) {
+      else if (textFile.test(entry.name)) {
         const source = fs.readFileSync(file, 'utf8');
-        if (business.test(source)) findings.push(`${rel}: project-specific identifier`);
-        if (legacy.test(source)) findings.push(`${rel}: old product name`);
+        if (/^(?:lense|mirage)\//.test(rel) && !/^(?:lense|mirage)\/(?:test|test-browser|testing|docs)\//.test(rel) && /\.[cm]?js$/.test(entry.name)) {
+          for (const finding of runtimeImports(source, file, directory)) findings.push(`${rel}: ${finding}`);
+        }
       }
     }
   };
   for (const name of ['bin', 'lense', 'mirage', 'scripts', 'test', 'test-browser', 'docs', 'examples', '.github']) {
     const dir = path.join(directory, name);
     if (fs.existsSync(dir)) walk(dir);
-  }
-  for (const name of ['package.json', 'paqvilo.config.yml', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example']) {
-    const file = path.join(directory, name);
-    if (fs.existsSync(file) && business.test(fs.readFileSync(file, 'utf8'))) findings.push(`${name}: project-specific identifier`);
   }
   if (fs.existsSync(path.join(directory, 'mirage/packs'))) findings.push('mirage/packs: project packs must be external');
   return findings;

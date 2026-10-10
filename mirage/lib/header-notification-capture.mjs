@@ -33,7 +33,7 @@ function find(html, predicate) {
   });
   return found;
 }
-const severity = { 1: "success", 2: "danger", 3: "warning", 4: "info" };
+const SEVERITIES = new Set(["success", "danger", "warning", "info"]);
 function safeMenuStyle(value) {
   if (!value) return "";
   if (
@@ -126,14 +126,14 @@ function captureItems(menu) {
         alert = n;
     });
     if (!description || !alert) continue;
-    const type = Object.keys(severity).find((k) =>
-      hasClass(alert, "alert-" + severity[k]),
+    const type = [...SEVERITIES].find((name) =>
+      hasClass(alert, "alert-" + name),
     );
     description.childNodes = [];
     const markup = validateItem(serialize({ childNodes: [row] }));
     if (!templates.has(type))
       templates.set(type, {
-        messageType: type,
+        severity: type,
         markup,
         sha256: digest(markup),
       });
@@ -141,15 +141,7 @@ function captureItems(menu) {
   return [...templates.values()];
 }
 function plainDescription(value) {
-  const text = decodeURIComponent(String(value ?? ""))
-      .replaceAll("||", " ")
-      .slice(0, 4096),
-    fragment = parseFragment(text);
-  let result = "";
-  walk(fragment, (n) => {
-    if (n.nodeName === "#text") result += n.value;
-  });
-  return result;
+  return String(value ?? "").slice(0, 4096);
 }
 /** Capture only the observed bell/count presentation. Native dropdown contents are discarded. */
 export function observedHeaderNotifications(
@@ -283,30 +275,30 @@ export function reconcileHeaderNotifications(
     if (hasClass(n, "notificationsCount")) count = n;
     if (hasClass(n, "alerts-dropdown")) menu = n;
   });
+  const visibleNotifications = notifications.filter((row) => row.visible !== false);
   count.childNodes = [
     {
       nodeName: "#text",
-      value: String(notifications.length),
+      value: String(visibleNotifications.length),
       parentNode: count,
     },
   ];
   const templates = new Map();
   for (const template of profile.itemTemplates ?? []) {
     if (
-      !Object.hasOwn(severity, template.messageType) ||
+      !SEVERITIES.has(template.severity) ||
       template.sha256 !== digest(template.markup) ||
-      templates.has(template.messageType)
+      templates.has(template.severity)
     )
       throw fail("Observed notification item failed its integrity check.");
-    templates.set(template.messageType, validateItem(template.markup));
+    templates.set(template.severity, validateItem(template.markup));
   }
-  const items = notifications
-    .filter((n) => n.visible !== false)
+  const items = visibleNotifications
     .map((n) => {
       const markup =
-        templates.get(String(n.messageType)) ??
+        templates.get(String(n.severity)) ??
         '<li><div class="alert alert-' +
-          (severity[String(n.messageType)] ?? "info") +
+          (SEVERITIES.has(n.severity) ? n.severity : "info") +
           '"><p class="description"></p></div></li>';
       const fragment = parseFragment(markup);
       walk(fragment, (node) => {

@@ -1,7 +1,7 @@
 import { createSign, generateKeyPairSync, randomUUID } from "node:crypto";
 
 /*
- * OAuth 2.0 implicit grant endpoints of the portal (agent C):
+ * OAuth 2.0 implicit grant endpoints of the portal :
  * POST /_services/auth/token issues an ID token (RS256 JWT) for the signed-in contact and
  * GET /_services/auth/publickey returns the key that validates it. Contract (Microsoft
  * Learn, "Use OAuth 2.0 implicit grant flow in your Power Pages site"): optional client_id

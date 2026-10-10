@@ -4,8 +4,7 @@ import { siteSetting } from "./redirects.mjs";
 /**
  * External sign-in configuration derived from the portal's site settings (Learn: "Local
  * authentication, registration, and other settings", "Set up site authentication" and the
- * OpenID Connect, OAuth 2.0, SAML 2.0 and WS-Federation provider articles) and from the
- * reference-portal sign-in chain capture (docs/runtime-evidence.md).
+ * OpenID Connect, OAuth 2.0, SAML 2.0 and WS-Federation provider articles).
  * docs/sim-administration.md, "External sign-in", describes the flow these feed.
  */
 
@@ -155,12 +154,12 @@ export function oidcOptions(fields = {}) {
  *   AzureADLoginEnabled true, or an Authentication/OpenIdConnect/AzureAD/Authority. Its
  *   AuthenticationType is its authority: the setting, else the project's observed authority,
  *   else the authority the portal's own sign-in forms post, else the multi-tenant authority
- *   (reported as authoritySource "default"). reference-portal posts back to the site root with
+ *   (reported as authoritySource "default"). The adapter posts back to the site root with
  *   scope "openid profile" (capture: signin-chain/summary.json).
  * - OpenID Connect providers with Authentication/OpenIdConnect/<name>/Authority.
  * - OAuth 2.0 providers with Authentication/OpenAuth/<Name>/ClientId (ConsumerKey, AppId).
  * - SAML 2.0 and WS-Federation providers with an AuthenticationType setting.
- * OpenID Connect providers without a RedirectUri use the site root, as reference-portal's built-in
+ * OpenID Connect providers without a RedirectUri use the site root, as the platform's built-in
  * provider does; the local OAuth 2.0, SAML 2.0 and WS-Federation providers exchange the
  * same OpenID Connect messages with the local identity provider.
  */

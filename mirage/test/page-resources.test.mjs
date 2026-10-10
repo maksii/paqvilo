@@ -98,6 +98,49 @@ test("an unknown route returns an explicit unresolved page dependency", () => {
   assert.equal(result.unresolved[0].kind, "page");
 });
 
+test("literal built-in list includes resolve comma-separated and JSON exported views; dynamic keys stay unknown", () => {
+  const input = portal();
+  input.pages[0].formId = null; input.pages[0].listId = null;
+  input.pages[0].html = `{% include 'entity_list' key:'list-1' %}{% include 'entity_list' label:'key: fake' key:request.params.list %}`;
+  input.templates = {}; input.pageTemplates = []; input.pages[0].pageTemplateId = null; input.website = {};
+  input.lists[0].metadata.adx_view = 'view-1,view-2';
+  input.lists[0].metadata.adx_views = JSON.stringify({ Type: 'ViewMetadata', Views: [{ ViewId: 'view-3' }, { ViewId: 'view-1' }] });
+  const metadata = { entities: { sample_application: { fields: { sample_name: {} }, sources: ['C:/solution/table.xml'] } }, views: ['view-1','view-2','view-3'].map((id) => ({ id, name: id, entity: 'sample_application', fields: [{ name: 'sample_name' }], file: `C:/solution/${id}.xml` })) };
+  const report = resolvePageResources(input, '/workspace/', { solutionMetadata: metadata });
+  assert.equal(report.components.filter(row => row.kind === 'list').length, 1);
+  assert.deepEqual(report.views.map(row => row.id), ['view-1','view-2','view-3']);
+  assert.equal(report.tables[0].logicalName, 'sample_application');
+  assert.equal(report.columns.some(row => row.name === 'sample_name'), true);
+  assert.equal(report.unresolved.filter(row => row.kind === 'entitylist' && /variable/.test(row.reason)).length, 1);
+  assert.equal(report.unresolved.some(row => row.expression.includes('fake') && row.kind === 'list'), false);
+});
+
+test("raw, nested comments and manifests do not introduce executable reference dependencies", () => {
+  const input = portal();
+  input.pages[0].formId = null; input.pages[0].listId = null; input.pageTemplates = []; input.pages[0].pageTemplateId = null; input.website = {}; input.templates = {};
+  input.pages[0].html = `{%- raw -%}{% include 'Missing' %}{% entitylist id:chosen %}{{ snippets['Missing'] }}<fetch><entity name="invented_missing"/></fetch>{% comment %}{%- endraw -%}{% comment %}{% comment %}{{ settings.Missing }}{% endcomment %}{% entityform id:'missing' %}{% endcomment %}{% manifest %}{"description":"{% include 'Missing' %}"}{% endmanifest %}{% include 'entity_list' key:'list-1' %}{% entityview id:chosen_view %}`;
+  input.lists[0].metadata.adx_view = null;
+  const report = resolvePageResources(input, '/workspace/');
+  assert.equal(report.components.filter(row => row.kind === 'list').length, 1);
+  assert.equal(report.snippets.some(row => row.name === 'Missing'), false);
+  assert.equal(report.siteSettings.some(row => row.name === 'Missing'), false);
+  assert.equal(report.tables.some(row => row.logicalName === 'invented_missing'), false);
+  assert.equal(report.unresolved.filter(row => ['web-template','entitylist','entityform'].includes(row.kind)).length, 0);
+  assert.equal(report.unresolved.filter(row => row.kind === 'entityview').length, 1);
+});
+
+test("an exported override of entity_list is inspected as a template without assuming its arguments render a native list", () => {
+  const input = portal();
+  input.pages[0].formId = null; input.pages[0].listId = null; input.pageTemplates = []; input.pages[0].pageTemplateId = null; input.website = {};
+  input.pages[0].html = `{% include 'ENTITY_LIST' key:'list-1' %}`;
+  input.templates = { custom: { id: 'custom', name: 'entity_list', source: '{{ settings.Custom }}', metadata: { _file: 'C:/portal/custom.yml' } } };
+  input.records.push({ kind: 'sitesetting', name: 'Custom', _file: 'C:/portal/settings.yml' });
+  const report = resolvePageResources(input, '/workspace/');
+  assert.equal(report.webTemplates[0].name, 'entity_list');
+  assert.equal(report.components.some(row => row.kind === 'list'), false);
+  assert.equal(report.siteSettings.some(row => row.name === 'Custom'), true);
+});
+
 test("real PAC and unpacked solution imports return openable source-relative page dependencies", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "page-resources-import-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

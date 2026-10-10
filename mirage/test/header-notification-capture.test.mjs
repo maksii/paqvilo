@@ -16,15 +16,15 @@ test("source-bound static notification presentation renders only local records a
   assert.doesNotMatch(profile.markup, /PRIVATE|>3</);
   const result = reconcileHeaderNotifications(source, source, profile, {
     notifications: [
-      { notificationText: "Synthetic||alert", messageType: "3" },
+      { notificationText: "Synthetic alert", severity: "warning" },
       {
         notificationText: "<script>private</script>",
-        messageType: "4",
+        severity: "info",
         visible: false,
       },
     ],
   });
-  assert.match(result.html, /notificationsCount[^>]*>2</);
+  assert.match(result.html, /notificationsCount[^>]*>1</);
   assert.match(result.html, /Synthetic alert/);
   assert.doesNotMatch(result.html, /private|PRIVATE/);
   assert.match(result.html, /Local Person/);
@@ -92,13 +92,13 @@ test("observed menu layout and blank severity templates preserve local text with
   const result = reconcileHeaderNotifications(source, source, profile, {
     notifications: [
       {
-        messageType: "3",
-        notificationText: encodeURIComponent("<b>Local & safe</b>"),
+        severity: "warning",
+        notificationText: "<b>Local & safe</b>",
         showCloseButton: false,
       },
     ],
   });
-  assert.match(result.html, />Local &amp; safe<\/p>/);
+  assert.match(result.html, />&lt;b&gt;Local &amp; safe&lt;\/b&gt;<\/p>/);
   assert.match(result.html, /display:none/);
   assert.match(result.html, /viewBox="0 0 20 20"/);
   assert.doesNotMatch(result.html, /<b>|PRIVATE/);
@@ -120,4 +120,21 @@ test("observed menu layout and blank severity templates preserve local text with
       headerSource: source,
     }),
   );
+});
+
+test("notification counts follow visible rows and literal text remains safely escaped", () => {
+  const profile = observedHeaderNotifications(native, { headerSource: source, origin: "https://portal.example" });
+  const literal = '<b>Literal</b> 100% %2F || & <script>alert("x")</script>';
+  const result = reconcileHeaderNotifications(source, source, profile, { notifications: [
+    { visible: false, severity: "danger", notificationText: "Hidden notice" },
+    { visible: true, severity: "info", notificationText: literal },
+  ] });
+  assert.match(result.html, /notificationsCount[^>]*>1</);
+  assert.match(result.html, /&lt;b&gt;Literal&lt;\/b&gt; 100% %2F \|\| &amp; &lt;script&gt;alert\("x"\)&lt;\/script&gt;/);
+  assert.doesNotMatch(result.html, /Hidden notice|<script>|<b>/);
+  const allHidden = reconcileHeaderNotifications(source, source, profile, { notifications: [
+    { visible: false, severity: "info", notificationText: "Hidden notice" },
+  ] });
+  assert.match(allHidden.html, /notificationsCount[^>]*>0</);
+  assert.doesNotMatch(allHidden.html, /Hidden notice|class="description"/);
 });

@@ -92,7 +92,6 @@ test("page titles come from the language content page and language codes from th
   });
   const portal = await importPortal(dir);
   const title = (url) => portal.pages.find((page) => page.url === url).title;
-  // adx_title, else adx_name, of the content page (sandbox: "Knowledge Base", not the root page name).
   assert.equal(title("/kb/"), "Knowledge Base");
   assert.equal(title("/faq/"), "Frequently asked questions");
   assert.equal(title("/"), "Home");
@@ -138,7 +137,6 @@ test("unflagged special web roles fall back to the documented role names in an e
 });
 
 test("exported special-role flags are kept as exported and unusual assignments are reported", async (t) => {
-  // As in Third: two other roles carry the Authenticated Users flag; "Authenticated Users" does not.
   const dir = await temp(t, "pp-role-flags-");
   await write(dir, {
     ...portalFiles,
@@ -368,7 +366,6 @@ test("same-name web link sets stay reachable by ID; the name lookup takes the fi
   const dir = await temp(t, "pp-import-weblinks-");
   await write(dir, {
     ...portalFiles,
-    // Third exports three active sets named "Default"; the header template uses one by ID.
     "weblink-sets/Default/Default.weblinkset.yml": "- adx_weblinksetid: set-a\n  adx_name: Default\n- adx_weblinksetid: set-b\n  adx_name: Default\n- adx_weblinksetid: set-c\n  adx_name: Footer\n  statecode: 1",
     "weblink-sets/Default/Default.weblink.yml": "- adx_weblinkid: link-a\n  adx_name: Home A\n  adx_weblinksetid: set-a\n  adx_pageid: home\n- adx_weblinkid: link-b\n  adx_name: Home B\n  adx_weblinksetid: set-b\n  adx_pageid: home",
   });
@@ -396,9 +393,6 @@ test("one URL claimed by several pages or web files is reported; parentless web 
   // IDs that are not GUIDs keep export order.
   assert.deepEqual(claims.map((d) => d.rule), ["export-order", "export-order"]);
   assert.ok(claims[0].message.includes("'Dup A' is served (first in export order)"));
-  // GUID IDs: the first in SQL Server uniqueidentifier order is served, as Second sandbox
-  // serves the restricted page (bca7581a-...-000d3aaa03a2) of the two claiming
-  // /alternative-therapies/, though the other (fa65ade2-...-27887390aa0a) is exported first.
   const ordered = await temp(t, "pp-import-claims-guid-");
   await write(ordered, {
     ...portalFiles,
@@ -409,8 +403,6 @@ test("one URL claimed by several pages or web files is reported; parentless web 
   assert.deepEqual([claim.rule, claim.usedId, claim.claimants.map((claimant) => claimant.name)], ["id-order", "bca7581a-3f1a-ee11-8f6d-000d3aaa03a2", ["Alternative public", "Alternative restricted"]]);
   assert.equal(byId.pages.find((page) => normalizePortalPath(page.url) === "/alternative-therapies").name, "Alternative restricted");
   assert.ok(guidOrderKey("bca7581a-3f1a-ee11-8f6d-000d3aaa03a2") < guidOrderKey("fa65ade2-8125-69c9-2317-27887390aa0a"));
-  // Web files: the LAST in ID order is served, as Sample sandbox serves /favicon.ico from
-  // 17197785-…-7c1e52266593 (image/svg+xml) rather than acbcf3df-…-0050f2811e07.
   const files = await temp(t, "pp-import-claims-files-");
   await write(files, {
     ...portalFiles,

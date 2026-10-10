@@ -114,6 +114,15 @@
 
 
 
+      <RootComponent type="91" id="{b4700000-0000-4000-8000-370000000001}" schemaName="Paqvilo.Demo.Plugins, Version=1.0.0.0, Culture=neutral, PublicKeyToken=70fb5a9b55e65c6c" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000100}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000101}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000102}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000103}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000104}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000105}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000106}" behavior="0" />
+      <RootComponent type="92" id="{b4700000-0000-4000-8000-370000000107}" behavior="0" />
     </RootComponents>
     <MissingDependencies />
   </SolutionManifest>

@@ -1,10 +1,12 @@
 {
-  "name": "my-portal-project",
+  "name": "paqvilo-example",
   "private": true,
   "type": "module",
   "scripts": {
-    "lense": "paqvilo lense --config ./paqvilo.config.yml",
-    "mirage": "paqvilo mirage",
+    "dev": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0",
+    "dev:debug": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222",
+    "lense": "paqvilo lense dev --config ./paqvilo.config.yml --site example",
+    "mirage": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0",
     "test": "node --test test/*.test.mjs"
   },
   "dependencies": { "paqvilo": "file:../.." }

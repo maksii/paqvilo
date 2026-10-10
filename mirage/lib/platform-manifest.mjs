@@ -1,19 +1,15 @@
 import { createHash } from "node:crypto";
 
 /*
- * Native Power Pages platform resource manifest (agent C).
+ * Native Power Pages platform resource manifest.
  *
  * The local page shell is composed from this manifest when no live shell capture exists;
  * a captured shell profile (lib/shell-capture.mjs) remains an optional override that
  * supplies the real platform bundle paths, which the asset cache then serves.
  *
- * Evidence (read-only reference-portal observations, agent C and agent G):
- * - docs/runtime-evidence.md: anonymous and signed-in home
- *   pages and the /contact-us/ basic form page (body order, form#liquid_form children,
- *   platform globals, chrome markup).
- * - live-run1/live-run2 (signed-in list pages) and live-run4 (modal form document).
- * - docs/runtime-evidence.md: AXD scripts on form pages only, tokenhtml requests,
- *   heading announcer, offline bar and native-controls root on every page.
+ * The manifest defines local shell contracts for platform globals, chrome, forms
+ * and bundles. Synthetic regressions cover their composition and ordering.
+ * Captured shell profiles can override deployment-specific bundle paths.
  * - Legacy ADX sources (MIT): LiquidServerControl.ServerForm (liquid_form wrapper and
  *   jquery.blockUI ScriptReference), EntityForm/WebForm (webform.js, radcaptcha.js) and
  *   CellTemplate/EnhancedTextBox (crmentityformview.js).
@@ -30,7 +26,7 @@ export const PAGE_KINDS = Object.freeze({
 });
 
 /**
- * Ordered platform resources per phase. `native` is the reference-portal resource (hashed bundle names
+ * Ordered platform resources per phase. `native` is the platform resource (hashed bundle names
  * vary by platform build); `local` is what the mirage serves without a capture.
  * `kinds` lists the page kinds that load the resource.
  */
@@ -66,7 +62,7 @@ const escapeAttribute = (value) =>
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
-/** reference-portal markup (live-run9), with the platform CDN images served from the local origin. */
+/** Offline notification markup with platform images served from the local origin. */
 export const OFFLINE_NOTIFICATION_BAR =
   `<div id="offlineNotificationBar" class="displayNone"> <img alt="web" id="web" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/web.png'; img.alt = 'web'; img.id = 'web' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/web.png"> <div id="message">You’re offline. This is a read only version of the page.</div> <div id="close" onclick="this.parentElement.style.display='none';"><img alt="close" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/close.png'; img.alt = 'close'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/close.png"></div> </div>`;
 
@@ -76,8 +72,7 @@ export const NATIVE_CONTROLS_ROOT = `<div id="pp-native-controls-react-root"></d
 
 /**
  * The platform layout's <body data-ckeditor-basepath> value (the platform's rich-text
- * designer library path). Observed on the reference portal's modal form document
- * (live-run5/6, Form.aspx body attributes); G's layout capture shows the same shape.
+ * designer library path). Modal form documents use this minimal shell.
  */
 export const CKEDITOR_BASEPATH = "/js/BaseHtmlContentDesigner/Libs/msdyncrm_/libs/ckeditor/";
 
@@ -104,7 +99,7 @@ const hidden = (name, value) => `<input type="hidden" name="${name}" id="${name}
 
 /**
  * The WebForms script resources of form pages at their native paths: WebResource.axd and
- * three ScriptResource.axd (reference-portal live-run9 /contact-us/; agent G's capture holds WebForms.js,
+ * three ScriptResource.axd resources (WebForms.js,
  * WebUIValidation.js, MicrosoftAjax.js and MicrosoftAjaxWebForms.js). The `d` value names the
  * local equivalent that lib/native-services.mjs serves:
  * - webforms-compat.js implements the postback, WebForm_* and validation surface;
@@ -128,8 +123,7 @@ export function localAspNetScript(url) {
 }
 
 /**
- * The ASP.NET server form of a native form page (LiquidServerControl.ServerForm; reference-portal
- * /contact-us/ in live-run9): hidden state fields, the postback stub, the WebForms
+ * The ASP.NET server form of a native form page (LiquidServerControl.ServerForm): hidden state fields, the postback stub, the WebForms
  * script resources and the form scripts, then the page content. `aspNetScripts` are
  * captured AXD paths when a live shell capture provides them; otherwise the local
  * WebForms equivalents load at the native AXD paths (LOCAL_ASPNET_SCRIPTS).
@@ -223,20 +217,13 @@ export function rewritePageLayout(page, pageTemplate) {
 }
 
 // ---------------------------------------------------------------------------
-// Platform bundles in live document order (agent C).
-//
-// Every page of the reference portals loads the ResourceManager script and 17 bundles from
-// content.powerapps.com/resource/powerappsportal, in a fixed order. This includes modal form
-// documents. Evidence:
-// - The reference-portal reference portal: live-run9 (home pages, /contact-us/) and live-run4 (modal form).
-// - Three further reference portals: agent G's page-shell runs of 2026-10-08,
-//   docs/runtime-evidence.md
+// Platform bundle ordering used by the local shell, including modal form documents.
+// The ResourceManager script and bundles retain their native URL structure.
 // Sites whose Site/BootstrapV5Enabled setting is true load the BootstrapV5 builds of
 // font-awesome, preform (css and moment), bootstrap, postpreform and app.
 //
-// The hashes are the platform build that three of the four reference portals ran. The fourth
-// ran an earlier build: client-telemetry 2bb0ef927d, controls host 8512520686, app 79acd4df74.
-// A captured shell profile supplies the deployed names.
+// The default hashes identify one platform build; they are not a deployed site baseline.
+// A captured shell profile supplies the actual deployment-specific names.
 //
 // Locally each bundle is linked at the same path on the local origin. The asset cache serves
 // captured bytes; otherwise lib/native-services.mjs serves the local equivalent named by
@@ -309,7 +296,7 @@ const RESOURCE_MANAGER_PATH = /^\/_portal\/[^/]+\/Resources\/ResourceManager(?:[
  *   With a capture, the captured stylesheets that precede the first platform stylesheet
  *   are used instead.
  * - `controlsRoot`: false for modal form documents, which load the controls host scripts
- *   without the layout's native-controls root (live-run4).
+ *   without the layout's native-controls root.
  */
 export function platformShell({ variant = "BootstrapV3", profile = null, websiteId = "", languageCode = "en-US", bootstrap = "", renderStyles = null, controlsRoot = true } = {}) {
   const lists = ["stylesheets", "headScripts", "beforeContentScripts", "bodyScripts", "afterFooterScripts"];

@@ -112,12 +112,18 @@ export function validateOperationOverrides(overrides) {
   if (!overrides || typeof overrides !== 'object' || Array.isArray(overrides)) fail('operations must map discovered operation keys to local configurations.');
   if (Object.keys(overrides).length > 1000) fail('Too many local operation configurations.');
   for (const [key, value] of Object.entries(overrides)) {
-    if (!/^(server-logic|cloud-flow):[^\s]{1,250}$/.test(key)) fail('Invalid operation key.');
+    if (!/^(server-logic|cloud-flow|plugin-step):[^\s]{1,250}$/.test(key)) fail('Invalid operation key.');
     if (!value || typeof value !== 'object' || Array.isArray(value)) fail('An operation configuration must be an object.');
     if (!['placeholder', 'mock', 'exported', 'handler'].includes(value.mode)) fail('Operation mode must be placeholder, mock, exported or handler.');
+    if (key.startsWith('plugin-step:') && value.mode === 'exported') fail('Compiled .NET plugin execution is not supported locally.');
     if (Object.keys(value).some(name => !['mode', 'status', 'body'].includes(name))) fail('Unknown operation configuration field.');
     if (value.status !== undefined && (!Number.isInteger(value.status) || value.status < 200 || value.status > 599)) fail('Operation response status must be an integer from 200 to 599.');
     if (Buffer.byteLength(JSON.stringify(value)) > 1024 * 1024) fail('Operation configuration exceeds 1 MiB.');
+    if (key.startsWith('plugin-step:') && value.body !== undefined) {
+      if (!value.body || typeof value.body !== 'object' || Array.isArray(value.body) || Object.keys(value.body).some(name => !['target', 'error'].includes(name))) fail('Plugin mock body must contain target field changes or an error.');
+      if (value.body.target !== undefined && (!value.body.target || typeof value.body.target !== 'object' || Array.isArray(value.body.target))) fail('Plugin mock target must be a field map.');
+      if (value.body.error !== undefined && (!value.body.error || typeof value.body.error !== 'object' || typeof value.body.error.message !== 'string')) fail('Plugin mock error needs a message.');
+    }
   }
 }
 

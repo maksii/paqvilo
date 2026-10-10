@@ -516,8 +516,6 @@ test("solution roots resolve alike for serve and bootstrap-report: CLI, catalogu
 test("case relationships come from Learn and document management creates <table>_SharePointDocumentLocations", async (t) => {
   const managed = "<IsDocumentManagementEnabled>1</IsDocumentManagementEnabled>";
   const root = await tree(t, {
-    // Second and Third grants: case notes, activities, email, portal comments and document
-    // locations; sample_shortage and incident have document management enabled.
     "Entities/Incident/Entity.xml": entityXml("Incident", { attributes: attribute("sample_Extra", "nvarchar"), extra: managed }),
     "Entities/sample_shortage/Entity.xml": entityXml("sample_shortage", { set: "sample_shortages", full: true, extra: managed }),
     "Entities/sample_plain/Entity.xml": entityXml("sample_plain", { set: "sample_plains", full: true, extra: "<IsDocumentManagementEnabled>0</IsDocumentManagementEnabled>" }),

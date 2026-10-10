@@ -34,3 +34,6 @@
 - adx_name: Authentication/Registration/ExternalLoginEnabled
   adx_sitesettingid: b4700000-0000-4000-8000-b39fafa3da93
   adx_value: "false"
+- adx_name: Webapi/error/innererror
+  adx_sitesettingid: b4700000-0000-4000-8000-370000000200
+  adx_value: "true"

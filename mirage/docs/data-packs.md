@@ -38,7 +38,7 @@ paqvilo mirage data generate --pack customer-demo --pack-module ./pack/pack.mjs 
 
 Use repeatable `--count NAME=N` options for pack-defined dataset dimensions, for example `--count customers=5 --count orders=20`. Names and meanings belong to your generator; core passes the validated nonnegative integers as `counts` without assuming business entities.
 
-Register local server operations by their exported names:
+Register project providers by their exported operation names when the default simulation is insufficient:
 
 ```js
 serverLogics: {
@@ -49,10 +49,14 @@ cloudFlows: {
 },
 ```
 
-These optional pack properties are explicit trust decisions. Mirage checks the exported operation and its web roles before calling a handler. HTTP writes require the portal verification token. Unregistered operations retain their unsupported response; server logic is never forwarded to a live site.
+These optional pack properties are explicit trust decisions. Mirage checks the exported operation and its web roles before calling a handler. HTTP writes require the portal verification token. [Operations](operations.md) automatically inventories exports, executes supported request/response flows and offers placeholders, JSON mocks and explicit exported-code opt-in. Server logic and imported workflows are not forwarded to remote services.
 
-`runExportedServerLogic()` runs trusted exported JavaScript in a separate worker with a time and memory limit. It supplies invocation context, site settings, user information and permission-scoped **local** Dataverse reads. The adapter supports `RetrieveRecord` and `RetrieveMultipleRecords`; connector writes and external HTTP/flow calls require a project handler. The worker is a resource boundary, not a security sandbox for untrusted code. Liquid `serverlogic` uses the same registration and returns `success`, `status_code`, `data` and `raw_result`.
+`runExportedServerLogic()` runs trusted exported JavaScript in a worker with time and memory limits. It supplies invocation context, site settings, user information and permission-scoped local Dataverse query/CRUD helpers. Writes require a verified HTTP write request; Liquid helper calls remain read-only. External HTTP, connectors and custom APIs require a project handler. The worker provides resource limits, not an untrusted-code sandbox or Dataverse transaction guarantees. Liquid `serverlogic` returns `success`, `status_code`, `data` and `raw_result`.
 
 `runExportedCloudFlow()` reads the selected solution's workflow by exported process ID. It supports one Power Pages Request trigger and one Response action, including `@triggerBody()?['field']`. Other actions and expressions fail explicitly. A custom handler can model those operations using its `input`, local `store` and `identity`; keep its behavior and acceptance tests in the project.
 
-Standard PCF controls use the selected solution's manifests and declared resources. Configure `observed.codeComponents` as a component GUID-to-schema-name map with `observed.evidence` explaining the verified binding. The host provides lifecycle calls, parameters, output events (`paqvilo:pcf-output`), basic context and permission-scoped Web API operations. Dataset and React hosts, framework-specific services and undeclared resources remain unsupported.
+Standard PCF controls use selected Solution manifests and declared resources. Tags can use an exact exported schema name; GUID references require `observed.codeComponents` with evidence. The host provides lifecycle calls, parameters, output events (`paqvilo:pcf-output`) and permission-scoped Web API operations. Explicitly bound exported datasets and enabled native single-field bindings have dedicated adapters. React/virtual hosts, platform libraries and unsupported SDK services remain outside this host. See [code components](code-components.md).
+
+For imported Dataverse plugin steps, expose `pluginSteps: { '<exported-step-id>': synchronousHandler }` on your pack. Handlers explicitly model local validation or target-field changes; they do not execute the assembly. See [plugin contracts and rollback](dataverse-plugins.md#model-a-write).
+
+A pack can name a `shell.headerNotificationQuery` web template for an explicitly captured header presentation. The template owns all audience and visibility rules and returns `{ "notifications": [{ "notificationText": "Local notice", "severity": "info", "visible": true }] }`. Severity accepts `success`, `danger`, `warning` or `info`. The count includes visible rows only. Text is bounded plain text and displayed literally with HTML escaping; the runtime does not decode project field formats or infer visibility from custom audience values. Invalid rows produce `HEADER_NOTIFICATION_QUERY_INVALID` and are omitted.

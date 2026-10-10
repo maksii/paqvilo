@@ -49,21 +49,25 @@ Run `npx --no-install paqvilo lense --help` for the full command/options referen
 | `verify` | Edit a disposable copy and check the browser applies supported changes |
 | `agent` | Inspect and control a running owned browser through the bounded authenticated API |
 
-In npm release 0.9.2, `doctor` can report missing Mirage dependencies even when local rendering works. Use `mirage inspect` to check the export; the source-checkout `npm run setup` instruction does not apply to your portal project.
-
 ## Source mapping and comparison scope
 
 JavaScript, CSS, images and supported inline fields map from discovered export metadata. Literal markup uses baseline patches and rejects ambiguous matches. Lense does not evaluate Liquid locally or apply server-side portal settings. Enhanced XML and code-bearing YAML fields are edited using their discovered field/JSON descriptors; `source-edit.mjs` preserves sibling values and rejects stale identity or paths outside the source extract.
 
 The default scope overlays every local source. `--scope changed` limits overlays to changes since the captured baseline. HEAD is pinned when a target activates; committing later does not erase the baseline. Explicit deployment refs remain explicit. The panel reports Git drift and can pin a fresh HEAD. Shared sources refresh the affected portal's tabs; page sources affect that page; CSS can hot-swap. Pausing reload preserves an unsaved form while saves accumulate.
 
+Create the initial source commit before previewing literal markup. The [setup instructions](getting-started.md#4-preview-live-with-lense) cover a new export; this local baseline does not identify a deployed commit.
+
 The panel's **Online / Local** switch compares the browser's responses. **Alt+Shift+P** opens the panel. **Inspect** is available for live and Mirage sessions. **Tweaks** changes local Mirage identity and scenarios. Independent targets stay isolated by origin, environment and source selection.
 
 In **Inspect**, start with **Page & templates** to open the page copy, JavaScript, CSS and template include chain. **Forms & controls** connects exported forms, lists, views and fields with rendered controls. **Select an element** identifies a control and shows an exact field match when one is available; unmatched elements point you to the page sources. Source rows open files in your configured editor.
 
-Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings.
+Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings. Exported language routes select the corresponding page and snippet sources. Relative asset references follow their browser URL.
 
-With only a portal export, Inspect resolves portal components, snippets, web files and exported access rules. Add `mirage.solutionRoots` or `mirage.project` to the catalogue to resolve Solution FormXml, views, table fields and mapped PCF manifests and resources. These shared source settings also work in live Lense without starting Mirage. **Refresh inspection** rereads the selected sources, including Solution changes.
+Native code components connect FormXml properties and bound columns to their manifests and portal attribute settings. Inspect distinguishes the selected desktop control from other form factors and reports explicit portal enablement separately from a model-driven default.
+
+Table rows also expose exported Dataverse plugin registrations: message, stage, rank, filtering columns, type and assembly. Open their registration XML or explicitly mapped C# source. Lense uses the online plugin execution; exported registrations do not establish which assembly is currently deployed. See [plugin source mappings](../mirage/docs/dataverse-plugins.md).
+
+With only a portal export, Inspect resolves portal components, snippets, web files and exported access rules. Add `mirage.solutionRoots` or `mirage.project` to the catalogue to resolve Solution FormXml, views, table fields, PCF manifests/resources and literal dataset bindings. Code components resolve by exported schema name or an explicit observed ID mapping. These shared source settings also work in live Lense without starting Mirage. **Refresh inspection** rereads the selected sources, including Solution changes.
 
 **Tables & access** shows exported permissions, scopes, relationships and web roles. Static references can include conditional branches. Rendered controls and assets are labelled separately. Live role membership and effective record access remain unknown; an exported grant is not proof that the signed-in user can use it.
 

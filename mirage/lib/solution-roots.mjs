@@ -78,7 +78,7 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
   return { roots: await discoverSolutionRoots(sourceDir, { cacheFile }), order: "derived", source: "discovered" };
 }
 
-const RELEVANT_TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|controls|workflows|powerpagecomponents)$/i;
+const RELEVANT_TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|controls|workflows|powerpagecomponents|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
 /**

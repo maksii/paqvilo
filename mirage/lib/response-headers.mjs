@@ -25,7 +25,7 @@ const NOT_ECHOED = /^(?:access-control-.*|strict-transport-security)$/;
 
 /**
  * Portal page and web file headers derived only from HTTP/* site settings, one header
- * each, as reference-portal sends them: every HTTP/<Header-Name> setting with a value
+ * each, as the platform sends them: every HTTP/<Header-Name> setting with a value
  * (X-Content-Type-Options, Referrer-Policy, Permissions-Policy, ...), X-Frame-Options
  * (default SAMEORIGIN), the site's Content-Security-Policy (sitePolicy) and
  * Content-Security-Policy-Report-Only. Nothing else: no CSP and no X-Content-Type-Options
@@ -57,17 +57,14 @@ export function siteHeaders(portal, { confinement = null, kind = null } = {}) {
 }
 
 /**
- * The anti-forgery token fragment (/_layout/tokenhtml) carries the page headers on reference-portal:
- * docs/runtime-evidence.md, headers-tokenhtml-anon, lists
- * content-security-policy, x-content-type-options, x-frame-options and
- * access-control-allow-origin among the live header names, as on that site's pages. So it gets the
- * page caching and the page's site headers (siteHeaders kind "page").
+ * The anti-forgery token fragment (/_layout/tokenhtml) uses page caching and
+ * the page's configured site headers (siteHeaders kind "page").
  */
 export function tokenHtmlHeaders(portal, { confinement = null } = {}) {
   return { "cache-control": PAGE_CACHE_CONTROL, ...siteHeaders(portal, { confinement, kind: "page" }) };
 }
 
-/** HTML page responses: reference-portal sends no-cache, no-store, must-revalidate. */
+/** HTML page responses: the platform sends no-cache, no-store, must-revalidate. */
 export const PAGE_CACHE_CONTROL = "no-cache, no-store, must-revalidate";
 
 const rfc5987 = (value) => encodeURIComponent(String(value)).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
@@ -82,7 +79,7 @@ export function webFileDisposition(metadata = {}) {
 }
 
 /**
- * Web file response headers as reference-portal sends them: content type with ";charset=utf-8" on
+ * Web file response headers as the platform sends them: content type with ";charset=utf-8" on
  * every type, Content-Disposition (the record's inline or attachment) with the RFC 5987
  * attachment file name, an unquoted base64 SHA-256 ETag of the body and Last-Modified.
  * Caching is the platform's by default: public (anonymous) or private (signed in)

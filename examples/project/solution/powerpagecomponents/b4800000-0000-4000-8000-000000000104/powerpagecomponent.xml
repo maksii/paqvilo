@@ -1,0 +1,9 @@
+<powerpagecomponent powerpagecomponentid="b4800000-0000-4000-8000-000000000104">
+  <content>{"source":"{% assign cell_value = record[column.logical_name] %}{% if column.logical_name == primary_name %}&lt;a href=\"/approach/web-api/account/?id={{ record[primary_key] | escape }}\"&gt;{{ cell_value | escape }}&lt;/a&gt;{% elsif cell_value.label %}{{ cell_value.label | escape }}{% elsif cell_value.name %}{{ cell_value.name | escape }}{% elsif column.attribute_type == 'DateTime' %}{{ cell_value | date: 'yyyy-MM-dd' | escape }}{% else %}{{ cell_value | escape }}{% endif %}\n"}</content>
+  <iscustomizable>1</iscustomizable>
+  <name>Liquid view cell</name>
+  <powerpagecomponenttype>8</powerpagecomponenttype>
+  <powerpagesiteid><powerpagesiteid>b4700000-0000-4000-8000-d31ddbcbde91</powerpagesiteid></powerpagesiteid>
+  <statecode>0</statecode>
+  <statuscode>1</statuscode>
+</powerpagecomponent>

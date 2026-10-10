@@ -1,15 +1,15 @@
 // The platform's page-level client object window.Microsoft.Dynamic365.Portal.
 //
-// reference-portal (agent G's read-only capture, docs/runtime-evidence.md) exposes the 17
+// The local client contract exposes the 17
 // top-level keys below, in this order, and the 6 User keys, signed in and anonymous alike;
 // there is no `version` key. Microsoft.PowerPages carries onPagesClientApiReady too. Local values:
 // - User.* come from the session persona's contact; an anonymous visitor has empty strings
-//   (contactId included) and userRoles is always an empty array, as on the reference portal;
+//   (contactId included) and userRoles is always an empty array, as on the platform;
 // - the site id is the exported website id; tenant and organisation ids are stable local
 //   GUIDs derived from it; correlationId is the request trace id;
-// - type, geo, portalProductionOrTrialType, timerProfileForBatching and isSpaSite take the
-//   reference values; activeLanguages is the page language;
-// - isTelemetryEnabled and isClientApiEnabled are "False" (the reference has "True"): a local
+// - type, geo and portalProductionOrTrialType remain unknown unless the page supplies them;
+//   activeLanguages is the page language; batching and SPA flags use local compatibility values;
+// - isTelemetryEnabled and isClientApiEnabled are "False": a local
 //   runtime sends no telemetry and provides no pages client API, so onPagesClientApiReady
 //   never settles; InstrumentationSettings and dynamics365PortalAnalytics are empty strings.
 // Values already present on the page (an authored or captured definition) are kept.
@@ -61,14 +61,14 @@ export function portalClientObject(identity = {}, { websiteId = "", language = "
       contactId,
       userRoles: [],
     },
-    type: "StarterPortal",
+    type: "",
     id: site,
-    geo: "EUR",
+    geo: "",
     tenant: localGuid(`tenant:${site}`),
     correlationId: GUID.test(String(traceId ?? "")) ? String(traceId) : randomUUID(),
     orgEnvironmentId: localGuid(`environment:${site}`),
     orgId: localGuid(`organization:${site}`),
-    portalProductionOrTrialType: "Production",
+    portalProductionOrTrialType: "",
     isTelemetryEnabled: "False",
     InstrumentationSettings: { instrumentationKey: "", collectorEndpoint: "" },
     timerProfileForBatching: "NEAR_REAL_TIME",
@@ -79,7 +79,7 @@ export function portalClientObject(identity = {}, { websiteId = "", language = "
   };
 }
 
-/** Browser script that completes window.Microsoft.Dynamic365.Portal in the reference key order. */
+/** Browser script that completes window.Microsoft.Dynamic365.Portal in the compatibility key order. */
 export function clientPortalObjectRuntime(identity, site) {
   const values = JSON.stringify(portalClientObject(identity, site)).replace(/</g, "\\u003c");
   const keys = JSON.stringify(PORTAL_OBJECT_KEYS);

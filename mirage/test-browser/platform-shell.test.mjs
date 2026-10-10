@@ -77,7 +77,7 @@ async function portalFixture(t, { settings = [], home = null } = {}) {
 test("platform chrome, lazy anti-forgery token, app-bundle accessibility and Datejs on a plain page", async (t) => {
   const { app, page, errors, requests } = await portalFixture(t);
   await page.goto(`${app.url}/`);
-  // Body order as on sandbox: offline bar (hidden by the platform styles), header, empty
+  // Default shell body order: offline bar (hidden by the platform styles), header, empty
   // anti-forgery holder, content, native-controls root, footer, then the authored banner.
   const order = await page.evaluate(() => [...document.body.children].map((element) => element.id || element.tagName.toLowerCase()).filter((name) => !["script", "style", "link"].includes(name)));
   assert.deepEqual(order.slice(0, 3), ["offlineNotificationBar", "header", "antiforgerytoken"]);
@@ -126,7 +126,7 @@ test("basic form pages run inside the WebForms form with the platform form scrip
     ["object", "function", "function", "function", true],
   );
   // The platform's word-boundary getElementsByClassName (an Array, so page scripts can call
-  // forEach) does not change jQuery class selection (sandbox live-run11/12).
+  // forEach) does not change jQuery class selection.
   const selection = await page.evaluate(() => ({
     method: document.getElementsByClassName("control").length,
     words: document.getElementsByClassName("control").some((element) => element.classList.contains("form-control")),

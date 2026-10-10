@@ -8,7 +8,7 @@ Install Paqvilo, try the included example, then connect your own Power Pages exp
 
 | Tool | Why you need it |
 | --- | --- |
-| [Node.js 24 LTS](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. Node.js 22+ is supported. |
+| [Node.js 22 or later](https://nodejs.org/en/download) | Runs Paqvilo and includes npm and npx. |
 | Edge or Chrome | Displays your portal and the integrated development panel. Edge is the default. |
 | [Git](https://git-scm.com/downloads) | Provides source baselines for browser overlays and change comparisons. |
 | [Visual Studio Code](https://code.visualstudio.com/download) | Recommended editor for your exported sources and configuration. |
@@ -60,7 +60,9 @@ Follow the walkthrough on the page:
 6. **Edit locally.** In VS Code, open `paqvilo-example/portal/web-files/demo.css`. Change a style and save. The browser should refresh with your edit.
 7. **Try an empty state.** Open **Manage data and personas**, select **Plugins & presets**, apply **Empty account workspace** and confirm. Refresh the portal. Apply **Populated account workspace** to restore the sample rows.
 
-The demo includes editable portal and solution sources, PCF projects and importable deployment archives. All three approaches support local account/contact CRUD and notes. Extended uses explicitly registered local server logic and a request/response flow simulation. [Demo coverage](../examples/project/README.md) lists supported host features; the sample's [deployment guide](../examples/project/deployment/README.md) takes it to your own Power Pages environment.
+The demo includes editable portal and solution sources, PCF projects and importable deployment archives. All three approaches support local account/contact CRUD and notes. Extended uses local server logic and a request/response flow simulation. The [demo guide](demo.md) connects each approach to its sources; [coverage](coverage.md) describes the supported platform boundary. The sample's [deployment guide](../examples/project/deployment/README.md) takes it to your own Power Pages environment.
+
+Prefer menus and **F5** for daily work? Use `npx --no-install paqvilo mirage demo --scaffold` instead, then open the generated `paqvilo-example/paqvilo-demo.code-workspace`. Its prepared tasks and browser debugger are explained in the [VS Code walkthrough](demo.md#prefer-vs-code-tasks).
 
 Keep the terminal running. Close the demo browser or press **Ctrl+C** to stop. Running the demo again preserves source edits and restores its sample dataset. Local sign-in uses invented contacts, without a password or Microsoft account.
 
@@ -140,6 +142,16 @@ Close the dev browser or press **Ctrl+C** to stop runtimes started by that sessi
 
 ## 4. Preview live with Lense
 
+Lense uses a committed export as the baseline for literal markup previews and Git comparisons. If this export has no Git history, run these commands from your project folder before editing it:
+
+```sh
+git init
+git add sources/portal-export
+git commit -m "Baseline portal export"
+```
+
+Use your actual export path. In an existing repository, commit the export through your normal source review. This baseline records local files; it does not establish what is deployed online.
+
 ```sh
 npx --no-install paqvilo lense dev --config ./paqvilo.config.yml --site portal --env dev
 ```
@@ -160,5 +172,6 @@ Lense previews supported local resources while Liquid and Dataverse execute onli
 | Exported pages are missing | Check the directory containing your exported site and run `mirage inspect` again. |
 | Mirage lists are empty or access is denied | Add simulated rows and sign this browser in as a local persona; inspect its table permissions. |
 | A saved change is missing | Check applied resources, unmatched patches, `needsDeploy` and failed requests in the panel. |
+| Inspect cannot open the editor | Set the top-level `editor` in `paqvilo.config.yml`, or `PAQVILO_EDITOR`, to your editor CLI's name or actual executable path, then restart the session. VS Code uses `code` or its installed `code.cmd`. |
 
 [Documentation index](index.md) | [Project starter](../examples/project/README.md)

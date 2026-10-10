@@ -17,7 +17,7 @@ import { loginPath } from "./redirects.mjs";
 /**
  * The portal side of external sign-in (docs/sim-administration.md, "External sign-in").
  *
- * reference-portal (capture: docs/runtime-evidence.md): the portal's
+ * The local adapter reproduces the portal's
  * provider form POSTs /Account/Login/ExternalLogin?returnUrl=... with
  * __RequestVerificationToken and provider = the provider's AuthenticationType (for
  * Microsoft Entra, its authority); the portal answers 302 to <authority>oauth2/authorize
@@ -27,8 +27,7 @@ import { loginPath } from "./redirects.mjs";
  * to <LoginPath>?ReturnUrl=%2FAccount%2FLogin%2FLogOff.
  *
  * Locally the provider's authority is its local authority on the runtime's identity
- * provider (lib/identity-provider.mjs). The response handling that reference-portal could not show
- * without an interactive sign-in follows the documented ASP.NET Identity/OWIN external
+ * provider (lib/identity-provider.mjs). Response handling follows the ASP.NET Identity/OWIN external
  * login pattern the platform is built on (Learn, "Local authentication, registration, and
  * other settings"): the provider's form post to the reply URL is validated (state, id_token
  * signature from the provider's keys, issuer, audience, lifetime, nonce and the nonce
@@ -818,7 +817,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   // ---- LogOff ----
   async function logOff(req, res, url) {
     if (!identity()?.contactId)
-      // reference-portal: LogOff needs a signed-in user; an anonymous request is sent to the sign-in path.
+      // LogOff needs a signed-in user; an anonymous request is sent to the sign-in path.
       return redirect(res, `${loginPath(portal())}?ReturnUrl=${encodeURIComponent(url.pathname)}`, "sign-out-anonymous");
     const returnUrl = safeReturnUrl(returnUrlParameter(url.searchParams));
     const session = sessions.read(req.headers.cookie);

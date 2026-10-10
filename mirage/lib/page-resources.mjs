@@ -1,6 +1,7 @@
 import path from "node:path";
 import fs from "node:fs";
 import { normalizePortalPath, portalField } from "./importer.mjs";
+import { stripLiquidLiteralBlocks } from "./liquid-source.mjs";
 
 const id = (value) =>
   String(value?.id ?? value ?? "")
@@ -43,8 +44,19 @@ const lookup = (rows, value) => {
   return rows.find((row) => id(row.id) === key) ?? null;
 };
 const expression = (text) => String(text ?? "").replace(/\s+/g, " ").trim().slice(0, 240);
+const guid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function componentReference(args, keys) {
+  const values = new Map();
+  for (const match of args.matchAll(/\b([\w]+)\s*:\s*('[^']*'|"[^"]*"|[^\s,]+)/g)) {
+    const value = match[2], quoted = value.startsWith("'") || value.startsWith('"');
+    values.set(match[1].toLowerCase(), { reference: quoted ? value.slice(1, -1) : value.replace(/-?%}$/, ''), quoted });
+  }
+  const value = keys.map((key) => values.get(key)).find(Boolean);
+  return { reference: value?.reference, dynamic: Boolean(value && !value.quoted && !guid.test(value.reference)) };
+}
 
-function extractReferences(source) {
+function extractReferences(source, exportedTemplateNames = new Set()) {
+  source = stripLiquidLiteralBlocks(source);
   const templates = [], snippets = [], settings = [], forms = [], lists = [], views = [];
   const unresolved = [], usages = [];
   const addStatic = (collection, value, type, text) => {
@@ -55,6 +67,13 @@ function extractReferences(source) {
   for (const match of source.matchAll(tagRegex)) {
     addStatic(templates, match[1] ?? match[2], "web-template", match[0]);
     usages.push({ kind: "include", reference: match[1] ?? match[2], expression: expression(match[0]) });
+    if ((match[1] ?? match[2]).toLowerCase() === "entity_list" && !exportedTemplateNames.has("entity_list") && /^\{%[-]?\s*include\b/i.test(match[0])) {
+      const args = match[0].replace(/^\{%[-]?\s*include\s+(?:'[^']+'|"[^"]+")/i, '');
+      const { reference, dynamic } = componentReference(args, ['key']);
+      if (dynamic) unresolved.push({ kind: "entitylist", expression: match[0], reason: "Built-in list key uses a Liquid variable and cannot be resolved statically." });
+      else addStatic(lists, reference, "entitylist", match[0]);
+      usages.push({ kind: "entitylist", reference: dynamic ? null : reference ?? null, expression: expression(match[0]), via: "built-in entity_list" });
+    }
   }
   for (const match of source.matchAll(/{%[-]?\s*(?:include|render|extends|layout)\s+[^%]*%}/gi))
     if (!/^\{%[-]?\s*(?:include|render|extends|layout)\s+(?:'[^']+'|"[^"]+")[^%]*%}$/.test(match[0])) {
@@ -87,10 +106,8 @@ function extractReferences(source) {
   const component = /{%[-]?\s*(entityform|entitylist|webform|entityview)\b([^%]*)%}/gi;
   for (const match of source.matchAll(component)) {
     const kind = match[1].toLowerCase();
-    const value = /\b(?:id|key|name)\s*:\s*(?:'([^']+)'|"([^"]+)"|([\w.-]+))/i.exec(match[2]);
     const list = kind === "entitylist" ? lists : kind === "entityview" ? views : forms;
-    const reference = value?.[1] ?? value?.[2] ?? value?.[3];
-    const dynamic = Boolean(reference && !value?.[1] && !value?.[2] && !/^[0-9a-f]{8}-[0-9a-f-]{27,}$/i.test(reference));
+    const { reference, dynamic } = componentReference(match[2], ['id', 'key', 'name']);
     if (dynamic)
       unresolved.push({ kind, expression: match[0], reason: "Component reference uses a Liquid variable and cannot be resolved statically." });
     else addStatic(list, reference, kind, match[0]);
@@ -156,7 +173,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
   const queue = [];
   const templateRows = unique(Object.values(portal.templates ?? {}), (item) => id(item.id));
   const addTemplate = (reference, via, owner) => {
-    const found = templateRows.find((item) => id(item.id) === id(reference) || item.name === reference);
+    const found = templateRows.find((item) => id(item.id) === id(reference) || item.name?.toLowerCase() === String(reference).toLowerCase());
     if (!found) {
       unresolved.push({ kind: "web-template", expression: reference, via, ...(owner ? { owner } : {}), reason: "No imported web template matches this static reference." });
       return;
@@ -211,7 +228,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     const key = `${owner}\u0000${text}`;
     if (seenSources.has(key)) return;
     seenSources.add(key);
-    const refs = extractReferences(text);
+    const refs = extractReferences(text, new Set(templateRows.map((item) => item.name?.toLowerCase())));
     references.templates.push(...refs.templates);
     references.snippets.push(...refs.snippets);
     references.settings.push(...refs.settings);
@@ -226,7 +243,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
       fields.forEach((name) => references.tables.get(entity).add(name));
     }
     for (const ref of refs.templates)
-      if (!builtinTemplates.has(ref.toLowerCase())) addTemplate(ref, "Liquid include/layout", owner);
+      if (!builtinTemplates.has(ref.toLowerCase()) || templateRows.some((item) => item.name?.toLowerCase() === ref.toLowerCase())) addTemplate(ref, "Liquid include/layout", owner);
   };
   let scanned = 0;
   const drain = () => {
@@ -279,8 +296,15 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     if (component.js) sources.push({ text: component.js, owner: `list:${id(component.id)}` });
     if (component.entityName) entityNames.add(component.entityName.toLowerCase());
     add(components, { ...recordDescriptor(component.metadata, "list", component.name, "customjavascript"), entity: component.entityName ?? null, sourceFile: sourceFile(component.metadata, "custom_javascript.js") ?? component.metadata?._file ?? null, file: sourceFile(component.metadata, "custom_javascript.js") ?? component.metadata?._file ?? null });
-    for (const viewId of [field(component.metadata, "view"), ...asArray(field(component.metadata, "views"))]) {
-      const value = viewId && typeof viewId === "object" ? viewId.id ?? viewId.value : viewId;
+    const viewValues = [];
+    for (let value of [field(component.metadata, "view"), field(component.metadata, "views")]) {
+      if (typeof value === "string") {
+        try { value = JSON.parse(value); } catch { value = value.split(",").map((part) => part.trim()).filter(Boolean); }
+      }
+      viewValues.push(...asArray(value?.Views ?? value?.views ?? value));
+    }
+    for (const viewId of viewValues) {
+      const value = viewId && typeof viewId === "object" ? viewId.ViewId ?? viewId.viewId ?? viewId.id ?? viewId.value : viewId;
       if (value) references.views.push(String(value));
     }
   }

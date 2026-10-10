@@ -1135,7 +1135,7 @@ export async function importPortal(
       roleIds: relationshipOf(record, "adx_cloudflowconsumer_adx_webrole"),
     };
   });
-  // Platform changes the runtime reports instead of modelling (agent B, lib/platform-changes.mjs).
+  // Platform changes the runtime reports instead of modelling (lib/platform-changes.mjs).
   diagnostics.push(...platformChangeDiagnostics({ website, lists, forms, records, pages, templates }));
   // A source with zero recognised pages is not a portal (serve, inspect and bootstrap-report
   // refuse it through assertPortalSource, lib/source-dialect.mjs).

@@ -28,7 +28,7 @@ test(
     );
     await fs.writeFile(
       path.join(directory, "webrole.yml"),
-      "- adx_webroleid: auth\n  adx_name: Authenticated Users\n  adx_authenticatedusersrole: true\n- adx_webroleid: manager\n  adx_name: Forms Applicant Manager\n- adx_webroleid: contributor\n  adx_name: Forms Applicant Contributor\n- adx_webroleid: coordinator\n  adx_name: Forms Applicant Coordinator\n",
+      "- adx_webroleid: auth\n  adx_name: Authenticated Users\n  adx_authenticatedusersrole: true\n- adx_webroleid: manager\n  adx_name: Review Manager\n- adx_webroleid: contributor\n  adx_name: Review Contributor\n- adx_webroleid: coordinator\n  adx_name: Review Coordinator\n",
     );
     const initial = {
       version: 1,
@@ -79,7 +79,7 @@ test(
         {
           id: "edit-own",
           entity: "application",
-          roles: ["Forms Applicant Manager", "Forms Applicant Coordinator"],
+          roles: ["Review Manager", "Review Coordinator"],
           scope: "account",
           field: "companyid",
           operations: ["update", "create"],
@@ -154,7 +154,7 @@ test(
       .waitFor();
     await portal
       .locator("#roles")
-      .filter({ hasText: "Forms Applicant Coordinator" })
+      .filter({ hasText: "Review Coordinator" })
       .waitFor();
     assert.equal(
       await portal.locator("#apps").innerText(),
@@ -185,11 +185,11 @@ test(
       .selectOption("blair");
     await admin
       .getByRole("group", { name: "Contact web-role memberships", exact: true })
-      .getByLabel("Forms Applicant Coordinator", { exact: true })
+      .getByLabel("Review Coordinator", { exact: true })
       .uncheck();
     await admin
       .getByRole("group", { name: "Contact web-role memberships", exact: true })
-      .getByLabel("Forms Applicant Contributor", { exact: true })
+      .getByLabel("Review Contributor", { exact: true })
       .check();
     await admin
       .getByRole("button", { name: "Save contact roles", exact: true })
@@ -197,7 +197,7 @@ test(
     await admin.getByText("Configuration saved.", { exact: true }).waitFor();
     await portal
       .locator("#roles")
-      .filter({ hasText: "Forms Applicant Contributor" })
+      .filter({ hasText: "Review Contributor" })
       .waitFor();
     api = await asBrowser("/_api/applications(app-b)", {
       method: "PATCH",

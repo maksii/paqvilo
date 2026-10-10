@@ -120,6 +120,37 @@ export function comparison(before, after, context = 3, max = MAX_DIFF_LINES) {
 }
 
 /**
+ * Keep PATH precedence, then locate the vendor CLI for ordinary Windows installs.
+ * Explicit editor executable paths and other editor names remain unchanged.
+ */
+export function resolveEditorCommand(editor, { platform = process.platform, env = process.env } = {}) {
+  if (platform !== 'win32' || !/^code(?:-insiders)?$/i.test(editor ?? '')) return editor;
+  const safe = value => typeof value === 'string' && value && !/["%!\r\n&|<>^]/.test(value);
+  const regular = file => {
+    try { return safe(file) && fs.statSync(file).isFile(); } catch { return false; }
+  };
+  const command = editor.toLowerCase();
+  const value = name => Object.entries(env).find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+  for (const entry of String(value('PATH') ?? '').split(';')) {
+    const dir = entry.trim().replace(/^"(.*)"$/, '$1');
+    if (!safe(dir)) continue;
+    if (['.cmd', '.exe', '.bat', '.com'].some(extension => regular(path.join(dir, command + extension)))) return editor;
+  }
+  const product = command === 'code-insiders' ? 'Microsoft VS Code Insiders' : 'Microsoft VS Code';
+  const roots = [
+    [value('LOCALAPPDATA'), 'Programs'],
+    [value('ProgramFiles')],
+    [value('ProgramFiles(x86)')],
+  ];
+  for (const [root, ...parts] of roots) {
+    if (!safe(root) || !path.isAbsolute(root)) continue;
+    const candidate = path.join(root, ...parts, product, 'bin', command + '.cmd');
+    if (regular(candidate)) return candidate;
+  }
+  return editor;
+}
+
+/**
  * Opens `file` at a line in the editor (`code -g file:line:col` and compatible).
  * @returns {Promise<string|null>} null when it worked, else why not
  */
@@ -130,6 +161,7 @@ export function openInEditor(editor, file, line = 1, col = 1) {
     // may be able to end the quoted argument
     if (/["%!\r\n]/.test(target)) return resolve('the file name has characters that cannot be passed to the editor');
     if (typeof editor !== 'string' || !editor.trim() || /["%!\r\n&|<>^]/.test(editor)) return resolve('editor must be an executable name or path without shell commands');
+    editor = resolveEditorCommand(editor);
     let child;
     try {
       child =
@@ -1106,11 +1138,16 @@ export function enablePanel(context, session, opts = {}) {
       if (!cfg.mirage) {
         const answer = await sourceInspector.inspect(runtime.path, rendered);
         runtime.report = answer.report;
+        runtime.roots = answer.roots.map(realNative);
       } else {
         // Supplement runtime evidence with source paths without changing its access verdicts.
         await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
           (runtime.report.unresolved ??= []).push({ kind: 'source-inspection', reason: error.message.split('\n')[0] });
         });
+        // Additional code roots come only from stat-validated mappings in this
+        // task's trusted configuration, never from a runtime's claimed paths.
+        const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
+        runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
       }
       runtimeFilesByPage.set(page, annotateRuntime(runtime.report, runtime.roots));
       // The flat dependency list repeats the typed groups; it stays indexed here for opening files.

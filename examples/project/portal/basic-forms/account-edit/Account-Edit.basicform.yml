@@ -31,3 +31,4 @@ adx_submitbuttontext: >-
   ]
 adx_tabname: DEMO_TAB
 adx_validationsummarylinksenabled: true
+adx_redirecturlquerystringname: id

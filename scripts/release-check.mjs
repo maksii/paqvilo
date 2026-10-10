@@ -17,7 +17,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/project-config.mjs', 'mirage/admin/index.html',
   'lense/source-inspection.mjs', 'mirage/lib/code-components.mjs', 'mirage/lib/code-components-client.js',
   'mirage/lib/exported-operations.mjs', 'mirage/lib/exported-operation-worker.mjs',
-  'mirage/lib/operation-catalogue.mjs',
+  'mirage/lib/operation-catalogue.mjs', 'mirage/lib/exported-plugins.mjs', 'mirage/lib/liquid-source.mjs',
   'mirage/lib/bootstrap-plugins-compat.js', 'mirage/lib/datetimepicker-compat.js',
   'mirage/lib/jqueryui-dialog-compat.js', 'mirage/lib/date-format-compat.js',
   'mirage/lib/footer-spacing-compat.js',
@@ -26,15 +26,17 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/admin/app.mjs', 'mirage/admin/style.css',
   'mirage/package.json',
   'mirage/package-lock.json', 'mirage/README.md',
-  'mirage/MIGRATION.md', 'mirage/docs/runtime-evidence.md',
+  'mirage/docs/runtime-evidence.md',
   'mirage/docs/bootstrap-and-sources.md', 'mirage/docs/dataverse-parity.md',
   'mirage/docs/sim-administration.md', 'mirage/docs/toolkit-integration.md',
   'mirage/docs/data-packs.md', 'mirage/docs/parity-evidence.md',
   'mirage/docs/README.md', 'mirage/docs/forms-lists-parity.md',
+  'mirage/docs/code-components.md', 'mirage/docs/operations.md', 'mirage/docs/dataverse-plugins.md',
   'mirage/testing/session.mjs', 'docs/project-extensions.md', 'docs/architecture.md',
-  'docs/index.md', 'docs/getting-started.md', ...DOCUMENTATION_ASSETS,
+  'docs/index.md', 'docs/getting-started.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs', 'examples/project/test/portal.test.mjs', 'examples/project/gitignore.template',
   'examples/project/paqvilo.config.yml', 'examples/project/portal/sitesetting.yml', 'examples/project/portal/webrole.yml',
+  'examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json',
   'examples/project/portal/web-files/demo.css', 'examples/project/portal/web-files/demo-workspace.js',
   'examples/project/portal/web-files/demo.css.webfile.yml', 'examples/project/portal/web-files/demo-workspace.js.webfile.yml',
   'examples/project/pack/fixtures.json', 'examples/project/solution/Entities/Account/Entity.xml',
@@ -43,11 +45,14 @@ export const REQUIRED_RELEASE_FILES = [
 export function validateReleaseFiles(files) {
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
-  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|MIGRATION\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md))$/;
+  const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json']);
+  const demoPluginSources = /^examples\/project\/components\/DataversePlugins\/[A-Za-z0-9._-]+\.(?:cs|csproj|json|md|snk)$/;
+  const demoPluginAssembly = /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
+  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md))$/;
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && name !== 'examples/project/pack/fixtures.json' && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }
@@ -61,7 +66,7 @@ function checkEditorTasks(root) {
   for (const task of tasks.tasks) {
     for (const dependency of [task.dependsOn ?? []].flat()) if (!labels.has(dependency)) throw new Error(`Missing editor task: ${dependency}`);
     if (task.type === 'npm' && !pkg.scripts[task.script]) throw new Error(`Missing npm script in editor task: ${task.script}`);
-    if (task.command === 'node' && !fs.existsSync(path.join(root, task.args[0]))) throw new Error(`Missing editor task program: ${task.args[0]}`);
+    if (task.command === 'node' && task.args[0] !== '${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs' && !fs.existsSync(path.resolve(root, task.args[0].replace('${workspaceFolder}', root)))) throw new Error(`Missing editor task program: ${task.args[0]}`);
   }
   for (const config of launch.configurations) {
     if (config.preLaunchTask && !labels.has(config.preLaunchTask)) throw new Error(`Missing debugger task: ${config.preLaunchTask}`);
@@ -70,7 +75,7 @@ function checkEditorTasks(root) {
 }
 
 function checkDocumentation(root) {
-  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/lense.md', 'docs/configuration.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/MIGRATION.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md']) {
+  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/lense.md', 'docs/configuration.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md', 'mirage/docs/code-components.md', 'mirage/docs/operations.md', 'mirage/docs/dataverse-plugins.md']) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];
@@ -101,6 +106,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     checkLockConsistency(root);
     checkPackageMetadata(JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8')));
     checkEditorTasks(root);
+    checkEditorTasks(path.join(root, 'examples/project'));
     const npmCli = process.env.npm_execpath;
     if (!npmCli || !fs.existsSync(npmCli)) throw new Error('Run npm run release:check so the configured npm CLI is used');
     const packed = spawnSync(process.execPath, [npmCli, 'pack', '--dry-run', '--json', '--ignore-scripts'], {

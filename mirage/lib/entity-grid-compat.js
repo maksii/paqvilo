@@ -43,37 +43,73 @@
     // Without jQuery, trigger() dispatches the full Bootstrap-style name (show.bs.modal).
     else element.addEventListener(name, (event) => handler(event, event.detail));
   }
-  // The row action menu is position: fixed (as on reference-portal). The platform's app bundle places it
-  // when the dropdown opens:
-  // - left-to-right: below its button, left-aligned unless it would overflow the window;
+  // Native row action menus use position: fixed. This local adapter places them
+  // when the dropdown opens, including when authored page layouts constrain the viewport:
+  // - below its button when it fits, otherwise above or bounded to the visible viewport;
+  // - left-to-right: left-aligned unless it would overflow the window;
   // - right-to-left: right-aligned;
   // - the toggle's aria-expanded follows the menu;
   // - Tab closes it, Up and Down move between its items, and scrolling the window closes it.
   function bindActionMenu(container) {
     if (!container) return;
+    const menu = container.querySelector(".dropdown-menu");
+    const sizing = menu && Object.fromEntries(["maxHeight", "maxWidth", "minWidth", "overflowY", "overflowX", "boxSizing"].map((key) => [key, menu.style[key]]));
     on(container, "show.bs.dropdown", () => {
       container.querySelector(".aria-exp")?.setAttribute("aria-expanded", "true");
-      const menu = container.querySelector(".dropdown-menu");
       if (!menu) return;
       const rect = container.getBoundingClientRect();
-      const top = rect.top + container.offsetHeight;
       // Measure the menu as displayed: it opens right after this event.
       const previous = menu.style.display;
+      Object.assign(menu.style, sizing);
       menu.style.display = "block";
+      const viewport = window.visualViewport;
+      const edge = document.documentElement.clientWidth || window.innerWidth;
+      const gap = 4;
+      const leftEdge = (viewport?.offsetLeft || 0) + gap;
+      const topEdge = (viewport?.offsetTop || 0) + gap;
+      const rightEdge = leftEdge + (viewport?.width || edge) - gap * 2;
+      const bottomEdge = topEdge + (viewport?.height || window.innerHeight) - gap * 2;
+      const style = getComputedStyle(menu);
+      const marginTop = parseFloat(style.marginTop) || 0;
+      const marginBottom = parseFloat(style.marginBottom) || 0;
+      const marginLeft = parseFloat(style.marginLeft) || 0;
+      const marginRight = parseFloat(style.marginRight) || 0;
+      const maxHeight = Math.max(1, bottomEdge - topEdge);
+      const maxWidth = Math.max(1, rightEdge - leftEdge);
+      if (menu.offsetHeight > maxHeight) {
+        menu.style.boxSizing = "border-box";
+        menu.style.maxHeight = `${maxHeight}px`;
+        menu.style.overflowY = "auto";
+      }
+      if (menu.offsetWidth > maxWidth) {
+        menu.style.boxSizing = "border-box";
+        menu.style.minWidth = "0";
+        menu.style.maxWidth = `${maxWidth}px`;
+        menu.style.overflowX = "auto";
+      }
       const width = menu.offsetWidth;
+      const height = menu.offsetHeight;
+      const below = rect.bottom + marginTop;
+      const above = rect.top - height - marginBottom;
+      const top = below + height > bottomEdge && rect.top - topEdge > bottomEdge - rect.bottom ? above : below;
+      menu.style.top = `${Math.max(topEdge, Math.min(top, bottomEdge - height)) - marginTop}px`;
+      const rtl = document.documentElement.getAttribute("dir") === "rtl";
+      let left = rtl ? rect.right - width - marginRight : rect.left + marginLeft;
+      if (!rtl && left + width > rightEdge) left = rect.right - width - marginRight;
+      if (rtl && left < leftEdge) left = rect.left + marginLeft;
+      left = Math.max(leftEdge, Math.min(left, rightEdge - width));
+      menu.style.left = rtl ? "auto" : `${left - marginLeft}px`;
+      menu.style.right = rtl ? `${edge - left - width - marginRight}px` : "auto";
       menu.style.display = previous;
-      menu.style.top = `${top}px`;
-      if (document.documentElement.getAttribute("dir") === "rtl") {
-        const edge = document.documentElement.clientWidth + document.documentElement.offsetLeft;
-        const right = edge - rect.left - rect.width;
-        menu.style.left = "auto";
-        menu.style.right = `${right + width <= edge ? right : right + rect.width - width}px`;
-      } else menu.style.left = `${rect.left + width <= window.innerWidth ? rect.left : rect.left + rect.width - width}px`;
+      container.__ppMenuScrollPosition = { x: window.scrollX, y: window.scrollY };
     });
     on(container, "hide.bs.dropdown", () => container.querySelector(".aria-exp")?.setAttribute("aria-expanded", "false"));
     container.addEventListener("keydown", (event) => {
       const key = event.key;
-      if (key === "Tab") container.classList.remove("open", "show");
+      if (key === "Tab") {
+        trigger(container, "hide.bs.dropdown");
+        container.classList.remove("open", "show");
+      }
       if (key !== "ArrowDown" && key !== "ArrowUp") return;
       event.preventDefault();
       event.stopImmediatePropagation();
@@ -85,9 +121,20 @@
       items[Math.max(index, 0)].focus();
     });
   }
-  window.addEventListener("scroll", () => {
-    for (const open of document.querySelectorAll(".entity-grid .dropdown.action.open")) open.classList.remove("open");
-  }, { passive: true });
+  function closeActionMenus(event) {
+    for (const open of document.querySelectorAll(".entity-grid .dropdown.action.open")) {
+      // A browser can dispatch an already-queued scroll after the click that
+      // opens a menu. Smooth scrolling can also finish one CSS pixel away from
+      // the measured position. Keep that rounding drift without resetting the
+      // baseline, so cumulative movement still closes it. Resize always closes.
+      const position = open.__ppMenuScrollPosition;
+      if (event?.type === 'scroll' && position && Math.abs(position.x - window.scrollX) <= 1 && Math.abs(position.y - window.scrollY) <= 1) continue;
+      trigger(open, "hide.bs.dropdown");
+      open.classList.remove("open");
+    }
+  }
+  window.addEventListener("scroll", closeActionMenus, { passive: true });
+  window.addEventListener("resize", closeActionMenus, { passive: true });
 
   // ---- token and transport ------------------------------------------------
   function token() {
@@ -768,14 +815,21 @@
     }
 
     bindRowActions(tbody) {
+      // Refresh replaces rows but retains the tbody. Bind the delegated handler
+      // once so a saved modal cannot make the next toggle open and immediately close.
+      if (tbody.__ppRowActionsBound) return;
+      tbody.__ppRowActionsBound = true;
       tbody.addEventListener("click", (event) => {
         const link = event.target.closest("a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link");
         if (!link || !tbody.contains(link)) {
           const toggle = event.target.closest('[data-toggle="dropdown"]');
           if (toggle && tbody.contains(toggle) && !(jq() && jq().fn.dropdown)) {
             event.preventDefault();
-            toggle.parentElement.classList.toggle("open");
-            toggle.setAttribute("aria-expanded", toggle.parentElement.classList.contains("open") ? "true" : "false");
+            const container = toggle.parentElement;
+            const opening = !container.classList.contains("open");
+            trigger(container, opening ? "show.bs.dropdown" : "hide.bs.dropdown");
+            container.classList.toggle("open", opening);
+            toggle.setAttribute("aria-expanded", opening ? "true" : "false");
           }
           return;
         }

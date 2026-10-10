@@ -33,7 +33,7 @@
     const response = await fetch(url, {method: options.method || 'GET',cache:'no-store',credentials:'same-origin',headers:{Accept:'application/json','Content-Type':'application/json','__RequestVerificationToken':await token(),'Prefer':'odata.include-annotations="OData.Community.Display.V1.FormattedValue"'+(options.pageSize?',odata.maxpagesize='+options.pageSize:'')},body:options.body === undefined ? undefined : JSON.stringify(options.body)});
     let result = null;
     if (response.status !== 204) { const text = await response.text(); if(text){try{result=JSON.parse(text);}catch{result={error:{message:text.slice(0,300)}};}} }
-    if (!response.ok) throw new Error(result?.error?.message || 'The portal returned HTTP ' + response.status + '.');
+    if (!response.ok) throw new Error(result?.error?.innererror?.message || result?.error?.message || 'The portal returned HTTP ' + response.status + '.');
     const id = response.headers.get('entityid') || response.headers.get('OData-EntityId')?.match(/\(([0-9a-f-]+)\)/i)?.[1];
     return {result,id};
   }

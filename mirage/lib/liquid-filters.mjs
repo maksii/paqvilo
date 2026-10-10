@@ -544,7 +544,7 @@ function sanitizeHtml(input) {
 }
 
 // ---------------------------------------------------------------------------
-// json (observed on reference-portal, parity probes liquid-json-* and liquid-reports-*):
+// json output contract:
 // - a value from a user or request root (the values the platform HTML-encodes on output) passes
 //   through verbatim: untrimmed, unquoted, unescaped ('-', ' - ', '"-"', '[]', 'true', '1.50', '01');
 //   the output is then HTML-encoded like other request output;

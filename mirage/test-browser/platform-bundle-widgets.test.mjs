@@ -53,7 +53,6 @@ test("platform bundle equivalents: the row action menu opens below its button, j
   await page.goto(app.url + "/");
   const row = page.locator(`.entity-grid tr[data-id="${ACCOUNTS[0]}"]`);
   await row.waitFor();
-  // The fixed action menu opens right below its button (app bundle placement, sandbox markup).
   const toggle = row.locator(".dropdown.action > button");
   await toggle.click();
   assert.equal(await toggle.getAttribute("aria-expanded"), "true");

@@ -268,7 +268,6 @@ test("HTTP: Liquid and API share identity/data; admin CRUD is protected and pers
   assert.equal(response.status, 200);
   // Dataverse/Power Pages rows carry their row version and primary key.
   const { value: listed, ...collection } = await response.json();
-  // sandbox collections carry the context and the CRM count annotations.
   assert.deepEqual(collection, {
     "@odata.context": `${app.url}/_api/$metadata#contacts(fullname)`,
     "@odata.count": 1,

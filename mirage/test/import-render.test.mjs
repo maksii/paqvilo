@@ -178,7 +178,7 @@ test("observed header notification presentation uses exported Liquid query and c
     "web-templates/header/Header.webtemplate.source.html": header,
     "web-templates/notifications/Notifications.webtemplate.yml":
       "adx_webtemplateid: notifications\nadx_name: Site notifications query",
-    "web-templates/notifications/Notifications.webtemplate.source.html": `{% fetchxml notices %}<fetch><entity name="notification"/></fetch>{% endfetchxml %}{"notifications": [{% for notice in notices.results.entities %}{"audience":"3","contactId":"{{notice.contact}}","notificationText":"{{notice.message}}","messageType":"4","webRoleName":"","url":""}{% unless forloop.last %},{% endunless %}{% endfor %}]}`,
+    "web-templates/notifications/Notifications.webtemplate.source.html": `{% fetchxml notices %}<fetch><entity name="notification"/></fetch>{% endfetchxml %}{"notifications": [{% for notice in notices.results.entities %}{"visible":{% if notice.contact == user.id %}true{% else %}false{% endif %},"notificationText":"{{notice.message}}","severity":"info"}{% unless forloop.last %},{% endunless %}{% endfor %}]}`,
   });
   const profile = observedHeaderNotifications(
     '<li class="userProfileHolder"><a href="#"><svg><path d="M0 0"/></svg><span class="notificationsCount">99</span></a></li>',
@@ -190,8 +190,8 @@ test("observed header notification presentation uses exported Liquid query and c
       identity = user;
       return {
         entities: [
-          { contact: "current", message: "Local%20notice" },
-          { contact: "other", message: "Hidden%20notice" },
+          { contact: "current", message: "Local notice" },
+          { contact: "other", message: "Hidden notice" },
         ],
       };
     },
@@ -202,10 +202,39 @@ test("observed header notification presentation uses exported Liquid query and c
   });
   assert.equal(result.status, 200);
   assert.equal(identity.id, "current");
-  assert.match(result.html, /notificationsCount[^>]*>2</);
+  assert.match(result.html, /notificationsCount[^>]*>1</);
   assert.match(result.html, /Local notice/);
   assert.doesNotMatch(result.html, /Hidden notice/);
   assert.doesNotMatch(result.html, />99</);
+});
+
+test("header queries own custom audience rules and invalid presentation rows are diagnosed", async (t) => {
+  registerShellConventions("presentation-fixture", { headerNotificationQuery: "Authored notices" });
+  const header = '<header><ul><li class="userProfileHolder">Profile</li></ul></header>';
+  const dir = await fixture(t, {
+    ...standard,
+    "web-templates/header/Header.webtemplate.source.html": header,
+    "web-templates/notices/Notices.webtemplate.yml": "adx_webtemplateid: authored-notices\nadx_name: Authored notices",
+    "web-templates/notices/Notices.webtemplate.source.html": JSON.stringify({ notifications: [
+      { notificationText: "Authored visible", visible: true, severity: "warning", audience: 99, webRoleName: "Unassigned" },
+      { notificationText: "Authored hidden", visible: false, severity: "info", audience: 1 },
+      { notificationText: "Numeric severity", visible: true, severity: 2 },
+      { notificationText: "String visibility", visible: "false", severity: "info" },
+      null,
+    ] }),
+  });
+  const profile = observedHeaderNotifications(
+    '<li class="userProfileHolder"><a href="#"><svg><path d="M0 0"/></svg><span class="notificationsCount">99</span></a></li>',
+    { headerSource: header, origin: "https://example.invalid" },
+  );
+  const renderer = createPortalRenderer(await importPortal(dir), { shellProfile: { headerNotifications: profile } });
+  const result = await renderer.renderPage("/work/", { user: { id: "current", roles: [] } });
+  assert.equal(result.status, 200);
+  assert.match(result.html, /Authored visible/);
+  assert.match(result.html, /alert-warning/);
+  assert.match(result.html, /notificationsCount[^>]*>1</);
+  assert.doesNotMatch(result.html, /Authored hidden|Numeric severity|String visibility/);
+  assert.equal(result.diagnostics.find((entry) => entry.code === "HEADER_NOTIFICATION_QUERY_INVALID")?.count, 3);
 });
 
 test("portal date formats support single numeric tokens and literal text", async (t) => {
@@ -710,8 +739,6 @@ test("platform poll placements render the embedded placeholder and the poll serv
     /<div class="poll" data-url="\/_services\/polls\/[^/]*\/placements\/sidebar\/random" data-submit-url="\/_services\/polls\/[^/]*\/SubmitPoll\?id=sidebar"><\/div>/,
   );
   assert.deepEqual(ctx.__diagnostics, []);
-  // PollDataAdapter accepts active (statecode 0), released and unexpired polls; adx_active is
-  // not consulted (sandbox serves a poll exported with adx_active false).
   const service = '{% assign poll_placement_name = "Sidebar" %}{% mirage_poll %}';
   const served = await renderer.renderString(service, renderer.contextForPage(portal.pages[1]));
   assert.match(served, /<div class="poll-questionpanel" data-id="poll" data-name="Question">/);
@@ -781,7 +808,6 @@ test("browser title suffix renders exported Liquid and retains entities without 
   portal.snippets["Browser Title Suffix"] =
     "&nbsp;· {{ website.name }} </title><script>alert(1)</script>";
   const result = await createPortalRenderer(portal).renderPage("/work/");
-  // sandbox composes "{page title} {Browser Title Suffix}" (parity baseline liquid-title-format).
   assert.match(
     result.html,
     /<title>Work title &nbsp;· Test &lt;\/title&gt;&lt;script&gt;alert\(1\)&lt;\/script&gt;<\/title>/,
@@ -839,10 +865,10 @@ test("query filters preserve relative navigation paths and fragment spelling", a
   );
   assert.equal(
     await renderer.renderString(
-      '{{ "productselection/#step" | add_query: "id", "record" | add_query: "orderId", 1 }}',
+      '{{ "itemselection/#step" | add_query: "id", "record" | add_query: "orderId", 1 }}',
       {},
     ),
-    "productselection/?id=record&orderId=1#step",
+    "itemselection/?id=record&orderId=1#step",
   );
   assert.equal(
     await renderer.renderString(
@@ -864,15 +890,15 @@ test("DotLiquid path split and include variable casing select the authored creat
   const portal = await importPortal(await fixture(t, standard));
   portal.templates.HeaderFlags = {
     source:
-      '{% assign parts=request.path | split:"/" %}{% assign productSelection=productSelection %}{% if parts.size == 2 and parts[0] == "Applications" and parts[1] == "draftapplication" %}<h1>Create new application</h1>{% endif %}<button style="display:{{productSelection}}">Save</button>',
+      '{% assign parts=request.path | split:"/" %}{% assign itemSelection=itemSelection %}{% if parts.size == 2 and parts[0] == "requests" and parts[1] == "new" %}<h1>Create new request</h1>{% endif %}<button style="display:{{itemSelection}}">Save</button>',
   };
   const renderer = createPortalRenderer(portal);
   assert.equal(
     await renderer.renderString(
-      '{% include "HeaderFlags" productselection:"none" %}',
-      { request: { path: "/Applications/draftapplication/" } },
+      '{% include "HeaderFlags" itemselection:"none" %}',
+      { request: { path: "/requests/new/" } },
     ),
-    '<h1>Create new application</h1><button style="display:none">Save</button>',
+    '<h1>Create new request</h1><button style="display:none">Save</button>',
   );
   assert.equal(
     await renderer.renderString(

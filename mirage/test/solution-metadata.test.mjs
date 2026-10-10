@@ -189,6 +189,19 @@ test("PAC advanced steps with omitted mode retain the platform Insert default", 
   assert.equal(result.componentSchemas.wizard.steps[0].mode, 100000000);
 });
 
+test('PAC redirect step import does not invent a missing record query name', async t => {
+  const root = await fixture(t, { 'Solution/Entities/Contact/Entity.xml': entity });
+  const site = portal();
+  site.pages = [{ id: 'done', url: '/done/' }];
+  site.advancedForms = [{ id: 'wizard', name: 'Wizard', metadata: { adx_startstep: 'redirect' } }];
+  site.records = [{ kind: 'advancedformstep', id: 'redirect', adx_webform: 'wizard', adx_type: 100000003, adx_redirectwebpage: 'done', adx_redirecturlappendentityidquerystring: true }];
+  const omitted = await importSolutionMetadata(root, { portal: site });
+  assert.equal(omitted.componentSchemas.wizard.steps[0].recordQueryName, null);
+  site.records[0].adx_redirecturlquerystringname = 'record';
+  const named = await importSolutionMetadata(root, { portal: site });
+  assert.equal(named.componentSchemas.wizard.steps[0].recordQueryName, 'record');
+});
+
 test("rich text controls resolve their per-control managed configuration from systemform descriptions", async (t) => {
   const richForm = form("Narrative")
     .replace(

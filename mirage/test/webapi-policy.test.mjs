@@ -181,7 +181,6 @@ test("complete local mapping distinguishes invalid columns from known but disabl
   const request = (query) => fetch(`${app.url}/_api/contacts?${query}`);
   let response = await request("$select=unknowncolumn");
   assert.equal(response.status, 400);
-  // Query options with an unknown column: 400 9004010A on sandbox.
   assert.deepEqual(await apiError(response), { code: "9004010A", sim: "InvalidAttribute" });
   response = await request("$select=secret");
   assert.equal(response.status, 403);
@@ -552,7 +551,6 @@ test("HTTP optional profile default inherits table grants while explicit sensiti
   let response = await request("/_api/contacts(person)?$select=fullname");
   assert.equal(response.status, 200);
   assert.equal((await response.json()).fullname, "Visible");
-  // sandbox: a select-less collection read names the first column outside the list.
   response = await request("/_api/contacts");
   assert.equal(response.status, 403);
   // Property-name order puts the lookup _companyid_value first.

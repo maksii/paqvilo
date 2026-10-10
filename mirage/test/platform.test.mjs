@@ -14,6 +14,18 @@ import {
 } from "../lib/platform.mjs";
 import { createWebFormSessions } from "../lib/form-service.mjs";
 
+test('exported advanced redirect steps retain an omitted record query name when rendered directly', async () => {
+  const id = 'd6300000-0000-4000-8000-000000000001';
+  const step = { kind: 'advancedformstep', id: 'finish', adx_webform: 'wizard', adx_type: 100000003, adx_redirecturl: '/detail/?existing=1', adx_redirecturlappendentityidquerystring: true };
+  const options = { portal: { advancedForms: [{ id: 'wizard', name: 'Wizard', metadata: { adx_startstep: 'finish' } }], records: [step], pages: [] }, schemas: {}, store: {} };
+  const context = { request: { url: 'http://localhost/form/', params: { stepid: 'finish', id } } };
+  assert.equal(await renderComponent('webform', 'Wizard', context, options), `<script>location.replace("/detail/?existing=1&${id}");</script>`);
+  step.adx_redirecturlquerystringname = 'row';
+  assert.equal(await renderComponent('webform', 'Wizard', context, options), `<script>location.replace("/detail/?existing=1&row=${id}");</script>`);
+  step.adx_redirecturl = '/detail/?existing=1#record';
+  assert.equal(await renderComponent('webform', 'Wizard', context, options), `<script>location.replace("/detail/?existing=1&row=${id}#record");</script>`);
+});
+
 test("lookup views follow exact XML paging cookies and fail explicitly on incomplete pagination", async () => {
   const calls = [],
     cookie = '<cookie page="1"><name last="A & B"/></cookie>',

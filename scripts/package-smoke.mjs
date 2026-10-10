@@ -19,11 +19,17 @@ const run = (args, cwd, timeout = 120_000) => {
 
 const packed = JSON.parse(run(['pack', '--json', '--ignore-scripts', '--pack-destination', work], root))[0];
 validateReleaseFiles(packed.files);
+const archive = `file:${path.join(work, packed.filename).replaceAll('\\', '/')}`;
+const bootstrap = path.join(work, 'bootstrap');
+fs.mkdirSync(bootstrap);
+fs.writeFileSync(path.join(bootstrap, 'package.json'), JSON.stringify({ name: 'paqvilo-smoke-bootstrap', private: true, dependencies: { paqvilo: archive } }));
+run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
 const project = path.join(work, 'project');
-fs.cpSync(path.join(root, 'examples/project'), project, { recursive: true, filter: (file) => !['node_modules', 'package-lock.json', '.paqvilo'].includes(path.basename(file)) });
+const scaffold = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'mirage', 'demo', '--scaffold', '--dir', project], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 120_000 });
+if (scaffold.status !== 0 || !scaffold.stdout.includes('No runtime was started.')) throw new Error(`Installed scaffold failed: ${scaffold.stdout}\n${scaffold.stderr}`);
 const manifestFile = path.join(project, 'package.json');
 const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
-manifest.dependencies.paqvilo = `file:${path.join(work, packed.filename).replaceAll('\\', '/')}`;
+manifest.devDependencies.paqvilo = archive;
 fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], project);
 const installed = path.join(project, 'node_modules/paqvilo/bin/paqvilo.mjs');
@@ -54,4 +60,7 @@ try {
 if (cli('mirage', 'status', '--json').sessions.some((item) => item.processAlive)) throw new Error('Installed lifecycle left an owned runtime running.');
 const tests = run(['test'], project);
 console.log(tests.trim());
-console.log(`Distribution smoke passed: ${packed.files.length} files; independent offline install, command namespaces, project-scoped lifecycle and the project-owned test. Artifact: ${path.join(work, packed.filename)}`);
+const workspace = spawnSync(process.execPath, ['--test', path.join(root, 'test-browser/demo-workspace.test.mjs')], { cwd: root, env: { ...process.env, PAQVILO_DEMO_CLI: installed }, encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 1024 * 1024 });
+if (workspace.status !== 0) throw new Error(`Installed workspace browser check failed: ${workspace.stdout}\n${workspace.stderr}`);
+console.log(workspace.stdout.trim());
+console.log(`Distribution smoke passed: ${packed.files.length} files; independent offline install, installed demo scaffold, project-scoped lifecycle, project acceptance tests and workspace browser debugging. Artifact: ${path.join(work, packed.filename)}`);

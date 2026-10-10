@@ -221,7 +221,7 @@ export function auditResources(model, site) {
     if (item.status === 'gap' && /^web-files\//i.test(item.relativePath)) Object.assign(item, { status: 'blocked', reason: 'Payload has no active web-file metadata or explicit route; its URL cannot safely be inferred.' });
     // Server logic code (.powerpages-site server-logic/<name>/<name>.js) runs on the Power Pages server,
     // never in a page response: the overlay cannot apply it and changes need deployment.
-    if (item.status === 'gap' && /^server-logics?\//i.test(item.relativePath)) Object.assign(item, { status: 'deployment', reason: 'Server logic code runs on the Power Pages server, not in a page response; changes need deployment (the Mirage answers its calls as unsupported).' });
+    if (item.status === 'gap' && /^server-logics?\//i.test(item.relativePath)) Object.assign(item, { status: 'deployment', reason: 'Server logic runs on the Power Pages server; changes require deployment. Mirage provides separately configured local operation models.' });
   }
 
   const resources = [...entries.values()].sort((a, b) => compare(a.id, b.id));

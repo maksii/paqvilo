@@ -1,0 +1,37 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "Demo: Mirage and browser debugger",
+      "type": "pwa-msedge",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}/portal",
+      "pathMapping": { "/": "${workspaceFolder}/portal/web-files" },
+      "timeout": 60000,
+      "preLaunchTask": "demo: Mirage + browser debugger",
+      "skipFiles": ["**/xrm-adx/**", "**/*.min.js"]
+    },
+    {
+      "name": "Demo: Lense and browser debugger",
+      "type": "pwa-msedge",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}/portal",
+      "pathMapping": { "/": "${workspaceFolder}/portal/web-files" },
+      "timeout": 60000,
+      "preLaunchTask": "demo: Lense + browser debugger",
+      "skipFiles": ["https://content.powerapps.com/**", "**/xrm-adx/**", "**/*.min.js"]
+    },
+    {
+      "name": "Demo: Attach to the running browser",
+      "type": "pwa-msedge",
+      "request": "attach",
+      "port": 9222,
+      "webRoot": "${workspaceFolder}/portal",
+      "pathMapping": { "/": "${workspaceFolder}/portal/web-files" },
+      "timeout": 60000,
+      "skipFiles": ["**/xrm-adx/**", "**/*.min.js"]
+    }
+  ]
+}
