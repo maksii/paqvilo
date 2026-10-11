@@ -193,7 +193,7 @@ jobs:
         shell: pwsh
         run: |
           if (-not (Test-Path -LiteralPath $env:PAQ_TEST_XRM_SDK)) { throw 'CLR SDK fixture was not installed' }
-          node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
+          node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-query-paging.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
 
