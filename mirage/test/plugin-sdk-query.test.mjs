@@ -31,3 +31,19 @@ test('Full-text SDK Contains cannot be silently executed as substring LIKE',()=>
  q.criteria={conditions:[{attributeName:'title',operatorName:'Like',values:['%aren%']}]};
  assert.equal(run(store,q).entities.length,1);
 });
+
+
+test('FetchExpression observer binding uses the structural root while preserving authored and changed query text',()=>{
+ const store=data(),readOnlyBefore=store.pluginReadOnly,seen=[],original='<fetch><!-- source documentation: <entity name="child"/> --><entity\n name = "root"><attribute name="title"/></entity></fetch>';
+ store.setPluginPipeline(context=>{seen.push({stage:context.stage,entity:context.entity,query:structuredClone(context.query)});},({operation})=>operation==='retrievemultiple');
+ assert.equal(store.fetchXml(original,{admin:true}).entities[0].title,'Parent');assert.deepEqual(seen.map(x=>x.entity),['root','root']);assert.deepEqual(seen.map(x=>x.query),[{$type:'FetchExpression',query:original},{$type:'FetchExpression',query:original}]);
+ seen.length=0;const changed='<fetch><entity name="root"><attribute name="title"/><filter><condition attribute="title" operator="eq" value="Parent"/></filter></entity></fetch>';
+ store.setPluginPipeline(context=>{if(context.stage===20)context.query.query=changed;seen.push({stage:context.stage,query:structuredClone(context.query)});if(context.stage===40)context.collection.entities[0].attributes.title='Post observer';},({operation})=>operation==='retrievemultiple');
+ const result=store.fetchXml(original,{admin:true});assert.equal(result.entities[0].title,'Post observer');assert.deepEqual(seen.map(x=>x.query),[{$type:'FetchExpression',query:changed},{$type:'FetchExpression',query:changed}]);assert.equal(store.snapshot().tables.root[0].title,'Parent');assert.equal(store.pluginReadOnly,readOnlyBefore);
+});
+
+test('FetchExpression structural binding rejects malformed original or changed XML and a changed root table',()=>{
+ const store=data(),readOnlyBefore=store.pluginReadOnly,seen=[],valid='<fetch><entity name="root"><attribute name="title"/></entity></fetch>',malformed='<fetch><entity name="root"></fetch>';
+ store.setPluginPipeline(context=>seen.push(context.stage),({operation})=>operation==='retrievemultiple');assert.throws(()=>store.fetchXml(malformed,{admin:true}),error=>error.code==='InvalidRequest');assert.deepEqual(seen,[]);
+ for(const [source,code]of [[malformed,'InvalidRequest'],['<fetch><entity name="child"/></fetch>','LocalPluginQueryUnsupported']]){seen.length=0;store.setPluginPipeline(context=>{seen.push(context.stage);if(context.stage===20)context.query.query=source;},({operation})=>operation==='retrievemultiple');assert.throws(()=>store.fetchXml(valid,{admin:true}),error=>error.code===code);assert.deepEqual(seen,[20]);assert.equal(store.pluginReadOnly,readOnlyBefore);assert.equal(store.snapshot().tables.root[0].title,'Parent');}
+});

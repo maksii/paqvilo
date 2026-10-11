@@ -11,6 +11,33 @@ const json = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const contained = (root, file) => { const rel = path.relative(root, file); return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); };
 const pcfTypes = { nvarchar: 'SingleLine.Text', ntext: 'Multiple', uniqueidentifier: 'SingleLine.Text', primarykey: 'SingleLine.Text', int: 'Whole.None', integer: 'Whole.None', bigint: 'Whole.None', decimal: 'Decimal', float: 'FP', money: 'Currency', datetime: 'DateAndTime.DateAndTime', bit: 'TwoOptions', picklist: 'OptionSet', state: 'OptionSet', status: 'OptionSet', multiselectpicklist: 'MultiSelectOptionSet', lookup: 'Lookup.Simple', owner: 'Lookup.Simple' };
 
+// Classic SDK bundles start with an optional block-comment header and a single
+// uninitialized var. Advance monotonically: repeating comments/whitespace in a
+// regular expression can revisit the same resource prefix many times.
+function classicExportGlobal(source) {
+  let offset = 0;
+  const whitespace = () => {
+    const start = offset;
+    while (offset < source.length && /\s/.test(source[offset])) offset++;
+    return offset > start;
+  };
+  for (;;) {
+    whitespace();
+    if (!source.startsWith('/*', offset)) break;
+    const end = source.indexOf('*/', offset + 2);
+    if (end < 0) return undefined;
+    offset = end + 2;
+  }
+  if (!source.startsWith('var', offset)) return undefined;
+  offset += 3;
+  if (!whitespace() || !/[A-Za-z_$]/.test(source[offset] ?? '')) return undefined;
+  const start = offset++;
+  while (offset < source.length && /[A-Za-z0-9_$]/.test(source[offset])) offset++;
+  const name = source.slice(start, offset);
+  whitespace();
+  return source[offset] === ';' ? name : undefined;
+}
+
 // Declaration eligibility is a Power Pages contract, independent of whether a
 // local facade implements the requested API. Keep source attributes untouched.
 function featureEligibility(features = []) {
@@ -98,7 +125,7 @@ export async function importCodeComponents(layers = []) {
           // SDK bundles can export their constructor through a classic script
           // module rather than a namespace or registerControl call. Bind only
           // a declaration from this exact declared resource, never scan globals.
-          const exportGlobal = resource.name === 'code' ? /^(?:\s*\/\*[\s\S]*?\*\/)*\s*var\s+([A-Za-z_$][\w$]*)\s*;/.exec(body.toString('utf8'))?.[1] : undefined;
+          const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
           resources.push({ kind: resource.name, path: relative, url, order: Number(resource.attrs.order) || 0, attributes: { ...resource.attrs }, ...(exportGlobal ? { exportGlobal } : {}) });
           if (resource.name === 'resx') {
             const document = parseSolutionXml(body.toString('utf8'));

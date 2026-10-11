@@ -2,7 +2,7 @@
 
 This checkpoint provides working ordinary flows for Lense and Mirage before the broader compatibility investigation continues. The tests use invented schemas, exported fixture structures and loopback services. Online observations are separate evidence; passing these tests does not establish complete Power Pages or Dataverse parity.
 
-The Windows qualification on 2026-10-11 ran `npm run validate` with the supplied Microsoft SDK reference: **1,552 passed, zero failed, four skipped**. Toolkit, Mirage and Lense source fingerprints were unchanged during that run. The staged-source commit hook independently validates the committed tree and the installed package.
+The initial Windows qualification on 2026-10-11 ran `npm run validate` with the supplied Microsoft SDK reference: **1,552 passed, zero failed, four skipped**. Toolkit, Mirage and Lense source fingerprints were unchanged during that run. Each follow-up commit reruns the staged-source hook, which independently validates the committed tree and the installed package; CI qualifies the exact pushed revision.
 
 | Stream | Working positive flow | Regression coverage | Further parity work |
 | --- | --- | --- | --- |

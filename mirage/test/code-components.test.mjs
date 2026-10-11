@@ -26,6 +26,49 @@ test('PCF manifests expose only declared resources and use evidenced GUID mappin
   assert.throws(()=>observedConfig({codeComponents:{[id]:'tst_Synthetic.Editor'}}),/evidence/);
   assert.throws(()=>observedConfig({codeComponents:{[id]:'../escape'},evidence:'fixture'}),/schema names/);
 });
+
+test('PCF classic SDK export declarations consume only leading block comments and a complete var declaration', async t => {
+  const { dir, control } = await fixture(t);
+  const cases = [
+    ['var Bundle;Bundle={Editor:class{}};', 'Bundle'],
+    ['\uFEFF \r\n/* generated */\t/** license\nline */\nvar $Bundle_2 \t;\n', '$Bundle_2'],
+    ['/**//* next */var _Bundle;', '_Bundle'],
+    ['window.ComponentFramework.registerControl("Synthetic.Editor",class{});', undefined],
+    ['let Bundle; var Other;', undefined],
+    ['var Bundle={};', undefined],
+    ['var Bundle, Other;', undefined],
+    ['variable Bundle;', undefined],
+    ['var 2Bundle;', undefined],
+    ['var Bundle.part;', undefined],
+    ['var Bundle', undefined],
+    ['/* unfinished var Bundle;', undefined],
+    ['/* ended */ statement(); var Bundle;', undefined],
+    ['// line header\nvar Bundle;', undefined],
+  ];
+  for (const [source, expected] of cases) {
+    await fs.writeFile(path.join(control, 'bundle.js'), source);
+    const catalog = await importCodeComponents([{ dir }]);
+    assert.deepEqual(catalog.diagnostics, []);
+    const resource = catalog.controls.get('tst_Synthetic.Editor').resources[0];
+    assert.equal(resource.exportGlobal, expected, JSON.stringify(source));
+    assert.equal(Object.hasOwn(resource, 'exportGlobal'), expected !== undefined);
+  }
+});
+
+test('PCF classic SDK declaration scanning handles large repeated headers and incomplete prefixes', { timeout: 10000 }, async t => {
+  const { dir, control } = await fixture(t);
+  const header = ' \t/* generated header */\n'.repeat(20000);
+  for (const [source, expected] of [
+    [header + 'var LargeBundle;', 'LargeBundle'],
+    [header + ' '.repeat(250000) + 'var LargeBundle=', undefined],
+    [header + '/*' + '* '.repeat(250000), undefined],
+  ]) {
+    await fs.writeFile(path.join(control, 'bundle.js'), source);
+    const catalog = await importCodeComponents([{ dir }]);
+    assert.deepEqual(catalog.diagnostics, []);
+    assert.equal(catalog.controls.get('tst_Synthetic.Editor').resources[0].exportGlobal, expected);
+  }
+});
 test('PCF manifest traversal is rejected and missing resources never become mountable',async t=>{
   const {dir}=await fixture(t,'<code path="../../outside.js"/>');await fs.writeFile(path.join(dir,'outside.js'),'bad');
   const catalog=await importCodeComponents([{dir}]);assert.equal(catalog.controls.size,0);assert.equal(catalog.assets.size,0);assert.equal(catalog.diagnostics[0].code,'PCF_IMPORT_FAILED');

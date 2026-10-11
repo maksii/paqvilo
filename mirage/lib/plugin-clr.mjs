@@ -25,19 +25,125 @@ export function validateClrDescriptor(value){
  if(!uuid.test(value.context?.initiatingUserId??'')||!uuid.test(value.context?.organizationId??'')||!uuid.test(value.context?.businessUnitId??''))fail('Explicit initiating user, organization and business unit context GUIDs are required.');
  validateServiceProfile(value.serviceProfile);return value;
 }
-async function confined(root,relative){const realRoot=await fs.realpath(root),candidate=path.resolve(realRoot,relative);const rel=path.relative(realRoot,candidate);if(!rel||rel==='..'||rel.startsWith('..'+path.sep)||path.isAbsolute(rel))fail('CLR source escaped its declared root.');let current=realRoot;for(const part of rel.split(path.sep)){current=path.join(current,part);if((await fs.lstat(current)).isSymbolicLink())fail('CLR source symlinks are not executable dependencies.');}const actual=await fs.realpath(candidate),stat=await fs.stat(actual);if(actual!==candidate||!stat.isFile()||stat.size>32*1024*1024)fail('CLR dependency must be a regular DLL of at most 32 MiB.');return {path:actual,bytes:await fs.readFile(actual)};}
+function pathParts(file) {
+  const absolute = path.resolve(file), anchor = path.parse(absolute).root;
+  let current = anchor;
+  return absolute.slice(anchor.length).split(path.sep).filter(Boolean)
+    .map(part => current = path.join(current, part));
+}
+const sameFile = (a, b) => a.dev === b.dev && a.ino === b.ino;
+const CLR_FILE_LIMIT = 32 * 1024 * 1024;
+async function readClrBytes(handle) {
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const buffer = Buffer.allocUnsafe(Math.min(65536, CLR_FILE_LIMIT - total + 1));
+    const { bytesRead } = await handle.read({ buffer, offset: 0, length: buffer.length, position: null });
+    if (!bytesRead) break;
+    total += bytesRead;
+    if (total > CLR_FILE_LIMIT) fail('CLR dependency must be a regular DLL of at most 32 MiB.');
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+  return Buffer.concat(chunks, total);
+}
+function readClrBytesSync(fd) {
+  const chunks = [];
+  let total = 0;
+  for (;;) {
+    const buffer = Buffer.allocUnsafe(Math.min(65536, CLR_FILE_LIMIT - total + 1));
+    const bytesRead = syncFs.readSync(fd, buffer, 0, buffer.length, null);
+    if (!bytesRead) break;
+    total += bytesRead;
+    if (total > CLR_FILE_LIMIT)
+      fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
+    chunks.push(buffer.subarray(0, bytesRead));
+  }
+  return Buffer.concat(chunks, total);
+}
+/** Canonical spelling may differ on Windows; actual link components remain forbidden. */
+export async function canonicalClrDirectory(directory) {
+  for (const part of pathParts(directory)) {
+    const stat = await fs.lstat(part);
+    if (stat.isSymbolicLink() || !stat.isDirectory()) fail('CLR cache root cannot use a symlink.');
+  }
+  return fs.realpath(directory);
+}
+function canonicalClrDirectorySync(directory) {
+  for (const part of pathParts(directory)) {
+    const stat = syncFs.lstatSync(part);
+    if (stat.isSymbolicLink() || !stat.isDirectory())
+      fail('CLR cache directory or dependencies changed.', 'LocalPluginSourceChanged', 409);
+  }
+  return syncFs.realpathSync(directory);
+}
+/** Validate and read the opened object, rather than reopening a checked pathname. */
+export async function readClrDependency(root, relative) {
+  const realRoot = await fs.realpath(root), candidate = path.resolve(realRoot, relative);
+  const rel = path.relative(realRoot, candidate);
+  if (!rel || rel === '..' || rel.startsWith('..' + path.sep) || path.isAbsolute(rel))
+    fail('CLR source escaped its declared root.');
+  const handle = await fs.open(candidate, 'r');
+  try {
+    const stat = await handle.stat({ bigint: true });
+    let current = realRoot;
+    for (const part of rel.split(path.sep)) {
+      current = path.join(current, part);
+      if ((await fs.lstat(current)).isSymbolicLink())
+        fail('CLR source symlinks are not executable dependencies.');
+    }
+    const named = await fs.lstat(candidate, { bigint: true });
+    if (!stat.isFile() || stat.size > CLR_FILE_LIMIT || !sameFile(stat, named))
+      fail('CLR dependency must be a regular DLL of at most 32 MiB.');
+    const bytes = await readClrBytes(handle), actual = await fs.realpath(candidate);
+    const after = await fs.lstat(candidate, { bigint: true }), actualRelative = path.relative(realRoot, actual);
+    if (after.isSymbolicLink() || !sameFile(stat, after) || actualRelative === '..' ||
+        actualRelative.startsWith('..' + path.sep) || path.isAbsolute(actualRelative))
+      fail('CLR dependency changed during preparation.');
+    return { path: actual, bytes };
+  } finally {
+    await handle.close();
+  }
+}
+function readClrFileSync(file) {
+  const fd = syncFs.openSync(file, 'r');
+  try {
+    const stat = syncFs.fstatSync(fd, { bigint: true }), named = syncFs.lstatSync(file, { bigint: true });
+    if (named.isSymbolicLink() || !stat.isFile() || stat.size > CLR_FILE_LIMIT || !sameFile(stat, named))
+      fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
+    return readClrBytesSync(fd);
+  } finally {
+    syncFs.closeSync(fd);
+  }
+}
+function removeClrSnapshot(directory, files) {
+  // Process absence may precede Windows releasing the owning worker's file handles.
+  const deadline = Date.now() + 1000, signal = new Int32Array(new SharedArrayBuffer(4));
+  for (;;) {
+    try {
+      for (const file of files) {
+        try { syncFs.unlinkSync(path.join(directory, file.name)); }
+        catch (cause) { if (cause.code !== 'ENOENT') throw cause; }
+      }
+      syncFs.rmdirSync(directory);
+      return;
+    } catch (cause) {
+      if (!['EPERM', 'EBUSY', 'ENOTEMPTY'].includes(cause.code) || Date.now() >= deadline) throw cause;
+      Atomics.wait(signal, 0, 0, 25);
+    }
+  }
+}
 /** No assembly is discovered or executed automatically. Cache contains only explicitly trusted bytes. */
 export async function prepareClrRuntime(descriptor,{compiler}={}){
  validateClrDescriptor(descriptor);if(process.platform!=='win32')fail('The built-in CLR host requires Windows .NET Framework; configure mocks on other platforms.','LocalPluginClrUnavailable',501);
- const assembly=await confined(descriptor.root,descriptor.assembly),sdk=await confined(descriptor.sdkRoot,descriptor.sdkAssembly),dependencies=await Promise.all((descriptor.dependencies??[]).map(relative=>confined(descriptor.root,relative)));
+ const assembly=await readClrDependency(descriptor.root,descriptor.assembly),sdk=await readClrDependency(descriptor.sdkRoot,descriptor.sdkAssembly),dependencies=await Promise.all((descriptor.dependencies??[]).map(relative=>readClrDependency(descriptor.root,relative)));
  const names=[assembly,sdk,...dependencies].map(f=>path.basename(f.path).toLowerCase());if(new Set(names).size!==names.length)fail('CLR dependency filenames must be unique.');
- const source=await fs.readFile(hostSource),signature=sha(Buffer.concat([source,assembly.bytes,sdk.bytes,...dependencies.map(f=>f.bytes)]));const cacheParent=path.resolve(descriptor.cacheRoot);await fs.mkdir(cacheParent,{recursive:true});if(await fs.realpath(cacheParent)!==cacheParent)fail('CLR cache root cannot use a symlink.');const directory=path.join(cacheParent,'clr-'+signature+'-'+randomUUID());await fs.mkdir(directory,{recursive:true});if((await fs.lstat(directory)).isSymbolicLink()||await fs.realpath(directory)!==directory)fail('CLR signature directory cannot use a symlink.');
- const files=[];for(const original of [assembly,sdk,...dependencies]){const destination=path.join(directory,path.basename(original.path));try{await fs.writeFile(destination,original.bytes,{flag:'wx'});}catch(cause){if(cause.code!=='EEXIST')throw cause;if(sha(await fs.readFile(destination))!==sha(original.bytes))fail('CLR cache bytes changed.');}files.push({path:destination,sourcePath:original.path,sha256:sha(original.bytes)});}
- const executable=path.join(directory,'paqvilo-plugin-host.exe'),sourceFile=path.join(directory,'paqvilo-plugin-host.cs');for(const file of [...files.map(f=>f.path),executable,sourceFile]){const stat=await fs.lstat(file).catch(c=>{if(c.code==='ENOENT')return null;throw c;});if(stat&&(stat.isSymbolicLink()||!stat.isFile()))fail('CLR cache files must be regular files.');}await fs.writeFile(sourceFile,source);
+ const source=(await readClrDependency(path.dirname(hostSource),path.basename(hostSource))).bytes,signature=sha(Buffer.concat([source,assembly.bytes,sdk.bytes,...dependencies.map(f=>f.bytes)]));await fs.mkdir(path.resolve(descriptor.cacheRoot),{recursive:true});const cacheParent=await canonicalClrDirectory(descriptor.cacheRoot),directory=await fs.mkdtemp(path.join(cacheParent,'clr-'+signature+'-'));
+ const files=[];for(const original of [assembly,sdk,...dependencies]){const destination=path.join(directory,path.basename(original.path));await fs.writeFile(destination,original.bytes,{flag:'wx'});files.push({path:destination,sourcePath:original.path,sha256:sha(original.bytes)});}
+ const executable=path.join(directory,'paqvilo-plugin-host.exe'),sourceFile=path.join(directory,'paqvilo-plugin-host.cs');await fs.writeFile(sourceFile,source,{flag:'wx'});
  const compilerFile=compiler??path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
  const build=spawnSync(compilerFile,['/nologo','/target:exe','/out:'+executable,'/reference:'+files[1].path,'/reference:System.Web.Extensions.dll','/reference:System.Runtime.Serialization.dll','/reference:System.ServiceModel.dll',sourceFile],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000,maxBuffer:256*1024});
  if(build.error||build.status!==0)fail('CLR host compilation failed: '+String(build.error?.message??build.stdout??build.stderr).slice(0,4000),'LocalPluginClrBuild',501);
- files.push({path:executable,sha256:sha(await fs.readFile(executable))});const allowed=new Set([...files.map(f=>path.basename(f.path)),path.basename(sourceFile)]);if((await fs.readdir(directory)).some(name=>!allowed.has(name)))fail('CLR cache has unregistered sidecar dependencies.');return {descriptor,executable,assembly:files[0].path,files,directory,allowedFiles:[...allowed],provenance:{kind:'original-clr-assembly',typeName:descriptor.typeName,assemblySha256:files[0].sha256,sdkSha256:files[1].sha256,hostSourceSha256:sha(source),trusted:true,securityModel:'Explicit project backend profile; native process is trusted code, not a security sandbox'}};
+ files.push({path:executable,sha256:sha((await readClrDependency(directory,path.basename(executable))).bytes)});const allowed=new Set([...files.map(f=>path.basename(f.path)),path.basename(sourceFile)]);if((await fs.readdir(directory)).some(name=>!allowed.has(name)))fail('CLR cache has unregistered sidecar dependencies.');return {descriptor,executable,assembly:files[0].path,files,directory,allowedFiles:[...allowed],provenance:{kind:'original-clr-assembly',typeName:descriptor.typeName,assemblySha256:files[0].sha256,sdkSha256:files[1].sha256,hostSourceSha256:sha(source),trusted:true,securityModel:'Explicit project backend profile; native process is trusted code, not a security sandbox'}};
 }
 export function pluginRuntimeDescriptors(packs=[]){const descriptors=new Map();for(const pack of packs)for(const[id,descriptor]of Object.entries(pack.pluginRuntimes??{})){const key=canon(id);if(!uuid.test(key)||descriptors.has(key))fail('Invalid or ambiguous CLR plugin step registration.');descriptors.set(key,descriptor);}return descriptors;}
 export async function preparePluginRuntimes(packs=[]){const runtimes=new Map();for(const[id,descriptor]of pluginRuntimeDescriptors(packs))runtimes.set(id,await prepareClrRuntime(descriptor));return runtimes;}
@@ -130,13 +236,48 @@ function executeSdkMethod({store,service,message,responseToken}){
 }
 export function executeSdkFetch(store,xml,execute){const prepared=prepareFetchForSdk(xml,store),answer=execute(prepared.xml);Object.defineProperty(answer,'sdkHiddenId',{value:prepared.hiddenId,configurable:true});return answer;}
 /** Synchronous pipeline RPC; no queued DataStore.create/update await can deadlock this thread. */
-export function executeClrPlugin(runtime,input,{store,diagnostic=()=>{}}){
- if(syncFs.realpathSync(runtime.directory)!==runtime.directory||syncFs.lstatSync(runtime.directory).isSymbolicLink()||syncFs.readdirSync(runtime.directory).some(name=>!runtime.allowedFiles.includes(name)))fail('CLR cache directory or dependencies changed.','LocalPluginSourceChanged',409);
- for(const file of runtime.files)for(const checked of [file.path,...(file.sourcePath?[file.sourcePath]:[])]){const stat=syncFs.lstatSync(checked);if(stat.isSymbolicLink()||!stat.isFile()||sha(syncFs.readFileSync(checked))!==file.sha256)fail('Trusted CLR bytes changed after preparation.','LocalPluginSourceChanged',409);}
- if(sha(syncFs.readFileSync(hostSource))!==runtime.provenance.hostSourceSha256)fail('CLR host source changed; restart to prepare the new host.','LocalPluginSourceChanged',409);
- if(Buffer.byteLength(JSON.stringify(input))>4*1024*1024)fail('CLR context exceeds 4 MiB.','LocalPluginInputLimit',413);
+export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} }) {
+  if (path.relative(canonicalClrDirectorySync(runtime.directory), path.resolve(runtime.directory)) !== '' ||
+      syncFs.readdirSync(runtime.directory).some(name => !runtime.allowedFiles.includes(name)))
+    fail('CLR cache directory or dependencies changed.', 'LocalPluginSourceChanged', 409);
+  const verified = [];
+  for (const file of runtime.files) {
+    canonicalClrDirectorySync(path.dirname(file.path));
+    const bytes = readClrFileSync(file.path);
+    if (sha(bytes) !== file.sha256)
+      fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
+    if (file.sourcePath) {
+      canonicalClrDirectorySync(path.dirname(file.sourcePath));
+      if (sha(readClrFileSync(file.sourcePath)) !== file.sha256)
+        fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
+    }
+    verified.push({ name: path.basename(file.path), bytes });
+  }
+  if (sha(readClrFileSync(hostSource)) !== runtime.provenance.hostSourceSha256)
+    fail('CLR host source changed; restart to prepare the new host.', 'LocalPluginSourceChanged', 409);
+  if (Buffer.byteLength(JSON.stringify(input)) > 4 * 1024 * 1024)
+    fail('CLR context exceeds 4 MiB.', 'LocalPluginInputLimit', 413);
+  const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-'));
+  try {
+    for (const file of verified)
+      syncFs.writeFileSync(path.join(directory, file.name), file.bytes, { flag: 'wx' });
+    return executeClrSnapshot(runtime, input, { store, diagnostic }, {
+      directory,
+      executable: path.join(directory, path.basename(runtime.executable)),
+      assembly: path.join(directory, path.basename(runtime.assembly)),
+    });
+  } finally {
+    try { removeClrSnapshot(directory, verified); }
+    catch (cause) {
+      // Cleanup diagnostics must not replace an original plugin exception.
+      try { diagnostic({ code: 'PLUGIN_CLR_CLEANUP', message: 'Owned CLR snapshot cleanup failed: ' + cause.code + ' (' + cause.syscall + ')' }); }
+      catch {}
+    }
+  }
+}
+function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot){
  const timeout=Math.max(100,Math.min(runtime.descriptor.timeoutMs??2000,10000)),{port1,port2}=new MessageChannel(),signal=new SharedArrayBuffer(4),flags=new Int32Array(signal);
- const worker=new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:runtime.executable,input:{...input,assembly:runtime.assembly,typeName:runtime.descriptor.typeName,unsecureConfiguration:runtime.descriptor.unsecureConfiguration??null,secureConfiguration:runtime.descriptor.secureConfiguration??null},timeout},transferList:[port2]});
+ const worker=new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,input:{...input,assembly:snapshot.assembly,typeName:runtime.descriptor.typeName,unsecureConfiguration:runtime.descriptor.unsecureConfiguration??null,secureConfiguration:runtime.descriptor.secureConfiguration??null},timeout},transferList:[port2]});
  worker.on('error',()=>{}); // The synchronous deadline reports worker failure and closes the owned host.
  const deadline=Date.now()+timeout+1000;let calls=0,result,ownedPid;executionDepth++;try{if(executionDepth>8)fail('CLR nested execution depth exceeds eight.','LocalPluginDepth',400);while(!result){let packet;while((packet=receiveMessageOnPort(port1))){const message=packet.message;if(message.kind==='owned-child'){if(!Number.isInteger(message.pid)||message.pid<=0)fail('Invalid owned CLR process.','LocalPluginProtocol',500);ownedPid=message.pid;diagnostic({code:'PLUGIN_CLR_HOST_STARTED',pid:ownedPid});}else if(message.kind==='rpc'){let value,error;try{if(++calls>1000)fail('CLR SDK call limit exceeded.','LocalPluginCallLimit',413);value=dispatchSdkCall({store,profile:runtime.descriptor.serviceProfile,message});}catch(cause){error={code:cause.code??'LocalPluginSdkError',message:cause.message};const inner=cause.details?.innerCode??(cause.code==='NotFound'?'0x80040217':null);if(/^0x[a-f\d]{8}$/i.test(inner??''))error.organizationServiceFault={errorCode:parseInt(inner,16)|0,message:cause.message,timestamp:new Date().toISOString(),errorDetails:cause.details?.sourceException?.exceptionDetails??{},provenance:'Local modeled SDK fault; native timestamp/correlation/stack are not available'};}port1.postMessage({kind:'rpc-answer',value,error});}else if(message.kind==='trace'){if(typeof message.message!=='string'||message.message.length>16384)fail('CLR trace exceeds the local limit.','LocalPluginOutputLimit',413);diagnostic({code:'PLUGIN_CLR_TRACE',message:message.message});}else if(message.kind==='failure'){const details={sourceException:{type:message.exceptionType??null,errorCode:message.errorCode??null,operationStatus:message.operationStatus??null,exceptionDetails:message.exceptionDetails??null}};if(Number.isInteger(message.errorCode))details.innerCode=message.exceptionType==='Microsoft.Xrm.Sdk.InvalidPluginExecutionException'&&(message.errorCode>>>0)===0x80131500?'0x80040265':'0x'+(message.errorCode>>>0).toString(16).padStart(8,'0');throw new DataError(message.message,message.code==='LocalPluginTimeout'?504:400,message.code??'PluginValidation',details);}else if(message.kind==='result')result=message;else fail('Unknown CLR protocol result.','LocalPluginProtocol',500);}if(result)break;if(Date.now()>deadline)fail('CLR host/worker did not complete within the configured deadline.','LocalPluginTimeout',504);Atomics.wait(flags,0,0,20);Atomics.store(flags,0,0);}}
  finally{executionDepth--;if(ownedPid)try{process.kill(ownedPid);}catch(cause){if(cause.code!=='ESRCH')diagnostic({code:'PLUGIN_CLR_CLEANUP',message:'Owned CLR process cleanup failed: '+cause.code});}port1.postMessage({kind:'cancel'});port1.close();void worker.terminate();if(ownedPid){let closed=false;const stopDeadline=Date.now()+1000;while(Date.now()<stopDeadline){try{process.kill(ownedPid,0);}catch(cause){if(cause.code==='ESRCH'){closed=true;break;}}Atomics.wait(flags,0,0,10);}diagnostic({code:'PLUGIN_CLR_HOST_STOPPED',pid:ownedPid,absenceVerified:closed});}}

@@ -67,6 +67,38 @@ async function hostFixture(t) {
   return { page, requests };
 }
 
+test('PCF classic SDK bundle resolves its declared export after repeated whitespace and block comments', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-pcf-classic-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const portal = path.join(root, 'portal'), solution = path.join(root, 'solution');
+  const files = {
+    'portal/website.yml': 'adx_websiteid: site\nadx_name: Invented classic bundle',
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
+    'portal/Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main\nadx_usewebsiteheaderandfooter: false',
+    'portal/Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
+    'portal/Main.webtemplate.source.html': '<html><body>{% codecomponent name:"tst_Synthetic.Editor" value:"Classic value" %}</body></html>',
+    'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>Synthetic</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'solution/Controls/tst_Synthetic.Editor/ControlManifest.xml': '<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound"/><resources><code path="bundle.js"/></resources></control></manifest>',
+    'solution/Controls/tst_Synthetic.Editor/ControlManifest.xml.data.xml': '<CustomControl><Name>tst_Synthetic.Editor</Name></CustomControl>',
+    'solution/Controls/tst_Synthetic.Editor/bundle.js': '\uFEFF \n/* generated */\t/** license */\nvar $ClassicBundle_2 ;\n$ClassicBundle_2={Editor:class{init(context,notify,state,container){window.classicInit=(window.classicInit||0)+1;this.input=document.createElement("input");this.input.value=context.parameters.value.raw;container.appendChild(this.input);}updateView(){}getOutputs(){return{value:this.input.value};}destroy(){}}};',
+  };
+  for (const [name, body] of Object.entries(files)) {
+    const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, body);
+  }
+  const app = await createSimulator({ sourceDir: portal, solutionRoots: [solution], port: 0, watch: false });
+  t.after(() => app.close());
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const page = await browser.newPage(), errors = [], external = [];
+  page.on('pageerror', error => errors.push(error.message));
+  page.on('request', request => { if (!request.url().startsWith(app.url)) external.push(request.url()); });
+  await page.goto(app.url);
+  await page.locator('[data-pcf-ready=true]').waitFor();
+  assert.equal(await page.locator('input').inputValue(), 'Classic value');
+  assert.equal(await page.evaluate(() => window.classicInit), 1);
+  assert.deepEqual(errors, []); assert.deepEqual(external, []);
+});
+
 test('PCF repeated controls have separate instances and state, typed parameters, bounded binary resources and removal cleanup', async t => {
   const { page } = await hostFixture(t);
   const errors = []; page.on('pageerror', error => errors.push(error.message));

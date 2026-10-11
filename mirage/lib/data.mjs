@@ -2952,10 +2952,10 @@ export class DataStore {
    * profile models Liquid/list/lookup execution through the portal.
    */
   fetchXml(xml, identity = {}, options = {}) {
-    const entity=/<entity\s[^>]*name=["']([\w]+)["']/i.exec(xml??'')?.[1];
+    const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
     const execute=source=>executeSdkFetch(this,source,prepared=>this.fetchXmlCore(prepared,identity,options));
     if(!entity||!this.pluginPipeline||!this.pluginPipelineActive({entity,operation:'retrievemultiple'}))return options.sdkResult?execute(xml):this.fetchXmlCore(xml,identity,options);
-    return this.retrieveMultipleOperation(entity,options.sdkQuery??{$type:'FetchExpression',query:xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||/<entity\s[^>]*name=["']([\w]+)["']/i.exec(source)?.[1]!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken);
+    return this.retrieveMultipleOperation(entity,options.sdkQuery??{$type:'FetchExpression',query:xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken);
   }
   fetchXmlCore(xml, identity = {}, options = {}) {
     const plan = planFetch(parseFetchXml(xml), {
