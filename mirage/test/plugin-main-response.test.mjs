@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -45,7 +46,7 @@ else if(mode=="bulk"){var r=(CreateMultipleResponse)s.Execute(new CreateMultiple
 else throw new Exception("Unknown invented case");target["status"]="passed:"+mode;((ITracingService)services.GetService(typeof(ITracingService))).Trace("Main response passed {0}",mode);}}
 }`);
  const build=spawnSync(path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,'/reference:System.Runtime.Serialization.dll',source],{encoding:'utf8',windowsHide:true});assert.equal(build.status,0,build.stdout+build.stderr);
- const descriptor=typeName=>({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.'+typeName,sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:5000});
+ const descriptor=typeName=>({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.'+typeName,sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
  const caller=await prepareClrRuntime(descriptor('Caller')),pre=await prepareClrRuntime(descriptor('Pre')),steps=[step(1,'widget','Create','Caller')];let sequence=1;
  for(const [entity,messages] of [['secondary',['Create','Update','Delete','Retrieve','RetrieveMultiple']],['bulkitem',['CreateMultiple','UpdateMultiple']]])for(const message of messages)steps.push(step(++sequence,entity,message,'Pre'));
  const runtimes=new Map(steps.map(row=>[row.id,row.entity==='widget'?caller:pre])),items=pluginCatalogue({plugins:{steps},runtimes,overrides:Object.fromEntries(steps.map(row=>['plugin-step:'+row.id,{mode:'clr'}]))}),notes=[];

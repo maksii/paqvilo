@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -47,7 +48,7 @@ var deleted=(DeleteResponse)s.Execute(new DeleteRequest{Target=new EntityReferen
 }}}`);
  const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
  const build=spawnSync(compiler,['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});assert.equal(build.status,0,build.stdout+build.stderr);
- const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.ExecuteOriginal',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'.paqvilo/cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:'50000000-0000-0000-0000-000000000001',businessUnitId:'60000000-0000-0000-0000-000000000001'},timeoutMs:2000});
+ const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.ExecuteOriginal',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'.paqvilo/cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:'50000000-0000-0000-0000-000000000001',businessUnitId:'60000000-0000-0000-0000-000000000001'},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
  const store=storeOf(),notes=[],step={id:'30000000-0000-0000-0000-000000000001',name:'Invented Execute',assemblyId:'invented-execute',enabled:true,entity:'widget',message:'Create',stage:20,rank:1,mode:0,supportedDeployment:0,filteringAttributes:[],images:[],typeName:'Invented.ExecuteOriginal'},runtimes=new Map([[step.id,runtime]]);
  store.setPluginPipeline(context=>runPluginPhase({...context,store,runtimes,items:pluginCatalogue({plugins:{steps:[step]},runtimes,overrides:{['plugin-step:'+step.id]:{mode:'clr'}}}),diagnostic:note=>notes.push(note)}));
  store.file=path.join(root,'state.json');await store.save();const before=store.snapshot();

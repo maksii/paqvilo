@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -79,7 +80,7 @@ else if(c.MessageName=="CreateMultiple")output["Ids"]=new[]{new Guid("${changed}
 else{var e=c.MessageName=="Retrieve"?(Entity)output["BusinessEntity"]:((EntityCollection)output["BusinessEntityCollection"]).Entities[0];if(c.OwningExtension.Name=="Last observer"){if(e.GetAttributeValue<string>("title")!="Handler changed")throw new Exception("Ranked read became stale");output["last"]=new OptionSetValue(7);}else e["title"]="CLR changed";}}}
 }`);
  const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),build=spawnSync(compiler,['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,'/reference:System.ServiceModel.dll','/reference:System.Runtime.Serialization.dll',source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});assert.equal(build.status,0,build.stdout+build.stderr);
- const descriptor=typeName=>({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.'+typeName,sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:'50000000-0000-0000-0000-000000000001',businessUnitId:'60000000-0000-0000-0000-000000000001'},timeoutMs:5000});
+ const descriptor=typeName=>({trust:'execute-local-assembly',root,assembly:path.basename(assembly),typeName:'Invented.'+typeName,sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:profile,context:{initiatingUserId:user,organizationId:'50000000-0000-0000-0000-000000000001',businessUnitId:'60000000-0000-0000-0000-000000000001'},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
  const caller=await prepareClrRuntime(descriptor('Caller')),responder=await prepareClrRuntime(descriptor('Results')),steps=[],runtimes=new Map(),handlers=new Map();let sequence=200;
  const step=(entity,message,stage,rank,typeName,name)=>{const row={id:'30000000-0000-0000-0000-'+String(++sequence).padStart(12,'0'),enabled:true,assemblyId:'invented-response',entity,message,stage,rank,typeName:'Invented.'+typeName,name,mode:0,supportedDeployment:0,filteringAttributes:[],images:[]};steps.push(row);runtimes.set(row.id,typeName==='Caller'?caller:responder);return row;};
  step('widget','Create',20,1,'Caller','Caller');for(const entity of ['secondary','audit'])step(entity,'Create',40,1,'Results','Result writer');step('bulkitem','CreateMultiple',40,1,'Results','Bulk writer');

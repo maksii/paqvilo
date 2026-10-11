@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {ORDINARY_CLR_TIMEOUT_MS} from './fixtures/clr-budget.mjs';
 import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -54,7 +55,7 @@ test('Original DLL reads PreValidation variables through ParentContext across CR
  `);
  const build=spawnSync(path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,'/reference:System.Runtime.Serialization.dll',source],{encoding:'utf8',windowsHide:true});
  assert.equal(build.status,0,build.stdout+build.stderr);
- const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root:directory,assembly:path.basename(assembly),typeName:'Invented.SharedAudit',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(directory,'cache'),serviceProfile:{userId:user,evidence:'Invented documented SharedVariables contract',grants:[{entity:'child',operations:['create','read']}]},context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:5000});
+ const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root:directory,assembly:path.basename(assembly),typeName:'Invented.SharedAudit',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(directory,'cache'),serviceProfile:{userId:user,evidence:'Invented documented SharedVariables contract',grants:[{entity:'child',operations:['create','read']}]},context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:ORDINARY_CLR_TIMEOUT_MS});
  const steps=[];let index=0;
  for(const entity of ['widget','child'])for(const message of entity==='widget'?['Create','Update','Delete']:['Create'])for(const [stage,rank] of [[10,1],[10,2],[20,1],[40,1]])steps.push({id:'30000000-0000-0000-0000-'+String(++index).padStart(12,'0'),enabled:true,entity,message,stage,rank,mode:0,supportedDeployment:0,filteringAttributes:[],images:[],typeName:'Invented.SharedAudit',assemblyId:'invented',assemblyName:'SharedAudit'});
  const runtimes=new Map(steps.map(step=>[step.id,runtime])),overrides=Object.fromEntries(steps.map(step=>['plugin-step:'+step.id,{mode:'clr'}])),items=pluginCatalogue({plugins:{steps},runtimes,overrides}),notes=[];
