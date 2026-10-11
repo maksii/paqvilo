@@ -8,13 +8,15 @@ import {spawnSync} from 'node:child_process';
 import {canonicalClrDirectory,readClrDependency,prepareClrRuntime} from '../lib/plugin-clr.mjs';
 import {DataStore} from '../lib/data.mjs';
 import {pluginCatalogue,runPluginPhase} from '../lib/exported-plugins.mjs';
-async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-clr-files-'));t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));return root;}
+async function fixture(t){const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-clr-files-'));t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));return fs.realpath(root);}
+// Hooks target the opened canonical pathname even when the caller supplied another spelling.
+const requestedRoot=root=>process.platform==='win32'?root.toLowerCase():root;
 test('CLR dependency reads preserve bytes and reject traversal, nonfiles and oversized files',async t=>{
  const root=await fixture(t);await fs.writeFile(path.join(root,'Original.dll'),'original bytes');assert.equal((await readClrDependency(root,'Original.dll')).bytes.toString(),'original bytes');await assert.rejects(readClrDependency(root,'../Original.dll'),/escaped/);await assert.rejects(readClrDependency(root,'.'),/escaped/);await fs.mkdir(path.join(root,'Directory.dll'));await assert.rejects(readClrDependency(root,'Directory.dll'),/regular DLL/);const h=await fs.open(path.join(root,'Large.dll'),'wx');await h.truncate(32*1024*1024+1);await h.close();await assert.rejects(readClrDependency(root,'Large.dll'),/regular DLL/);
  // A file that grows after fstat still has a bounded same-handle read.
  const growing=path.join(root,'Growing.dll');await fs.writeFile(growing,'initial');const open=fs.open;let opened,readTotal=0;
  fs.open=async function(file,...args){const handle=await open(file,...args);if(file===growing){opened=handle;const read=handle.read.bind(handle);let grew=false;handle.read=async args=>{if(!grew){grew=true;await fs.truncate(growing,32*1024*1024+100);}const result=await read(args);readTotal+=result.bytesRead;return result;};}return handle;};
- try{await assert.rejects(readClrDependency(root,'Growing.dll'),/regular DLL/);assert.equal(readTotal,32*1024*1024+1);assert.equal(opened.fd,-1);}finally{fs.open=open;}
+ try{await assert.rejects(readClrDependency(requestedRoot(root),'Growing.dll'),/regular DLL/);assert.equal(readTotal,32*1024*1024+1);assert.equal(opened.fd,-1);}finally{fs.open=open;}
 });
 test('CLR directory canonical spelling accepts a real directory while actual directory links remain forbidden',async t=>{
  const root=await fixture(t),target=path.join(root,'MixedCaseCache');await fs.mkdir(target);assert.equal(await canonicalClrDirectory(target),await fs.realpath(target));if(process.platform==='win32'){assert.notEqual(path.resolve(target.toLowerCase()),await fs.realpath(target));assert.equal(await canonicalClrDirectory(target.toLowerCase()),await fs.realpath(target));}
@@ -23,12 +25,12 @@ test('CLR directory canonical spelling accepts a real directory while actual dir
 test('CLR opened-file identity rejects replacement before validation and closes the original handle',async t=>{
  const root=await fixture(t),file=path.join(root,'Original.dll');await fs.writeFile(file,'original');const original=fs.open;let opened;
  fs.open=async function(p,...args){const h=await original(p,...args);if(p===file){opened=h;await fs.rename(file,file+'.retained');await fs.writeFile(file,'replacement');}return h;};
- try{await assert.rejects(readClrDependency(root,'Original.dll'),/regular DLL/);assert.equal(opened.fd,-1);}finally{fs.open=original;}
+ try{await assert.rejects(readClrDependency(requestedRoot(root),'Original.dll'),/regular DLL/);assert.equal(opened.fd,-1);}finally{fs.open=original;}
 });
 test('CLR opened-file read rejects a pathname replaced during reading without reopening its replacement',async t=>{
  const root=await fixture(t),file=path.join(root,'Original.dll');await fs.writeFile(file,'original');const original=fs.open;let readBytes,opened;
  fs.open=async function(p,...args){const h=await original(p,...args);if(p===file){opened=h;const read=h.read.bind(h);let replaced=false;h.read=async args=>{if(!replaced){replaced=true;await fs.rename(file,file+'.retained');await fs.writeFile(file,'replacement');}const result=await read(args);if(result.bytesRead)readBytes=Buffer.from(args.buffer.subarray(0,result.bytesRead));return result;};}return h;};
- try{await assert.rejects(readClrDependency(root,'Original.dll'),/changed during preparation/);assert.equal(readBytes.toString(),'original');assert.equal(opened.fd,-1);}finally{fs.open=original;}
+ try{await assert.rejects(readClrDependency(requestedRoot(root),'Original.dll'),/changed during preparation/);assert.equal(readBytes.toString(),'original');assert.equal(opened.fd,-1);}finally{fs.open=original;}
 });
 test('Actual original CLR case-variant cache compiles once, runs verified snapshot bytes and removes snapshots after success, fault, timeout and nesting',{skip:process.platform!=='win32'||!process.env.PAQ_TEST_XRM_SDK},async t=>{
  const root=await fixture(t),sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(root,'Original.cs'),assembly=path.join(root,'Original.dll'),cache=path.join(root,'MixedCaseCache');await fs.mkdir(cache);
