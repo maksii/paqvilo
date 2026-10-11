@@ -22,6 +22,7 @@ export const PAGE_KINDS = Object.freeze({
   list: "Page rendering {% entitylist %}: client-side grid from the platform app bundle, no WebForms wrapper.",
   "basic-form": "Page rendering {% entityform %}: content inside form#liquid_form with the WebForms resources.",
   "multistep-form": "Page rendering {% webform %}: as basic-form; the control is WebFormControl_<id>.",
+  "code-component": "Page rendering {% codecomponent %}: the code control requires the Liquid WebForms server form.",
   "modal-form": "Modal and quick view documents (/_portal/modal-form-template-path, quickform-template-path): form#content_form, no header or footer.",
 });
 
@@ -31,7 +32,7 @@ export const PAGE_KINDS = Object.freeze({
  * `kinds` lists the page kinds that load the resource.
  */
 const ALL = Object.keys(PAGE_KINDS);
-const FORMS = ["basic-form", "multistep-form", "modal-form"];
+const FORMS = ["basic-form", "multistep-form", "code-component", "modal-form"];
 export const PLATFORM_RESOURCES = Object.freeze([
   { id: "resource-manager", phase: "head", kinds: ALL, native: "/_portal/{websiteId}/Resources/ResourceManager?lang={language}", local: "the same path (the strings that local scripts read)", provides: ["window.ResourceManager"] },
   { id: "bootstrap-style", phase: "head", kinds: ALL, native: "the Head/Bootstrap snippet, the site's bootstrap.min.css content style or /css/bootstrap.min.css", local: "the same choice (lib/liquid.mjs contentStylesheets); /css/bootstrap.min.css needs a capture", provides: ["Bootstrap styles"] },
@@ -79,6 +80,7 @@ export const CKEDITOR_BASEPATH = "/js/BaseHtmlContentDesigner/Libs/msdyncrm_/lib
 const NATIVE_FORM_MARKER = /\bdata-pp-native-form\b/;
 const MULTISTEP_MARKER = /\bid="WebFormControl_[0-9a-f]{32}"/i;
 const LIST_MARKER = /\bclass="[^"]*\bentity-grid\b[^"]*\bentitylist\b|\bclass="[^"]*\bentitylist\b[^"]*\bentity-grid\b/;
+const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
 const DATE_CONTROL_MARKER = /\bclass="[^"]*\binput-group datetimepicker\b|\bdata-date-format="/;
 
@@ -86,6 +88,7 @@ const DATE_CONTROL_MARKER = /\bclass="[^"]*\binput-group datetimepicker\b|\bdata
 export function pageKind(content, { authenticated = false } = {}) {
   const html = String(content ?? "");
   if (NATIVE_FORM_MARKER.test(html)) return MULTISTEP_MARKER.test(html) ? "multistep-form" : "basic-form";
+  if (CODE_COMPONENT_MARKER.test(html)) return "code-component";
   if (LIST_MARKER.test(html)) return "list";
   return authenticated ? "authenticated" : "anonymous";
 }
@@ -159,7 +162,7 @@ export function nativePageRegions({ content = "", action = "/", bodyScripts = []
   const other = scripts.filter((entry) => !isAspNetScript(entry));
   // Liquid pages get the server form only for their form controls; legacy ASPX page
   // templates (rewrite URLs) always run inside the WebForms master's content_form.
-  const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form";
+  const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component";
   return {
     kind,
     content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "" }) : content,

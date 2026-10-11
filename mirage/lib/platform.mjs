@@ -22,11 +22,15 @@ import {
   executeGridQuery,
   settingsJson,
 } from "./native-services.mjs";
-import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId } from "./form-service.mjs";
+import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId, nativeFormSubmissionContext } from "./form-service.mjs";
 import { deniedPageRoute } from "./redirects.mjs";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { hasPlatformBundles } from "./platform-manifest.mjs";
 import { clientPortalObjectRuntime } from "./portal-client-object.mjs";
+import { parseDateValue } from "./dataverse-values.mjs";
+import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
+import { missingLiquidComponent, observedChartMarkup, observedSearchUnavailable } from './liquid-service-observations.mjs';
+import { compactNativeControlId as compactId, nativeFormControlIds, nativeFormPostbackDescriptor } from './native-postback.mjs';
 const escape = (value) =>
   String(value ?? "").replace(
     /[&<>"']/g,
@@ -337,8 +341,6 @@ const canonicalId = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-// ASP.NET client ids: {guid:N}; schema-only names keep word characters only.
-const compactId = (value) => canonicalId(value).replace(/-/g, "").replace(/[^A-Za-z0-9_]/g, "_");
 const scalarValue = (value) =>
   value && typeof value === "object" ? (value.id ?? value.value) : value;
 const json = (value) => JSON.stringify(value).replace(/</g, "\\u003c");
@@ -356,7 +358,7 @@ function componentError(message, status, code) {
   return Object.assign(new Error(message), { status, code });
 }
 
-function nativeControlKind(field) {
+export function nativeControlKind(field) {
   const type = String(field.dataverseType ?? "").toLowerCase();
   if (field.richText) return "richtext";
   if (field.type === "lookup" || /^(lookup|customer|owner)$/.test(type)) return "lookup";
@@ -373,6 +375,21 @@ function nativeControlKind(field) {
   if (field.type === "number") return "integer";
   if (field.type === "email" || String(field.format ?? "").toLowerCase() === "email") return "email";
   return "text";
+}
+
+/** Native numeric range messages use the column's exported decimal precision. */
+export function nativeRangeMessage(field) {
+  const control = nativeControlKind(field);
+  const precision = Number.isInteger(field.precision) && field.precision >= 0 && field.precision <= 100 ? field.precision : null;
+  const bound = (value) => value == null ? "" : precision != null && control !== "integer" ? Number(value).toFixed(precision) : String(value);
+  return `${field.label ?? field.name} must have a value between ${bound(field.minimum ?? field.minValue)} and ${bound(field.maximum ?? field.maxValue)}.`;
+}
+
+/** The exported Dataverse format takes precedence over the generic input type. */
+export function nativeDateOnly(field) {
+  const format = String(field.format ?? "").toLowerCase();
+  return !/^(datetime|dateandtime)$/.test(format) &&
+    (/dateonly/i.test(field.dateTimeBehavior ?? field.behavior ?? format) || /^(date|dateonly)$/.test(format) || field.type === "date" || String(field.dataverseType).toLowerCase() === "datetime");
 }
 
 /** Merge basic/advanced form metadata (adx_entityformmetadata / adx_webformmetadata). */
@@ -393,7 +410,7 @@ function renderLiquidText(renderLiquid, context, value) {
 }
 
 /** Locate the form record from the native record source settings. */
-async function resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session }) {
+export async function resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session }) {
   let mode = Number(schema.mode ?? definition?.mode ?? FORM_MODE.insert);
   const params = context.request?.params ?? {};
   const component = schema.metadata ?? definition?.metadata ?? {};
@@ -492,6 +509,8 @@ function fieldValidators(field, { linksEnabled }) {
       validationexpression: field.pattern,
     });
   if (field.maxLength && ["text", "email", "textarea"].includes(field.control))
+    // Like the hosted control, these CustomValidators run on the server. They
+    // deliberately have no clientvalidationfunction: a format error posts back.
     validators.push({
       id: `MaximumLengthValidator${id}`,
       controltovalidate: id,
@@ -516,8 +535,8 @@ function fieldValidators(field, { linksEnabled }) {
     validators.push({
       id: `RangeValidator${id}`,
       controltovalidate: id,
-      errormessage: summaryLink(id, field.rangeMessage || `${label} must have a value between ${field.minimum} and ${field.maximum}.`, linksEnabled),
-      evaluationfunction: "RangeValidatorEvaluateIsValid",
+      errormessage: summaryLink(id, field.rangeMessage || nativeRangeMessage(field), linksEnabled),
+      evaluationfunction: "CustomValidatorEvaluateIsValid",
       minimumvalue: String(field.minimum ?? ""),
       maximumvalue: String(field.maximum ?? ""),
       type: field.control === "integer" ? "Integer" : "Double",
@@ -800,7 +819,10 @@ function findList(portal, args, name) {
 
 async function renderEntityList(name, context, options) {
   const list = findList(options.portal, options.args, name);
-  if (!list) return { context: {}, html: "" };
+  if (!list) {
+    missingLiquidComponent('entitylist', options);
+    return { context: {}, html: "" };
+  }
   const model = listModel({ portal: options.portal, metadata: options.metadata, store: options.store, list, schemas: options.schemas });
   if (model.approximated)
     options.diagnostic?.({
@@ -835,7 +857,7 @@ async function renderEntityView(name, context, options) {
   else {
     const views = options.metadata?.views ?? [];
     const view = views.find((candidate) => (args.id && candidate.id === canonicalId(args.id)) || ((args.logical_name || args.logicalname) && candidate.entity === canonicalId(args.logical_name || args.logicalname) && candidate.name === args.name));
-    if (!view) return { context: { entityview: null } };
+    if (!view) return missingLiquidComponent('entityview', options) ? null : { context: { entityview: null } };
     const mapping = options.store.resolveMapping(view.entity);
     model = { kind: "view", entity: view.entity, idColumn: mapping.idColumn, primaryName: mapping.nameColumn, views: [view], settings: {}, pageSize: 10, search: { enabled: true }, userFilters: {}, filter: {} };
   }
@@ -897,8 +919,13 @@ async function renderEntityView(name, context, options) {
 export async function renderComponent(kind, name, context, options) {
   // {% entityview %} inside {% entitylist %} needs no arguments: it selects the list's default view.
   if (kind === "entityview") return renderEntityView(name, context, options);
+  if (kind === 'chart') {
+    const markup = observedChartMarkup(options.args, context, options);
+    if (markup !== null) return markup;
+  }
   if (name == null || name === "") return "";
   if (kind === "entitylist") return renderEntityList(name, context, options);
+  if (kind === 'searchindex') observedSearchUnavailable(options);
   if (kind !== "entityform" && kind !== "webform")
     throw componentError(`Component ${kind} '${name}' is not implemented by the local runtime.`, 501, "COMPONENT_UNSUPPORTED");
   return renderForm(kind, name, context, options);
@@ -939,6 +966,7 @@ async function renderForm(kind, name, context, options) {
   if (!schema && kind === "entityform" && definition) schema = approximateFormSchema({ definition, portal, metadata, diagnostic: options.diagnostic });
   if (kind === "webform" && definition) schema = approximateAdvancedFormSchema({ definition, portal, metadata, schema, diagnostic: options.diagnostic });
   if (!schema && !definition) {
+    missingLiquidComponent(kind, options);
     // The platform's entityform/webform tags render nothing for a name that resolves to no
     // active form record (legacy Liquid EntityForm tag), and a page whose attached form is
     // missing renders without it (legacy EntityForm control): an empty region, reported.
@@ -999,12 +1027,14 @@ async function renderForm(kind, name, context, options) {
     const stepId = params.stepid ?? (!startNew ? session?.current : null) ?? schema.initialStepId;
     let selected = schema.steps.find((step) => canonicalId(step.stepId) === canonicalId(stepId));
     if (!selected) {
+      if (canonicalId(stepId) === canonicalId(schema.initialStepId)) throw componentError(`Advanced form '${definition?.name ?? name}' has no mapped declared initial step '${stepId}'`, 501, 'ADVANCEDFORM_STEP_UNRESOLVED');
       selected =
         schema.steps.find((step) => canonicalId(step.stepId) === canonicalId(schema.initialStepId) && step.type !== "redirect" && step.type !== "condition") ??
         schema.steps.find((step) => step.type !== "redirect" && step.type !== "condition");
       if (!selected) throw componentError(`Advanced form '${definition?.name ?? name}' has no renderable step in the selected metadata or export`, 501, "ADVANCEDFORM_STEP_UNRESOLVED");
       options.diagnostic?.({ code: "ADVANCEDFORM_STEP_UNRESOLVED", severity: "warning", component: "webform", form: definition?.name ?? name, step: stepId ?? null, rendered: selected.stepId, message: `Advanced form step '${stepId}' of '${definition?.name ?? name}' is absent from the selected metadata and the export; the step '${selected.stepId}' is rendered instead.` });
     }
+    if (selected.type === 'condition' && canonicalId(selected.stepId) === canonicalId(schema.initialStepId)) throw componentError(`Advanced form '${definition?.name ?? name}' cannot start with a Condition step`, 501, 'ADVANCEDFORM_INITIAL_CONDITION');
     const visited = new Set();
     let current = schema.steps.find((step) => canonicalId(step.stepId) === canonicalId(schema.initialStepId));
     while (current && !visited.has(current.stepId)) {
@@ -1058,17 +1088,7 @@ async function renderForm(kind, name, context, options) {
   const metadataRows = formMetadataRows(portal, kind === "webform" ? null : definition, schema.stepId);
   const websiteId = canonicalId(portal.website?.id);
   const N = compactId(definition?.id ?? name);
-  // Controls attached to a legacy ASPX page are the static WebFormControl / EntityFormControl
-  // of the WebForms master's EntityControls placeholder.
-  const pageControlPrefix = "ctl00$ContentContainer$MainContent$EntityControls$";
-  const ids =
-    kind === "webform"
-      ? pageControl
-        ? { wrapper: "WebFormControl", panel: "WebFormPanel", view: "EntityFormView", names: `${pageControlPrefix}WebFormControl$EntityFormView$`, buttons: `${pageControlPrefix}WebFormControl$` }
-        : { wrapper: `WebFormControl_${N}`, panel: "WebFormPanel", view: "EntityFormView", names: `ctl00$ContentContainer$WebFormControl_${N}$EntityFormView$`, buttons: `ctl00$ContentContainer$WebFormControl_${N}$` }
-      : modal || pageControl
-        ? { wrapper: "EntityFormControl", panel: "EntityFormPanel", view: "EntityFormControl_EntityFormView", names: `${pageControl ? pageControlPrefix : "ctl00$ContentContainer$MainContent$"}EntityFormControl$EntityFormControl_EntityFormView$`, buttons: `${pageControl ? pageControlPrefix : "ctl00$ContentContainer$MainContent$"}EntityFormControl$` }
-        : { wrapper: `EntityFormControl_${N}`, panel: "EntityFormPanel", view: `EntityFormControl_${N}_EntityFormView`, names: `ctl00$ContentContainer$EntityFormControl_${N}$EntityFormControl_${N}_EntityFormView$`, buttons: `ctl00$ContentContainer$EntityFormControl_${N}$` };
+  const ids = nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
 
   // Record source.
   const source = await resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session });
@@ -1114,6 +1134,8 @@ async function renderForm(kind, name, context, options) {
   }
   if (notFound)
     return `<div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+  const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
+  if (postback?.validationErrors) record = { ...record, ...postback.values };
   // Edit becomes read-only for inactive records or without write permission.
   if (mode === FORM_MODE.edit) {
     const state = scalarValue(record?.statecode);
@@ -1254,8 +1276,8 @@ async function renderForm(kind, name, context, options) {
     switch (field.control) {
       case "lookup": {
         const name = current?.name ?? "";
-        const logical = current?.logical_name ?? (field.targets?.length === 1 ? field.targets[0] : "");
         const idValue = canonicalId(scalar);
+        const logical = current?.logical_name ?? (idValue && field.targets?.length === 1 ? field.targets[0] : "");
         if (field.hidden)
           return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}" value="${attr(idValue)}"><input name="${nameAttr(field, "_name")}" type="hidden" id="${attr(field.id)}_name" value="${attr(name)}"><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname" value="${attr(logical)}">`;
         if (field.lookupStyle === "dropdown") {
@@ -1337,10 +1359,13 @@ async function renderForm(kind, name, context, options) {
         return `<div id="PcfControl_${attr(compactId(field.id + N).slice(0, 32))}" onchange="setIsDirty(this.id);"><span id="${attr(field.id)}_Container" class="flexbox"><div id="${attr(field.id)}_ControlView" class="flexbox"><div id="${attr(field.id)}_i" class="msos-container ${values.length ? "msos-some-selected" : "msos-none-selected"}" data-paqvilo-mirage-multiselect="${attr(field.id)}"><div class="msos-selecteditems-container" tabindex="0"><ul class="msos-selecteditems msos-current-selection-normal" tabindex="-1">${values.map((v) => `<li class="msos-selected-display-item" data-value="${attr(v)}">${escape(options.find((option) => String(option.value) === v)?.label ?? v)}</li>`).join("")}</ul></div><div class="msos-inner-container" role="combobox" aria-haspopup="true" aria-expanded="false" aria-label="${attr(field.label)}"><div class="msos-filter-container"><div class="msos-input-container"><input id="${attr(field.id)}_ledit" type="text" class="msos-input" placeholder="Search"${disabled ? ' disabled="disabled"' : ""}></div><div class="msos-caret-container"><button class="msos-caret-button" tabindex="-1" aria-label="Toggle menu" type="button"${disabled ? ' disabled="disabled"' : ""}><span class="msos-glyph"></span></button></div></div><div class="msos-selection-container" hidden><div class="msos-action-buttons"><label name="${attr(field.id)}msos-label" class="msos-label msos-selectall msos-option"><input type="checkbox" class="msos-checkbox" id="${attr(field.id)}_selectAll" tabindex="-1" aria-label="Select all"${disabled ? ' disabled="disabled"' : ""}><div class="msos-label-text" aria-hidden="true"><div class="msos-optionitem-text">Select all</div><div id="${attr(field.id)}msos-no-of-Items" class="msos-itemcount-text">${options.length} items</div></div></label></div><div id="${attr(field.id)}_no-results" class="msos-no-results msos-hidden">No results found</div><ul class="msos-selected-items msos-selection" role="listbox" tabindex="-1" aria-multiselectable="true" aria-labelledby="${attr(field.id)}msos-no-of-Items">${optionsHtml}</ul></div></div><select id="${attr(field.id)}_0" multiple="multiple" style="display: none;">${options.map((option) => `<option value="${attr(option.value)}"${values.includes(String(option.value)) ? " selected" : ""}>${escape(option.label)}</option>`).join("")}</select></div></div></span></div><input type="hidden" name="${nameAttr(field)}" id="${attr(field.id)}" value="${attr(values.join(","))}">`;
       }
       case "datetime": {
-        const dateOnly = /dateonly/i.test(field.behavior ?? field.format ?? "") || field.type === "date" || String(field.dataverseType).toLowerCase() === "datetime" && field.format !== "datetime";
+        // Solution columns use Format=DateAndTime while their generic input
+        // type is still "date". The exported format determines the picker.
+        const dateOnly = nativeDateOnly(field);
         const format = datePickerFormat(portal.settings?.[dateOnly ? "DateTime/DateFormat" : "DateTime/DateTimeFormat"], dateOnly);
         const behavior = field.dateTimeBehavior ?? field.behavior ?? (dateOnly ? "DateOnly" : "UserLocal");
-        const iso = scalar ? String(scalar) : "";
+        const parsed = scalar ? parseDateValue(scalar) : null;
+        const iso = parsed ? new Date(parsed.ms).toISOString().replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' ? 'Z' : '')) : scalar ? String(scalar) : "";
         // crmentityformview-datetime.js: a read-only picker keeps its visible box without the
         // input group, the placeholder or the (hidden) calendar button, whose title and label
         // are the Datetimepicker_Datepicker_Label resource.
@@ -1356,7 +1381,11 @@ async function renderForm(kind, name, context, options) {
       case "decimal":
       case "double":
       case "money": {
-        const control = `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);" value="${attr(scalar ?? "")}"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
+        const precision = Number(field.precision);
+        const displayed = field.control !== "integer" && scalar != null && scalar !== "" && Number.isFinite(Number(scalar)) && field.precision != null && Number.isInteger(precision) && precision >= 0 && precision <= 10
+          ? Number(scalar).toFixed(precision)
+          : scalar ?? "";
+        const control = `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);" value="${attr(displayed)}"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
         return field.control === "money" ? `<div class="input-group">${control}</div>` : control;
       }
       default:
@@ -1374,7 +1403,9 @@ async function renderForm(kind, name, context, options) {
     }
   };
 
+  const renderedFields = new Set();
   const input = async (field) => {
+    if (byName.has(field.name)) renderedFields.add(field.name);
     const original = await nativeInput(field);
     // The portal's attribute metadata explicitly enables the desktop PCF from
     // FormXml. Model-driven defaults alone do not activate a portal component.
@@ -1387,7 +1418,7 @@ async function renderForm(kind, name, context, options) {
     if (!component || !options.codeComponent) return unsupported(`The enabled code component for ${field.label} requires its exported desktop FormXml binding and solution control sources.`);
     if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name) return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
     const args = { disabled: field.readOnly };
-    const properties = [];
+    const properties = [], propertyTypes = {};
     for (const [name, parameter] of Object.entries(component.parameters)) {
       if (parameter.kind === 'static') args[name] = parameter.value;
       else if (parameter.kind === 'binding' && parameter.column === field.name) {
@@ -1396,9 +1427,20 @@ async function renderForm(kind, name, context, options) {
           ? current ? [{ id: canonicalId(scalarValue(current)), entityType: current.logical_name ?? field.targets?.[0], name: current.name ?? '' }] : []
           : field.control === 'multiselect' ? (Array.isArray(current) ? current.map(scalarValue) : String(scalarValue(current) ?? '').split(',').filter(Boolean)) : scalarValue(current);
         properties.push(name);
+        if (parameter.type) propertyTypes[name] = parameter.type;
       } else return unsupported(`Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`);
     }
-    const host = await options.codeComponent({ name: component.name, args, nativeBinding: { id: field.id, control: field.control, properties } });
+    const attributes = Object.fromEntries(Object.entries({
+      DisplayName: field.label, LogicalName: field.name,
+      RequiredLevel: field.required ? 2 : ({ none: 0, systemrequired: 1, applicationrequired: 2, required: 2, recommended: 3 })[String(field.requiredLevel ?? '').toLowerCase()],
+      MaxLength: field.maxLength, MinValue: field.minimum, MaxValue: field.maximum, Precision: field.precision,
+      PrecisionSource: field.precisionSource,
+      Behavior: ({ UserLocal: 1, DateOnly: 2, TimeZoneIndependent: 3 })[field.dateTimeBehavior],
+      Format: field.format, Targets: field.targets, IsSecured: field.isSecured,
+      Options: field.options?.map(option => ({ Label: option.label, Value: option.value })),
+      DefaultValue: field.defaultValue,
+    }).filter(([, item]) => item !== undefined));
+    const host = await options.codeComponent({ name: component.name, args, nativeBinding: { id: field.id, control: field.control, properties, propertyTypes, attributes } });
     // Original inputs retain validators, names and the native form postback.
     // The client hides them after a successful mount and reveals them on failure.
     return `<div data-pcf-native-field="${attr(field.id)}"><div data-pcf-native-input>${original}</div>${host}</div>`;
@@ -1584,8 +1626,9 @@ async function renderForm(kind, name, context, options) {
   const managedReady = Object.keys(nativeDefinitions).length ? `<script>${clientManagedControlsRuntime(nativeDefinitions)}</script>` : "";
 
   // Actions.
-  const actionSettings = settingsJson(fieldOf(componentMetadata, "settings") ?? "", "form settings");
-  const submitAction = (actionSettings.Actions ?? []).find((action) => action.Type === "SubmitAction");
+  const configuredActions = nativeFormActions(componentMetadata);
+  const submitAction = configuredActions.find((action) => action.Type === "SubmitAction");
+  const submitEnabled = !configuredActions.length || Boolean(submitAction);
   const busy = formLabel(fieldOf(componentMetadata, "submitbuttonbusytext"), "") || formLabel(submitAction?.ButtonBusyLabel, "") || "Processing...";
   const hook = kind === "webform" ? "webFormClientValidate" : "entityFormClientValidate";
   const group = fieldOf(componentMetadata, "validationgroup") ?? "";
@@ -1593,6 +1636,7 @@ async function renderForm(kind, name, context, options) {
     `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${buttonName}", "", true, "${group}", "", false, true))`;
   let actionsHtml = "";
   let defaultButton = "";
+  const renderedActions = [];
   if (kind === "webform") {
     const step = schema.metadata ?? {};
     const nextStep = schema.nextStepId ? (advancedSteps ?? schemas[definition?.id]?.steps ?? []).find((candidate) => canonicalId(candidate.stepId) === canonicalId(schema.nextStepId)) : null;
@@ -1602,9 +1646,12 @@ async function renderForm(kind, name, context, options) {
     defaultButton = "NextButton";
     const previous = previousAllowed ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, "previousbuttontext"), "Previous"))}" onclick="javascript:__doPostBack('${attr(ids.buttons)}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, "previousbuttoncssclass") || "btn btn-default button previous previous-btn")}"></div>` : "";
     const next = readOnly && terminal ? "" : `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}NextButton" value="${attr(nextLabel)}" onclick="${attr(onclick(ids.buttons + "NextButton"))}" id="NextButton" class="${attr(terminal ? fieldOf(step, "submitbuttoncssclass") || "btn btn-primary button next submit-btn" : fieldOf(step, "nextbuttoncssclass") || "btn btn-primary button next submit-btn")}"></div>`;
+    if (previous) renderedActions.push({ button: "PreviousButton", action: "previous" });
+    if (next) renderedActions.push({ button: "NextButton", action: "submit" });
     actionsHtml = previous || next ? `<div class="actions"><div class="col-sm-6 clearfix">${previous}${next}</div></div>` : "";
-  } else if (!readOnly) {
+  } else if (!readOnly && submitEnabled) {
     const button = mode === FORM_MODE.insert ? "InsertButton" : "UpdateButton";
+    renderedActions.push({ button, action: "submit" });
     defaultButton = button;
     const label = formLabel(fieldOf(componentMetadata, "submitbuttontext"), "") || formLabel(submitAction?.ButtonLabel, "") || "Submit";
     if (submitAction) {
@@ -1618,6 +1665,28 @@ async function renderForm(kind, name, context, options) {
     // A read-only basic form keeps its (empty) actions container and has no default button.
     actionsHtml = '<div class="actions"></div>';
   }
+  if (kind === 'entityform' && id) {
+    const buttons = [];
+    for (const [index, action] of configuredActions.entries()) {
+      const entry = Object.entries(NATIVE_STATE_ACTIONS).find(([, value]) => value.type === action.Type);
+      if (!entry) {
+        if (action.Type !== 'SubmitAction') options.diagnostic?.({ code: 'FORM_ACTION_UNSUPPORTED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' is unsupported.` });
+        continue;
+      }
+      const [operation, descriptor] = entry;
+      if (Number(scalarValue(record?.statecode)) === descriptor.state) continue;
+      if (store.allowed && !store.allowed(mapping.logicalName, 'update', record, identity)) continue;
+      if (action.FilterCriteria || !nativeActionStateValues(schema.entity, operation, { metadata, store, schema })) {
+        options.diagnostic?.({ code: 'FORM_ACTION_UNRESOLVED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' requires resolved state/status metadata and supported filter criteria.` });
+        continue;
+      }
+      const label = formLabel(action.ButtonLabel, descriptor.label), confirmation = formLabel(action.Confirmation, '');
+      const handler = `${confirmation ? `if(!window.confirm(${json(confirmation)}))return false;` : ''}__doPostBack(${json(ids.buttons + descriptor.button)},'')`;
+      renderedActions.push({ button: descriptor.button, action: operation, actionIndex: index });
+      buttons.push(`<input type="button" name="${attr(ids.buttons + descriptor.button)}" id="${descriptor.button}" value="${attr(label)}" title="${attr(formLabel(action.ButtonTooltip, label))}" class="${attr(action.ButtonCssClass || 'btn btn-primary button')}" data-pp-action-index="${index}" onclick="${attr(handler)}">`);
+    }
+    if (buttons.length) actionsHtml += `<div class="actions native-record-actions">${buttons.join('')}</div>`;
+  }
 
   // Hidden configuration consumed by the local postback runtime (scripts are
   // excluded from semantic DOM comparison).
@@ -1630,6 +1699,7 @@ async function renderForm(kind, name, context, options) {
     operation: mode === FORM_MODE.insert ? "create" : "update",
     recordQueryName: queryName,
     summaryHeader: "The form could not be submitted for the following reasons:",
+    ...((options.observed ?? portal.observed)?.nativeFormTransport === 'postback' ? { transport: 'postback' } : {}),
     fields: fields
       .filter((field) => !field.ownerHidden && !field.readOnly && !["state", "status"].includes(field.control))
       .map((field) => ({ name: field.name, id: field.id, control: controlForSubmit(field), readOnly: false, bindings: field.bindings })),
@@ -1655,12 +1725,30 @@ async function renderForm(kind, name, context, options) {
   const instructions = formLabel(fieldOf(componentMetadata, "instructions"), "");
   const panelClass = kind === "webform" && progress?.position === "left" ? "crmEntityFormView left" : kind === "webform" && progress?.position === "right" ? "crmEntityFormView right" : "crmEntityFormView";
   const entityFormClass = readOnly ? "form-readonly entity-form" : "entity-form";
-  const formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""} role="form" aria-label="${kind === "webform" ? "Multistep Form" : "Basic Form"}"><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="display:none;"${readOnly ? ' readonly="readonly"' : ""}></div>${layoutHtml}${attachHtml}</div>${actionsHtml}</div>`;
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""} role="form" aria-label="${kind === "webform" ? "Multistep Form" : "Basic Form"}"><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}</div>${actionsHtml}</div>`;
+  if (postback?.outcome?.type === 'message') {
+    const message = `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
+    formHtml = message + (postback.outcome.hideForm !== false ? '<div style="display:none;">' + formHtml + '</div>' : formHtml);
+  }
   const progressTop = progress && progress.position !== "bottom" ? progress.html : "";
   const progressBottom = progress && progress.position === "bottom" ? progress.html : "";
   // Native order: validation runtime and default hook before the control, custom
   // JavaScript first inside the control, validator expandos after the markup.
   const runtime = `<script src="${NATIVE_FORMS_SCRIPT}"></script>${kind === "webform" ? "" : `<script type="text/javascript">function entityFormClientValidate() { // Custom client side validation. Method is called by the submit button's onclick event.\n// Must return true or false. Returning false will prevent the form from submitting.\nreturn true; }</script>`}`;
+  if (options.onNativePostbackDescriptor) {
+    const writable = fields.filter((field) => renderedFields.has(field.name) && !field.readOnly && !field.ownerHidden && !field.disabled);
+    const descriptor = nativeFormPostbackDescriptor({ kind, formId: definition?.id ?? name, fields: writable, actions: renderedActions, modal, pageControl });
+    Object.freeze(descriptor.ids);
+    for (const field of descriptor.fields) Object.freeze(field);
+    for (const action of descriptor.actions) Object.freeze(action);
+    Object.freeze(descriptor.fields);
+    Object.freeze(descriptor.actions);
+    Object.freeze(descriptor);
+    const resolved = nativeFormSubmissionContext({ kind, formId: definition?.id ?? name, entity: schema.entity, mode, recordId: id ? canonicalId(id) : null, stepId: schema.stepId ?? null, sessionId: session?.id ?? null, recordQueryName: queryName });
+    // The callback is an internal request collector. Its return value cannot change HTML,
+    // and only the service-resolved context accompanies the successful-control names.
+    await options.onNativePostbackDescriptor(Object.freeze({ descriptor, context: resolved }));
+  }
   return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${progressBottom}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}</div>`;
 }
 

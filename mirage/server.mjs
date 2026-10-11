@@ -1,4 +1,6 @@
 import http from "node:http";
+import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
+import { attachODataReaderDetails, attachODataJsonSource, odataInvalidJsonDetails } from "./lib/webapi-error-details.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { readLocalFile } from '../lense/local-file.mjs';
@@ -18,6 +20,9 @@ import {
 } from "./lib/data.mjs";
 import { DATA_MODELS, importPortal, normalizePortalPath } from "./lib/importer.mjs";
 import { createPortalRenderer, renderShellResource } from "./lib/liquid.mjs";
+import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from "./lib/liquid-missing-data.mjs";
+import { observedPageQueryValidation } from "./lib/page-query-validation.mjs";
+import { observedPageErrorResponse } from "./lib/page-error-presentation.mjs";
 import { initialState } from "./lib/bootstrap.mjs";
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
@@ -29,8 +34,12 @@ import { AssetCache } from "./lib/asset-cache.mjs";
 import { capturePortalShell } from "./lib/shell-capture.mjs";
 import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs";
 import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
+import {createFlowTriggerRunner} from './lib/flow-triggers.mjs';
 import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
 import { pluginHandlers, pluginCatalogue, runPluginPhase } from './lib/exported-plugins.mjs';
+import {pluginRuntimeDescriptors,prepareClrRuntime} from './lib/plugin-clr.mjs';
+import {createAsyncPluginRunner} from './lib/plugin-async.mjs';
+import {settleCommittedWork} from './lib/committed-work.mjs';
 import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
 import { mergeShellProfile } from "./lib/shell-profile.mjs";
 import { captureRichTextAssets } from "./lib/richtext-assets.mjs";
@@ -58,8 +67,10 @@ import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
 import { discoverPacks } from "./lib/preset-registry.mjs";
+import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
 import { injectRuntime, renderComponent } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
+import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from "./lib/visitor-session.mjs";
 import { handleNativeService, antiForgeryCookie } from "./lib/native-services.mjs";
 import { antiForgeryHolder, isAspNetScript, webFormsForm, platformShell, bootstrapVariant } from "./lib/platform-manifest.mjs";
@@ -163,13 +174,17 @@ async function rawBody(req) {
   }
   return Buffer.concat(chunks);
 }
-async function jsonBody(req) {
+async function jsonBody(req, { allowEmpty = true, odataErrorDetails = false } = {}) {
   const bytes = await rawBody(req);
-  if (!bytes.length) return {};
+  if (!bytes.length) {
+    if (!allowEmpty) throw Object.assign(error("Passed entity object cannot be null or empty."), { details: { innerCode: "0x80072530" } });
+    return {};
+  }
   try {
-    return JSON.parse(bytes.toString("utf8"));
+    const source = bytes.toString("utf8"), body = parseExactJson(source);
+    return odataErrorDetails ? attachODataJsonSource(body, source) : body;
   } catch {
-    throw error("Request body must be valid JSON.");
+    throw attachODataReaderDetails(error("Request body must be valid JSON."), odataErrorDetails ? odataInvalidJsonDetails(bytes.toString("utf8")) : null);
   }
 }
 function json(res, status, value, headers = {}) {
@@ -188,7 +203,7 @@ function json(res, status, value, headers = {}) {
     "cache-control": "no-store",
     ...headers,
   });
-  res.end(status === 204 ? undefined : JSON.stringify(value));
+  res.end(status === 204 ? undefined : stringifyExactJson(value));
 }
 
 export async function createSimulator({
@@ -296,9 +311,11 @@ export async function createSimulator({
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
   const registeredOperations = operationHandlers(projectPacks ?? []);
+  const registeredWebApiErrorTemplates = collectWebApiErrorTemplates(projectPacks ?? []);
   const registeredPluginSteps = pluginHandlers(projectPacks ?? []);
+  const registeredPluginDescriptors=pluginRuntimeDescriptors(projectPacks??[]),registeredPluginRuntimes=new Map();
   const operationPortal = () => withSolutionOperations(portal, solutionOperations);
-  const pluginSteps = () => pluginCatalogue({ plugins: solutionMetadata.plugins, handlers: registeredPluginSteps, overrides: config().operations });
+  const pluginSteps = () => pluginCatalogue({ plugins: solutionMetadata.plugins, handlers: registeredPluginSteps,runtimes:registeredPluginRuntimes,descriptors:registeredPluginDescriptors, overrides: config().operations });
   const operations = () => [...operationCatalogue({ portal: operationPortal(), workflows: operationWorkflows, handlers: registeredOperations, overrides: config().operations }), ...pluginSteps()];
   const bootstrapOptions = () => ({ origin, metadata: solutionData, ...(projectPacks ? { packs: projectPacks } : {}) });
   let generatedPresets = initialState(portal, bootstrapOptions()).presets;
@@ -423,12 +440,16 @@ export async function createSimulator({
     closing = false,
     closePromise = null,
     // External sign-in and its local identity provider (lib/sign-in-flow.mjs), set below.
-    externalSignIn = null;
+    externalSignIn = null,triggerRunner=null,asyncPluginRunner=null;
+  const activeWrites=new Set();
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
     closePromise = (async () => {
       await watcher?.close();
+      while(activeWrites.size)await Promise.all([...activeWrites]);
+      await store.queue;
+      await settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true});
       for (const event of events) event.end();
       await live.close();
       // The local identity provider lives and ends with its runtime.
@@ -573,7 +594,11 @@ export async function createSimulator({
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
-  store.setPluginPipeline(context => runPluginPhase({ ...context, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => (solutionMetadata.plugins?.steps ?? []).some(step => step.enabled && step.entity === entity && String(step.message).toLowerCase() === operation));
+  store.setPluginPipeline(context => runPluginPhase({ ...context,store,runtimes:registeredPluginRuntimes, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => pluginSteps().some(step => step.enabled && step.entity === entity && String(step.message).toLowerCase() === operation && (!['retrieve','retrievemultiple'].includes(operation)||!['placeholder','disabled'].includes(step.mode))));
+  for(const item of pluginSteps().filter(item=>item.mode==='clr'))try{if(!item.clrAvailable)throw new Error('No exact trusted descriptor');registeredPluginRuntimes.set(item.id,await prepareClrRuntime(registeredPluginDescriptors.get(item.id)));}catch(error){recordDiagnostic({code:'PLUGIN_CLR_PREPARATION_FAILED',stepId:item.id,message:error.message});}
+  const acceptedChains=new Set();
+  triggerRunner=createFlowTriggerRunner({store,items:operations,workflows:()=>operationWorkflows,identities:()=>registeredOperations.flowIdentities,diagnostic:recordDiagnostic,acceptedChains});
+  asyncPluginRunner=createAsyncPluginRunner({store,items:pluginSteps,handlers:registeredPluginSteps,runtimes:registeredPluginRuntimes,diagnostic:recordDiagnostic,acceptedChains});
   const liveMapping = (entity) => {
     const mapping = store.resolveMapping(entity);
     return {
@@ -764,6 +789,7 @@ export async function createSimulator({
     assertOperationRole(record, identity);
     const item = operations().find(item => item.kind === 'server-logic' && item.id === record.id);
     if (item.mode === 'placeholder') operationPlaceholder(item);
+    if(item.mode==='disabled')throw error('This backend operation is explicitly disabled locally.',503);
     if (item.mode === 'mock') {
       if ((item.configuration.status ?? 200) >= 400) throw error('Configured local operation failure.', item.configuration.status, 'LocalOperationMockFailure');
       return JSON.stringify(Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {});
@@ -774,8 +800,93 @@ export async function createSimulator({
     const answer = await handler({ ...context, runExportedServerLogic: () => runExportedServerLogic(context) });
     return typeof answer === 'string' ? answer : JSON.stringify(answer ?? null);
   };
+  const formSubmissionOptions = (formIdentity, visitor, pageTarget) => {
+    const formLanguage = renderer.requestLanguage(pageTarget);
+    const associateFormRecord = async (entity, id, navigation, targetId, identity) => {
+      const mapping = liveMapping(entity),
+        target = liveMapping(mapping.relationships?.[navigation]?.entity);
+      const response = await live.request(
+        `/_api/${mapping.entitySet}(${encodeURIComponent(id)})/${navigation}/$ref`,
+        {
+          method: "POST",
+          body: Buffer.from(JSON.stringify({ "@odata.id": `${live.origin}/_api/${target.entitySet}(${targetId})` })),
+          contentType: "application/json",
+        },
+      );
+      if (response.status >= 400)
+        throw error(`Live form association returned HTTP ${response.status}.`, response.status, "LIVE_BRIDGE");
+    };
+    return {
+      portal,
+      store,
+      identity: formIdentity,
+      schemas: {
+        ...solutionMetadata.componentSchemas,
+        ...config().componentSchemas,
+      },
+      metadata: solutionMetadata,
+      readProvider,
+      writeProvider: {
+        create: (entity, values, identity) =>
+          writeFormRecord(entity, null, values, identity),
+        update: writeFormRecord,
+        associate: async (entity, id, navigation, targetId, identity) =>
+          config().mode !== "live"
+            ? store.associate(entity, id, navigation, targetId, identity)
+            : associateFormRecord(entity, id, navigation, targetId, identity),
+        // A submission's record, associations and notes form one unit. Locally the
+        // store transaction restores everything on failure; the live bridge has no
+        // transaction, so the records the unit created are deleted again.
+        transaction: async (work) => {
+          if (config().mode !== "live")
+            return store.transact(() =>
+              work({
+                create: (entity, values, identity) => store.createRecord(entity, values, identity),
+                update: (entity, id, values, identity) => store.updateRecord(entity, id, values, identity),
+                associate: (entity, id, navigation, targetId, identity) =>
+                  store.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
+              }),
+            );
+          const created = [];
+          try {
+            return await work({
+              create: async (entity, values, identity) => {
+                const row = await writeFormRecord(entity, null, values, identity);
+                const id = row?.[liveMapping(entity).idColumn];
+                if (id) created.push({ entity, id });
+                return row;
+              },
+              update: writeFormRecord,
+              associate: associateFormRecord,
+            });
+          } catch (cause) {
+            for (const row of created.reverse()) {
+              const response = await live
+                .request(`/_api/${liveMapping(row.entity).entitySet}(${encodeURIComponent(row.id)})`, { method: "DELETE" })
+                .catch(() => ({ status: 0 }));
+              if (!(response.status >= 200 && response.status < 300))
+                recordDiagnostic({
+                  code: "FORM_UNIT_COMPENSATION_FAILED",
+                  severity: "error",
+                  message: `A live form submission failed after creating ${row.entity} ${row.id}; deleting it again returned HTTP ${response.status}.`,
+                });
+            }
+            throw cause;
+          }
+        },
+      },
+      requestUrl: pageTarget.href,
+      sessions: webFormSessions,
+      owner: webFormSessionOwner(formIdentity, visitor),
+      language: {
+        lcid: formLanguage.selected?.lcid ?? null,
+        defaultLcid: formLanguage.languages.find((entry) => entry.isDefault)?.lcid ?? null,
+      },
+    };
+  };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
+      observed: config().observed ?? source.observed,
       serverLogic: async ({ name, operation, input }) => {
         try {
           const raw = await executeServerLogic({ name, operation, input });
@@ -789,9 +900,15 @@ export async function createSimulator({
       },
       observationOrigin: live.origin,
       sourceDependencies,
-      fetchXml: async (xml) => readProvider.fetchXml(xml, currentIdentity()),
-      entity: async (entity, id) =>
-        readProvider.get(entity, id, currentIdentity()),
+      fetchXml: async (xml) => {
+        const empty = config().mode === "live" ? null : emptyUnmappedLiquidFetchXml(xml, {
+          observed: config().observed ?? source.observed,
+          resolveMapping: name => store.resolveMapping(name),
+        });
+        return empty ?? readProvider.fetchXml(xml, currentIdentity());
+      },
+      entity: async (entity, id) => observedLiquidEntityRead(
+        () => readProvider.get(entity, id, currentIdentity()), config().observed ?? source.observed),
       renderComponent: async (kind, args, context) =>
         kind === 'codecomponent' ? renderCodeComponent({ name: args?.name ?? args?.id, args, portal, catalog: codeComponents, metadata: solutionMetadata, language: context?.__language ?? portal.language, identity: currentIdentity(), mappings: store.snapshot({ sections: ['mappings'] }).mappings, diagnostic: entry => recordDiagnostic({ ...entry, path: context?.request?.path }) }) : renderComponent(
           kind,
@@ -807,6 +924,7 @@ export async function createSimulator({
             metadata: solutionMetadata,
             codeComponent: spec => renderCodeComponent({ ...spec, portal, catalog: codeComponents, metadata: solutionMetadata, language: context?.__language ?? portal.language, identity: currentIdentity(), mappings: store.snapshot({ sections: ['mappings'] }).mappings, diagnostic: entry => recordDiagnostic({ ...entry, path: context?.request?.path }) }),
             config: config(),
+            observed: config().observed ?? portal.observed,
             managedControls:
               config().managedControls ??
               config().shellProfile?.managedControls,
@@ -819,6 +937,9 @@ export async function createSimulator({
             renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
             webFormSessions,
             webFormOwner: () => webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor),
+            onNativePostbackDescriptor: (config().observed ?? portal.observed)?.nativeFormTransport === 'postback'
+              ? item => trace.getStore()?.nativePostbacks?.push(item) : undefined,
+            nativePostbackState: trace.getStore()?.nativePostbackState,
             // Component diagnostics name the page that rendered the component.
             diagnostic: (entry) => recordDiagnostic({ ...entry, path: entry.path ?? context?.request?.path }),
           },
@@ -1435,8 +1556,10 @@ export async function createSimulator({
       if (method === 'DELETE') delete state.simulator.operations[key];
       else {
         const value = await jsonBody(req);
-        validateOperationOverrides({ [key]: value });
+        validateOperationOverrides({ [key]: value },{pluginStep:item.kind==='plugin-step'?item:undefined});
         if (value.mode === 'handler' && !item.registered) throw error('No trusted project handler is registered for this operation.', 409);
+        if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);registeredPluginRuntimes.set(item.id,await prepareClrRuntime(registeredPluginDescriptors.get(item.id)));}
+        if(value.mode==='handler'&&item.unsupported)throw error(item.unsupported,409);
         if (value.mode === 'exported' && !item.definitionAvailable) throw error('The selected sources do not include this operation definition.', 409);
         state.simulator.operations[key] = value;
       }
@@ -2132,6 +2255,7 @@ export async function createSimulator({
     const identity = currentIdentity();
     return handleWebApi(req, res, url, {
       store,
+      webApiErrorTemplates: registeredWebApiErrorTemplates,
       portal: {
         ...portal,
         webApiViews: solutionMetadata.views,
@@ -2467,93 +2591,12 @@ export async function createSimulator({
         res.setHeader("set-cookie", started.cookie);
       }
       const pageTarget = new URL(typeof body?.pageUrl === "string" && body.pageUrl.startsWith("/") ? body.pageUrl : "/", localOrigin);
-      const formLanguage = renderer.requestLanguage(pageTarget);
-      const associateFormRecord = async (entity, id, navigation, targetId, identity) => {
-        const mapping = liveMapping(entity),
-          target = liveMapping(mapping.relationships?.[navigation]?.entity);
-        const response = await live.request(
-          `/_api/${mapping.entitySet}(${encodeURIComponent(id)})/${navigation}/$ref`,
-          {
-            method: "POST",
-            body: Buffer.from(JSON.stringify({ "@odata.id": `${live.origin}/_api/${target.entitySet}(${targetId})` })),
-            contentType: "application/json",
-          },
-        );
-        if (response.status >= 400)
-          throw error(`Live form association returned HTTP ${response.status}.`, response.status, "LIVE_BRIDGE");
-      };
       return change(async () => {
         const result = await submitPortalForm(
           formRoute[1],
           formRoute[2],
           body,
-          {
-            portal,
-            store,
-            identity: formIdentity,
-            schemas: {
-              ...solutionMetadata.componentSchemas,
-              ...config().componentSchemas,
-            },
-            metadata: solutionMetadata,
-            readProvider,
-            writeProvider: {
-              create: (entity, values, identity) =>
-                writeFormRecord(entity, null, values, identity),
-              update: writeFormRecord,
-              associate: async (entity, id, navigation, targetId, identity) =>
-                config().mode !== "live"
-                  ? store.associate(entity, id, navigation, targetId, identity)
-                  : associateFormRecord(entity, id, navigation, targetId, identity),
-              // A submission's record, associations and notes form one unit. Locally the
-              // store transaction restores everything on failure; the live bridge has no
-              // transaction, so the records the unit created are deleted again.
-              transaction: async (work) => {
-                if (config().mode !== "live")
-                  return store.transact(() =>
-                    work({
-                      create: (entity, values, identity) => store.createRecord(entity, values, identity),
-                      update: (entity, id, values, identity) => store.updateRecord(entity, id, values, identity),
-                      associate: (entity, id, navigation, targetId, identity) =>
-                        store.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
-                    }),
-                  );
-                const created = [];
-                try {
-                  return await work({
-                    create: async (entity, values, identity) => {
-                      const row = await writeFormRecord(entity, null, values, identity);
-                      const id = row?.[liveMapping(entity).idColumn];
-                      if (id) created.push({ entity, id });
-                      return row;
-                    },
-                    update: writeFormRecord,
-                    associate: associateFormRecord,
-                  });
-                } catch (cause) {
-                  for (const row of created.reverse()) {
-                    const response = await live
-                      .request(`/_api/${liveMapping(row.entity).entitySet}(${encodeURIComponent(row.id)})`, { method: "DELETE" })
-                      .catch(() => ({ status: 0 }));
-                    if (!(response.status >= 200 && response.status < 300))
-                      recordDiagnostic({
-                        code: "FORM_UNIT_COMPENSATION_FAILED",
-                        severity: "error",
-                        message: `A live form submission failed after creating ${row.entity} ${row.id}; deleting it again returned HTTP ${response.status}.`,
-                      });
-                  }
-                  throw cause;
-                }
-              },
-            },
-            requestUrl: pageTarget.href,
-            sessions: webFormSessions,
-            owner: webFormSessionOwner(formIdentity, visitor),
-            language: {
-              lcid: formLanguage.selected?.lcid ?? null,
-              defaultLcid: formLanguage.languages.find((entry) => entry.isDefault)?.lcid ?? null,
-            },
-          },
+          formSubmissionOptions(formIdentity, visitor, pageTarget),
         );
         return json(
           res,
@@ -2707,18 +2750,19 @@ export async function createSimulator({
       const identity = currentIdentity(); assertOperationRole(flow, identity);
       const item = operations().find(item => item.kind === 'cloud-flow' && item.id === flow.id);
       if (item.mode === 'placeholder') operationPlaceholder(item);
+      if(item.mode==='disabled')throw error('This cloud flow is explicitly disabled locally.',503);
       const bytes = (await rawBody(req)).toString('utf8');
       let input;
       try {
         const parsed = String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded') ? Object.fromEntries(new URLSearchParams(bytes)) : JSON.parse(bytes || '{}');
         input = typeof parsed.eventData === 'string' ? JSON.parse(parsed.eventData) : (parsed.eventData ?? parsed);
       } catch { throw error('Cloud-flow input must be valid JSON.', 400); }
-      const context = { record: flow, workflows: operationWorkflows, input, identity, store, portal };
+      const context = { record: flow, workflows: operationWorkflows, input, identity, store, portal,serviceProfile:registeredOperations.flowIdentities.get(String(flow.processId??'').replace(/[{}]/g,'').toLowerCase()),steps:item.configuration?.steps,diagnostic:recordDiagnostic };
       if (item.mode === 'handler' && !flowHandler) operationPlaceholder(item);
       const answer = item.mode === 'mock' ? { status: item.configuration.status ?? 200, body: Object.hasOwn(item.configuration, 'body') ? item.configuration.body : {} }
-        : item.mode === 'exported' ? runExportedCloudFlow(context)
+        : item.mode === 'exported' ? await (async()=>{let failure;const value=await store.transact(()=>{try{return runExportedCloudFlow(context);}catch(error){failure=error;return null;}});if(failure)throw failure;return value;})()
         : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
-      return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
+      return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
     if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
@@ -2739,6 +2783,8 @@ export async function createSimulator({
     const signInRoute = authRoute(url.pathname, req.method, { loginPath: loginPath(portal) });
     if (signInRoute) return authenticate(req, res, url, signInRoute);
     let formParams = {};
+    let nativeEntries = null;
+    const nativePostbackEnabled = (config().observed ?? portal.observed)?.nativeFormTransport === 'postback';
     const postedPage =
       req.method === "POST" &&
       portal.pages.find(
@@ -2752,7 +2798,7 @@ export async function createSimulator({
       );
     // Exported Liquid AJAX pages often use POST for DataTables filters. Rendering
     // those pages is a read operation; record mutations remain on the Web API.
-    if (postedPage && postedTemplate?.useHeaderFooter === false) {
+    if (postedPage && (postedTemplate?.useHeaderFooter === false || nativePostbackEnabled)) {
       const bytes = await rawBody(req);
       const contentType = (
         req.headers["content-type"] ?? "application/x-www-form-urlencoded"
@@ -2760,10 +2806,20 @@ export async function createSimulator({
         .split(";")[0]
         .trim()
         .toLowerCase();
-      if (contentType === "application/x-www-form-urlencoded")
-        formParams = Object.fromEntries(
-          new URLSearchParams(bytes.toString("utf8")),
-        );
+      if (contentType === "application/x-www-form-urlencoded") {
+        const controls = new URLSearchParams(bytes.toString('utf8'));
+        if (nativePostbackEnabled && controls.has('__EVENTTARGET')) {
+          const tokens = controls.getAll('__RequestVerificationToken');
+          if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
+          nativeEntries = [...controls];
+          const context = trace.getStore();
+          if (context && !context.visitor && !webFormSessionOwner(currentIdentity())) {
+            const started = newVisitor(visitorName());
+            context.visitor = started.id;
+            res.setHeader('set-cookie', started.cookie);
+          }
+        } else formParams = Object.fromEntries(controls);
+      }
       else if (contentType === "application/json") {
         try {
           formParams = bytes.length ? JSON.parse(bytes.toString("utf8")) : {};
@@ -2784,6 +2840,8 @@ export async function createSimulator({
           "Liquid page POST requires URL-encoded or JSON parameters.",
           415,
         );
+      if (nativePostbackEnabled && postedTemplate?.useHeaderFooter !== false && !nativeEntries)
+        throw error('Native form postback target required.', 400, 'InvalidNativePostback');
     } else if (!["GET", "HEAD"].includes(req.method))
       throw error("Use the local Web API for writes.", 405);
     if (
@@ -2982,6 +3040,7 @@ export async function createSimulator({
             signedIn: Boolean(fileIdentity?.contactId ?? fileIdentity?.id),
             caching: store.state.settings?.webFileCaching === "revalidate" ? "revalidate" : "platform",
             disposition: webFileDisposition(asset.metadata),
+            mimeCharset: portal.observed?.webFileMimeCharset,
           }),
           ...extra,
         };
@@ -3051,7 +3110,17 @@ export async function createSimulator({
     }
     if (route?.kind === "error") throw error(route.message, route.status, route.code);
     if (route) recordDiagnostic({ code: route.code ?? "PAGE_NOT_FOUND", path: url.pathname, message: `${route.message ? route.message + " " : ""}Rendered the ${route.page.name} page with HTTP ${route.status}.` });
-    const rendered = await renderer.renderPage((route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search, {
+    // Native evidence covers GET page-query validation. Other request methods
+    // retain their existing handlers until their validation order is observed.
+    const queryValidation = req.method === "GET"
+      ? observedPageQueryValidation(url, config().observed ?? portal.observed)
+      : null;
+    if (queryValidation) throw error(queryValidation.message, queryValidation.status, queryValidation.code);
+    const nativeContext = trace.getStore();
+    if (nativeEntries && (route || !routedPage || !access?.allowed)) throw error('Native form page is not accessible.', 403);
+    const renderCurrentPage = () => {
+      if (nativeContext) nativeContext.nativePostbacks = [];
+      return renderer.renderPage((route ? route.page.url : markerRoute ? markerRoute.page.url : url.pathname) + url.search, {
       user: pageIdentity,
       // The website language whose code the language route removed from the path .
       languageCode: language?.code ?? null,
@@ -3061,7 +3130,26 @@ export async function createSimulator({
         params: { ...formParams, ...Object.fromEntries(url.searchParams) },
         method: req.method,
       },
-    });
+      });
+    };
+    let rendered = await renderCurrentPage();
+    if (nativeEntries) {
+      const collected = nativeContext?.nativePostbacks ?? [];
+      const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
+      let response;
+      try {
+        const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(pageIdentity, nativeContext?.visitor, url)));
+        response = nativePostbackResponse({ result, context });
+      } catch (cause) {
+        response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values });
+      }
+      if (response.location) {
+        res.writeHead(response.status, { location: response.location, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+        return res.end();
+      }
+      nativeContext.nativePostbackState = response.state;
+      rendered = await renderCurrentPage();
+    }
     let html = typeof rendered === "string" ? rendered : rendered.html;
     for (const diagnostic of rendered.diagnostics ?? [])
       recordDiagnostic({ ...diagnostic, path: url.pathname });
@@ -3116,6 +3204,7 @@ export async function createSimulator({
     );
   }
   const server = http.createServer((req, res) => {
+    if(closing)return json(res,503,{error:{code:'SIMULATOR_CLOSING',message:'The local runtime is shutting down.'}},{'connection':'close'});
     const started = Date.now();
     let url;
     try {
@@ -3214,7 +3303,7 @@ export async function createSimulator({
       });
       if (requests.length > 300) requests.shift();
     });
-    trace
+    const invocation=trace
       .run(context, () => handle(req, res))
       .catch((err) => {
         context.error = err;
@@ -3239,15 +3328,22 @@ export async function createSimulator({
             error: {
               code: err.code ?? "SIMULATOR_ERROR",
               message: err.message,
+              ...(req.url.startsWith("/__sim/forms/") && Array.isArray(err.details?.validationErrors) ? { validationErrors: err.details.validationErrors } : {}),
             },
           });
         else {
-          res.writeHead(status, { "content-type": "text/html; charset=utf-8" });
+          const presentation = observedPageErrorResponse({ method: req.method, error: err, observed: config().observed ?? portal.observed });
+          if (presentation) {
+            res.writeHead(presentation.status, presentation.headers);
+            return res.end(presentation.body);
+          }
+          res.writeHead(status, { "content-type": "text/html; charset=utf-8",...(err.code==='REDIRECT_SITE_MARKER_NULL_REFERENCE'&&observed.siteMarkerRedirect==='null-reference'?{'cache-control':PAGE_CACHE_CONTROL}:{}) });
           res.end(
             `<!doctype html><title>Portal simulation diagnostic</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>Portal rendering needs attention</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
           );
         }
-      });
+      }).finally(()=>activeWrites.delete(invocation));
+    if(isWrite(req.method))activeWrites.add(invocation);
   });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -3269,6 +3365,7 @@ export async function createSimulator({
   let watchedLayers = "";
   const layerSignature = () => JSON.stringify([(solutionData.layers ?? []).map((layer) => layer.dir), solutionMetadata.plugins?.sourceFiles ?? []]);
   async function reload() {
+    await settleCommittedWork(store,[triggerRunner,asyncPluginRunner]);
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
     reloadPromise = (async () => {

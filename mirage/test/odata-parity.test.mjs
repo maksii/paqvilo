@@ -449,7 +449,7 @@ test("write validation follows Dataverse types inside the CDSError envelope", as
   const { json } = await start(t);
   const cases = [
     [{ name: 5 }, "0x80048d19", "Cannot convert the literal '5' to the expected type 'Edm.String'."],
-    [{ employees: "12" }, "0x80048d19", "Cannot convert the literal '12' to the expected type 'Edm.Int32'."],
+    [{ employees: "not-integer" }, "0x80048d19", "Cannot convert the literal 'not-integer' to the expected type 'Edm.Int32'."],
     [{ name: "x".repeat(41) }, "0x80044331", "A validation error occurred.  The length of the 'name' attribute of the 'account' entity exceeded the maximum allowed length of '40'."],
     [{ openedon: "2026-02-30" }, "0x80040239", null],
   ];
@@ -502,7 +502,7 @@ test("observed webApiInnerError all-errors adds innererror to every error envelo
     message: column,
     innererror: { code: "90040101", message: column, type: "AttributePermissionIsMissing" },
   });
-  // Dataverse failures keep the Dataverse code and message.
+  // Dataverse failures keep their code and message without a portal exception type.
   const cds = await json(`/_api/accounts(${G(1)})`, { method: "PATCH", body: { name: 5 } });
   assert.deepEqual(cds.body.error, {
     code: "9004010D",
@@ -510,7 +510,6 @@ test("observed webApiInnerError all-errors adds innererror to every error envelo
     innererror: {
       code: "0x80048d19",
       message: "Cannot convert the literal '5' to the expected type 'Edm.String'.",
-      type: "CDSError",
     },
   });
 });

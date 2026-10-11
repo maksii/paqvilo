@@ -3,6 +3,7 @@
 // dialect "extended" keeps the simulator's internal convenience functions
 // (tolower, length, OData 4.01 "in") for plugin predicates and admin reads.
 import { DataError } from "./data-error.mjs";
+import {isExactNumeric,parseNumericLiteral,sumNumeric,averageNumeric} from './exact-numeric.mjs';
 import {
   CRM_FUNCTIONS,
   compileOperator,
@@ -99,18 +100,19 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
       unsupported(`Malformed OData expression: expected '${value}' near ${token?.value ?? "end of input"}`);
     return token;
   };
-  const literalFromToken = (token) => {
+  const literalFromToken = (token, jsonArray = false) => {
     switch (token.kind) {
       case "string":
         return { type: "literal", kind: "string", value: token.value.slice(1, -1).replace(/''/g, "'") };
       case "dstring":
+        if (dialect === "dataverse" && !jsonArray) unsupported("OData string literals must use single quotes.");
         return { type: "literal", kind: "string", value: JSON.parse(token.value) };
       case "guid":
         return { type: "literal", kind: "guid", value: token.value.toLowerCase() };
       case "datetime":
         return { type: "literal", kind: "datetime", value: token.value };
       case "number":
-        return { type: "literal", kind: "number", value: Number(token.value.replace(/[mdflMDFL]$/, "")) };
+        return { type: "literal", kind: "number", value: parseNumericLiteral(token.value.replace(/[mdflMDFL]$/, "")) };
       default:
         return null;
     }
@@ -129,7 +131,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
     if (peek()?.value !== "]") {
       do {
         const token = take();
-        const literal = token && (literalFromToken(token) ?? (token.kind === "ident" && ["true", "false", "null"].includes(token.value.toLowerCase()) ? { type: "literal", kind: "keyword", value: { true: true, false: false, null: null }[token.value.toLowerCase()] } : null));
+        const literal = token && (literalFromToken(token, true) ?? (token.kind === "ident" && ["true", "false", "null"].includes(token.value.toLowerCase()) ? { type: "literal", kind: "keyword", value: { true: true, false: false, null: null }[token.value.toLowerCase()] } : null));
         if (!literal) unsupported("OData array values must be literals");
         items.push(literal.value);
         if (peek()?.value !== ",") break;
@@ -863,13 +865,14 @@ export function evaluateApply(steps, rows, ctx) {
           .map((row) => valueOf(row, aggregate.path))
           .filter((value) => !isEmpty(scalar(value)));
         const numbers = values.map((value) => Number(scalar(value))).filter(Number.isFinite);
+        const definition=ctx.pathDefinition(aggregate.path),numericKind=fieldKind(definition),exact=values.some(isExactNumeric)||['decimal','money'].includes(numericKind);
         let result = null;
         switch (aggregate.method) {
           case "sum":
-            result = numbers.reduce((a, b) => a + b, 0);
+            result = exact?sumNumeric(values):numbers.reduce((a, b) => a + b, 0);
             break;
           case "average":
-            result = numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null;
+            result = exact?averageNumeric(values):numbers.length ? numbers.reduce((a, b) => a + b, 0) / numbers.length : null;
             break;
           case "min":
           case "max": {
@@ -877,7 +880,8 @@ export function evaluateApply(steps, rows, ctx) {
             const definition = ctx.pathDefinition(aggregate.path);
             const keyed = values.map((value) => ({ value, key: makeSortKey(value, { definition, rawChoice: true }) }));
             keyed.sort((a, b) => compareSortKeys(a.key, b.key, ctx.settings?.collation));
-            result = scalar(aggregate.method === "min" ? keyed[0].value : keyed.at(-1).value);
+            const chosen=aggregate.method === "min" ? keyed[0].value : keyed.at(-1).value;
+            result = isExactNumeric(chosen)?structuredClone(chosen):scalar(chosen);
             const date = typeof result === "string" ? parseDateValue(result) : null;
             if (date && !date.dateOnly) result = new Date(date.ms).toISOString().replace(/\.\d{3}Z$/, "Z");
             break;

@@ -1,6 +1,8 @@
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from "./data-error.mjs";
+import {isExactNumeric,sumNumeric,averageNumeric} from './exact-numeric.mjs';
+import {fieldKind} from './dataverse-values.mjs';
 import {
   FETCH_OPERATORS,
   UNSUPPORTED_FETCH_OPERATORS,
@@ -1206,6 +1208,7 @@ export function executeFetch(plan, ctx) {
           });
         }
         const numbers = () => values.map((value) => Number(scalar(value))).filter(Number.isFinite);
+        const exact=values.some(isExactNumeric)||['decimal','money'].includes(fieldKind(column.definition));
         let result;
         switch (column.aggregate) {
           case "count":
@@ -1215,7 +1218,7 @@ export function executeFetch(plan, ctx) {
             result = values.length;
             break;
           case "sum":
-            result = numbers().reduce((sum, value) => sum + value, 0);
+            result = exact?sumNumeric(values):numbers().reduce((sum, value) => sum + value, 0);
             break;
           case "avg": {
             const list = numbers();
@@ -1225,7 +1228,7 @@ export function executeFetch(plan, ctx) {
               const integer = ["int", "integer", "bigint"].includes(
                 String(column.definition?.dataverseType ?? "").toLowerCase(),
               );
-              result = integer ? Math.trunc(average) : average;
+              result = exact?averageNumeric(values,{integer}):integer ? Math.trunc(average) : average;
             }
             break;
           }

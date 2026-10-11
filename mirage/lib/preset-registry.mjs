@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerExpressionOperators, registerShellConventions, validateEndpoints } from "./extensions.mjs";
+import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
 
 /**
  * Project-agnostic preset registry.
@@ -154,8 +155,15 @@ export function validatePack(pack, source = "data pack") {
   const pluginSteps = dataProperty(pack, 'pluginSteps')?.value;
   if (pluginSteps !== undefined && (!pluginSteps || typeof pluginSteps !== 'object' || Array.isArray(pluginSteps) || Object.entries(pluginSteps).some(([id, handler]) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction')))
     fail('pluginSteps must map exported step IDs to synchronous functions');
+  for(const kind of ['pluginRuntimes','flowIdentities']){
+    const entries=dataProperty(pack,kind)?.value;
+    if(entries!==undefined&&(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.entries(entries).some(([id,value])=>!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g,''))||!value||typeof value!=='object'||Array.isArray(value))))fail(`${kind} must map exact exported IDs to explicit trusted descriptors`);
+  }
   try {
     validateEndpoints(pack.id, dataProperty(pack, "endpoints")?.value);
+    const templates = Object.getOwnPropertyDescriptor(pack, "webApiErrorTemplates");
+    if (templates && !("value" in templates)) fail("webApiErrorTemplates must be an explicit data property");
+    if (templates?.value !== undefined) validateWebApiErrorTemplates(templates.value);
   } catch (error) {
     fail(error.message);
   }

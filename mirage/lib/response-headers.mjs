@@ -87,10 +87,10 @@ export function webFileDisposition(metadata = {}) {
  * settings.webFileCaching "revalidate" is the explicit opt-in to no-cache, so an edited
  * source is fetched again on every reload (still answered 304 while unchanged).
  */
-export function webFileHeaders({ body, contentType, fileName, modified, signedIn = false, caching = "platform", disposition = "inline" }) {
+export function webFileHeaders({ body, contentType, fileName, modified, signedIn = false, caching = "platform", disposition = "inline", mimeCharset = "utf8" }) {
   const type = String(contentType || "application/octet-stream");
   const headers = {
-    "content-type": /;\s*charset=/i.test(type) ? type : `${type}; charset=utf-8`,
+    "content-type": mimeCharset === "source" || /;\s*charset=/i.test(type) ? type : `${type}; charset=utf-8`,
     "content-disposition": `${disposition === "attachment" ? "attachment" : "inline"};filename*=UTF-8''${rfc5987(fileName)}`,
     etag: createHash("sha256").update(body).digest("base64"),
     "last-modified": new Date(Math.floor(new Date(modified ?? Date.now()).getTime() / 1000) * 1000).toUTCString(),

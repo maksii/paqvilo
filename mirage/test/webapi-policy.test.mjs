@@ -354,14 +354,13 @@ test("plain field lists expose only metadata-proven lookup aliases and empty pro
     }),
   );
   policy.assertWrite({ "company@odata.bind": "/accounts(company)" });
-  // A navigation the table doesn't have is an invalid attribute (400,
-  // Power Pages 90040100), not a disallowed one (403).
+  // The write allow-list is checked before unknown attributes reach Dataverse.
   assert.throws(
     () =>
       policy.assertWrite({
         "unmappedcompany@odata.bind": "/accounts(company)",
       }),
-    (error) => error.code === "InvalidAttribute" && error.status === 400,
+    (error) => error.code === "WebApiFieldNotEnabled" && error.status === 403,
   );
   assert.deepEqual(
     policy.project({

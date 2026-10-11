@@ -2,6 +2,7 @@
 // row versions, following the documented Dataverse/Power Pages responses
 // (power-pages/configure/read-operations; data-platform/webapi/query/select-columns
 // and fetchxml/select-columns).
+import {isExactNumeric} from './exact-numeric.mjs';
 import {
   fieldKind,
   formattedValue,
@@ -99,6 +100,7 @@ export function createWebApiFormatter({ store, identity = {}, metadata, formatti
   /** JSON value of a column: choices as numbers, lookups as ids, UTC instants. */
   const outputValue = (value, columnDefinition, key) => {
     if (value == null) return null;
+    if (isExactNumeric(value)) return value;
     if (isChoiceObject(value)) return value.value;
     if (isLookupObject(value)) return value.id;
     const kind = fieldKind(columnDefinition);
@@ -108,7 +110,10 @@ export function createWebApiFormatter({ store, identity = {}, metadata, formatti
     ) {
       const parsed = parseDateValue(value);
       if (parsed)
-        return parsed.dateOnly || isDateOnlyField(columnDefinition)
+        // A date-only input literal does not change the column's behavior.
+        // UserLocal columns with date display format still return an instant;
+        // only metadata-declared DateOnly columns use a bare date here.
+        return isDateOnlyField(columnDefinition)
           ? isoUtc(parsed.ms, { dateOnly: true })
           : isoUtc(parsed.ms);
     }
@@ -116,6 +121,7 @@ export function createWebApiFormatter({ store, identity = {}, metadata, formatti
   };
   const formatted = (value, columnDefinition, key) => {
     if (value == null) return undefined;
+    if (isExactNumeric(value)) return formattedValue(value,columnDefinition,formatting);
     if (isChoiceObject(value)) return value.label ?? formattedValue(value.value, columnDefinition, formatting);
     if (fieldKind(columnDefinition)) return formattedValue(value, columnDefinition, formatting);
     if (typeof value === "boolean") return value ? "Yes" : "No";

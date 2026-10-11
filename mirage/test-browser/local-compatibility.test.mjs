@@ -164,8 +164,8 @@ test("clean source-only forms use local date and rich-text compatibility assets 
     chooser.value = "2025-02-03";
     chooser.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  assert.equal(await page.locator("#effective").inputValue(), "2025-02-03");
-  assert.equal(await page.locator("#effective_datepicker_description").inputValue(), "03/02/2025");
+  assert.equal(await page.locator("#effective").inputValue(), "2025-02-03T00:00:00.0000000");
+  assert.equal(await page.locator("#effective_datepicker_description").inputValue(), "2/3/2025");
   await page.locator("[data-sim-editor-mode=compatibility]").waitFor();
   assert.equal(await page.locator(".sim-compatibility-badge").innerText(), "Compatibility editor");
   assert.equal(

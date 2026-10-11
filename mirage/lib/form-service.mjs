@@ -2,7 +2,10 @@ import { randomUUID } from "node:crypto";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
-import { schemaFromFormXml } from "./platform.mjs";
+import { schemaFromFormXml, nativeControlKind, nativeRangeMessage, nativeDateOnly, resolveFormRecord } from "./platform.mjs";
+import { parseDateValue } from "./dataverse-values.mjs";
+import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
+import { isExactNumeric, decimalParts, compareNumeric, parseNumericLiteral } from './exact-numeric.mjs';
 
 const canonical = (value) =>
   String(value ?? "")
@@ -13,6 +16,16 @@ const fail = (message, status = 400, code = "InvalidFormSubmission") => {
 };
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ""));
 const falsy = (value) => value === false || /^(false|0)$/i.test(String(value ?? ""));
+
+/** Server-resolved context for a rendered form; submitted controls cannot replace it. */
+export function nativeFormSubmissionContext({ kind, formId, entity, mode, recordId = null, stepId = null, sessionId = null, recordQueryName = "id" }) {
+  if (!["entityform", "webform"].includes(kind) || typeof formId !== "string" || !formId || typeof entity !== "string" || !entity)
+    fail("Resolved native form context required");
+  if (![100000000, 100000001, 100000002].includes(mode)) fail("Resolved native form mode required");
+  for (const value of [recordId, stepId, sessionId]) if (value != null && typeof value !== "string") fail("Resolved native form reference must be textual");
+  if (typeof recordQueryName !== "string") fail("Resolved record query name must be textual");
+  return Object.freeze({ kind, formId, entity, mode, recordId, stepId, sessionId, recordQueryName });
+}
 
 /**
  * A localized form label or message: plain text, or [{LCID, Value}] (PAC exports) in the
@@ -155,27 +168,67 @@ export function previousSessionRecord(session, stepId) {
 
 export function evaluateStepCondition(expression, record) {
   const tokens = [];
+  const ranges = [];
   const source = String(expression ?? "");
   const pattern = /\s*(\(|\)|&|\||!(?!=)|==\*|=\*|!=\*|~=|==|!=|>=|<=|=|>|<|'[^']*'|"[^"]*"|[^\s()&|!=<>~]+)/gy;
   let match;
-  while ((match = pattern.exec(source))) tokens.push(match[1]);
+  while ((match = pattern.exec(source))) {
+    tokens.push(match[1]);
+    ranges.push({ start: match.index + match[0].length - match[1].length, end: match.index + match[0].length });
+  }
   if (tokens.join("").replace(/\s/g, "") !== source.replace(/\s/g, "")) fail("Unsupported multistep condition expression", 501, "ADVANCEDFORM_CONDITION_UNSUPPORTED");
   let index = 0;
   const peek = () => tokens[index];
   const literal = (text) => {
-    if (/^['"].*['"]$/.test(text)) return text.slice(1, -1);
+    if (/^(['"]).*\1$/.test(text)) return text.slice(1, -1);
     if (/^null$/i.test(text)) return null;
     if (/^(true|false)$/i.test(text)) return /^true$/i.test(text);
-    if (/^-?\d+(\.\d+)?$/.test(text)) return Number(text);
+    if (/^-?\d+(\.\d+)?$/.test(text)) return parseNumericLiteral(text);
     return text;
+  };
+  const readLiteral = () => {
+    const first = index;
+    const token = tokens[index];
+    if (token == null || /^(?:\(|\)|&|\||!|==\*|=\*|!=\*|~=|==|!=|>=|<=|=|>|<)$/.test(token)) fail('Multistep condition requires a comparison value', 501, 'ADVANCEDFORM_CONDITION_UNSUPPORTED');
+    index++;
+    if (/^['"]/.test(token) && !/^(['"]).*\1$/.test(token)) fail('Multistep condition has an unterminated quoted value', 501, 'ADVANCEDFORM_CONDITION_UNSUPPORTED');
+    if (/^(['"]).*\1$/.test(token)) return literal(token);
+    while (index < tokens.length && !/^(?:\(|\)|&|\||!|==\*|=\*|!=\*|~=|==|!=|>=|<=|=|>|<)$/.test(tokens[index])) {
+      // A quoted literal cannot be extended by adjoining unquoted tokens.
+      if (/^['"]/.test(tokens[index])) fail('Multistep condition mixes quoted and unquoted values', 501, 'ADVANCEDFORM_CONDITION_UNSUPPORTED');
+      index++;
+    }
+    return literal(source.slice(ranges[first].start, ranges[index - 1].end));
   };
   const value = (name) => {
     const raw = record?.[name];
+    if (isExactNumeric(raw)) return raw;
     const scalar = raw && typeof raw === "object" ? (raw.id ?? raw.value) : raw;
     return scalar;
   };
   const compare = (left, operator, right) => {
-    const a = typeof right === "number" && left != null && left !== "" ? Number(left) : typeof right === "boolean" ? truthy(left) : left;
+    const numericRight = typeof right === 'number' || isExactNumeric(right);
+    if (numericRight && ['=', '==', '!=', '>', '<', '>=', '<='].includes(operator)) {
+      // Keep saved Int64/Decimal digits and numeric literal digits out of
+      // Number(). Legacy numeric-string/boolean coercion remains supported;
+      // an empty/null value still does not equal the numeric literal zero.
+      const numericLeft = isExactNumeric(left) ? left
+        : typeof left === 'string' && /^\s*[+-]?\d+(?:\.\d*)?(?:[eE][+-]?\d+)?\s*$/.test(left) ? left.trim() : Number(left);
+      const order = compareNumeric(numericLeft, right);
+      const equal = left != null && left !== '' && order === 0;
+      switch (operator) {
+        case '=': case '==': return equal;
+        case '!=': return !equal;
+        case '>': return order > 0;
+        case '<': return order < 0;
+        case '>=': return order >= 0;
+        case '<=': return order <= 0;
+      }
+    }
+    const scalarLeft = isExactNumeric(left) ? left.value : left;
+    const scalarRight = isExactNumeric(right) ? right.value : right;
+    const a = typeof scalarRight === "number" && scalarLeft != null && scalarLeft !== "" ? Number(scalarLeft) : typeof scalarRight === "boolean" ? truthy(scalarLeft) : scalarLeft;
+    right = scalarRight;
     const like = (text, patternText) => new RegExp(`^${String(patternText).replace(/[.+?^${}()|[\]\\]/g, "\\$&").replace(/\*/g, ".*").replace(/%/g, ".*")}$`, "i").test(String(text ?? ""));
     switch (operator) {
       case "=":
@@ -211,9 +264,12 @@ export function evaluateStepCondition(expression, record) {
     if (token === "!") return !primary();
     if (!/^[a-z_][\w]*$/i.test(token ?? "")) fail("Multistep condition requires an attribute name", 501, "ADVANCEDFORM_CONDITION_UNSUPPORTED");
     const operator = peek();
-    if (!/^(==\*|=\*|!=\*|~=|==|!=|>=|<=|=|>|<)$/.test(operator ?? "")) return truthy(value(token));
+    if (!/^(==\*|=\*|!=\*|~=|==|!=|>=|<=|=|>|<)$/.test(operator ?? "")) {
+      const raw = value(token);
+      return truthy(isExactNumeric(raw) ? raw.value : raw);
+    }
     index++;
-    return compare(value(token), operator, literal(tokens[index++]));
+    return compare(value(token), operator, readLiteral());
   };
   const and = () => {
     let result = primary();
@@ -298,6 +354,26 @@ export function advancedFormStep(portal, formSchema, stepId) {
   return null;
 }
 
+/** Missing referenced steps are incomplete local configuration, not terminal success. */
+function requiredAdvancedFormStep(portal, schema, id) {
+  if (!canonical(id)) return null;
+  const step = advancedFormStep(portal, schema, id);
+  if (!step) fail(`Referenced multistep '${id}' has no resolved local step`, 501, 'FormStepUnresolved');
+  return step;
+}
+
+function nextAdvancedFormStep(portal, schema, id, record) {
+  let next = requiredAdvancedFormStep(portal, schema, id);
+  const visited = new Set();
+  while (next?.type === 'condition') {
+    if (visited.has(canonical(next.stepId))) fail('Conditional multistep routing repeats a step without reaching a load or redirect step', 501, 'FormConditionCycle');
+    visited.add(canonical(next.stepId));
+    const passed = evaluateStepCondition(next.condition, record);
+    next = requiredAdvancedFormStep(portal, schema, passed ? next.nextStepId : next.conditionDefaultNextStepId);
+  }
+  return next;
+}
+
 /** Redirect step settings: the exported adx_webformstep, else an explicit schema step. */
 function redirectSettings(step) {
   if (step.metadata && Object.keys(step.metadata).length) return step.metadata;
@@ -355,6 +431,8 @@ export async function submitPortalForm(
     owner,
     // The request's selected website language: { lcid, defaultLcid }.
     language = {},
+    // Internal same-page adapter only; public JSON submissions retain their validation contract.
+    nativePostback = false,
   },
 ) {
   const text = (value, fallback = "") => formText(value, fallback, language);
@@ -366,7 +444,9 @@ export async function submitPortalForm(
   if (!body || typeof body !== "object" || Array.isArray(body) || !body.values || typeof body.values !== "object" || Array.isArray(body.values))
     fail("Native form submission requires a values object");
   const action = body.action ?? "submit";
-  if (!["submit", "previous"].includes(action)) fail("Unsupported native form action", 400, "InvalidFormAction");
+  if (!["submit", "previous", ...Object.keys(NATIVE_STATE_ACTIONS)].includes(action)) fail("Unsupported native form action", 400, "InvalidFormAction");
+  const stateAction = NATIVE_STATE_ACTIONS[action];
+  if (stateAction && kind !== 'entityform') fail('Record state actions require a basic form', 400, 'InvalidFormAction');
   const pageUrl = (() => {
     try {
       const base = new URL(requestUrl ?? "http://localhost/");
@@ -425,7 +505,7 @@ export async function submitPortalForm(
   if (!schema.entity) fail("Native form table is unresolved", 501, "FormEntityRequired");
   const componentMetadata = schema.metadata ?? definition.metadata ?? {};
   let mode = Number(schema.mode ?? definition.mode);
-  if (mode === 100000002) fail("This native form is read-only", 403, "FormReadOnly");
+  if (mode === 100000002 && !stateAction) fail("This native form is read-only", 403, "FormReadOnly");
   // A multistep insert step becomes an edit once its record exists in the session.
   const sessionRecordId = session ? sessionRecord(session, schema.stepId) : null;
   if (session && mode === 100000000 && sessionRecordId) mode = 100000001;
@@ -443,6 +523,30 @@ export async function submitPortalForm(
   if (schema.recordId && body.recordId && canonical(schema.recordId) !== canonical(body.recordId))
     fail("The submitted record differs from the form record", 403, "FormRecordMismatch");
   const mapping = store.resolveMapping(schema.entity);
+  const configuredActions = nativeFormActions(componentMetadata);
+  if (stateAction) {
+    const matches = configuredActions.map((source, index) => ({ source, index })).filter(({ source, index }) => source.Type === stateAction.type && (body.actionIndex == null || body.actionIndex === index));
+    if (matches.length !== 1) fail('This record action is not configured for the native form', 403, 'FormActionNotEnabled');
+    const configured = matches[0].source;
+    if (create) fail('Record actions require an existing record', 400, 'FormRecordRequired');
+    if (Object.keys(body.values).length || (body.attachments?.length ?? 0)) fail('Record actions do not accept field changes or attachments', 400, 'FormActionInvalid');
+    if (configured.FilterCriteria) fail('Native record action filter criteria are unsupported', 501, 'FormActionFilterUnsupported');
+    const source = await resolveFormRecord({ kind, definition, schema, metadata, context: { request: { params: query } }, readProvider, store, identity });
+    if (!source.id || canonical(source.id) !== canonical(recordId)) fail('The submitted record differs from the form record source', 403, 'FormRecordMismatch');
+    const current = await readProvider.get(schema.entity, recordId, identity);
+    if (!current) fail(`Entity '${schema.entity}' With Id = ${canonical(recordId)} Does Not Exist`, 404, 'FormRecordNotFound');
+    const stateValues = nativeActionStateValues(schema.entity, action, { metadata, store, schema });
+    if (!stateValues) fail('Native record actions require unambiguous state and status metadata', 501, 'FormActionStateUnresolved');
+    const { record } = await writeUnit(writeProvider, async operations => ({ record: await operations.update(schema.entity, recordId, stateValues, identity) }));
+    const savedId = canonical(recordId), savedRecord = { ...current, ...record };
+    const redirect = [1, 2].includes(Number(configured.OnComplete))
+      ? redirectTarget({ adx_redirectwebpage: configured.RedirectWebpageId, adx_redirecturl: configured.RedirectUrl }, { portal, recordId: savedId, record: savedRecord, requestUrl: pageUrl })
+      : null;
+    return { record, recordId: savedId, entity: schema.entity, operation: action, componentId: definition.id, name: mapping.nameColumn ? savedRecord[mapping.nameColumn] ?? null : null,
+      outcome: redirect ? { type: 'redirect', url: redirect } : { type: 'message', message: text(configured.SuccessMessage, action === 'deactivate' ? 'The record has been deactivated.' : 'The record has been activated.'), hideForm: false } };
+  }
+  if (kind === 'entityform' && configuredActions.length && !configuredActions.some(candidate => candidate.Type === 'SubmitAction'))
+    fail('Submitting fields is not configured for this native form', 403, 'FormSubmitNotEnabled');
   const formMetadata = (portal.records ?? []).filter(
     (row) =>
       ["basicformmetadata", "advancedformmetadata"].includes(row.kind) &&
@@ -460,6 +564,8 @@ export async function submitPortalForm(
         readOnly: immutable || portalField(metadata ?? {}, "readonly", field.readOnly),
         pattern: portalField(metadata ?? {}, "validationregularexpression") || field.pattern || null,
         patternMessage: text(portalField(metadata ?? {}, "validationregularexpressionerrormessage"), ""),
+        validationMessage: text(portalField(metadata ?? {}, "validationerrormessage"), field.validationMessage ?? ""),
+        rangeMessage: text(portalField(metadata ?? {}, "rangevalidationerrormessage"), field.rangeMessage ?? ""),
         label: text(portalField(metadata ?? {}, "label"), field.label ?? field.name),
       };
     });
@@ -565,6 +671,8 @@ export async function submitPortalForm(
     changed[name] = scalar(value);
     assigned.add(name);
   }
+  const validationErrors = [];
+  const invalid = (field, code, message) => validationErrors.push({ field: field.name, code, message });
   for (const field of effectiveFields) {
     const key = canonical(field.name),
       hasChange = Object.hasOwn(changed, key),
@@ -587,7 +695,40 @@ export async function submitPortalForm(
               .trim(),
           )
         : empty(scalar(value));
-    if (field.required && !field.hidden && !field.readOnly && requiredEmpty) fail(`${field.label} is a required field.`, 400, "FormFieldRequired");
+    if (field.required && !field.hidden && !field.readOnly && requiredEmpty) invalid(field, "FormFieldRequired", `${field.label} is a required field.`);
+    // Native format CustomValidators are server-side, unlike the Web API's
+    // JSON type checks. Validate before invoking either local or live providers.
+    // Preserve a malformed numeric textbox as text so it cannot become JSON null.
+    if (hasChange && !empty(value) && !field.hidden && !field.readOnly) {
+      const control = nativeControlKind(field);
+      // Native lists validate posted values against the exported options, before
+      // invoking Dataverse. The Web API may accept unlisted integer values.
+      if (control === "picklist" && field.options?.length && !field.options.some(option => Number(option.value) === Number(value)))
+        fail("Invalid postback or callback argument. Event validation is enabled.", 500, "FormEventValidationInvalid");
+      if (control === "email" && (typeof value !== "string" || !/^[^\s@<>]+@[^\s@<>]+$/.test(value)))
+        invalid(field, "FormFieldInvalid", field.validationMessage || `${field.label} must be a valid email address.`);
+      if (["integer", "decimal", "double", "money"].includes(control)) {
+        const number = typeof value === "number" ? value : NaN;
+        const exact = nativePostback && isExactNumeric(value) ? decimalParts(value) : null;
+        const valid = exact ? control !== 'double' && (control !== 'integer' || exact.scale === 0) : Number.isFinite(number) && (control !== "integer" || Number.isInteger(number));
+        if (!valid) {
+          const kind = control === "integer" ? "integer" : control === "double" ? "floating-point" : "decimal";
+          invalid(field, "FormFieldInvalid", field.validationMessage || `${field.label} must be a valid ${kind} value.`);
+        }
+        const minimum = field.minimum ?? field.minValue, maximum = field.maximum ?? field.maxValue;
+        if ((minimum != null || maximum != null) && (!valid || (minimum != null && (exact ? compareNumeric(value, minimum) < 0 : number < Number(minimum))) || (maximum != null && (exact ? compareNumeric(value, maximum) > 0 : number > Number(maximum)))))
+          invalid(field, "FormFieldOutOfRange", field.rangeMessage || nativeRangeMessage(field));
+      }
+      if (control === "datetime") {
+        // Native DateFormatValidator consumes the round-trip hidden control,
+        // not the Web API's ISO date/date-time literals. Server-assigned on-save
+        // dates have already been typed and do not come from that control.
+        const behavior = field.dateTimeBehavior ?? field.behavior ?? (nativeDateOnly(field) ? 'DateOnly' : 'UserLocal');
+        const native = behavior === 'UserLocal' ? /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/ : /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}$/;
+        if (typeof value !== "string" || !parseDateValue(value) || (!assigned.has(key) && !native.test(value)))
+          invalid(field, "FormFieldInvalid", field.validationMessage || `${field.label} must have a valid date format.`);
+      }
+    }
     // Server-side counterparts of the native regular-expression and length validators.
     if (hasChange && !empty(value) && typeof value === "string") {
       if (field.pattern) {
@@ -598,12 +739,13 @@ export async function submitPortalForm(
           fail(`Field '${field.name}' has an invalid exported validation expression`, 501, "FormValidationExpressionInvalid");
         }
         const match = expression.exec(value);
-        if (!match || match[0] !== value) fail(field.patternMessage || `${field.label} is not valid.`, 400, "FormFieldInvalid");
+        if (!match || match[0] !== value) invalid(field, "FormFieldInvalid", field.patternMessage || `${field.label} is not valid.`);
       }
       if (field.maxLength && !field.richText && value.length > Number(field.maxLength))
-        fail(`${field.label} exceeds the maximum length of ${field.maxLength} characters.`, 400, "FormFieldTooLong");
+        invalid(field, "FormFieldTooLong", `${field.label} exceeds the maximum length of ${field.maxLength} characters.`);
     }
   }
+  if (validationErrors.length) throw new DataError(validationErrors[0].message, 400, validationErrors[0].code, { validationErrors });
   // Native reference parameters (refentity/refid/refrel) relate a created child
   // to its subgrid parent; Set Entity Reference metadata does the same from a query parameter.
   const relateAfterCreate = [];
@@ -691,7 +833,11 @@ export async function submitPortalForm(
   }
   // The record, its reference associations and its notes are written as one unit: a failure
   // in any of them (a table permission, a plugin, the provider) leaves none of them saved.
-  const { record, savedId } = await writeUnit(writeProvider, async (operations) => {
+  // A directly unresolved source edge can be rejected before any write. Branches
+  // depend on the saved row, including plugin changes, so resolve those inside
+  // the provider's existing write unit before changing the session history.
+  if (session) requiredAdvancedFormStep(portal, formSchema, schema.nextStepId);
+  const { record, savedId, next } = await writeUnit(writeProvider, async (operations) => {
     const record = create ? await operations.create(schema.entity, values, identity) : await operations.update(schema.entity, recordId, values, identity);
     const savedId = canonical(record?.[mapping.idColumn] ?? recordId);
     for (const relation of relateAfterCreate) {
@@ -699,7 +845,8 @@ export async function submitPortalForm(
       await operations.associate(relation.entity, relation.id, relation.navigation, savedId, identity);
     }
     for (const note of notes) await operations.create("annotation", note(savedId), identity);
-    return { record, savedId };
+    const next = session ? nextAdvancedFormStep(portal, formSchema, schema.nextStepId, { ...current, ...record }) : null;
+    return { record, savedId, next };
   });
   // Outcome: success message, redirect, or the next multistep step.
   const savedRecord = { ...current, ...record };
@@ -709,13 +856,6 @@ export async function submitPortalForm(
     const entry = { stepId: schema.stepId, recordId: savedId, entity: schema.entity };
     if (entryIndex >= 0) session.history.splice(entryIndex, session.history.length - entryIndex, entry);
     else session.history.push(entry);
-    let next = advancedFormStep(portal, formSchema, schema.nextStepId);
-    const guard = new Set();
-    while (next?.type === "condition" && !guard.has(next.stepId)) {
-      guard.add(next.stepId);
-      const passed = evaluateStepCondition(next.condition, savedRecord);
-      next = advancedFormStep(portal, formSchema, passed ? next.nextStepId : next.conditionDefaultNextStepId);
-    }
     if (next && next.type !== "redirect") {
       session.current = next.stepId;
       outcome = { type: "step", url: nextStepUrl(next.stepId, session, pageUrl, startNew) };

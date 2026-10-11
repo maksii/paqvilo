@@ -179,6 +179,21 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
+      - name: Install pinned Microsoft SDK reference for original CLR regressions
+        shell: pwsh
+        run: |
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'paqvilo-sdk-reference'
+          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
+          $sdkArchive = Join-Path $sdkDirectory 'sdk.zip'
+          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg' -OutFile $sdkArchive
+          if ((Get-FileHash $sdkArchive -Algorithm SHA256).Hash -ne '59650574CDC89C1F506FABD7275FE6325A59A8BAE9FA9F92C5B5C2CBE31D5E1F') { throw 'Microsoft SDK archive digest mismatch' }
+          Expand-Archive -LiteralPath $sdkArchive -DestinationPath (Join-Path $sdkDirectory 'reference')
+          "PAQ_TEST_XRM_SDK=$(Join-Path $sdkDirectory 'reference/lib/net462/Microsoft.Xrm.Sdk.dll')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Execute original CLR plugin regressions (required SDK fixture)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:PAQ_TEST_XRM_SDK)) { throw 'CLR SDK fixture was not installed' }
+          node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
 

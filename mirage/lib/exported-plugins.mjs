@@ -3,6 +3,10 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { DataError } from './data-error.mjs';
 import { parseSolutionXml } from './solution-xml.mjs';
+import {clrContext,clrExecutionDepth,executeClrPlugin} from './plugin-clr.mjs';
+import {sdkValueToRecord} from './local-organization-service.mjs';
+import {populatePluginSystemOutputs} from './plugin-response.mjs';
+const executionFrames=new WeakMap();
 
 const canonical = value => String(value ?? '').trim().replace(/[{}]/g, '').toLowerCase();
 const nodes = (node, name) => {
@@ -121,16 +125,20 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
   return plugins;
 }
 
-export function pluginUnsupported(step) {
-  if (step.mode !== 0) return step.mode === 1 ? 'Asynchronous plugin execution is not simulated.' : 'Execution mode is missing or unsupported.';
+export function pluginUnsupported(step,{images=false}={}) {
+  if (![0,1].includes(step.mode)) return 'Execution mode is missing or unsupported.';
+  if(step.mode===1&&(step.stage!==40||!['create','update','delete'].includes(String(step.message).toLowerCase())))return 'Asynchronous execution supports post-commit stage 40 Create/Update/Delete registrations.';
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
   if (!step.message) return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
-  if (!['create', 'update', 'delete'].includes(String(step.message ?? '').toLowerCase())) return 'This message has no local CRUD pipeline.';
+  if (!['create', 'update', 'delete','retrieve','retrievemultiple','createmultiple','updatemultiple','associate','disassociate'].includes(String(step.message ?? '').toLowerCase())) return 'This message has no configured local execution pipeline.';
+  if(['retrieve','retrievemultiple'].includes(String(step.message).toLowerCase())&&![20,40].includes(step.stage))return 'Read messages support synchronous PreOperation/PostOperation observers.';
   if (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)) return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
   if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
   if (step.impersonatingUserId) return 'Impersonated execution requires an explicit identity adapter.';
-  if (step.images?.length) return 'Registered pre/post images require an explicit image adapter.';
+  if (step.images?.length&&!images) return 'Registered pre/post images require an explicit image adapter.';
+  if(images&&(step.images??[]).some(image=>![0,1,2].includes(image.type)||!image.alias&&!image.name))return 'Registered image type or alias is unresolved.';
+  if(images&&new Set((step.images??[]).map(image=>image.alias||image.name)).size!==(step.images??[]).length)return 'Registered image aliases must be unique.';
   if (!step.typeName || !step.assemblyId) return 'The exported plugin type or assembly dependency is unresolved.';
   return null;
 }
@@ -151,34 +159,73 @@ export function pluginHandlers(packs = []) {
   return result;
 }
 
-export function pluginCatalogue({ plugins, handlers = new Map(), overrides = {} }) {
+export function pluginCatalogue({ plugins, handlers = new Map(), runtimes = new Map(),descriptors=new Map(), overrides = {} }) {
   return (plugins?.steps ?? []).map(step => {
     const key = `plugin-step:${step.id}`, configuration = overrides[key] ?? null, registered = handlers.has(step.id);
-    return { ...step, key, kind: 'plugin-step', registered, mode: configuration?.mode ?? (registered ? 'handler' : 'placeholder'), configuration, configurable: step.enabled && !step.unsupported, definitionAvailable: false, path: null, contract: { entity: step.entity, message: step.message, stage: step.stage, stageName: step.stageName, rank: step.rank, mode: step.mode, filteringAttributes: step.filteringAttributes, assemblyName: step.assemblyName, typeName: step.typeName, unsupported: step.unsupported, boundary: 'All local synchronous stages run in one rollback transaction after portal authorization; compiled .NET is never executed.' } };
+    const runtime=runtimes.get(step.id),descriptor=descriptors.get(step.id),unsupported=pluginUnsupported(step,{images:Boolean(runtime||descriptor)});
+    const clrAvailable=Boolean((runtime?.descriptor??descriptor)?.typeName===step.typeName);
+    return { ...step,unsupported,key, kind: 'plugin-step', registered,clrAvailable,clrPrepared:Boolean(runtime),clrProvenance:runtime?.provenance??null, mode: configuration?.mode ?? (registered ? 'handler' : 'placeholder'), configuration, configurable: step.enabled, definitionAvailable: clrAvailable, path: null, contract: { entity: step.entity, message: step.message, stage: step.stage, stageName: step.stageName, rank: step.rank, mode: step.mode, filteringAttributes: step.filteringAttributes, assemblyName: step.assemblyName, typeName: step.typeName, unsupported, boundary: 'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. RetrieveMultiple observers are read-only. CLR requires an explicitly trusted original assembly and a separate project backend security profile.' } };
   });
 }
 
 /** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes. */
-export function runPluginPhase({ items, handlers, entity, operation, stage, target, record, previous, identity, changedAttributes, diagnostic = () => {} }) {
-  const attributes = new Set(changedAttributes.map(canonical));
-  const matched = items.filter(item => item.enabled && item.entity === entity && String(item.message).toLowerCase() === operation && item.stage === stage && (operation !== 'update' || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+export function runPluginPhase({ items, handlers, runtimes=new Map(),store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,asyncExecution=false,initialFrame, diagnostic = () => {} }) {
+  // A saved row can be reused by a later Delete; its previous request frame
+  // must not supply shared variables, correlation or parent context to this one.
+  if(stage===10&&!asyncExecution)executionFrames.set(record,{});
+  if(initialFrame)executionFrames.set(record,structuredClone(initialFrame));
+  const attributes = new Set(changedAttributes.map(canonical)),read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
+  const matched = items.filter(item => item.enabled && (item.contract?.mode===1)===asyncExecution && item.entity === entity && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update','updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  // Mock/handler read outputs also belong to the SDK response frame. Keep ordinary
+  // reads without an executing observer on their existing projection path.
+  if(stage===40&&read&&!asyncExecution&&!executionFrames.has(record)&&matched.some(item=>['clr','handler','mock'].includes(item.mode)&&(!item.unsupported||item.mode==='mock')))executionFrames.set(record,{});
+  if(stage===40&&store&&!asyncExecution&&executionFrames.has(record)){
+    const frame=executionFrames.get(record),primary=store.resolveMapping(entity).idColumn;
+    const values=operation==='create'?{id:{$type:'Guid',value:record[primary]}}:operation==='createmultiple'?{Ids:{$type:'GuidArray',values:record.bulkIds.map(value=>({$type:'Guid',value}))}}:operation==='retrieve'?{BusinessEntity:holder.entity}:multiple?{BusinessEntityCollection:collection}:{};
+    populatePluginSystemOutputs(frame,values);executionFrames.set(record,frame);
+  }
+  const replace=(object,value)=>{if(!value||typeof value!=='object'||Array.isArray(value))throw error('Invalid plugin query/collection result.');for(const key of Object.keys(object))delete object[key];Object.assign(object,structuredClone(value));};
+  const readResultChanged=()=>{const frame=executionFrames.get(record),key=multiple?'BusinessEntityCollection':'BusinessEntity';if(frame?.outputParameters?.values&&Object.hasOwn(frame.outputParameters.values,key))frame.outputParameters.values[key]=multiple?collection:holder.entity;};
   for (const item of matched) {
     const note = (code, message) => diagnostic({ code, severity: code === 'PLUGIN_STEP_REJECTED' ? 'error' : code === 'PLUGIN_STEP_SIMULATED' ? 'info' : 'warning', stepId: item.id, name: item.name, entity, operation, stage, sourceFile: item.sourceFile, message });
-    if (item.unsupported) { note('PLUGIN_STEP_UNSUPPORTED', item.unsupported); continue; }
+    if(item.mode==='disabled'){note('PLUGIN_STEP_DISABLED','This step is explicitly disabled in local simulator configuration.');continue;}
+    if(item.mode==='mock'){if((item.configuration?.status??200)>=400||item.configuration?.body?.error){const message=item.configuration?.body?.error?.message||'Explicit plugin mock rejected.';note('PLUGIN_STEP_REJECTED',message);throw error(message,'PluginValidation');}if(item.unsupported)note('PLUGIN_STEP_SIMULATED','Explicit mock chosen for an unsupported source execution contract; original logic was not executed.');}
+    if (item.unsupported&&item.mode!=='mock') { note('PLUGIN_STEP_UNSUPPORTED', item.unsupported); if(['clr','handler'].includes(item.mode))throw error(item.unsupported,'LocalPluginUnsupported',501);continue; }
     if (item.mode === 'placeholder') { note('PLUGIN_STEP_PLACEHOLDER', 'This exported registration was discovered. Its business logic was skipped; configure a local mock or trusted handler.'); continue; }
     let output;
     try {
-      if (item.mode === 'mock') {
+      if(item.mode==='clr'){
+        const runtime=runtimes.get(item.id);if(!runtime||!item.clrAvailable||!store)throw error('No trusted original CLR runtime is registered for this exact exported type/step.','LocalPluginClrUnavailable',501);
+        let frame=executionFrames.get(record);if(!frame){frame={};executionFrames.set(record,frame);}
+        if(read){frame.query=query;frame.collection=collection;frame.entity=holder?.entity;frame.columns=columns;}
+        if(bulk){frame.targets=targets;frame.previousRecords=previousRecords;frame.records=records;}
+        if(association)frame.associationParameters=associationParameters;
+        const depth=clrExecutionDepth()+1,context=clrContext({runtime,store,step:item,entity,operation,stage,target,record,previous,frame,depth});
+        const answer=executeClrPlugin(runtime,context,{store,diagnostic:entry=>diagnostic({...entry,stepId:item.id,entity,operation,stage})});frame.sharedVariables=answer.sharedVariables;frame.outputParameters=answer.outputParameters;
+        // CRUD PreValidation variables belong to the parent context of later
+        // stages, while PreOperation and PostOperation share their own collection.
+        if(stage===10&&['create','update','delete'].includes(operation))frame.preValidationContext={$type:'ExecutionContext',values:{...structuredClone(context.context),InputParameters:structuredClone(answer.inputParameters),OutputParameters:structuredClone(answer.outputParameters),SharedVariables:structuredClone(answer.sharedVariables),PreEntityImages:{$type:'EntityImageCollection',values:structuredClone(context.preImages)},PostEntityImages:{$type:'EntityImageCollection',values:structuredClone(context.postImages)}}};
+        if(read){if(multiple){const nextQuery=answer.inputParameters?.values?.Query;if(stage===20)replace(query,nextQuery);else if(answer.outputParameters?.values?.BusinessEntityCollection!=null){replace(collection,answer.outputParameters.values.BusinessEntityCollection);readResultChanged();}}else if(stage===40&&answer.outputParameters?.values?.BusinessEntity!=null){holder.entity=structuredClone(answer.outputParameters.values.BusinessEntity);readResultChanged();}output={};}
+        else if(bulk){const next=answer.inputParameters?.values?.Targets;if(next?.$type!=='EntityCollection'||!Array.isArray(next.entities))throw error('Bulk plugin must retain a typed Targets EntityCollection.');if(stage!==40)targets.splice(0,targets.length,...structuredClone(next.entities));output={};}
+        else if(association){if(JSON.stringify(answer.inputParameters?.values)!==JSON.stringify(associationParameters))throw error('Association parameter mutation needs a source-qualified adapter.','LocalPluginSdkUnsupported',501);output={};}
+        else if(stage!==40&&operation!=='delete'&&Object.keys(target).some(key=>!Object.hasOwn(answer.target?.attributes??{},key)))throw error('Original plugin removed a Target attribute; target removal requires an explicit mutation adapter.','LocalPluginSdkUnsupported',501);
+        if(!read&&!bulk&&!association)output=stage===40||operation==='delete'?{}:{target:sdkValueToRecord(answer.target)};
+        diagnostic({code:'PLUGIN_STEP_CLR_EXECUTED',severity:'info',stepId:item.id,entity,operation,stage,sdkCalls:answer.sdkCalls,assemblyFullName:answer.assemblyFullName,sdkFullName:answer.sdkFullName,sourceProvenance:answer.provenance,message:'Original CLR assembly completed with local SDK calls.'});
+      }else if (item.mode === 'mock') {
         if ((item.configuration?.status ?? 200) >= 400) throw error(item.configuration?.body?.error?.message || `Plugin mock ${item.name} rejected the write.`, 'PluginValidation');
         output = item.configuration?.body ?? {};
       } else if (item.mode === 'handler') {
         const handler = handlers.get(item.id);
         if (!handler) throw error(`No trusted handler for plugin step ${item.id}.`);
-        output = handler({ step: structuredClone(item), entity, operation, stage, target: structuredClone(target), record: structuredClone(record), previous: previous ? structuredClone(previous) : null, identity: structuredClone(identity), changedAttributes: [...changedAttributes], reject: message => { throw error(message, 'PluginValidation'); } });
+        output = handler({ step: structuredClone(item), entity, operation, stage, target: structuredClone(target), record: structuredClone(record), previous: previous ? structuredClone(previous) : null, identity: structuredClone(identity), changedAttributes: [...changedAttributes],...(association?{associationParameters:structuredClone(associationParameters)}:{}),...(bulk?{targets:structuredClone(targets),previousRecords:structuredClone(previousRecords),records:structuredClone(records)}:{}),...(read?{query:structuredClone(query),collection:structuredClone(collection),columns:structuredClone(columns),entityResult:structuredClone(holder?.entity)}:{}), reject: message => { throw error(message, 'PluginValidation'); } });
         if (output?.then) { Promise.resolve(output).catch(() => {}); throw error('Plugin handlers must return synchronously.', 'LocalPluginAsyncHandler'); }
-      } else throw error('Compiled .NET plugin execution is not supported locally.', 'LocalPluginUnsupported');
-      if (output !== undefined && (!output || typeof output !== 'object' || Array.isArray(output) || Object.keys(output).some(key => !['target', 'error'].includes(key)))) throw error('Plugin result must contain only target field changes or an error.');
+      } else throw error(`Plugin step mode ${item.mode} has no local execution adapter. Select clr, handler, mock, or disabled.`, 'LocalPluginUnsupported');
+      if (output !== undefined && (!output || typeof output !== 'object' || Array.isArray(output) || Object.keys(output).some(key => !(association?['error']:bulk?['targets','error']:read?['query','collection','entityResult','error']:['target','error']).includes(key)))) throw error('Plugin result must contain only supported field/query changes or an error.');
       if (output?.error) throw error(String(output.error.message || 'Plugin rejected the write.'), 'PluginValidation');
+      if(bulk&&output?.targets!==undefined){if(stage===40||!Array.isArray(output.targets))throw error('Bulk Targets changes require a pre-operation array.');targets.splice(0,targets.length,...structuredClone(output.targets));}
+      if(!multiple&&output?.entityResult!==undefined){if(stage!==40)throw error('Retrieve Entity changes require PostOperation.');holder.entity=structuredClone(output.entityResult);readResultChanged();}
+      if(read&&output?.query!==undefined){if(stage!==20)throw error('Query changes require PreOperation.');replace(query,output.query);}
+      if(read&&output?.collection!==undefined){if(stage!==40)throw error('Collection changes require PostOperation.');replace(collection,output.collection);readResultChanged();}
       if (output?.target !== undefined) {
         if (stage === 40 || operation === 'delete') throw error('PostOperation and Delete target changes cannot be persisted by this adapter.');
         if (!output.target || typeof output.target !== 'object' || Array.isArray(output.target)) throw error('Plugin target must be a field map.');
@@ -188,7 +235,8 @@ export function runPluginPhase({ items, handlers, entity, operation, stage, targ
           record[name] = structuredClone(value);
         }
       }
-      note('PLUGIN_STEP_SIMULATED', `Local ${item.mode} completed; compiled .NET was not executed.`);
+      if(item.mode!=='clr')note('PLUGIN_STEP_SIMULATED', `Local ${item.mode} completed; compiled .NET was not executed.`);
     } catch (cause) { note('PLUGIN_STEP_REJECTED', cause.message); throw cause; }
   }
+  return structuredClone(executionFrames.get(record)??{});
 }

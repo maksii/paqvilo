@@ -95,6 +95,7 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
     attribute("sample_Flag", "bit", `<AppDefaultValue>1</AppDefaultValue><optionset Name="sample_item_sample_flag"><OptionSetType>bit</OptionSetType><options><option value="0">${label("No")}</option><option value="1">${label("Yes")}</option></options></optionset>`),
     attribute("sample_Shared", "picklist", "<OptionSetName>sample_sharedchoice</OptionSetName>"),
     attribute("sample_Amount", "decimal", "<Accuracy>2</Accuracy><MinValue>0</MinValue><MaxValue>100</MaxValue>"),
+    attribute("sample_Cost", "money", "<Accuracy>4</Accuracy><AccuracySource>2</AccuracySource>"),
     attribute("sample_Due", "datetime", "<Format>date</Format><Behavior>2</Behavior>"),
     attribute("sample_Number", "nvarchar", "<AutoNumberFormat>ExampleApp-{SEQNUM:6}</AutoNumberFormat><MaxLength>20</MaxLength><IsSecured>1</IsSecured><ValidForCreateApi>0</ValidForCreateApi><ValidForUpdateApi>0</ValidForUpdateApi><ValidForReadApi>1</ValidForReadApi>"),
     attribute("sample_ParentId", "lookup"),
@@ -119,6 +120,8 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
   assert.equal(fields.sample_shared.optionSetType, "global");
   assert.match(fields.sample_shared.optionSetSource, /sample_sharedchoice\.xml$/);
   assert.deepEqual([fields.sample_amount.precision, fields.sample_amount.minValue, fields.sample_amount.maxValue], [2, 0, 100]);
+  assert.deepEqual([fields.sample_cost.precision, fields.sample_cost.precisionSource], [4, 2]);
+  assert.equal(Object.hasOwn(fields.sample_amount, "precisionSource"), false);
   assert.deepEqual([fields.sample_due.format, fields.sample_due.dateTimeBehavior, fields.sample_due.type], ["date", "DateOnly", "date"]);
   assert.equal(fields.sample_number.autoNumberFormat, "ExampleApp-{SEQNUM:6}");
   assert.deepEqual([fields.sample_number.validForCreate, fields.sample_number.validForUpdate, fields.sample_number.validForRead, fields.sample_number.isSecured], [false, false, true, true]);
@@ -130,6 +133,26 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
   // A complete table also lists the column Dataverse never writes into solution XML.
   assert.equal(fields.versionnumber.implicit, true);
   assert.match(fields.sample_choice.source, /Entity\.xml$/);
+});
+
+test("Owner columns retain concrete user/team targets when relationships name abstract owner", async (t) => {
+  const root = await tree(t, {
+    "Entities/sample_widget/Entity.xml": entityXml("sample_widget", { attributes:
+      attribute("OwnerId", "owner", '<LookupTypes><LookupType id="00000000-0000-0000-0000-000000000000">8</LookupType><LookupType id="00000000-0000-0000-0000-000000000000">9</LookupType></LookupTypes>') +
+      attribute("sample_OwnerReference", "lookup") + attribute("sample_ConcreteOwner", "owner"),
+    }),
+    "Other/Relationships.xml": `<EntityRelationships>${
+      oneToMany("sample_widget_owner", "sample_widget", "owner", "OwnerId") +
+      oneToMany("sample_widget_owner_reference", "sample_widget", "owner", "sample_OwnerReference") +
+      oneToMany("sample_widget_concrete_owner", "sample_widget", "systemuser", "sample_ConcreteOwner")
+    }</EntityRelationships>`,
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const fields = tableFields(schema, "sample_widget");
+  assert.deepEqual(fields.ownerid.targets, ["systemuser", "team"]);
+  assert.deepEqual(fields.sample_ownerreference.targets, ["owner"]);
+  assert.deepEqual(fields.sample_concreteowner.targets, ["systemuser"]);
+  assert.equal(fields.ownerid.dataverseType, "owner");
 });
 
 test("relationships expose navigation properties, partners and intersect columns in mappings", async (t) => {

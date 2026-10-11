@@ -78,7 +78,11 @@ export async function discoverSourceDependencies(portal) {
   authored.push(
     ...strings(portal.templates),
     ...strings(portal.snippets),
-    ...(portal.pages ?? []).flatMap((page) => [page.html, page.js]),
+    ...strings(portal.snippetTranslations),
+    ...(portal.pages ?? []).flatMap((page) => [
+      page.html, page.js,
+      ...Object.values(page.translations ?? {}).flatMap((variant) => [variant.html, variant.js]),
+    ]),
     ...(portal.forms ?? []).map((form) => form.js),
     ...(portal.lists ?? []).map((list) => list.js),
     ...strings((portal.records ?? [])

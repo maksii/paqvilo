@@ -9,9 +9,11 @@
 // Strainer: IConvertible arguments are converted with Convert.ChangeType and other
 // mismatches raise the .NET exception that renders as "Liquid error: ...".
 import sanitize from "sanitize-html";
+import { parseFragment, serializeOuter } from "parse5";
 import {
   LiquidError,
   NetDecimal,
+  NetDouble,
   isNumber,
   isDate,
   numberKind,
@@ -182,6 +184,11 @@ export const FILTER_SIGNATURES = Object.freeze({
   where: ["input, key, value"],
   xml_escape: ["input"],
 });
+export function createFilterSignatures(host = {}) {
+  return host.filterRegistration === "observed"
+    ? { ...FILTER_SIGNATURES, currency: ["@context, value, record, attribute, format?"] }
+    : FILTER_SIGNATURES;
+}
 // ---------------------------------------------------------------------------
 // Strainer parameter conversion
 // ---------------------------------------------------------------------------
@@ -249,6 +256,11 @@ function mathOperation(input, operand, operation) {
       `The binary operator ${symbol} is not defined for the types '${netTypeName(input)}' and '${netTypeName(operand)}'.`,
       "System.InvalidOperationException",
     );
+  }
+  if (kindA === "double" || kindB === "double") {
+    const a = toNumber(input), b = toNumber(operand);
+    const result = operation === "add" ? a + b : operation === "subtract" ? a - b : operation === "multiply" ? a * b : operation === "divide" ? a / b : a % b;
+    return new NetDouble(result);
   }
   if (kindA === "decimal" || kindB === "decimal") {
     const result =
@@ -459,7 +471,7 @@ function toTitleCase(input) {
   });
 }
 /** Adxstudio SimpleHtmlFormatter (text_to_html). */
-function simpleHtml(input, linkify = true) {
+function simpleHtml(input, linkify = true, lineBreak = "<br />") {
   let text = htmlEncode(input);
   if (linkify)
     text = text.replace(/http(s?):\/\/\S+[/\p{L}\p{Mn}\p{Nd}\p{Pc}]/giu, (match) => {
@@ -473,7 +485,7 @@ function simpleHtml(input, linkify = true) {
   return text
     .split(/\r\n\r\n|\n\n/)
     .filter((block) => block !== "")
-    .map((block) => `<p>${block.replace(/\r\n/g, "<br />").replace(/\n/g, "<br />")}</p>`)
+    .map((block) => `<p>${block.replace(/\r\n/g, lineBreak).replace(/\n/g, lineBreak)}</p>`)
     .join("");
 }
 /** Adxstudio FileSize.ToString(precision). */
@@ -535,13 +547,15 @@ function formatNumberString(value, format) {
 // ---------------------------------------------------------------------------
 // html_safe_escape: closest local equivalent of the managed HTML sanitizer.
 // ---------------------------------------------------------------------------
-function sanitizeHtml(input) {
+function sanitizeHtml(input, { htmlSafeInput } = {}) {
   return sanitize(String(input), {
-    allowedTags: [...sanitize.defaults.allowedTags, "img"],
+    allowedTags: [...sanitize.defaults.allowedTags, "img", ...(htmlSafeInput === "observed" ? ["input"] : [])],
+    allowedEmptyAttributes: [...sanitize.defaults.allowedEmptyAttributes, ...(htmlSafeInput === "observed" ? ["disabled"] : [])],
     allowedAttributes: {
       "*": ["class", "id", "title", "lang", "dir", "style", "aria-*", "data-*"],
       a: ["href", "name", "target", "rel"],
       img: ["src", "alt", "width", "height", "loading"],
+      ...(htmlSafeInput === "observed" ? { input: ["type", "value", "disabled"] } : {}),
       td: ["colspan", "rowspan", "headers"], th: ["colspan", "rowspan", "scope", "headers"],
       ol: ["start", "reversed", "type"], li: ["value"],
     },
@@ -562,6 +576,24 @@ function sanitizeHtml(input) {
       },
     },
   });
+}
+
+function htmlVoidSerialization(markup) {
+  // Parse already-sanitized output to find real tag tokens. Attributes containing
+  // '/>' remain data, and only void tags change serialization.
+  const replacements = [], voidTags = new Set(["img", "br", "hr", "area", "base", "basefont", "input", "link", "meta", "col"]);
+  const visit = (node) => {
+    if (voidTags.has(node.tagName) && node.sourceCodeLocation?.startTag) {
+      const location = node.sourceCodeLocation.startTag;
+      replacements.push({ start: location.startOffset, end: location.endOffset, value: serializeOuter(node) });
+    }
+    for (const child of node.childNodes ?? []) visit(child);
+    if (node.content) visit(node.content);
+  };
+  visit(parseFragment(markup, { sourceCodeLocationInfo: true }));
+  for (const replacement of replacements.sort((a, b) => b.start - a.start))
+    markup = markup.slice(0, replacement.start) + replacement.value + markup.slice(replacement.end);
+  return markup;
 }
 
 // ---------------------------------------------------------------------------
@@ -792,7 +824,7 @@ export function createFilters(host = {}) {
     },
     newline_to_br: (input) => {
       const s = asString(input);
-      return isNullOrWhiteSpace(s) ? s : s.replace(/(\r?\n)/g, "<br />$1");
+      return isNullOrWhiteSpace(s) ? s : s.replace(/(\r?\n)/g, (newline) => (host.htmlVoidSerialization === "html" ? "<br>" : "<br />") + newline);
     },
     date(input, format) {
       if (input == null) return null;
@@ -823,13 +855,38 @@ export function createFilters(host = {}) {
       if (typeof input === "string") return input + netToString(operand);
       return mathOperation(input, operand, "add");
     },
-    minus: (input, operand) => mathOperation(input, operand, "subtract"),
+    minus(input, operand) {
+      if (host.filterErrors === "observed" && typeof input === "string" && numberKind(operand) === "int")
+        throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
+      if (host.filterErrors === "observed" && typeof input === "string" && numberKind(operand) === "decimal")
+        return mathOperation(toNetDecimal(input), operand, "subtract");
+      return mathOperation(input, operand, "subtract");
+    },
     times(input, operand) {
+      if (host.timesDispatch === "observed") {
+        const stringArray = Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === "string");
+        if ((numberKind(input) === "int" && typeof operand === "string") || (stringArray && numberKind(operand) === "int"))
+          throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
+        if (stringArray && numberKind(operand) === "decimal")
+          throw new LiquidError("Unable to cast object of type 'System.String[]' to type 'System.IConvertible'.", "System.InvalidCastException");
+      }
+      // An observed portal can opt into decimal string conversion without changing
+      // the pinned DotLiquid20 string repetition and operator contracts elsewhere.
+      if (host.decimalStringMultiply === "convert" && typeof input === "string" && numberKind(operand) === "decimal")
+        return mathOperation(toNetDecimal(input), operand, "multiply");
       if (typeof input === "string" && numberKind(operand) && numberKind(operand) !== "decimal")
         return Array.from({ length: Math.max(0, Number(operand)) }, () => input);
       return mathOperation(input, operand, "multiply");
     },
-    divided_by: (input, operand) => mathOperation(input, operand, "divide"),
+    divided_by(input, operand) {
+      if (host.filterErrors === "observed" && numberKind(input) === "int" && numberKind(operand) === "int" && asInt(operand) === 0)
+        throw new LiquidError("Exception has been thrown by the target of an invocation.", "System.Reflection.TargetInvocationException");
+      if (host.filterErrors === "observed" && numberKind(input) === "int" && typeof operand === "string")
+        throw new LiquidError("Parameter count mismatch.", "System.Reflection.TargetParameterCountException");
+      if (host.filterErrors === "observed" && numberKind(input) === "int" && asInt(input) !== 0 && numberKind(operand) === "decimal" && toNumber(operand) === 0)
+        return new NetDouble(toNumber(input) / toNumber(operand));
+      return mathOperation(input, operand, "divide");
+    },
     modulo: (input, operand) => mathOperation(input, operand, "modulo"),
     uniq(input) {
       if (input == null) return null;
@@ -956,6 +1013,8 @@ export function createFilters(host = {}) {
     batch(input, batchSize) {
       const list = asEnumerable(input) ?? [];
       const size = asInt(batchSize);
+      if (host.filterErrors === "observed" && numberKind(batchSize) === "int" && size <= 0)
+        throw new LiquidError("Value must be positive and non-zero.\r\nParameter name: size", "System.ArgumentOutOfRangeException");
       if (size <= 0) throw new LiquidError("Specified argument was out of the range of valid values.\r\nParameter name: size", "System.ArgumentOutOfRangeException");
       const batches = [];
       for (let index = 0; index < list.length; index += size) batches.push(list.slice(index, index + size));
@@ -990,8 +1049,11 @@ export function createFilters(host = {}) {
       return filters.order_by.call(this, input, key, direction);
     },
     async then_by(input, key, direction = "asc") {
-      if (!(input instanceof OrderedList))
-        throw new LiquidError(`Object of type '${netTypeName(input)}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`, "System.ArgumentException");
+      if (!(input instanceof OrderedList)) {
+        const stringArray = host.filterErrors === "observed" && Array.isArray(input) && input.length > 0 && input.every((item) => typeof item === "string");
+        const type = host.filterErrors === "observed" && Array.isArray(input) && input.length === 0 ? "System.Linq.Enumerable+WhereArrayIterator`1[System.Object]" : stringArray ? "System.String[]" : netTypeName(input);
+        throw new LiquidError(`Object of type '${type}' cannot be converted to type 'System.Linq.IOrderedEnumerable\`1[System.Object]'.`, "System.ArgumentException");
+      }
       return orderBy([...input], asString(key), asString(direction), this, input.ranks);
     },
     async thenby(input, key, direction = "asc") {
@@ -1114,7 +1176,7 @@ export function createFilters(host = {}) {
     text_to_html(input, linkifyUrls = true) {
       const s = asString(input);
       if (s == null) return null;
-      return simpleHtml(s, arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== "false" : true);
+      return simpleHtml(s, arguments.length > 1 ? linkifyUrls !== false && linkifyUrls !== "false" : true, host.htmlVoidSerialization === "html" ? "<br>" : "<br />");
     },
     url_escape: (input) => {
       const s = asString(input);
@@ -1131,7 +1193,9 @@ export function createFilters(host = {}) {
     },
     html_safe_escape: (input) => {
       const s = asString(input);
-      return s == null ? null : sanitizeHtml(s);
+      if (s == null) return null;
+      const sanitized = sanitizeHtml(s, host);
+      return host.htmlVoidSerialization === "html" ? htmlVoidSerialization(sanitized) : sanitized;
     },
 
     // ---- Adxstudio NumberFormatFilters (en-US current UI culture) ----
@@ -1199,7 +1263,7 @@ export function createFilters(host = {}) {
     },
     path_and_query(url) {
       // UrlBuilder.PathWithQueryString re-encodes the query through QueryStringCollection.
-      return urlPart(url, this, (u) => u.pathname + buildQuery(queryPairs(u.search)));
+      return urlPart(url, this, (u) => u.pathname + buildQuery(queryPairs(u.search + (host.pathAndQueryFragment === "query" && u.search ? u.hash : ""))));
     },
     scheme(url) {
       return urlPart(url, this, (u) => u.protocol.replace(/:$/, ""));
@@ -1223,6 +1287,10 @@ export function createFilters(host = {}) {
       return options.length ? options : null;
     },
   };
+  if (host.filterRegistration === "observed") {
+    delete filters.json;
+    delete filters.sort_natural;
+  }
   return filters;
 }
 function isConvertibleForNumber(value) {

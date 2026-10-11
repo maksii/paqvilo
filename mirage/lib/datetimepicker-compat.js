@@ -15,8 +15,11 @@
   }
   const jq = () => window.jQuery;
   const instances = new WeakMap();
-  const trigger = (root, name, detail) =>
+  const trigger = (root, name, detail) => {
+    // Native bindings survive later source includes replacing window.jQuery.
+    if (name === 'change' && root.hasAttribute('data-sim-date-target')) root.dispatchEvent(new CustomEvent('sim:datechange', { detail }));
     jq()(root).trigger(jq().Event(`dp.${name}`, detail));
+  };
   const parse = (value, format) => {
     if (moment.isMoment(value)) return value.clone();
     if (value instanceof Date) return moment(value);
@@ -31,6 +34,7 @@
       logicalId = display?.id?.replace(/_datepicker_description$/, ""),
       linked = logicalId && document.getElementById(logicalId),
       canonical = linked && linked !== display ? linked : display,
+      nativeBinding = root.hasAttribute('data-sim-date-target'),
       format = options.format || display?.dataset.dateFormat || "DD/MM/YYYY",
       hasTime = /[Hhms]/.test(format),
       chooser = document.createElement("input");
@@ -58,12 +62,13 @@
     const todayButton = makeButton("Today", () => setDate(moment(), true)),
       clearButton = makeButton("Clear date", () => setDate(null, true));
     root.append(buttons);
+    let lastGoodValue = '';
     const parseCurrent = () =>
         parse(canonical.value || display.value, format),
       isoValue = (value) =>
         value.format(hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD"),
-      notify = (oldDate) => {
-        const current = parseCurrent();
+      notify = (oldDate, date) => {
+        const current = date === undefined ? parseCurrent() : date;
         trigger(root, "update", { date: current?.isValid() ? current : null });
         trigger(root, "change", {
           date: current?.isValid() ? current : null,
@@ -75,14 +80,14 @@
           next = value == null ? null : parse(value, format);
         if (next && !next.isValid()) return;
         const formatted = next ? next.format(format) : "";
-        if (canonical !== display) canonical.value = next ? isoValue(next) : "";
+        if (canonical !== display && !nativeBinding) canonical.value = next ? isoValue(next) : "";
         display.value = formatted;
         chooser.value = next ? isoValue(next) : "";
         if (announce) {
-          canonical.dispatchEvent(new Event("change", { bubbles: true }));
+          if (!nativeBinding) canonical.dispatchEvent(new Event("change", { bubbles: true }));
           if (canonical !== display)
             display.dispatchEvent(new Event("change", { bubbles: true }));
-          notify(oldDate);
+          notify(oldDate, next);
         }
       },
       show = () => {
@@ -100,10 +105,18 @@
     display.addEventListener("change", () => {
       const value = parse(display.value, format);
       if (value?.isValid()) {
+        if (nativeBinding) lastGoodValue = display.value;
         const oldDate = parseCurrent();
-        if (canonical !== display) canonical.value = isoValue(value);
+        if (canonical !== display && !nativeBinding) canonical.value = isoValue(value);
         chooser.value = isoValue(value);
-        notify(oldDate);
+        notify(oldDate, value);
+      } else if (nativeBinding) {
+        const previous = parseCurrent();
+        if (!display.value.trim()) lastGoodValue = '';
+        const restored = lastGoodValue ? parse(lastGoodValue, format) : null;
+        display.value = restored?.isValid() ? lastGoodValue : '';
+        chooser.value = restored?.isValid() ? isoValue(restored) : '';
+        notify(previous, restored?.isValid() ? restored : null);
       }
     });
     root.addEventListener("click", (event) => {

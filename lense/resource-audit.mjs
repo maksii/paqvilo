@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isSourceFile } from './portal-model.mjs';
+import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
 
@@ -102,6 +102,11 @@ export function auditResources(model, site) {
 
   for (const file of files) {
     const rel = relative(file);
+    if (isEnhancedSiteMetadata(rel)) {
+      const raw = read(file);
+      add(file, null, { kind: 'site-metadata', empty: raw === null ? null : !raw.trim(), status: 'deployment', reason: 'Enhanced site and language configuration document; the overlay cannot apply its fields. This file classification does not attest field parsing or runtime behavior.' });
+      continue;
+    }
     if (CODE_FILE.test(file)) {
       const text = read(file);
       add(file, null, { language: /\.[cm]?js$/i.test(file) ? 'javascript' : /\.css$/i.test(file) ? 'css' : 'html', empty: text === null ? null : !text.trim() });

@@ -7,6 +7,30 @@ import { DataStore } from '../lib/data.mjs';
 import { runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows, assertOperationRole, operationHandlers } from '../lib/exported-operations.mjs';
 import { validatePack } from '../lib/preset-registry.mjs';
 import { createSimulator } from '../server.mjs';
+import {isExactNumeric,stringifyExactJson} from '../lib/exact-numeric.mjs';
+
+test('imported flow JSON retains authored unsafe numeric literals before local expression execution',async t=>{
+ const {dir}=await source(t,'');await fs.mkdir(path.join(dir,'Workflows'));
+ await fs.writeFile(path.join(dir,'Workflows/numeric.json.data.xml'),`<Workflow WorkflowId="{${role}}"/>`);
+ const raw='{"properties":{"definition":{"triggers":{"manual":{"type":"Request","kind":"powerpages"}},"actions":{"integer":{"type":"Compose","inputs":9007199254740993},"decimal":{"type":"Compose","runAfter":{"integer":["Succeeded"]},"inputs":99999999999.1234567891},"reply":{"type":"Response","kind":"powerpages","runAfter":{"decimal":["Succeeded"]},"inputs":{"statusCode":200,"body":{"integer":"@string(outputs(\'integer\'))","decimal":"@outputs(\'decimal\')"}}}}}}}';
+ await fs.writeFile(path.join(dir,'Workflows/numeric.json'),raw);
+ const workflows=await importOperationWorkflows([{dir}]),flow=workflows.get(role);
+ assert.equal(flow.definition.properties.definition.actions.integer.inputs.value,'9007199254740993');
+ const result=runExportedCloudFlow({record:{processId:role},workflows,input:{}});
+ assert.equal(result.body.integer,'9007199254740993');assert.equal(isExactNumeric(result.body.decimal),true);
+ assert.match(stringifyExactJson(result.body),/"decimal":99999999999\.1234567891/);
+});
+
+test('exported server connector writes exact raw literals and returns raw-number JSON without internal tags',async t=>{
+ const {record}=await source(t,"function post(){return Server.Connector.Dataverse.CreateRecord('meters',Server.Context.Body);}function get(){return Server.Connector.Dataverse.RetrieveRecord('meters',Server.Context.QueryParameters.id,'$select=quantity,measure');}");
+ const data=new DataStore({state:{version:1,mappings:{meter:{entitySet:'meters',idColumn:'meterid',columns:{quantity:{type:'number',dataverseType:'bigint'},measure:{type:'number',dataverseType:'decimal',precision:10}}}},tables:{meter:[]},permissions:[{entity:'meter',scope:'global',operations:['create','read'],roles:['Editor']}],settings:{permissionMode:'enforce'},plugins:[]}});
+ const context={record,portal:{},store:data,identity:{id:'local',roles:['Editor']}};
+ const created=JSON.parse(await runExportedServerLogic({...context,method:'POST',body:'{"quantity":9007199254740993,"measure":99999999999.1234567891}'}));
+ assert.equal(created.StatusCode,201);assert.match(created.Body,/"quantity":9007199254740993/);assert.match(created.Body,/"measure":99999999999\.1234567891/);assert.doesNotMatch(created.Body,/DataverseNumeric|numericType/);
+ const id=JSON.parse(created.Body).meterid;assert.equal(data.get('meters',id,context.identity).quantity.value,'9007199254740993');
+ const read=JSON.parse(await runExportedServerLogic({...context,method:'GET',query:{id}}));assert.equal(read.StatusCode,200);assert.match(read.Body,/"quantity":9007199254740993/);assert.match(read.Body,/"measure":99999999999\.1234567891/);assert.doesNotMatch(read.Body,/DataverseNumeric|numericType/);
+ const forged=JSON.parse(await runExportedServerLogic({...context,method:'POST',body:'{"quantity":{"$type":"DataverseNumeric","numericType":"Int64","value":"1"}}'}));assert.equal(forged.StatusCode,400);assert.equal(data.rows('meter',context.identity).length,1);
+});
 
 const role = 'd0000000-0000-4000-8000-000000000001';
 async function source(t, code) {
@@ -75,7 +99,7 @@ test('operation registrations are explicit, validated and ambiguous names fail c
   assert.throws(() => validatePack(pack), /map exported names to functions/);
 });
 
-test('flow definition is selected by exported process id and evaluates only the supported request/response contract', async t => {
+test('flow definition is selected by exported process id and unknown connectors require an explicit action choice', async t => {
   const {dir} = await source(t, '');
   await fs.mkdir(path.join(dir,'Workflows'));
   const definition = {properties:{definition:{triggers:{manual:{type:'Request',kind:'powerpages',inputs:{schema:{properties:{City:{type:'string'}},required:['City']}}}},actions:{reply:{type:'Response',kind:'powerpages',inputs:{statusCode:200,body:{City:"@triggerBody()?['City']"}}}}}}};
@@ -95,7 +119,7 @@ test('flow definition is selected by exported process id and evaluates only the 
   assert.throws(() => runExportedCloudFlow({...context,input:{items:[{count:2,choice:'C'}]}}), /allowed|enum/);
   definition.properties.definition.actions.connector={type:'OpenApiConnection'};
   workflows.get(role).definition=definition;
-  assert.throws(() => runExportedCloudFlow(context), /Request and one Response/);
+  assert.throws(() => runExportedCloudFlow(context), /explicit action mock or disable/);
   assert.throws(() => runExportedCloudFlow({...context,record:{processId:'missing'}}), /no JSON definition/);
 });
 
@@ -131,4 +155,19 @@ test('registered HTTP operations enforce exported roles and CSRF and server logi
   assert.equal((await post(logic,authorized)).status,403);assert.equal((await post(cloud,authorized)).status,403);
   assert.equal((await configure({mode:'live',live:{origin:'https://invalid.example'}})).status,200);
   assert.equal((await fetch(app.url+logic)).status,501);assert.deepEqual(calls,[]);
+});
+
+test('Imported flow HTTP failure retains completed connector commits and Response headers',async t=>{
+ const {dir}=await source(t,''),flow='d0000000-0000-4000-8000-000000000003',stateFile=path.join(dir,'.paqvilo/state.json');
+ const sources={'website.yml':'adx_websiteid: site\nadx_name: Invented Flow',
+ 'Request.cloudflowconsumer.yml':`adx_cloudflowconsumerid: consumer\nadx_name: Failure request\nadx_processid: ${flow}\nadx_flowapiurl: /_api/cloudflow/v1.0/trigger/${flow}\nadx_cloudflowconsumer_adx_webrole:\n- ${role}`,
+ 'Runner.webrole.yml':`adx_webroleid: ${role}\nadx_name: Runner`,
+ 'pack.mjs':`export default{id:'invented-flow',name:'Invented',description:'Invented',matches:()=>true,presets:()=>({}),flowIdentities:{'${flow}':{userId:'10000000-0000-0000-0000-000000000001',evidence:'Invented backend',grants:[{entity:'widget',operations:['create','read']}]}}};`};
+ for(const[file,value]of Object.entries(sources))await fs.writeFile(path.join(dir,file),value);await fs.mkdir(path.join(dir,'Workflows'));
+ const workflow={properties:{definition:{triggers:{request:{type:'Request',kind:'powerpages'}},actions:{created:{type:'OpenApiConnection',inputs:{host:{apiId:'/apis/shared_commondataserviceforapps',operationId:'CreateRecord'},parameters:{entityName:'widgets','item/title':'Committed before later failure'}}},reply:{type:'If',runAfter:{created:['Succeeded']},expression:"@triggerBody()['ok']",actions:{success:{type:'Response',inputs:{headers:{'x-invented-flow':'preserved'},body:"@body('created')"}}},else:{actions:{failure:{type:'Terminate',inputs:{runStatus:'Failed',runError:{message:'Later action failed'}}}}}}}}}};
+ await fs.writeFile(path.join(dir,'Workflows/flow.json'),JSON.stringify(workflow));await fs.writeFile(path.join(dir,'Workflows/flow.json.data.xml'),`<Workflow WorkflowId="${flow}" Name="Invented flow"/>`);
+ const app=await createSimulator({sourceDir:dir,solutionRoots:[dir],stateFile,port:0,watch:false,dataPacks:[{module:path.join(dir,'pack.mjs')}],initial:{version:1,tables:{widget:[]},mappings:{widget:{entitySet:'widgets',idColumn:'widgetid'}},permissions:[],plugins:[],settings:{permissionMode:'enforce'},simulator:{mode:'local',pageMode:'local',identityScope:'configured',identity:{id:'caller',roles:['Runner'],roleSource:'override'}}}});t.after(()=>app.close());
+ const send=ok=>fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+flow,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:app.state().csrf},body:JSON.stringify({ok})});
+ const rejected=await send(false);assert.equal(rejected.status,400);assert.equal(app.state().data.widget.length,1);assert.equal(JSON.parse(await fs.readFile(stateFile,'utf8')).tables.widget.length,1);
+ const accepted=await send(true);assert.equal(accepted.status,200);assert.equal(accepted.headers.get('x-invented-flow'),'preserved');assert.equal(app.state().data.widget.length,2);
 });

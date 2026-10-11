@@ -20,6 +20,7 @@ export const REQUIRED_RELEASE_FILES = [
   'lense/source-inspection.mjs', 'mirage/lib/code-components.mjs', 'mirage/lib/code-components-client.js',
   'mirage/lib/exported-operations.mjs', 'mirage/lib/exported-operation-worker.mjs',
   'mirage/lib/operation-catalogue.mjs', 'mirage/lib/exported-plugins.mjs', 'mirage/lib/liquid-source.mjs',
+  'mirage/lib/plugin-clr.mjs','mirage/lib/plugin-clr-worker.mjs','mirage/lib/plugin-clr-host.cs','mirage/lib/plugin-async.mjs','mirage/lib/plugin-query.mjs','mirage/lib/plugin-sdk-query.mjs','mirage/lib/plugin-response.mjs','mirage/lib/flow-runtime.mjs','mirage/lib/flow-triggers.mjs','mirage/lib/committed-work.mjs','mirage/lib/local-organization-service.mjs',
   'mirage/lib/bootstrap-plugins-compat.js', 'mirage/lib/datetimepicker-compat.js',
   'mirage/lib/jqueryui-dialog-compat.js', 'mirage/lib/date-format-compat.js',
   'mirage/lib/footer-spacing-compat.js',
@@ -54,7 +55,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

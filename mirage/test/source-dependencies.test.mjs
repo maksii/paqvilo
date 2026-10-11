@@ -67,6 +67,23 @@ test("pages without those source globals do not receive compatibility dependenci
   assert.deepEqual(runtimeDependencyPaths(dependencies), []);
 });
 
+test("dependencies used only by translated page and snippet sources are available on language navigation", async () => {
+  const dependencies = await discoverSourceDependencies({
+    pages: [{ html: "<p>Default</p>", js: "", translations: {
+      other: { html: "<script>$('#notice').dialog();</script>", js: "moment.utc();" },
+    } }],
+    snippets: { Welcome: "Welcome" },
+    snippetTranslations: { other: { Welcome: "<script>$('#date').datetimepicker();</script>" } },
+  });
+  assert.equal(dependencies.jquery, true);
+  assert.equal(dependencies.moment, true);
+  assert.equal(dependencies.jqueryUiDialog, true);
+  assert.equal(dependencies.dateTimePicker, true);
+  assert.deepEqual(runtimeDependencyPaths(dependencies), [
+    "/__sim-static/vendor/moment.min.js", "/__sim-static/vendor/jquery.min.js",
+  ]);
+});
+
 test("runtime dependency tags load before authored inline scripts", () => {
   const html = "<html><head><title>Page</title></head><body><script>window.used = moment.utc();</script></body></html>";
   const injected = injectRuntimeDependencies(html, { jquery: true, moment: true });

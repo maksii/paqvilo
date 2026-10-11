@@ -22,7 +22,7 @@ const setting = (index, name, value) => [
   component(`00000000-0000-0000-0000-00000000010${index}`, 9, name, { value, source: 0 }),
 ];
 
-async function start(t, files, { permissions, contactRoles }) {
+async function start(t, files, { permissions, contactRoles, dataModel }) {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-site-tables-"));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
   for (const [file, content] of Object.entries(files)) {
@@ -31,6 +31,7 @@ async function start(t, files, { permissions, contactRoles }) {
   }
   const app = await createSimulator({
     sourceDir: directory,
+    dataModel,
     watch: false,
     initial: {
       mappings: { contact: { entitySet: "contacts", idColumn: "contactid", nameColumn: "fullname" } },
@@ -141,6 +142,34 @@ test("standard model: contacts expand their web roles through adx_webrole_contac
   const roles = await get(`/_api/contacts(${ME})?$select=contactid&$expand=adx_webrole_contact($select=adx_name)`);
   assert.equal(roles.status, 200);
   assert.deepEqual(roles.body.adx_webrole_contact.map((row) => row.adx_name), ["Readers"]);
+});
+
+test("classic PAC YAML with an explicit enhanced model supplies component rows and role memberships", async (t) => {
+  const { get } = await start(t, {
+    "website.yml": "adx_websiteid: site\nadx_name: Configured enhanced\n",
+    "Home.webpage.yml": "adx_webpageid: 00000000-0000-0000-0000-000000000001\nadx_name: Home\nadx_partialurl: /\n",
+    "webrole.yml": `- adx_webroleid: ${PUBLISHER}\n  adx_name: Publishers\n  adx_description: Source description\n`,
+    "sitesetting.yml": [
+      ["Webapi/contact/enabled", "true"], ["Webapi/contact/fields", "fullname"],
+      ["Webapi/powerpagecomponent/enabled", "true"], ["Webapi/powerpagecomponent/fields", "name,content,powerpagecomponenttype"],
+    ].map(([name, value], i) => `- adx_sitesettingid: 00000000-0000-0000-0000-00000000010${i}\n  adx_name: ${name}\n  adx_value: '${value}'`).join("\n"),
+    "unrecognized.yml": "id: unknown\nname: Unknown metadata\n",
+  }, {
+    dataModel: "enhanced",
+    permissions: [contactSelf, { id: "components", entity: "powerpagecomponent", scope: "global", roles: ["Authenticated Users"], operations: ["read"] }],
+    contactRoles: [{ contactId: ME, roleId: PUBLISHER }],
+  });
+  const role = await get(`/_api/powerpagecomponents(${PUBLISHER})?$select=name,content,powerpagecomponenttype`);
+  assert.equal(role.status, 200);
+  assert.equal(role.body.powerpagecomponenttype, 11);
+  assert.equal(JSON.parse(role.body.content).adx_description, "Source description");
+  const components = await get("/_api/powerpagecomponents?$select=name,powerpagecomponenttype");
+  assert.equal(components.status, 200);
+  assert.equal(components.body.value.length, 6, "website and unknown YAML kinds are not site component rows");
+  assert.ok(components.body.value.some(row => row.name === "Home" && row.powerpagecomponenttype === 2));
+  const membership = await get(`/_api/contacts(${ME})?$select=contactid&$expand=powerpagecomponent_mspp_webrole_contact($select=name)`);
+  assert.equal(membership.status, 200);
+  assert.deepEqual(membership.body.powerpagecomponent_mspp_webrole_contact.map(row => row.name), ["Publishers"]);
 });
 
 test("Liquid FetchXML reads the site tables before any Web API request", async (t) => {

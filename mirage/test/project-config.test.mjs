@@ -72,6 +72,8 @@ test("project inspect CLI reports every configured portal", async (t) => {
   const result = JSON.parse(output);
   assert.deepEqual(result.portals.map((portal) => portal.id), ["portal-1", "portal-2"]);
   assert.equal(result.portals[0].solutionMetadata.sources.length, 2);
+  assert.ok(result.portals.every((portal) => portal.liquidSyntax.sourceCount >= 0));
+  assert.ok(result.portals.every((portal) => portal.liquidSyntax.sourceParsePassed === portal.liquidSyntax.sourceCount));
 });
 
 test("project serve CLI starts isolated loopback servers for every portal", async (t) => {
@@ -282,6 +284,9 @@ test("portals record observed site behaviour with its evidence; observations are
   assert.deepEqual(observedConfig({ anonymousDataAccess: "blocked", loginPath: "/SignIn", evidence: "e" }), { loginPath: "/SignIn", anonymousDataAccess: "blocked", evidence: "e" });
   assert.throws(() => observedConfig({ webApiInnerError: "some", evidence: "e" }), /observed\.webApiInnerError must be all-errors or dataverse-errors/);
   assert.throws(() => observedConfig({ anonymousDataAccess: "open", evidence: "e" }), /observed\.anonymousDataAccess must be allowed or blocked/);
+  assert.deepEqual(observedConfig({ redirect301: "temporary", evidence: "fixture/redirect-wire.json" }), { redirect301: "temporary", evidence: "fixture/redirect-wire.json" });
+  assert.throws(() => observedConfig({ redirect301: "permanent", evidence: "e" }), /observed\.redirect301 must be configured or temporary/);
+  assert.throws(() => observedConfig({ redirect301: "temporary" }), /observed\.evidence must name the observation behind redirect301/);
   assert.throws(() => observedConfig({ webApiInnerError: "all-errors" }), /observed\.evidence must name the observation behind webApiInnerError/);
   // The Web API wildcard exemption (Webapi/<table>/fields = "*") is an observation too.
   assert.deepEqual(observedConfig({ webApiWildcard: "exempt", evidence: "fixture/reports/wildcard.json" }), { webApiWildcard: "exempt", evidence: "fixture/reports/wildcard.json" });
@@ -294,7 +299,23 @@ test("portals record observed site behaviour with its evidence; observations are
     { headers: { page: { "x-content-type-options": "nosniff" }, webFile: { "access-control-allow-origin": "https://app.powerbi.com" } }, evidence: "wave3/report.json" },
   );
   assert.equal(observedConfig({ headers: { page: {} }, evidence: "e" }), null);
-  assert.throws(() => observedConfig({ headers: { api: { a: "b" } }, evidence: "e" }), /observed\.headers\.api must be page or webFile/);
+  assert.throws(() => observedConfig({ headers: { api: { a: "b" } }, evidence: "e" }), /observed\.headers\.api must be page, webFile or webApi/);
+  assert.deepEqual(observedConfig({ headers: { webApi: { "Cache-Control": "no-cache, no-store, must-revalidate" } }, webApiCdsErrorMessage: "Common Data Service error occurred.", webApiAntiForgery: "decryption-401", webApiReferenceErrors: "unexpected", evidence: "loopback-fixture" }), { headers: { webApi: { "cache-control": "no-cache, no-store, must-revalidate" } }, webApiCdsErrorMessage: "Common Data Service error occurred.", webApiAntiForgery: "decryption-401", webApiReferenceErrors: "unexpected", evidence: "loopback-fixture" });
+  assert.throws(() => observedConfig({ webApiAntiForgery: "any", evidence: "e" }), /observed.webApiAntiForgery/);
+  assert.throws(() => observedConfig({ webApiReferenceErrors: "unexpected" }), /evidence/);
+  assert.throws(() => observedConfig({ webApiInvalidDate: "crm-minimum" }), /evidence/);
+  assert.equal(observedConfig({ webApiInvalidDate: "crm-minimum", evidence: "loopback" }).webApiInvalidDate,"crm-minimum");
+  assert.throws(() => observedConfig({ liquidDecimalStringMultiply: "convert" }), /evidence/);
+  assert.equal(observedConfig({ liquidDecimalStringMultiply: "convert", evidence: "loopback/math.json" }).liquidDecimalStringMultiply, "convert");
+  assert.throws(() => observedConfig({ liquidDecimalStringMultiply: "coerce", evidence: "loopback" }), /liquidDecimalStringMultiply must be dotliquid or convert/);
+  assert.throws(() => observedConfig({ liquidTimesDispatch: "observed" }), /evidence/);
+  assert.equal(observedConfig({ liquidTimesDispatch: "observed", evidence: "loopback/dispatch.json" }).liquidTimesDispatch, "observed");
+  assert.throws(() => observedConfig({ liquidTimesDispatch: "any", evidence: "loopback" }), /liquidTimesDispatch must be dotliquid or observed/);
+  for (const [key, value] of Object.entries({ siteMarkerRedirect:"null-reference", webTemplateResponseNewline:"crlf", webFileMimeCharset:"source", liquidFilterErrors:"observed", liquidFilterRegistration:"observed", liquidServiceTags:"observed", liquidObjectCompatibility:"observed", liquidHtmlVoidSerialization:"html", liquidHtmlSafeInput:"observed", liquidPathAndQueryFragment:"query", liquidRuntimeCompatibility:"observed", liquidEditableMetadata:"observed", liquidMissingData:"empty" })) {
+    assert.throws(() => observedConfig({ [key]:value }), /evidence/);
+    assert.equal(observedConfig({ [key]:value, evidence:"loopback/observations.json" })[key], value);
+    assert.throws(() => observedConfig({ [key]:"unverified", evidence:"loopback" }), new RegExp(key));
+  }
   assert.throws(() => observedConfig({ headers: { page: { "bad name": "x" } }, evidence: "e" }), /must be a header name with a one-line value/);
   assert.throws(() => observedConfig({ headers: { page: { "x-a": "line\nbreak" } }, evidence: "e" }), /must be a header name with a one-line value/);
   assert.throws(() => observedConfig({ headers: { page: { "x-a": "b" } } }), /observed\.evidence must name the observation behind headers/);

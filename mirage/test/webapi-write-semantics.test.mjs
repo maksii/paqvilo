@@ -237,3 +237,16 @@ test("choice writes use the exported options and a status reason of the record's
   assert.equal(rows("account")[0].statuscode, 2);
   assert.equal((await json(`/_api/accounts(${G(1)})`, { method: "PATCH", body: { statecode: 0, statuscode: 1, industrycode: 2 } })).status, 204);
 });
+
+test("invalid exported state or status options use the state/status validation contract and preserve the row", async (t) => {
+  const { json, rows } = await start(t);
+  for (const body of [{ statecode: 999 }, { statuscode: 999 }, { statecode: 999, statuscode: 999 }]) {
+    const before = rows("account");
+    const response = await json(`/_api/accounts(${G(1)})`, { method: "PATCH", body });
+    assert.equal(response.status, 400);
+    assert.equal(response.body.error.code, "9004010D");
+    assert.equal(response.body.error.innererror.code, "0x80048408");
+    assert.equal(response.body.error.innererror.message, "State code is invalid or state code is valid but status code is invalid for a specified state code.");
+    assert.deepEqual(rows("account"), before, "failed state/status input must not change rows or versions");
+  }
+});

@@ -764,7 +764,7 @@ test("submitted steps follow the session or the page's stepid: saved steps reope
 test("Authentication Required refuses an anonymous submission before any write", async () => {
   const options = await setupUnits();
   options.portal.advancedForms.push({ id: "secure", metadata: { adx_authenticationrequired: true } });
-  options.schemas.secure = { initialStepId: "first", steps: [options.schemas.wizard.steps[0]] };
+  options.schemas.secure = { initialStepId: "first", steps: [{ ...options.schemas.wizard.steps[0], nextStepId: null }] };
   const before = options.store.snapshot();
   await assert.rejects(
     submitPortalForm("webform", "secure", { values: { fullname: "Anonymous" } }, { ...options, identity: anonymous, owner: "visitor:44444444-4444-4444-8444-444444444444" }),

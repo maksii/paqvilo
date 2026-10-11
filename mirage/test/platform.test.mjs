@@ -162,7 +162,7 @@ test("editable hidden lookups retain native navigation bindings without reading 
   const field = formConfig(html).fields.find((candidate) => candidate.name === "contactid");
   assert.deepEqual(field.bindings, { contact: { navigation: "contactnav", entitySet: "contacts" } });
   assert.match(html, /<input name="[^"]*\$contactid" type="hidden" id="contactid" value="">/);
-  assert.match(html, /id="contactid_entityname" value="contact"/);
+  assert.match(html, /id="contactid_entityname" value=""/, "blank lookup preserves its navigation mapping without inventing a selected entity");
 });
 
 test("rich text adapters fetch source-bound configuration URLs and reject malformed source JSON", async (t) => {
@@ -1231,7 +1231,7 @@ test("advanced forms follow a start step that another advanced form's export own
   });
   assert.match(html, /<div id="WebFormControl_person" data-pp-native-form>/);
   assert.match(html, /<label for="name" id="name_label" class="field-label">Product name<\/label>/);
-  assert.deepEqual(diagnostics.map((entry) => [entry.code, entry.step]), [["COMPONENT_SCHEMA_REQUIRED", "Identifier"]]);
+  assert.deepEqual(diagnostics.map((entry) => [entry.code, entry.step]), [["ADVANCEDFORM_SHARED_STEP_REFERENCE", "shared"], ["COMPONENT_SCHEMA_REQUIRED", "Identifier"]]);
 });
 
 test("list and grid labels use the request's website language, then the website default", async () => {

@@ -1,0 +1,24 @@
+# Compatibility baseline
+
+This checkpoint provides working ordinary flows for Lense and Mirage before the broader compatibility investigation continues. The tests use invented schemas, exported fixture structures and loopback services. Online observations are separate evidence; passing these tests does not establish complete Power Pages or Dataverse parity.
+
+The Windows qualification on 2026-10-11 ran `npm run validate` with the supplied Microsoft SDK reference: **1,552 passed, zero failed, four skipped**. Toolkit, Mirage and Lense source fingerprints were unchanged during that run. The staged-source commit hook independently validates the committed tree and the installed package.
+
+| Stream | Working positive flow | Regression coverage | Further parity work |
+| --- | --- | --- | --- |
+| Liquid | Render source templates, includes, conditions, loops, supported filters and source-backed objects | `mirage/test/liquid*.test.mjs`; Liquid browser scenarios | Remaining hosted differences, observed object/accessor behavior and error presentation |
+| Forms and data | Create and edit a row, show saved values in details and lists, then search | `mirage/test-browser/input-roundtrip.test.mjs`; form submission and descriptor tests | Full field/format matrix, multistep paths, conditional rules and hosted validation messages |
+| Web API and search | Create/update/read typed source fields; filter and search saved rows | `mirage/test/webapi-input-roundtrip.test.mjs`; `odata-parity.test.mjs` | Complete hosted submission matrix and exact response envelopes |
+| Default templates | Import page/template references, render a basic form inside the platform shell, load local compatibility assets | `mirage/test-browser/platform-shell.test.mjs`; `local-compatibility.test.mjs`; `page-template-responses.test.mjs` | Complete exported Microsoft template dependency and hosted rendering comparisons |
+| Configuration objects | Import standard/enhanced objects and render source-backed links/navigation, page templates, redirects and files | `mirage/test/navigation-objects.test.mjs`; platform/import/schema/redirect tests | Complete child/settings variations and hosted behavior for every object family |
+| Permissions and roles | Combine role grants for ordinary row access; apply column and page restrictions independently | `mirage/test/permission-role-layering.test.mjs`; Web API policy tests | Complex hosted hierarchy/query transformation and duplicated-link behavior |
+| PCF | Load an exported form-bound control, edit a value, save through the form and inspect/update its lifecycle locally | `mirage/test-browser/native-pcf.test.mjs`; `pcf-debug-date.test.mjs`; code component tests | Remaining hosted formats/context APIs, null behavior and advanced debugging |
+| Plugins | Run a trusted original CLR plugin during CRUD with typed SDK values, images and service calls; select local mock/disabled behavior in administration | `mirage/test/plugin-clr.test.mjs`; typed SDK, response, HTTP fault and admin tests; `test-browser/exported-plugins.test.mjs` | Rich native parent context, complete original input/numeric/Money comparisons, conventional/custom Execute extension, async retry and remaining SDK types |
+| Power Automate | Import a supported basic flow, execute conditions/variables/Dataverse connector CRUD, and process a supported activated local row trigger | `mirage/test/flow-runtime.test.mjs`; `flow-triggers.test.mjs`; exported operation tests | Native run/connection evidence, remaining expressions/defaults, scheduling and complex connectors |
+| Lense integration | Resolve exported sources, apply eligible page/resource edits in a dedicated browser and report resources requiring deployment | `test/rewrite-safety.test.mjs`; metadata/resource tests; toolkit browser acceptance | Intended hosted page/actor alignment and application proof for every exported resource |
+
+`native` in a local test filename identifies the local form/protocol route being exercised; it does not mean that the test contacted an online portal. CLR tests on Windows compile invented original plugins against the supplied Microsoft SDK. CI installs the pinned SDK reference for the required CLR job.
+
+Private portal exports, observation receipts, exact fixture identities and the detailed restart checklist remain outside the distributable toolkit. The active investigation report is the ignored project checkpoint, `.paqvilo/compatibility-resume.md`. Retained fixture records are tracked there and must not be replayed as new invocations.
+
+Continue complete parity work from that checkpoint after this baseline is committed and pushed. Use [Liquid parity](liquid-parity.md), [data parity](dataverse-parity.md), [objects](object-parity.md), [plugins](dataverse-plugins.md), [flows](operations.md) and [PCF](code-components.md) for each runtime's supported contract and current limits.

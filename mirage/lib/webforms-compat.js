@@ -324,7 +324,10 @@
     return true;
   };
   w.__doPostBack = function (eventTarget, eventArgument) {
-    const button = [...document.querySelectorAll("input, button")].find((node) => node.name === eventTarget || node.id === String(eventTarget).split("$").pop());
+    const buttons = [...document.querySelectorAll("input, button")];
+    // Multiple native controls share button IDs; the full WebForms name identifies
+    // the component that owns this postback.
+    const button = buttons.find((node) => node.name === eventTarget) ?? buttons.find((node) => node.id === String(eventTarget).split("$").pop());
     const form = button?.closest("[data-pp-native-form]") ?? findFormFromTarget(eventTarget);
     if (!form) {
       // A postback without a rendered native form (for example an authored
@@ -333,8 +336,8 @@
       location.reload();
       return;
     }
-    const action = /PreviousButton$/.test(String(eventTarget)) ? "previous" : /DeleteButton$/.test(String(eventTarget)) ? "delete" : "submit";
-    submitNativeForm(form, action, button, eventArgument);
+    const action = /PreviousButton$/.test(String(eventTarget)) ? "previous" : /DeleteButton$/.test(String(eventTarget)) ? "delete" : /DeactivateButton$/.test(String(eventTarget)) ? "deactivate" : /ActivateButton$/.test(String(eventTarget)) ? "activate" : "submit";
+    submitNativeForm(form, action, button, eventArgument, String(eventTarget));
   };
   function findFormFromTarget(eventTarget) {
     const control = /\$(EntityFormControl_[0-9a-f]{32}|WebFormControl_[0-9a-f]{32}|EntityFormControl|WebFormControl)\$/i.exec(String(eventTarget))?.[1];
@@ -389,9 +392,17 @@
     const element = document.getElementById(field.id);
     switch (field.control) {
       case "lookup": {
-        const value = element?.value ?? "";
-        const entity = document.getElementById(`${field.id}_entityname`)?.value || (Object.keys(field.bindings ?? {}).length === 1 ? Object.keys(field.bindings)[0] : "");
-        return { lookup: true, value, entity };
+        const value = String(element?.value ?? "").trim();
+        // A native dropdown stores the reference in its selected option rather
+        // than the modal lookup's hidden id/entity-name pair.
+        const entity = element?.tagName === "SELECT"
+          ? element.selectedOptions[0]?.dataset.entity || (Object.keys(field.bindings ?? {}).length === 1 ? Object.keys(field.bindings)[0] : "")
+          : document.getElementById(`${field.id}_entityname`)?.value || "";
+        // Native hidden lookups contribute an empty reference when the record
+        // identity cannot be parsed or its entity name is absent. On an edit
+        // that clears the reference; it does not become a malformed API bind.
+        const valid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(value);
+        return { lookup: true, value: valid && entity ? value : "", entity };
       }
       case "checkbox":
         return element ? element.checked : null;
@@ -409,8 +420,13 @@
         return element?.value === "" || element == null ? null : Number(element.value);
       case "multiselect":
         return element?.value ? element.value : null;
-      case "number":
-        return element?.value === "" || element == null ? null : Number(String(element.value).replace(/,/g, ""));
+      case "number": {
+        if (element?.value === "" || element == null) return null;
+        const number = Number(String(element.value).replace(/,/g, ""));
+        // JSON.stringify(NaN) becomes null; retain the invalid textbox instead
+        // so the native server format validator rejects it without a write.
+        return Number.isFinite(number) ? number : element.value;
+      }
       case "datetime":
         return element?.value ? element.value : null;
       case "richtext":
@@ -437,6 +453,33 @@
     if (typeof w.scrollTo === "function") w.scrollTo(0, 0);
   }
   const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+  function showValidationErrors(form, errors) {
+    const summary = form.querySelector('.validation-summary');
+    if (!summary) { showError(form, errors.map((error) => error.message).join(' ')); return; }
+    summary.replaceChildren();
+    const heading = document.createElement('h2');
+    heading.className = 'validation-header';
+    heading.textContent = configOf(form)?.summaryHeader || 'The form could not be submitted for the following reasons:';
+    summary.append(heading);
+    const list = document.createElement('ul');
+    for (const error of errors) {
+      for (const validator of w.Page_Validators ?? []) {
+        if (validator.controltovalidate === error.field && (validator.errormessage === error.message || validator.errormessage?.includes(escapeHtml(error.message)))) {
+          validator.isvalid = false;
+          w.ValidatorUpdateDisplay(validator);
+        }
+      }
+      const item = document.createElement('li'), link = document.createElement('a');
+      link.href = '#' + error.field + '_label';
+      link.textContent = error.message;
+      link.addEventListener('click', (event) => { event.preventDefault(); w.scrollToAndFocus?.(error.field + '_label', error.field); });
+      item.append(link); list.append(item);
+    }
+    summary.append(list);
+    summary.style.display = '';
+    w.ValidatorUpdateIsValid();
+    list.querySelector('a')?.focus();
+  }
   function showSuccess(form, message, hide) {
     let panel = form.querySelector("#MessagePanel");
     if (!panel) {
@@ -451,12 +494,40 @@
     panel.style.display = "";
     if (hide) for (const node of form.querySelectorAll("#EntityFormPanel, #WebFormPanel")) node.style.display = "none";
   }
-  async function submitNativeForm(form, action, button) {
+  async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
     try {
+      if (config.transport === 'postback') {
+        const outer = serverForm(form);
+        if (!outer) throw new Error('Native postback requires its page form.');
+        const target = postbackTarget(form);
+        if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
+        if ([...form.querySelectorAll('input[type="file"]')].some(input => input.files?.length)) throw new Error('Native URLencoded file submission is not supported.');
+        const tokenValue = await new Promise(resolve => {
+          const deferred = w.shell?.getTokenDeferred?.();
+          if (deferred?.done) deferred.done(resolve);
+          else if (deferred?.then) deferred.then(resolve);
+          else resolve(document.querySelector('input[name="__RequestVerificationToken"]')?.value);
+        });
+        const hidden = (name, value) => {
+          const existing = [...outer.elements].filter(node => node.name === name);
+          if (existing.length > 1) throw new Error('Ambiguous native postback control.');
+          const input = existing[0] ?? document.createElement('input');
+          input.type = 'hidden'; input.name = name; input.value = value ?? '';
+          if (!existing.length) outer.append(input);
+        };
+        hidden('__EVENTTARGET', eventTarget || button?.name);
+        hidden('__EVENTARGUMENT', eventArgument);
+        hidden('__RequestVerificationToken', tokenValue);
+        outer.method = 'POST';
+        outer.enctype = 'application/x-www-form-urlencoded';
+        outer.action = target.href;
+        HTMLFormElement.prototype.submit.call(outer);
+        return;
+      }
       const values = {};
-      if (action !== "previous" && action !== "delete")
+      if (action === "submit")
         for (const field of config.fields ?? []) {
           if (field.readOnly || controlDisabled(field)) continue;
           const value = controlValue(field);
@@ -474,7 +545,7 @@
           values[field.name] = value;
         }
       const attachments = [];
-      for (const input of form.querySelectorAll('input[type="file"][data-pp-attach-file]')) for (const file of input.files ?? []) attachments.push(await readFile(file));
+      if (action === 'submit') for (const input of form.querySelectorAll('input[type="file"][data-pp-attach-file]')) for (const file of input.files ?? []) attachments.push(await readFile(file));
       const tokenValue = await new Promise((resolve) => {
         const deferred = w.shell?.getTokenDeferred?.();
         if (deferred?.done) deferred.done(resolve);
@@ -488,6 +559,7 @@
           recordId: form.querySelector("input[type=hidden][id$='_EntityID']")?.value || null,
           stepId: config.stepId ?? null,
           action,
+          ...(button?.dataset?.ppActionIndex != null ? { actionIndex: Number(button.dataset.ppActionIndex) } : {}),
           values,
           attachments,
           query: Object.fromEntries(new URLSearchParams(location.search)),
@@ -495,7 +567,14 @@
         }),
       });
       const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error?.message || result.Message || result.message || "Save failed");
+      if (!response.ok) {
+        if (Array.isArray(result.error?.validationErrors) && result.error.validationErrors.length) {
+          restoreButtons();
+          showValidationErrors(form, result.error.validationErrors);
+          return;
+        }
+        throw new Error(result.error?.message || result.Message || result.message || "Save failed");
+      }
       const outcome = result.outcome ?? {};
       const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
       if (idInput && result.recordId) idInput.value = result.recordId;

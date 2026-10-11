@@ -16,7 +16,9 @@ test('catalogue discovery covers consumers and unlinked solution workflows witho
   assert.equal(items[0].mode,'placeholder');
   assert.equal(items[1].mode,'placeholder');
   assert.equal(items[2].path,null);
-  assert.equal(items[2].configurable,false);
+  assert.equal(items[2].configurable,true);
+  assert.equal(items[2].mode,'placeholder');
+  assert.equal(items[2].contract.supported,false);
   assert.throws(()=>validateOperationOverrides({'server-logic:logic':{mode:'eval'}}),/mode/);
   assert.throws(()=>validateOperationOverrides({'server-logic:logic':{mode:'mock',status:201.5}}),/integer/);
   assert.throws(()=>validateOperationOverrides({'server-logic:logic':{mode:'mock',url:'https://invalid.example'}}),/Unknown/);
@@ -60,9 +62,30 @@ test('discovered placeholders, automatic declarative flows and editable response
   assert.deepEqual(JSON.parse((await (await fetch(app.url+logic.path)).json()).data),{source:true});
   assert.equal((await admin(route,'DELETE')).status,200);
   assert.equal((await fetch(app.url+logic.path)).status,501);
-  assert.equal((await admin('/operations/'+encodeURIComponent('cloud-flow:'+standalone),'PATCH',{mode:'mock'})).status,409);
+  assert.equal((await admin('/operations/'+encodeURIComponent('cloud-flow:'+standalone),'PATCH',{mode:'mock'})).status,200);
+  const unlinked=(await (await admin('/operations')).json()).items.find(item=>item.processId===standalone);
+  assert.equal(unlinked.mode,'mock');
+  assert.equal(unlinked.path,null);
+  assert.notEqual((await fetch(app.url+'/_api/cloudflow/v1.0/trigger/'+standalone,{method:'POST',headers:{'content-type':'application/json',__RequestVerificationToken:csrf},body:'{}'})).status,200);
   assert.equal((await admin(route,'PATCH',{mode:'handler'})).status,409);
   assert.equal((await admin('/config','PATCH',{identity:{id:'person',roles:[],roleSource:'override'}})).status,200);
   assert.equal((await trigger({Message:'Blocked'})).status,403);
   assert.equal((await fetch(app.url+logic.path)).status,403);
+  assert.equal((await admin('/operations/'+encodeURIComponent(echo.key),'PATCH',{mode:'mock',body:{secret:true}})).status,200);
+  assert.equal((await trigger({Message:'Still blocked'})).status,403);
+});
+
+test('unlinked Request configuration does not invent an endpoint; activated Dataverse sources require a backend profile',()=>{
+  const request={file:'/invented-request.json',active:true,definition:{properties:{definition:{triggers:{request:{type:'Request',kind:'powerpages',inputs:{schema:{type:'object'}}}},actions:{response:{type:'Response',kind:'powerpages',inputs:{statusCode:200,body:'owned'}}}}}}};
+  const automatic={file:'/invented-row.json',active:true,definition:{properties:{definition:{triggers:{row:{type:'OpenApiConnectionWebhook',inputs:{host:{apiId:'/providers/Microsoft.PowerApps/apis/shared_commondataserviceforapps',operationId:'SubscribeWebhookTrigger'},parameters:{'subscriptionRequest/entityname':'widget','subscriptionRequest/message':4,'subscriptionRequest/scope':4,'subscriptionRequest/filteringattributes':''}}}},actions:{message:{type:'Compose',inputs:"@triggerBody()?['SdkMessage']"}}}}}};
+  const catalogue=(workflow,handlers)=>operationCatalogue({portal:{},workflows:new Map([[standalone,workflow]]),handlers})[0];
+  const sourceOnly=catalogue(request);
+  assert.equal(sourceOnly.configurable,true);assert.equal(sourceOnly.path,null);assert.equal(sourceOnly.mode,'placeholder');
+  const mocked=operationCatalogue({portal:{},workflows:new Map([[standalone,request]]),overrides:{['cloud-flow:'+standalone]:{mode:'mock'}}})[0];
+  assert.equal(mocked.mode,'mock');assert.equal(mocked.path,null);
+  assert.equal(catalogue(automatic).mode,'placeholder');
+  const handlers={flowIdentities:new Map([[standalone,{userId:'invented-backend'}]])};
+  assert.equal(catalogue(automatic,handlers).mode,'exported');
+  assert.equal(catalogue({...automatic,active:false},handlers).mode,'placeholder');
+  assert.equal(catalogue({...automatic,active:null},handlers).mode,'placeholder');
 });

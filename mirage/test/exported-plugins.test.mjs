@@ -73,7 +73,8 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.deepEqual(step.filteringAttributes, ['fx_title']); assert.equal(step.stageName, 'PreValidation');
   assert.equal(step.unsupported, null);
   assert.match(step.sourceFile, /SdkMessageProcessingSteps/); assert.match(step.typeSourceFile, /PluginAssemblies/); assert.match(step.assemblySourceFile, /PluginAssemblies/);
-  assert.match(metadata.plugins.steps.find(item => item.id === pluginId(9)).unsupported, /Asynchronous/);
+  assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(9)).unsupported, null);
+  assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(9)).mode, 1);
   assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(10)).enabled, false);
   assert.equal(classifySolutionPath('PluginAssemblies/Synthetic/Synthetic.dll'), null);
   const combined = parseSchemaDocument(`<ImportExportXml>${assemblyXml}<SdkMessageProcessingSteps>${pluginStepsXml.join('')}</SdkMessageProcessingSteps></ImportExportXml>`, { kind: 'customizations' });
@@ -108,7 +109,7 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
   events.length = 0;
   await store.update('fx_widgets', created.fx_widgetid, { fx_note: 'Changed note' }, editor);
   assert.deepEqual(events, [], 'unrelated attributes skip filtered Update registrations');
-  assert.ok(diagnostics.some(item => item.code === 'PLUGIN_STEP_UNSUPPORTED' && item.stepId === pluginId(9)));
+  assert.ok(!diagnostics.some(item => item.stepId === pluginId(9)), 'Asynchronous steps are not run or reported as synchronous failures.');
   await store.update('fx_widgets', created.fx_widgetid, { fx_title: 'Valid' }, editor);
   assert.deepEqual(events, ['update10', 'update20'], 'unchanged values still trigger submitted filtering attributes');
   assert.throws(() => pluginHandlers([{ id: 'async', pluginSteps: { [pluginId(3)]: async () => ({}) } }]), /synchronous/);
@@ -151,5 +152,5 @@ test('automatic plugin placeholders and editable mocks are inventoried, CSRF pro
   assert.equal((await admin(route, 'PATCH', { mode: 'mock', body: { target: { fx_title: 'Configured title' } } })).status, 200);
   assert.equal((await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Input' })).status, 204);
   assert.equal(app.store.snapshot().tables.fx_widget[0].fx_title, 'Configured title');
-  assert.equal((await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status, 409);
+  assert.equal((await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status, 200);
 });

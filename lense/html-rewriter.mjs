@@ -274,7 +274,7 @@ function toLines(text) {
   const lines = parts.map((t, i) => {
     starts.push(offset);
     offset += t.length + 1;
-    return { text: t, eol: i < parts.length - 1, logic: false, outputs: [] };
+    return { text: t, eol: i < parts.length - 1, logic: false, outputs: [], protected: [], whitespaceControl: false };
   });
   if (lines.length && !lines.at(-1).eol && lines.at(-1).text === '') lines.pop();
   const lineAt = (at) => {
@@ -287,7 +287,17 @@ function toLines(text) {
     }
     return lo;
   };
+  const protect = (from, to) => {
+    const whitespaceControl = /\{[{%]-|-[}%]\}/.test(normalized.slice(from, to));
+    for (let i = lineAt(from); i <= lineAt(Math.max(from, to - 1)) && i < lines.length; i++) {
+      lines[i].protected.push({ start: Math.max(0, from - starts[i]), end: Math.min(lines[i].text.length, to - starts[i]) });
+      // Trimming can affect literal text on either side of a token. Keep these lines
+      // out of the literal-segment fallback even when the token itself is unchanged.
+      if (whitespaceControl) lines[i].whitespaceControl = true;
+    }
+  };
   const markLogic = (from, to) => {
+    protect(from, to);
     for (let i = lineAt(from); i <= lineAt(Math.max(from, to - 1)) && i < lines.length; i++) lines[i].logic = true;
   };
   // Only direct literal output is patchable. Comment bodies are never printed, capture bodies
@@ -332,7 +342,10 @@ function toLines(text) {
     } else {
       const first = lineAt(start);
       if (first !== lineAt(end - 1) || normalized[start + 2] === '-' || normalized[end - 3] === '-') markLogic(start, end);
-      else lines[first]?.outputs.push({ index: start - starts[first], text: normalized.slice(start, end), expr: normalized.slice(start + 2, end - 2) });
+      else {
+        protect(start, end);
+        lines[first]?.outputs.push({ index: start - starts[first], text: normalized.slice(start, end), expr: normalized.slice(start + 2, end - 2) });
+      }
     }
   }
   if (captureStart != null) markLogic(captureStart, normalized.length);
@@ -488,6 +501,8 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   const added = newLines.slice(hunk.bStart, hunk.bEnd);
   const where = `line ${hunk.bStart + 1}`;
   if (oldCore.some((l) => l.logic) || added.some((l) => l.logic)) {
+    const literal = prepareLiteralSegment(oldCore, added, baseText, otherLanguages);
+    if (literal) return { where, ...literal };
     return { where, error: 'the change touches Liquid tags, a comment/capture body, or multiline/whitespace-controlled output; the portal has to render it' };
   }
 
@@ -515,6 +530,41 @@ function prepareHunk(baseLines, newLines, hunk, baseText, otherLanguages = []) {
   }
   if (sharedLanguageAnchor()) return { where, error: 'the literal anchor also occurs in another localized Value or language source; the portal language cannot be determined safely from this response' };
   return { where, pattern, added, unique };
+}
+
+/** A single changed literal gap may share a line with unchanged server-rendered logic. */
+function prepareLiteralSegment(oldLines, newLines, baseText, otherLanguages) {
+  if (oldLines.length !== 1 || newLines.length !== 1) return null;
+  const [oldLine] = oldLines, [newLine] = newLines;
+  if (oldLine.eol !== newLine.eol || oldLine.whitespaceControl || newLine.whitespaceControl) return null;
+  const split = (line) => {
+    const spans = [];
+    for (const span of [...line.protected].sort((a, b) => a.start - b.start || b.end - a.end)) {
+      const previous = spans.at(-1);
+      if (previous && span.start <= previous.end) previous.end = Math.max(previous.end, span.end);
+      else spans.push({ ...span });
+    }
+    const gaps = [], protectedText = [];
+    let at = 0;
+    for (const span of spans) {
+      gaps.push(line.text.slice(at, span.start));
+      protectedText.push(line.text.slice(span.start, span.end));
+      at = span.end;
+    }
+    gaps.push(line.text.slice(at));
+    return { gaps, protectedText };
+  };
+  const before = split(oldLine), after = split(newLine);
+  if (!before.protectedText.length || JSON.stringify(before.protectedText) !== JSON.stringify(after.protectedText)) return null;
+  const changed = before.gaps.map((text, i) => text !== after.gaps[i] ? i : -1).filter(i => i >= 0);
+  if (changed.length !== 1) return null;
+  const index = changed[0], oldText = before.gaps[index], newText = after.gaps[index];
+  // Do not introduce Liquid or mistake a raw body's literal delimiters for a template gap.
+  if (/\{%|\{\{/.test(oldText) || /\{%|\{\{/.test(newText)) return null;
+  const pattern = { tokens: [{ mark: 'core' }, { lit: oldText }, { mark: 'after' }], literal: [oldText], anchored: !!oldText, weight: oldText.replace(/\s+/g, '').length };
+  if (!pattern.anchored || pattern.weight < 3 || findMatches(pattern, baseText, 2).length !== 1) return null;
+  if (otherLanguages.some(text => findMatches(pattern, text).some(match => standsAlone(pattern, text, match)))) return null;
+  return { pattern, added: [{ text: newText, eol: false, outputs: [] }], unique: true, literalSegment: true };
 }
 
 /** LF-normalised copy of `html` plus a way back to offsets in the original. */
@@ -1008,7 +1058,7 @@ export class HtmlRewriter {
         if (!all.length) continue; // this template/snippet is simply not part of this page
         const found = all.filter((match) => standsAlone(hunk.pattern, text, match));
         if (!found.length) continue;
-        if (!hunk.unique && found.length > 1) {
+        if ((!hunk.unique || hunk.literalSegment) && found.length > 1) {
           notes.push({ rel: patch.rel, reason: `${hunk.where}: the surrounding text occurs ${found.length} times in the page, change not applied` });
           continue;
         }

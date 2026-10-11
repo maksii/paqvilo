@@ -331,6 +331,9 @@ export async function importPortal(
         );
         const attachment =
           /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
+        // Component lifecycle status belongs to the outer envelope. A content
+        // statuscode can instead be the HTTP status of a redirect.
+        const componentStatus = /<statuscode\b[^>]*(?:\/>|>([\s\S]*?)<\/statuscode>)/.exec(xml);
         // The component's site language is the <powerpagesitelanguageid> element outside
         // <content>; it selects language copies as adx_webpagelanguageid and
         // adx_contentsnippetlanguageid do in standard exports.
@@ -355,6 +358,9 @@ export async function importPortal(
           ...content,
           ...languageFields,
           statecode: Number(/<statecode>\s*(\d+)\s*</.exec(xml)?.[1] ?? 0),
+          ...(componentStatus
+            ? { _componentEnvelope: { statuscode: componentStatus[1]?.trim() ? Number(componentStatus[1].trim()) : null } }
+            : {}),
           _file: file,
           _attachment: attachment
             ? {
@@ -462,8 +468,9 @@ export async function importPortal(
               ) ?? (shortKey ? row.id : undefined),
             ),
             name: field(row, "name", ""),
-            // Short-key records of an enhanced data model site are powerpagecomponent rows.
-            ...(shortKey && dataModel === "enhanced" && COMPONENT_TYPE_OF_KIND[kind] ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] } : {}),
+            // PAC can export enhanced sites with adx_ keys. The selected data model,
+            // rather than the YAML key dialect, determines their component tables.
+            ...(dataModel === "enhanced" && COMPONENT_TYPE_OF_KIND[kind] ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] } : {}),
             _file: file,
           };
           records.push(record);
@@ -860,11 +867,17 @@ export async function importPortal(
   // Web link sets: every active set stays reachable by ID (weblinkSets, export order); the
   // name map holds the FIRST active set per exact name, as the platform's name lookup
   // (first active set in retrieval order). Shared names are reported.
-  const weblinkSets = byKind("weblinkset").map((r) => ({
-    id: r.id,
-    name: r.name,
-    weblinks: links.filter((c) => c.setId === r.id && !c.parentId),
-  }));
+  const weblinkSets = await mapLimit(byKind("weblinkset"), IO_CONCURRENCY, async (r) => {
+    const copy = await source(r, "copy.html", "copy");
+    return {
+      id: r.id,
+      name: r.name,
+      title: field(r, "title") == null ? null : localized(field(r, "title"), lcid),
+      copy: copy || (field(r, "copy") == null ? null : copy),
+      metadata: r,
+      weblinks: links.filter((c) => c.setId === r.id && !c.parentId),
+    };
+  });
   const weblinks = {};
   for (const set of weblinkSets) {
     if (!Object.hasOwn(weblinks, set.name)) {
@@ -1191,3 +1204,12 @@ export async function importPortal(
 }
 
 export { field as portalField };
+
+/** Explicit page-template choices select the active source even when both references exist. */
+export function pageTemplateKind(template) {
+  const value = field(template?.metadata ?? {}, "type");
+  if (Number(value) === 756150000) return "rewrite";
+  if (Number(value) === 756150001) return "web-template";
+  // Older or partial exports omit the choice; retain their existing source inference.
+  return template?.webTemplateId ? "web-template" : template?.rewriteUrl ? "rewrite" : null;
+}

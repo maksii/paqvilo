@@ -6,6 +6,7 @@
 // web-api-http-requests-handle-errors) and, where Power Pages passes requests
 // through, the Dataverse Web API. docs/dataverse-parity.md lists the evidence
 // and the remaining open questions for each behaviour.
+import {isExactNumeric} from './exact-numeric.mjs';
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference, parseKeySegment } from "./data.mjs";
@@ -14,8 +15,10 @@ import { prepareODataPage } from "./odata-paging.mjs";
 import { parseExpand, parseSelect } from "./odata-query.mjs";
 import { createWebApiFormatter } from "./webapi-format.mjs";
 import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from "./webapi-policy.mjs";
-import { fieldKind, own } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, own } from "./dataverse-values.mjs";
 import { siteHeaders } from "./response-headers.mjs";
+import { attachODataReaderDetails, odataNumberLexemes, odataRootDetails, observedODataInnerMessage } from "./webapi-error-details.mjs";
+import { appendObservedWebApiErrorTemplate } from "./webapi-error-templates.mjs";
 
 export const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
@@ -38,6 +41,7 @@ const apiHeaders = (portal) => ({
   "x-content-type-options": "nosniff",
   ...siteHeaders(portal ?? {}),
   ...CACHE_HEADERS,
+  ...(portal?.observed?.headers?.webApi ?? {}),
 });
 // Errors raised while Power Pages validates OData query options answer
 // 400 9004010A with a generic message on the platform (unknown columns, invalid
@@ -217,12 +221,12 @@ const ERROR_TYPES = Object.freeze({
  *   which portal scripts read for plugin messages.
  * - "all-errors" (two observed sites send innererror { code, message, type } with every
  *   error): code and message repeat the outer error, as observed; Dataverse failures,
- *   not yet observed in this mode, keep the Dataverse code and message that portal
- *   scripts read. type comes from ERROR_TYPES, or is null for a code without a name.
+ *   keep the Dataverse code and message that portal scripts read without a type.
+ *   Portal exceptions use ERROR_TYPES, or null for a code without a name.
  * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors" } = {}) {
+export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
@@ -230,13 +234,13 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   const everyError = innerErrorScope === "all-errors";
   const respond = (httpStatus, code, message, inner) => {
     const body = { error: { code, message } };
-    if (innerError && everyError)
+    if (innerError && everyError && !details.hideInner)
       body.error.innererror = {
         code: inner?.code ?? code,
         message: inner?.message ?? message,
-        type: ERROR_TYPES[code] ?? null,
+        ...(code === "9004010D" ? {} : { type: ERROR_TYPES[code] ?? null }),
       };
-    else if (innerError && inner) body.error.innererror = { code: inner.code, message: inner.message };
+    else if (innerError && inner && !details.hideInner) body.error.innererror = { code: inner.code, message: inner.message };
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
@@ -246,6 +250,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // property): the same generic 9004010A as a malformed query (decision, not observed).
   if (details.phase === "payload" && internal === "UndeclaredNavigationProperty")
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
+  if (internal === "WebApiInvalidReference")
+    return respond(500, "9004010A", "An unexpected error occurred while processing the request", plain);
   if (internal === "WebApiConfigurationTable")
     return respond(404, "9004010E", `Configuration table ${details.table} is not supported.`, plain);
   if (internal === "ResourceNotFound" || internal === "WebApiTableNotEnabled" || internal === "UnknownEntity")
@@ -291,8 +297,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // (90040109) and gives 90040107 HttpAntiForgeryException no status; Microsoft's clients
   // treat 403 with 90040107 as an expired token and 401 as an expired session. Local tokens
   // aren't bound to a session, so no local path raises MissingPortalSessionCookie.
-  if (internal === "MissingPortalRequestVerificationToken") return respond(401, "90040107", error.message, plain);
-  if (internal === "HttpAntiForgeryException") return respond(403, "90040107", error.message, plain);
+  if (internal === "MissingPortalRequestVerificationToken") return respond(401, "90040107", antiForgery === "decryption-401" ? "Request validation failed : " + error.message : error.message, plain);
+  if (internal === "HttpAntiForgeryException") return respond(antiForgery === "decryption-401" ? 401 : 403, "90040107", antiForgery === "decryption-401" ? 'Request validation failed : The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.' : error.message, plain);
   if (internal === "MissingPortalSessionCookie")
     return respond(401, "90040109", "An Invalid session token was passed into the throwing method.", plain);
   if (internal === "NoAttributesForTableCreate")
@@ -305,9 +311,14 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // Everything else is Dataverse rejecting the request: CDSError with the
   // platform error code and message in innererror.
   const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? "0x80040203");
-  return respond(status, "9004010D", "CDS error occurred.", {
+  return respond(status, "9004010D", cdsErrorMessage, {
     code: innerCode,
-    message: error?.message ?? "",
+    message: internal === "InvalidDateTime" && details.failedDateConversion && invalidDate === "crm-minimum"
+      ? "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+      : (() => {
+        const observed = observedODataInnerMessage(error, errorDetails);
+        return observed === null ? error?.message ?? "" : appendObservedWebApiErrorTemplate(error, observed, { mode: errorStacks, templates: errorTemplates, method: errorMethod });
+      })(),
   });
 }
 
@@ -323,6 +334,13 @@ export async function handleWebApi(req, res, url, deps) {
     const response = webApiErrorResponse(cause, {
       innerError: settingTrue(deps.portal?.settings, "Webapi/error/innererror"),
       innerErrorScope: deps.portal?.observed?.webApiInnerError,
+      cdsErrorMessage: deps.portal?.observed?.webApiCdsErrorMessage,
+      antiForgery: deps.portal?.observed?.webApiAntiForgery,
+      invalidDate: deps.portal?.observed?.webApiInvalidDate,
+      errorDetails: deps.portal?.observed?.webApiErrorDetails,
+      errorStacks: deps.portal?.observed?.webApiErrorStacks,
+      errorTemplates: deps.webApiErrorTemplates,
+      errorMethod: req.method,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
@@ -847,33 +865,43 @@ function getProperty(t, raw) {
   const lookup = /^_(.+)_value$/.test(target.segment) ? target.segment : `_${target.segment}_value`;
   const value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
   if (value == null) return sendNoContent(t);
-  if (raw) return sendText(t, value);
+  if (raw) return sendText(t, isExactNumeric(value)?value.value:value);
   return send(t, 200, { value });
 }
 
 // ---- writes ----------------------------------------------------------------
 
 async function readBody(t) {
-  const body = await t.deps.jsonBody(t.req);
+  const observed = t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper";
+  const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
   if (!body || typeof body !== "object" || Array.isArray(body))
-    throw badRequest("The request body must be a JSON object.", "InvalidRequest", "0x0");
+    throw attachODataReaderDetails(badRequest("The request body must be a JSON object.", "InvalidRequest", "0x0"), observed ? odataRootDetails(body) : null);
   return body;
 }
 
 /** @odata.bind and @odata.id references must stay on this portal (or its live origin). */
 function checkReferenceOrigin(t, value, name) {
+  const observed = t.deps.portal?.observed?.webApiReferenceErrors === "unexpected";
+  const failure = (message) => new DataError(message, observed ? 500 : 400, observed ? "WebApiInvalidReference" : "InvalidLookup", { innerCode: "0x80040203", ...(observed ? { hideInner: true } : {}) });
   const reference = parseEntityReference(value);
-  if (!reference) throw new DataError(`Invalid entity reference in ${name}.`, 400, "InvalidLookup", { innerCode: "0x80040203" });
+  if (!reference) throw failure(`Invalid entity reference in ${name}.`);
+  if (observed && !GUID_PATTERN.test(reference.id) && !parseKeySegment(reference.id))
+    throw failure(`Invalid entity reference in ${name}.`);
   if (reference.origin && !t.deps.origins.includes(reference.origin))
-    throw new DataError(`Entity references in ${name} must use this portal origin.`, 400, "InvalidLookup", {
-      innerCode: "0x80040203",
-    });
+    throw failure(`Entity references in ${name} must use this portal origin.`);
+  if (observed) {
+    const target = t.store.resolveMapping(reference.set);
+    if (!t.store.findByKey(target, reference.id))
+      throw new DataError(`The referenced record does not exist.`, 404, "InvalidLookup", { hideInner: true });
+  }
   return reference;
 }
 function assertBindOrigins(t, body) {
   for (const [key, value] of Object.entries(body ?? {})) {
     if (key.endsWith("@odata.bind")) {
-      for (const item of Array.isArray(value) ? value : [value]) if (item != null) checkReferenceOrigin(t, item, key);
+      for (const item of Array.isArray(value) ? value : [value])
+        if (item != null || t.deps.portal?.observed?.webApiReferenceErrors === "unexpected") checkReferenceOrigin(t, item, key);
     } else if (value && typeof value === "object")
       for (const item of Array.isArray(value) ? value : [value])
         if (item && typeof item === "object" && !Array.isArray(item)) assertBindOrigins(t, item);
@@ -881,6 +909,9 @@ function assertBindOrigins(t, body) {
 }
 const writeOptions = (t, extra = {}) => ({
   coerce: true,
+  odataErrorDetails: t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper",
+  odataNumberLexemes: t.odataNumberLexemes,
+  ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(t.req.headers["content-type"] ?? "")),
   metadata: t.deps.metadata,
   ifMatch: t.req.headers["if-match"],
   ifNoneMatch: t.req.headers["if-none-match"],

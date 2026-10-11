@@ -7,13 +7,15 @@
 // lists, views, search, chart, powerbi, codecomponent, redirect, outputcache, log,
 // manifest), web template resolution (active web templates by name, then the embedded
 // runtime templates) and the page shell. Behaviour and evidence: docs/liquid-parity.md.
-import { normalizePortalPath, portalField } from "./importer.mjs";
+import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { pageAccess } from "./page-access.mjs";
 import { reconcileFooterLogos } from "./footer-capture.mjs";
 import { reconcileHeaderNotifications } from "./header-notification-capture.mjs";
 import { headerNotificationQueries } from "./extensions.mjs";
 import { resolveSnippetComposition } from "./observed-snippet-composition.mjs";
 import { resolveObservedPageCopy } from "./observed-pagecopy-layout.mjs";
+import { applyObservedLiquidObjects } from "./liquid-observed-objects.mjs";
+import { editableMetadataAttributes } from "./liquid-editable-metadata.mjs";
 import { injectRuntimeCompatibility, isHtmlDocument } from "./source-dependencies.mjs";
 import { OFFLINE_NOTIFICATION_BAR, antiForgeryHolder, nativePageRegions, rewritePageLayout, CKEDITOR_BASEPATH, platformShell, bootstrapVariant, PLATFORM_BOOTSTRAP_STYLESHEET } from "./platform-manifest.mjs";
 import {
@@ -36,7 +38,7 @@ import {
   LIQUID_HIDDEN,
   isInfrastructureError,
 } from "./liquid-engine.mjs";
-import { FILTER_SIGNATURES, createFilters } from "./liquid-filters.mjs";
+import { createFilterSignatures, createFilters } from "./liquid-filters.mjs";
 import {
   ISO_DATETIME,
   parseNetDate,
@@ -48,6 +50,7 @@ import {
 } from "./liquid-dotnet.mjs";
 import { CMS_VIEW_TEMPLATES, EMBEDDED_TEMPLATES } from "./liquid-builtins.mjs";
 import { createAdsDrop, createPollsDrop } from "./liquid-community.mjs";
+import { serverLogicFallback } from './liquid-service-observations.mjs';
 import { RESX_CULTURES } from "./liquid-resx.mjs";
 import { portalLanguage } from "./portal-languages.mjs";
 import fs from "node:fs/promises";
@@ -557,7 +560,7 @@ class ManifestTag extends RawBlock {
  * {% serverlogic name: 'record', operation: 'function', input: value, output: variable %} (Learn,
  * liquid-objects "serverlogic": the output object has success, status_code, data and raw_result).
  * Registered operations use the host's local adapter; unregistered calls receive a 501
- * result and a SERVER_LOGIC_UNSUPPORTED diagnostic.
+ * result. An explicitly observed site uses 404 when the source has no matching record.
  */
 class ServerLogicTag extends Tag {
   parse() {
@@ -575,8 +578,9 @@ class ServerLogicTag extends Tag {
         return;
       }
     }
-    context.diagnostic("SERVER_LOGIC_UNSUPPORTED", `Server logic "${name}" (operation "${operation}") has no active local handler; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
-    if (output) context.assignGlobal(output, { success: false, status_code: 501, data: null, raw_result: "" });
+    const fallback = serverLogicFallback(context.engine.portalHost.portal, name, context.engine.portalHost.observed);
+    context.diagnostic(fallback.diagnosticCode, `Server logic "${name}" (operation "${operation}") has no active local handler; ${output ? `${output}.success is false` : "the tag names no output"}.`, { name, operation });
+    if (output) context.assignGlobal(output, { success: false, status_code: fallback.status, data: null, raw_result: "" });
   }
 }
 
@@ -727,6 +731,13 @@ export function createPortalRenderer(portal, options = {}) {
     return `Template "${name}" not found.`;
   }
   const filterHost = {
+    decimalStringMultiply: (options.observed ?? portal.observed)?.liquidDecimalStringMultiply,
+    timesDispatch: (options.observed ?? portal.observed)?.liquidTimesDispatch,
+    filterErrors: (options.observed ?? portal.observed)?.liquidFilterErrors,
+    filterRegistration: (options.observed ?? portal.observed)?.liquidFilterRegistration,
+    htmlVoidSerialization: (options.observed ?? portal.observed)?.liquidHtmlVoidSerialization,
+    htmlSafeInput: (options.observed ?? portal.observed)?.liquidHtmlSafeInput,
+    pathAndQueryFragment: (options.observed ?? portal.observed)?.liquidPathAndQueryFragment,
     renderLiquid: (source, context) => renderNested(engine, source, context),
     renderWebTemplate: async (id, context) => {
       const record = Object.values(portal.templates ?? {}).find((t) => String(t?.id ?? "").toLowerCase() === String(id ?? "").toLowerCase());
@@ -744,7 +755,8 @@ export function createPortalRenderer(portal, options = {}) {
   };
   const engine = new LiquidEngine({
     filters: createFilters(filterHost),
-    filterSignatures: FILTER_SIGNATURES,
+    filterSignatures: createFilterSignatures(filterHost),
+    runtimeCompatibility: (options.observed ?? portal.observed)?.liquidRuntimeCompatibility,
     loadTemplateSource,
     autoEncodeRoots: (context) => context.engine.portalHost.autoEncodeRoots(),
   });
@@ -826,7 +838,7 @@ export function createPortalRenderer(portal, options = {}) {
     const variant = languageId ? page?.translations?.[languageId] : null;
     return variant ? { ...page, ...variant } : page;
   };
-  const wrapEditable = ({ value, hasValue, editType = "html", cssClass, escape, tag = "div", languageName }) => {
+  const wrapEditable = ({ value, hasValue, editType = "html", cssClass, escape, tag = "div", languageName, metadata = "" }) => {
     const classes = ["xrm-editable-" + editType, "xrm-attribute"];
     if (!hasValue) classes.push("no-value");
     if (cssClass) classes.push(String(cssClass));
@@ -835,10 +847,11 @@ export function createPortalRenderer(portal, options = {}) {
     // TagBuilder sorts attributes and AntiXSS attribute encoding renders spaces as &#32;.
     const attr = (text) => text.replace(/[^A-Za-z0-9,.\-_]/g, (c) => `&#${c.codePointAt(0)};`);
     const language = languageName ? ` data-languageContext="${attr(languageName)}"` : "";
-    return `<${tag} class="${attr(classes.join(" "))}"${language}><${tag} class="${valueClasses.replace(/ /g, "&#32;")}">${inner}</${tag}></${tag}>`;
+    return `<${tag} class="${attr(classes.join(" "))}"${metadata}${language}><${tag} class="${valueClasses.replace(/ /g, "&#32;")}">${inner}</${tag}></${tag}>`;
   };
   const portalHost = {
     portal,
+    get observed() { return options.observed ?? portal.observed; },
     get serverLogic() { return options.serverLogic; },
     get fetchXml() {
       return options.fetchXml;
@@ -855,7 +868,8 @@ export function createPortalRenderer(portal, options = {}) {
     autoEncodeRoots: () => {
       const setting = Object.entries(portal.settings ?? {}).find(([name]) => name.toLowerCase() === "site/enabledefaulthtmlencoding")?.[1];
       // Power Pages 9.3.8.x+: escape is applied to user and request output unless disabled.
-      return String(setting ?? "").trim().toLowerCase() === "false" ? null : AUTO_ENCODE_ROOTS;
+      if (String(setting ?? "").trim().toLowerCase() === "false") return null;
+      return (options.observed ?? portal.observed)?.liquidRuntimeCompatibility === "observed" ? new Set([...AUTO_ENCODE_ROOTS, "params"]) : AUTO_ENCODE_ROOTS;
     },
     freshContext: (context) =>
       new LiquidContext(engine, {
@@ -905,7 +919,16 @@ export function createPortalRenderer(portal, options = {}) {
         }
         // Dataverse stores empty text as null: an empty attribute renders the no-value wrapper.
         const hasValue = value != null && value !== "";
-        return wrapEditable({ value: await render(hasValue ? formatItem(value) : (defaultValue ?? "")), hasValue: hasValue || defaultValue != null, editType, cssClass, escape, tag });
+        const request = context.environments[0].get("request");
+        const metadata = target.__isCurrentPage ? editableMetadataAttributes({
+          observed: options.observed ?? portal.observed,
+          websiteId: portal.website?.id ?? portalField(portal.website ?? {}, "websiteid"),
+          rootId: target.id,
+          contentId: target.metadata?.adx_webpageid ?? target.metadata?.mspp_webpageid ?? target.metadata?.webpageid ?? target.id,
+          key, requestPath: request?.path, encoded: escape, liquid: liquidEnabled,
+          workingFlag: "False",
+        }) : "";
+        return wrapEditable({ value: await render(hasValue ? formatItem(value) : (defaultValue ?? "")), hasValue: hasValue || defaultValue != null, editType, cssClass, escape, tag, metadata });
       }
       // Web link sets and other editable objects render editing metadata for editors only.
       return null;
@@ -1140,13 +1163,13 @@ export function createPortalRenderer(portal, options = {}) {
     context.sitemarkers = Object.fromEntries(
       Object.entries(portal.sitemarkers ?? {}).map(([name, target]) => [name, target?.id ? { ...nodes.get(target.id), url: target.url } : target?.url ? { url: target.url } : null]),
     );
-    context.weblinks = buildWeblinks(identity, page, languageId);
+    context.weblinks = buildWeblinks(identity, page, languageId, new Set(current.breadcrumbs.map((crumb) => crumb.id)));
     // Community objects over exported adx_poll*/adx_ad* records (Adxstudio PollsDrop/AdsDrop).
     context.polls ??= createPollsDrop(portal, { now: context.now });
     context.ads ??= createAdsDrop(portal, { now: context.now });
     return context;
   }
-  function buildWeblinks(identity, page, languageId = null) {
+  function buildWeblinks(identity, page, languageId = null, ancestorIds = new Set()) {
     const link = (item) => {
       const metadata = item.metadata ?? {};
       const target = item.pageId ? portal.pages.find((p) => p.id === item.pageId) : null;
@@ -1169,7 +1192,7 @@ export function createPortalRenderer(portal, options = {}) {
         Open_In_New_Window: Boolean(item.open_in_new_window),
         tooltip: item.name,
         is_sitemap_current: Boolean(target && target.id === page.id),
-        is_sitemap_ancestor: Boolean(target && target.id !== page.id && normalizePortalPath(page.url).startsWith(normalizePortalPath(target.url))),
+        is_sitemap_ancestor: Boolean(target && target.id !== page.id && ancestorIds.has(target.id)),
         weblinks: (item.weblinks ?? []).filter(allowed).map(link),
       };
     };
@@ -1180,6 +1203,7 @@ export function createPortalRenderer(portal, options = {}) {
       return !target || pageAccess(portal, target, identity).allowed;
     };
     const convert = (set) => ({
+      ...Object.fromEntries(Object.entries(set.metadata ?? {}).filter(([key]) => !key.startsWith("_")).map(([key, value]) => [key, liquidValue(value)])),
       id: set.id,
       name: set.name,
       logical_name: "adx_weblinkset",
@@ -1224,12 +1248,22 @@ export function createPortalRenderer(portal, options = {}) {
   /** Build a LiquidContext over a plain context object (contextForPage output or test data). */
   function liquidContextFor(context) {
     if (context instanceof LiquidContext) return context;
-    const environment = { ...(context ?? {}) };
+    const metadata = context?.page?.metadata;
+    const environment = applyObservedLiquidObjects({ ...(context ?? {}) }, {
+      mode: (options.observed ?? portal.observed)?.liquidObjectCompatibility,
+      pageIdentity: metadata?.adx_webpageid ?? metadata?.mspp_webpageid ?? metadata?.webpageid ?? metadata?.id,
+    });
     const diagnostics = Array.isArray(environment.__diagnostics) ? environment.__diagnostics : [];
     const hashes = new Map();
+    const observedParams = (options.observed ?? portal.observed)?.liquidRuntimeCompatibility === "observed";
     const asHash = (value) => {
-      if (value instanceof LiquidHash || value == null || typeof value !== "object") return value;
-      if (!hashes.has(value)) hashes.set(value, new LiquidHash(value));
+      if (value == null || typeof value !== "object" || (value instanceof LiquidHash && !observedParams)) return value;
+      // Only RequestDrop.Params has the observed pair accessor restrictions.
+      // Clone caller-owned hashes so unrelated dictionaries retain their capabilities.
+      if (!hashes.has(value)) hashes.set(value, new LiquidHash(value instanceof LiquidHash ? new Map(value.entries()) : value, {
+        numericPairLookup: !observedParams,
+        namedPairLookup: !observedParams,
+      }));
       return hashes.get(value);
     };
     // request.params and params are the same Hash (RequestDrop.Params).
@@ -1264,8 +1298,15 @@ export function createPortalRenderer(portal, options = {}) {
     const diagnostics = context.__diagnostics;
     try {
       const pageTemplate = portal.pageTemplates.find((t) => t.id === page.pageTemplateId);
-      const template = portal.templates[pageTemplate?.webTemplateId];
-      if (pageTemplate?.webTemplateId && !template)
+      const rewriteSelected = pageTemplateKind(pageTemplate) === "rewrite";
+      const physicalRewrite = String(pageTemplate?.rewriteUrl ?? "").trim().split(/[?#]/, 1)[0];
+      if (rewriteSelected && physicalRewrite && !/\.aspx$/i.test(physicalRewrite)) {
+        const error = new Error("The route handler 'Adxstudio.Xrm.Web.Routing.PortalRouteHandler' did not return an IHttpHandler from its GetHttpHandler() method.");
+        error.code = "INVALID_REWRITE_HANDLER";
+        throw error;
+      }
+      const template = rewriteSelected ? null : portal.templates[pageTemplate?.webTemplateId];
+      if (!rewriteSelected && pageTemplate?.webTemplateId && !template)
         diagnostics.push({ code: "missing-page-template", message: `Web template ${pageTemplate.webTemplateId} is absent` });
       // Legacy ASPX page templates render their WebForms layout with the page's attached
       // advanced form, basic form and list (lib/platform-manifest.mjs).
@@ -1273,10 +1314,10 @@ export function createPortalRenderer(portal, options = {}) {
       const body = await renderSource(template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"), context);
       const css = page.css ? `<style>${await renderSource(page.css, context)}</style>` : "";
       const js = page.js ? `<script>${await renderSource(page.js, context)}</script>` : "";
-      if (pageTemplate?.useHeaderFooter === false) {
+      if (!rewriteSelected && pageTemplate?.useHeaderFooter === false) {
         const mime = String(portalField(template?.metadata ?? {}, "mimetype", "text/html")).replace(/;\s*$/, "");
         return {
-          html: body + css + js,
+          html: body + css + js + (portal.observed?.webTemplateResponseNewline === "crlf" ? "\r\n" : ""),
           status: 200,
           page,
           diagnostics,
@@ -1525,18 +1566,55 @@ export function createPortalRenderer(portal, options = {}) {
       .map(([name, value]) => ` ${name}="${htmlEscape(value)}"`)
       .join("");
   }
-  /** Parse every exported web template, snippet and page source with the Power Pages grammar. */
+  /** Parse imported, active Liquid sources, including every imported page/snippet language.
+   * This is a syntax check; it does not prove includes, data or browser behavior. */
   function inspectCapabilities() {
     const diagnostics = [];
     const templates = new Set(Object.values(portal.templates ?? {}));
+    const sources = [];
+    const add = (kind, record, field, value, language = null) => {
+      if (typeof value === "string" && value.length)
+        sources.push({ kind, id: record.id ?? null, name: record.name ?? null, field, language, value });
+    };
     for (const template of templates) {
+      add("web-template", template, "source", template.source);
+    }
+    for (const page of portal.pages ?? []) {
+      for (const field of ["html", "js", "css"])
+        add("page", page, field, page[field]);
+      for (const [language, variant] of Object.entries(page.translations ?? {}))
+        for (const field of ["html", "js", "css"])
+          // The selected translation is also the main page source.
+          if (variant[field] !== page[field]) add("page", page, field, variant[field], language);
+    }
+    for (const [name, value] of Object.entries(portal.snippets ?? {}))
+      add("content-snippet", { name }, "value", value);
+    for (const [language, snippets] of Object.entries(portal.snippetTranslations ?? {}))
+      for (const [name, value] of Object.entries(snippets))
+        if (value !== portal.snippets?.[name]) add("content-snippet", { name }, "value", value, language);
+    for (const form of portal.forms ?? []) add("basic-form", form, "js", form.js);
+    for (const list of portal.lists ?? []) add("list", list, "js", list.js);
+    for (const step of portal.records ?? [])
+      if (step.kind === "advancedformstep" && Number(portalField(step, "statecode", 0)) !== 1)
+        add("advanced-form-step", step, "customJavascript", step.customJavascript);
+    let templateErrors = 0;
+    for (const { kind, id, name, field, language, value } of sources) {
       try {
-        engine.parse(template.source ?? "");
+        engine.parse(value);
       } catch (error) {
-        diagnostics.push({ code: "template-parse-error", templateId: template.id, name: template.name, message: error.message });
+        if (kind === "web-template") templateErrors++;
+        diagnostics.push({
+          code: kind === "web-template" ? "template-parse-error" : "source-parse-error",
+          ...(kind === "web-template" ? { templateId: id } : { sourceId: id }),
+          kind, name, field, language, message: error.message,
+        });
       }
     }
-    return { templateCount: templates.size, parsePassed: templates.size - diagnostics.length, diagnostics };
+    return {
+      templateCount: templates.size, parsePassed: templates.size - templateErrors,
+      sourceCount: sources.length, sourceParsePassed: sources.length - diagnostics.length,
+      diagnostics,
+    };
   }
   return { engine, renderString, renderPage, contextForPage, requestLanguage, inspectCapabilities };
 }

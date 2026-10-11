@@ -35,13 +35,43 @@ function validateOrigin(value, label) {
 /** Observed values that are a choice between documented behaviours (B: Web API, data). */
 const OBSERVED_CHOICES = {
   webApiInnerError: ["all-errors", "dataverse-errors"],
+  webApiCdsErrorMessage: ["CDS error occurred.", "Common Data Service error occurred."],
+  webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
+  webApiReferenceErrors: ["dataverse", "unexpected"],
+  webApiInvalidDate: ["invalid-format", "crm-minimum"],
+  // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
+  webApiErrorDetails: ["diagnostic", "odata-wrapper"],
   anonymousDataAccess: ["allowed", "blocked"],
+  // Some deployments return 302 for an explicitly configured 301 redirect record.
+  // Other status values are outside this observation and keep their source behavior.
+  redirect301: ["configured", "temporary"],
+  webTemplateResponseNewline: ["none", "crlf"],
+  webFileMimeCharset: ["utf8", "source"],
+  siteMarkerRedirect: ["resolve", "null-reference"],
+  nativeFormTransport: ["json", "postback"],
+  webApiErrorStacks: ["diagnostic", "response-template"],
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
   // site's bootstrap.min.css web file (read by lib/liquid.mjs; default from the export).
   bootstrapStylesheet: ["platform", "web-file"],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ["enforced", "exempt"],
+  // A site's Liquid math adapter may convert string inputs before decimal multiplication.
+  // The pinned DotLiquid contract remains the default; a different result needs site evidence.
+  liquidDecimalStringMultiply: ["dotliquid", "convert"],
+  liquidTimesDispatch: ["dotliquid", "observed"],
+  liquidFilterErrors: ["dotliquid", "observed"],
+  liquidServiceTags: ["dotliquid", "observed"],
+  liquidObjectCompatibility: ["dotliquid", "observed"],
+  liquidHtmlVoidSerialization: ["dotliquid", "html"],
+  liquidHtmlSafeInput: ["excluded", "observed"],
+  liquidPathAndQueryFragment: ["uri", "query"],
+  liquidRuntimeCompatibility: ["dotliquid", "observed"],
+  liquidFilterRegistration: ["dotliquid", "observed"],
+  liquidEditableMetadata: ["minimal", "observed"],
+  liquidMissingData: ["diagnostic", "empty"],
+  requestValidation: ["diagnostic", "aspnet-query"],
+  pageErrorPresentation: ["diagnostic", "generic-error"],
 };
 
 /**
@@ -102,7 +132,7 @@ export function observedConfig(value, label = "observed") {
     if (typeof value.headers !== "object" || Array.isArray(value.headers)) throw new Error(`${label}.headers must map page and webFile to headers`);
     const headers = {};
     for (const [kind, entries] of Object.entries(value.headers)) {
-      if (!["page", "webFile"].includes(kind)) throw new Error(`${label}.headers.${kind} must be page or webFile`);
+      if (!["page", "webFile", "webApi"].includes(kind)) throw new Error(`${label}.headers.${kind} must be page, webFile or webApi`);
       if (!entries || typeof entries !== "object" || Array.isArray(entries)) throw new Error(`${label}.headers.${kind} must map header names to values`);
       headers[kind] = {};
       for (const [name, raw] of Object.entries(entries)) {

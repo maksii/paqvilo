@@ -97,7 +97,7 @@ test("solution form layout creates typed data, saved view filters rows, and sour
     },
     tables: {
       contact: [{ contactid: "young", fullname: "Young contact", age: 12 }],
-      account: [{ accountid: "org", name: "Local Organisation" }],
+      account: [{ accountid: "11111111-1111-1111-1111-111111111111", name: "Local Organisation" }],
     },
     plugins: [],
     permissions: [],
@@ -165,7 +165,7 @@ test("solution form layout creates typed data, saved view filters rows, and sour
     await page.locator("#parentcustomerid_name").inputValue(),
     "Local Organisation",
   );
-  assert.equal(await page.locator("#parentcustomerid").inputValue(), "org");
+  assert.equal(await page.locator("#parentcustomerid").inputValue(), "11111111-1111-1111-1111-111111111111");
   assert.equal(
     await page.locator("#parentcustomerid_entityname").inputValue(),
     "account",
@@ -185,11 +185,11 @@ test("solution form layout creates typed data, saved view filters rows, and sour
   assert.equal(adult.age, 42);
   assert.equal(
     writes[0]["parentcustomerid_account@odata.bind"],
-    "/accounts(org)",
+    "/accounts(11111111-1111-1111-1111-111111111111)",
   );
   assert.equal(Object.hasOwn(writes[0], "parentcustomerid"), false);
   assert.deepEqual(adult.parentcustomerid, {
-    id: "org",
+    id: "11111111-1111-1111-1111-111111111111",
     logical_name: "account",
     name: "Local Organisation",
   });

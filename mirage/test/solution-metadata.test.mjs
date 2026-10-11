@@ -8,6 +8,7 @@ import {
   parseSolutionXml,
 } from "../lib/solution-metadata.mjs";
 import { formCells } from "../lib/native-services.mjs";
+import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-metadata-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -44,6 +45,84 @@ const portal = () => ({
   ],
   advancedForms: [],
   records: [],
+});
+
+for (const [name, groupType] of [
+  ["main", "main"],
+  ["card", "card"],
+  ["unknown literal", "future-source-type"],
+  ["absent group type", undefined],
+  ["standalone systemform", null],
+]) {
+  test(`form metadata preserves ${name} without inferring a type from its directory`, async (t) => {
+    const systemform = form("Name").replace(/^<forms[^>]*>/, "").replace(/<\/forms>$/, "");
+    const xml = groupType === null
+      ? systemform
+      : `<forms${groupType === undefined ? "" : ` type="${groupType}"`}>${systemform}</forms>`;
+    const root = await fixture(t, {
+      "Entities/Contact/Entity.xml": entity,
+      "Entities/Contact/FormXml/main/form.xml": xml,
+    });
+    const metadata = await importSolutionMetadata([root], { portal: portal() });
+    assert.equal(metadata.forms.length, 1);
+    assert.equal(metadata.forms[0].formType, groupType ?? undefined);
+    assert.equal(Object.hasOwn(metadata.forms[0], "formType"), typeof groupType === "string");
+    if (groupType === 'card') {
+      assert.equal(metadata.componentSchemas['basic-form'], undefined);
+      assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
+    } else assert.equal(metadata.componentSchemas["basic-form"].formId, "form-id");
+  });
+}
+
+test("mixed source form groups retain their types and select Main rather than earlier Card", async (t) => {
+  const systemform = form("Name").replace(/^<forms[^>]*>/, "").replace(/<\/forms>$/, "");
+  const root = await fixture(t, {
+    "Entities/Contact/Entity.xml": entity,
+    "Entities/Contact/FormXml/main/forms.xml": `<FormXml><forms type="card">${systemform.replace("{form-id}", "{card-id}")}</forms><forms type="main">${systemform.replace("{form-id}", "{main-id}")}</forms></FormXml>`,
+  });
+  const metadata = await importSolutionMetadata([root], { portal: portal() });
+  assert.deepEqual(metadata.forms.map(({ id, formType }) => ({ id, formType })), [
+    { id: "card-id", formType: "card" },
+    { id: "main-id", formType: "main" },
+  ]);
+  assert.equal(metadata.componentSchemas["basic-form"].formId, "main-id");
+});
+
+for (const order of ['card-first', 'main-first']) test(`standalone numeric types select Main with ${order} source order`, async t => {
+  const systemform = form('Name').replace(/^<forms[^>]*>/, '').replace(/<\/forms>$/, '');
+  const typed = (id, type, column) => systemform.replace('{form-id}', `{${id}}`).replace('<formid>', `<type>${type}</type><formid>`).replace('datafieldname="fullname"', `datafieldname="${column}"`);
+  const rows = [typed('card-id', 11, 'createdon'), typed('main-id', 2, 'fullname')];
+  if (order === 'main-first') rows.reverse();
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/standalone.xml': `<FormXml>${rows.join('')}</FormXml>` });
+  const metadata = await importSolutionMetadata(root, { portal: portal() });
+  const expected = [{ id: 'card-id', systemFormType: 11, formType: undefined }, { id: 'main-id', systemFormType: 2, formType: undefined }];
+  if (order === 'main-first') expected.reverse();
+  assert.deepEqual(metadata.forms.map(({ id, systemFormType, formType }) => ({ id, systemFormType, formType })), expected);
+  assert.equal(metadata.componentSchemas['basic-form'].formId, 'main-id');
+  assert.deepEqual(metadata.componentSchemas['basic-form'].fields.map(field => field.name), ['fullname']);
+  assert.equal(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_NAME_AMBIGUOUS'), false);
+});
+
+test('numeric form type overrides enclosing group and explicit Card cannot become an approximated form', async t => {
+  const xml = form('Name').replace('<forms ', '<forms type="main" ').replace('<formid>', '<type>11</type><formid>');
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/card.xml': xml });
+  const definition = portal();
+  definition.forms[0].metadata.adx_formid = 'form-id';
+  const metadata = await importSolutionMetadata(root, { portal: definition });
+  assert.equal(metadata.forms[0].systemFormType, 11);
+  assert.equal(metadata.forms[0].formType, 'main');
+  assert.equal(metadata.componentSchemas['basic-form'], undefined);
+  assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }), null);
+});
+
+test('absent source and legacy untyped layouts retain their approximation behavior', async t => {
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity });
+  const definition = portal();
+  const metadata = await importSolutionMetadata(root, { portal: definition });
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }).approximated, true);
+  metadata.forms = [{ id: 'legacy-id', entity: 'contact', name: 'Portal edit', active: true }];
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }).approximated, true);
 });
 
 test("global option-set references resolve labels across solution roots and unresolved choices remain explicit", async (t) => {

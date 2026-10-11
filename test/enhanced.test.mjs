@@ -5,12 +5,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { PortalModel, detectFormat, sourceText, componentContent, componentContentSpan } from '../lense/portal-model.mjs';
+import { PortalModel, detectFormat, sourceText, componentContent, componentContentSpan, isPortalMetadata } from '../lense/portal-model.mjs';
 import { GitBaseline } from '../lense/git.mjs';
 import { HtmlRewriter } from '../lense/html-rewriter.mjs';
 import { SITE } from './fixture.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
+import { auditResources } from '../lense/resource-audit.mjs';
 
 const HOME = '00000000-0000-0000-0000-0000000000a0';
 const HOME_EN = '00000000-0000-0000-0000-0000000000a1';
@@ -87,6 +88,41 @@ test('known enhanced XML saves refresh page code and metadata asynchronously', a
   editField(NEWS, 'partialurl', () => 'renamed-news');
   await session.refreshAsync([xmlOf(NEWS)]);
   assert.equal(session.model.pagePath(NEWS_EN), '/renamed-news');
+});
+
+test('enhanced site and language saves report deployment requirements and refresh language routing', async () => {
+  const siteRel = 'Assets/powerpagesites.xml';
+  const languageRel = 'Assets/powerpagesitelanguages.xml';
+  const siteFile = path.join(dir, siteRel);
+  const languageFile = path.join(dir, languageRel);
+  fs.mkdirSync(path.dirname(siteFile));
+  fs.writeFileSync(siteFile, '<powerpagesites><powerpagesite powerpagesiteid="00000000-0000-0000-0000-000000000100"><content>{"name":"Invented site"}</content><name>Invented site</name></powerpagesite></powerpagesites>');
+  fs.writeFileSync(languageFile, '<powerpagesitelanguages><powerpagesitelanguage powerpagesitelanguageid="00000000-0000-0000-0000-000000000101"><languagecode>en-US</languagecode></powerpagesitelanguage></powerpagesitelanguages>');
+  git('add', '-A');
+  git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'invented site configuration');
+  const baseline = new GitBaseline(dir, 'HEAD');
+  const session = new OverlaySession({ sourceDir: dir, site: structuredClone(SITE) });
+  assert.ok(session.model.languageCodes.has('en-us'));
+  assert.deepEqual(session.classifyChanges([siteFile, languageFile]), { relevant: [siteFile, languageFile], ignored: [], structural: true });
+  assert.ok(isPortalMetadata('configuration/powerpagesites.xml'));
+  assert.equal(isPortalMetadata('notes/powerpagesite.xml'), false);
+  fs.writeFileSync(siteFile, fs.readFileSync(siteFile, 'utf8').replaceAll('Invented site', 'Changed site'));
+  fs.writeFileSync(languageFile, fs.readFileSync(languageFile, 'utf8').replace('en-US', 'fr-FR'));
+  await session.refreshAsync([siteFile, languageFile]);
+  assert.ok(session.model.languageCodes.has('fr-fr'));
+  assert.equal(session.model.languageCodes.has('en-us'), false);
+  const changes = session.model.deploymentChanges(baseline, baseline.changedFiles());
+  assert.deepEqual(changes.map((change) => change.rel).sort(), [siteRel, languageRel].sort());
+  assert.ok(changes.every((change) => /require deployment/.test(change.reason)));
+  const audit = auditResources(session.model, SITE);
+  for (const rel of [siteRel, languageRel]) assert.equal(audit.resources.find((item) => item.relativePath === rel)?.status, 'deployment');
+  assert.equal(audit.coverage.runtimeVerified, false);
+  fs.unlinkSync(languageFile);
+  assert.ok(session.model.deploymentChanges(baseline, baseline.changedFiles()).some((change) => change.rel === languageRel && /deleted/.test(change.reason)));
+  const added = path.join(dir, 'configuration', 'powerpagesitelanguages.xml');
+  fs.mkdirSync(path.dirname(added));
+  fs.writeFileSync(added, '<powerpagesitelanguages/>');
+  assert.ok(session.model.deploymentChanges(baseline, [added]).some((change) => /new portal metadata/.test(change.reason)));
 });
 
 test('language fields of inactive enhanced root pages are excluded', () => {
@@ -249,6 +285,33 @@ test('enhanced link descriptions and localized form metadata preserve configurat
   assert.ok(result.html.includes('New hint'));
   editField('metadata1', 'description', (text) => text.replace('1033', '1031'));
   assert.ok(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()).some((change) => change.rel.includes('metadata1') && change.reason.includes('description')));
+});
+
+test('enhanced multistep titles expose localized literal leaves while preserving component configuration', async () => {
+  const languages = [{ LCID: 1033, Value: '<h3>Original step title</h3>' }, { LCID: 1045, Value: '<h3>Other language</h3>' }];
+  const original = { webform: 'wizard', title: JSON.stringify(languages), mode: 123, nextstep: 'next' };
+  editField(NEWS, 'webform', () => 'wizard');
+  put('step1', component('step1', 20, 'Wizard step', original));
+  git('add', '-A');
+  git('-c', 'user.name=t', '-c', 'user.email=t@localhost', 'commit', '-q', '-m', 'step title');
+  const baseline = new GitBaseline(dir, 'HEAD');
+  const model = await PortalModel.create(dir);
+  const source = model.inlineSources.find((entry) => entry.file === xmlOf('step1') && entry.lcid === 1033);
+  assert.ok(source);
+  assert.deepEqual(source.fieldPath, ['title']);
+  assert.deepEqual(source.jsonPath, [0, 'Value']);
+  assert.deepEqual(source.usedOn, ['/Newsfeed']);
+  assert.equal(auditResources(model, SITE).resources.find((entry) => entry.id.endsWith('step1/powerpagecomponent.xml#title.0.Value')).status, 'mapped');
+  editSource(source, (text) => text.replace('Original', 'Updated'));
+  const updated = componentContent(fs.readFileSync(xmlOf('step1'), 'utf8'));
+  assert.deepEqual({ ...updated, title: original.title }, original);
+  assert.deepEqual(JSON.parse(updated.title), [{ ...languages[0], Value: '<h3>Updated step title</h3>' }, languages[1]]);
+  assert.deepEqual(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()), []);
+  const site = { ...SITE, markup: { ...SITE.markup, kinds: [...SITE.markup.kinds, 'metadata-markup'] } };
+  assert.match(rewriter(site).rewrite('<html><body><h3>Original step title</h3></body></html>', '/Newsfeed').html, /<h3>Updated step title<\/h3>/);
+  editField('step1', 'title', (text) => text.replace('1033', '1031'));
+  assert.equal(sourceText(source), null);
+  assert.ok(new PortalModel(dir).deploymentChanges(baseline, baseline.changedFiles()).some((entry) => entry.rel.includes('step1')));
 });
 
 test('enhanced attachment names cannot leave filecontent or point to directories', () => {

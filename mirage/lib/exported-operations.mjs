@@ -4,7 +4,10 @@ import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'node:worker_threads';
 import { DataError } from './data.mjs';
-import { parseSolutionXml, descendants } from './solution-xml.mjs';
+import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
+import {executeFlowDefinition} from './flow-runtime.mjs';
+import {validateServiceProfile} from './local-organization-service.mjs';
+import {parseExactJson,stringifyExactJson} from './exact-numeric.mjs';
 
 const canonical = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const failure = (message, status = 501, code = 'LocalOperationUnsupported') => new DataError(message, status, code);
@@ -23,6 +26,7 @@ export function operationHandlers(packs = []) {
       result[kind].set(key, handler);
     }
   }
+  result.flowIdentities=new Map();for(const pack of packs)for(const[id,profile]of Object.entries(pack.flowIdentities??{})){const key=canonical(id);validateServiceProfile(profile);if(result.flowIdentities.has(key))throw new Error('Ambiguous flow backend profile: '+key);result.flowIdentities.set(key,profile);}
   return result;
 }
 
@@ -76,7 +80,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
           if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(method)) throw failure('Local server-logic mutations require a verified write request.', 403, 'Forbidden');
           let payload;
           if (message.kind !== 'delete') {
-            payload = JSON.parse(message.payload);
+            payload = parseExactJson(message.payload);
             if (!payload || typeof payload !== 'object' || Array.isArray(payload)) throw failure('The Dataverse payload must be a JSON object.', 400, 'InvalidRequest');
           }
           if (message.kind === 'create') { data = await store.create(message.entitySet, payload, identity); status = 201; }
@@ -84,7 +88,7 @@ export async function runExportedServerLogic({ record, portal, store, identity, 
           if (message.kind === 'delete') { await store.remove(message.entitySet, message.id, identity); status = 204; }
         }
         if (['query', 'get'].includes(message.kind) && !data) status = 404;
-        answer = { value: { StatusCode: status, Body: data === undefined ? '' : JSON.stringify(data), IsSuccessStatusCode: status < 400, ReasonPhrase: status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK', ServerError: false, ServerErrorMessage: null, Headers: {} } };
+        answer = { value: { StatusCode: status, Body: data === undefined ? '' : stringifyExactJson(data), IsSuccessStatusCode: status < 400, ReasonPhrase: status === 404 ? 'Not Found' : status === 204 ? 'No Content' : status === 201 ? 'Created' : 'OK', ServerError: false, ServerErrorMessage: null, Headers: {} } };
       } catch (error) {
         answer = { value: { StatusCode: error.status ?? 500, Body: '{}', IsSuccessStatusCode: false, ReasonPhrase: error.message, ServerError: true, ServerErrorMessage: error.message, Headers: {} } };
       }
@@ -115,49 +119,18 @@ export async function importOperationWorkflows(layers = []) {
       const xml = parseSolutionXml(contained[0]);
       const id = canonical(xml.attrs.WorkflowId ?? descendants(xml, 'Workflow')[0]?.attrs.WorkflowId);
       if (!/^[0-9a-f-]{36}$/.test(id)) continue;
-      result.set(id, { file: files[1], name: xml.attrs.Name ?? descendants(xml, 'Workflow')[0]?.attrs.Name ?? null, definition: JSON.parse(contained[1]) });
+      const node=descendants(xml,'Workflow')[0]??xml,state=childText(node,'StateCode')??childText(node,'statecode')??node.attrs.StateCode??node.attrs.statecode??null;
+      const active=state===null?null:['1','activated'].includes(String(state).toLowerCase());
+      result.set(id, { file: files[1],name: xml.attrs.Name ?? node.attrs.Name ?? null,active,activation:{sourceValue:state,sourceFile:files[0]}, definition: parseExactJson(contained[1]) });
     }
   }
   return result;
 }
 
 /** Deliberately small declarative interpreter. Unknown actions are rejected before any work. */
-export function runExportedCloudFlow({ record, workflows, input }) {
+export function runExportedCloudFlow({ record, workflows, input, store,serviceProfile,steps,diagnostic }) {
   const workflow = workflows.get(canonical(record.processId));
   if (!workflow) throw failure('This cloud flow has no JSON definition in the selected solution sources.');
   const definition = workflow.definition.properties?.definition ?? workflow.definition.definition;
-  const triggers = Object.values(definition?.triggers ?? {});
-  const actions = Object.values(definition?.actions ?? {});
-  if (triggers.length !== 1 || triggers[0].type !== 'Request' || triggers[0].kind !== 'powerpages' || actions.length !== 1 || actions[0].type !== 'Response' || actions[0].kind !== 'powerpages') throw failure('This local cloud-flow adapter supports a Power Pages Request and one Response only. Register a project handler for other actions.');
-  if (!input || typeof input !== 'object' || Array.isArray(input)) throw failure('The cloud-flow input must be an object.', 400, 'InvalidRequest');
-  const validate = (value, schema, name = 'body', depth = 0) => {
-    if (depth > 32) throw failure('The cloud-flow input schema exceeds the local nesting limit.');
-    const invalid = message => { throw failure(`Cloud-flow input ${name} ${message}.`, 400, 'InvalidRequest'); };
-    const types = schema.type ? [schema.type].flat() : [];
-    const matches = type => type === 'null' ? value === null : type === 'array' ? Array.isArray(value) : type === 'object' ? Boolean(value && typeof value === 'object' && !Array.isArray(value)) : type === 'integer' ? Number.isInteger(value) : type === 'number' ? typeof value === 'number' && Number.isFinite(value) : typeof value === type;
-    if (types.length && !types.some(matches)) invalid('has an invalid type');
-    if (Array.isArray(schema.enum) && !schema.enum.some(item => JSON.stringify(item) === JSON.stringify(value))) invalid('is not an allowed value');
-    if (value && typeof value === 'object' && !Array.isArray(value)) {
-      for (const key of schema.required ?? []) if (!Object.hasOwn(value, key)) invalid(`is missing required property ${key}`);
-      for (const [key, item] of Object.entries(value)) {
-        if (schema.properties?.[key]) validate(item, schema.properties[key], `${name}.${key}`, depth + 1);
-        else if (schema.additionalProperties === false) invalid(`contains undeclared property ${key}`);
-      }
-    }
-    if (Array.isArray(value) && schema.items) value.forEach((item, index) => validate(item, schema.items, `${name}[${index}]`, depth + 1));
-  };
-  validate(input, triggers[0].inputs?.schema ?? {});
-  const resolve = value => {
-    if (Array.isArray(value)) return value.map(resolve);
-    if (value && typeof value === 'object') return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, resolve(item)]));
-    if (typeof value === 'string' && value.startsWith('@')) {
-      const match = /^@triggerBody\(\)\?\['([^']+)'\]$/.exec(value);
-      if (!match) throw failure('The response uses an unsupported local flow expression.');
-      return input[match[1]] ?? null;
-    }
-    return value;
-  };
-  const status = Number(actions[0].inputs?.statusCode ?? 200);
-  if (!Number.isInteger(status) || status < 200 || status > 599) throw failure('The flow response status is invalid.');
-  return { status, body: resolve(actions[0].inputs?.body ?? {}) };
+  return executeFlowDefinition({definition,input,store,serviceProfile,steps,diagnostic});
 }

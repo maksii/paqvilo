@@ -72,8 +72,10 @@ const VARIABLE_END_TEXT = "(?-mix:\\}\\})";
 // ---------------------------------------------------------------------------
 /** DotLiquid Hash: ordered, case-insensitive (OrdinalIgnoreCase naming convention). */
 export class LiquidHash {
-  constructor(entries) {
+  constructor(entries, { numericPairLookup = true, namedPairLookup = true } = {}) {
     this.map = new Map();
+    Object.defineProperty(this, "numericPairLookup", { value: numericPairLookup });
+    Object.defineProperty(this, "namedPairLookup", { value: namedPairLookup });
     if (entries)
       for (const [key, value] of entries instanceof Map ? entries : Object.entries(entries)) this.set(key, value);
   }
@@ -101,13 +103,15 @@ export class LiquidHash {
     for (const [key, value] of this.map.values()) yield [key, value];
   }
   [Symbol.iterator]() {
-    return [...this.map.values()].map(([key, value]) => new KeyValuePair(key, value))[Symbol.iterator]();
+    return [...this.map.values()].map(([key, value]) => new KeyValuePair(key, value, this.numericPairLookup, this.namedPairLookup))[Symbol.iterator]();
   }
 }
 export class KeyValuePair {
-  constructor(key, value) {
+  constructor(key, value, numericLookup = true, namedLookup = true) {
     this.key = key;
     this.value = value;
+    Object.defineProperty(this, "numericLookup", { value: numericLookup });
+    Object.defineProperty(this, "namedLookup", { value: namedLookup });
   }
 }
 /** Base class for drops (DotLiquid Drop: property access, renders empty, not enumerable). */
@@ -167,6 +171,8 @@ export async function lookupMember(object, part, context) {
   if (Array.isArray(object)) {
     if (!isNumber(part) || !Number.isInteger(Number(part))) return { found: false };
     let index = Number(part);
+    if (context?.engine.runtimeCompatibility === "observed" && object.length && object.every((value) => typeof value === "string") && (index < 0 || index >= object.length))
+      throw new LiquidError("Index was outside the bounds of the array.", "System.IndexOutOfRangeException");
     if (index < 0) index += object.length;
     return index >= 0 && index < object.length ? { found: true, value: object[index] } : { found: false };
   }
@@ -349,7 +355,7 @@ export class Variable {
       const root = /^[^.[\s]+/.exec(this.name)?.[0]?.toLowerCase();
       const last = this.filters.at(-1)?.name.toLowerCase();
       // Power Pages 9.3.8.x+: user/request output is HTML encoded by default.
-      if (roots.has(root) && !ENCODING_FILTERS.has(last)) text = htmlEncode(text);
+      if ((roots.has(root) || (context.engine.runtimeCompatibility === "observed" && context.isEncodedVariable(this.name))) && !ENCODING_FILTERS.has(last)) text = htmlEncode(text);
     }
     out.push(text);
   }
@@ -421,24 +427,24 @@ class ElseCondition extends Condition {
     return true;
   }
 }
-const conditionFrom = (match) =>
-  new Condition(match[1].replace(/^\(+/, ""), match[2] ?? "", (match[3] ?? "").replace(/\)+$/, ""));
+const conditionFrom = (match, preserveParentheses = false) =>
+  new Condition(preserveParentheses ? match[1] : match[1].replace(/^\(+/, ""), match[2] ?? "", preserveParentheses ? (match[3] ?? "") : (match[3] ?? "").replace(/\)+$/, ""));
 /** If.PushBlock: expressions are grouped right-to-left; there are no parentheses. */
-export function parseCondition(markup) {
+export function parseCondition(markup, preserveParentheses = false) {
   const help = "Syntax Error in 'if' tag - Valid syntax: if [expression]";
   const expressions = scan(markup, IF_EXPRESSIONS);
   const syntax = expressions.at(-1);
   if (!syntax) throw new LiquidSyntaxError(help);
   const match = IF_SYNTAX.exec(syntax);
   if (!match) throw new LiquidSyntaxError(help);
-  let condition = conditionFrom(match);
+  let condition = conditionFrom(match, preserveParentheses);
   let count = 1;
   for (let i = 1; i < expressions.length; i += 2) {
     const operator = expressions.at(-1 - i).trim();
     const expression = IF_SYNTAX.exec(expressions.at(-2 - i) ?? "");
     if (!expression) throw new LiquidSyntaxError(help);
     if (++count > 500) throw new LiquidSyntaxError("Syntax Error in 'if' tag - max 500 conditions are allowed");
-    const next = conditionFrom(expression);
+    const next = conditionFrom(expression, preserveParentheses);
     if (operator === "and" || operator === "or") {
       next.relation = operator;
       next.child = condition;
@@ -458,6 +464,7 @@ const BLANK = new LiquidSymbol("blank", (value) =>
   (isEnumerable(value) && toList(value).length === 0),
 );
 const EMPTY = new LiquidSymbol("empty", (value) => isEnumerable(value) && toList(value).length === 0);
+const encodedAssignments = new WeakMap();
 /** One Strainer overload from its signature text ("@context, input, format?"). */
 function parseFilterSignature(text) {
   const names = String(text)
@@ -516,6 +523,17 @@ export class LiquidContext {
   /** assign/capture/fetchxml: Scopes.Last() (outermost scope). */
   assignGlobal(key, value) {
     this.outerScope.set(key, value);
+    encodedAssignments.get(this.outerScope)?.delete(String(key).toLowerCase());
+  }
+  isEncodedVariable(markup) {
+    const root = /^[^.[\s]+/.exec(markup ?? "")?.[0]?.toLowerCase();
+    if (!root) return false;
+    for (const scope of this.scopes) if (scope.has(root)) return encodedAssignments.get(scope)?.has(root) ?? false;
+    return Boolean(this.engine.autoEncodeRoots?.(this)?.has(root));
+  }
+  markEncodedAssignment(key) {
+    if (!encodedAssignments.has(this.outerScope)) encodedAssignments.set(this.outerScope, new Set());
+    encodedAssignments.get(this.outerScope).add(String(key).toLowerCase());
   }
   /** Merged view of all variables (innermost wins) for host components. */
   /** Merged plain-object view of all variables (innermost wins) for host components. */
@@ -547,7 +565,7 @@ export class LiquidContext {
       case "false":
         return false;
       case "blank":
-        return BLANK;
+        return this.engine.runtimeCompatibility === "observed" ? EMPTY : BLANK;
       case "empty":
         return EMPTY;
     }
@@ -608,11 +626,11 @@ export class LiquidContext {
       const part = bracketed ? await this.resolve(raw.slice(1, -1)) : raw;
       if (object instanceof KeyValuePair) {
         const numeric = isNumber(part) ? Number(part) : null;
-        if (numeric === 0 || part === "Key") {
+        if ((object.numericLookup && numeric === 0) || (object.namedLookup && part === "Key")) {
           object = object.key;
           continue;
         }
-        if (numeric === 1 || part === "Value" || part === object.key) {
+        if ((object.numericLookup && numeric === 1) || (object.namedLookup && part === "Value") || part === object.key) {
           object = object.value ?? null;
           continue;
         }
@@ -714,7 +732,7 @@ export class Block extends Tag {
       const token = tokens.shift();
       if (token.startsWith("{%")) {
         const full = FULL_TOKEN.exec(token);
-        if (!full) throw new LiquidSyntaxError(`Tag '${token}' was not properly terminated with regexp: ${TAG_END_TEXT}`);
+        if (!full) throw new LiquidSyntaxError(`Tag '${this.engine.runtimeCompatibility === "observed" && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${TAG_END_TEXT}`);
         const [, name, args = ""] = full;
         if (name === this.blockDelimiter) {
           this.endTag();
@@ -728,7 +746,7 @@ export class Block extends Tag {
         } else this.unknownTag(name, args, tokens);
       } else if (token.startsWith("{{")) {
         const content = CONTENT_OF_VARIABLE.exec(token);
-        if (!content) throw new LiquidSyntaxError(`Variable '${token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`);
+        if (!content) throw new LiquidSyntaxError(`Variable '${this.engine.runtimeCompatibility === "observed" && /[\r\n]/.test(token) ? token.slice(0, 2) : token}' was not properly terminated with regexp: ${VARIABLE_END_TEXT}`);
         this.nodeList.push(new Variable(content[1]));
       } else if (token !== "") this.nodeList.push(token);
     }
@@ -844,7 +862,9 @@ class AssignTag extends Tag {
     this.from = new Variable(m[2]);
   }
   async render(context) {
+    const encoded = context.engine.runtimeCompatibility === "observed" && !this.from.filters.length && context.isEncodedVariable(this.from.name);
     context.assignGlobal(this.to, await this.from.evaluate(context));
+    if (encoded) context.markEncodedAssignment(this.to);
   }
 }
 const WORD = re(`([${WC}]+)`);
@@ -870,7 +890,7 @@ class IfTag extends Block {
     super.parse(tokens);
   }
   pushBlock(tag, markup) {
-    const block = tag === "else" ? new ElseCondition() : parseCondition(markup);
+    const block = tag === "else" ? new ElseCondition() : parseCondition(markup, this.engine.runtimeCompatibility === "observed");
     this.blocks.push(block);
     this.nodeList = block.attachment;
   }
@@ -983,6 +1003,7 @@ class ForTag extends Block {
   }
   unknownTag(tag, markup, tokens) {
     if (tag === "else") {
+      if (this.engine.runtimeCompatibility === "observed") return super.unknownTag(tag, markup, tokens);
       this.elseBlock = [];
       this.nodeList = this.elseBlock;
       return;
@@ -1023,7 +1044,7 @@ class ForTag extends Block {
         const item = segment[index];
         context.set(
           this.variableName,
-          item instanceof KeyValuePair && (item.value instanceof LiquidHash || isPlainObject(item.value))
+          item instanceof KeyValuePair && item.numericLookup && (item.value instanceof LiquidHash || isPlainObject(item.value))
             ? new LegacyKeyValueDrop(item.key, item.value)
             : item,
         );
@@ -1367,14 +1388,19 @@ export class LiquidEngine {
     maxIterations = 5_000_000,
     timeoutMs = 60_000,
     autoEncodeRoots = null,
+    runtimeCompatibility = "dotliquid",
   } = {}) {
     this.tags = new Map(Object.entries({ ...STANDARD_TAGS, ...tags }));
+    if (runtimeCompatibility === "observed") {
+      for (const name of ["increment", "decrement"]) this.tags.delete(name);
+    }
     this.filters = new Map(Object.entries(filters));
     this.filterSignatures = new Map(Object.entries(filterSignatures).map(([name, overloads]) => [name, overloads.map(parseFilterSignature)]));
     this.loadTemplateSource = loadTemplateSource;
     this.maxIterations = maxIterations;
     this.timeoutMs = timeoutMs;
     this.autoEncodeRoots = autoEncodeRoots;
+    this.runtimeCompatibility = runtimeCompatibility;
     this.cache = new Map();
   }
   get rawTags() {

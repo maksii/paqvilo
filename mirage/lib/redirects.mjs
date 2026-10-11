@@ -161,7 +161,10 @@ function redirectMatch(portal, url) {
     const candidate = lower(query < 0 ? withoutSlash(relative) : withoutSlash(relative.slice(0, query)) + relative.slice(query));
     if (candidate !== requested) continue;
     if (redirect.redirectUrl && redirect.redirectUrl === inbound) return null;
-    const status = [301, 302].includes(redirect.statusCode) ? redirect.statusCode : redirect.statusCode ?? 302;
+    const configuredStatus = redirect.statusCode ?? 302;
+    const status = configuredStatus === 301 && portal.observed?.redirect301 === "temporary" ? 302 : configuredStatus;
+    if (redirect.siteMarkerId && !redirect.redirectUrl && !redirect.webPageId && portal.observed?.siteMarkerRedirect === "null-reference")
+      return { kind: "error", status: 500, code: "REDIRECT_SITE_MARKER_NULL_REFERENCE", message: "Object reference not set to an instance of an object.", source: "redirect", redirectId: redirect.id };
     const page = redirect.webPageId ? (portal.pages ?? []).find((item) => item.id === redirect.webPageId) : null;
     const marker = redirect.siteMarkerId ? (portal.siteMarkers ?? []).find((item) => item.id === redirect.siteMarkerId) : null;
     const markerPage = marker ? (portal.pages ?? []).find((item) => item.id === marker.pageId) : null;

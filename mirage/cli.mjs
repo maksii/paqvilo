@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { importPortal } from "./lib/importer.mjs";
+import { createPortalRenderer } from "./lib/liquid.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
 import { createSimulator } from "./server.mjs";
 import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
@@ -163,6 +164,7 @@ try {
           assets: portal.webFiles.length,
           forms: portal.forms.length,
           lists: portal.lists.length,
+          liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
           solutionMetadata: metadata.summary,
           diagnostics: [...portal.diagnostics, ...metadata.diagnostics],
         })),
@@ -318,6 +320,7 @@ try {
             assets: portal.webFiles.length,
             forms: portal.forms.length,
             lists: portal.lists.length,
+            liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
             diagnostics: portal.diagnostics,
           },
           null,

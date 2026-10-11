@@ -174,6 +174,7 @@ const YAML_MARKUP_KINDS = [
   { dir: 'polls', suffix: '.poll.yml', fields: ['adx_question'] },
   { dir: 'basic-forms', suffix: '.basicform.yml', fields: ['adx_instructions'] },
   { dir: 'basic-forms', suffix: '.basicformmetadata.yml', fields: ['adx_description', 'adx_label', 'adx_validationregularexpressionerrormessage'] },
+  { dir: 'advanced-forms', suffix: '.advancedformstep.yml', fields: ['adx_title'] },
   { dir: 'advanced-forms', suffix: '.advancedformmetadata.yml', fields: ['adx_description', 'adx_label', 'adx_validationregularexpressionerrormessage'] },
 ];
 // The same fields in a .powerpages-site (short-key) export: unprefixed keys, one web link per file.
@@ -183,6 +184,7 @@ const SHORT_KEY_MARKUP_KINDS = [
   { dir: 'polls', suffix: '.poll.yml', fields: ['question'] },
   { dir: 'basic-forms', suffix: '.basicform.yml', fields: ['instructions'] },
   { dir: 'basic-forms', suffix: '.basicformmetadata.yml', fields: ['description', 'label', 'validationregularexpressionerrormessage'] },
+  { dir: 'advanced-forms', suffix: '.advancedformstep.yml', fields: ['title'] },
   { dir: 'advanced-forms', suffix: '.advancedformmetadata.yml', fields: ['description', 'label', 'validationregularexpressionerrormessage'] },
 ];
 // A field of a YAML record: adx_<name> in PAC YAML, <name> in a .powerpages-site export, which
@@ -442,11 +444,14 @@ const COMPONENT_MARKUP_FIELDS = new Map([
   [COMPONENT.WEB_LINK, ['description']],
   [COMPONENT.BASIC_FORM, ['instructions']],
   [COMPONENT.BASIC_FORM_METADATA, ['description', 'label', 'validationregularexpressionerrormessage']],
+  [COMPONENT.ADVANCED_FORM_STEP, ['title']],
   [COMPONENT.ADVANCED_FORM_METADATA, ['description', 'label', 'validationregularexpressionerrormessage']],
 ]);
 const CLASSIC_METADATA = /(?:^(?:website|websiteaccess|webrole|webpagerule|urlhistory|forumthreadtype|sitesetting|sitemarker|publishingstate|websitelanguage|tag|adplacement|shortcut|redirect|ad)\.yml$|(?:^|\/)[^/]+\.(?:webpage|webfile|contentsnippet|webtemplate|basicform|basicformmetadata|advancedform|advancedformstep|advancedformmetadata|list|pagetemplate|tablepermission|entitypermission|columnpermissionprofile|columnpermission|weblink|weblinkset|poll|pollplacement|polloption|forum|forumpermission|forumaccesspermission|webrole|webpagelanguage|websitelanguage|sitemarker|sitesetting|publishingstate|webpageaccesscontrolrule|websiteaccess|redirect|shortcut|deployment|botconsumer|cloudflowconsumer|serverlogic|uxcomponent|pollplacement|adplacement|publishingstatetransitionrule|portallanguage|sourcefile)\.yml$)/i;
+/** Enhanced site and language documents configure the live host, rather than page overlays. */
+export const isEnhancedSiteMetadata = (relative) => /(?:^|\/)powerpagesite(?:s|languages)\.xml$/i.test(relative.replace(/\\/g, '/'));
 /** Portal metadata filenames, excluding unrelated YAML/XML notes in the checkout. */
-export const isPortalMetadata = (relative) => CLASSIC_METADATA.test(relative.replace(/\\/g, '/')) || /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replace(/\\/g, '/'));
+export const isPortalMetadata = (relative) => CLASSIC_METADATA.test(relative.replace(/\\/g, '/')) || /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replace(/\\/g, '/')) || isEnhancedSiteMetadata(relative);
 const stableValue = (value) => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
 
 export class PortalModel {
@@ -541,7 +546,7 @@ export class PortalModel {
     const field = (row, key) => row?.[`adx_${key}`] ?? row?.[`mspp_${key}`] ?? row?.[key];
     const languageRows = [];
     const portalRows = [];
-    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => entry.isFile() ? [path.join(this.sourceDir, entry.name)] : entry.isDirectory() && /^(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?$/i.test(entry.name) ? this.#files(path.join(this.sourceDir, entry.name)) : []);
+    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => entry.isFile() ? [path.join(this.sourceDir, entry.name)] : entry.isDirectory() && /^(?:Assets|(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?)$/i.test(entry.name) ? this.#files(path.join(this.sourceDir, entry.name)) : []);
     for (const file of candidates) {
       const name = path.basename(file);
       if (/^(?:websitelanguage|portallanguage)\.yml$/i.test(name) || /\.(?:websitelanguage|portallanguage)\.ya?ml$/i.test(name)) {
@@ -1009,7 +1014,7 @@ export class PortalModel {
             this.inactiveSources.push({ file, rel });
             continue;
           }
-          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'id'].find((key) => record[key] != null);
+          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'id'].find((key) => record[key] != null);
           for (const field of def.fields) {
             for (const value of markupValues(record[field])) {
               const fieldPath = index === null ? [field] : [index, field];
@@ -1047,7 +1052,7 @@ export class PortalModel {
 
   /** Changes the overlay cannot render: portal configuration, record creation/deletion and schema. */
   deploymentChanges(baseline, changed) {
-    const files = [...changed].map((file) => ({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') })).filter(({ rel }) => this.format === 'enhanced' ? /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel) : CLASSIC_METADATA.test(rel) && !rel.startsWith('../'));
+    const files = [...changed].map((file) => ({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') })).filter(({ rel }) => !rel.startsWith('../') && (this.format === 'enhanced' ? /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel) || isEnhancedSiteMetadata(rel) : CLASSIC_METADATA.test(rel)));
     baseline.preload?.(files.map(({ file }) => file));
     const changes = [];
     if (this.format === 'classic') {
@@ -1065,6 +1070,10 @@ export class PortalModel {
       if (before === after) continue;
       if (before === null || after === null) {
         changes.push({ rel, reason: `${after === null ? 'deleted' : 'new'} portal metadata requires deployment; the overlay cannot create or delete portal records` });
+        continue;
+      }
+      if (isEnhancedSiteMetadata(rel)) {
+        changes.push({ rel, reason: 'site or language configuration changed; these fields require deployment' });
         continue;
       }
       if (this.format !== 'enhanced') {

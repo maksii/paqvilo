@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import { normalizePortalPath, portalField } from "./importer.mjs";
+import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { stripLiquidLiteralBlocks } from "./liquid-source.mjs";
 
 const id = (value) =>
@@ -187,8 +187,10 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     add(webTemplates, descriptor);
     queue.push({ text: found.source ?? "", owner: `web-template:${id(found.id)}` });
   };
-  if (pageTemplate?.webTemplateId) addTemplate(pageTemplate.webTemplateId, "page-template", `page-template:${id(pageTemplate.id)}`);
-  else if (pageTemplate) unresolved.push({ kind: "web-template", expression: pageTemplate.name, via: "page-template", reason: "Page template has no resolved web-template ID." });
+  if (pageTemplateKind(pageTemplate) !== "rewrite") {
+    if (pageTemplate?.webTemplateId) addTemplate(pageTemplate.webTemplateId, "page-template", `page-template:${id(pageTemplate.id)}`);
+    else if (pageTemplate) unresolved.push({ kind: "web-template", expression: pageTemplate.name, via: "page-template", reason: "Page template has no resolved web-template ID." });
+  }
 
   const sources = [{ text: page.html ?? "", owner: "page" }, { text: page.js ?? "", owner: "page" }, { text: page.css ?? "", owner: "page" }];
   const seenSources = new Set();
@@ -211,7 +213,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     add(snippets, descriptor);
     sources.push({ text: portal.snippets?.[record.name] ?? "", owner: `content-snippet:${record.name}` });
   };
-  if (pageTemplate?.useHeaderFooter !== false) {
+  if (pageTemplateKind(pageTemplate) === "rewrite" || pageTemplate?.useHeaderFooter !== false) {
     const headerId = field(portal.website, "headerwebtemplateid");
     const footerId = field(portal.website, "footerwebtemplateid");
     if (headerId) addTemplate(headerId, "website header", "website-header");

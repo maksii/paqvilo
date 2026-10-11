@@ -75,3 +75,118 @@ test('PCF native form mounts require declared bound properties and retain select
   assert.match(html, /__paqviloPcf.mount/); assert.match(html, /"lcid":1036/); assert.match(html, /"nativeBinding"/);
   for (const properties of [[], ['unknown'], ['caption'], ['value', 'caption']]) assert.match(renderCodeComponent({ ...context, nativeBinding: { id: 'fullname', control: 'text', properties } }), /no valid single-field native binding/);
 });
+
+test('PCF feature declarations preserve source attributes and order and distinguish portal eligibility from local APIs', async t => {
+  const { dir, control } = await fixture(t);
+  const declarations = [
+    { name: 'Device.captureImage', required: 'false' },
+    { name: 'WebAPI', required: '1' },
+    { name: 'Utility', required: 'true' },
+    { name: 'WebAPI', required: '0' },
+    { name: 'Unqualified.Feature', required: 'false', 'source-note': 'retained' },
+    { name: 'device.captureImage', required: 'false' },
+  ];
+  const write = async features => fs.writeFile(path.join(control, 'ControlManifest.xml'), `<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><feature-usage>${features}</feature-usage><resources><code path="bundle.js"/></resources></control></manifest>`);
+  await write(declarations.map(f => `<uses-feature ${Object.entries(f).map(([name, value]) => `${name}="${value}"`).join(' ')}/>`).join(''));
+  let catalog = await importCodeComponents([{ dir }]);
+  assert.deepEqual(catalog.controls.get('tst_Synthetic.Editor').features, declarations);
+  const diagnostics = [];
+  const html = renderCodeComponent({ name: 'tst_Synthetic.Editor', portal: {}, catalog, diagnostic: value => diagnostics.push(value) });
+  assert.doesNotMatch(html, /__paqviloPcf.mount|<script/);
+  assert.equal(diagnostics[0].code, 'PCF_HOST_UNSUPPORTED');
+  assert.equal(diagnostics[0].reason, 'PCF_FEATURE_DECLARATIONS_UNSUPPORTED');
+  assert.deepEqual(diagnostics[0].features.map(f => [f.name, f.required, f.eligible, f.hostApiAvailable]), [
+    ['Device.captureImage', 'false', true, false], ['WebAPI', '1', false, true],
+    ['Utility', 'true', false, false], ['WebAPI', '0', true, true], ['Unqualified.Feature', 'false', true, null], ['device.captureImage', 'false', true, false],
+  ]);
+  for (const [required, eligible] of [['true', false], ['1', false], ['false', true], ['0', true], [' true ', false], [' false ', true], ['TRUE', false], ['', false]]) {
+    await write(`<uses-feature name="WebAPI" required="${required}"/>`);
+    catalog = await importCodeComponents([{ dir }]);
+    const found = [];
+    const output = renderCodeComponent({ name: 'tst_Synthetic.Editor', portal: {}, catalog, diagnostic: value => found.push(value) });
+    assert.equal(output.includes('__paqviloPcf.mount'), eligible, required);
+    if (!eligible) assert.equal(found[0].features[0].reason, ['true', '1'].includes(required.trim()) ? 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' : 'PCF_FEATURE_DECLARATION_INVALID');
+    assert.equal(catalog.controls.get('tst_Synthetic.Editor').features[0].required, required);
+  }
+  for (const declaration of ['<uses-feature name="WebAPI"/>', '<uses-feature required="false"/>']) {
+    await write(declaration); catalog = await importCodeComponents([{ dir }]);
+    const found = [];
+    renderCodeComponent({ name: 'tst_Synthetic.Editor', portal: {}, catalog, diagnostic: value => found.push(value) });
+    assert.equal(found[0].features[0].reason, 'PCF_FEATURE_DECLARATION_INVALID');
+  }
+  await write(''); catalog = await importCodeComponents([{ dir }]);
+  assert.deepEqual(catalog.controls.get('tst_Synthetic.Editor').features, []);
+  assert.match(renderCodeComponent({ name: 'tst_Synthetic.Editor', portal: {}, catalog }), /__paqviloPcf.mount/);
+});
+
+test('PCF RESX import retains languages and resource metadata instead of flattening translations', async t => {
+  const { dir, control } = await fixture(t);
+  await fs.mkdir(path.join(control, 'strings'));
+  const declarations = [
+    { path: 'strings/Labels.1036.resx', version: '2.3.4', order: '03', culture: 'fr-FR' },
+    { path: 'strings/Labels.1033.resx', version: '1.2.3', order: '1' },
+  ];
+  const files = {
+    'strings/Labels.1036.resx': '<root xml:lang="fr-FR"><resheader name="version"><value>2.0</value></resheader><data name="Caption" xml:space="preserve"><value> Bonjour β </value><comment>French label</comment></data><data name="Empty"><value></value></data></root>',
+    'strings/Labels.1033.resx': '<root><data name="Caption"><value>Hello</value></data><data name="EnglishOnly"><value>Base-only string</value></data></root>',
+  };
+  for (const [relative, text] of Object.entries(files)) await fs.writeFile(path.join(control, relative), text);
+  const write = async resources => fs.writeFile(path.join(control, 'ControlManifest.xml'), `<manifest><control namespace="Synthetic" constructor="Editor" control-type="standard"><resources><code path="bundle.js"/>${resources.map(attrs => `<resx ${Object.entries(attrs).map(([key, value]) => `${key}="${value}"`).join(' ')}/>`).join('')}</resources></control></manifest>`);
+  await write(declarations);
+  let catalog = await importCodeComponents([{ dir }]);
+  const c = catalog.controls.get('tst_Synthetic.Editor');
+  assert.deepEqual(c.stringResources.map(resource => resource.attributes), declarations);
+  assert.deepEqual(c.stringResources.map(resource => resource.lcid), [1036, 1033]);
+  assert.equal(c.stringResources[0].strings.Caption, ' Bonjour β ');
+  assert.equal(c.stringResources[0].entries[0].attrs['xml:space'], 'preserve');
+  assert.equal(c.stringResources[0].entries[0].children.find(node => node.name === 'comment').text, 'French label');
+  assert.equal(c.stringResources[0].document.attrs['xml:lang'], 'fr-FR');
+  assert.equal(c.stringResources[0].document.children[0].name, 'resheader');
+  const spec = (catalog, language, websiteLanguages = []) => {
+    const diagnostics = [];
+    const html = renderCodeComponent({ name: 'tst_Synthetic.Editor', catalog, language, portal: { websiteLanguages }, diagnostic: d => diagnostics.push(d) });
+    return { value: JSON.parse(/__paqviloPcf\.mount\((.*), document\.currentScript/.exec(html)[1]), diagnostics };
+  };
+  const french = spec(catalog, { code: 'fr-FR', lcid: 1036 });
+  assert.deepEqual(french.value.strings, { Caption: ' Bonjour β ', Empty: '' });
+  assert.equal(french.value.localization.resources[0].selection, 'selected-language');
+  assert.equal(french.diagnostics.length, 0);
+  assert.equal(french.value.stringResources, undefined);
+  const english = spec(catalog, { code: 'en-US' });
+  assert.deepEqual(english.value.strings, { Caption: 'Hello', EnglishOnly: 'Base-only string' });
+  assert.equal(english.value.language.lcid, 1033);
+  const fallback = spec(catalog, { code: 'de-DE', lcid: 1031 }, [{ code: 'fr-FR', lcid: 1036, isDefault: true }]);
+  assert.deepEqual(fallback.value.strings, french.value.strings);
+  assert.equal(fallback.diagnostics[0].code, 'PCF_RESOURCE_LANGUAGE_FALLBACK');
+  assert.equal(fallback.diagnostics[0].nativeQualified, false);
+  const unresolved = spec(catalog, { lcid: 1031 });
+  assert.deepEqual(unresolved.value.strings, {});
+  assert.equal(unresolved.diagnostics[0].code, 'PCF_RESOURCE_LANGUAGE_UNRESOLVED');
+  await write([...declarations].reverse()); catalog = await importCodeComponents([{ dir }]);
+  assert.deepEqual(spec(catalog, { lcid: 1036 }).value.strings, french.value.strings);
+  await fs.writeFile(path.join(control, 'strings/Labels.01036.resx'), files['strings/Labels.1036.resx']);
+  await write([...declarations, { path: 'strings/Labels.01036.resx', version: '99.0.0' }]);
+  catalog = await importCodeComponents([{ dir }]);
+  const duplicateLocale = spec(catalog, { lcid: 1036 });
+  assert.deepEqual(duplicateLocale.value.strings, {});
+  assert.equal(duplicateLocale.diagnostics[0].code, 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS');
+  // A newer resource version must not silently choose a language or source.
+  await fs.writeFile(path.join(control, 'strings/Unqualified.resx'), '<root><data name="Unknown"><value>Unqualified language</value></data></root>');
+  await write([{ path: 'strings/Unqualified.resx', version: '1.0.0', culture: 'fr-FR' }]);
+  catalog = await importCodeComponents([{ dir }]);
+  assert.equal(catalog.controls.get('tst_Synthetic.Editor').stringResources[0].lcid, null);
+  assert.deepEqual(spec(catalog, { lcid: 1036 }).value.strings, {});
+  assert.equal(catalog.diagnostics[0].code, 'PCF_RESOURCE_LANGUAGE_UNRESOLVED');
+  await fs.writeFile(path.join(control, 'strings/Second.1036.resx'), '<root><data name="Caption"><value>Conflicting caption</value></data><data name="Other"><value>Second resource</value></data></root>');
+  await write([declarations[0], { path: 'strings/Second.1036.resx', version: '1.0.0' }]);
+  catalog = await importCodeComponents([{ dir }]);
+  const conflictingKey = spec(catalog, { lcid: 1036 });
+  assert.deepEqual(conflictingKey.value.strings, { Empty: '', Other: 'Second resource' });
+  assert.equal(conflictingKey.diagnostics[0].code, 'PCF_RESOURCE_KEY_AMBIGUOUS');
+  await fs.writeFile(path.join(control, 'strings/Second.1036.resx'), '<root><data name="Repeated"><value>One</value></data><data name="Repeated"><value>Two</value></data></root>');
+  await write([{ path: 'strings/Second.1036.resx', version: '1.0.0' }]);
+  catalog = await importCodeComponents([{ dir }]);
+  assert.equal(catalog.controls.get('tst_Synthetic.Editor').stringResources[0].entries.length, 2);
+  assert.deepEqual(spec(catalog, { lcid: 1036 }).value.strings, {});
+  assert.equal(catalog.diagnostics[0].code, 'PCF_RESOURCE_KEY_AMBIGUOUS');
+});

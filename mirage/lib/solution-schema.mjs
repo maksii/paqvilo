@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
+import {metadataNumeric} from './exact-numeric.mjs';
 import {
   parseSolutionXml,
   descendants,
@@ -177,8 +178,8 @@ function attributeFacts(node) {
     maxLength: num(t("MaxLength")),
     precision: num(t("Accuracy")),
     precisionSource: num(t("AccuracySource")),
-    minValue: num(t("MinValue")),
-    maxValue: num(t("MaxValue")),
+    minValue: metadataNumeric(t("MinValue")),
+    maxValue: metadataNumeric(t("MaxValue")),
     format: t("Format") || undefined,
     dateTimeBehavior: BEHAVIOR[t("Behavior")],
     autoNumberFormat: t("AutoNumberFormat") || undefined,
@@ -1035,10 +1036,15 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       message: `Global option set ${attribute.optionSetName} is not available in the selected solution roots.`,
     });
   const type = attribute.type ?? "nvarchar";
-  const lookupTargets =
+  const sourceLookupTargets =
     schema.targets[tableName + "/" + attribute.name] ??
     (attribute.intersectTarget ? [attribute.intersectTarget] : undefined) ??
     (["lookup", "owner"].includes(type) ? STANDARD_LOOKUP_TARGETS[attribute.name] : undefined);
+  // Solution relationships can name the abstract owner table. Owner columns
+  // resolve to the concrete user/team targets, unlike ordinary lookup columns.
+  const lookupTargets = type === "owner" && sourceLookupTargets?.includes("owner")
+    ? [...new Set(sourceLookupTargets.flatMap(target => target === "owner" ? STANDARD_LOOKUP_TARGETS.ownerid : [target]))]
+    : sourceLookupTargets;
   const appDefault = attribute.appDefaultValue;
   const defaultValue =
     type === "bit" && /^[01]$/.test(appDefault ?? "")
@@ -1069,6 +1075,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       requiredLevel: attribute.requiredLevel,
       validForRead: attribute.validForRead,
       precision: attribute.precision,
+      precisionSource: attribute.precisionSource,
       minValue: attribute.minValue,
       maxValue: attribute.maxValue,
       format: attribute.format,

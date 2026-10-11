@@ -16,6 +16,8 @@ import {
 } from "./solution-schema.mjs";
 import { mapLimit } from "./solution-cache.mjs";
 import { importSolutionPlugins, resolvePluginSourceFiles } from './exported-plugins.mjs';
+import { matchingSystemForms, portalFormEligible } from './system-form-selection.mjs';
+import { advancedFormGraph } from './advanced-form-graph.mjs';
 
 export { parseSolutionXml, descendants };
 
@@ -23,7 +25,7 @@ const norm = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-const FORM_PARSER_ID = "metadata-form@3";
+const FORM_PARSER_ID = "metadata-form@5";
 const VIEW_PARSER_ID = "metadata-view@1";
 const IO_CONCURRENCY = 24;
 
@@ -31,14 +33,25 @@ const IO_CONCURRENCY = 24;
 function parseFormDocument(xml, entity, file, lcid) {
   const document = parseSolutionXml(xml);
   const forms = [];
+  const sourceTypes = new Map();
+  const visit = (node, enclosingType) => {
+    const type = node.name === "forms" ? node.attrs.type : enclosingType;
+    if (node.name === "systemform" && type !== undefined) sourceTypes.set(node, type);
+    for (const nested of node.children ?? []) visit(nested, type);
+  };
+  visit(document, undefined);
   for (const systemform of document.name === "systemform"
     ? [document]
     : descendants(document, "systemform")) {
     const form = child(systemform, "form");
     if (!form) continue;
+    const declaredType = text(systemform, "type");
+    const systemFormType = /^\d+$/.test(declaredType ?? '') ? Number(declaredType) : undefined;
     forms.push({
       id: norm(text(systemform, "formid") ?? path.basename(file, ".xml")),
       entity,
+      ...(sourceTypes.has(systemform) ? { formType: sourceTypes.get(systemform) } : {}),
+      ...(systemFormType !== undefined ? { systemFormType } : {}),
       name: label(child(systemform, "LocalizedNames"), lcid) ?? "",
       xml: serialize(form),
       file,
@@ -547,15 +560,15 @@ export function applySolutionMetadata(portal, metadata) {
     };
   };
   const resolve = (definition) => {
-    const formId = norm(field(definition.metadata, "formid"));
-    let choices = metadata.forms.filter(
-      (f) =>
-        f.entity === norm(definition.entityName) &&
-        f.active &&
-        (formId
-          ? f.id === formId
-          : norm(f.name.trim()) === norm(definition.formName?.trim())),
-    );
+    const matches = matchingSystemForms(definition, metadata.forms);
+    const choices = matches.filter(portalFormEligible);
+    if (matches.length && !choices.length) diagnostics.push({
+      code: 'SYSTEMFORM_INELIGIBLE_TYPE',
+      id: definition.id,
+      entity: definition.entityName,
+      candidates: matches.map(({ id, formType, systemFormType, file }) => ({ formId: id, formType, systemFormType, sourceFile: file })),
+      message: 'Matching exported forms have a declared non-Main type; no portal form layout is selected.',
+    });
     if (!choices.length) return null;
     // Legacy form selection (platform-internals-reference.md 6.1.3): the first systemform
     // with the name. Dataverse retrieval order is not observable locally; layer and file
@@ -639,16 +652,20 @@ export function applySolutionMetadata(portal, metadata) {
       });
   }
   for (const form of portal.advancedForms ?? []) {
-    const steps = portal.records.filter(
-      (r) =>
-        r.kind === "advancedformstep" &&
-        norm(field(r, "webform")) === form.id &&
-        Number(field(r, "statecode", 0)) !== 1,
-    );
+    const graph = advancedFormGraph(form, portal.records);
+    const steps = graph.steps;
+    diagnostics.push(...graph.diagnostics);
     const schemas = [];
     for (const step of steps) {
       try {
-        if (Number(field(step, "type")) === 100000003) {
+        const type = Number(field(step, 'type', 100000001));
+        if (type === 100000000) {
+          const schema = { stepId: step.id, type: 'condition', condition: field(step, 'condition'), nextStepId: norm(field(step, 'nextstep')), conditionDefaultNextStepId: norm(field(step, 'conditiondefaultnextstep')), js: step.customJavascript, metadata: step };
+          schemas.push(schema);
+          componentSchemas[step.id] = schema;
+          continue;
+        }
+        if (type === 100000003) {
           const target = portal.pages.find(
             (p) => p.id === norm(field(step, "redirectwebpage")),
           );
@@ -668,9 +685,12 @@ export function applySolutionMetadata(portal, metadata) {
             ),
             recordQueryName: field(step, "redirecturlquerystringname"),
             js: step.customJavascript,
+            metadata: step,
           });
+          componentSchemas[step.id] = schemas.at(-1);
           continue;
         }
+        if (![100000001, 100000002].includes(type)) throw new Error(`Exported multistep type '${type}' is unsupported; it is not a Load Form or Load Tab.`);
         const definition = {
           id: step.id,
           name: step.name,
@@ -692,7 +712,7 @@ export function applySolutionMetadata(portal, metadata) {
           schema.metadata = step;
           schemas.push(schema);
           componentSchemas[step.id] = schema;
-        }
+        } else diagnostics.push({ code: 'ADVANCEDFORM_STEP_UNRESOLVED', id: step.id, form: form.id, entity: definition.entityName, formName: definition.formName, message: 'The exported load step has no matching eligible Dataverse systemform layout.' });
       } catch (error) {
         diagnostics.push({
           code: "ADVANCEDFORM_STEP_MAPPING_ERROR",
@@ -701,8 +721,8 @@ export function applySolutionMetadata(portal, metadata) {
         });
       }
     }
-    const start = norm(field(form.metadata, "startstep"));
-    const schema = schemas.find((s) => s.stepId === start) ?? schemas[0];
+    const start = graph.initialStepId;
+    const schema = schemas.find((s) => norm(s.stepId) === start);
     if (schema)
       componentSchemas[form.id] = {
         ...schema,
@@ -713,7 +733,9 @@ export function applySolutionMetadata(portal, metadata) {
       diagnostics.push({
         code: "ADVANCEDFORM_UNRESOLVED",
         id: form.id,
-        message: "No mapped form step exists in the solution sources",
+        initialStepId: start || null,
+        mappedStepIds: schemas.map(step => step.stepId),
+        message: "The declared initial step has no mapped layout in the selected solution sources; another step is not selected instead",
       });
   }
   return {

@@ -21,6 +21,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Registered Dataverse plugins and local write models | [Dataverse plugins](dataverse-plugins.md) |
 | Scripts, assets and platform adapters | [Platform resources](platform-resources.md) |
 | Reference comparison and its limits | [Parity evidence](parity-evidence.md), [runtime evidence](runtime-evidence.md) |
+| Configuration families, children and observations | [Configuration object parity](object-parity.md) |
 | Atomic simulation state writes | [State integrity](state-write-integrity.md) |
 
 These guides describe reusable contracts. Organisation-specific observations, datasets, parity results and business backlogs belong to the separate portal project. Store evidence under ignored `.paqvilo/`.

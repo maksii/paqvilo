@@ -1,7 +1,24 @@
 (function () {
   'use strict';
   if (window.__paqviloPcf) return;
-  const constructors = new Map(), loaded = new Map(), instances = new Map(), counts = new Map();
+  const constructors = new Map(), loaded = new Map(), instances = new Map(), counts = new Map(), history = [];
+  const errorText = value => { try { return typeof value?.message === 'string' ? value.message : String(value); } catch { return 'Unknown PCF failure'; } };
+  const debugValue = (value, depth = 0) => {
+    try {
+    if (value == null || typeof value !== 'object') return typeof value === 'function' ? undefined : value;
+    if (value instanceof Date) return Number.isFinite(value.getTime()) ? value.toISOString() : null;
+    if (depth > 5) return '[depth limit]';
+    if (Array.isArray(value)) return value.slice(0, 100).map(item => debugValue(item, depth + 1));
+    return Object.fromEntries(Object.entries(Object.getOwnPropertyDescriptors(value)).slice(0, 100).filter(([, descriptor]) => !('value' in descriptor) || typeof descriptor.value !== 'function').map(([key, descriptor]) => [key, 'value' in descriptor ? debugValue(descriptor.value, depth + 1) : '[accessor]']));
+    } catch { return '[snapshot unavailable]'; }
+  };
+  const debugSnapshot = entry => { try { return {
+    id: entry.id, constructor: entry.constructor, state: entry.state, error: entry.error ?? null,
+    lifecycle: entry.lifecycle.map(item => ({ ...item })), outputs: debugValue(entry.outputs ?? {}), lastParameterUpdate: debugValue(entry.lastParameterUpdate ?? null),
+    parameters: Object.fromEntries(Object.entries(entry.parameters ?? {}).map(([name, parameter]) => [name,
+      Object.hasOwn(parameter, 'raw') ? { raw: debugValue(parameter.raw), formatted: parameter.formatted, type: parameter.type, attributes: debugValue(parameter.attributes), error: Boolean(parameter.error), errorMessage: parameter.errorMessage }
+        : { dataset: true, loading: parameter.loading, error: parameter.error, errorMessage: parameter.errorMessage, sortedRecordIds: debugValue(parameter.sortedRecordIds), paging: debugValue(parameter.paging) }])),
+  }; } catch (error) { return { id: entry.id, constructor: entry.constructor, state: entry.state, error: entry.error ?? null, snapshotError: errorText(error) }; } };
   const framework = window.ComponentFramework = window.ComponentFramework || {};
   const prior = framework.registerControl;
   framework.registerControl = function (name, constructor) {
@@ -56,12 +73,13 @@
     }
     return value;
   }
-  function groupType(types) {
+  function groupType(types, boundType) {
     if (!types?.length) return null;
+    if (boundType) return types.includes(boundType) ? boundType : null;
     if (types.every(type => ['SingleLine.Text', 'Multiple', 'SingleLine.TextArea', 'SingleLine.Email', 'SingleLine.Phone', 'SingleLine.URL', 'SingleLine.Ticker'].includes(type))) return 'SingleLine.Text';
     if (types.every(type => ['Decimal', 'FP', 'Whole.None', 'Currency'].includes(type))) return types.length === 1 ? types[0] : 'Decimal';
     if (types.every(type => ['DateAndTime.DateAndTime', 'DateAndTime.DateOnly'].includes(type))) return types.length === 1 ? types[0] : 'DateAndTime.DateAndTime';
-    return types[0];
+    return types.length === 1 ? types[0] : null;
   }
   function nativeScope(container) {
     return container.closest('[data-pcf-native-field]') || container.closest('[data-mirage-component="entityform"], [data-mirage-component="webform"]') || container.closest('form') || document;
@@ -107,8 +125,16 @@
     else if (field.matches('select[multiple]')) { const values = new Set((raw == null ? [] : Array.isArray(raw) ? raw : [raw]).map(String)); for (const option of field.options) option.selected = values.has(option.value); events.add(field); }
     else if (field.matches('input,select,textarea')) {
       let value = raw == null ? '' : raw instanceof Date ? raw.toISOString() : String(raw);
-      if (raw instanceof Date && (field.type === 'date' || field.dataset.type === 'date')) value = value.slice(0, 10);
-      if (raw instanceof Date && field.type === 'datetime-local') value = value.slice(0, 19);
+      if (raw instanceof Date) {
+        const date = new Date(raw.getTime()), pad = (item, size = 2) => String(item).padStart(size, '0');
+        if (field.dataset.type === 'date' || field.type === 'date') date.setHours(0, 0, 0, 0);
+        const local = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
+        if (field.hasAttribute('data-sim-date-value')) value = field.dataset.behavior === 'UserLocal'
+          ? date.toISOString().replace(/\.(\d{3})Z$/, '.$10000Z')
+          : local + '.' + pad(date.getMilliseconds(), 3) + '0000';
+        else if (field.type === 'date') value = local.slice(0, 10);
+        else if (field.type === 'datetime-local') value = local;
+      }
       write(field, value);
       if (binding.control === 'multiselect') {
         const values = new Set((raw == null ? [] : Array.isArray(raw) ? raw : [raw]).map(String));
@@ -272,30 +298,46 @@
     const ordinal = (counts.get(spec.id) || 0) + 1;
     counts.set(spec.id, ordinal);
     container.id = spec.id + '-' + ordinal;
+    const debug = { id: container.id, constructor: spec.constructor, state: 'loading', lifecycle: [] };
+    const trace = stage => { debug.lifecycle.push({ stage, at: Date.now() }); if (debug.lifecycle.length > 100) debug.lifecycle.shift(); };
     let control, observer, disposed = false, tracked = false, detachNative = () => {}, nativeWriting = false, updatingFromNative = false, nativeQueued = false;
     const cleanup = () => {
       if (disposed) return;
       disposed = true; observer?.disconnect(); detachNative(); instances.delete(container);
-      try { control?.destroy?.(); } catch (error) { container.dataset.pcfCleanupError = error.message; }
+      try { if (control) { trace('destroy'); control.destroy?.(); } } catch (error) { container.dataset.pcfCleanupError = errorText(error); debug.error ??= errorText(error); }
+      debug.state = debug.error ? 'failed' : 'destroyed'; history.push(debugSnapshot(debug)); if (history.length > 100) history.shift();
     };
     const failure = error => {
-      cleanup(); container.setAttribute('aria-busy', 'false'); container.setAttribute('role', 'alert'); container.textContent = error.message; container.dataset.pcfError = 'true'; delete container.dataset.pcfReady;
+      debug.error = errorText(error);
+      cleanup(); container.setAttribute('aria-busy', 'false'); container.setAttribute('role', 'alert'); container.textContent = debug.error; container.dataset.pcfError = 'true'; delete container.dataset.pcfReady;
       const fallback = container.closest('[data-pcf-native-field]')?.querySelector('[data-pcf-native-input]');
       if (fallback) fallback.hidden = false;
     };
     // Reserve before resource loading so duplicate calls cannot create two instances.
-    instances.set(container, { cleanup });
+    instances.set(container, { cleanup, debug });
     try {
       for (const item of spec.resources.filter(item => item.kind === 'code' || item.kind === 'css')) await resource(item);
       if (disposed || !container.isConnected) { cleanup(); return; }
-      const Constructor = constructors.get(spec.constructor) || spec.constructor.split('.').reduce((value, key) => value?.[key], window);
+      let Constructor = constructors.get(spec.constructor) || spec.constructor.split('.').reduce((value, key) => value?.[key], window);
+      if (!Constructor) {
+        const exportName = spec.constructor.split('.').at(-1);
+        const candidates = [...new Set(spec.resources.filter(item => item.kind === 'code' && item.exportGlobal)
+          .map(item => Object.getOwnPropertyDescriptor(window, item.exportGlobal)?.value?.[exportName]).filter(item => typeof item === 'function'))];
+        if (candidates.length > 1) throw new Error('The declared PCF resources expose ambiguous constructor exports: ' + spec.constructor);
+        Constructor = candidates[0];
+      }
       if (typeof Constructor !== 'function') throw new Error('The PCF bundle did not register ' + spec.constructor);
       const parameters = {}, writable = new Set();
+      debug.parameters = parameters;
+      debug.editableParameters = spec.properties.filter(property => property.usage !== 'output').map(property => property.name);
       for (const property of spec.properties) {
-        const type = property['of-type'] || groupType(property.types);
+        const type = property['of-type'] || groupType(property.types, spec.nativeBinding?.propertyTypes?.[property.name]);
         if (!type) throw new Error('PCF property ' + property.name + ' has an ambiguous type-group binding');
         const raw = typed(spec.args[property.name] ?? spec.args[property.name.toLowerCase()] ?? property['default-value'] ?? null, type);
-        parameters[property.name] = { raw, formatted: raw == null ? '' : String(raw), type, attributes: { DisplayName: spec.strings[property['display-name-key']] || property['display-name-key'] || property.name, LogicalName: property.name, RequiredLevel: property.required === 'true' ? 1 : 0, Options: [] }, error: false, errorMessage: '' };
+        const attributes = spec.nativeBinding?.properties?.includes(property.name) && spec.nativeBinding.attributes
+          ? spec.nativeBinding.attributes
+          : { DisplayName: spec.strings[property['display-name-key']] ?? property['display-name-key'] ?? property.name, LogicalName: property.name, RequiredLevel: property.required === 'true' ? 1 : 0, Options: [] };
+        parameters[property.name] = { raw, formatted: raw == null ? '' : String(raw), type, attributes: { ...attributes }, error: false, errorMessage: '' };
         if (property.usage === 'bound' || property.usage === 'output') writable.add(property.name);
       }
       const entitySet = name => {
@@ -347,26 +389,52 @@
         navigation: { openAlertDialog: async options => { window.alert(options.text); }, openConfirmDialog: async options => ({ confirmed: window.confirm(options.text) }) },
       };
       const datasetHosts = (spec.datasets ?? []).map(binding => {
-        const host = datasetAdapter(binding, api, name => { if (control && !disposed) { context.updatedProperties = [name]; try { control.updateView(context); } catch (error) { failure(error); } } });
+        const host = datasetAdapter(binding, api, name => { if (control && !disposed) { context.updatedProperties = [name]; try { trace('updateView:dataset'); control.updateView(context); } catch (error) { failure(error); } } });
         parameters[binding.name] = host.dataset; return host;
       });
       control = new Constructor();
       const changed = () => {
         if (disposed || updatingFromNative) return;
-        const outputs = Object.fromEntries(Object.entries(control.getOutputs?.() || {}).filter(([name]) => writable.has(name)));
-        const updates = [];
-        for (const [name, raw] of Object.entries(outputs)) {
-          if (JSON.stringify(parameters[name].raw) !== JSON.stringify(raw)) updates.push(name);
-          parameters[name].raw = raw; parameters[name].formatted = raw == null ? '' : String(raw);
-        }
+        let outputs, prepared;
+        try {
+          trace('getOutputs'); outputs = Object.fromEntries(Object.entries(control.getOutputs?.() || {}).filter(([name]) => writable.has(name)));
+          debug.outputs = outputs;
+          // Prepare every comparison/format before mutating parameter values. A
+          // cyclic value or getter can fail after getOutputs itself succeeded.
+          prepared = Object.entries(outputs).map(([name, raw]) => ({ name, raw, changed: JSON.stringify(parameters[name].raw) !== JSON.stringify(raw), formatted: raw == null ? '' : String(raw) }));
+        } catch (error) { failure(error); return; }
+        const updates = prepared.filter(item => item.changed).map(item => item.name);
+        for (const { name, raw, formatted } of prepared) { parameters[name].raw = raw; parameters[name].formatted = formatted; }
         try { nativeWriting = true; nativeOutput(spec, container, outputs); }
         catch (error) { failure(error); return; }
         finally { nativeWriting = false; }
         container.dispatchEvent(new CustomEvent('paqvilo:pcf-output', { bubbles: true, detail: outputs }));
-        if (updates.length) queueMicrotask(() => { if (!disposed) { context.updatedProperties = updates; try { control.updateView(context); } catch (error) { failure(error); } } });
+        if (updates.length) queueMicrotask(() => { if (!disposed) { context.updatedProperties = updates; try { trace('updateView:output'); control.updateView(context); } catch (error) { failure(error); } } });
       };
       let state = {}; try { state = JSON.parse(sessionStorage.getItem(stateKey) || '{}'); } catch {}
-      control.init(context, changed, state, container); control.updateView(context);
+      trace('init'); control.init(context, changed, state, container); if (disposed) return; trace('updateView'); control.updateView(context);
+      debug.updateParameters = values => {
+        if (disposed) throw new Error('PCF instance is disposed');
+        if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('PCF parameter updates require an object');
+        const updates = Object.entries(values).map(([name, value]) => {
+          const property = spec.properties.find(item => item.name === name);
+          if (!property || property.usage === 'output') throw new Error('PCF parameter is not editable: ' + name);
+          return [name, typed(value, parameters[name].type)];
+        });
+        const nativeUpdates = updates.filter(([name]) => spec.nativeBinding?.properties?.includes(name));
+        if (nativeUpdates.some(([, value]) => JSON.stringify(value) !== JSON.stringify(nativeUpdates[0][1]))) throw new Error('PCF returned conflicting outputs for one native field');
+        debug.lastParameterUpdate = { names: updates.map(([name]) => name), phase: 'validated', parameterValuesApplied: false, nativeValuesMayHaveChanged: false };
+        for (const [name, raw] of updates) { parameters[name].raw = raw; parameters[name].formatted = raw == null ? '' : String(raw); parameters[name].error = false; parameters[name].errorMessage = ''; }
+        debug.lastParameterUpdate.parameterValuesApplied = true;
+        try {
+          debug.lastParameterUpdate.phase = 'native-output'; debug.lastParameterUpdate.nativeValuesMayHaveChanged = nativeUpdates.length > 0;
+          nativeWriting = true; nativeOutput(spec, container, Object.fromEntries(updates.filter(([name]) => writable.has(name))));
+          context.updatedProperties = updates.map(([name]) => name); debug.lastParameterUpdate.phase = 'updateView'; trace('debug:updateView'); control.updateView(context); debug.lastParameterUpdate.phase = 'completed';
+        } catch (error) { failure(error); throw error; }
+        finally { nativeWriting = false; }
+        return debugSnapshot(debug);
+      };
+      debug.state = 'ready';
       if (disposed) return;
       if (spec.nativeBinding) {
         const scope = nativeScope(container), binding = spec.nativeBinding;
@@ -384,7 +452,7 @@
             } catch (error) { if (!property.error || property.errorMessage !== error.message) updates.push(name); property.error = true; property.errorMessage = error.message; }
           }
           if (updates.length) {
-            try { updatingFromNative = true; context.updatedProperties = updates; control.updateView(context); }
+            try { updatingFromNative = true; context.updatedProperties = updates; trace('updateView:native'); control.updateView(context); }
             catch (error) { failure(error); }
             finally { updatingFromNative = false; }
           }
@@ -409,7 +477,7 @@
         if (!tracked || disposed) return;
         const width = container.clientWidth, height = container.clientHeight;
         if (width === context.mode.allocatedWidth && height === context.mode.allocatedHeight) return;
-        context.mode.allocatedWidth = width; context.mode.allocatedHeight = height; context.updatedProperties = ['layout']; try { control.updateView(context); } catch (error) { failure(error); }
+        context.mode.allocatedWidth = width; context.mode.allocatedHeight = height; context.updatedProperties = ['layout']; try { trace('updateView:layout'); control.updateView(context); } catch (error) { failure(error); }
       });
       observer.observe(container);
     } catch (error) {
@@ -419,5 +487,43 @@
   const removed = new MutationObserver(() => { for (const [container, instance] of instances) if (!container.isConnected) instance.cleanup(); });
   removed.observe(document.documentElement, { childList: true, subtree: true });
   window.addEventListener('pagehide', () => { for (const instance of instances.values()) instance.cleanup(); }, { once: true });
-  window.__paqviloPcf = { mount };
+  window.__paqviloPcf = {
+    mount,
+    inspect(id) {
+      const current = [...instances.values()].map(instance => debugSnapshot(instance.debug));
+      return [...current, ...history].filter(entry => id === undefined || entry.id === id);
+    },
+    updateParameters(id, values) {
+      const instance = [...instances.values()].find(item => item.debug.id === id);
+      if (!instance?.debug.updateParameters) throw new Error('PCF ready instance not found: ' + id);
+      return instance.debug.updateParameters(values);
+    },
+    openDebugger() {
+      const existing = document.querySelector('[data-paqvilo-pcf-debugger]');
+      if (existing) { if (!existing.open) existing.showModal(); return existing; }
+      const dialog = document.createElement('dialog'); dialog.setAttribute('data-paqvilo-pcf-debugger', ''); dialog.setAttribute('aria-label', 'Code component debugger');
+      dialog.style.cssText = 'max-width:760px;width:90%;max-height:85vh;padding:20px;border:1px solid #777;border-radius:8px;overflow:auto';
+      const title = document.createElement('h2'); title.textContent = 'Code component debugger';
+      const select = document.createElement('select'); select.setAttribute('aria-label', 'Code component instance');
+      const editor = document.createElement('textarea'); editor.setAttribute('aria-label', 'Parameter values (JSON)'); editor.rows = 8; editor.style.cssText = 'display:block;width:100%;margin:12px 0;font-family:monospace';
+      const status = document.createElement('p'); status.setAttribute('role', 'status');
+      const details = document.createElement('pre'); details.style.cssText = 'white-space:pre-wrap;overflow-wrap:anywhere';
+      const button = text => { const node = document.createElement('button'); node.type = 'button'; node.textContent = text; return node; };
+      const apply = button('Apply parameters'), refresh = button('Refresh state'), close = button('Close');
+      const render = () => {
+        const entry = window.__paqviloPcf.inspect(select.value)[0];
+        apply.disabled = entry?.state !== 'ready'; details.textContent = JSON.stringify(entry ?? {}, null, 2);
+        const instance = [...instances.values()].find(item => item.debug.id === select.value);
+        const editable = Object.entries(instance?.debug.parameters ?? {}).filter(([name, parameter]) => instance.debug.editableParameters.includes(name) && Object.hasOwn(parameter, 'raw'));
+        editor.value = JSON.stringify(Object.fromEntries(editable.map(([name, parameter]) => [name, debugValue(parameter.raw)])), null, 2);
+      };
+      const inventory = () => { const id = select.value; select.replaceChildren(); for (const entry of window.__paqviloPcf.inspect()) { const option = document.createElement('option'); option.value = entry.id; option.textContent = `${entry.id} · ${entry.state}`; select.append(option); } if ([...select.options].some(option => option.value === id)) select.value = id; render(); };
+      select.addEventListener('change', render); refresh.addEventListener('click', inventory);
+      apply.addEventListener('click', () => {
+        try { window.__paqviloPcf.updateParameters(select.value, JSON.parse(editor.value)); status.textContent = 'Parameters applied.'; render(); }
+        catch (error) { status.textContent = errorText(error); details.textContent = JSON.stringify(window.__paqviloPcf.inspect(select.value)[0] ?? {}, null, 2); }
+      });
+      close.addEventListener('click', () => dialog.close()); dialog.append(title, select, editor, apply, refresh, close, status, details); document.body.append(dialog); inventory(); dialog.showModal(); return dialog;
+    },
+  };
 })();

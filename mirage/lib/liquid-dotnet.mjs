@@ -39,6 +39,13 @@ const INT32_MIN = -2147483648;
 const INT32_MAX = 2147483647;
 const DECIMAL_MAX_MANTISSA = 79228162514264337593543950335n;
 
+/** Explicit Double values produced by observed floating-point filter dispatch. */
+export class NetDouble {
+  constructor(value) { this.value = Number(value); }
+  valueOf() { return this.value; }
+  toString() { return this.value === Infinity ? "∞" : this.value === -Infinity ? "-∞" : plainNumber(this.value); }
+}
+
 /** System.Decimal value with exact base-10 digits (scale kept for Convert.ToString). */
 export class NetDecimal {
   constructor(mantissa, scale = 0) {
@@ -47,6 +54,7 @@ export class NetDecimal {
   }
   static from(value) {
     if (value instanceof NetDecimal) return value;
+    if (value instanceof NetDouble) return NetDecimal.from(value.valueOf());
     if (typeof value === "bigint") return new NetDecimal(value, 0);
     if (typeof value === "number") {
       if (!Number.isFinite(value)) throw overflow();
@@ -163,16 +171,17 @@ export function decimalModulo(a, b) {
 
 export const isNetDecimal = (value) => value instanceof NetDecimal;
 export const isNumber = (value) =>
-  (typeof value === "number" && Number.isFinite(value)) || value instanceof NetDecimal;
+  (typeof value === "number" && Number.isFinite(value)) || value instanceof NetDecimal || value instanceof NetDouble;
 /** .NET kind of a numeric runtime value: int (Int32), long (Int64) or decimal. */
 export function numberKind(value) {
+  if (value instanceof NetDouble) return "double";
   if (value instanceof NetDecimal) return "decimal";
   if (typeof value !== "number") return null;
   if (!Number.isInteger(value)) return "decimal";
   return value >= INT32_MIN && value <= INT32_MAX ? "int" : "long";
 }
 export function toNumber(value) {
-  return value instanceof NetDecimal ? value.valueOf() : Number(value);
+  return value instanceof NetDecimal || value instanceof NetDouble ? value.valueOf() : Number(value);
 }
 /** Decimal values that are mathematically integral stay NetDecimal; others become JS numbers. */
 export function normalizeDecimal(result) {
@@ -198,12 +207,14 @@ export function plainNumber(value) {
 
 /** Convert.ToString(number, en-US) (decimal keeps its scale). */
 export function numberToNetString(value) {
+  if (value instanceof NetDouble) return value.toString();
   if (value instanceof NetDecimal) return value.toFixedString();
   if (Number.isInteger(value)) return plainNumber(value);
   return plainNumber(value);
 }
 /** DotLiquid Variable output of numbers (decimal "0.####", others ToString). */
 export function numberToOutput(value) {
+  if (value instanceof NetDouble) return value.toString();
   if (value instanceof NetDecimal) return value.toString();
   return plainNumber(value);
 }
@@ -600,6 +611,7 @@ export function netTypeName(value) {
   if (typeof value === "string") return "System.String";
   if (typeof value === "boolean") return "System.Boolean";
   if (value instanceof NetDecimal) return "System.Decimal";
+  if (value instanceof NetDouble) return "System.Double";
   if (typeof value === "number") return numberKind(value) === "int" ? "System.Int32" : numberKind(value) === "long" ? "System.Int64" : "System.Decimal";
   if (isDate(value)) return "System.DateTime";
   if (Array.isArray(value)) return "System.Object[]";
@@ -620,7 +632,7 @@ export function changeType(value, target) {
       if (kind === "string") return value;
       if (kind === "bool") return value ? "True" : "False";
       if (kind === "date") return dateToNetString(value);
-      if (kind === "int" || kind === "long" || kind === "decimal") return numberToNetString(value);
+      if (kind === "int" || kind === "long" || kind === "decimal" || kind === "double") return numberToNetString(value);
       throw invalidCast(netTypeName(value), "System.String");
     case "int":
     case "long": {
@@ -632,13 +644,13 @@ export function changeType(value, target) {
         return parsed;
       }
       if (kind === "bool") return value ? 1 : 0;
-      if (kind === "int" || kind === "long" || kind === "decimal") return toInt32Checked(value, target);
+      if (kind === "int" || kind === "long" || kind === "decimal" || kind === "double") return toInt32Checked(value, target);
       throw invalidCast(netTypeName(value), target === "int" ? "System.Int32" : "System.Int64");
     }
     case "decimal":
       if (kind === "string") return parseNetDecimal(value);
       if (kind === "bool") return new NetDecimal(value ? 1n : 0n, 0);
-      if (kind === "int" || kind === "long" || kind === "decimal") return NetDecimal.from(value);
+      if (kind === "int" || kind === "long" || kind === "decimal" || kind === "double") return NetDecimal.from(value);
       throw invalidCast(netTypeName(value), "System.Decimal");
     case "bool":
       if (kind === "bool") return value;
@@ -648,7 +660,7 @@ export function changeType(value, target) {
         if (text === "false") return false;
         throw new LiquidError("String was not recognized as a valid Boolean.", "System.FormatException");
       }
-      if (kind === "int" || kind === "long" || kind === "decimal") return toNumber(value) !== 0;
+      if (kind === "int" || kind === "long" || kind === "decimal" || kind === "double") return toNumber(value) !== 0;
       throw invalidCast(netTypeName(value), "System.Boolean");
     case "date":
       if (kind === "date") return value;

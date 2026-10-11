@@ -22,9 +22,10 @@ const CONTACT = "c0000000-0000-4000-8000-000000000011";
 const VALIDATED = 'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
 
 test("page kinds follow the rendered native controls", () => {
-  assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "modal-form"]);
+  assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "code-component", "modal-form"]);
   assert.equal(pageKind('<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "basic-form");
   assert.equal(pageKind('<div id="WebFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "multistep-form");
+  assert.equal(pageKind('<div data-mirage-component="codecomponent" data-pcf-schema="Sample.Widget"></div>'), "code-component");
   assert.equal(pageKind('<div class="entity-grid entitylist" data-view-layouts=""></div>'), "list");
   assert.equal(pageKind("<p>Welcome</p>", { authenticated: true }), "authenticated");
   assert.equal(pageKind("<p>Welcome</p>"), "anonymous");
@@ -34,6 +35,16 @@ test("page kinds follow the rendered native controls", () => {
     assert.ok(resource.native, resource.id);
     assert.ok("local" in resource, resource.id);
   }
+});
+
+test("standalone code components require a server form without native basic form scripts", () => {
+  const content = '<div data-pcf-schema="Sample.Widget"></div><form data-authored-form><input name="subject"></form>';
+  const regions = nativePageRegions({ content, action: "/components/" });
+  assert.equal(regions.kind, "code-component");
+  assert.match(regions.content, /^<form method="post" action="\/components\/" id="liquid_form">/);
+  assert.ok(regions.content.includes(content));
+  assert.match(regions.content, /__VIEWSTATE/);
+  assert.doesNotMatch(regions.content, /xrm-adx\/js\/webform\.js/);
 });
 
 test("the WebForms server form carries the native hidden fields, postback stub and form scripts in order", () => {

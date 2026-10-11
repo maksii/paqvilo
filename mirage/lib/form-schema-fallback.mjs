@@ -1,4 +1,6 @@
 import { portalField } from "./importer.mjs";
+import { matchingSystemForms, portalFormEligible } from './system-form-selection.mjs';
+import { advancedFormGraph } from './advanced-form-graph.mjs';
 
 /*
  * Local layouts for exported basic and advanced forms whose Dataverse systemforms are absent
@@ -30,6 +32,13 @@ function formMetadataRows(portal, definition, stepId) {
  * approximation (COMPONENT_SCHEMA_REQUIRED) as a diagnostic.
  */
 export function approximateFormSchema({ definition, portal, metadata, diagnostic, step = null }) {
+  const matches = matchingSystemForms(definition, metadata?.forms);
+  // An absent layout can be approximated; an explicitly ineligible exported
+  // layout must not silently become an editable invented form.
+  if (matches.length && !matches.some(portalFormEligible)) {
+    diagnostic?.({ code: 'SYSTEMFORM_INELIGIBLE_TYPE', component: step ? 'webform' : 'entityform', form: definition.name, message: 'Matching exported forms have a declared non-Main type; approximation is unavailable.' });
+    return null;
+  }
   const entity = canonicalId(definition.entityName ?? fieldOf(definition.metadata, "entityname"));
   if (!entity) return null;
   const table = metadata?.entities?.[entity] ?? {};
@@ -84,23 +93,9 @@ export function approximateFormSchema({ definition, portal, metadata, diagnostic
  * redirect and condition steps keep their targets, and each approximation is reported.
  */
 export function approximateAdvancedFormSchema({ definition, portal, metadata, schema, diagnostic }) {
-  const active = (portal.records ?? []).filter((row) => row.kind === "advancedformstep" && Number(fieldOf(row, "statecode") ?? 0) !== 1);
-  const byId = new Map(active.map((row) => [canonicalId(row.id), row]));
-  const selected = new Map(active.filter((row) => canonicalId(fieldOf(row, "webform")) === canonicalId(definition.id)).map((row) => [canonicalId(row.id), row]));
-  // The platform starts at adx_startstep and follows the next-step links, including step
-  // records that another advanced form owns (an export can share one start step).
-  const queue = [canonicalId(fieldOf(definition.metadata ?? {}, "startstep"))];
-  const visited = new Set();
-  while (queue.length) {
-    const id = queue.shift();
-    if (!id || visited.has(id)) continue;
-    visited.add(id);
-    const row = byId.get(id);
-    if (!row) continue;
-    selected.set(id, row);
-    queue.push(canonicalId(fieldOf(row, "nextstep")), canonicalId(fieldOf(row, "conditiondefaultnextstep")));
-  }
-  const records = [...selected.values()];
+  const graph = advancedFormGraph(definition, portal.records);
+  for (const entry of graph.diagnostics) diagnostic?.(entry);
+  const records = graph.steps;
   if (!records.length) return schema ?? null;
   const known = new Map((schema?.steps ?? []).map((step) => [canonicalId(step.stepId), step]));
   const steps = [];
@@ -121,7 +116,11 @@ export function approximateAdvancedFormSchema({ definition, portal, metadata, sc
       continue;
     }
     if (type === 100000000) {
-      steps.push({ stepId: record.id, type: "condition", condition: fieldOf(record, "condition"), nextStepId, conditionDefaultNextStepId: canonicalId(fieldOf(record, "conditiondefaultnextstep")) || null, metadata: record });
+      steps.push({ stepId: record.id, type: "condition", condition: fieldOf(record, "condition"), nextStepId, conditionDefaultNextStepId: canonicalId(fieldOf(record, "conditiondefaultnextstep")) || null, js: record.customJavascript, metadata: record });
+      continue;
+    }
+    if (![100000001, 100000002].includes(type)) {
+      diagnostic?.({ code: 'ADVANCEDFORM_STEP_UNSUPPORTED', component: 'webform', form: definition.id, step: record.id, stepType: type, message: 'The exported step type cannot be approximated as a load form.' });
       continue;
     }
     const approximated = approximateFormSchema({
@@ -133,8 +132,11 @@ export function approximateAdvancedFormSchema({ definition, portal, metadata, sc
     });
     if (approximated) steps.push({ ...approximated, stepId: record.id, nextStepId, js: record.customJavascript, metadata: record });
   }
-  const start = canonicalId(fieldOf(definition.metadata ?? {}, "startstep")) || canonicalId(schema?.initialStepId);
-  const first = steps.find((step) => canonicalId(step.stepId) === start) ?? steps.find((step) => step.type !== "redirect" && step.type !== "condition");
-  if (!first) return schema ?? null;
-  return { ...(schema ?? {}), ...first, steps, initialStepId: start && steps.some((step) => canonicalId(step.stepId) === start) ? start : first.stepId };
+  const start = graph.initialStepId || canonicalId(schema?.initialStepId);
+  const first = steps.find((step) => canonicalId(step.stepId) === start);
+  if (!first) {
+    diagnostic?.({ code: 'ADVANCEDFORM_STEP_UNRESOLVED', component: 'webform', form: definition.id, step: start || null, message: 'The declared initial step is unavailable; another exported step is not rendered instead.' });
+    return null;
+  }
+  return { ...(schema ?? {}), ...first, steps, initialStepId: start };
 }

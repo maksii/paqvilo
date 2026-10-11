@@ -105,6 +105,53 @@ async function simulator(t, overrides = {}) {
   return { app, dir, get, signInAs, signOut, settings };
 }
 
+test("an evidenced 301 redirect observation changes record responses, preserving source and canonical redirects", async (t) => {
+  const dir = await exportDir(t);
+  const portal = await importPortal(dir);
+  const target = new URL("/go", "http://local.invalid");
+  assert.equal(resolveUnmatchedRoute(portal, target).status, 301);
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false,
+    observed: { redirect301: "temporary", evidence: "fixture/first-response.json" } });
+  t.after(() => app.close());
+  for (const headers of [{}, signInHeaders(app, "owned-contact", { roles: [] })]) {
+    const response = await fetch(app.url + "/go", { redirect: "manual", headers });
+    assert.equal(response.status, 302);
+    assert.equal(response.headers.get("location"), "/secure/");
+  }
+  assert.equal(app.portal.redirects.find(row => row.inboundUrl === "go").statusCode, 301);
+  const canonical = await fetch(app.url + "/new-name?tab=2", { redirect: "manual" });
+  assert.equal(canonical.status, 301);
+  assert.equal(canonical.headers.get("location"), "/new-name/?tab=2");
+  const temporary = await fetch(app.url + "/promo?x=1", { redirect: "manual" });
+  assert.equal(temporary.status, 302);
+  assert.equal(temporary.headers.get("location"), "https://example.test/promo");
+  app.portal.redirects.push({ inboundUrl: "unobserved-status", statusCode: 307, redirectUrl: "/secure/" });
+  assert.equal(resolveUnmatchedRoute(app.portal, new URL("/unobserved-status", app.url)).status, 307);
+});
+
+test("observed marker-only redirect failure preserves higher-priority URL and page targets", async (t) => {
+  const dir=await exportDir(t);
+  const app=await createSimulator({sourceDir:dir,stateFile:path.join(dir,'state.json'),port:0,watch:false,
+    observed:{siteMarkerRedirect:'null-reference',evidence:'invented/root-child-marker-errors.json'}});
+  t.after(()=>app.close());
+  app.portal.redirects.push({inboundUrl:'missing-marker',siteMarkerId:'absent'});
+  for(const route of ['/area','/missing-marker']) {
+    const response=await fetch(app.url+route,{redirect:'manual'});
+    assert.equal(response.status,500);
+    assert.equal(response.headers.get('location'),null);
+    assert.equal(response.headers.get('cache-control'),'no-cache, no-store, must-revalidate');
+    assert.match(await response.text(),/Object reference not set to an instance of an object\./);
+  }
+  const urlRecord=app.portal.redirects.find(row=>row.inboundUrl==='/promo?x=1');
+  urlRecord.siteMarkerId='absent';
+  assert.equal(resolveUnmatchedRoute(app.portal,new URL('/promo?x=1',app.url)).location,'https://example.test/promo');
+  const pageRecord=app.portal.redirects.find(row=>row.inboundUrl==='go');
+  pageRecord.siteMarkerId='absent';
+  assert.equal(resolveUnmatchedRoute(app.portal,new URL('/go',app.url)).location,'/secure/');
+  app.portal.observed.siteMarkerRedirect='resolve';
+  assert.equal(resolveUnmatchedRoute(app.portal,new URL('/area',app.url)).status,302);
+});
+
 test("unresolved paths follow redirects and the canonical slash before Page Not Found; URL history is opt-in", async (t) => {
   const portal = await importPortal(await exportDir(t));
   const route = (target, options = {}) => resolveUnmatchedRoute(portal, new URL(target, "http://local.invalid"), options);

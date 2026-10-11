@@ -67,6 +67,9 @@ test(
     assert.equal(inspected.format, "standard");
     assert.equal(inspected.pages[0].url, "/");
     assert.equal(inspected.pages[0].name, "CLI standard");
+    assert.equal(inspected.liquidSyntax.sourceCount, 1);
+    assert.equal(inspected.liquidSyntax.sourceParsePassed, 1);
+    assert.deepEqual(inspected.liquidSyntax.diagnostics, []);
     result = await run(
       [
         "inspect",

@@ -13,7 +13,7 @@ test("native date formats preserve exported time tokens and quoted literals", ()
 });
 
 test("readonly native date display remains visible and does not disable its textbox", () => {
-  const classes = new Set(), icon = { style: {} }, display = { readOnly: false, classList: { add: value => classes.add(value) } };
+  const classes = new Set(), icon = { style: {} }, display = { dataset: {}, readOnly: false, classList: { add: value => classes.add(value) } };
   const group = { dataset: { simDateTarget: "date", simDateOnly: "true", dateFormat: "DD/MM/YYYY" }, querySelector: selector => selector === "input" ? display : icon };
   const input = { id: "date", value: "", readOnly: true };
   const picker = { disable: () => assert.fail("Readonly native textboxes must not be disabled"), date: () => {} };

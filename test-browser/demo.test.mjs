@@ -160,7 +160,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.keyboard.press('Alt+Shift+P');
   const css = path.join(directory, 'portal/web-files/demo.css');
   await fs.appendFile(css, '\nbody{--demo-source-proof:verified;}\n');
-  await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified');
+  await page.waitForFunction(() => document.body && getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified');
   await page.goto(url + '/approach/out-of-the-box/');
   await page.locator('.entity-grid tbody tr[data-id]').first().waitFor();
   assert.equal(await page.locator('.entity-grid tbody tr[data-id]').count(), 10);

@@ -1,7 +1,9 @@
 import { parseFetchXml, DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
 import { planFetch } from "./fetchxml-engine.mjs";
-import { fieldKind } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN } from "./dataverse-values.mjs";
+import {isExactNumeric} from './exact-numeric.mjs';
+import {attachODataReaderDetails, odataConversionDetails} from './webapi-error-details.mjs';
 import {
   applyPaths,
   expressionPaths,
@@ -423,8 +425,8 @@ export function webApiPolicy(portal, store, entity) {
           "WebApiPrivateField",
         );
       if (name.endsWith("@odata.bind")) assertBindNavigation(column);
-      assertExists(column, { write: true });
       if (!enabled(column, writeFields)) notEnabled(column, mapping.logicalName);
+      assertExists(column, { write: true });
       if (!columnAllowed(column, operation))
         denied(
           `Column permission denies ${operation} on ${mapping.logicalName}.${column}.`,
@@ -433,6 +435,15 @@ export function webApiPolicy(portal, store, entity) {
           { attribute: column, table: mapping.logicalName, operation },
         );
       const rel = relation(column);
+      // The portal gates property names inside object payloads before Dataverse
+      // attempts scalar conversion. A scalar choice wrapper is not a wire value.
+      if (!rel && !name.endsWith("@odata.bind") && value && typeof value === "object" && !Array.isArray(value) && !isExactNumeric(value))
+        write(value, operation);
+      // Validate submitted GUID literals before immutable fields are omitted.
+      // Otherwise a malformed primary key could turn into a successful no-op.
+      if (value != null && (column === mapping.idColumn || fieldKind(definitionOf(column)) === "guid") &&
+          (typeof value !== "string" || !GUID_PATTERN.test(value)))
+        throw attachODataReaderDetails(new DataError(`Cannot convert the literal '${typeof value === "object" ? JSON.stringify(value) : String(value)}' to the expected type 'Edm.Guid'.`, 400, "InvalidValue", { innerCode: "0x80048d19" }), portal.observed?.webApiErrorDetails === "odata-wrapper" ? odataConversionDetails(value, "Edm.Guid", column) : null);
       if (
         rel &&
         !name.endsWith("@odata.bind") &&
