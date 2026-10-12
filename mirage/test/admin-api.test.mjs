@@ -6,6 +6,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
+import { presetId, presetBody, syntheticPresetPack } from "./fixtures/lazy-preset-pack.mjs";
 
 const FILES = {
   "website.yml": "adx_websiteid: site\nadx_name: Admin API fixture\nadx_headerwebtemplateid: header",
@@ -95,6 +96,42 @@ async function setup(t, options = {}) {
   };
   return { app, call, dir, signIn };
 }
+
+test("admin GET hydrates a builtin and a name-only PATCH preserves its body as a custom preset after restart", async (t) => {
+  const fixture = syntheticPresetPack();
+  const { app, call, dir } = await setup(t, {
+    packs: [fixture.pack],
+    initial: { ...initial(), presets: { [presetId]: {
+      builtin: true, builtinVersion: 1, name: "Tiny builtin", description: "One generated row",
+    } } },
+  });
+  const hydrated = await call(`/__sim/api/presets/${presetId}`);
+  assert.equal(hydrated.status, 200);
+  assert.deepEqual(hydrated.json.tables.item, presetBody().tables.item);
+  for (const key of ["permissions", "plugins", "settings"])
+    assert.deepEqual(hydrated.json[key], presetBody()[key]);
+  assert.equal(hydrated.json.mappings.item.idColumn, "itemid");
+  const changed = await call(`/__sim/api/presets/${presetId}`, "PATCH", { name: "My saved preset" });
+  assert.equal(changed.status, 200);
+  const expected = { ...hydrated.json, name: "My saved preset", userConfigured: true };
+  assert.deepEqual((await call(`/__sim/api/presets/${presetId}`)).json, expected);
+  const file = path.join(dir, "state", "state.json");
+  const persisted = JSON.parse(await fs.readFile(file, "utf8")).presets[presetId];
+  assert.equal(persisted.userConfigured, true);
+  assert.deepEqual(persisted.tables, hydrated.json.tables);
+  await app.close();
+  const fresh = syntheticPresetPack();
+  // A different generated replacement proves the saved body wins on restart.
+  fresh.pack.presets = () => ({ [presetId]: { name: "New default", load: () => ({ tables: { item: [] } }) } });
+  const restarted = await createSimulator({ sourceDir: dir, stateFile: file, watch: false, packs: [fresh.pack] });
+  try {
+    const response = await fetch(`${restarted.url}/__sim/api/presets/${presetId}`);
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), expected);
+  } finally {
+    await restarted.close();
+  }
+});
 
 test("status is cheap, carries CSRF, revision, diagnostics, presets and the effective identity", async (t) => {
   const { app, call } = await setup(t);

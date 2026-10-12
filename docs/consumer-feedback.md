@@ -17,6 +17,7 @@ These changes use invented data, exported fixture structures and loopback servic
 | 11 | Public resolved catalogue paths include source root, site sources, Solution roots, port/state file and provenance. A starter workspace generator consumes them. Shared external catalogues/local settings support worktrees explicitly. | Shell, .env, local configuration and catalogue provenance |
 | 12 | Starter LF attributes are copied during scaffolding; consumer docs describe installation, readiness, project tests and capture. | Release allowlist/links and installed scaffold smoke |
 | 13 | Package/locks use 0.9.4; the version command and release notes explain explicit migration from incompatible old ranges. | Version CLI, lock consistency and release checks |
+| 14 | Toolkit-owned regressions cover three-way state migration, compact pack persistence, admin preset hydration/editing and permission-filtered plugin relationship traversal. Migration respects explicit mapping overrides even when old inference provenance remains. | Small synthetic migration, preset persistence, admin API and plugin-expression fixtures; no reference reads or large generated libraries |
 
 Shell capture stays an explicit reference read. The optional automatic-capture mode is not enabled: opening Mirage alone must not silently read a reference portal. Worktrees do not automatically inherit another checkout's `.env`; a shared external project catalogue and local settings provide the documented opt-in arrangement. Disabling a local adapter does not rewrite authored or captured scripts.
 
