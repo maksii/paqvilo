@@ -18,7 +18,9 @@ export async function createMirageContext({ packs = [], config, site, portal, me
   const sourceDir = selected?.sourceDir ?? cfg?.sourceDir;
   const solutionRoots = selected?.solutionRoots ?? (cfg ? (await resolveSolutionRoots({ sourceDir, catalogue: cfg.mirageConfig })).roots : []);
   const solutionOrder = project?.solutionOrder ?? cfg?.mirageConfig.solutionOrder ?? 'derived';
-  const origin = project ? projectOrigin(project, selected) ?? cfg.origin : cfg?.origin;
+  const configuredOrigin = project ? projectOrigin(project, selected) ?? cfg.origin : cfg?.origin;
+  // A local-only catalogue target is not a live reference (same rule as mirage/cli.mjs).
+  const origin = /^https:\/\//i.test(configuredOrigin ?? '') ? configuredOrigin : null;
   metadata ??= solutionRoots.length ? await importSolutionData(solutionRoots, { order: solutionOrder }) : undefined;
   portal ??= sourceDir ? await importPortal(sourceDir, { dataModel: selected?.dataModel ?? cfg.mirageConfig?.dataModel }) : undefined;
   const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? [] });

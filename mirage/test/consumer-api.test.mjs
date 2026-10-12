@@ -163,3 +163,12 @@ test('context reads the same explicitly configured project packs as the catalogu
     assert.equal((await (await fetch(simulator.url + '/_sim/api/records/widget')).json()).value[0].widgetid, 'configured');
   } finally { await simulator.close(); }
 });
+
+test('local-only catalogue contexts start without inventing a live reference', async t => {
+  const root = await project(t);
+  await fs.writeFile(path.join(root, 'paqvilo.config.local.yml'), 'sites:\n  invented:\n    environments:\n      dev: http://127.0.0.1:8787\n');
+  const context = await createMirageContext({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented' });
+  const simulator = await context.createSimulator({ watch: false });
+  try { assert.equal(simulator.state().config.live.origin, null); }
+  finally { await simulator.close(); }
+});
