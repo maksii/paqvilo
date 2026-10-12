@@ -244,6 +244,38 @@
   }
 
   const ready = () => {
+    for (const frame of document.querySelectorAll('iframe.quickform')) {
+      let observer;
+      const loaded = () => {
+        observer?.disconnect();
+        if (frame.getAttribute('src') === 'about:blank') { frame.style.height = '0px'; return; }
+        try {
+          const body = frame.contentDocument?.body;
+          if (!body) return;
+          const resize = () => { frame.style.height = `${body.scrollHeight}px`; };
+          resize();
+          observer = new ResizeObserver(resize);
+          observer.observe(body);
+        } catch { /* Only local quick view documents can be inspected. */ }
+      };
+      frame.addEventListener('load', loaded);
+      loaded();
+    }
+    const refreshQuickViews = (input) => {
+      for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
+        if (frame.dataset.lookupElement !== input.id) continue;
+        const id = input.value.replace(/[{}]/g, '').trim();
+        if (!id) { frame.setAttribute('src', 'about:blank'); continue; }
+        const url = new URL(frame.dataset.path, location.href);
+        if (url.origin !== location.origin) continue;
+        url.search = new URLSearchParams({ entityid: id, entityname: frame.dataset.entityname, entityprimarykeyname: frame.dataset.entityprimarykeyname, formname: frame.dataset.formname, controlid: frame.dataset.controlid });
+        if (frame.src !== url.href) frame.src = url.href;
+      }
+    };
+    // jQuery-triggered changes do not dispatch native DOM change events.
+    const quickJquery = jq();
+    if (quickJquery) quickJquery(document).on('change.mirageQuickView', 'input', function () { refreshQuickViews(this); });
+    else document.addEventListener('change', event => { if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target); });
     const active = document.querySelector(".progress .list-group-item.active");
     if (active) {
       const label = active.textContent;

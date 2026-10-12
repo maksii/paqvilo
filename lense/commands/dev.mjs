@@ -6,6 +6,7 @@ import { loadDevTargets } from '../config.mjs';
 import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
+import { panelVisibilityNotice } from '../panel.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
@@ -433,6 +434,8 @@ export default async function dev(cfg, args) {
     if (cfg.panel) {
       const panel = runtime.active.get(cfg.origin).panel;
       const { keys } = panel;
+      const visibilityNotice = panelVisibilityNotice(panel);
+      if (visibilityNotice) console.log(visibilityNotice);
       console.log(`dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`);
     }
     const startUrl = cfg.origin + (cfg.site.startPath ?? '/');

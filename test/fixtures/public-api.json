@@ -32,7 +32,18 @@
       "sourceFingerprint",
       "stateFingerprint",
       "validateNativeNetworkBaseline",
-      "verifyParity"
+      "verifyParity",
+      "AssetCache",
+      "validateLivePath",
+      "decodePagingCookie",
+      "collectFetchXmlPages",
+      "escapeXmlAttribute",
+      "auditQuery",
+      "richTextBody",
+      "resolveRichTextMode",
+      "settleHostModal",
+      "editRichText",
+      "assertRichText"
     ],
     "paqvilo/mirage/testing": [
       "connectRuntime",
@@ -45,6 +56,35 @@
       "loadDevTargets",
       "resolveCatalogue",
       "resolveMirageConfig"
+    ],
+    "paqvilo/mirage/packs": [
+      "validatePack",
+      "discoverPacks",
+      "loadPack",
+      "presetLibrary",
+      "presetDescriptor",
+      "defineLazyPreset",
+      "bootstrapPresetLibrary",
+      "compactBuiltinPresets",
+      "listPresets",
+      "resolvePreset",
+      "assertReadOnlyPath",
+      "DENIED_ROUTE_PATTERNS",
+      "validatePlan",
+      "activatePackDeniedRoutes"
+    ],
+    "paqvilo/mirage/fixtures": [
+      "formatMockRecord",
+      "mergeDataset",
+      "findDanglingLookups",
+      "schemaViolations",
+      "fieldIndexFromMappings",
+      "schemaFieldIndex",
+      "formatViolations",
+      "assertOfflineState",
+      "stateFileFingerprint",
+      "importPortal",
+      "createPortalRenderer"
     ]
   }
 }

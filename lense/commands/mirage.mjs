@@ -370,6 +370,7 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
   if (!effective.project && !effective['solution-root']?.length && configured.solutionRoots?.length) effective['solution-root'] = [...configured.solutionRoots];
   if (effective.port === undefined && Number.isInteger(configured.port)) effective.port = String(configured.port);
   if (effective.preset === undefined && configured.preset) effective.preset = configured.preset;
+  if (effective['preset-mode'] === undefined && configured.presetMode) effective['preset-mode'] = configured.presetMode;
   return effective;
 }
 
@@ -378,6 +379,7 @@ export function cliArgs(cfg, action, args, project = null) {
   const common = [
     '--state-dir', path.dirname(miragePaths(cfg, args).discoveryRoot),
     ...(args.port ? ['--port', String(args.port)] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
+    ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
     // Live writes stay impossible unless this runtime is started with the flag (off by default).
     ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
   ];
@@ -453,7 +455,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   return {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
-      stateFile: resolved(stateFile), preset: args.preset ?? null, allowLiveWrites: args['allow-live-writes'] === true,
+      stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', allowLiveWrites: args['allow-live-writes'] === true,
       // Sorted only for matching records written by earlier toolkit versions; the CLI keeps load order.
       solutionRoots: [...solutionRoots].sort(),
       requestedPort: String(args.port ?? DEFAULT_PORT),
@@ -468,6 +470,7 @@ function identityMatches(left, right) {
     && (left.project ?? null) === (right.project ?? null)
     && (left.portal ?? null) === (right.portal ?? null)
     && (left.preset ?? null) === (right.preset ?? null)
+    && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])
     && String(left.requestedPort ?? '') === String(right.requestedPort ?? ''));
@@ -809,9 +812,9 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
 // ------------------------------------------------------------------------------ several portals
 // One Mirage per catalogue site (each with its own project or source, state, port, references
 // and session cookie); `dev` switches between them, and the live targets, in one browser.
-const PER_PORTAL_OPTIONS = ['project', 'portal', 'port', 'state', 'preset', 'solution-root', 'source', 'url', 'out'];
+const PER_PORTAL_OPTIONS = ['project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'solution-root', 'source', 'url', 'out'];
 /** With several portals, dev and start apply these options to the selected site's runtime only. */
-const SELECTED_SITE_OPTIONS = ['port', 'state', 'preset', 'solution-root'];
+const SELECTED_SITE_OPTIONS = ['port', 'state', 'preset', 'preset-mode', 'solution-root'];
 const given = (args, option) => args[option] !== undefined && !(Array.isArray(args[option]) && !args[option].length);
 const pick = (args, options) => Object.fromEntries(options.filter((option) => given(args, option)).map((option) => [option, args[option]]));
 
@@ -1087,6 +1090,7 @@ function print(value, json) {
   }
   if (value.url) {
     console.log(`Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`);
+    if (value.runtime?.startupPreset?.name) console.log(`Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'existing state preserved'})`);
     if (value.launch?.project) console.log(`Project:   ${value.launch.project}${value.launch.portal ? ` (portal ${value.launch.portal})` : ''}`);
     if (value.stop) console.log(`Stop:      ${value.stop}`);
     return;
@@ -1155,6 +1159,7 @@ export default async function mirage(cfg, args, positionals = []) {
     console.log(`state       ${stateFile}`);
     console.log(`source      ${session.sourceDir}`);
     console.log(`live writes ${liveWritesText(session.runtime?.liveWrites)}`);
+    if (session.runtime?.startupPreset?.name) console.log(`preset      ${session.runtime.startupPreset.name} (${session.runtime.startupPreset.mode}; ${session.runtime.startupPreset.applied ? 'applied at startup' : 'existing state preserved'})`);
     if (launch.project) console.log(`project     ${launch.project}${launch.portal ? ` (portal ${launch.portal})` : ''}`);
     console.log(`solutions   ${launch.solutionRoots.length ? launch.solutionRoots.join(', ') : 'none (no Solution roots configured or discovered)'}`);
     console.log(`stop        ${session.started ? 'Ctrl+C here or close the browser: the browser and this Mirage stop' : 'Ctrl+C here or close the browser ends the browser session; the Mirage keeps running'}. Stop it any time with: ${stop}`);

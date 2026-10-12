@@ -102,7 +102,7 @@ function signInDocument(html, pagePath) {
   return /^(?:sign\s*in|log\s*in|login)\b/i.test(title);
 }
 
-function resolveResource(value, base, origin) {
+function resolveResource(value, base, origin, { external = false } = {}) {
   if (typeof value !== "string" || !value)
     throw fail("Observed shell resource has no URL.");
   let url;
@@ -123,7 +123,7 @@ function resolveResource(value, base, origin) {
       "SHELL_RESOURCE_ORIGIN",
     );
   if (
-    url.origin !== origin &&
+    !external && url.origin !== origin &&
     (url.origin !== cdn ||
       !url.pathname.startsWith("/resource/powerappsportal/"))
   )
@@ -396,10 +396,11 @@ export async function capturePortalShell(
   let base = origin + path,
     hasJquery = false,
     hasStyles = false;
-  const issue = (resource, error) =>
+  const issue = (resource, error, optional = false) =>
     failures.push({
       path: safePath(resource),
       code: error.code ?? "SHELL_CAPTURE",
+      ...(optional ? { optional: true } : {}),
       message: error.code
         ? error.message
         : "Shell resource could not be captured.",
@@ -564,7 +565,26 @@ export async function capturePortalShell(
     try {
       resource = resolveResource(ref.value, base, origin);
     } catch (error) {
-      issue(ref.value, error);
+      // Exported templates retain their own external scripts. Observe references,
+      // without fetching third-party bytes or claiming they were captured.
+      if (error.code === 'SHELL_RESOURCE_ORIGIN' && ref.kind === 'script') {
+        try {
+          const external = resolveResource(ref.value, base, origin, { external: true });
+          if (/(?:^|\/)jquery(?:[-.][\d.]+)?(?:\.min)?\.js$/i.test(new URL(external.url).pathname)) {
+            hasJquery = true;
+            diagnostics.push({ code: 'SHELL_EXTERNAL_JQUERY', origin: external.sourceOrigin, path: safePath(external.path), message: 'The shell references external jQuery; exported templates supply it directly. External bytes and load success are not captured.' });
+            continue;
+          }
+        } catch { /* Keep credential and invalid URL failures below. */ }
+      }
+      let optional = false;
+      if (error.code === 'SHELL_RESOURCE_ORIGIN') {
+        try {
+          const external = resolveResource(ref.value, base, origin, { external: true });
+          optional = external.sourceOrigin !== origin && external.sourceOrigin !== cdn;
+        } catch { /* Unsafe resources still block capture. */ }
+      }
+      issue(ref.value, error, optional);
       continue;
     }
     const exportedScript =
@@ -761,6 +781,11 @@ export async function capturePortalShell(
         try {
           const target = new URL(value, resource.url);
           target.hash = "";
+          if (local && target.origin !== origin && (target.origin !== cdn || !target.pathname.startsWith('/resource/powerappsportal/'))) {
+            const external = resolveResource(target.href, resource.url, origin, { external: true });
+            diagnostics.push({ code: 'SHELL_EXTERNAL_LOCAL_DEPENDENCY', origin: external.sourceOrigin, path: safePath(external.path), stylesheet: safePath(resource.path), message: 'The exported stylesheet keeps this external dependency; no third-party bytes were captured.' });
+            continue;
+          }
           const dependency = resolveResource(target.href, resource.url, origin);
           pending.push(dependency);
         } catch (error) {
@@ -778,7 +803,7 @@ export async function capturePortalShell(
       ),
     );
   shellProfile.platformStyles = {
-    mode: failures.some(failure => !failure.dependency) ? 'placeholder' : 'captured',
+    mode: failures.some(failure => !failure.dependency && !failure.optional) ? 'placeholder' : 'captured',
     capturedAt: new Date().toISOString(), origin,
     missingHeadStylesheets: failures.filter(failure => !failure.dependency && /\.css(?:\?|$)/i.test(failure.path)).map(failure => failure.path),
   };
@@ -792,6 +817,6 @@ export async function capturePortalShell(
     // CSS files can name obsolete fallback fonts/images that the selected
     // browser never requests. Keep every failure visible, while permitting a
     // profile whose directly observed scripts/styles/images were all captured.
-    ready: failures.every((failure) => failure.dependency === true),
+    ready: failures.every((failure) => failure.dependency === true || failure.optional === true),
   };
 }

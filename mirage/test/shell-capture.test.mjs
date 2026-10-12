@@ -22,6 +22,53 @@ const htmlResponse = (html) => ({
 const page = (head, body = "") =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
+test('external jQuery and local CSS external dependencies remain visible without blocking platform capture', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-external-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const file = join(directory, 'local.css');
+  await writeFile(file, '@font-face{src:url("https://fonts.example.test/font.woff2")}');
+  const live = livePage(page('<link rel="stylesheet" href="/platform.css"><link rel="stylesheet" href="/local.css"><script src="https://scripts.example.test/jquery-3.7.1.min.js"></script>'), {
+    '/platform.css': { type: 'text/css', body: 'body{}' },
+  });
+  const cache = await new AssetCache({ directory: join(directory, 'cache'), origin }).init();
+  const report = await capturePortalShell(cache, live, { path: '/workspace/', portal: { webFiles: [{ url: '/local.css', file }] } });
+  assert.equal(report.ready, true);
+  assert.equal(report.complete, true);
+  assert.equal(report.shellProfile.platformStyles.mode, 'captured');
+  assert.ok(report.diagnostics.some(item => item.code === 'SHELL_EXTERNAL_JQUERY'));
+  assert.ok(report.diagnostics.some(item => item.code === 'SHELL_EXTERNAL_LOCAL_DEPENDENCY' && item.path === '/font.woff2'));
+  assert.deepEqual(live.calls.map(item => item.path), ['/workspace/', '/platform.css']);
+});
+
+test('CSS relative URLs resolve identically with single, double and no quotes', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-quotes-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const live = livePage(page('<link rel="stylesheet" href="/css/style.css"><script src="/jquery.js"></script>'), {
+    '/css/style.css': { type: 'text/css', body: 'a{background:url(images/icon.png)}b{background:url(\'images/icon.png\')}c{background:url("images/icon.png")}' },
+    '/css/images/icon.png': { type: 'image/png', body: 'synthetic' },
+    '/jquery.js': { type: 'text/javascript', body: 'window.jQuery={};' },
+  });
+  const cache = await new AssetCache({ directory, origin }).init();
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.captured.filter(item => item.path.endsWith('.png')).map(item => item.path), ['/css/images/icon.png']);
+  assert.equal(live.calls.filter(item => item.path === '/css/images/icon.png').length, 1);
+});
+
+test('optional third-party shell failures do not prevent applying captured platform styles', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-optional-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const live = livePage(page('<link rel="stylesheet" href="/platform.css"><script src="/jquery.js"></script><link rel="stylesheet" href="https://optional.example.test/theme.css">'), {
+    '/platform.css': { type: 'text/css', body: 'body{}' }, '/jquery.js': { type: 'text/javascript', body: 'window.jQuery={};' },
+  });
+  const cache = await new AssetCache({ directory, origin }).init();
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal(report.ready, true);
+  assert.equal(report.complete, false);
+  assert.equal(report.shellProfile.platformStyles.mode, 'captured');
+  assert.ok(report.failures.some(item => item.optional && item.code === 'SHELL_RESOURCE_ORIGIN'));
+});
+
 test("UTF-16 PAC stylesheet attachments capture their browser font dependencies", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pp-shell-utf16-"));
   try {

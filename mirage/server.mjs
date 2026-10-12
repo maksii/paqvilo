@@ -211,6 +211,8 @@ function json(res, status, value, headers = {}) {
 export async function createSimulator({
   sourceDir,
   stateFile,
+  preset,
+  presetMode = 'always',
   port = 0,
   host = "127.0.0.1",
   origin,
@@ -368,6 +370,9 @@ export async function createSimulator({
     await store.replaceState(candidate.state);
     appliedPermissionModel = candidate.model;
   };
+  if (!['always', 'bootstrap'].includes(presetMode)) throw new Error('presetMode must be bootstrap or always');
+  const stateExisted = stateFile ? await fs.stat(stateFile).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }) : false;
+  const startupPreset = { name: preset ?? null, mode: presetMode, applied: Boolean(preset && (presetMode === 'always' || !stateExisted)) };
   const store = await new DataStore({
     file: stateFile,
     presetLibrary: generatedPresets,
@@ -1031,6 +1036,7 @@ export async function createSimulator({
         sourceFingerprint: fingerprint,
         project: projectStatus(), bootstrap: bootstrapStatus(), confinement: confinementStatus(),
         platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
+        startupPreset,
         ...implementationEvidence(implementationFingerprint, implementationFingerprint),
         format: portal.format,
         site: portal.website.name ?? portal.website.adx_name,
@@ -1303,6 +1309,7 @@ export async function createSimulator({
       solutionRoots,
       stateFile,
       platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
+      startupPreset,
       deploymentProfile: portal.deploymentProfile ?? null,
       sourceFingerprint: fingerprint,
       loadedImplementationFingerprint: implementationFingerprint,
@@ -3363,6 +3370,7 @@ export async function createSimulator({
       }).finally(()=>activeWrites.delete(invocation));
     if(isWrite(req.method))activeWrites.add(invocation);
   });
+  if (startupPreset.applied) await applySelectedPreset(preset);
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ host, port }, resolve);

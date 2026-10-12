@@ -86,6 +86,7 @@ Agent session access
   --port <n>        mirage: local Mirage port (0 chooses a free port; default:
                     mirage.port of the catalogue, else 8787)
   --state <file>    mirage: simulation state file
+  --preset-mode bootstrap|always  mirage: seed new state only, or reset on every start
   --preset <name>   mirage: apply a scenario preset when starting (default: mirage.preset)
   --solution-root <dir> mirage: add a solution source root (repeatable; default:
                     mirage.solutionRoots, else sibling *.Solutions.* repositories)
@@ -151,6 +152,7 @@ try {
       port: { type: 'string' },
       state: { type: 'string' },
       preset: { type: 'string' },
+      'preset-mode': { type: 'string' },
       'solution-root': { type: 'string', multiple: true },
       'startup-timeout': { type: 'string' },
       'allow-live-writes': { type: 'boolean' },
@@ -211,7 +213,7 @@ try {
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
     agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
-    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json'],
+    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json'],
   };
   for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw new Error(`--${option} is not supported by ${command}`);
   if (values.pick && values.json) throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');

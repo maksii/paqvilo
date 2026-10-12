@@ -1,5 +1,6 @@
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
+import sanitizeHtml from 'sanitize-html';
 import {
   clientManagedControlsRuntime,
   validateManagedControlDefinition,
@@ -1415,7 +1416,11 @@ async function renderForm(kind, name, context, options) {
       options.diagnostic?.({ code: 'PCF_NATIVE_BINDING_UNSUPPORTED', form: definition?.id, field: field.name, sourceFile: component?.sourceFile, message });
       return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>${original}`;
     };
-    if (!component || !options.codeComponent) return unsupported(`The enabled code component for ${field.label} requires its exported desktop FormXml binding and solution control sources.`);
+    if (!component) {
+      options.diagnostic?.({ code: 'PCF_NATIVE_BINDING_UNSUPPORTED', form: definition?.id, field: field.name, message: `Code component metadata for ${field.label} has no exported desktop FormXml binding; the native control is rendered.` });
+      return original;
+    }
+    if (!options.codeComponent) return unsupported(`The enabled code component for ${field.label} requires its solution control sources.`);
     if (component.boundAttributes.length !== 1 || component.boundAttributes[0] !== field.name) return unsupported(`Code component ${component.name} must bind only to its native form field ${field.name}.`);
     const args = { disabled: field.readOnly };
     const properties = [], propertyTypes = {};
@@ -1448,6 +1453,9 @@ async function renderForm(kind, name, context, options) {
 
   // Subgrids, quick views and notes cells.
   const extraControls = new Map();
+  const subgridLabel = label => options.config?.observed?.subgridLabelMarkup === 'sanitized'
+    ? sanitizeHtml(String(label ?? ''), { allowedTags: ['span', 'strong', 'em', 'b', 'i', 'br', 'small', 'p', 'div'], allowedAttributes: { '*': ['class'] } })
+    : escape(label);
   const cells = formCells(schema);
   for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes"].includes(candidate.type))) {
     if (cell.type === "quickform") {
@@ -1461,7 +1469,7 @@ async function renderForm(kind, name, context, options) {
       const path = `/_portal/quickform-template-path/${websiteId}`;
       const formName = cell.schema.formName ?? cell.schema.title ?? cell.label ?? cell.id;
       const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}` : "about:blank";
-      extraControls.set(cell.id, `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation" scrolling="no" style="max-height: 350px;" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
+      extraControls.set(cell.id, `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" style="max-height: 350px;" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
       continue;
     }
     if (cell.type === "notes") {
@@ -1477,7 +1485,7 @@ async function renderForm(kind, name, context, options) {
     const label = cell.label ?? cell.id;
     if (!id) {
       // Native subgrids bind to an existing record and render nothing in Insert mode.
-      extraControls.set(cell.id, `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${escape(label)}</label></h3><div class="control"></div>`);
+      extraControls.set(cell.id, `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control"></div>`);
       continue;
     }
     const model = subgridModel({ portal, schemas, metadata, store, kind, formId: definition?.id ?? name, stepId: schema.stepId, gridId: cell.id });
@@ -1510,7 +1518,7 @@ async function renderForm(kind, name, context, options) {
     const settings = model.settings ?? {};
     extraControls.set(
       cell.id,
-      `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${escape(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="true" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage)}${associateHtml}</div></div></div>`,
+      `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="true" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {

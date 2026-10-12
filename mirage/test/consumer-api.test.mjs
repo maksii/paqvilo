@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createSimulator, createMirageContext, discoverPacks, presetLibrary, initialState } from '../api.mjs';
 import { connectRuntime } from '../testing.mjs';
 import { resolveLocalOverrides } from '../lib/local-overrides.mjs';
@@ -19,6 +21,72 @@ async function project(t) {
   await fs.writeFile(path.join(root, 'paqvilo.config.yml'), 'sourceRoot: .\nsites:\n  invented:\n    source: portal\n    environments:\n      dev: https://invented.example.test\n');
   return root;
 }
+
+test('capture client preserves incomplete reports and other errors preserve the server message', async () => {
+  const report = { shellProfile: {}, captured: [], failures: [{ code: 'ASSET_HTTP', path: '/missing.css' }], complete: false, applied: false };
+  const client = await connectRuntime({ origin: 'http://127.0.0.1:9999', fetchImpl: async url => url.endsWith('/status') ? Response.json({}) : url.includes('/state?') ? Response.json({ csrf: 'synthetic' }) : url.endsWith('/assets/capture-shell') ? Response.json(report, { status: 409 }) : Response.json({ error: { message: 'Synthetic conflict' } }, { status: 409 }) });
+  assert.deepEqual(await client.captureShell('/'), report);
+  await assert.rejects(client.liveDisconnect(), /409.*Synthetic conflict/);
+  const empty = await connectRuntime({ origin: 'http://127.0.0.1:9999', fetchImpl: async url => url.endsWith('/status') ? Response.json({}) : url.includes('/state?') ? Response.json({ csrf: 'synthetic' }) : new Response('', { status: 409 }) });
+  await assert.rejects(empty.captureShell('/'), /Local runtime request failed \(409\)/);
+});
+
+test('capture all chooses one safe environment per configured site and reports caution skips', async t => {
+  const root = await project(t), config = path.join(root, 'paqvilo.config.yml');
+  await fs.writeFile(config, 'sourceRoot: .\nsites:\n  first:\n    source: portal\n    mirage: { port: 0 }\n    environments:\n      dev: https://invented.example.test\n      production: { url: https://production.example.test, caution: true }\n  second:\n    source: portal\n    mirage: { port: 0 }\n    environments:\n      dev: https://invented.example.test\n      production: { url: https://production.example.test, caution: true }\n');
+  const starts = [];
+  const report = await captureShell({ config, all: true, cdp: 'http://127.0.0.1:9222', createLocalSimulator: options => {
+    starts.push(options.stateFile);
+    const bridge = { origin: options.origin, connected: false, configure(value) { this.origin = value.origin; }, status() { return { connected: this.connected }; }, async connect() { this.connected = true; this.context = {}; return this.status(); }, async close() { this.connected = false; this.context = null; }, async request(route) { return { status: 200, headers: { 'content-type': route === '/' ? 'text/html' : route.endsWith('.css') ? 'text/css' : 'text/javascript' }, body: Buffer.from(route === '/' ? '<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script>' : route.endsWith('.css') ? 'body{}' : 'window.jQuery={};') }; } };
+    return createSimulator({ ...options, liveBridge: bridge });
+  } });
+  assert.equal(report.complete, true);
+  assert.deepEqual(report.reports.map(item => [item.site, item.env]), [['first', 'dev'], ['second', 'dev']]);
+  assert.equal(new Set(starts).size, 2);
+  assert.deepEqual(report.skipped.map(item => [item.site, item.env]), [['first', 'production'], ['second', 'production']]);
+});
+
+test('bootstrap preset mode preserves records on restart and always mode resets them', async t => {
+  const root = await project(t), stateFile = path.join(root, 'state.json');
+  const pack = { id: 'tiny', name: 'Tiny', description: 'Synthetic', matches: () => true, presets: () => ({ tiny: { name: 'Tiny', tables: { widget: [{ widgetid: 'seed', name: 'Seed' }] }, mappings: { widget: { idColumn: 'widgetid', entitySet: 'widgets' } }, settings: { permissionMode: 'permissive' } } }) };
+  const options = { sourceDir: path.join(root, 'portal'), stateFile, packs: [pack], preset: 'tiny', presetMode: 'bootstrap', watch: false };
+  let app = await createSimulator(options);
+  try {
+    assert.equal(app.state().status.startupPreset.applied, true);
+    await app.store.create('widget', { widgetid: 'local', name: 'Local' }, {});
+  } finally { await app.close(); }
+  app = await createSimulator(options);
+  try {
+    assert.equal(app.state().status.startupPreset.applied, false);
+    assert.ok(app.store.snapshot().tables.widget.some(row => row.widgetid === 'local'));
+  } finally { await app.close(); }
+  app = await createSimulator({ ...options, presetMode: 'always' });
+  try { assert.deepEqual(app.store.snapshot().tables.widget.map(row => row.widgetid), ['seed']); }
+  finally { await app.close(); }
+});
+
+test('capture CLI prints failed resources, exits one and disconnects the running runtime', async t => {
+  const root = await project(t), sourceDir = path.join(root, 'portal');
+  const bridge = { origin: 'https://invented.example.test', connected: false,
+    configure() {}, status() { return { connected: this.connected }; },
+    async connect() { this.connected = true; this.context = {}; return this.status(); },
+    async close() { this.connected = false; this.context = null; },
+    async request(route) { return route === '/' ? { status: 200, headers: { 'content-type': 'text/html' }, body: Buffer.from('<link rel="stylesheet" href="/missing.css"><script src="/jquery.js"></script>') } : { status: 404, headers: { 'content-type': 'text/plain' }, body: Buffer.from('missing') }; },
+  };
+  const app = await createSimulator({ sourceDir, origin: bridge.origin, stateFile: path.join(root, '.paqvilo/simulator/invented/state.json'), watch: false, liveBridge: bridge });
+  t.after(() => app.close());
+  const config = path.join(root, 'paqvilo.config.yml');
+  await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
+  const child = spawn(process.execPath, [fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'capture-shell', '--config', config, '--site', 'invented', '--cdp', 'http://127.0.0.1:9222', '--json'], { windowsHide: true });
+  let output = '', errors = '';
+  child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
+  const code = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
+  assert.equal(code, 1, errors);
+  const report = JSON.parse(output);
+  assert.equal(report.reports[0].applied, false);
+  assert.ok(report.reports[0].failures.some(item => item.code === 'ASSET_HTTP' && item.path === '/missing.css'));
+  assert.equal(bridge.connected, false);
+});
 
 test('local overrides confine files, preserve head order and disable bundled footer code', async t => {
   const root = await project(t);
@@ -139,6 +207,11 @@ test('offline shell capture writes state and matching runtime capture uses its A
     assert.equal(simulator.state().status.platformStyles.mode, 'captured');
     const missing = await connectRuntime({ origin: simulator.url });
     assert.deepEqual((await missing.status()).platformStyles.missingHeadStylesheets, []);
+    await fs.writeFile(config, `sourceRoot: .\nsites:\n  invented:\n    source: portal\n    defaultEnv: other\n    mirage: { port: ${new URL(simulator.url).port} }\n    environments:\n      other: https://other.example.test\n      dev: https://invented.example.test\n      production: { url: https://production.example.test, caution: true }\n`);
+    const all = await captureShell({ config, all: true, cdp: 'http://127.0.0.1:9222', createLocalSimulator: () => { throw new Error('Must use running runtime'); } });
+    assert.equal(all.complete, true);
+    assert.equal(all.reports[0].env, 'dev');
+    assert.ok(all.skipped.some(item => item.env === 'other' && item.reason.includes('running runtime')));
   } finally { await simulator.close(); }
 });
 

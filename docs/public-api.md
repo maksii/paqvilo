@@ -6,6 +6,8 @@ Paqvilo 0.9.4 introduces supported package entry points. Exported names, documen
 | --- | --- |
 | `paqvilo/mirage` | `createSimulator`, `DataStore`, `DataError`, `initialState`, `discoverSolutionRoots`, `resolveSolutionRoots`, `importSolutionData`, `applySolutionData`, `migrateScenarioState`, `discoverPacks`, `loadPack`, `presetLibrary`, `createMirageContext` |
 | `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers |
+| `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation |
+| `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
 | `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime` |
 | `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
 
@@ -46,3 +48,28 @@ Alternatively pass `{ origin: 'http://127.0.0.1:8787' }`. The client resolves an
 `await resolveCatalogue({ config }, processEnv)` returns `sourceRoot`, site `sourceDir`, effective Solution roots, Mirage port/state file and provenance. `paqvilo lense list --json` exposes this under `resolved`. The starter's `node editor-workspace.mjs` generates `portal.code-workspace` from these paths.
 
 For linked worktrees, keep the catalogue, ignored `paqvilo.config.local.yml` and `.env` in a shared external project folder. Select that catalogue explicitly and set `PAQVILO_REPO` to the current portal worktree, or pass `--repo`. Each worktree then reads the same project settings. Paqvilo does not copy sign-in state or automatically inherit another worktree's `.env`.
+
+## Pack authors and project test runners
+
+Use `paqvilo/mirage/packs` for `validatePack`, `presetDescriptor`, `defineLazyPreset`,
+`bootstrapPresetLibrary`, `compactBuiltinPresets`, `listPresets` and
+`resolvePreset(state, name, library)`. Pass your context's library to use the same explicitly
+registered packs as your runtime. `assertReadOnlyPath`, `DENIED_ROUTE_PATTERNS`, `validatePlan`
+and `activatePackDeniedRoutes` support project-owned parity plans.
+
+`paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
+`schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
+`assertOfflineState`, `stateFileFingerprint`, `importPortal` and `createPortalRenderer`.
+The acceptance entry point also exports `AssetCache`, `validateLivePath`, `decodePagingCookie`,
+`collectFetchXmlPages`, `escapeXmlAttribute`, `auditQuery`, `richTextBody`, `resolveRichTextMode`,
+`settleHostModal`, `editRichText` and `assertRichText`. These rich-text actions are the supported
+runner surface; source configuration parsing and editor-host implementation modules remain internal.
+
+`connectRuntime().captureShell(path)` returns the full report even for HTTP 409 incomplete
+captures. Check `applied` and `complete`; the command exits one for an incomplete report.
+Other API errors carry `status` and the parsed `response`, and include the server message.
+
+`createSimulator({ preset, presetMode: 'bootstrap', stateFile })` applies the preset only when
+the state file does not exist. The default mode is `always`. Runtime status and startup JSON
+include `startupPreset: { name, mode, applied }`. Existing state is never silently reseeded in
+bootstrap mode; a requested manual preset application remains an explicit reset.

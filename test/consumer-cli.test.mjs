@@ -18,6 +18,12 @@ test('public tool registry routes each tool-specific help and prints the package
   const result = spawnSync(process.execPath, [bin, '--version'], { encoding: 'utf8', windowsHide: true });
   const pkg = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(result.stdout.trim(), pkg.version);
+  const help = spawnSync(process.execPath, [bin, '--help'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(help.status, 0);
+  for (const name of ['doctor', ...Object.keys(MIRAGE_TOOLS)]) assert.ok(help.stdout.includes(name), name);
+  const doctor = spawnSync(process.execPath, [bin, 'doctor', '--help'], { encoding: 'utf8', windowsHide: true });
+  assert.equal(doctor.status, 0, doctor.stderr);
+  assert.match(doctor.stdout, /Usage: paqvilo doctor --setup \[--json\] \[--browser CHANNEL\]/);
 });
 
 test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async t => {

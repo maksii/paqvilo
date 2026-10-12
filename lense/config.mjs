@@ -225,6 +225,7 @@ export function isExtract(dir) {
  */
 export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
+  if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
   return {
     project: value.project ? path.resolve(configDir, value.project) : null,
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
@@ -236,6 +237,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
       : { id: entry.id ?? null, module: path.resolve(configDir, entry.module) })),
     port: Number.isInteger(value.port) ? value.port : null,
     preset: value.preset ?? null,
+    ...(value.presetMode ? { presetMode: value.presetMode } : {}),
     // Passed through as configured; the Mirage validates it (observedConfig).
     observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
     // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).

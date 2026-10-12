@@ -101,6 +101,8 @@
     "./mirage": "./mirage/api.mjs",
     "./mirage/acceptance": "./mirage/acceptance-api.mjs",
     "./mirage/testing": "./mirage/testing.mjs",
+    "./mirage/packs": "./mirage/packs.mjs",
+    "./mirage/fixtures": "./mirage/fixtures.mjs",
     "./lense": "./lense/api.mjs",
     "./package.json": "./package.json",
     "./lense/*": "./lense/*",

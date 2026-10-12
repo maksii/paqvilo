@@ -9,7 +9,9 @@ import { siteSetting } from "./redirects.mjs";
 import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
-import { platformBundleFor, localAspNetScript } from "./platform-manifest.mjs";
+import { platformBundleFor, localAspNetScript, platformShell, bootstrapVariant } from "./platform-manifest.mjs";
+import { renderShellResource } from './liquid.mjs';
+import { formStyleDiagnostics } from './platform-styles.mjs';
 import { adapterEnabled } from './local-overrides.mjs';
 import {
   subgridSettings,
@@ -1818,10 +1820,11 @@ export async function handleNativeService(req, res, url, context) {
         identity: context.identity,
         params: Object.fromEntries(url.searchParams),
       });
-      const styles = (context.portal.webFiles ?? [])
-        .filter((file) => /bootstrap(?:\.min)?\.css$/i.test(file.url ?? ""))
-        .map((file) => `<link rel="stylesheet" href="${xmlEscape(file.url)}">`)
-        .join("");
+      const resource = entry => renderShellResource(entry, 'css', { localOnly: true });
+      const bootstrap = (context.portal.webFiles ?? []).find(file => /\/bootstrap\.min\.css$/i.test(file.url ?? ''));
+      const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
+      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + platform.headEnd;
+      for (const diagnostic of formStyleDiagnostics(body, context.config?.shellProfile)) context.recordDiagnostic?.({ ...diagnostic, path: url.pathname });
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><form id="content_form"><div id="content-container">${body}</div></form></body></html>`);
     } catch (error) {

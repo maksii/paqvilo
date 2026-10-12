@@ -26,6 +26,15 @@ test('native grid form dialogs save, retain parent edits and refresh authored ha
   await row(pendingId).locator('a.edit-link.launch-modal').click();
   const modal=page.locator('#Children section.modal-form-edit'),frame=page.frameLocator('#Children section.modal-form-edit iframe');
   await frame.getByLabel('Message',{exact:true}).fill('New notification message');
+  const sizes = await modal.evaluate(element => {
+    const body = element.querySelector('.modal-body'), frame = body.querySelector('iframe'), style = getComputedStyle(body);
+    return { content: body.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), frame: frame.getBoundingClientRect().width, border: getComputedStyle(frame).borderLeftWidth, height: getComputedStyle(frame).height };
+  });
+  assert.ok(Math.abs(sizes.content - sizes.frame) < 1, JSON.stringify(sizes));
+  assert.equal(sizes.border, '0px');
+  assert.equal(sizes.height, '700px');
+  const controlSizes = await frame.getByLabel('Message',{exact:true}).evaluate(input => [input.getBoundingClientRect().width, input.parentElement.getBoundingClientRect().width]);
+  assert.ok(Math.abs(controlSizes[0] - controlSizes[1]) < 1, JSON.stringify(controlSizes));
   await frame.locator('#UpdateButton').click();
   // The frame posts back, Form.aspx posts "Success" and the grid closes the dialog and refreshes.
   await page.waitForFunction(()=>window.gridLoads>=2);

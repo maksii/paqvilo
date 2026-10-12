@@ -17,6 +17,7 @@ import { createSourceInspector, inspectRenderedPage } from './source-inspection.
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
 const keyName = (code) => `Alt+Shift+${code.replace(/^Key/, '')}`;
+export const panelVisibilityNotice = panel => panel.hidden ? `dev panel   hidden; ${panel.keys.hide} shows it` : null;
 
 /** what the panel remembers between pages and sessions */
 function cleanUi(input) {
@@ -1280,5 +1281,5 @@ export function enablePanel(context, session, opts = {}) {
     disposal = Promise.race([cleanup, new Promise((resolve) => { timer = setTimeout(resolve, 2000); })]).finally(() => clearTimeout(timer));
     return disposal;
   };
-  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), stateFor, draw, dispose };
+  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), get hidden() { return ui.hidden === true; }, stateFor, draw, dispose };
 }

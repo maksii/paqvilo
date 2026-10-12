@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { OverlaySession } from '../lense/session.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
-import { enablePanel, comparison, openInEditor } from '../lense/panel.mjs';
+import { enablePanel, comparison, openInEditor, panelVisibilityNotice } from '../lense/panel.mjs';
 import { panelUi } from '../lense/panel-ui.mjs';
 import { createFixture, SITE } from './fixture.mjs';
 import { fakeBrowser } from './fake-browser.mjs';
@@ -167,6 +167,8 @@ test('scope and live reload are switched while the loop runs; the position is re
   assert.equal(session.liveReload, false);
   await call('ui', { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true, somethingElse: 1 });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stateDir, 'panel.json'), 'utf8')), { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
+  const restarted = await setup();
+  assert.equal(panelVisibilityNotice(restarted.panel), 'dev panel   hidden; Alt+Shift+L shows it');
 });
 
 test('lookalike portal origins receive neither the panel nor its token', async () => {

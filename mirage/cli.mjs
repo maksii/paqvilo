@@ -31,6 +31,7 @@ try {
       origin: { type: "string" },
       cdp: { type: "string" },
       preset: { type: "string" },
+      "preset-mode": { type: "string" },
       path: { type: "string", default: "/" },
       "managed-control-path": { type: "string" },
       stylesheet: { type: "string", multiple: true },
@@ -88,7 +89,7 @@ if (args.help || command === "help") {
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH]
 
-Options: --state FILE, --preset NAME, --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Deployment profiles require --deployment-profile.
@@ -201,6 +202,7 @@ try {
           const simulator = await createSimulator({
             sourceDir: portal.sourceDir,
             stateFile,
+            preset: args.preset, presetMode: args['preset-mode'] ?? 'always',
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
@@ -216,7 +218,6 @@ try {
             requirePortalSource: true,
             allowLiveWrites: args["allow-live-writes"] === true,
           });
-          if (args.preset) await simulator.applyPreset(args.preset);
           if (args.cdp) await simulator.live.connect(args.cdp);
           sessions.push({ portal, simulator, stateFile });
         }
@@ -246,6 +247,7 @@ try {
           // Portal pages carry only site-setting headers unless confinement is opted in.
           confinePortalPages: startedConfig.confinePortalPages,
           signInPath: startedStatus.bootstrap.signInPath,
+          startupPreset: startedStatus.startupPreset,
           // External sign-in's local identity provider: its own loopback port, closed with the runtime.
           identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
           // "disabled" unless started with --allow-live-writes.
@@ -295,6 +297,10 @@ try {
       // mirage settings (observed behaviour, catalogued roots) still apply.
       const { loadConfig } = await import("../lense/config.mjs");
       siteMirage = (await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) })).mirageConfig ?? null;
+    }
+    if (command === 'serve') {
+      args.preset ??= siteMirage?.preset;
+      args['preset-mode'] ??= siteMirage?.presetMode;
     }
     const deploymentProfile = args["deployment-profile"] ?? configuredPortal?.deploymentProfile;
     // The data model of a YAML source: --data-model, else the project portal's or catalogue
@@ -402,6 +408,7 @@ try {
         localOverrides: siteMirage?.localOverrides,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
         stateFile,
+        preset: args.preset, presetMode: args['preset-mode'] ?? 'always',
         port,
         origin,
         solutionRoots,
@@ -417,9 +424,6 @@ try {
         allowLiveWrites: args["allow-live-writes"] === true,
       });
       try {
-        if (args.preset) {
-          await simulator.applyPreset(args.preset);
-        }
         if (args.cdp) await simulator.live.connect(args.cdp);
         if (capturing) {
           const state = simulator.state();
@@ -528,6 +532,7 @@ try {
                 // Portal pages carry only site-setting headers unless confinement is opted in.
                 confinePortalPages: startedConfig.confinePortalPages,
                 signInPath: startedStatus.bootstrap.signInPath,
+                startupPreset: startedStatus.startupPreset,
                 // External sign-in's local identity provider: its own loopback port, closed with the runtime.
                 identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
                 // "disabled" unless started with --allow-live-writes.

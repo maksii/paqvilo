@@ -2,6 +2,11 @@ import { loadConfig } from '../../lense/config.mjs';
 import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 
+function requestError(status, value, label = 'Local runtime request') {
+  const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
+  return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), { status, response: value });
+}
+
 export function runtimeOrigin(value) {
   const url = new URL(value);
   if (url.protocol !== 'http:' || !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname) || url.username || url.password || url.pathname !== '/' || url.search || url.hash)
@@ -30,15 +35,17 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   }
   origin = runtimeOrigin(origin);
   let cookie = '';
-  const request = async (route, { method = 'GET', body, headers = {} } = {}) => {
+  const request = async (route, { method = 'GET', body, headers = {}, captureReport = false } = {}) => {
     if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
     const response = await fetchImpl(`${origin}/_sim/api${route}`, {
       method, headers: { ...(cookie ? { cookie } : {}), ...headers, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(30000),
     });
-    if (!response.ok) throw new Error(`Local runtime request failed (${response.status})`);
     if (response.status === 204) return null;
-    const value = await response.json();
+    const value = await response.json().catch(() => null);
+    if (!response.ok && !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))) {
+      throw requestError(response.status, value);
+    }
     const returnedCookie = response.headers.get('set-cookie');
     if (returnedCookie) cookie = returnedCookie.split(';', 1)[0];
     return value;
@@ -58,7 +65,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       const body = { contactId, ...(roles !== undefined ? { roles } : {}) };
       if (context) {
         const response = await context.request.post(`${origin}/_sim/api/session/sign-in`, { headers: { 'x-sim-csrf': state.csrf }, data: body });
-        if (!response.ok()) throw new Error(`Local sign-in failed (${response.status()})`);
+        if (!response.ok()) throw requestError(response.status(), await response.json().catch(() => null), 'Local sign-in');
         return response.json();
       }
       await request('/session/sign-in', { method: 'POST', body });
@@ -68,7 +75,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       if (!context) return request('/session/sign-out', { method: 'POST', body: {} });
       const state = await request('/state?summary=1');
       const response = await context.request.post(`${origin}/_sim/api/session/sign-out`, { headers: { 'x-sim-csrf': state.csrf }, data: {} });
-      if (!response.ok()) throw new Error(`Local sign-out failed (${response.status()})`);
+      if (!response.ok()) throw requestError(response.status(), await response.json().catch(() => null), 'Local sign-out');
       return response.json();
     },
     records: (table, query = {}) => request(`/records/${encodeURIComponent(table)}?${new URLSearchParams(query)}`),
@@ -78,6 +85,6 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     },
     liveConnect: cdpUrl => request('/live/connect', { method: 'POST', body: { cdpUrl } }),
     liveDisconnect: () => request('/live/disconnect', { method: 'POST', body: {} }),
-    captureShell: path => request('/assets/capture-shell', { method: 'POST', body: { path } }),
+    captureShell: path => request('/assets/capture-shell', { method: 'POST', body: { path }, captureReport: true }),
   });
 }

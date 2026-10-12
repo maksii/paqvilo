@@ -8,13 +8,14 @@ const HELP = `paqvilo — Power Pages development
 
 Usage: paqvilo lense <command> [options]
        paqvilo mirage <command> [options]
+       paqvilo doctor --setup [--json] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
           dev, list, use, doctor, map, status, audit, resources, verify, agent
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
           demo, init, dev, start, status, stop, serve, inspect, data, presets
-          bootstrap-report, render-sweep, liquid-inventory, webapi-inventory,
-          portal-matrix, parity-suite, liquid-conformance, acceptance
+          ${Object.keys(MIRAGE_TOOLS).join(', ')}
+  doctor  Check installed dependencies and browser readiness.
 
 Run paqvilo lense --help or paqvilo mirage --help for options.
 `;
@@ -23,6 +24,8 @@ if (['--version', '-v'].includes(product)) {
   console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
 } else if (!product || ['--help', '-h'].includes(product)) {
   console.log(HELP);
+} else if (product === 'doctor' && args.some(arg => ['--help', '-h'].includes(arg))) {
+  console.log('Usage: paqvilo doctor --setup [--json] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --browser  Browser channel to check (for example msedge or chromium).');
 } else if (product === 'doctor' && args.includes('--setup')) {
   const child = spawn(process.execPath, [fileURLToPath(new URL('../scripts/ensure-dependencies.mjs', import.meta.url)), '--check', ...args.filter(arg => arg !== '--setup')], { stdio: 'inherit', windowsHide: true });
   child.on('exit', code => { process.exitCode = code ?? 1; });

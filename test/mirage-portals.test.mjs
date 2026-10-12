@@ -72,7 +72,7 @@ test('mirage with portals=all writes one project per site, starts one runtime pe
     // one runtime of a project, or one source, do not fit several catalogue portals.
     const conflict = run('mirage', 'start', '--config', config, '--portal', 'classic', '--json');
     assert.equal(conflict.status, 1);
-    assert.match(json(conflict).error.message, /--portal applies to a single runtime\. \(--port, --state, --preset, --solution-root apply to the selected site\.\)/);
+    assert.match(json(conflict).error.message, /--portal applies to a single runtime\. \(--port, --state, --preset, --preset-mode, --solution-root apply to the selected site\.\)/);
     const misplaced = run('mirage', 'status', '--config', config, '--allow-live-writes', '--json');
     assert.equal(misplaced.status, 1);
     assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);

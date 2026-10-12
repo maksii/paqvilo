@@ -44,20 +44,34 @@ export async function captureShell({ config, site, env, all = false, path: pageP
   if (all && env) throw new Error('--all and --env are mutually exclusive');
   if (cdp) cdp = captureCdpUrl(cdp);
   const catalogue = loadCatalogue({ config });
+  const selectedSite = site;
   site ??= catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite ?? Object.keys(catalogue.sites)[0];
   if (!catalogue.sites[site]) throw new Error(`Unknown site '${site}'`);
-  const environments = all ? Object.keys(catalogue.sites[site].environments) : [env];
+  const skipped = [], targets = [];
   // Validate every target before opening any browser or changing local state.
-  const targets = await Promise.all(environments.map(env => loadConfig({ config, site, env }, process.env)));
-  if (targets.some(cfg => cfg.caution)) throw new Error('Shell capture refuses caution environments');
   const resolved = await resolveCatalogue({ config });
-  const target = resolved.sites.find(item => item.name === site);
+  for (const name of all ? selectedSite ? [selectedSite] : Object.keys(catalogue.sites) : [site]) {
+    const target = resolved.sites.find(item => item.name === name);
+    if (all && !Number.isInteger(catalogue.sites[name].mirage?.port)) { skipped.push({ site: name, reason: 'No Mirage port configured' }); continue; }
+    let cfg = await loadConfig({ config, site: name, env: all ? undefined : env }, process.env);
+    if (all) {
+      const candidates = await Promise.all(Object.keys(catalogue.sites[name].environments).map(env => loadConfig({ config, site: name, env }, process.env)));
+      for (const candidate of candidates) if (candidate.caution) skipped.push({ site: name, env: candidate.envName, reason: 'Caution environment' });
+      if (cfg.caution) cfg = candidates.find(candidate => !candidate.caution);
+      if (!cfg) continue;
+      for (const candidate of candidates) if (!candidate.caution && candidate.envName !== cfg.envName) skipped.push({ site: name, env: candidate.envName, reason: 'One capture per site state file; using ' + cfg.envName });
+    } else if (cfg.caution) throw new Error('Shell capture refuses caution environments');
+    const shared = targets.find(entry => samePath(entry.target.mirage.stateFile, target.mirage.stateFile));
+    if (shared) { skipped.push({ site: name, env: cfg.envName, reason: `Shared state file already selected for ${shared.cfg.siteName}` }); continue; }
+    targets.push({ cfg, target });
+  }
   const reports = [];
-  for (const cfg of targets) {
+  for (const entry of targets) {
+    let { cfg } = entry;
+    const { target } = entry;
     let browser, simulator;
     try {
-      const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
-      const running = (await discoveries(miragePaths(cfg), { probe: false })).filter(item => item.processAlive && (samePath(item.sourceDir, target.sourceDir) || item.stateFile && samePath(item.stateFile, target.mirage.stateFile)));
+      const running = (await discoveries(miragePaths(cfg), { probe: false })).filter(item => item.processAlive && (item.stateFile ? samePath(item.stateFile, target.mirage.stateFile) : samePath(item.sourceDir, target.sourceDir)));
       if (!running.length && target.mirage.port > 0) {
         const url = `http://127.0.0.1:${target.mirage.port}`;
         let response;
@@ -72,6 +86,19 @@ export async function captureShell({ config, site, env, all = false, path: pageP
       if (running.length) {
         client = await connectRuntime({ origin: running[0].url });
         const status = await client.status(), state = await client.state({ summary: true });
+        if (all && state.config.live?.origin !== cfg.origin) {
+          const candidates = await Promise.all(Object.keys(catalogue.sites[cfg.siteName].environments).map(env => loadConfig({ config, site: cfg.siteName, env }, process.env)));
+          const active = candidates.find(candidate => !candidate.caution && candidate.origin === state.config.live?.origin);
+          if (!active && candidates.some(candidate => candidate.caution && candidate.origin === state.config.live?.origin)) {
+            skipped.push({ site: cfg.siteName, env: cfg.envName, reason: 'State file is owned by a runtime using a caution environment' });
+            continue;
+          }
+          if (!active) throw new Error('Running runtime origin is not a non-caution environment for this site');
+          skipped.push({ site: cfg.siteName, env: cfg.envName, reason: 'Using the running runtime environment ' + active.envName });
+          const index = skipped.findIndex(item => item.site === active.siteName && item.env === active.envName);
+          if (index >= 0) skipped.splice(index, 1);
+          cfg = active;
+        }
         if (!samePath(status.sourceDir, target.sourceDir) || status.stateFile && !samePath(status.stateFile, target.mirage.stateFile) || state.config.live?.origin !== cfg.origin)
           throw new Error('Running runtime source/origin does not match the capture target');
         if (state.status.live?.connected) throw new Error('Runtime already has a live connection; disconnect it before shell capture');
@@ -85,10 +112,11 @@ export async function captureShell({ config, site, env, all = false, path: pageP
         simulator.live.configure(state.simulator.live);
         client = await connectRuntime({ origin: simulator.url });
       }
-      reports.push({ site, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath) });
+      const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
+      reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath) });
     } finally { try { await simulator?.close(); } finally { await browser?.close(); } }
   }
-  return { schemaVersion: 1, command: 'capture-shell', reports, complete: reports.every(report => report.complete) };
+  return { schemaVersion: 1, command: 'capture-shell', reports, skipped, complete: reports.every(report => report.complete) };
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

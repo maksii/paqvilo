@@ -49,6 +49,7 @@ const OBSERVED_CHOICES = {
   webFileMimeCharset: ["utf8", "source"],
   siteMarkerRedirect: ["resolve", "null-reference"],
   nativeFormTransport: ["json", "postback"],
+  subgridLabelMarkup: ["encoded", "sanitized"],
   webApiErrorStacks: ["diagnostic", "response-template"],
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
   // site's bootstrap.min.css web file (read by lib/liquid.mjs; default from the export).
