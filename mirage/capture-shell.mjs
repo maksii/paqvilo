@@ -119,9 +119,19 @@ export async function captureShell({ config, site, env, all = false, path: pageP
   return { schemaVersion: 1, command: 'capture-shell', reports, skipped, complete: reports.every(report => report.complete) };
 }
 
+export function captureSummary(report) {
+  return (report.reports ?? []).flatMap(item => {
+    const failures = [...(item.failures ?? [])].sort((a, b) => Number(Boolean(b.blocking)) - Number(Boolean(a.blocking)));
+    return [`Shell ${item.site}: ${item.applied ? 'applied' : 'not applied'}`, ...failures.map(failure =>
+      `  ${failure.blocking ? 'BLOCKING' : 'observed'} ${failure.code}: ${failure.path}${failure.host ? ` [${failure.host}: ${failure.reason ?? 'excluded'}]` : ''} — ${failure.message}`)];
+  }).join('\n');
+}
+
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
     const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' } } });
-    const report = await captureShell(values); console.log(JSON.stringify(report, null, 2)); process.exitCode = report.complete ? 0 : 1;
+    const report = await captureShell(values);
+    if (!values.json) console.error(captureSummary(report));
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.complete ? 0 : 1;
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

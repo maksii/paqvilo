@@ -526,13 +526,15 @@ export async function createSimulator({
       throw cause;
     }
   };
-  const config = () =>
-    store.snapshot({ sections: ["simulator"] }).simulator ?? {
+  const config = () => {
+    const simulator = store.snapshot({ sections: ["simulator"] }).simulator ?? {
       mode: "local",
       pageMode: "local",
       identity: { roles: [] },
       live: { origin },
     };
+    return { ...simulator, observed: observed ?? simulator.observed ?? portal.observed ?? null };
+  };
   // Sign-in sessions (lib/auth-session.mjs): every portal request (pages,
   // Liquid, FetchXML, /_api, forms, native services) takes its identity from the
   // paqvilo-mirage-auth cookie only and is anonymous without one, whoever the client is. The
@@ -1312,6 +1314,8 @@ export async function createSimulator({
       platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
       startupPreset,
       deploymentProfile: portal.deploymentProfile ?? null,
+      observed: config().observed,
+      subgridLabelMarkup: config().observed?.subgridLabelMarkup ?? 'sanitized',
       sourceFingerprint: fingerprint,
       loadedImplementationFingerprint: implementationFingerprint,
       revision,

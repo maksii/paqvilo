@@ -175,13 +175,15 @@ function assetPath(value) {
       400,
       "ASSET_AXD_QUERY",
     );
+  // A CSS url(%22images%2Ficon.png%22) requests the literal quoted pathname.
+  // Validate its static type without rewriting the URL the browser would request.
   const ext = isAspNetResourcePath(value)
     ? ".js"
     : isResourceManagerPath(parsed.pathname)
       ? ".js"
       : isPcfWebResourcePath(parsed.pathname)
         ? ".pcf"
-        : path.posix.extname(parsed.pathname).toLowerCase();
+      : path.posix.extname(parsed.pathname.replace(/(?:%22|%27)$/i, '')).toLowerCase();
   if (!types[ext] || (ext === ".pcf" && !isPcfWebResourcePath(parsed.pathname)))
     throw fail(
       "Only static script, style, font, image, source-map and known platform ResourceManager asset paths may be captured.",
@@ -563,14 +565,18 @@ export class AssetCache {
             (!response.headers?.["content-type"] ||
               mediaType(response.headers["content-type"]) ===
                 "application/octet-stream");
-          const contentType = verifyAsset(
+          let contentType;
+          try { contentType = verifyAsset(
             bytes,
             inferred
               ? types[requested.extension][0]
               : response.headers?.["content-type"],
             requested.extension,
             { observedEmpty },
-          );
+          ); } catch (error) {
+            Object.assign(error, { originStatus: response.status, originContentType: mediaType(response.headers?.['content-type']) });
+            throw error;
+          }
           const sha256 = hash(bytes);
           const entry = {
             origin,
@@ -601,6 +607,7 @@ export class AssetCache {
             path: failurePath(value),
             code: error.code ?? "ASSET_CAPTURE",
             ...(error.originStatus ? { originStatus: error.originStatus } : {}),
+            ...(error.originContentType ? { originContentType: error.originContentType } : {}),
             message:
               error.code === "LIVE_BRIDGE"
                 ? error.message

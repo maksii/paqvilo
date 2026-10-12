@@ -33,6 +33,10 @@ These changes use invented data, exported fixture structures and loopback servic
 | 25 | Authorized sandbox observations confirmed presentation markup in field, section and subgrid labels. Authored labels preserve sanitized markup by default; record values remain encoded. The evidenced subgrid encoding override remains available. | Synthetic markup, script/handler sanitization and encoded override |
 | 26 | Opt-in `mirage.presetMode: bootstrap` / `--preset-mode bootstrap` seeds only a new state file; `always` preserves existing behavior. Startup/status reports the decision. | Seed, create, restart preservation and explicit reset |
 | 27 | Hidden panel state is named in startup output with its configured reveal shortcut. | Persisted panel state and startup notice |
+| 28 | Captured Bootstrap 3/5 preform bundles can provide jQuery; record the provider path, origin and hash. A shell with no observed provider is blocked. | Synthetic bundles and runtime application |
+| 29 | Confirmed native HTTP/non-CSS failures are visible and nonblocking; literal encoded quotes stay in requested URLs. Failures name their blocking state and excluded resources expose safe hosts/reasons. | HTML-as-CSS, literal URL 404, redaction and CLI ordering |
+| 30 | Catalogue/project observations reach form rendering and status, including the explicit encoded override. The earlier native validation established sanitized markup as the default. | Catalogue-to-runtime rendering for both overrides and the default |
+| 31 | Defaults/site schemas accept preset mode, and startup/status expose whether bootstrap seeding kept existing state. | Actual CLI start, stop, preserved local record and restart |
 
 Shell capture stays an explicit reference read. The optional automatic-capture mode is not enabled: opening Mirage alone must not silently read a reference portal. Worktrees do not automatically inherit another checkout's `.env`; a shared external project catalogue and local settings provide the documented opt-in arrangement. Disabling a local adapter does not rewrite authored or captured scripts.
 

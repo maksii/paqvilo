@@ -208,6 +208,8 @@ async function readRuntime(url, fallbackSite = null) {
         // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
         liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
         platformStyles: status.platformStyles ?? { mode: 'placeholder' },
+        startupPreset: status.startupPreset ?? null,
+        observed: status.observed ?? null,
       };
     } catch { return null; }
   }
@@ -1041,6 +1043,7 @@ function print(value, json) {
       console.log(`${state}${session.owned ? ' · toolkit managed' : ''}${session.site ? `  [${session.site}]` : ''}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${session.runtime?.site ? `  (${session.runtime.site}, ${session.runtime.pageCount} pages)` : ''}`);
       const details = [session.adminUrl && `admin ${session.adminUrl}`, session.identityProvider?.origin && `idp ${session.identityProvider.origin}`, session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`, session.project && `project ${session.project}`, session.portal && `portal ${session.portal}`, session.stateFile && `state ${session.stateFile}`, `pid ${session.pid}`].filter(Boolean);
       console.log(`    ${details.join(' · ')}`);
+      if (session.runtime?.startupPreset?.name) console.log(`    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`);
       if (session.runtime?.platformStyles) {
         const styles = session.runtime.platformStyles;
         console.log(`    platform stylesheets: ${styles.mode === 'captured' ? `captured ${styles.capturedAt} from ${styles.origin}` : 'placeholder (local structural form rules)'}`);
@@ -1090,7 +1093,7 @@ function print(value, json) {
   }
   if (value.url) {
     console.log(`Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`);
-    if (value.runtime?.startupPreset?.name) console.log(`Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'existing state preserved'})`);
+    if (value.runtime?.startupPreset?.name) console.log(`Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`);
     if (value.launch?.project) console.log(`Project:   ${value.launch.project}${value.launch.portal ? ` (portal ${value.launch.portal})` : ''}`);
     if (value.stop) console.log(`Stop:      ${value.stop}`);
     return;
@@ -1159,7 +1162,7 @@ export default async function mirage(cfg, args, positionals = []) {
     console.log(`state       ${stateFile}`);
     console.log(`source      ${session.sourceDir}`);
     console.log(`live writes ${liveWritesText(session.runtime?.liveWrites)}`);
-    if (session.runtime?.startupPreset?.name) console.log(`preset      ${session.runtime.startupPreset.name} (${session.runtime.startupPreset.mode}; ${session.runtime.startupPreset.applied ? 'applied at startup' : 'existing state preserved'})`);
+    if (session.runtime?.startupPreset?.name) console.log(`preset      ${session.runtime.startupPreset.name} (${session.runtime.startupPreset.mode}; ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`);
     if (launch.project) console.log(`project     ${launch.project}${launch.portal ? ` (portal ${launch.portal})` : ''}`);
     console.log(`solutions   ${launch.solutionRoots.length ? launch.solutionRoots.join(', ') : 'none (no Solution roots configured or discovered)'}`);
     console.log(`stop        ${session.started ? 'Ctrl+C here or close the browser: the browser and this Mirage stop' : 'Ctrl+C here or close the browser ends the browser session; the Mirage keeps running'}. Stop it any time with: ${stop}`);

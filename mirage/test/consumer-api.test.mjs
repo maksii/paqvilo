@@ -10,7 +10,7 @@ import { connectRuntime } from '../testing.mjs';
 import { resolveLocalOverrides } from '../lib/local-overrides.mjs';
 import { injectRuntimeCompatibility } from '../lib/source-dependencies.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from '../lib/platform-styles.mjs';
-import { captureCdpUrl, captureThroughRuntime, captureShell } from '../capture-shell.mjs';
+import { captureCdpUrl, captureThroughRuntime, captureShell, captureSummary } from '../capture-shell.mjs';
 
 async function project(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-consumer-'));
@@ -84,8 +84,11 @@ test('capture CLI prints failed resources, exits one and disconnects the running
   assert.equal(code, 1, errors);
   const report = JSON.parse(output);
   assert.equal(report.reports[0].applied, false);
-  assert.ok(report.reports[0].failures.some(item => item.code === 'ASSET_HTTP' && item.path === '/missing.css'));
+  assert.ok(report.reports[0].failures.some(item => item.code === 'NATIVE_ASSET_HTTP' && item.path === '/missing.css' && !item.blocking));
+  assert.ok(report.reports[0].failures.some(item => item.code === 'SHELL_JQUERY_MISSING' && item.blocking));
   assert.equal(bridge.connected, false);
+  const summary = captureSummary(report);
+  assert.ok(summary.indexOf('BLOCKING SHELL_JQUERY_MISSING') < summary.indexOf('observed NATIVE_ASSET_HTTP'));
 });
 
 test('local overrides confine files, preserve head order and disable bundled footer code', async t => {
@@ -244,4 +247,19 @@ test('local-only catalogue contexts start without inventing a live reference', a
   const simulator = await context.createSimulator({ watch: false });
   try { assert.equal(simulator.state().config.live.origin, null); }
   finally { await simulator.close(); }
+});
+
+test('runtime applies a bundled-jQuery shell despite verified native stylesheet defects', async t => {
+  const root=await project(t), bundle='/resource/powerappsportal/dist/preform.BootstrapV5.moment_2_29_4.bundle-abcdef.js';
+  const bridge={origin:'https://invented.example.test',connected:false,configure(){},status(){return{connected:this.connected}},async connect(){this.connected=true;this.context={};return this.status()},async close(){this.connected=false;this.context=null},async request(route){
+    const assets={
+      '/': ['text/html',`<link rel="stylesheet" href="/bad.css"><link rel="stylesheet" href="/style.css"><script src="${bundle}"></script>`],
+      '/bad.css':['text/html','<html>Not CSS</html>'], '/style.css':['text/css','a{background:url(%22images%2Fmissing.png%22)}'], [bundle]:['application/javascript','window.jQuery=window.$={fn:{jquery:"3.6.2"}};'],
+    };
+    const entry=assets[route];return{status:entry?200:404,headers:{'content-type':entry?.[0]??'text/plain'},body:Buffer.from(entry?.[1]??'Not found')};
+  }};
+  const app=await createSimulator({sourceDir:path.join(root,'portal'),origin:bridge.origin,stateFile:path.join(root,'state.json'),watch:false,liveBridge:bridge});t.after(()=>app.close());
+  const client=await connectRuntime({origin:app.url});const report=await captureThroughRuntime(client,'http://127.0.0.1:9222','/');
+  assert.equal(report.applied,true);assert.equal(report.complete,true);assert.ok(report.failures.every(f=>f.nativeOriginFailed&&!f.blocking));
+  assert.equal(app.state().config.shellProfile.jquery.source,bundle);assert.equal((await client.status()).platformStyles.mode,'captured');assert.equal(bridge.connected,false);
 });

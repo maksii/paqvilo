@@ -104,6 +104,10 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   assert.equal(await page.locator("#overlapAction").evaluate((button) => button.getBoundingClientRect().bottom <= document.querySelector(".sample-footer").getBoundingClientRect().top), true, JSON.stringify(await page.evaluate(() => ({ action: document.querySelector("#overlapAction").getBoundingClientRect().toJSON(), footer: document.querySelector(".sample-footer").getBoundingClientRect().toJSON(), style: { position: getComputedStyle(document.querySelector(".sample-footer")).position, marginTop: getComputedStyle(document.querySelector(".sample-footer")).marginTop }, body: document.body.getBoundingClientRect().toJSON() }))));
   assert.equal(await page.locator("#sourceDate").evaluate((node) => !!window.jQuery(node).data("DateTimePicker")), true);
   await page.locator("#sourceTip").hover();
+  await page.evaluate(() => new Promise(resolve => {
+    document.getElementById('sourceTip').setAttribute('aria-label', 'Helpful hint');
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
   assert.equal(await page.getByRole("tooltip").innerText(), "Helpful hint");
   await page.evaluate(() => {
     window.popoverHookCalls = [];

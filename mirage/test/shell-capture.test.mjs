@@ -84,14 +84,14 @@ test('stylesheet capture accepts a loaded jQuery library with an authored filena
   assert.ok(!report.failures.some(item => item.code === 'SHELL_JQUERY_MISSING'));
 });
 
-test('unidentified jQuery is a browser verification diagnostic rather than a stylesheet capture failure', async t => {
+test('a shell without an observed jQuery provider cannot be applied', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pp-shell-no-library-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
   const live = livePage(page('<link rel="stylesheet" href="/style.css">'), { '/style.css': { type: 'text/css', body: 'body{}' } });
   const cache = await new AssetCache({ directory, origin }).init();
   const report = await capturePortalShell(cache, live, { path: '/workspace/' });
-  assert.equal(report.ready, true);
-  assert.ok(report.diagnostics.some(item => item.code === 'SHELL_JQUERY_MISSING'));
+  assert.equal(report.ready, false);
+  assert.ok(report.failures.some(item => item.code === 'SHELL_JQUERY_MISSING' && item.blocking));
 });
 
 test("UTF-16 PAC stylesheet attachments capture their browser font dependencies", async () => {
@@ -403,7 +403,7 @@ test("missing, non-static, credential and cross-origin shell resources produce e
     });
     assert.equal(result.complete, false);
     assert.equal(
-      result.failures.some((f) => f.code === "ASSET_HTTP"),
+      result.failures.some((f) => f.code === "NATIVE_ASSET_HTTP" && !f.blocking),
       true,
     );
     assert.equal(
@@ -419,7 +419,7 @@ test("missing, non-static, credential and cross-origin shell resources produce e
       true,
     );
     assert.equal(
-      result.diagnostics.some((f) => f.code === "SHELL_JQUERY_MISSING"),
+      result.failures.some((f) => f.code === "SHELL_JQUERY_MISSING" && f.blocking),
       true,
     );
     assert.equal(JSON.stringify(result).includes("SECRET_VALUE"), false);
@@ -723,4 +723,64 @@ test("shell capture binds observed footer sizing and notification presentation w
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
+});
+
+for (const variant of ['', '.BootstrapV5']) test(`captured preform${variant} supplies jQuery without a standalone script`, async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-preform-'));
+  t.after(() => rm(directory, {recursive:true,force:true}));
+  const bundle = `/resource/powerappsportal/dist/preform${variant}.moment_2_29_4.bundle-abcdef.js`;
+  const manager = '/_portal/11111111-1111-1111-1111-111111111111/Resources/ResourceManager';
+  const source = variant ? cdn + bundle : bundle;
+  const live = livePage(page(`<link rel="stylesheet" href="/style.css"><script src="${manager}"></script>`, `<script src="${source}"></script>`), {
+    '/style.css': {type:'text/css',body:'body{}'},
+    [manager]: {type:'application/javascript',body:'window.ResourceManager={label:"Synthetic"};'},
+    [bundle]: {type:'application/javascript',body:'(function(e){e.jQuery=e.$={fn:{jquery:"3.6.2"}}})(window);'},
+  });
+  const cache = await new AssetCache({directory,origin,fetchImpl:async url=>{
+    assert.equal(url,cdn+bundle);
+    return {status:200,headers:{get:()=> 'application/javascript'},arrayBuffer:async()=>Buffer.from('window.jQuery=window.$={fn:{jquery:"3.6.2"}};')};
+  }}).init();
+  const report = await capturePortalShell(cache,live,{path:'/workspace/'});
+  assert.equal(report.ready,true);assert.equal(report.complete,true);
+  assert.equal(report.shellProfile.jquery.source,bundle);assert.equal(report.shellProfile.jquery.kind,'captured');
+  assert.equal(report.shellProfile.jquery.sourceOrigin,variant?cdn:origin);
+  assert.match(report.shellProfile.jquery.sha256,/^[a-f0-9]{64}$/);
+  assert.deepEqual(report.shellProfile.beforeContentScripts,[bundle]);
+  assert.ok(!report.failures.some(item=>item.code==='SHELL_JQUERY_MISSING'));
+});
+
+test('native unusable CSS and literal encoded-quote dependencies do not block; excluded URLs explain their host', async t => {
+  const directory = await mkdtemp(join(tmpdir(),'pp-shell-unusable-'));
+  t.after(()=>rm(directory,{recursive:true,force:true}));
+  const image='/css/%22images%2Ficon.png%22';
+  const live=livePage(page('<link rel="stylesheet" href="/bad.css"><link rel="stylesheet" href="/css/style.css"><script src="/jquery.js"></script><link rel="stylesheet" href="https://content.powerapps.com/outside/theme.css?sig=DO_NOT_LOG"><script src="https://user:DO_NOT_LOG@excluded.example.test/script.js"></script>'),{
+    '/bad.css':{type:'text/html',body:'<html><title>Not a stylesheet</title></html>'},
+    '/css/style.css':{type:'text/css',body:'a{background:url(%22images%2Ficon.png%22)}'},
+    '/jquery.js':{type:'application/javascript',body:'window.jQuery={};'},
+  });
+  const cache=await new AssetCache({directory,origin}).init();
+  const report=await capturePortalShell(cache,live,{path:'/workspace/'});
+  assert.equal(report.ready,false);
+  assert.ok(report.failures.find(f=>f.path==='/bad.css'&&f.code==='NATIVE_ASSET_CONTENT_TYPE'&&!f.blocking));
+  assert.ok(report.failures.find(f=>f.path===image&&f.code==='NATIVE_ASSET_HTTP'&&!f.blocking&&f.originStatus===404));
+  assert.ok(live.calls.some(call=>call.path===image));
+  assert.ok(report.failures.find(f=>f.host==='content.powerapps.com'&&f.reason==='disallowed origin'&&f.blocking));
+  assert.ok(report.failures.find(f=>f.host==='excluded.example.test'&&f.reason==='credentials'&&f.blocking));
+  assert.ok(report.failures[0].blocking);assert.ok(!JSON.stringify(report).includes('DO_NOT_LOG'));
+  assert.ok(!report.shellProfile.stylesheets.includes('/bad.css'));
+  assert.equal(await cache.get('/bad.css'),null);
+  const harmless = livePage(page('<link rel="stylesheet" href="/bad.css"><link rel="stylesheet" href="/css/style.css"><script src="/jquery.js"></script>'), {
+    '/bad.css':{type:'text/html',body:'<html>Not CSS</html>'},'/css/style.css':{type:'text/css',body:'a{background:url(%22images%2Ficon.png%22)}'},'/jquery.js':{type:'application/javascript',body:'window.jQuery={};'},
+  });
+  const accepted=await capturePortalShell(cache,harmless,{path:'/workspace/'});
+  assert.equal(accepted.ready,true);assert.equal(accepted.complete,true);assert.equal(accepted.shellProfile.platformStyles.mode,'captured');
+});
+
+test('an unusable stylesheet version does not remove a captured sibling version', async t=>{
+ const directory=await mkdtemp(join(tmpdir(),'pp-shell-versions-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+ const live=livePage(page('<link rel="stylesheet" href="/theme.css?v=good"><link rel="stylesheet" href="/theme.css?v=bad"><script src="/jquery.js"></script>'),{
+  '/theme.css?v=good':{type:'text/css',body:'body{}'},'/theme.css?v=bad':{type:'text/html',body:'<html>Not CSS</html>'},'/jquery.js':{type:'application/javascript',body:'window.jQuery={};'},
+ });
+ const cache=await new AssetCache({directory,origin}).init();const report=await capturePortalShell(cache,live,{path:'/workspace/'});
+ assert.equal(report.ready,true);assert.deepEqual(report.shellProfile.stylesheets,['/theme.css?v=good']);assert.ok(await cache.get('/theme.css?v=good'));assert.equal(await cache.get('/theme.css?v=bad'),null);
 });

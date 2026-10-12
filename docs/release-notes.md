@@ -27,5 +27,14 @@ Public API additions: `paqvilo/mirage`, `paqvilo/mirage/acceptance`, `paqvilo/mi
 - Render native fields without an in-page PCF alert when no desktop FormXml binding exists. Native validation confirmed authored field, section and subgrid label markup; preserve sanitized presentation markup while keeping record values encoded.
 - Modal and quick-view documents include exported site styles and native container wrappers, deduplicating captured styles. Cleared quick views leave the tab order and restore it on reload.
 - The starter stacks modal fields at narrower frame widths so lookup values fit beside accessible controls with native container padding.
-- A renamed or bundled jQuery reference no longer blocks platform stylesheet capture. Passive inspection can report the loaded library version; otherwise a diagnostic requests browser verification.
+- Captured Bootstrap 3/5 preform bundles can supply jQuery; the shell records its provider. Passive inspection also accepts a loaded library under an authored filename. A missing provider blocks application.
 - Pin quoted CSS URL resolution with a synthetic regression; no parser change was needed on this branch.
+
+## Follow-up consumer feedback (28–31)
+
+- Confirmed native HTTP and non-CSS stylesheet failures remain visible without blocking the shell. Preserve literal percent-encoded CSS URL quotes, flag blocking failures, and report safe hosts and reasons for excluded resources.
+- Catalogue/project observations reach form rendering and runtime status. The native-validated sanitized label default remains; an evidenced `encoded` subgrid override applies correctly.
+- Accept `mirage.presetMode` in defaults and site settings. Startup and `mirage status` report the preset's application or preservation decision.
+- Stable footer repairs avoid repeated style restoration on harmless tooltip mutations, preserving hover. Layout, source-style and stacking changes still re-evaluate overlap and restore the footer when appropriate.
+
+Public API names are unchanged; capture and status reports gain additive provider, observation and failure details.

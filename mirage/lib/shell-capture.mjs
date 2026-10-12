@@ -39,7 +39,7 @@ const decode = (value) =>
     },
   );
 const safePath = (value) =>
-  typeof value === "string" && value.startsWith("/")
+  typeof value === "string" && value.startsWith("/") && !value.startsWith('//') && !value.includes('@')
     ? value.split("?")[0].slice(0, 300)
     : "<excluded shell resource>";
 
@@ -117,21 +117,21 @@ function resolveResource(value, base, origin, { external = false } = {}) {
     url.hash ||
     !["https:"].includes(url.protocol)
   )
-    throw fail(
+    throw Object.assign(fail(
       "Shell resources must use HTTPS without credentials or fragments.",
       400,
       "SHELL_RESOURCE_ORIGIN",
-    );
+    ), { host: url.host || null, reason: url.username || url.password ? 'credentials' : url.hash ? 'fragment' : 'unsupported scheme' });
   if (
     !external && url.origin !== origin &&
     (url.origin !== cdn ||
       !url.pathname.startsWith("/resource/powerappsportal/"))
   )
-    throw fail(
+    throw Object.assign(fail(
       "Shell resource is outside the portal and allowed Microsoft platform CDN prefix.",
       400,
       "SHELL_RESOURCE_ORIGIN",
-    );
+    ), { host: url.host, reason: 'disallowed origin' });
   const path = url.pathname + url.search;
   validateLivePath(path);
   for (const key of url.searchParams.keys())
@@ -140,11 +140,11 @@ function resolveResource(value, base, origin, { external = false } = {}) {
         key,
       )
     )
-      throw fail(
+      throw Object.assign(fail(
         "Shell resources cannot include credential query parameters.",
         400,
         "SHELL_RESOURCE_CREDENTIAL",
-      );
+      ), { host: url.host, reason: 'credential query parameters' });
   return { path, sourceOrigin: url.origin, url: url.href };
 }
 const field = (record, key) =>
@@ -191,7 +191,7 @@ const runtimeScript = (path) => {
   return (
     isAspNetResourcePath(path) ||
     isResourceManagerPath(pathname) ||
-    /^\/resource\/powerappsportal\/dist\/preform\.moment_[\w.-]+\.js$/i.test(
+    /^\/resource\/powerappsportal\/dist\/preform(?:\.BootstrapV5)?\.moment_[\w.-]+\.js$/i.test(
       pathname,
     ) ||
     /^\/resource\/powerappsportal\/dist\/(?:postpreform\.bundle-|default-\d+\.moment_)[\w.-]+\.js$/i.test(
@@ -367,6 +367,7 @@ export async function capturePortalShell(
     captured = [],
     failures = [],
     diagnostics = [];
+  const unusable = new Set();
   const owned = new Map(
       (portal?.webFiles ?? []).map((f) => [f.url.split("?")[0], f]),
     ),
@@ -400,6 +401,8 @@ export async function capturePortalShell(
     failures.push({
       path: safePath(resource),
       code: error.code ?? "SHELL_CAPTURE",
+      ...(error.host ? { host: error.host } : {}),
+      ...(error.reason ? { reason: error.reason } : {}),
       ...(optional ? { optional: true } : {}),
       message: error.code
         ? error.message
@@ -628,12 +631,6 @@ export async function capturePortalShell(
       continue;
     }
     if (ref.kind === "style") hasStyles = true;
-    else if (
-      /(?:^|\/)jquery(?:-[\d.]+)?(?:\.min)?\.js$/i.test(
-        new URL(resource.url).pathname,
-      )
-    )
-      hasJquery = true;
     if (seen.has(resource.path)) continue;
     seen.add(resource.path);
     if (!embedded.has(resource.path.split("?")[0])) {
@@ -649,7 +646,7 @@ export async function capturePortalShell(
                   new URL(resource.url).pathname,
                 )
               ? "afterFooterScripts"
-              : /(?:^|\/)(?:jquery(?:[-.]|$)|preform\.moment_)/i.test(
+              : /(?:^|\/)(?:jquery(?:[-.]|$)|preform(?:\.BootstrapV5)?\.moment_)/i.test(
                     new URL(resource.url).pathname,
                   )
                 ? "beforeContentScripts"
@@ -725,6 +722,8 @@ export async function capturePortalShell(
       break;
     }
     let css = null;
+    let script = null;
+    let scriptSha256 = null;
     let local =
       resource.sourceOrigin === origin
         ? owned.get(resource.path.split("?")[0])
@@ -740,6 +739,13 @@ export async function capturePortalShell(
       }
     }
     if (local) {
+      if (/\.m?js$/i.test(new URL(resource.url).pathname)) {
+        try {
+          const bytes = await fs.readFile(local.file);
+          script = bytes.toString('utf8');
+          scriptSha256 = createHash('sha256').update(bytes).digest('hex');
+        } catch { issue(resource.path, fail('Local exported script could not be read.', 404, 'SHELL_LOCAL_FILE_MISSING')); }
+      }
       if (/\.css$/i.test(new URL(resource.url).pathname) && local.file)
         try {
           css = cssText(await fs.readFile(local.file));
@@ -765,14 +771,26 @@ export async function capturePortalShell(
             });
       captured.push(...result.captured);
       failures.push(
-        ...result.failures.map((failure) => ({
-          ...failure,
-          dependency: !required.has(identity),
-          ...(!required.has(identity) && failure.code === 'ASSET_HTTP' && failure.originStatus >= 400 ? { code: 'NATIVE_ASSET_HTTP', nativeOriginFailed: true } : {}),
-        })),
+        ...result.failures.map((failure) => {
+          const nativeHttp = failure.code === 'ASSET_HTTP' && failure.originStatus >= 400;
+          const nativeStyle = /\.css(?:\?|$)/i.test(resource.path) && failure.code === 'ASSET_CONTENT_TYPE' && failure.originStatus === 200;
+          if (nativeHttp || nativeStyle) unusable.add(resource.path);
+          return { ...failure, dependency: !required.has(identity),
+            ...(nativeHttp || nativeStyle ? { originalCode: failure.code, code: nativeHttp ? 'NATIVE_ASSET_HTTP' : 'NATIVE_ASSET_CONTENT_TYPE', nativeOriginFailed: true } : {}) };
+        }),
       );
+      const cachedScript = result.captured.find(item => /(?:java|ecma)script/i.test(item.contentType));
+      if (cachedScript) {
+        script = (await cache.get(resource.path, { origin })).body.toString('utf8');
+        scriptSha256 = cachedScript.sha256;
+      }
       if (result.captured.some((item) => item.contentType === "text/css"))
         css = cssText((await cache.get(resource.path, { origin })).body);
+    }
+    if (script != null && (/(?:^|\/)jquery(?:[-.][\d.]+)?(?:\.min)?\.js$/i.test(resource.path.split('?')[0]) ||
+      /\b[\w$]+\.jQuery\s*=(?!=)/.test(script))) {
+      hasJquery = true;
+      shellProfile.jquery ??= { source: resource.path.split('?')[0], sourceOrigin: resource.sourceOrigin, sha256: scriptSha256, kind: local ? 'exported' : 'captured' };
     }
     if (css != null)
       for (const value of cssDependencies(css)) {
@@ -801,13 +819,18 @@ export async function capturePortalShell(
       version = await page?.evaluate(() => globalThis.jQuery?.fn?.jquery);
     } catch { /* Page inspection is optional; static resource capture still works. */ }
     const loaded = typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:[-.][\w]+)*$/.test(version);
-    diagnostics.push({ code: loaded ? 'SHELL_JQUERY_OBSERVED' : 'SHELL_JQUERY_MISSING', path: safePath(path),
-      ...(loaded ? { version } : {}), message: loaded
-        ? 'The loaded page exposes jQuery under an exported or bundled reference; no filename-based library claim is required.'
-        : 'No identifiable jQuery reference was observed. Platform styles can be captured independently; verify the exported page scripts in the browser.' });
+    if (loaded) {
+      hasJquery = true;
+      shellProfile.jquery = { kind: 'browser-observed', pagePath: safePath(path), version };
+      diagnostics.push({ code: 'SHELL_JQUERY_OBSERVED', path: safePath(path), version, message: 'The loaded page exposes jQuery under an exported or bundled reference.' });
+    } else issue(path, fail('No observed script provides jQuery; shell application requires a captured, exported or browser-observed provider.', 422, 'SHELL_JQUERY_MISSING'));
   }
+  for (const failure of failures) failure.blocking = !failure.dependency && !failure.optional && !failure.nativeOriginFailed;
+  failures.sort((left, right) => Number(right.blocking) - Number(left.blocking));
+  for (const phase of ['stylesheets', 'headScripts', 'bodyScripts', 'beforeContentScripts', 'afterFooterScripts'])
+    shellProfile[phase] = shellProfile[phase].filter(entry => !unusable.has(typeof entry === 'string' ? entry : entry.href ?? entry.src));
   shellProfile.platformStyles = {
-    mode: failures.some(failure => !failure.dependency && !failure.optional) ? 'placeholder' : 'captured',
+    mode: failures.some(failure => failure.blocking) ? 'placeholder' : 'captured',
     capturedAt: new Date().toISOString(), origin,
     missingHeadStylesheets: failures.filter(failure => !failure.dependency && /\.css(?:\?|$)/i.test(failure.path)).map(failure => failure.path),
   };
@@ -821,6 +844,6 @@ export async function capturePortalShell(
     // CSS files can name obsolete fallback fonts/images that the selected
     // browser never requests. Keep every failure visible, while permitting a
     // profile whose directly observed scripts/styles/images were all captured.
-    ready: failures.every((failure) => failure.dependency === true || failure.optional === true),
+    ready: !failures.some(failure => failure.blocking),
   };
 }

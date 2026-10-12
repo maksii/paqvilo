@@ -3,7 +3,7 @@ import { validateLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'observed', 'dataModel', 'compat', 'head'];
+const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'observed', 'dataModel', 'compat', 'head'];
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
 
@@ -104,6 +104,7 @@ export function mirageSettings(value, name) {
   if (value.solutionOrder != null && !['derived', 'explicit'].includes(value.solutionOrder)) throw new Error(`${name}.solutionOrder must be derived (Solution dependency order, the default) or explicit (the listed solutionRoots order)`);
   if (value.port != null && (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) throw new Error(`${name}.port must be an integer from 0 to 65535 (0 chooses a free port)`);
   if (value.preset != null && (typeof value.preset !== 'string' || !PRESET_ID.test(value.preset))) throw new Error(`${name}.preset must be a preset ID (letters, numbers, underscores, dots or hyphens)`);
+  if (value.presetMode != null && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error(`${name}.presetMode must be bootstrap or always`);
   // The site's data model when the source does not record it (a .powerpages-site export defaults to enhanced).
   if (value.dataModel != null && !['standard', 'enhanced'].includes(value.dataModel)) throw new Error(`${name}.dataModel must be standard or enhanced`);
 }
