@@ -265,11 +265,12 @@
       for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
         if (frame.dataset.lookupElement !== input.id) continue;
         const id = input.value.replace(/[{}]/g, '').trim();
-        if (!id) { frame.setAttribute('src', 'about:blank'); continue; }
+        if (!id) { frame.setAttribute('src', 'about:blank'); frame.setAttribute('tabindex', '-1'); frame.style.height = '0px'; continue; }
         const url = new URL(frame.dataset.path, location.href);
         if (url.origin !== location.origin) continue;
         url.search = new URLSearchParams({ entityid: id, entityname: frame.dataset.entityname, entityprimarykeyname: frame.dataset.entityprimarykeyname, formname: frame.dataset.formname, controlid: frame.dataset.controlid });
         if (frame.src !== url.href) frame.src = url.href;
+        frame.setAttribute('tabindex', '0');
       }
     };
     // jQuery-triggered changes do not dispatch native DOM change events.

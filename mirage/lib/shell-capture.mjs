@@ -793,15 +793,19 @@ export async function capturePortalShell(
         }
       }
   }
-  if (!hasJquery)
-    issue(
-      path,
-      fail(
-        "No jQuery shell reference or verified ResourceManager jQuery library was observed.",
-        422,
-        "SHELL_JQUERY_MISSING",
-      ),
-    );
+  if (!hasJquery) {
+    let version;
+    try {
+      const target = new URL(path, origin);
+      const page = live.context.pages?.().find(page => { const url = new URL(page.url()); return url.origin === origin && url.pathname === target.pathname; });
+      version = await page?.evaluate(() => globalThis.jQuery?.fn?.jquery);
+    } catch { /* Page inspection is optional; static resource capture still works. */ }
+    const loaded = typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:[-.][\w]+)*$/.test(version);
+    diagnostics.push({ code: loaded ? 'SHELL_JQUERY_OBSERVED' : 'SHELL_JQUERY_MISSING', path: safePath(path),
+      ...(loaded ? { version } : {}), message: loaded
+        ? 'The loaded page exposes jQuery under an exported or bundled reference; no filename-based library claim is required.'
+        : 'No identifiable jQuery reference was observed. Platform styles can be captured independently; verify the exported page scripts in the browser.' });
+  }
   shellProfile.platformStyles = {
     mode: failures.some(failure => !failure.dependency && !failure.optional) ? 'placeholder' : 'captured',
     capturedAt: new Date().toISOString(), origin,

@@ -12,6 +12,7 @@ import { handleODataFeed } from "./odata-feeds.mjs";
 import { platformBundleFor, localAspNetScript, platformShell, bootstrapVariant } from "./platform-manifest.mjs";
 import { renderShellResource } from './liquid.mjs';
 import { formStyleDiagnostics } from './platform-styles.mjs';
+import { formContentStyles } from './form-head.mjs';
 import { adapterEnabled } from './local-overrides.mjs';
 import {
   subgridSettings,
@@ -1822,11 +1823,13 @@ export async function handleNativeService(req, res, url, context) {
       });
       const resource = entry => renderShellResource(entry, 'css', { localOnly: true });
       const bootstrap = (context.portal.webFiles ?? []).find(file => /\/bootstrap\.min\.css$/i.test(file.url ?? ''));
-      const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
-      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + platform.headEnd;
+      const sourceStyles = await context.formStyles?.(url.pathname + url.search) ?? {};
+      const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: sourceStyles.bootstrap || resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
+      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd;
       for (const diagnostic of formStyleDiagnostics(body, context.config?.shellProfile)) context.recordDiagnostic?.({ ...diagnostic, path: url.pathname });
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><form id="content_form"><div id="content-container">${body}</div></form></body></html>`);
+      const document = `<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><div id="content-container" class="container quickform"><div id="content"><form id="content_form">${body}</form></div></div></body></html>`;
+      res.end(context.decorateDocument?.(document) ?? document);
     } catch (error) {
       res.writeHead(error.status ?? 500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       res.end(`<!doctype html><title>Quick view</title><p role="alert">${xmlEscape(error.message)}</p>`);

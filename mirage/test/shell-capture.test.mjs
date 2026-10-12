@@ -69,6 +69,31 @@ test('optional third-party shell failures do not prevent applying captured platf
   assert.ok(report.failures.some(item => item.optional && item.code === 'SHELL_RESOURCE_ORIGIN'));
 });
 
+test('stylesheet capture accepts a loaded jQuery library with an authored filename', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-library-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const live = livePage(page('<link rel="stylesheet" href="/style.css"><script src="/project-library.js"></script>'), { '/style.css': { type: 'text/css', body: 'body{}' } });
+  const evaluated = [];
+  live.context.pages = () => [{ url: () => origin + '/workspace/', evaluate: async fn => { evaluated.push(fn); return '3.6.2'; } }];
+  const cache = await new AssetCache({ directory, origin }).init();
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal(report.complete, true);
+  assert.equal(report.ready, true);
+  assert.equal(evaluated.length, 1);
+  assert.ok(report.diagnostics.some(item => item.code === 'SHELL_JQUERY_OBSERVED' && item.version === '3.6.2'));
+  assert.ok(!report.failures.some(item => item.code === 'SHELL_JQUERY_MISSING'));
+});
+
+test('unidentified jQuery is a browser verification diagnostic rather than a stylesheet capture failure', async t => {
+  const directory = await mkdtemp(join(tmpdir(), 'pp-shell-no-library-'));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const live = livePage(page('<link rel="stylesheet" href="/style.css">'), { '/style.css': { type: 'text/css', body: 'body{}' } });
+  const cache = await new AssetCache({ directory, origin }).init();
+  const report = await capturePortalShell(cache, live, { path: '/workspace/' });
+  assert.equal(report.ready, true);
+  assert.ok(report.diagnostics.some(item => item.code === 'SHELL_JQUERY_MISSING'));
+});
+
 test("UTF-16 PAC stylesheet attachments capture their browser font dependencies", async () => {
   const directory = await mkdtemp(join(tmpdir(), "pp-shell-utf16-"));
   try {
@@ -394,7 +419,7 @@ test("missing, non-static, credential and cross-origin shell resources produce e
       true,
     );
     assert.equal(
-      result.failures.some((f) => f.code === "SHELL_JQUERY_MISSING"),
+      result.diagnostics.some((f) => f.code === "SHELL_JQUERY_MISSING"),
       true,
     );
     assert.equal(JSON.stringify(result).includes("SECRET_VALUE"), false);

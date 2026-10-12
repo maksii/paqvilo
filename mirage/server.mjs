@@ -20,6 +20,7 @@ import {
 } from "./lib/data.mjs";
 import { DATA_MODELS, importPortal, normalizePortalPath } from "./lib/importer.mjs";
 import { createPortalRenderer, renderShellResource } from "./lib/liquid.mjs";
+import { formContentStyles } from './lib/form-head.mjs';
 import { emptyUnmappedLiquidFetchXml, observedLiquidEntityRead } from "./lib/liquid-missing-data.mjs";
 import { observedPageQueryValidation } from "./lib/page-query-validation.mjs";
 import { observedPageErrorResponse } from "./lib/page-error-presentation.mjs";
@@ -2780,7 +2781,7 @@ export async function createSimulator({
         : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
       return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
-    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => injectLocalHead(html, localOverrides), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
     // Routing and sign-in : repeated slashes collapse before resolution (portal
@@ -2954,17 +2955,18 @@ export async function createSimulator({
       // capture the Bootstrap slot is the site's bootstrap.min.css web file, else the
       // platform's /css/bootstrap.min.css.
       const bootstrapFile = portal.webFiles.find((f) => /\/bootstrap\.min\.css$/i.test(f.url));
+      const sourceStyles = await renderer.contentStylesheets(explicitPage ?? servicePages(portal).home ?? page, context);
       const modalPlatform = platformShell({
         variant: bootstrapVariant(portal.settings),
         profile: config().shellProfile ?? null,
         websiteId: portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid,
         languageCode: context.website?.selected_language?.code ?? "en-US",
-        bootstrap: resource(bootstrapFile?.url ?? "/css/bootstrap.min.css", "css"),
+        bootstrap: sourceStyles.bootstrap || resource(bootstrapFile?.url ?? "/css/bootstrap.min.css", "css"),
         renderStyles: (paths) => paths.map((p) => resource(p, "css")).join(""),
         controlsRoot: false,
       });
       const remaining = modalPlatform.remaining;
-      const styles = remaining.stylesheets.map((p) => resource(p, "css")).join("");
+      const styles = remaining.stylesheets.map((p) => resource(p, "css")).join("") + formContentStyles(sourceStyles.content, config().shellProfile);
       const configuredHeadScripts = [...remaining.headScripts, ...remaining.beforeContentScripts];
       const headScripts = configuredHeadScripts.map((p) => resource(p, "js")).join("");
       const aspNetScripts = remaining.bodyScripts.filter(isAspNetScript).map((p) => resource(p, "js")).join("");
@@ -2981,7 +2983,7 @@ export async function createSimulator({
       // EntityFormControl; its empty anti-forgery holder uses the portal-scoped URL.
       const scopedSite = normalizeId(portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid);
       const document = injectRuntimeCompatibility(
-        `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: `<div id="content-container">${html}</div>`, aspNetScripts })}${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
         sourceDependencies, configuredHeadScripts,
       );
       for (const item of formStyleDiagnostics(document, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });

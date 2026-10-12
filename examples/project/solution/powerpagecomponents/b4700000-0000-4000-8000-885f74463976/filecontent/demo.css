@@ -47,3 +47,5 @@ main.container,.page-heading{max-width:1220px}.page-heading{display:none}.demo{m
 .demo-native-frame .crmEntityFormView .btn-primary,.demo-native-frame .crmEntityFormView input[type=submit]{background:var(--demo-forest)!important;border-color:var(--demo-forest)!important;color:#fff}
 
 .demo-native-frame .crmEntityFormView .control .input-group button:is(.clearlookupfield,.launchentitylookup){font-size:12px;line-height:1.4;padding:9px 8px;min-width:0;flex:0 0 auto}
+/* Native modal containers reserve side padding; stack fields before lookup text clips. */
+@media(max-width:760px){.demo-native-frame .crmEntityFormView table.section>tbody{grid-template-columns:1fr}}

@@ -30,7 +30,7 @@ These changes use invented data, exported fixture structures and loopback servic
 | 22 | Lookup selection, native change and jQuery change reload quick views with the full parameter contract; clearing blanks them. | Browser lookup selection, scripted change and clear |
 | 23 | Quick view documents use the modal document's platform head and structural readonly controls. | Captured/placeholder stylesheet comparison and browser geometry |
 | 24 | Metadata without a FormXml PCF binding renders the native control and records a diagnostic. Real unsupported bindings retain their alert. | Native email input and status diagnostic browser assertions |
-| 25 | No authorized native page was supplied to establish label encoding. Encoded labels remain the default; an evidenced per-site `observed.subgridLabelMarkup: sanitized` enables safe subgrid markup. Section and field labels remain encoded. | Default encoding, required evidence and script/handler sanitization |
+| 25 | Authorized sandbox observations confirmed presentation markup in field, section and subgrid labels. Authored labels preserve sanitized markup by default; record values remain encoded. The evidenced subgrid encoding override remains available. | Synthetic markup, script/handler sanitization and encoded override |
 | 26 | Opt-in `mirage.presetMode: bootstrap` / `--preset-mode bootstrap` seeds only a new state file; `always` preserves existing behavior. Startup/status reports the decision. | Seed, create, restart preservation and explicit reset |
 | 27 | Hidden panel state is named in startup output with its configured reveal shortcut. | Persisted panel state and startup notice |
 

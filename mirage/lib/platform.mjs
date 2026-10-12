@@ -1,6 +1,6 @@
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
-import sanitizeHtml from 'sanitize-html';
+import { renderFormLabel } from './form-labels.mjs';
 import {
   clientManagedControlsRuntime,
   validateManagedControlDefinition,
@@ -1453,9 +1453,7 @@ async function renderForm(kind, name, context, options) {
 
   // Subgrids, quick views and notes cells.
   const extraControls = new Map();
-  const subgridLabel = label => options.config?.observed?.subgridLabelMarkup === 'sanitized'
-    ? sanitizeHtml(String(label ?? ''), { allowedTags: ['span', 'strong', 'em', 'b', 'i', 'br', 'small', 'p', 'div'], allowedAttributes: { '*': ['class'] } })
-    : escape(label);
+  const subgridLabel = label => options.config?.observed?.subgridLabelMarkup === 'encoded' ? escape(label) : renderFormLabel(label);
   const cells = formCells(schema);
   for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes"].includes(candidate.type))) {
     if (cell.type === "quickform") {
@@ -1469,7 +1467,7 @@ async function renderForm(kind, name, context, options) {
       const path = `/_portal/quickform-template-path/${websiteId}`;
       const formName = cell.schema.formName ?? cell.schema.title ?? cell.label ?? cell.id;
       const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}` : "about:blank";
-      extraControls.set(cell.id, `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" style="max-height: 350px;" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
+      extraControls.set(cell.id, `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
       continue;
     }
     if (cell.type === "notes") {
@@ -1532,7 +1530,7 @@ async function renderForm(kind, name, context, options) {
       : ` for="${attr(resolved.control === "datetime" ? `${resolved.id}_datepicker_description` : resolved.id)}"`;
     const description = resolved.description?.text ? resolved.description : null;
     const descriptionHtml = (position) => (description && description.position === position ? `<div class="description${position === 100000000 ? " above" : position === 100000001 ? " below" : ""}${resolved.cssClass ? " " + attr(resolved.cssClass) : ""}">${description.text}</div>` : "");
-    const labelHtml = resolved.showLabel === false ? "" : `<label${labelFor} id="${attr(resolved.id)}_label" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${escape(resolved.label)}</label>`;
+    const labelHtml = resolved.showLabel === false ? "" : `<label${labelFor} id="${attr(resolved.id)}_label" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(resolved.label)}</label>`;
     // CellTemplate: a field-level read-only cell has no validator container; a read-only form
     // keeps its validators (marked read-only). The app bundle then makes the containers of
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
@@ -1589,7 +1587,7 @@ async function renderForm(kind, name, context, options) {
           const sectionRow = sectionMetadata(section.name);
           const sectionLabel = formLabel(fieldOf(sectionRow, "label"), section.label ?? "");
           const widths = section.columnWidths ?? [100];
-          tabHtml += `<fieldset${sectionLabel ? ` aria-label="${attr(plainText(sectionLabel))}"` : ""}>${section.showLabel ? `<legend class="section-title"><h3>${sectionLabel}</h3></legend>` : ""}<table role="presentation"${section.name ? ` data-name="${attr(section.name)}"` : ""} class="section${fieldOf(sectionRow, "cssclass") ? " " + attr(fieldOf(sectionRow, "cssclass")) : ""}"><colgroup>${widths.map((width) => `<col style="width:${width}%;">`).join("")}<col></colgroup><tbody>`;
+          tabHtml += `<fieldset${sectionLabel ? ` aria-label="${attr(plainText(sectionLabel))}"` : ""}>${section.showLabel ? `<legend class="section-title"><h3>${renderFormLabel(sectionLabel)}</h3></legend>` : ""}<table role="presentation"${section.name ? ` data-name="${attr(section.name)}"` : ""} class="section${fieldOf(sectionRow, "cssclass") ? " " + attr(fieldOf(sectionRow, "cssclass")) : ""}"><colgroup>${widths.map((width) => `<col style="width:${width}%;">`).join("")}<col></colgroup><tbody>`;
           for (const row of section.rows) {
             tabHtml += "<tr>";
             for (const cell of row) {
@@ -1869,7 +1867,7 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
   const display = (value) => value?.name ?? value?.label ?? scalarValue(value) ?? "";
   const rows = (quick.schema.fields ?? [])
     .filter((field) => !field.hidden)
-    .map((field) => `<tr><td colspan="1" rowspan="1" class="clearfix cell text form-control-cell"><div class="info"><label for="${attr(field.name)}" id="${attr(field.name)}_label" class="field-label">${escape(field.label ?? field.name)}</label></div><div class="control" data-logical-name="${attr(field.name)}"><input type="text" id="${attr(field.name)}" readonly="readonly" class="text form-control readonly" value="${attr(display(record[field.name]))}"></div></td><td class="cell zero-cell"></td></tr>`)
+    .map((field) => `<tr><td colspan="1" rowspan="1" class="clearfix cell text form-control-cell"><div class="info"><label for="${attr(field.name)}" id="${attr(field.name)}_label" class="field-label">${renderFormLabel(field.label ?? field.name)}</label></div><div class="control" data-logical-name="${attr(field.name)}"><input type="text" id="${attr(field.name)}" readonly="readonly" class="text form-control readonly" value="${attr(display(record[field.name]))}"></div></td><td class="cell zero-cell"></td></tr>`)
     .join("");
   return `<div id="QuickFormControl" class="crmEntityFormView readonly"><div class="form-readonly entity-form"><table role="presentation" class="section"><colgroup><col style="width:100%;"><col></colgroup><tbody>${rows}</tbody></table></div></div>`;
 }

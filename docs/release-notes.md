@@ -18,11 +18,14 @@ The published package line is 0.9.x. If older source metadata led your project t
 
 Public API additions: `paqvilo/mirage`, `paqvilo/mirage/acceptance`, `paqvilo/mirage/testing`, `paqvilo/lense`, `createMirageContext`, `connectRuntime` and `resolveCatalogue`. Existing deep imports remain available; see the [compatibility policy](public-api.md). The branch also includes the [compatibility baseline](../mirage/docs/compatibility-baseline.md) for forms, Liquid, PCF, local CLR plugins and supported flows. Synthetic tests establish local contracts, not complete hosted parity.
 
-## Additional consumer feedback (15–27)
+## Additional consumer feedback (15â€“27)
 
 - Fix modal fallback frame geometry and readonly quick view styles; quick views reload after lookup changes.
 - Preserve incomplete capture reports, report server error details, and keep safe external dependencies visible without blocking platform styles. `capture-shell --all` captures one safe environment per configured site and reports skips.
 - Add semver-covered `paqvilo/mirage/packs` and `paqvilo/mirage/fixtures`, plus cache, paging, audit and rich-text acceptance helpers. Existing public names stay available.
 - Add opt-in bootstrap-only preset seeding, registry-derived root CLI help, doctor help and hidden-panel startup notices.
-- Render native fields without an in-page PCF alert when no desktop FormXml binding exists. Subgrid label markup is an evidenced, sanitized per-site option; default label encoding remains unchanged pending native verification.
+- Render native fields without an in-page PCF alert when no desktop FormXml binding exists. Native validation confirmed authored field, section and subgrid label markup; preserve sanitized presentation markup while keeping record values encoded.
+- Modal and quick-view documents include exported site styles and native container wrappers, deduplicating captured styles. Cleared quick views leave the tab order and restore it on reload.
+- The starter stacks modal fields at narrower frame widths so lookup values fit beside accessible controls with native container padding.
+- A renamed or bundled jQuery reference no longer blocks platform stylesheet capture. Passive inspection can report the loaded library version; otherwise a diagnostic requests browser verification.
 - Pin quoted CSS URL resolution with a synthetic regression; no parser change was needed on this branch.

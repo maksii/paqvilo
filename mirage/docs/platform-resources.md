@@ -31,8 +31,16 @@ height, matching the structural rule in Microsoft's [public preform stylesheet](
 Quick view documents use the same platform styles, and their frames follow lookup changes.
 Captured styles replace these fallbacks.
 
-Subgrid label markup is deployment-specific until verified against an authorized native page.
-The default encodes labels. Sites with evidence may configure
-`mirage.observed: { subgridLabelMarkup: sanitized, evidence: "your observation receipt" }`.
-Only presentation tags and class attributes survive sanitization; scripts, event handlers and
-styles are removed. Section and field labels retain their encoded default.
+Modal and quick-view documents also include exported root styles and native container wrappers.
+Captured stylesheet links take precedence over duplicate exported links. Local head additions
+apply to both document types. Clearing a quick view blanks its frame and removes it from the tab order.
+
+Authorized native observations confirmed presentation markup in authored field, section and
+subgrid labels. These labels preserve sanitized markup by default; scripts, event handlers
+and inline styles are removed. Record values remain encoded. An evidenced site may select
+`mirage.observed: { subgridLabelMarkup: encoded, evidence: "your observation receipt" }`.
+
+An unrecognized jQuery filename does not block stylesheet capture. When the connected browser
+already has the target page open, passive inspection can emit `SHELL_JQUERY_OBSERVED` with its
+loaded version. Otherwise `SHELL_JQUERY_MISSING` requests browser verification; a successful
+stylesheet capture alone does not prove script execution.

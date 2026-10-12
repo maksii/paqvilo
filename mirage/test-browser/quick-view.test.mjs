@@ -20,12 +20,15 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
     'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main',
     'Main.webtemplate.source.html': '{% entityform name: "Create widget" %}',
     'Widget.basicform.basicformmetadata.yml': 'adx_entityform: create\nadx_type: 100000000\nadx_attributelogicalname: email\nadx_controlstyle: 756150001',
+    'Site.webfile.yml': 'adx_webfileid: style\nadx_name: site.css\nadx_partialurl: site.css\nadx_parentpageid: home\nadx_mimetype: text/css',
+    'site.css': '.crmEntityFormView .info{color:rgb(1,2,3)}',
+    'local.css': ':root{--local-only-flag:1}',
     'Widget.basicform.yml': 'adx_entityformid: create\nadx_name: Create widget\nadx_entityname: widget\nadx_mode: 100000000',
   })) await fs.writeFile(path.join(root, file), source);
   const fields = [{ name: 'name', label: 'Name' }, { name: 'parentid', label: 'Parent', type: 'lookup', targets: ['parent'] }, { name: 'email', label: 'Email', type: 'email' }];
   const schema = { entity: 'widget', mode: 100000000, fields, layout: [{ name: 'tab', columns: [{ sections: [{ name: 'main', rows: [[{ name: 'name' }], [{ name: 'parentid' }], [{ name: 'email' }], [{ type: 'quickform', id: 'ParentDetails', lookup: 'parentid', entity: 'parent', schema: { formName: 'Parent details', fields: [{ name: 'name', label: 'Parent name' }] } }]] }] }] }] };
   const initial = { mappings: { widget: { idColumn: 'widgetid', entitySet: 'widgets', relationships: { parent: { entity: 'parent', from: 'parentid', to: 'parentid', many: false } } }, parent: { idColumn: 'parentid', entitySet: 'parents', nameColumn: 'name' } }, tables: { widget: [], parent: [{ parentid: parent, name: 'Synthetic parent' }] }, permissions: [], settings: { permissionMode: 'permissive' }, simulator: { componentSchemas: { create: schema }, endpoints: [], mode: 'local', pageMode: 'local', live: { origin: null } } };
-  const app = await createSimulator({ sourceDir: root, initial, watch: false });
+  const app = await createSimulator({ sourceDir: root, initial, watch: false, projectRoot: root, head: { stylesheets: ['./local.css'] } });
   t.after(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
@@ -44,8 +47,10 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   assert.equal(await frame.locator('#name').inputValue(), 'Synthetic parent');
   await page.evaluate(() => { document.getElementById('parentid').value = ''; jQuery('#parentid').trigger('change'); });
   await page.waitForFunction(() => document.getElementById('ParentDetails').getAttribute('src') === 'about:blank');
+  assert.equal(await page.locator('#ParentDetails').getAttribute('tabindex'), '-1');
   await page.evaluate(id => { document.getElementById('parentid').value = id; jQuery('#parentid').trigger('change'); }, parent);
   await frame.locator('#name').waitFor();
+  assert.equal(await page.locator('#ParentDetails').getAttribute('tabindex'), '0');
   const geometry = await frame.locator('#name').evaluate(input => ({ input: input.getBoundingClientRect().width, control: input.parentElement.getBoundingClientRect().width, height: input.getBoundingClientRect().height }));
   assert.ok(Math.abs(geometry.input - geometry.control) < 1, JSON.stringify(geometry));
   assert.ok(geometry.height >= 34);
@@ -53,9 +58,13 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   assert.equal(quick.searchParams.get('entityprimarykeyname'), 'parentid');
   const stylesheetPaths = html => [...html.matchAll(/<link[^>]+href="([^"]+)"/g)].map(match => match[1]);
   for (const captured of [false, true]) {
-    if (captured) { const state = app.store.snapshot(); state.simulator.shellProfile = { stylesheets: ['/captured.css'], platformStyles: { mode: 'captured', origin: 'https://synthetic.example.test', capturedAt: '2026-10-12' } }; await app.store.replaceState(state); }
+    if (captured) { const state = app.store.snapshot(); state.simulator.shellProfile = { stylesheets: ['/site.css', '/captured.css'], platformStyles: { mode: 'captured', origin: 'https://synthetic.example.test', capturedAt: '2026-10-12' } }; await app.store.replaceState(state); }
     const quickHtml = await (await fetch(quick)).text();
     const modalHtml = await (await fetch(`${app.url}/_portal/modal-form-template-path/${website}?entityformid=create`)).text();
     assert.deepEqual(stylesheetPaths(quickHtml), stylesheetPaths(modalHtml));
+    assert.equal(stylesheetPaths(quickHtml).filter(href => href.split('?')[0] === '/site.css').length, 1);
+    assert.ok(stylesheetPaths(quickHtml).some(href => href.startsWith('/_sim-local/head/')));
+    assert.match(quickHtml, /id="content-container" class="container quickform"/);
+    assert.match(modalHtml, /id="content-container" class="container wrapper-body"/);
   }
 });

@@ -1616,7 +1616,7 @@ export function createPortalRenderer(portal, options = {}) {
       diagnostics,
     };
   }
-  return { engine, renderString, renderPage, contextForPage, requestLanguage, inspectCapabilities };
+  return { engine, renderString, renderPage, contextForPage, requestLanguage, inspectCapabilities, contentStylesheets };
 }
 const AUTO_ENCODE_ROOTS = new Set(["user", "request"]);
 
