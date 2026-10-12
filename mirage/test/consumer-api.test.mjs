@@ -65,6 +65,9 @@ test('runtime client signs in configured persona, carries CSRF and resolves cata
   const simulator = await createSimulator({ sourceDir: path.join(root, 'portal'), watch: false, initial: { mappings: { contact: { idColumn: 'contactid', entitySet: 'contacts' } }, tables: { contact: [{ contactid: 'synthetic', fullname: 'Synthetic' }] }, simulator: { identity: { contactId: 'synthetic', roles: ['Tester'], roleSource: 'override' } } } });
   try {
     await fs.appendFile(path.join(root, 'paqvilo.config.yml'), `    mirage:\n      port: ${new URL(simulator.url).port}\n`);
+    // Import canonicalizes the source; catalogues may retain a junction/alias spelling.
+    await fs.symlink(path.join(root, 'portal'), path.join(root, 'alias'), process.platform === 'win32' ? 'junction' : 'dir');
+    await fs.writeFile(path.join(root, 'paqvilo.config.local.yml'), 'sites:\n  invented:\n    source: alias\n');
     const client = await connectRuntime({ config: path.join(root, 'paqvilo.config.yml'), site: 'invented' });
     assert.equal(client.origin, simulator.url);
     const headers = await client.signIn(null, { configuredPersona: true });

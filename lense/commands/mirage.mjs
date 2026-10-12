@@ -34,7 +34,10 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const resolved = (value) => value ? path.resolve(value) : null;
 export const samePath = (a, b) => {
   if (!a || !b) return false;
-  const left = path.resolve(a), right = path.resolve(b);
+  // Node and Windows temp directories may spell the same source through a
+  // short path or junction. Compare existing filesystem identities first.
+  const canonical = value => { try { return fsSync.realpathSync.native(value); } catch { return path.resolve(value); } };
+  const left = canonical(a), right = canonical(b);
   return process.platform === 'win32'
     ? left.toLowerCase() === right.toLowerCase()
     : left === right;
