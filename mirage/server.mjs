@@ -2990,8 +2990,9 @@ export async function createSimulator({
     }
     const localHeadAsset = localOverrides.assets.find(asset => asset.url === url.pathname);
     if (localHeadAsset && ['GET', 'HEAD'].includes(req.method)) {
+      const body = await readLocalFile(localHeadAsset.file, { root: localHeadAsset.root, maxBytes: 8 * 1024 * 1024 });
       res.writeHead(200, { 'content-type': localHeadAsset.kind === 'scripts' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', 'cache-control': 'no-store', 'x-sim-local-only': 'head' });
-      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(localHeadAsset.file));
+      return res.end(req.method === 'HEAD' ? undefined : body);
     }
     const localRuntimeAssets = new Map([
       ["/__sim-static/vendor/jquery.min.js", createRequire(import.meta.url).resolve('jquery/dist/jquery.min.js')],

@@ -47,6 +47,23 @@ test('local overrides confine files, preserve head order and disable bundled foo
   assert.deepEqual(formStyleDiagnostics('<div class="crmEntityFormView">', profile), []);
 });
 
+test('local head assets remain confined when a directory is replaced after startup', async t => {
+  const root = await project(t), outside = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-head-outside-'));
+  t.after(() => fs.rm(outside, { recursive: true, force: true }));
+  await fs.mkdir(path.join(root, 'local'));
+  await fs.writeFile(path.join(root, 'local/extra.css'), 'body{color:purple}');
+  await fs.writeFile(path.join(outside, 'extra.css'), 'OUTSIDE_SOURCE_MUST_NOT_BE_SERVED');
+  const localOverrides = resolveLocalOverrides({ head: { stylesheets: ['./local/extra.css'] } }, root);
+  const simulator = await createSimulator({ sourceDir: path.join(root, 'portal'), localOverrides, watch: false });
+  try {
+    await fs.rename(path.join(root, 'local'), path.join(root, 'original-local'));
+    await fs.symlink(outside, path.join(root, 'local'), process.platform === 'win32' ? 'junction' : 'dir');
+    const response = await fetch(simulator.url + '/_sim-local/head/0.css');
+    assert.equal(response.status, 500);
+    assert.ok(!(await response.text()).includes('OUTSIDE_SOURCE_MUST_NOT_BE_SERVED'));
+  } finally { await simulator.close(); }
+});
+
 test('bound context generates project presets consistently without global leakage', async t => {
   const root = await project(t);
   const pack = { id: 'invented', name: 'Invented', description: 'Synthetic pack', matches: () => true, presets: () => ({ 'invented-data': { name: 'Invented data', tables: { widget: [{ widgetid: 'one' }] }, mappings: { widget: { idColumn: 'widgetid' } } } }) };

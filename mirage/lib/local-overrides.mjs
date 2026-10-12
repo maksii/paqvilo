@@ -36,7 +36,7 @@ export function resolveLocalOverrides(options = {}, projectRoot = process.cwd())
       throw new Error('Local head assets must stay inside the project');
     const extension = kind === 'scripts' ? '.js' : '.css';
     if (path.extname(file).toLowerCase() !== extension) throw new Error(`Local ${kind} must be ${extension} files`);
-    assets.push({ kind, file, url: `/_sim-local/head/${assets.length}${extension}` });
+    assets.push({ kind, file, root, url: `/_sim-local/head/${assets.length}${extension}` });
   }
   return { compat, assets };
 }
