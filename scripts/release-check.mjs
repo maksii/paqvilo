@@ -38,7 +38,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/testing/session.mjs', 'docs/project-extensions.md', 'docs/architecture.md',
   'docs/index.md', 'docs/getting-started.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs', 'examples/project/test/portal.test.mjs', 'examples/project/gitignore.template',
-  'examples/project/gitattributes.template', 'examples/project/editor-workspace.mjs', 'mirage/api.mjs', 'mirage/acceptance-api.mjs', 'mirage/testing.mjs', 'lense/api.mjs', 'docs/public-api.md', 'docs/release-notes.md',
+  'examples/project/gitattributes.template', 'examples/project/editor-workspace.mjs', 'mirage/api.mjs', 'mirage/acceptance-api.mjs', 'mirage/testing.mjs', 'lense/api.mjs', 'docs/public-api.md', 'docs/release-notes.md', 'docs/branch-packages.md',
   'examples/project/paqvilo.config.yml', 'examples/project/portal/sitesetting.yml', 'examples/project/portal/webrole.yml',
   'examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json',
   'examples/project/portal/web-files/demo.css', 'examples/project/portal/web-files/demo-workspace.js',

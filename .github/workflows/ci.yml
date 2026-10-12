@@ -13,6 +13,11 @@ on:
         type: string
         required: false
         default: ''
+      package_version:
+        description: Runner-only version for a gated preview archive
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -71,6 +76,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -114,6 +124,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -168,6 +183,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -215,6 +235,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
       # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.
