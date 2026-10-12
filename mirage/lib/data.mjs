@@ -2514,7 +2514,8 @@ export class DataStore {
     rows.push(row);
     this.applySecondary(effects);
     this.assertAllowed(m.logicalName, "create", row, identity);
-    this.validateBindings(m, pluginTarget, row, identity);
+    // Normalization drops raw navigation names; retain them for relationship validation.
+    this.validateBindings(m, { ...input, ...pluginTarget }, row, identity);
     // Deep insert/bind into collection-valued navigation properties.
     for (const item of nested.filter((entry) => entry.rel.many !== false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -2584,7 +2585,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, "update", row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
-    return this.commitUpdate(m, rows, index, row, identity, changes, options);
+    return this.commitUpdate(m, rows, index, row, identity, changes, options, data);
   }
   /**
    * Concurrency metadata that every Dataverse update sets: modifiedon is now and a
@@ -2604,7 +2605,7 @@ export class DataStore {
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, options = {}) {
+  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
     const previous = rows[index];
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
@@ -2613,7 +2614,7 @@ export class DataStore {
     this.exportedPluginPhase(mapping, 'update', 20, target, row, previous, identity, changedAttributes, options);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      this.validateBindings(mapping, target, row, identity, previous);
+      this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
     }
     const effects = this.applyPlugins(mapping.logicalName, "update", row, rows[index], identity);
     this.assertAlternateKeys(mapping, row, rows, index);

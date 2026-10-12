@@ -204,6 +204,7 @@ async function readRuntime(url, fallbackSite = null) {
         site: status.site ?? fallbackSite, pageCount: status.pageCount ?? 0, sourceFingerprint: status.sourceFingerprint ?? null, revision: status.revision ?? null,
         // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
         liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
+        platformStyles: status.platformStyles ?? { mode: 'placeholder' },
       };
     } catch { return null; }
   }
@@ -792,7 +793,13 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
   const portNumber = Number.isInteger(configured.port) ? configured.port : DEFAULT_PORT;
   const port = { port: portNumber, available: portNumber === 0 ? true : await checkPort(portNumber) };
   if (!port.available) warnings.push(`Port ${portNumber} is in use. mirage dev/start reuse a matching toolkit-owned Mirage there; otherwise pass --port 0 (any free port) or another port.`);
-  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, errors, warnings };
+  let platformStyles = { mode: 'placeholder' };
+  try {
+    const { platformStylesStatus } = await import('../../mirage/lib/platform-styles.mjs');
+    const file = projectPortal && loaded ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(loaded, projectPortal.id, path.join(miragePaths(cfg).discoveryRoot, 'projects')) : path.join(miragePaths(cfg).discoveryRoot, cfg.siteName, 'state.json');
+    platformStyles = platformStylesStatus(JSON.parse(await fs.readFile(file, 'utf8')).simulator?.shellProfile);
+  } catch { /* Missing state uses the structural fallback. */ }
+  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, platformStyles, localOverrides: configured.localOverrides, errors, warnings };
 }
 
 // ------------------------------------------------------------------------------ output
@@ -1028,6 +1035,11 @@ function print(value, json) {
       console.log(`${state}${session.owned ? ' · toolkit managed' : ''}${session.site ? `  [${session.site}]` : ''}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${session.runtime?.site ? `  (${session.runtime.site}, ${session.runtime.pageCount} pages)` : ''}`);
       const details = [session.adminUrl && `admin ${session.adminUrl}`, session.identityProvider?.origin && `idp ${session.identityProvider.origin}`, session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`, session.project && `project ${session.project}`, session.portal && `portal ${session.portal}`, session.stateFile && `state ${session.stateFile}`, `pid ${session.pid}`].filter(Boolean);
       console.log(`    ${details.join(' · ')}`);
+      if (session.runtime?.platformStyles) {
+        const styles = session.runtime.platformStyles;
+        console.log(`    platform stylesheets: ${styles.mode === 'captured' ? `captured ${styles.capturedAt} from ${styles.origin}` : 'placeholder (local structural form rules)'}`);
+        if (styles.missingHeadStylesheets?.length) console.log(`    missing head stylesheets: ${styles.missingHeadStylesheets.join(', ')}`);
+      }
     }
     return;
   }

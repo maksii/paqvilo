@@ -2,6 +2,10 @@
 
 Install Paqvilo, try the included example, then connect your own Power Pages export. The toolkit runs on your computer; you do not need to clone its repository.
 
+For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.4`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci` for repeatable setup.
+
+After configuring your export/catalogue, run `npx paqvilo lense doctor --config ./paqvilo.config.yml --site my-site`, then `npx paqvilo mirage dev --config ./paqvilo.config.yml --site my-site`. Capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`. See [platform resources](../mirage/docs/platform-resources.md), [public APIs](public-api.md) and [release notes](release-notes.md).
+
 ## 1. Install
 
 ### Prepare your computer

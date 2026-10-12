@@ -79,6 +79,8 @@ export default async function doctor(_cfg, args) {
       for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
       const mirage = item.mirage;
       if (mirage) {
+        console.log(`  platform stylesheets: ${mirage.platformStyles?.mode === 'captured' ? `captured ${mirage.platformStyles.capturedAt} from ${mirage.platformStyles.origin}` : 'placeholder (local structural form rules)'}`);
+        if (mirage.localOverrides?.assets.length || Object.keys(mirage.localOverrides?.compat ?? {}).length) console.log(`  local-only overrides: ${JSON.stringify(mirage.localOverrides)}`);
         const roots = mirage.solutionRoots.roots;
         console.log(`  mirage ${mirage.ready ? 'ready' : 'NOT READY'}: dependencies ${mirage.dependencies.ready ? 'installed' : 'missing'}, ${mirage.project.configured ? `project ${mirage.project.file}` : 'no project file'}, ${roots.length} Solution root(s) (${mirage.solutionRoots.source}${roots.length > 1 ? `, ${mirage.solutionRoots.order ?? 'derived'} order` : ''}), state folder ${mirage.stateDir.writable ? 'writable' : 'NOT writable'}, port ${mirage.port.port}${mirage.port.port === 0 ? ' (any free port)' : mirage.port.available ? ' free' : ' in use'}`);
         if (mirage.observed) console.log(`  mirage observed (${mirage.observedSource === 'project' ? 'project file' : 'catalogue'}): ${observedText(mirage.observed)}`);

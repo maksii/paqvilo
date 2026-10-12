@@ -548,11 +548,11 @@ export class AssetCache {
             break;
           }
           if (response.status !== 200)
-            throw fail(
+            throw Object.assign(fail(
               `Static asset capture returned HTTP ${response.status}.`,
               response.status >= 400 ? response.status : 502,
               "ASSET_HTTP",
-            );
+            ), { originStatus: response.status });
           const bytes = Buffer.from(response.body);
           const observedEmpty =
             !aspNet &&
@@ -600,6 +600,7 @@ export class AssetCache {
           failures.push({
             path: failurePath(value),
             code: error.code ?? "ASSET_CAPTURE",
+            ...(error.originStatus ? { originStatus: error.originStatus } : {}),
             message:
               error.code === "LIVE_BRIDGE"
                 ? error.message

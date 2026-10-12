@@ -1,5 +1,20 @@
 # Configuration
 
+## Local project additions (0.9.4)
+
+Configure these in `defaults.mirage` or `sites.<id>.mirage`, including in ignored `paqvilo.config.local.yml`:
+
+```yaml
+mirage:
+  compat:
+    footerSpacing: false
+  head:
+    stylesheets: [./local/extra.css]
+    scripts: [./local/flags.js]
+```
+
+Files resolve from the catalogue directory and must exist inside that project, including after resolving symlinks. They are served under `/_sim-local/head/` and injected before platform/authored scripts. Doctor, status and page diagnostics identify these local-only additions. They never modify exports. Supported boolean adapter names: `footerSpacing`, `dateFormat`, `dateTimePicker`, `bootstrapPlugins`, `jqueryUiDialog`, `jqueryUiWidgets`, `blockUi`, `entityGrid`, `platformApp`, `webForms`. Unknown names are errors. Disabling a fallback omits it from standalone scripts and local platform bundles. Authored and captured scripts remain controlled by the site's sources/capture.
+
 Your catalogue connects the toolkit to your sources and environments. Keep it in your portal project so the same configuration works with an installed package or a separate toolkit checkout. If this is your first setup, follow [getting started](getting-started.md).
 
 Pass `--config /path/to/your-project/paqvilo.config.yml`. Without it the toolkit uses the working directory's `paqvilo.config.yml` when present, otherwise its bundled example catalogue. The bundled example URL is an inert placeholder and must be replaced before connecting to a live portal.

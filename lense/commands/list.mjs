@@ -5,6 +5,7 @@ import { execFileSync } from 'node:child_process';
 import { loadCatalogue, loadDevTargets, ENV_SETTINGS, resolveMirageConfig } from '../config.mjs';
 import { detectFormat } from '../portal-model.mjs';
 import { browserProfileInfo } from '../browser-profile.mjs';
+import { resolveCatalogue } from '../resolved-catalogue.mjs';
 
 /** Portal extracts in the repository, whether configured or not. */
 export function discoverExtracts(startDir) {
@@ -79,7 +80,9 @@ export default async function list(_cfg, args) {
   const profileInfo = inEffect ? browserProfileInfo(inEffect) : null;
 
   if (args.json) {
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', offline: true, sourceRoot: catalogue.sourceRoot, sites, inEffect: inEffect && {
+    let resolved;
+    try { resolved = await resolveCatalogue(args); } catch (error) { resolved = { error: error.message }; }
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
       site: inEffect.siteName, env: inEffect.envName, url: inEffect.origin, source: inEffect.sourceDir, scope: inEffect.site.scope, baseline: inEffect.site.markup.baseline, portals: inEffect.portals,
       browser: { channel: inEffect.browser.channel, headless: inEffect.browser.headless, debugPort: inEffect.browser.debugPort, bypassCSP: inEffect.browser.bypassCSP, mode: inEffect.browser.cdpUrl ? 'attach' : 'launch',
         profileMode: inEffect.browser.cdpUrl ? 'attached' : inEffect.browser.userDataDir ? 'external' : inEffect.browser.profile ? 'named' : 'default',

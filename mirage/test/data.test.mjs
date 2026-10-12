@@ -12,6 +12,20 @@ import {
 import { initialState } from "../lib/bootstrap.mjs";
 
 const user = { contactId: "c1", accountId: "a1", roles: ["Member"] };
+test('enforced unknown navigation bindings reject create and plugin updates atomically', async () => {
+  const initial = state();
+  initial.settings = { ...initial.settings, associationPermissions: 'enforce' };
+  const store = new DataStore({ state: initial });
+  store.setPluginPipeline(({ record, stage }) => { if (stage === 20) record.firstname = 'Plugin changed'; });
+  for (const write of [
+    () => store.create('contacts', { firstname: 'Synthetic', 'unknown@odata.bind': '/accounts(a1)' }, user),
+    () => store.update('contacts', 'c1', { firstname: 'Synthetic', 'unknown@odata.bind': '/accounts(a1)' }, user),
+  ]) {
+    const before = store.snapshot();
+    await assert.rejects(write(), error => error.code === 'MissingRelationship' && error.status === 400);
+    assert.deepEqual(store.snapshot(), before);
+  }
+});
 test("Authored cache-refresh FetchXML parenthesized GUIDs identify the same permitted product without changing ordinary text comparisons", () => {
   const id = "33333333-3333-3333-3333-333333333333";
   const store = new DataStore({

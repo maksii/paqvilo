@@ -10,6 +10,7 @@ import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
 import { platformBundleFor, localAspNetScript } from "./platform-manifest.mjs";
+import { adapterEnabled } from './local-overrides.mjs';
 import {
   subgridSettings,
   subgridActionApplies,
@@ -1387,7 +1388,7 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
     const cached = await context.cache.get(url.pathname + url.search, { origin: context.live?.origin }).catch(() => null);
     if (cached) return false;
   }
-  const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
+  const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle, context.compat) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   res.writeHead(200, { "content-type": equivalent.type, "cache-control": "no-cache", "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
@@ -1404,19 +1405,20 @@ const BUNDLE_SOURCES = {
 // default-<lcid>.moment bundle: the site language's moment locale (moment ships "en").
 const MOMENT_LOCALE = "(function(){var m=window.moment;if(m&&typeof m.locale==='function'){m.locale((document.documentElement.getAttribute('lang')||'en').toLowerCase());}})();";
 const bundleBodies = new Map();
-async function bundleEquivalent(bundle) {
-  if (!bundleBodies.has(bundle.id))
+async function bundleEquivalent(bundle, compat = {}) {
+  const key = bundle.id + JSON.stringify(compat);
+  if (!bundleBodies.has(key))
     bundleBodies.set(
-      bundle.id,
+      key,
       (async () => {
         const parts = [];
         // Source map comments would point at files that are not served.
-        for (const source of bundle.local)
+        for (const source of bundle.local.filter(source => adapterEnabled(source, compat)))
           parts.push(`/* Local equivalent part: ${source} */\n${(await bundleSource(source)).replace(/^\/\/# sourceMappingURL=.*$/gm, "")}`);
         return Buffer.from(parts.join(bundle.kind === "stylesheet" ? "\n" : "\n;\n"));
       })(),
     );
-  return bundleBodies.get(bundle.id);
+  return bundleBodies.get(key);
 }
 // A source is a library, a file of lib/, one "// @part <name>" section of a file
 // ("file#name"), or "provided:<file>" for a resource whose surface another part provides.

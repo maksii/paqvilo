@@ -9,7 +9,7 @@ import { createRequire } from 'node:module';
 const canonicalDependencies = (value) => JSON.stringify(Object.entries(value ?? {}).sort(([a], [b]) => a.localeCompare(b)));
 
 /** Readiness checks never install or contact a registry, and can run before dependencies exist. */
-function projectDependencyReadiness(root) {
+function projectDependencyReadiness(root, { resolved = false } = {}) {
   try {
     const manifest = JSON.parse(fs.readFileSync(path.join(root, 'package.json'), 'utf8'));
     const packageLockPath = path.join(root, 'package-lock.json');
@@ -23,10 +23,25 @@ function projectDependencyReadiness(root) {
       if (canonicalDependencies(manifest[key]) !== canonicalDependencies(lock.packages[''][key])) return { ready: false, canInstall: false, reason: 'package.json and package-lock.json disagree. Update the tool lockfile before installing.' };
     }
     const platformMatches = (list, platform) => !list || (!list.includes(`!${platform}`) && (list.every((value) => value.startsWith('!')) || list.includes(platform)));
-    const installed = Object.entries(lock.packages).filter(([name, entry]) => name.startsWith('node_modules/') && platformMatches(entry.os, process.platform) && platformMatches(entry.cpu, process.arch)).every(([name, entry]) => {
+    let mismatch = null;
+    const require = createRequire(path.join(root, 'package.json'));
+    const installed = resolved ? Object.keys(manifest.dependencies ?? {}).every((name) => {
+      const expected = lock.packages[`node_modules/${name}`]?.version;
+      try {
+        const entry = require.resolve(name);
+        const directory = require.resolve.paths(name)?.map(base => path.join(base, name)).find(base => {
+          if (!fs.existsSync(path.join(base, 'package.json'))) return false;
+          const relative = path.relative(fs.realpathSync(base), entry);
+          return relative !== '..' && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+        });
+        const actual = JSON.parse(fs.readFileSync(path.join(directory, 'package.json'), 'utf8')).version;
+        if (!expected || actual !== expected) { mismatch = `${name}: expected ${expected}, resolved ${actual}`; return false; }
+        return true;
+      } catch { mismatch = `${name}: dependency does not resolve`; return false; }
+    }) : Object.entries(lock.packages).filter(([name, entry]) => name.startsWith('node_modules/') && platformMatches(entry.os, process.platform) && platformMatches(entry.cpu, process.arch)).every(([name, entry]) => {
       try { return JSON.parse(fs.readFileSync(path.join(root, name, 'package.json'), 'utf8')).version === entry.version; } catch { return false; }
     });
-    return { ready: installed, canInstall: true, reason: installed ? 'locked dependencies are ready' : 'locked dependencies are missing or incomplete. Run npm run setup.', dependencies: Object.keys(manifest.dependencies ?? {}) };
+    return { ready: installed, canInstall: true, reason: installed ? 'locked dependencies are ready' : mismatch ?? 'locked dependencies are missing or incomplete. Run npm run setup.', dependencies: Object.keys(manifest.dependencies ?? {}) };
   } catch (err) {
     return { ready: false, canInstall: false, reason: `cannot read dependency manifests: ${err.message}` };
   }
@@ -34,10 +49,11 @@ function projectDependencyReadiness(root) {
 
 /** Check the toolkit and its bundled Mirage as separate locked npm projects. */
 export function dependencyReadiness(root) {
-  const projects = [{ name: 'toolkit', directory: '.', ...projectDependencyReadiness(root) }];
+  const packaged = !fs.existsSync(path.join(root, 'package-lock.json'));
+  const projects = [{ name: 'toolkit', directory: '.', ...projectDependencyReadiness(root, { resolved: packaged }) }];
   const mirageRoot = path.join(root, 'mirage');
   if (fs.existsSync(path.join(mirageRoot, 'package.json')))
-    projects.push({ name: 'mirage', directory: 'mirage', ...projectDependencyReadiness(mirageRoot) });
+    projects.push({ name: 'mirage', directory: 'mirage', ...projectDependencyReadiness(mirageRoot, { resolved: packaged }) });
   const failed = projects.find((project) => !project.canInstall);
   const ready = projects.every((project) => project.ready);
   return {

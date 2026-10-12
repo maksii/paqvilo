@@ -1,6 +1,6 @@
 {
   "name": "paqvilo",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
   "keywords": [
     "power-pages",
@@ -98,6 +98,10 @@
   },
   "license": "AGPL-3.0-only",
   "exports": {
+    "./mirage": "./mirage/api.mjs",
+    "./mirage/acceptance": "./mirage/acceptance-api.mjs",
+    "./mirage/testing": "./mirage/testing.mjs",
+    "./lense": "./lense/api.mjs",
     "./package.json": "./package.json",
     "./lense/*": "./lense/*",
     "./mirage/*": "./mirage/*"

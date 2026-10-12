@@ -46,6 +46,8 @@ export async function prepareDemo(directory) {
     });
   }
   await fs.copyFile(path.join(STARTER, 'gitignore.template'), path.join(target, '.gitignore'));
+  await fs.copyFile(path.join(STARTER, 'gitattributes.template'), path.join(target, '.gitattributes'));
+  await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
   const { version } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
   await fs.writeFile(path.join(target, 'package.json'), JSON.stringify({
     name: 'paqvilo-example', private: true, type: 'module',

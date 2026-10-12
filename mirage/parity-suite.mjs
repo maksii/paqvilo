@@ -2280,20 +2280,21 @@ export function packScenarioFiles(pack, packDir) {
  * Select scenario sources: the core set, data-pack plans (`auto`: packs whose matches({ portal })
  * accepts the imported portal; `all`; `none`; or a list of pack ids) and explicit plan files.
  */
-export async function scenarioSources({ core = true, packs = "auto", portal = null, files = [], packsRoot, project, explicit = [] } = {}) {
+export async function scenarioSources({ core = true, packs = "auto", boundPacks = [], portal = null, files = [], packsRoot, project, explicit = [] } = {}) {
   const sources = [];
   if (core) sources.push({ source: "core", file: CORE_SCENARIOS_FILE });
   if (packs && packs !== "none") {
     if (!Array.isArray(packs) && !["auto", "all"].includes(packs)) throw new Error("Pack selection must be auto, all, none or a list of pack ids.");
-    const { packModules, loadPack, packMatches } = await import("./lib/preset-registry.mjs");
+    const { packModules, loadPack, packMatches, packDirectory } = await import("./lib/preset-registry.mjs");
     const wanted = Array.isArray(packs) ? new Set(packs) : null;
     const found = new Set();
-    for (const { module } of await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) })) {
+    for (const { module } of [...await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) }), ...boundPacks.map(module => ({ module }))]) {
       const pack = await loadPack(module);
       const selected = wanted ? wanted.has(pack.id) : packs === "all" || (portal != null && packMatches(pack, portal));
       if (!selected) continue;
       found.add(pack.id);
-      for (const file of packScenarioFiles(pack, path.dirname(module))) sources.push({ source: `pack:${pack.id}`, file });
+      if (pack.parity?.scenarios?.length && !packDirectory(pack)) throw new Error(`Loaded pack ${pack.id} needs parity.directory for relative scenario files`);
+      for (const file of packScenarioFiles(pack, packDirectory(pack) ?? process.cwd())) sources.push({ source: `pack:${pack.id}`, file });
     }
     for (const id of wanted ?? []) if (!found.has(id)) throw new Error(`Data pack ${id} was not found.`);
   }

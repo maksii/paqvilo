@@ -1,0 +1,50 @@
+{
+  "major": 0,
+  "introduced": "0.9.4",
+  "surfaces": {
+    "paqvilo/mirage": [
+      "DataError",
+      "DataStore",
+      "applySolutionData",
+      "createMirageContext",
+      "createSimulator",
+      "discoverPacks",
+      "discoverSolutionRoots",
+      "importSolutionData",
+      "initialState",
+      "loadPack",
+      "migrateScenarioState",
+      "presetLibrary",
+      "resolveSolutionRoots"
+    ],
+    "paqvilo/mirage/acceptance": [
+      "browserChannel",
+      "browserLaunchOptions",
+      "cachedSourceFingerprint",
+      "classifyNativeNetworkFailures",
+      "classifyNavigationObservations",
+      "compareReferenceContracts",
+      "correlateNetworkConsole",
+      "implementationEvidence",
+      "observedEvidence",
+      "reconcileSupersededRead",
+      "runAcceptance",
+      "sourceFingerprint",
+      "stateFingerprint",
+      "validateNativeNetworkBaseline",
+      "verifyParity"
+    ],
+    "paqvilo/mirage/testing": [
+      "connectRuntime",
+      "signInContext",
+      "signInHeaders"
+    ],
+    "paqvilo/lense": [
+      "loadCatalogue",
+      "loadConfig",
+      "loadDevTargets",
+      "resolveCatalogue",
+      "resolveMirageConfig"
+    ]
+  }
+}

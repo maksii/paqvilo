@@ -20,6 +20,8 @@ export const LAZY_PRESET = Symbol.for("paqvilo-mirage.lazy-preset");
 const packIdPattern = /^[a-z0-9][a-z0-9._-]*$/;
 const presetIdPattern = /^[\w.-]+$/;
 const reserved = new Set(["__proto__", "constructor", "prototype"]);
+const packDirectories = new WeakMap();
+export const packDirectory = pack => packDirectories.get(pack) ?? pack.parity?.directory;
 
 /** Presets that are valid for every exported portal. */
 export function genericPresets() {
@@ -196,11 +198,18 @@ export async function builtinPackModules(root = PACKS_ROOT) {
 
 /** Import and validate one pack module (absolute path or file URL). */
 export async function loadPack(module) {
+  if (module && typeof module === 'object' && !(module instanceof URL)) {
+    const pack = validatePack(module, module.id ?? 'loaded pack');
+    registerExpressionOperators(pack.id, pack.expressionOperators);
+    registerShellConventions(pack.id, pack.shell);
+    return pack;
+  }
   const url = module instanceof URL || /^file:/i.test(String(module))
     ? String(module)
     : pathToFileURL(path.resolve(String(module))).href;
   const imported = await import(url);
   const pack = validatePack(imported.default, fileURLToPath(url));
+  packDirectories.set(pack, path.dirname(fileURLToPath(url)));
   registerExpressionOperators(pack.id, pack.expressionOperators);
   registerShellConventions(pack.id, pack.shell);
   return pack;
@@ -225,7 +234,7 @@ const explicitEntries = (entries, base, label) => {
     if (typeof entry === "string") entry = { module: entry };
     if (!entry || typeof entry !== "object" || typeof entry.module !== "string" || !entry.module.trim())
       throw new Error(`${label}[${index}].module is required`);
-    if (entry.id !== undefined && (typeof entry.id !== "string" || !packIdPattern.test(entry.id)))
+    if (entry.id != null && (typeof entry.id !== "string" || !packIdPattern.test(entry.id)))
       throw new Error(`${label}[${index}].id is invalid`);
     const module = /^file:/i.test(entry.module)
       ? fileURLToPath(entry.module)
@@ -253,8 +262,10 @@ export async function discoverPacks({
   portal,
   explicit = [],
   root = PACKS_ROOT,
+  packs: suppliedPacks = [],
 } = {}) {
-  const entries = await packModules({ project, explicit, root });
+  if (!Array.isArray(suppliedPacks)) throw new Error('packs must be an array');
+  const entries = [...await packModules({ project, explicit, root }), ...suppliedPacks.map(module => ({ module }))];
   const loaded = new Map();
   const packs = [];
   for (const entry of entries) {
@@ -265,12 +276,12 @@ export async function discoverPacks({
       );
     const previous = loaded.get(pack.id);
     if (previous) {
-      if (path.resolve(previous) === path.resolve(entry.module)) continue;
+      if (previous.pack === pack) continue;
       throw new Error(
-        `Duplicate data pack id '${pack.id}' in ${previous} and ${entry.module}`,
+        `Duplicate data pack id '${pack.id}' in ${previous.module} and ${entry.module}`,
       );
     }
-    loaded.set(pack.id, entry.module);
+    loaded.set(pack.id, { module: entry.module, pack });
     if (packMatches(pack, portal)) packs.push(pack);
   }
   return packs;

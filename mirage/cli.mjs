@@ -274,6 +274,10 @@ try {
       configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
       sourceDir = configuredPortal.sourceDir;
       origin = projectOrigin(project, configuredPortal) ?? origin;
+      if (args.config && args.site) {
+        const { loadConfig } = await import('../lense/config.mjs');
+        siteMirage = (await loadConfig({ config: args.config, site: args.site, env: args.env })).mirageConfig;
+      }
     } else if (!sourceDir) {
       const { loadConfig } = await import("../lense/config.mjs");
       const cfg = await loadConfig({
@@ -395,6 +399,7 @@ try {
       const simulator = await createSimulator({
               sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
+        localOverrides: siteMirage?.localOverrides,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
         stateFile,
         port,

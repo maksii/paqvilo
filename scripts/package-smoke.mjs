@@ -38,6 +38,9 @@ const cli = (...args) => {
   if (result.status !== 0) throw new Error(`Installed command failed: ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
   return JSON.parse(result.stdout);
 };
+const readiness = cli('doctor', '--setup', '--json');
+if (!readiness.ready) throw new Error('Plain packed npm installation must be ready before any package-local setup.');
+if (fs.existsSync(path.join(project, 'node_modules/paqvilo/mirage/node_modules'))) throw new Error('Packed consumer unexpectedly needs a duplicate Mirage dependency installation.');
 for (const product of ['lense', 'mirage']) {
   const help = spawnSync(process.execPath, [installed, product, '--help'], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   if (help.status !== 0 || !help.stdout.toLowerCase().includes(product)) throw new Error(`Installed ${product} help failed: ${help.stderr}`);

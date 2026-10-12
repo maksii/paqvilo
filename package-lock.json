@@ -1,12 +1,12 @@
 {
   "name": "paqvilo",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "lockfileVersion": 3,
   "requires": true,
   "packages": {
     "": {
       "name": "paqvilo",
-      "version": "0.9.3",
+      "version": "0.9.4",
       "license": "AGPL-3.0-only",
       "dependencies": {
         "chokidar": "5.0.0",

@@ -29,6 +29,8 @@ import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } 
 import { inspectPage } from "./lib/page-resources.mjs";
 import { enrichReference } from "./enrich-reference.mjs";
 import { discoverSourceDependencies, runtimeDependencyPaths, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
+import { resolveLocalOverrides, injectLocalHead } from './lib/local-overrides.mjs';
+import { platformStylesStatus, formStyleDiagnostics } from './lib/platform-styles.mjs';
 import { LiveBridge, normalizeLiveRecord } from "./lib/live.mjs";
 import { AssetCache } from "./lib/asset-cache.mjs";
 import { capturePortalShell } from "./lib/shell-capture.mjs";
@@ -221,6 +223,9 @@ export async function createSimulator({
   project = null,
   // Explicit external pack modules for embedded runtimes and project-owned tests.
   dataPacks = [],
+  packs = [],
+  localOverrides: overridesOption,
+  compat = {}, head = {}, projectRoot = process.cwd(),
   deploymentProfile,
   onShutdown,
   richTextCompatibility: richTextCompatibilityOverride,
@@ -236,6 +241,7 @@ export async function createSimulator({
   // .powerpages-site export does not record it and defaults to enhanced.
   dataModel,
 } = {}) {
+  const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
   if (!["127.0.0.1", "localhost", "::1"].includes(host))
     throw error("The simulator binds only to loopback.");
   if (dataModel != null && !DATA_MODELS.includes(dataModel)) throw error(`dataModel must be standard or enhanced, not ${JSON.stringify(dataModel)}.`);
@@ -307,7 +313,7 @@ export async function createSimulator({
   }
   await loadSolutions();
   // Project data packs (project.dataPacks) join the built-in pack registry.
-  const projectPacks = project?.dataPacks?.length || dataPacks.length ? await discoverPacks({ project, portal: sourcePortal, explicit: dataPacks }) : undefined;
+  const projectPacks = project?.dataPacks?.length || dataPacks.length || packs.length ? await discoverPacks({ project, portal: sourcePortal, explicit: dataPacks, packs }) : undefined;
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
   const registeredOperations = operationHandlers(projectPacks ?? []);
@@ -370,7 +376,7 @@ export async function createSimulator({
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
   portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
-  let sourceDependencies = await discoverSourceDependencies(portal);
+  let sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
   await replaceCompiledState(store.snapshot());
   bootstrapTimings.startupMs = Math.round(performance.now() - startedAt);
   // Resolved project configuration (CLI --project) and the bootstrap inputs in use.
@@ -1024,6 +1030,7 @@ export async function createSimulator({
         sourceDir: portal.sourceDir,
         sourceFingerprint: fingerprint,
         project: projectStatus(), bootstrap: bootstrapStatus(), confinement: confinementStatus(),
+        platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
         ...implementationEvidence(implementationFingerprint, implementationFingerprint),
         format: portal.format,
         site: portal.website.name ?? portal.website.adx_name,
@@ -1294,6 +1301,8 @@ export async function createSimulator({
       format: portal.format,
       sourceDir: portal.sourceDir,
       solutionRoots,
+      stateFile,
+      platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
       deploymentProfile: portal.deploymentProfile ?? null,
       sourceFingerprint: fingerprint,
       loadedImplementationFingerprint: implementationFingerprint,
@@ -2437,7 +2446,7 @@ export async function createSimulator({
     else html += content;
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectRuntimeCompatibility(html, sourceDependencies);
+      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
       html = injectRuntime(html, csrf, revision, identity, trace.getStore()?.spanId);
     }
     res.writeHead(status, {
@@ -2764,7 +2773,7 @@ export async function createSimulator({
         : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
       return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
-    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
     // Routing and sign-in : repeated slashes collapse before resolution (portal
@@ -2968,15 +2977,21 @@ export async function createSimulator({
         `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: `<div id="content-container">${html}</div>`, aspNetScripts })}${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
         sourceDependencies, configuredHeadScripts,
       );
+      for (const item of formStyleDiagnostics(document, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });
       return res.end(
         injectRuntime(
-          document,
+          injectLocalHead(document, localOverrides),
           csrf,
           revision,
           formIdentity,
           trace.getStore()?.spanId,
         ),
       );
+    }
+    const localHeadAsset = localOverrides.assets.find(asset => asset.url === url.pathname);
+    if (localHeadAsset && ['GET', 'HEAD'].includes(req.method)) {
+      res.writeHead(200, { 'content-type': localHeadAsset.kind === 'scripts' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', 'cache-control': 'no-store', 'x-sim-local-only': 'head' });
+      return res.end(req.method === 'HEAD' ? undefined : await fs.readFile(localHeadAsset.file));
     }
     const localRuntimeAssets = new Map([
       ["/__sim-static/vendor/jquery.min.js", createRequire(import.meta.url).resolve('jquery/dist/jquery.min.js')],
@@ -3171,7 +3186,9 @@ export async function createSimulator({
       contentType.includes("text/html") && (rendered.isDocument ?? isHtmlDocument(html));
     if (isDocument) {
       html = injectRuntimeDependencies(html, sourceDependencies);
-      html = injectRuntimeCompatibility(html, sourceDependencies);
+      html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
+      for (const item of formStyleDiagnostics(html, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });
+      if (localOverrides.assets.length || Object.keys(localOverrides.compat).length) recordDiagnostic({ code: 'LOCAL_ONLY_OVERRIDES', severity: 'info', path: url.pathname, message: 'Project compat switches and local head additions are active.', localOverrides });
     }
     // Page headers: no-cache, no-store, must-revalidate and only the HTTP/* site-setting
     // headers; the loopback policy only with config.confinePortalPages (lib/response-headers.mjs).
@@ -3391,7 +3408,7 @@ export async function createSimulator({
           sourcePortal = await importSource();
           if (requirePortalSource) assertPortalSource(sourcePortal);
           portal = applyPortalOverrides(sourcePortal, config().portalOverrides);
-          sourceDependencies = await discoverSourceDependencies(portal);
+          sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
           await loadSolutions();
           generatedPresets = initialState(portal, bootstrapOptions()).presets;
           store.presetLibrary = generatedPresets;

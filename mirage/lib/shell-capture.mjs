@@ -748,6 +748,7 @@ export async function capturePortalShell(
         ...result.failures.map((failure) => ({
           ...failure,
           dependency: !required.has(identity),
+          ...(!required.has(identity) && failure.code === 'ASSET_HTTP' && failure.originStatus >= 400 ? { code: 'NATIVE_ASSET_HTTP', nativeOriginFailed: true } : {}),
         })),
       );
       if (result.captured.some((item) => item.contentType === "text/css"))
@@ -776,13 +777,18 @@ export async function capturePortalShell(
         "SHELL_JQUERY_MISSING",
       ),
     );
+  shellProfile.platformStyles = {
+    mode: failures.some(failure => !failure.dependency) ? 'placeholder' : 'captured',
+    capturedAt: new Date().toISOString(), origin,
+    missingHeadStylesheets: failures.filter(failure => !failure.dependency && /\.css(?:\?|$)/i.test(failure.path)).map(failure => failure.path),
+  };
   return {
     shellProfile,
     captured,
     failures,
     diagnostics,
     pagePath: path.split("?")[0],
-    complete: failures.length === 0,
+    complete: failures.every(failure => failure.nativeOriginFailed === true),
     // CSS files can name obsolete fallback fonts/images that the selected
     // browser never requests. Keep every failure visible, while permitting a
     // profile whose directly observed scripts/styles/images were all captured.

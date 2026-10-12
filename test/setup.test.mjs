@@ -11,6 +11,22 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-setup-'));
 after(() => fs.rmSync(root, { recursive: true, force: true }));
 const write = (file, value) => { fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true }); fs.writeFileSync(path.join(root, file), JSON.stringify(value)); };
 
+test('npm layout resolves Mirage dependencies through the root without a second installation', t => {
+  const install = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-packed-layout-'));
+  t.after(() => fs.rmSync(install, { recursive: true, force: true }));
+  const put = (file, value) => { const target = path.join(install, file); fs.mkdirSync(path.dirname(target), { recursive: true }); fs.writeFileSync(target, JSON.stringify(value)); };
+  const lock = { packages: { '': { dependencies: { library: '1.0.0' } }, 'node_modules/library': { version: '1.0.0' } } };
+  put('package.json', { dependencies: { library: '1.0.0' } }); put('npm-shrinkwrap.json', lock);
+  put('mirage/package.json', { dependencies: { library: '1.0.0' } }); put('mirage/package-lock.json', lock);
+  put('node_modules/library/package.json', { version: '1.0.0', main: 'index.js' });
+  fs.writeFileSync(path.join(install, 'node_modules/library/index.js'), 'module.exports = {};');
+  assert.equal(dependencyReadiness(install).ready, true);
+  put('node_modules/library/package.json', { version: '2.0.0', main: 'index.js' });
+  const result = dependencyReadiness(install);
+  assert.equal(result.ready, false);
+  assert.match(result.projects.find(item => item.name === 'mirage').reason, /library.*expected 1.0.0.*resolved 2.0.0/);
+});
+
 test('bootstrap matches dependencies regardless of JSON property ordering', () => {
   write('package.json', { dependencies: { a: '^1.0.0', b: '^2.0.0' } });
   write('package-lock.json', { packages: { '': { dependencies: { b: '^2.0.0', a: '^1.0.0' } }, 'node_modules/a': { version: '1.0.0' }, 'node_modules/b': { version: '2.0.0' } } });
@@ -32,6 +48,7 @@ test('bootstrap accepts the distributable shrinkwrap and rejects stale lock copi
   writeJson('package-lock.json', lock);
   writeJson('npm-shrinkwrap.json', lock);
   writeJson('node_modules/a/package.json', { version: '1.0.0' });
+  fs.writeFileSync(path.join(state, 'node_modules/a/index.js'), 'module.exports = {};');
   assert.equal(dependencyReadiness(state).ready, true);
   fs.writeFileSync(path.join(state, 'package-lock.json'), JSON.stringify({ packages: { '': {}, 'node_modules/a': { version: '1.0.0' } } }));
   assert.equal(dependencyReadiness(state).canInstall, false);

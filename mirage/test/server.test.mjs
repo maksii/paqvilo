@@ -960,12 +960,14 @@ test("HTTP: shell capture persists a complete profile and preserves it on captur
   const report = await response.json();
   assert.equal(report.complete, true);
   assert.equal(report.captured.length, 2);
+  assert.ok(Number.isFinite(Date.parse(report.shellProfile.platformStyles.capturedAt)));
   assert.deepEqual(report.shellProfile, {
     stylesheets: [{ href: "/platform.css", media: "screen" }],
     headScripts: ["/jquery.min.js"],
     bodyScripts: [],
     beforeContentScripts: [],
     afterFooterScripts: [],
+    platformStyles: { mode: 'captured', capturedAt: report.shellProfile.platformStyles.capturedAt, origin: liveBridge.origin, missingHeadStylesheets: [] },
   });
   assert.deepEqual(
     app.store.snapshot().simulator.shellProfile,

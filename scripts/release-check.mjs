@@ -38,6 +38,7 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/testing/session.mjs', 'docs/project-extensions.md', 'docs/architecture.md',
   'docs/index.md', 'docs/getting-started.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', ...DOCUMENTATION_ASSETS,
   'examples/project/pack/pack.mjs', 'examples/project/test/portal.test.mjs', 'examples/project/gitignore.template',
+  'examples/project/gitattributes.template', 'examples/project/editor-workspace.mjs', 'mirage/api.mjs', 'mirage/acceptance-api.mjs', 'mirage/testing.mjs', 'lense/api.mjs', 'docs/public-api.md', 'docs/release-notes.md',
   'examples/project/paqvilo.config.yml', 'examples/project/portal/sitesetting.yml', 'examples/project/portal/webrole.yml',
   'examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json',
   'examples/project/portal/web-files/demo.css', 'examples/project/portal/web-files/demo-workspace.js',
@@ -48,7 +49,7 @@ export const REQUIRED_RELEASE_FILES = [
 export function validateReleaseFiles(files) {
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
-  const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json']);
+  const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);
   const demoPluginSources = /^examples\/project\/components\/DataversePlugins\/[A-Za-z0-9._-]+\.(?:cs|csproj|json|md|snk)$/;
   const demoPluginAssembly = /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
   const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md))$/;

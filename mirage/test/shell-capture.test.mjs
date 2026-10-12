@@ -564,10 +564,13 @@ test("metadata-only exported scripts are captured and CSS dependency failures re
       portal,
     });
     assert.equal(result.ready, true);
-    assert.equal(result.complete, false);
+    assert.equal(result.complete, true);
     assert.equal(result.failures.length, 1);
     assert.equal(result.failures[0].path, "/obsolete.woff");
     assert.equal(result.failures[0].dependency, true);
+    assert.equal(result.failures[0].code, 'NATIVE_ASSET_HTTP');
+    assert.equal(result.failures[0].originStatus, 404);
+    assert.equal(result.failures[0].nativeOriginFailed, true);
     assert.ok(await cache.get("/jquery.min.js"));
     assert.ok(await cache.get("/exported.js"));
     assert.ok(await cache.get("/scripts/deferred.js"));

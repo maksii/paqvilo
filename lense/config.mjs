@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
+import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
 
@@ -200,7 +201,15 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
     site.sourceDir = site.source ? path.resolve(personalSource ? configDir : sourceRoot, site.source) : null;
     sites[name] = site;
   }
-  return { configFile, configDir, sourceRoot, root, sites, settings };
+  const fieldOrigin = (name, field) => local?.sites?.[name]?.mirage?.[field] !== undefined || local?.defaults?.mirage?.[field] !== undefined ? 'local config' : 'catalogue';
+  const provenance = {
+    sourceRoot: opts.repo !== undefined ? 'command line' : settings.values.PAQVILO_REPO ? settings.origin.PAQVILO_REPO : local?.sourceRoot !== undefined ? 'local config' : 'catalogue',
+    sites: Object.fromEntries(Object.keys(sites).map(name => [name, {
+      sourceDir: settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`] ? settings.origin[`PAQVILO_${name.toUpperCase()}_SOURCE`] : local?.sites?.[name]?.source !== undefined ? 'local config' : 'catalogue',
+      solutionRoots: fieldOrigin(name, 'solutionRoots'), port: fieldOrigin(name, 'port'), stateFile: fieldOrigin(name, 'project'),
+    }])),
+  };
+  return { configFile, configDir, sourceRoot, root, sites, settings, provenance };
 }
 
 export function isExtract(dir) {
@@ -218,6 +227,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
   return {
     project: value.project ? path.resolve(configDir, value.project) : null,
+    ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
     solutionRoots: (value.solutionRoots ?? []).map((root) => path.resolve(sourceRoot, root)),
     // Solution roots are a set layered in their dependency order; explicit keeps the listed order.
     solutionOrder: value.solutionOrder === 'explicit' ? 'explicit' : 'derived',
