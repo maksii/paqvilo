@@ -21,6 +21,14 @@ namespace Paqvilo.Demo.QueryObservation {
    if(portal!=null){try{if(portal.IsPortalsClientCall)return actor!=Guid.Empty&&portal.PortalsContactId!=Guid.Empty&&portal.PortalsContactId==actor?"RuntimePortalsContactMatched":null;}catch{return null;}}
    return PermissionContactBinding(query,actor)?"ObservedPermissionContactUnanimity.NotIdentityAttestation":null;
   }
+  public const string AnonymousIntentProvenance="AnonymousPortal.ConfiguredSDKIntent";
+  public static string AnonymousPortalBinding(IPluginExecutionContext context,Entity intent,Config configuration){
+   if(!configuration.allowAnonymousObservation||context.Depth!=1||context.ParentContext!=null||intent==null||intent.GetAttributeValue<string>("pqvd_actorprovenance")!=AnonymousIntentProvenance||intent.GetAttributeValue<string>("pqvd_expectedmessage")!="RetrieveMultiple"||!configuration.anonymousObservationTables.Contains(intent.GetAttributeValue<string>("pqvd_roottable"),StringComparer.OrdinalIgnoreCase))return null;
+   var lane=intent.GetAttributeValue<OptionSetValue>("pqvd_lane")?.Value;if(lane!=183270000&&lane!=183270001)return null;
+   var creator=intent.GetAttributeValue<EntityReference>("createdby");if(creator==null||!configuration.Trusted(creator.Id)||Lookup(intent,"pqvd_runid")==Guid.Empty)return null;
+   var portal=context as IPluginExecutionContext2;if(portal==null)return null;
+   try{return portal.IsPortalsClientCall&&portal.PortalsContactId==Guid.Empty?"RuntimeAnonymousPortal.ConfiguredSDKIntent":null;}catch{return null;}
+  }
   bool TrustedChildLineage(IPluginExecutionContext c,Guid operation){var parent=c.ParentContext;for(int i=0;parent!=null&&i<12;i++,parent=parent.ParentContext){if(!Configuration.Trusted(parent.UserId)||Recording.Operation(parent)!=operation)continue;if(parent.OwningExtension!=null&&Configuration.ChainStep(parent.OwningExtension.Id))return true;if(parent.SharedVariables.Contains("pqvd.lab.authorizedChainStepId")&&Guid.TryParse(Convert.ToString(parent.SharedVariables["pqvd.lab.authorizedChainStepId"]),out var step)&&Configuration.ChainStep(step))return true;}return false;}
   static int Links(IEnumerable<LinkEntity> links)=>links?.Sum(l=>1+Links(l.LinkEntities))??0;
   public override void Execute(IServiceProvider provider){try{Observe(provider);}catch(Exception ex){((ITracingService)provider.GetService(typeof(ITracingService))).Trace("CO query observer fault type={0} stack={1}",ex.GetType().Name,ex.StackTrace);throw;}}
@@ -36,14 +44,14 @@ namespace Paqvilo.Demo.QueryObservation {
    var ops=operations.Distinct().ToArray();var utc=times.Distinct().ToArray();if(ops.Length!=1||utc.Length!=1||!Guid.TryParse(ops[0].Substring(6),out var operation))return;
    if(!DateTime.TryParseExact(utc[0].Substring(7),"yyyy-MM-ddTHH:mm:ss.fffZ",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.AssumeUniversal,out _))return;
    // Validated immutable intent, not inferred authentication from markers.
-   var service=Service(provider,Guid.TryParse(Configuration.writerId,out var writer)?writer:c.UserId);var intentQuery=new QueryExpression("pqvd_testoperation"){TopCount=1,ColumnSet=new ColumnSet("pqvd_markerutc","pqvd_markeroperation","pqvd_roottable","pqvd_expectedmessage","pqvd_lane","pqvd_runid","pqvd_runnercontactid","pqvd_actorprovenance")};intentQuery.Criteria.AddCondition("pqvd_testoperationid",ConditionOperator.Equal,operation);var operationRow=service.RetrieveMultiple(intentQuery).Entities.FirstOrDefault();if(operationRow==null)return;
+   var service=Service(provider,Guid.TryParse(Configuration.writerId,out var writer)?writer:c.UserId);var intentQuery=new QueryExpression("pqvd_testoperation"){TopCount=1,ColumnSet=new ColumnSet("pqvd_markerutc","pqvd_markeroperation","pqvd_roottable","pqvd_expectedmessage","pqvd_lane","pqvd_runid","pqvd_runnercontactid","pqvd_actorprovenance","createdby")};intentQuery.Criteria.AddCondition("pqvd_testoperationid",ConditionOperator.Equal,operation);var operationRow=service.RetrieveMultiple(intentQuery).Entities.FirstOrDefault();if(operationRow==null)return;
    if(operationRow.GetAttributeValue<string>("pqvd_markerutc")!=utc[0]||operationRow.GetAttributeValue<string>("pqvd_markeroperation")!=ops[0]||!operationRow.Contains("pqvd_runid"))return;
    var lane=operationRow.GetAttributeValue<OptionSetValue>("pqvd_lane")?.Value??0;
    var provenance=operationRow.GetAttributeValue<string>("pqvd_actorprovenance");
    if(lane==183270002&&(!Configuration.Trusted(c.UserId)||provenance!="SDKConfiguredIdentity.RelationshipClaim")){((ITracingService)provider.GetService(typeof(ITracingService))).Trace("CO query capture withheld: SDK intent requires configured caller and provenance operation={0}",operation);return;}
    var controlledChild=c.Depth>1&&entity=="pqvd_chainnode"&&Configuration.Trusted(c.UserId)&&Recording.Operation(c)==operation&&(provenance=="SDKConfiguredIdentity.RelationshipClaim"||provenance=="PortalRelationshipClaim")&&TrustedChildLineage(c,operation);
    if(lane!=183270002&&!controlledChild&&(operationRow.GetAttributeValue<string>("pqvd_roottable")!=entity||operationRow.GetAttributeValue<string>("pqvd_expectedmessage")!="RetrieveMultiple"))return;
-   var actorBinding=lane==183270002?"ConfiguredSDKIntent":controlledChild?"ControlledSDKChild":PortalActorBinding(c,q,Lookup(operationRow,"pqvd_runnercontactid"));
+   var actorBinding=provenance==AnonymousIntentProvenance?AnonymousPortalBinding(c,operationRow,Configuration):lane==183270002?"ConfiguredSDKIntent":controlledChild?"ControlledSDKChild":PortalActorBinding(c,q,Lookup(operationRow,"pqvd_runnercontactid"));
    if(actorBinding==null){((ITracingService)provider.GetService(typeof(ITracingService))).Trace("CO query capture withheld: unqualified or mismatched portal actor binding operation={0}",operation);return;}
    var artifact=c.Stage==20&&Configuration.order>=9900?"PluginReceivedQuery.Stage20.Late":"PluginReceivedQuery.Stage"+c.Stage+".Order"+Configuration.order;
    var exact=q is FetchExpression fetch?fetch.Query:Snapshot.Json(Snapshot.Query(q));

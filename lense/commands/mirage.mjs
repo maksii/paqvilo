@@ -9,6 +9,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets } from '../config.mjs';
+import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -380,7 +381,7 @@ export function cliArgs(cfg, action, args, project = null) {
   const cli = path.join(MIRAGE_ROOT, 'cli.mjs');
   const common = [
     '--state-dir', path.dirname(miragePaths(cfg, args).discoveryRoot),
-    ...(args.port ? ['--port', String(args.port)] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
+    ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
     ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
     // Live writes stay impossible unless this runtime is started with the flag (off by default).
     ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
@@ -439,7 +440,7 @@ export function observedText(observed) {
 
 /** Solution roots in load order, as the Mirage CLI will apply them. */
 async function launchSolutionRoots(sourceDir, args, projectInfo) {
-  if (projectInfo) return projectInfo.solutionRoots ?? [];
+  if (projectInfo) return projectInfo.portals.find((portal) => portal.id === (args.portal ?? projectInfo.defaultPortal))?.solutionRoots ?? [];
   if (args['solution-root']?.length) return args['solution-root'].map((root) => path.resolve(root));
   return (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(sourceDir);
 }
@@ -459,8 +460,8 @@ async function launchIdentity(cfg, args, projectInfo = null) {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
       stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', allowLiveWrites: args['allow-live-writes'] === true,
-      // Sorted only for matching records written by earlier toolkit versions; the CLI keeps load order.
-      solutionRoots: [...solutionRoots].sort(),
+      // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
+      solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
     },
     solutionRoots,
@@ -475,14 +476,14 @@ function identityMatches(left, right) {
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
+    && left.solutionOrder === right.solutionOrder
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])
     && String(left.requestedPort ?? '') === String(right.requestedPort ?? ''));
 }
 
 // ------------------------------------------------------------------------------ start
 async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
-  const port = args.port === undefined ? String(DEFAULT_PORT) : String(args.port);
-  if (!/^\d+$/.test(port) || Number(port) > 65535) throw new Error('--port must be an integer from 0 to 65535');
+  const port = String(runtimePort(args.port, DEFAULT_PORT));
   const timeout = args['startup-timeout'] === undefined ? DEFAULT_STARTUP_TIMEOUT : Number(args['startup-timeout']);
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600_000) throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
   let projectInfo = null;
@@ -871,7 +872,7 @@ async function portalConfigs(cfg, args, action) {
 function portClashes(plans) {
   const sitesByPort = new Map();
   for (const plan of plans) {
-    const port = String(plan.args.port ?? DEFAULT_PORT);
+    const port = String(runtimePort(plan.args.port, DEFAULT_PORT));
     if (port !== '0') sitesByPort.set(port, [...(sitesByPort.get(port) ?? []), plan.site]);
   }
   return [...sitesByPort].filter(([, sites]) => sites.length > 1).map(([port, sites]) => `port ${port}: ${sites.join(', ')}`);
@@ -901,7 +902,8 @@ export function catalogueStartPlans(entries, args, selected = null) {
  */
 function projectStartPlans(cfg, effective, portals) {
   if (effective.state !== undefined) throw new Error('--state names one runtime; a project with several portals keeps a state file per portal. Pass --portal to start one of them with --state.');
-  const base = effective.port === undefined ? DEFAULT_PORT : Number(effective.port);
+  const base = runtimePort(effective.port, DEFAULT_PORT);
+  if (base && base + portals.length - 1 > 65535) throw new Error('The configured portal count exceeds the available port range.');
   return portals.map((portal, index) => ({
     site: portal.id,
     cfg: { ...cfg, siteName: portal.id, sourceDir: portal.sourceDir },

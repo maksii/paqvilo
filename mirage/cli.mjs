@@ -10,6 +10,7 @@ import { createSimulator } from "./server.mjs";
 import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { shareSolutionParses } from "./lib/solution-cache.mjs";
+import { runtimePort } from "./lib/runtime-port.mjs";
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -179,9 +180,7 @@ try {
         [...portal.diagnostics, ...metadata.diagnostics].some((d) => d.code?.startsWith("invalid"))) ? 1 : 0;
     }
     else if (project && command === "serve" && !args.portal) {
-      const port = Number(args.port);
-      if (!Number.isInteger(port) || port < 0 || port > 65535)
-        throw new Error("port must be 0–65535");
+      const port = runtimePort(args.port);
       if (port && port + project.portals.length - 1 > 65535)
         throw new Error("The configured portal count exceeds the available port range.");
       const sessions = [];
@@ -219,8 +218,9 @@ try {
             requirePortalSource: true,
             allowLiveWrites: args["allow-live-writes"] === true,
           });
-          if (args.cdp) await simulator.live.connect(args.cdp);
           sessions.push({ portal, simulator, stateFile });
+          // Keep the runtime in the cleanup set even when browser attachment fails.
+          if (args.cdp) await simulator.live.connect(args.cdp);
         }
       } catch (error) {
         await Promise.all(sessions.map(({ simulator }) => simulator.close()));
@@ -381,9 +381,7 @@ try {
           args.path.includes("\\"))
       )
         throw new Error("Capture page path must be portal-relative.");
-      const port = command === "serve" ? Number(args.port) : 0;
-      if (!Number.isInteger(port) || port < 0 || port > 65535)
-        throw new Error("port must be 0–65535");
+      const port = command === "serve" ? runtimePort(args.port) : 0;
       const stateFile = path.resolve(
         args.state ??
         (project

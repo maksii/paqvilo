@@ -59,7 +59,9 @@ test("Authored cache-refresh FetchXML parenthesized GUIDs identify the same perm
     },
   });
   for (const value of [id, "(" + id + ")", "{" + id + "}"]) {
-    const xml = `<fetch><entity name="product"><attribute name="name"/><filter><condition attribute="productid" operator="in"><value>${value}</value></condition></filter></entity></fetch>`;
+    // Scoped portal queries default to distinct; project a required identity
+    // explicitly rather than depending on an implicit primary key.
+    const xml = `<fetch><entity name="product"><attribute name="productid"/><attribute name="name"/><filter><condition attribute="productid" operator="in"><value>${value}</value></condition></filter></entity></fetch>`;
     assert.deepEqual(store.fetchXml(xml, user).entities, [
       { productid: id, name: "Medicinal Product" },
     ]);

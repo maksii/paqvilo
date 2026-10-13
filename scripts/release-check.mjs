@@ -12,6 +12,24 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
+// Reusable campaign sources only. Native recordings, configuration snapshots,
+// bridge credentials and local invocation manifests stay outside the package.
+const COMPANY_QUALIFICATION_SOURCES = new Set([
+  'portal-harness/batch-capture.mjs', 'portal-harness/native-batch-prototype.mjs',
+  'portal-harness/native-browser.mjs', 'portal-harness/native-capture.mjs', 'portal-harness/native-prototype.mjs',
+  'portal-harness/native-profile.mjs', 'portal-harness/native-paging.mjs', 'portal-harness/native-archive.mjs',
+  'portal-harness/native-profile-comparison.mjs',
+  'portal-harness/mirage-webapi-replay.mjs', 'test/mirage-webapi-replay.test.mjs',
+  'portal-harness/native-registry.mjs', 'portal-harness/native-role-lease.mjs',
+  'portal-security/qualification-domain.mjs', 'portal-security/qualification-plan.mjs',
+  'portal-security/permission-order.mjs', 'portal-security/permission-order-plan.mjs',
+  'portal-security/qualification-lease.mjs', 'portal-security/qualification-priority.mjs',
+  'plugins/mirage-runtime.mjs', 'plugins/test/mirage-runtime.test.mjs',
+  'test/native-capture.test.mjs', 'test/qualification-domain.test.mjs', 'test/qualification-role-lattice.test.mjs',
+  'test/native-archive.test.mjs', 'test/native-paging.test.mjs', 'test/native-profile.test.mjs',
+  'test/native-role-lease.test.mjs', 'test/permission-order.test.mjs',
+  'test/qualification-lease.test.mjs',
+].map(name => `examples/company-operations/${name}`));
 
 export const PROJECT_TEMPLATE_FILES = [
   'gitignore.template', 'gitattributes.template', 'editorconfig.template', 'README.md', 'AGENTS.md',
@@ -78,7 +96,7 @@ export const REQUIRED_RELEASE_FILES = [
 ];
 export function validateReleaseFiles(files) {
   const templates = new Set(PROJECT_TEMPLATE_FILES);
-  const provisioningSources = /^examples\/company-operations\/(?:README\.md|package(?:-lock)?\.json|prepare-(?:schema|data|stress-data)\.mjs|dataverse\/manifest\.json|data\/(?:catalogue|stress-catalogue)\.json|data\/reconcile-seed-headers\.mjs|test\/(?:schema|data|stress|forms|portal-security|plugins)\.test\.mjs|forms\/(?:catalogue|deploy|import-quickfind)\.mjs|forms\/update-quickfind\.ps1|portal-security\/(?:README\.md|blueprint\.json|(?:blueprint|deploy|model-audit|role-variant|deep-variant|reference-projections|package|bind-tester|tester-overlay)\.mjs)|portal-harness\/(?:README\.md|browser\.test\.mjs|(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness)\.mjs)|plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json|test\/(?:collector|registration)\.test\.mjs|(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs|(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)|Shared\/(?:Lab|Recording)\.cs|collector\/(?:[a-z-]+\.mjs|(?:deployment|flow-secret-contract)\.json)))$/;
+  const provisioningSources = /^examples\/company-operations\/(?:README\.md|package(?:-lock)?\.json|prepare-(?:schema|data|stress-data)\.mjs|dataverse\/manifest\.json|data\/(?:catalogue|stress-catalogue)\.json|data\/reconcile-seed-headers\.mjs|test\/(?:schema|data|stress|forms|portal-security|plugins)\.test\.mjs|forms\/(?:catalogue|deploy|import-quickfind)\.mjs|forms\/update-quickfind\.ps1|portal-security\/(?:README\.md|blueprint\.json|(?:blueprint|deploy|model-audit|role-variant|deep-variant|reference-projections|package|bind-tester|tester-overlay)\.mjs)|portal-harness\/(?:README\.md|(?:browser|parity)\.test\.mjs|(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs)|plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json|test\/(?:collector|registration)\.test\.mjs|(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs|(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)|Shared\/(?:Lab|Recording)\.cs|collector\/(?:[a-z-]+\.mjs|(?:deployment|flow-secret-contract)\.json)))$/;
   const designDocuments = new Set(['docs/design/company-operations-demo.md', 'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md']);
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
@@ -89,7 +107,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !templates.has(name) && !provisioningSources.test(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

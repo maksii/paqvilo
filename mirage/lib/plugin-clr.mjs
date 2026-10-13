@@ -15,14 +15,29 @@ const fail=(message,code='LocalPluginClrConfiguration',status=409)=>{throw new D
 const canon=id=>String(id??'').replace(/[{}]/g,'').toLowerCase();
 const hostSource=fileURLToPath(new URL('./plugin-clr-host.cs',import.meta.url));
 let executionDepth=0;
+const pooledHosts=new Map();
+process.once('exit',()=>{for(const session of pooledHosts.values())if(session.pid)try{process.kill(session.pid);}catch{}});
 export const clrExecutionDepth=()=>executionDepth;
+function clrTimeout(descriptor){
+ const value=descriptor.timeoutMs;
+ if(value!==undefined&&(!Number.isSafeInteger(value)||value<=0))fail('CLR timeoutMs must be a positive safe integer in milliseconds.');
+ return Math.max(100,Math.min(value??2000,10000));
+}
 export function validateClrDescriptor(value){
  if(!value||typeof value!=='object'||value.trust!=='execute-local-assembly')fail('CLR execution requires an explicit trusted project assembly descriptor.');
+ clrTimeout(value);
  for(const key of ['root','sdkRoot','cacheRoot'])if(typeof value[key]!=='string'||!path.isAbsolute(value[key]))fail('CLR '+key+' must be an explicit absolute project/toolchain path.');
  for(const key of ['assembly','sdkAssembly'])if(typeof value[key]!=='string'||path.isAbsolute(value[key])||!value[key].toLowerCase().endsWith('.dll')||value[key].replaceAll('\\','/').split('/').some(p=>!p||p==='.'||p==='..'||p.includes(':')))fail('CLR '+key+' must be a confined relative DLL path.');
  if(typeof value.typeName!=='string'||!/^[_a-z][\w.+`]{0,249}$/i.test(value.typeName))fail('An exact original CLR typeName is required.');
+ if(value.persistentHost!==undefined&&typeof value.persistentHost!=='boolean')fail('CLR persistentHost must be an explicit Boolean opt-in.');
  if(value.dependencies!==undefined&&(!Array.isArray(value.dependencies)||value.dependencies.length>100||value.dependencies.some(p=>typeof p!=='string'||path.isAbsolute(p)||!p.endsWith('.dll')||p.replaceAll('\\','/').split('/').some(p=>!p||p==='.'||p==='..'||p.includes(':')))))fail('CLR dependencies must be confined relative DLL paths.');
  if(!uuid.test(value.context?.initiatingUserId??'')||!uuid.test(value.context?.organizationId??'')||!uuid.test(value.context?.businessUnitId??''))fail('Explicit initiating user, organization and business unit context GUIDs are required.');
+ if(value.sdkCallerProfiles!==undefined){if(!Array.isArray(value.sdkCallerProfiles)||value.sdkCallerProfiles.length>32||new Set(value.sdkCallerProfiles.map(profile=>canon(profile?.userId))).size!==value.sdkCallerProfiles.length)fail('SDK caller profiles require a bounded unique list of explicitly authorized identities.');for(const profile of value.sdkCallerProfiles)validateServiceProfile(profile);}
+ if(value.context.interfaceVersion!==undefined&&![4,7].includes(value.context.interfaceVersion))fail('CLR context interfaceVersion supports only 4 or explicitly observed 7.');
+ for(const field of ['executionUserId','tenantId'])if(value.context[field]!==undefined&&!uuid.test(value.context[field]))fail('CLR context '+field+' must be a GUID.');
+ if(value.context.interfaceVersion===7&&(typeof value.context.environmentId!=='string'||typeof value.context.isApplicationUser!=='boolean'||typeof value.context.initiatingUserAgentPresent!=='boolean'||!uuid.test(value.context.tenantId??'')))fail('Context7 requires explicit environment, tenant, application-user and user-agent-presence observations.');
+ if(value.context.portalInputParameters!==undefined){const values=value.context.portalInputParameters;if(!values||typeof values!=='object'||Array.isArray(values)||Object.keys(values).length>16||Object.entries(values).some(([key,item])=>!['AppModuleId','IsAppModuleContext','IncludeAnnotations'].includes(key)||key==='AppModuleId'&&(item?.$type!=='Guid'||!uuid.test(item.value??''))||['IsAppModuleContext','IncludeAnnotations'].includes(key)&&typeof item!=='boolean'))fail('Portal input observations support only a typed AppModuleId and Boolean app-module/annotation flags.');}
+ if(value.context.emptyFetchPagingCookie!==undefined&&value.context.emptyFetchPagingCookie!=='')fail('Observed empty Fetch paging cookie must be an empty string.');
  validateServiceProfile(value.serviceProfile);return value;
 }
 function pathParts(file) {
@@ -138,23 +153,33 @@ export async function prepareClrRuntime(descriptor,{compiler}={}){
  const assembly=await readClrDependency(descriptor.root,descriptor.assembly),sdk=await readClrDependency(descriptor.sdkRoot,descriptor.sdkAssembly),dependencies=await Promise.all((descriptor.dependencies??[]).map(relative=>readClrDependency(descriptor.root,relative)));
  const names=[assembly,sdk,...dependencies].map(f=>path.basename(f.path).toLowerCase());if(new Set(names).size!==names.length)fail('CLR dependency filenames must be unique.');
  const source=(await readClrDependency(path.dirname(hostSource),path.basename(hostSource))).bytes,signature=sha(Buffer.concat([source,assembly.bytes,sdk.bytes,...dependencies.map(f=>f.bytes)]));await fs.mkdir(path.resolve(descriptor.cacheRoot),{recursive:true});const cacheParent=await canonicalClrDirectory(descriptor.cacheRoot),directory=await fs.mkdtemp(path.join(cacheParent,'clr-'+signature+'-'));
+ try{
  const files=[];for(const original of [assembly,sdk,...dependencies]){const destination=path.join(directory,path.basename(original.path));await fs.writeFile(destination,original.bytes,{flag:'wx'});files.push({path:destination,sourcePath:original.path,sha256:sha(original.bytes)});}
  const executable=path.join(directory,'paqvilo-plugin-host.exe'),sourceFile=path.join(directory,'paqvilo-plugin-host.cs');await fs.writeFile(sourceFile,source,{flag:'wx'});
  const compilerFile=compiler??path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
  const build=spawnSync(compilerFile,['/nologo','/target:exe','/out:'+executable,'/reference:'+files[1].path,'/reference:System.Web.Extensions.dll','/reference:System.Runtime.Serialization.dll','/reference:System.ServiceModel.dll',sourceFile],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000,maxBuffer:256*1024});
  if(build.error||build.status!==0)fail('CLR host compilation failed: '+String(build.error?.message??build.stdout??build.stderr).slice(0,4000),'LocalPluginClrBuild',501);
  files.push({path:executable,sha256:sha((await readClrDependency(directory,path.basename(executable))).bytes)});const allowed=new Set([...files.map(f=>path.basename(f.path)),path.basename(sourceFile)]);if((await fs.readdir(directory)).some(name=>!allowed.has(name)))fail('CLR cache has unregistered sidecar dependencies.');return {descriptor,executable,assembly:files[0].path,files,directory,allowedFiles:[...allowed],provenance:{kind:'original-clr-assembly',typeName:descriptor.typeName,assemblySha256:files[0].sha256,sdkSha256:files[1].sha256,hostSourceSha256:sha(source),trusted:true,securityModel:'Explicit project backend profile; native process is trusted code, not a security sandbox'}};
+ }catch(cause){
+  // This newly created directory belongs only to this preparation attempt.
+  // Preserve the original preparation failure if Windows delays handle release.
+  const relative=path.relative(cacheParent,directory);
+  if(relative&&!relative.startsWith('..')&&!path.isAbsolute(relative))await fs.rm(directory,{recursive:true,force:true,maxRetries:5,retryDelay:25}).catch(()=>{});
+  throw cause;
+ }
 }
 export function pluginRuntimeDescriptors(packs=[]){const descriptors=new Map();for(const pack of packs)for(const[id,descriptor]of Object.entries(pack.pluginRuntimes??{})){const key=canon(id);if(!uuid.test(key)||descriptors.has(key))fail('Invalid or ambiguous CLR plugin step registration.');descriptors.set(key,descriptor);}return descriptors;}
 export async function preparePluginRuntimes(packs=[]){const runtimes=new Map();for(const[id,descriptor]of pluginRuntimeDescriptors(packs))runtimes.set(id,await prepareClrRuntime(descriptor));return runtimes;}
 const typed=(type,value)=>({$type:type,value});
 export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
- const mapping=store.resolveMapping(entity),attributes={};for(const[key,value]of Object.entries(row??{})){if(!columns.allColumns&&!(columns.columns??[]).includes(key))continue;if(value==null){attributes[key]=null;continue;}const field=store.fieldDefinition(mapping.logicalName,key)??{},type=String(field.dataverseType??field.type??'').toLowerCase();
-  if(value&&typeof value==='object'&&value.id&&value.logical_name)attributes[key]={$type:'EntityReference',logicalName:value.logical_name,id:value.id,name:value.name??null};
+ const mapping=store.resolveMapping(entity),attributes={},formattedValues={};
+ const reference=(logicalName,id,suppliedName)=>{let target;try{target=store.resolveMapping(logicalName);}catch(error){if(error.code!=='UnknownEntity')throw error;}const primaryName=target&&(target.nameColumn??target.primaryNameColumn??Object.entries(target.fields??target.fieldMetadata??{}).find(([,definition])=>definition.isPrimaryName)?.[0]),record=primaryName?store.tableRows(target.logicalName).find(record=>canon(record[target.idColumn])===canon(id)):null,name=suppliedName??record?.[primaryName]??null;return {$type:'EntityReference',logicalName,id,name};};
+ for(const[key,value]of Object.entries(row??{})){if(!columns.allColumns&&!(columns.columns??[]).includes(key))continue;if(value==null){attributes[key]=null;continue;}const field=store.fieldDefinition(mapping.logicalName,key)??{},type=String(field.dataverseType??field.type??'').toLowerCase();
+  if(value&&typeof value==='object'&&value.id&&value.logical_name)attributes[key]=reference(value.logical_name,value.id,value.name);
   else if(['lookup','customer','owner'].includes(type)&&typeof value==='string'){
    const targets=field.targets;
    if(!uuid.test(value)||!Array.isArray(targets)||targets.length!==1||typeof targets[0]!=='string'||!/^[a-z][\w]*$/i.test(targets[0]))fail('SDK lookup GUID requires one exact source-declared target table.','LocalPluginSdkUnsupported',501);
-   attributes[key]={$type:'EntityReference',logicalName:targets[0],id:canon(value),name:null};
+   attributes[key]=reference(targets[0],canon(value));
   }
   else if(['money','decimal'].includes(type))attributes[key]=typed(type==='money'?'Money':'Decimal',String(value?.value??value));
   else if(type==='bigint')attributes[key]=typed('Int64',String(value?.value??value));
@@ -163,7 +188,7 @@ export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
    if(!Number.isFinite(number))fail('SDK Double requires a finite numeric source value.','LocalPluginSdkUnsupported',501);
    attributes[key]=typed('Double',String(number));
   }
-  else if(['choice','picklist','state','status','optionset'].includes(type))attributes[key]=typed('OptionSetValue',value?.value??value);
+  else if(['choice','picklist','state','status','optionset'].includes(type)){const option=value?.value??value;attributes[key]=typed('OptionSetValue',option);const label=value?.label??field.options?.find(entry=>Number(entry.value)===Number(option))?.label;if(typeof label==='string')formattedValues[key]=label;}
   else if(type==='multiselectpicklist'){
    const values=Array.isArray(value)?value:typeof value==='string'?value.split(',').filter(part=>part.trim()!==''):null;
    if(!values)fail('SDK choices require stored option values.','LocalPluginSdkUnsupported',501);
@@ -172,7 +197,13 @@ export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
   else if(['datetime','date'].includes(type))attributes[key]=typed('DateTime',value);
   else if(type==='uniqueidentifier'||key===mapping.idColumn)attributes[key]=typed('Guid',value);
   else attributes[key]=structuredClone(value);
- }return {$type:'Entity',logicalName:mapping.logicalName,id:row?.[mapping.idColumn]??'00000000-0000-0000-0000-000000000000',attributes};
+  if(attributes[key]?.$type==='EntityReference'&&typeof attributes[key].name==='string')formattedValues[key]=attributes[key].name;
+ }
+ const id=row?.[mapping.idColumn]??'00000000-0000-0000-0000-000000000000',versionColumn=mapping.sdkRowVersionColumn;
+ const sourceVersion=versionColumn&&store.tableRows(mapping.logicalName).find(source=>canon(source[mapping.idColumn])===canon(id))?.[versionColumn];
+ const rowVersion=sourceVersion==null?null:String(sourceVersion?.value??sourceVersion);
+ if(rowVersion!==null&&!/^\d+$/.test(rowVersion))fail('Source SDK RowVersion column requires an unsigned integral value.','LocalPluginSdkUnsupported',501);
+ return {$type:'Entity',logicalName:mapping.logicalName,id,attributes,...(versionColumn?{rowVersion}:{}),...(Object.keys(formattedValues).length?{formattedValues}:{})};
 }
 export function sdkQueryParameters(query){
  if(query.linkEntities?.length)fail('Linked QueryExpression requires the typed FetchXML execution adapter.','LocalPluginSdkUnsupported',501);
@@ -184,7 +215,14 @@ export function sdkQueryParameters(query){
  if(query.topCount!=null)params.$top=query.topCount;else if(query.pageInfo?.count>0)params.$top=query.pageInfo.count;if(!query.columnSet?.allColumns&&query.columnSet?.columns?.length)params.$select=query.columnSet.columns.map(name).join(',');return params;
 }
 export function dispatchSdkCall(args){const {store,message}=args,previous=store.pluginParentContext;if(message.parentContext){if(message.parentContext.$type!=='ExecutionContext'||Buffer.byteLength(JSON.stringify(message.parentContext))>4*1024*1024)fail('SDK ParentContext is invalid or excessive.','LocalPluginInputLimit',413);store.pluginParentContext=structuredClone(message.parentContext);}try{return dispatchSdkCallCore(args);}finally{store.pluginParentContext=previous;}}
-function dispatchSdkCallCore({store,profile,message}){
+function dispatchSdkCallCore({store,profile,message,callerProfiles=[]}){
+ const selected=message.userId===null?profile:[profile,...callerProfiles].find(candidate=>canon(candidate.userId)===canon(message.userId));
+ if(!selected)fail('SDK impersonation is not covered by the configured backend profiles.','LocalPluginImpersonationUnsupported',501);
+ validateServiceProfile(selected);
+ const previousExecutionUser=store.pluginExecutionUserId;store.pluginExecutionUserId=selected.userId;
+ try{return dispatchSdkCallAuthorized({store,profile:selected,message});}finally{store.pluginExecutionUserId=previousExecutionUser;}
+}
+function dispatchSdkCallAuthorized({store,profile,message}){
  const readExecute=message.method==='Execute'&&['Retrieve','RetrieveMultiple'].includes(message.arguments?.[0]?.requestName);
  if(store.pluginReadOnly&&['Create','Update','Delete','Associate','Disassociate','Execute'].includes(message.method)&&!readExecute)fail('SDK writes from a RetrieveMultiple observer require a serialized read-operation transaction adapter.','LocalPluginReadWriteUnsupported',501);
  const service=localOrganizationService(store,profile);if(message.userId!==null&&canon(message.userId)!==canon(profile.userId))fail('SDK impersonation is not covered by the configured backend profile.','LocalPluginImpersonationUnsupported',501);
@@ -195,12 +233,16 @@ function dispatchSdkCallCore({store,profile,message}){
    const request=args[0],parameters=request?.parameters?.values;
    if(request?.$type!=='OrganizationRequest'||request.parameters?.$type!=='ParameterCollection'||!parameters||typeof parameters!=='object'||Array.isArray(parameters))fail('SDK Execute requires a typed OrganizationRequest and ParameterCollection.','LocalPluginSdkUnsupported',501);
    const shapes={Create:['Target'],Update:['Target'],Delete:['Target'],Retrieve:['Target','ColumnSet'],RetrieveMultiple:['Query'],CreateMultiple:['Targets'],UpdateMultiple:['Targets'],Associate:['Target','Relationship','RelatedEntities'],Disassociate:['Target','Relationship','RelatedEntities']},shape=shapes[request.requestName];
-   if(!shape||Object.keys(parameters).some(key=>!shape.includes(key))||shape.some(key=>!Object.hasOwn(parameters,key)))fail('Unsupported SDK Execute request or parameters: '+request.requestName,'LocalPluginSdkUnsupported',501);
+   if(!shape||Object.keys(parameters).some(key=>!shape.includes(key)&&key!=='tag')||shape.some(key=>!Object.hasOwn(parameters,key)))fail('Unsupported SDK Execute request or parameters: '+request.requestName,'LocalPluginSdkUnsupported',501);
+   if(Object.hasOwn(parameters,'tag')&&(typeof parameters.tag!=='string'||Buffer.byteLength(parameters.tag)>8192))fail('SDK tag requires a bounded string.','LocalPluginSdkUnsupported',501);
+   const inherited=message.parentContext?.values?.SharedVariables?.values;
+   if(Object.hasOwn(parameters,'tag')&&inherited&&Object.hasOwn(inherited,'tag'))fail('A descendant SDK request cannot replace an inherited immutable tag.','LocalPluginTagImmutable',409);
    let method=request.requestName,arguments_=shape.map(key=>parameters[key]);
    if(['Associate','Disassociate'].includes(method)){const target=parameters.Target;if(target?.$type!=='EntityReference')fail('SDK relationship request requires an EntityReference Target.');arguments_=[target.logicalName,typed('Guid',target.id),parameters.Relationship,parameters.RelatedEntities];}
-   if(['CreateMultiple','UpdateMultiple'].includes(method)){const targets=parameters.Targets;if(targets?.$type!=='EntityCollection'||!Array.isArray(targets.entities))fail('Bulk SDK request requires a typed Targets EntityCollection.');return invokeSdkMethod({store,service,message:{...message,method,arguments:[targets]}},true);}
+   if(['CreateMultiple','UpdateMultiple'].includes(method)){const targets=parameters.Targets;if(targets?.$type!=='EntityCollection'||!Array.isArray(targets.entities))fail('Bulk SDK request requires a typed Targets EntityCollection.');arguments_=[targets];}
    if(['Delete','Retrieve'].includes(method)){const target=parameters.Target;if(target?.$type!=='EntityReference')fail('SDK '+method+'Request requires an EntityReference.');arguments_=[target.logicalName,typed('Guid',target.id),...(method==='Retrieve'?[parameters.ColumnSet]:[])];}
-   return invokeSdkMethod({store,service,message:{...message,method,arguments:arguments_}},true);
+   const previousTag=store.pluginSdkTag;store.pluginSdkTag=parameters.tag;
+   try{return invokeSdkMethod({store,service,message:{...message,method,arguments:arguments_}},true);}finally{store.pluginSdkTag=previousTag;}
   }
   default:return invokeSdkMethod({store,service,message},false);
  }
@@ -229,7 +271,7 @@ function executeSdkMethod({store,service,message,responseToken}){
   case 'Retrieve':return recordToSdkEntity(store,args[0],service.get(args[0],sdkValueToRecord(args[1]),args[2],{responseToken}),args[2]);
   case 'RetrieveMultiple':{const query=args[0];let rows,entity=query.entityName;if(query.$type==='FetchExpression'||query.$type==='QueryExpression'&&query.linkEntities?.length){
    const xml=query.$type==='FetchExpression'?query.query:queryExpressionToFetch(query,store);entity=/<entity\s[^>]*name=["'](\w+)["']/i.exec(xml)?.[1];const answer=service.fetch(xml,{sdkResult:true,sdkQuery:query,sdkResponseToken:responseToken});return answer.sdkCollection??fetchResultToSdkCollection(store,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet});
-  }else if(['QueryExpression','QueryByAttribute'].includes(query.$type)){const params=sdkQueryParameters(query),primary=service.mapping(entity).idColumn;if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)params.$select=primary;if(params.$select&&!params.$select.split(',').includes(primary))params.$select+=','+primary;rows=service.query(entity,params,{responseToken}).value;}
+  }else if(['QueryExpression','QueryByAttribute'].includes(query.$type)){const params=sdkQueryParameters(query),primary=service.mapping(entity).idColumn;if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)params.$select=primary;if(params.$select&&!params.$select.split(',').includes(primary))params.$select+=','+primary;const answer=service.query(entity,params,{responseToken,sdkQuery:query});if(answer.sdkCollection)return answer.sdkCollection;rows=answer.value;}
   else fail('Unsupported SDK query structure.','LocalPluginSdkUnsupported',501);return {$type:'EntityCollection',entities:rows.map(row=>recordToSdkEntity(store,entity,row,query.columnSet??{allColumns:true})),moreRecords:false,totalRecordCount:-1,pagingCookie:null};}
   default:fail('Unsupported SDK service method: '+message.method,'LocalPluginSdkUnsupported',501);
  }
@@ -237,6 +279,7 @@ function executeSdkMethod({store,service,message,responseToken}){
 export function executeSdkFetch(store,xml,execute){const prepared=prepareFetchForSdk(xml,store),answer=execute(prepared.xml);Object.defineProperty(answer,'sdkHiddenId',{value:prepared.hiddenId,configurable:true});return answer;}
 /** Synchronous pipeline RPC; no queued DataStore.create/update await can deadlock this thread. */
 export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} }) {
+  clrTimeout(runtime.descriptor);
   if (path.relative(canonicalClrDirectorySync(runtime.directory), path.resolve(runtime.directory)) !== '' ||
       syncFs.readdirSync(runtime.directory).some(name => !runtime.allowedFiles.includes(name)))
     fail('CLR cache directory or dependencies changed.', 'LocalPluginSourceChanged', 409);
@@ -251,12 +294,13 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
       if (sha(readClrFileSync(file.sourcePath)) !== file.sha256)
         fail('Trusted CLR bytes changed after preparation.', 'LocalPluginSourceChanged', 409);
     }
-    verified.push({ name: path.basename(file.path), bytes });
+    verified.push({ name: path.basename(file.path), bytes, sha256: file.sha256 });
   }
   if (sha(readClrFileSync(hostSource)) !== runtime.provenance.hostSourceSha256)
     fail('CLR host source changed; restart to prepare the new host.', 'LocalPluginSourceChanged', 409);
   if (Buffer.byteLength(JSON.stringify(input)) > 4 * 1024 * 1024)
     fail('CLR context exceeds 4 MiB.', 'LocalPluginInputLimit', 413);
+  if(runtime.descriptor.persistentHost===true)return executePooledClr(runtime,input,{store,diagnostic},verified);
   const directory = syncFs.mkdtempSync(path.join(path.dirname(runtime.directory), 'clr-run-'));
   try {
     for (const file of verified)
@@ -275,13 +319,102 @@ export function executeClrPlugin(runtime, input, { store, diagnostic = () => {} 
     }
   }
 }
-function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot){
- const timeout=Math.max(100,Math.min(runtime.descriptor.timeoutMs??2000,10000)),{port1,port2}=new MessageChannel(),signal=new SharedArrayBuffer(4),flags=new Int32Array(signal);
- const worker=new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,input:{...input,assembly:snapshot.assembly,typeName:runtime.descriptor.typeName,unsecureConfiguration:runtime.descriptor.unsecureConfiguration??null,secureConfiguration:runtime.descriptor.secureConfiguration??null},timeout},transferList:[port2]});
- worker.on('error',()=>{}); // The synchronous deadline reports worker failure and closes the owned host.
- const deadline=Date.now()+timeout+1000;let calls=0,result,ownedPid;executionDepth++;try{if(executionDepth>8)fail('CLR nested execution depth exceeds eight.','LocalPluginDepth',400);while(!result){let packet;while((packet=receiveMessageOnPort(port1))){const message=packet.message;if(message.kind==='owned-child'){if(!Number.isInteger(message.pid)||message.pid<=0)fail('Invalid owned CLR process.','LocalPluginProtocol',500);ownedPid=message.pid;diagnostic({code:'PLUGIN_CLR_HOST_STARTED',pid:ownedPid});}else if(message.kind==='rpc'){let value,error;try{if(++calls>1000)fail('CLR SDK call limit exceeded.','LocalPluginCallLimit',413);value=dispatchSdkCall({store,profile:runtime.descriptor.serviceProfile,message});}catch(cause){error={code:cause.code??'LocalPluginSdkError',message:cause.message};const inner=cause.details?.innerCode??(cause.code==='NotFound'?'0x80040217':null);if(/^0x[a-f\d]{8}$/i.test(inner??''))error.organizationServiceFault={errorCode:parseInt(inner,16)|0,message:cause.message,timestamp:new Date().toISOString(),errorDetails:cause.details?.sourceException?.exceptionDetails??{},provenance:'Local modeled SDK fault; native timestamp/correlation/stack are not available'};}port1.postMessage({kind:'rpc-answer',value,error});}else if(message.kind==='trace'){if(typeof message.message!=='string'||message.message.length>16384)fail('CLR trace exceeds the local limit.','LocalPluginOutputLimit',413);diagnostic({code:'PLUGIN_CLR_TRACE',message:message.message});}else if(message.kind==='failure'){const details={sourceException:{type:message.exceptionType??null,errorCode:message.errorCode??null,operationStatus:message.operationStatus??null,exceptionDetails:message.exceptionDetails??null}};if(Number.isInteger(message.errorCode))details.innerCode=message.exceptionType==='Microsoft.Xrm.Sdk.InvalidPluginExecutionException'&&(message.errorCode>>>0)===0x80131500?'0x80040265':'0x'+(message.errorCode>>>0).toString(16).padStart(8,'0');throw new DataError(message.message,message.code==='LocalPluginTimeout'?504:400,message.code??'PluginValidation',details);}else if(message.kind==='result')result=message;else fail('Unknown CLR protocol result.','LocalPluginProtocol',500);}if(result)break;if(Date.now()>deadline)fail('CLR host/worker did not complete within the configured deadline.','LocalPluginTimeout',504);Atomics.wait(flags,0,0,20);Atomics.store(flags,0,0);}}
- finally{executionDepth--;if(ownedPid)try{process.kill(ownedPid);}catch(cause){if(cause.code!=='ESRCH')diagnostic({code:'PLUGIN_CLR_CLEANUP',message:'Owned CLR process cleanup failed: '+cause.code});}port1.postMessage({kind:'cancel'});port1.close();void worker.terminate();if(ownedPid){let closed=false;const stopDeadline=Date.now()+1000;while(Date.now()<stopDeadline){try{process.kill(ownedPid,0);}catch(cause){if(cause.code==='ESRCH'){closed=true;break;}}Atomics.wait(flags,0,0,10);}diagnostic({code:'PLUGIN_CLR_HOST_STOPPED',pid:ownedPid,absenceVerified:closed});}}
- return {...result,provenance:runtime.provenance,sdkCalls:calls};
+function stopClrHost(session,diagnostic=()=>{}){
+ if(session.active)fail('An active CLR host cannot be closed.','LocalPluginHostBusy',409);
+ const report=note=>{try{diagnostic(note);}catch{}};
+ pooledHosts.delete(session.key);
+ if(session.pid)try{process.kill(session.pid);}catch(cause){if(cause.code!=='ESRCH')report({code:'PLUGIN_CLR_CLEANUP',message:'Owned CLR process cleanup failed: '+cause.code});}
+ session.port1.postMessage({kind:'cancel'});session.port1.close();void session.worker.terminate();
+ let absent=!session.pid;
+ const deadline=Date.now()+1000;
+ while(session.pid&&Date.now()<deadline){try{process.kill(session.pid,0);}catch(cause){if(cause.code==='ESRCH'){absent=true;break;}}Atomics.wait(session.flags,0,0,10);}
+ if(session.pid)report({code:'PLUGIN_CLR_HOST_STOPPED',pid:session.pid,absenceVerified:absent});
+ try{removeClrSnapshot(session.snapshot.directory,session.files);}catch(cause){report({code:'PLUGIN_CLR_CLEANUP',message:'Owned pooled CLR snapshot cleanup failed: '+cause.code});}
+ return absent;
+}
+/** Stop only hosts created by this process. Campaigns must close their pool in
+ * finally; default runtimes never enter the pool. */
+export function closeClrHostPool({runtime,diagnostic=()=>{}}={}){
+ const selected=[...pooledHosts.values()].filter(session=>!runtime||session.runtimeDirectory===runtime.directory);
+ if(selected.some(session=>session.active))fail('An active CLR host cannot be closed.','LocalPluginHostBusy',409);
+ return {closed:selected.length,allAbsenceVerified:selected.map(session=>stopClrHost(session,diagnostic)).every(Boolean)};
+}
+export function clrHostPoolStatus(){return [...pooledHosts.values()].map(session=>({pid:session.pid??null,active:session.active,depth:session.depth,typeName:session.typeName}));}
+function executePooledClr(runtime,input,options,verified){
+ const depth=executionDepth+1,key=runtime.directory+'\0'+runtime.descriptor.typeName+'\0'+depth;
+ if(depth>8)fail('CLR nested execution depth exceeds eight.','LocalPluginDepth',400);
+ let session=pooledHosts.get(key);
+ if(!session){
+  if(pooledHosts.size>=32){const idle=[...pooledHosts.values()].find(host=>!host.active);if(!idle)fail('CLR host pool exceeds 32 active hosts.','LocalPluginHostLimit',413);stopClrHost(idle,options.diagnostic);}
+  const directory=syncFs.mkdtempSync(path.join(path.dirname(runtime.directory),'clr-pool-'));
+  try{for(const file of verified)syncFs.writeFileSync(path.join(directory,file.name),file.bytes,{flag:'wx'});}catch(cause){removeClrSnapshot(directory,verified);throw cause;}
+  const snapshot={directory,executable:path.join(directory,path.basename(runtime.executable)),assembly:path.join(directory,path.basename(runtime.assembly))};
+  const {port1,port2}=new MessageChannel(),signal=new SharedArrayBuffer(4),flags=new Int32Array(signal);
+  const worker=new Worker(new URL('./plugin-clr-pool-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable},transferList:[port2]});
+  worker.on('error',()=>{});worker.unref();port1.unref();
+  session={key,runtimeDirectory:runtime.directory,typeName:runtime.descriptor.typeName,depth,snapshot,files:verified.map(file=>({name:file.name})),worker,port1,signal,flags,active:false};
+  pooledHosts.set(key,session);
+ }
+ if(session.active)fail('Concurrent CLR pool invocation is unsupported.','LocalPluginHostBusy',409);
+ // The opened execution copy remains immutable and gets checked independently
+ // of the source/compiled runtime checks above on every reused invocation.
+ let intact=false;
+ try{intact=syncFs.readdirSync(session.snapshot.directory).length===verified.length&&verified.every(file=>sha(readClrFileSync(path.join(session.snapshot.directory,file.name)))===file.sha256);}catch{}
+ if(!intact){stopClrHost(session,options.diagnostic);fail('Pooled CLR execution bytes changed.','LocalPluginSourceChanged',409);}
+ return executeClrSnapshot(runtime,input,options,session.snapshot,session);
+}
+function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot,session){
+ const timeout=clrTimeout(runtime.descriptor);
+ const channels=session??new MessageChannel(),port1=channels.port1,port2=channels.port2,signal=session?.signal??new SharedArrayBuffer(4),flags=session?.flags??new Int32Array(signal);
+ const invocationId=session?randomUUID():null;
+ const invocation={...input,assembly:snapshot.assembly,typeName:runtime.descriptor.typeName,unsecureConfiguration:runtime.descriptor.unsecureConfiguration??null,secureConfiguration:runtime.descriptor.secureConfiguration??null};
+ const worker=session?.worker??new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,input:invocation,timeout},transferList:[port2]});
+ if(session){session.active=true;port1.postMessage({kind:'invoke',invocationId,input:invocation,timeout});}
+ else worker.on('error',()=>{});
+ const deadline=Date.now()+timeout+1000;
+ let calls=0,result,ownedPid=session?.pid,completed=false;
+ executionDepth++;
+ try{
+  if(executionDepth>8)fail('CLR nested execution depth exceeds eight.','LocalPluginDepth',400);
+  while(!result){
+   let packet;
+   while((packet=receiveMessageOnPort(port1))){
+    const message=packet.message;
+    if(session&&message.kind!=='owned-child'&&message.invocationId!==invocationId)fail('Stale pooled CLR output.','LocalPluginProtocol',500);
+    if(message.kind==='owned-child'){
+     if(!Number.isInteger(message.pid)||message.pid<=0)fail('Invalid owned CLR process.','LocalPluginProtocol',500);
+     ownedPid=message.pid;if(session)session.pid=ownedPid;
+     diagnostic({code:'PLUGIN_CLR_HOST_STARTED',pid:ownedPid,pooled:Boolean(session)});
+    }else if(message.kind==='rpc'){
+     let value,error;
+     try{if(++calls>1000)fail('CLR SDK call limit exceeded.','LocalPluginCallLimit',413);value=dispatchSdkCall({store,profile:runtime.descriptor.serviceProfile,callerProfiles:runtime.descriptor.sdkCallerProfiles,message});}
+     catch(cause){error={code:cause.code??'LocalPluginSdkError',message:cause.message};const inner=cause.details?.innerCode??(cause.code==='NotFound'?'0x80040217':null);if(/^0x[a-f\d]{8}$/i.test(inner??''))error.organizationServiceFault={errorCode:parseInt(inner,16)|0,message:cause.message,timestamp:new Date().toISOString(),errorDetails:cause.details?.sourceException?.exceptionDetails??{},provenance:'Local modeled SDK fault; native timestamp/correlation/stack are not available'};}
+     port1.postMessage({kind:'rpc-answer',value,error,...(session?{invocationId}:{})});
+    }else if(message.kind==='trace'){
+     if(typeof message.message!=='string'||message.message.length>16384)fail('CLR trace exceeds the local limit.','LocalPluginOutputLimit',413);
+     diagnostic({code:'PLUGIN_CLR_TRACE',message:message.message});
+    }else if(message.kind==='failure'){
+     const details={sourceException:{type:message.exceptionType??null,errorCode:message.errorCode??null,operationStatus:message.operationStatus??null,exceptionDetails:message.exceptionDetails??null}};
+     if(Number.isInteger(message.errorCode))details.innerCode=message.exceptionType==='Microsoft.Xrm.Sdk.InvalidPluginExecutionException'&&(message.errorCode>>>0)===0x80131500?'0x80040265':'0x'+(message.errorCode>>>0).toString(16).padStart(8,'0');
+     throw new DataError(message.message,message.code==='LocalPluginTimeout'?504:400,message.code??'PluginValidation',details);
+    }else if(message.kind==='result'){result=message;break;}
+    else fail('Unknown CLR protocol result.','LocalPluginProtocol',500);
+   }
+   if(result)break;
+   if(Date.now()>deadline)fail('CLR host/worker did not complete within the configured deadline.','LocalPluginTimeout',504);
+   Atomics.wait(flags,0,0,20);Atomics.store(flags,0,0);
+  }
+  completed=true;
+ }finally{
+  executionDepth--;
+  if(session){session.active=false;if(!completed)stopClrHost(session,diagnostic);}
+  else{
+   if(ownedPid)try{process.kill(ownedPid);}catch(cause){if(cause.code!=='ESRCH')diagnostic({code:'PLUGIN_CLR_CLEANUP',message:'Owned CLR process cleanup failed: '+cause.code});}
+   port1.postMessage({kind:'cancel'});port1.close();void worker.terminate();
+   if(ownedPid){let absent=false;const stopDeadline=Date.now()+1000;while(Date.now()<stopDeadline){try{process.kill(ownedPid,0);}catch(cause){if(cause.code==='ESRCH'){absent=true;break;}}Atomics.wait(flags,0,0,10);}diagnostic({code:'PLUGIN_CLR_HOST_STOPPED',pid:ownedPid,absenceVerified:absent});}
+  }
+ }
+ return {...result,provenance:runtime.provenance,sdkCalls:calls,executionMode:session?'pooled-fresh-instance':'fresh-host'};
 }
 export function clrContext({runtime,store,step,entity,operation,stage,target,record,previous,frame,depth}){
  const descriptor=runtime.descriptor,context=descriptor.context,parent=store.pluginParentContext,primary=store.resolveMapping(entity).idColumn;
@@ -289,13 +422,15 @@ export function clrContext({runtime,store,step,entity,operation,stage,target,rec
  if(preValidationParent&&!frame.preValidationSharedDetached){frame.sharedVariables={$type:'ParameterCollection',values:{}};frame.preValidationSharedDetached=true;}
  const image=(row,registration)=>{if(!row)return null;return recordToSdkEntity(store,entity,row,{allColumns:!registration.attributes?.length,columns:registration.attributes??[]});};const preImages={},postImages={};for(const registration of step.images??[]){if([0,2].includes(registration.type)&&previous)preImages[registration.alias||registration.name]=image(previous,registration);if([1,2].includes(registration.type)&&stage===40&&operation!=='delete')postImages[registration.alias||registration.name]=image(record,registration);}
  const bulk=['createmultiple','updatemultiple'].includes(operation),messageName={retrievemultiple:'RetrieveMultiple',createmultiple:'CreateMultiple',updatemultiple:'UpdateMultiple'}[operation]??operation[0].toUpperCase()+operation.slice(1);
+ const portalRequest=frame.portalRequest===true&&!parent,portalContactId=portalRequest&&uuid.test(frame.portalContactId??'')?frame.portalContactId:'00000000-0000-0000-0000-000000000000';
  const bulkImages=(rows,post)=>({$type:'EntityImageCollectionArray',values:frame.targets.map((_,index)=>({$type:'EntityImageCollection',values:Object.fromEntries((step.images??[]).filter(registration=>(post?[1,2]:[0,2]).includes(registration.type)&&rows[index]).map(registration=>[registration.alias||registration.name,image(rows[index],registration)]))}))});
  // The main operation populates system results once. Keep custom values and
  // subsequent PostOperation replacements across ranks for every message shape.
  frame.outputParameters??={$type:'ParameterCollection',values:{}};
+ if(stage===40&&operation==='retrievemultiple'&&frame.query?.$type==='FetchExpression'&&frame.collection?.entities?.length===0&&frame.collection.pagingCookie==null&&context.emptyFetchPagingCookie==='')frame.collection.pagingCookie='';
  if(stage===40&&!frame.systemOutputsPopulated){
   const values=operation==='create'?{id:typed('Guid',record[primary])}:operation==='createmultiple'?{Ids:{$type:'GuidArray',values:record.bulkIds.map(value=>typed('Guid',value))}}:operation==='retrieve'?{BusinessEntity:frame.entity}:operation==='retrievemultiple'?{BusinessEntityCollection:frame.collection}:{};
   frame.outputParameters={$type:'ParameterCollection',values:{...frame.outputParameters.values,...values}};frame.systemOutputsPopulated=true;
  }
- return {expectedAssemblyName:step.assemblyName??null,context:{Stage:stage,Mode:step.contract?.mode??0,Depth:parent?Number(parent.values.Depth)+1:depth,MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',descriptor.serviceProfile.userId),InitiatingUserId:typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID()),OperationId:typed('Guid',frame.operationId??=randomUUID()),OperationCreatedOn:typed('DateTime',frame.createdOn??=new Date().toISOString()),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{})},inputParameters:{$type:'ParameterCollection',values:frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})})},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
+ return {expectedAssemblyName:step.assemblyName??null,context:{InterfaceVersion:context.interfaceVersion??4,...(context.interfaceVersion===7?{InitiatingUserAgent:context.initiatingUserAgentPresent?'Mirage observed user-agent presence; value withheld':null,EnvironmentId:context.environmentId,TenantId:typed('Guid',context.tenantId),IsApplicationUser:context.isApplicationUser}:{}),IsPortalsClientCall:portalRequest,PortalsContactId:typed('Guid',portalContactId),RequestId:typed('Guid',frame.requestId??=randomUUID()),SecondaryEntityName:context.secondaryEntityName??'',Stage:stage,Mode:step.contract?.mode??0,Depth:parent?Number(parent.values.Depth)+1:depth,MessageName:messageName,PrimaryEntityName:entity,PrimaryEntityId:typed('Guid',record[primary]),UserId:typed('Guid',context.executionUserId??store.pluginExecutionUserId??descriptor.serviceProfile.userId),InitiatingUserId:parent?.values.InitiatingUserId??typed('Guid',context.initiatingUserId),OrganizationId:typed('Guid',context.organizationId),OrganizationName:context.organizationName??'',BusinessUnitId:typed('Guid',context.businessUnitId),CorrelationId:typed('Guid',frame.correlationId??=parent?.values.CorrelationId?.value??randomUUID()),OperationId:typed('Guid',frame.operationId??=randomUUID()),OperationCreatedOn:typed('DateTime',frame.createdOn??=new Date().toISOString()),IsInTransaction:store.pluginInTransaction===true,IsExecutingOffline:false,IsOfflinePlayback:false,IsolationMode:step.isolationMode??2,OwningExtension:{$type:'EntityReference',logicalName:'sdkmessageprocessingstep',id:step.id,name:step.name},ParentContext:preValidationParent||parent||null,...(bulk?{PreEntityImagesCollection:bulkImages(frame.previousRecords??[],false),PostEntityImagesCollection:bulkImages(stage===40?frame.records??[]:[],true)}:{PreEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(preImages).length?[{$type:'EntityImageCollection',values:preImages}]:[]},PostEntityImagesCollection:{$type:'EntityImageCollectionArray',values:Object.keys(postImages).length?[{$type:'EntityImageCollection',values:postImages}]:[]}})},inputParameters:{$type:'ParameterCollection',values:{...(portalRequest?context.portalInputParameters??{}:{}),...(frame.associationParameters??(bulk?{Targets:{$type:'EntityCollection',entities:frame.targets,moreRecords:false,totalRecordCount:-1,pagingCookie:null}}:operation==='retrievemultiple'?{Query:frame.query}:operation==='retrieve'?{Target:{$type:'EntityReference',logicalName:entity,id:record[primary]},ColumnSet:{$type:'ColumnSet',...frame.columns}}:{Target:operation==='delete'?{$type:'EntityReference',logicalName:entity,id:record[primary]}:recordToSdkEntity(store,entity,{...target,[primary]:record[primary]})}))}},outputParameters:frame.outputParameters,sharedVariables:frame.sharedVariables??{$type:'ParameterCollection',values:{}},preImages,postImages};
 }

@@ -10,7 +10,7 @@
     "data:apply": "paqvilo dataverse data-apply --catalogue data/stress-catalogue.json",
     "data:compare": "paqvilo dataverse data-compare --catalogue data/stress-catalogue.json",
     "data:query": "paqvilo dataverse data-query --catalogue data/stress-catalogue.json",
-    "test": "node --test test/*.test.mjs portal-harness/test.mjs plugins/test/*.test.mjs",
+    "test": "node --test test/*.test.mjs portal-harness/test.mjs portal-harness/parity.test.mjs plugins/test/*.test.mjs",
     "stress:prepare": "node prepare-stress-data.mjs",
     "forms:audit": "node forms/deploy.mjs",
     "forms:apply": "node forms/deploy.mjs --apply",

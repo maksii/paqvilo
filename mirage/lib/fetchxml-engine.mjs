@@ -681,6 +681,10 @@ export function executeFetch(plan, ctx) {
       rows = (ctx.tableRows(lm.logicalName) ?? [])
         .filter((row) => row.code === ctx.platformLanguageCode)
         .map((row) => ({ languagelocaleid: row.languagelocaleid, code: row.code }));
+    } else if (ctx.permissionLink?.(link)) {
+      // Only a compiler-owned sidecar can identify these links. Alias/name text
+      // from an authored query must never enable a backend permission bypass.
+      rows = pkSort(ctx.readableRows(lm.logicalName, link), lm.idColumn);
     } else if (structural.has(link)) {
       const { relation, columns } = structural.get(link);
       const endpoint = ctx.mapping(relation.entity);
@@ -692,14 +696,14 @@ export function executeFetch(plan, ctx) {
         .map((edge) =>
           Object.fromEntries([...columns].filter((key) => own(edge, key)).map((key) => [key, edge[key]])),
         );
-    } else rows = pkSort(ctx.readableRows(lm.logicalName), lm.idColumn);
+    } else rows = pkSort(ctx.readableRows(lm.logicalName, link), lm.idColumn);
     candidates.set(link, rows);
     return rows;
   };
 
   // ---- filters -----------------------------------------------------------
   const valuesOf = (condition) => {
-    const items = children(condition, "value").map((value) => (value.text ?? "").trim());
+    const items = children(condition, "value").map((value) => value.text ?? "");
     if (items.length) return items;
     return own(condition.attrs, "value") ? [condition.attrs.value] : [];
   };
@@ -762,6 +766,48 @@ export function executeFetch(plan, ctx) {
     return parts.length ? (item) => parts.every((part) => part(item)) : null;
   };
 
+  // Distinct permission unions only project authored columns. Restrict their
+  // private paths before materializing alternatives, rather than multiplying
+  // every unrelated principal row and rejecting a valid small query locally.
+  // Both the sidecar and an unchanged, sole predicate for that generated alias
+  // are required; an authored generated-looking alias supplies no authority.
+  const permissionPredicates = new Map();
+  if (plan.distinct && !plan.aggregate) {
+    const conditions = [], nodes = [];
+    const collect = node => {
+      nodes.push(node);
+      if (node.name === 'condition') conditions.push(node);
+      for (const child of node.children) collect(child);
+    };
+    collect(plan.fetch);
+    const expectedConditions = ctx.permissionTerminalConditions ?? [];
+    const sameCondition = (actual, expected) => actual.name === 'condition' &&
+      Object.keys(expected).length === Object.keys(actual.attrs).length &&
+      Object.keys(expected).every(key => expected[key] === actual.attrs[key]);
+    const generatedAliases = new Set(plan.links.filter(link => ctx.permissionLink?.(link)).map(link => plan.aliasOf.get(link)));
+    // An observer can add root conditions referring to generated ancestors.
+    // Those may require rows outside the terminal match, so retain the full
+    // join semantics whenever generated aliases have additional dependencies.
+    const referencesGenerated = name => {
+      const target = plan.byAlias.get(name) ?? plan.byName.get(name);
+      return target != null && generatedAliases.has(plan.aliasOf.get(target));
+    };
+    const additionalDependency = nodes.some(node =>
+      referencesGenerated(node.attrs.entityname) && !expectedConditions.some(expected => sameCondition(node, expected)) ||
+      node.attrs.valueof?.includes('.') && referencesGenerated(node.attrs.valueof.split('.', 1)[0]));
+    for (const expected of additionalDependency ? [] : expectedConditions) {
+      const alias = expected.entityname, link = plan.byAlias.get(alias);
+      if (!link || !ctx.permissionLink?.(link)) continue;
+      const references = conditions.filter(condition => condition.attrs.entityname === alias);
+      if (references.length !== 1) continue;
+      const actual = references[0];
+      const fields = Object.keys(expected);
+      if (fields.length !== Object.keys(actual.attrs).length || fields.some(key => expected[key] !== actual.attrs[key])) continue;
+      const predicate = compileCondition(actual, alias);
+      permissionPredicates.set(link, row => predicate({base: null, aliases: {[alias]: row}}));
+    }
+  }
+
   // ---- joins -------------------------------------------------------------
   const linkPlans = new Map();
   const linkPlan = (link) => {
@@ -779,6 +825,19 @@ export function executeFetch(plan, ctx) {
     const local = !children(link, "filter").some((f) => referencesOtherAlias(f, alias));
     let rows = candidatesFor(link);
     if (filter && local) rows = rows.filter((row) => filter({ base: null, aliases: { [alias]: row } }));
+    const permissionPredicate = permissionPredicates.get(link);
+    if (permissionPredicate) rows = rows.filter(permissionPredicate);
+    // Propagate a qualified terminal restriction up its compiler-owned path.
+    // Outer paths with no qualifying principal remain null alternatives; other
+    // permission paths can still grant the root row through the union filter.
+    if (plan.distinct && !plan.aggregate && ctx.permissionLink?.(link)) {
+      const descendants = children(link, 'link-entity');
+      if (descendants.length === 1 && ctx.permissionLink?.(descendants[0])) {
+        const child = descendants[0], childPlan = linkPlan(child);
+        if (childPlan.permissionRestricted)
+          rows = rows.filter(row => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))));
+      }
+    }
     const index = new Map();
     for (const row of rows) {
       const key = joinKey(fieldValue(row, link.attrs.from));
@@ -786,7 +845,8 @@ export function executeFetch(plan, ctx) {
       if (!index.has(key)) index.set(key, []);
       index.get(key).push(row);
     }
-    const result = { alias, index, filter: local ? null : filter, unfiltered: null };
+    const result = { alias, index, filter: local ? null : filter, unfiltered: null,
+      permissionRestricted: Boolean(permissionPredicate) || children(link, 'link-entity').some(child => linkPlans.get(child)?.permissionRestricted) };
     if (link.attrs["link-type"] === "all") {
       const all = new Map();
       for (const row of candidatesFor(link)) {
@@ -856,11 +916,15 @@ export function executeFetch(plan, ctx) {
       for (const row of rows) {
         const matches = matchesFor(row, link, nodeAlias);
         if (type === "matchfirstrowusingcrossapply") {
-          if (matches.length) next.push(matches[0]);
-        } else if (matches.length) next.push(...matches);
-        else if (type === "outer") next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
+          if (matches.length) { countJoined(1); next.push(matches[0]); }
+        } else if (matches.length) {
+          countJoined(matches.length);
+          for (const match of matches) next.push(match);
+        } else if (type === "outer") {
+          countJoined(1);
+          next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
+        }
       }
-      countJoined(next.length);
       // Dataverse emits flat joins: a nested link joins against every row
       // produced so far, so an inner child of an outer link removes rows
       // whose outer parent is null.
@@ -896,7 +960,7 @@ export function executeFetch(plan, ctx) {
   }
 
   // ---- evaluate ------------------------------------------------------------
-  let rows = plan.retained ? [] : pkSort(ctx.readableRows(rootMapping.logicalName), rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
+  let rows = plan.retained ? [] : pkSort(ctx.readableRows(rootMapping.logicalName, root), rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, "filter").some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);
@@ -929,7 +993,7 @@ export function executeFetch(plan, ctx) {
     for (const { row } of keyed) {
       let joined = joinTree([row], root);
       if (rootFilter && !pushdown) joined = joined.filter(rootFilter);
-      collected.push(...joined);
+      for (const row of joined) collected.push(row);
       if (collected.length >= limit) break;
     }
     rows = collected;
@@ -1091,7 +1155,8 @@ export function executeFetch(plan, ctx) {
     }
     entities = projected.map((item) => item.entity);
     keys = projected.map((item) => ({ ...item.entry, specs }));
-    cookieSupported = !specs.some((spec) => spec.alias != null);
+    cookieSupported = !specs.some((spec) => spec.alias != null) &&
+      (!plan.distinct || columns.some(column => column.alias == null && column.attribute === rootMapping.idColumn && !column.aliased));
   }
   total.value = entities.length;
 
@@ -1114,6 +1179,8 @@ export function executeFetch(plan, ctx) {
   const pageEntities = entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
+  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && keys.some(item=>item.specs?.some(spec=>spec.alias!=null)))
+    pagingCookie='';
   const result = {
     entities: pageEntities,
     more_records: more,
@@ -1313,7 +1380,7 @@ export function executeFetch(plan, ctx) {
     const pk = rootMapping.idColumn;
     const seen = new Set();
     for (const spec of first.specs) {
-      if (spec.alias != null || seen.has(spec.attribute) || spec.attribute === pk) continue;
+      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && !plan.distinct)) continue;
       seen.add(spec.attribute);
       const read = (item) => fieldValue(item.row.base, spec.attribute);
       parts.push(

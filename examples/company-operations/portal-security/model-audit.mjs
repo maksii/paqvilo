@@ -17,8 +17,11 @@ export function evaluateConfiguredGraph(blueprint,schema,catalogue,personaKey) {
         if(r.parent===parentNode.table&&parents.has(a.from))for(const key of a.to)reached.add(key);
         else if(r.child===parentNode.table&&a.to.some(key=>parents.has(key)))reached.add(a.from);
       }
-      else if(r.parent===parentNode.table)for(const row of rowsByTable.get(node.table)??[])if(parents.has(row.refs?.[r.lookup.name]))reached.add(row.key);
-      else for(const parent of parents){const target=byKey.get(parent)?.refs?.[r.lookup.name];if(target)reached.add(target);}
+      else if(r.parent===parentNode.table){
+        for(const row of rowsByTable.get(node.table)??[])if(parents.has(row.refs?.[r.lookup.name]))reached.add(row.key);
+      } else {
+        for(const parent of parents){const target=byKey.get(parent)?.refs?.[r.lookup.name];if(target)reached.add(target);}
+      }
     }
     visibleByNode.set(node.key,reached);
     for(const key of reached){if(!effective.has(key))effective.set(key,{privileges:new Set(),provenance:[]});const entry=effective.get(key);for(const [right,value]of Object.entries(node.privileges))if(value)entry.privileges.add(right);entry.provenance.push(node.key);}

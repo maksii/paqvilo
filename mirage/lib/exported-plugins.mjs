@@ -131,7 +131,6 @@ export function pluginUnsupported(step,{images=false}={}) {
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
   if (!step.message) return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
   if (!['create', 'update', 'delete','retrieve','retrievemultiple','createmultiple','updatemultiple','associate','disassociate'].includes(String(step.message ?? '').toLowerCase())) return 'This message has no configured local execution pipeline.';
-  if(['retrieve','retrievemultiple'].includes(String(step.message).toLowerCase())&&![20,40].includes(step.stage))return 'Read messages support synchronous PreOperation/PostOperation observers.';
   if (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)) return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
   if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
@@ -164,15 +163,15 @@ export function pluginCatalogue({ plugins, handlers = new Map(), runtimes = new 
     const key = `plugin-step:${step.id}`, configuration = overrides[key] ?? null, registered = handlers.has(step.id);
     const runtime=runtimes.get(step.id),descriptor=descriptors.get(step.id),unsupported=pluginUnsupported(step,{images:Boolean(runtime||descriptor)});
     const clrAvailable=Boolean((runtime?.descriptor??descriptor)?.typeName===step.typeName);
-    return { ...step,unsupported,key, kind: 'plugin-step', registered,clrAvailable,clrPrepared:Boolean(runtime),clrProvenance:runtime?.provenance??null, mode: configuration?.mode ?? (registered ? 'handler' : 'placeholder'), configuration, configurable: step.enabled, definitionAvailable: clrAvailable, path: null, contract: { entity: step.entity, message: step.message, stage: step.stage, stageName: step.stageName, rank: step.rank, mode: step.mode, filteringAttributes: step.filteringAttributes, assemblyName: step.assemblyName, typeName: step.typeName, unsupported, boundary: 'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. RetrieveMultiple observers are read-only. CLR requires an explicitly trusted original assembly and a separate project backend security profile.' } };
+    return { ...step,unsupported,key, kind: 'plugin-step', registered,clrAvailable,clrPrepared:Boolean(runtime),clrProvenance:runtime?.provenance??null, mode: configuration?.mode ?? (registered ? 'handler' : 'placeholder'), configuration, configurable: step.enabled, definitionAvailable: clrAvailable, path: null, contract: { entity: step.entity, message: step.message, stage: step.stage, stageName: step.stageName, rank: step.rank, mode: step.mode, filteringAttributes: step.filteringAttributes, assemblyName: step.assemblyName, typeName: step.typeName, unsupported, boundary: 'Top-level PreValidation SDK requests commit independently; PreOperation/PostOperation and nested PreValidation join the caller transaction. Read observer writes require a serialized readOperation boundary and explicit backend grants; top-level read SDK writes commit independently. CLR requires an explicitly trusted original assembly and a separate project backend security profile.' } };
   });
 }
 
 /** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes. */
-export function runPluginPhase({ items, handlers, runtimes=new Map(),store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,asyncExecution=false,initialFrame, diagnostic = () => {} }) {
+export function runPluginPhase({ items, handlers, runtimes=new Map(),store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,portalRequest=false,asyncExecution=false,initialFrame, diagnostic = () => {} }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
-  if(stage===10&&!asyncExecution)executionFrames.set(record,{});
+  if(stage===10&&!asyncExecution&&!['retrieve','retrievemultiple'].includes(operation))executionFrames.set(record,{});
   if(initialFrame)executionFrames.set(record,structuredClone(initialFrame));
   const attributes = new Set(changedAttributes.map(canonical)),read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
   const matched = items.filter(item => item.enabled && (item.contract?.mode===1)===asyncExecution && item.entity === entity && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update','updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
@@ -196,16 +195,20 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),store, enti
     try {
       if(item.mode==='clr'){
         const runtime=runtimes.get(item.id);if(!runtime||!item.clrAvailable||!store)throw error('No trusted original CLR runtime is registered for this exact exported type/step.','LocalPluginClrUnavailable',501);
-        let frame=executionFrames.get(record);if(!frame){frame={};executionFrames.set(record,frame);}
+        let frame=executionFrames.get(record);if(!frame){frame={};const inherited=store.pluginParentContext?.values?.SharedVariables?.values,tag=store.pluginSdkTag??inherited?.tag;if(tag!==undefined)frame.sharedVariables={$type:'ParameterCollection',values:{tag}};executionFrames.set(record,frame);}
+        frame.portalContactId=portalRequest&&!store.pluginParentContext&&!identity?.admin?(identity?.contactId??identity?.id??null):null;
+        frame.portalRequest=portalRequest&&!store.pluginParentContext&&!identity?.admin;
         if(read){frame.query=query;frame.collection=collection;frame.entity=holder?.entity;frame.columns=columns;}
         if(bulk){frame.targets=targets;frame.previousRecords=previousRecords;frame.records=records;}
         if(association)frame.associationParameters=associationParameters;
         const depth=clrExecutionDepth()+1,context=clrContext({runtime,store,step:item,entity,operation,stage,target,record,previous,frame,depth});
-        const answer=executeClrPlugin(runtime,context,{store,diagnostic:entry=>diagnostic({...entry,stepId:item.id,entity,operation,stage})});frame.sharedVariables=answer.sharedVariables;frame.outputParameters=answer.outputParameters;
+        const answer=executeClrPlugin(runtime,context,{store,diagnostic:entry=>diagnostic({...entry,stepId:item.id,entity,operation,stage})});
+        if(Object.hasOwn(frame.sharedVariables?.values??{},'tag')&&answer.sharedVariables?.values?.tag!==frame.sharedVariables.values.tag)throw error('The request tag is immutable.','LocalPluginTagImmutable',409);
+        frame.sharedVariables=answer.sharedVariables;frame.outputParameters=answer.outputParameters;
         // CRUD PreValidation variables belong to the parent context of later
         // stages, while PreOperation and PostOperation share their own collection.
         if(stage===10&&['create','update','delete'].includes(operation))frame.preValidationContext={$type:'ExecutionContext',values:{...structuredClone(context.context),InputParameters:structuredClone(answer.inputParameters),OutputParameters:structuredClone(answer.outputParameters),SharedVariables:structuredClone(answer.sharedVariables),PreEntityImages:{$type:'EntityImageCollection',values:structuredClone(context.preImages)},PostEntityImages:{$type:'EntityImageCollection',values:structuredClone(context.postImages)}}};
-        if(read){if(multiple){const nextQuery=answer.inputParameters?.values?.Query;if(stage===20)replace(query,nextQuery);else if(answer.outputParameters?.values?.BusinessEntityCollection!=null){replace(collection,answer.outputParameters.values.BusinessEntityCollection);readResultChanged();}}else if(stage===40&&answer.outputParameters?.values?.BusinessEntity!=null){holder.entity=structuredClone(answer.outputParameters.values.BusinessEntity);readResultChanged();}output={};}
+        if(read){if(multiple){const nextQuery=answer.inputParameters?.values?.Query;if(stage!==40)replace(query,nextQuery);else if(answer.outputParameters?.values?.BusinessEntityCollection!=null){replace(collection,answer.outputParameters.values.BusinessEntityCollection);readResultChanged();}}else if(stage===40&&answer.outputParameters?.values?.BusinessEntity!=null){holder.entity=structuredClone(answer.outputParameters.values.BusinessEntity);readResultChanged();}output={};}
         else if(bulk){const next=answer.inputParameters?.values?.Targets;if(next?.$type!=='EntityCollection'||!Array.isArray(next.entities))throw error('Bulk plugin must retain a typed Targets EntityCollection.');if(stage!==40)targets.splice(0,targets.length,...structuredClone(next.entities));output={};}
         else if(association){if(JSON.stringify(answer.inputParameters?.values)!==JSON.stringify(associationParameters))throw error('Association parameter mutation needs a source-qualified adapter.','LocalPluginSdkUnsupported',501);output={};}
         else if(stage!==40&&operation!=='delete'&&Object.keys(target).some(key=>!Object.hasOwn(answer.target?.attributes??{},key)))throw error('Original plugin removed a Target attribute; target removal requires an explicit mutation adapter.','LocalPluginSdkUnsupported',501);
@@ -224,7 +227,7 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),store, enti
       if (output?.error) throw error(String(output.error.message || 'Plugin rejected the write.'), 'PluginValidation');
       if(bulk&&output?.targets!==undefined){if(stage===40||!Array.isArray(output.targets))throw error('Bulk Targets changes require a pre-operation array.');targets.splice(0,targets.length,...structuredClone(output.targets));}
       if(!multiple&&output?.entityResult!==undefined){if(stage!==40)throw error('Retrieve Entity changes require PostOperation.');holder.entity=structuredClone(output.entityResult);readResultChanged();}
-      if(read&&output?.query!==undefined){if(stage!==20)throw error('Query changes require PreOperation.');replace(query,output.query);}
+      if(read&&output?.query!==undefined){if(!multiple||stage===40)throw error('Query changes require RetrieveMultiple PreValidation or PreOperation.');replace(query,output.query);}
       if(read&&output?.collection!==undefined){if(stage!==40)throw error('Collection changes require PostOperation.');replace(collection,output.collection);readResultChanged();}
       if (output?.target !== undefined) {
         if (stage === 40 || operation === 'delete') throw error('PostOperation and Delete target changes cannot be persisted by this adapter.');

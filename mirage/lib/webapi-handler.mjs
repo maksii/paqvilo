@@ -57,6 +57,11 @@ const QUERY_CODES = new Set([
   "UnsupportedKeySyntax",
 ]);
 const queryPhase = (error) => {
+  // These are Dataverse execution budgets, including permission-generated
+  // joins. They must retain the CDS error envelope rather than being reported
+  // as a portal OData grammar failure.
+  if (["0x8004430c", "0x8004430d"].includes(String(error?.details?.innerCode).toLowerCase()) && error.details.phase == null)
+    error.details = { ...error.details, phase: "backend" };
   if (error && QUERY_CODES.has(error.code) && error.details?.phase == null)
     error.details = { ...(error.details ?? {}), phase: "query" };
   return error;
@@ -387,13 +392,37 @@ async function route(req, res, url, deps) {
       "NotImplemented",
     );
   const t = requestContext(req, res, url, deps, target, method);
+  // A read observer can issue independently committed SDK writes. Finish the
+  // serialized read unit before sending a successful response, including text
+  // properties and conditional 304s, so persistence failures remain errors.
+  const execute = () => method === "GET" && typeof deps.store.readOperation === "function"
+    ? dispatchRead(t)
+    : dispatch(t);
   if (method === "GET" && !(target.kind === "collection" && url.searchParams.has("fetchXml")))
     try {
-      return await dispatch(t);
+      return await execute();
     } catch (error) {
       throw queryPhase(error);
     }
-  return dispatch(t);
+  return execute();
+}
+
+async function dispatchRead(t) {
+  let response;
+  const pending = {
+    writeHead(status, headers) { response = { status, headers, raw: true }; },
+    end(body) { response = { ...response, raw: true, body }; },
+  };
+  const buffered = { ...t, res: pending, deps: { ...t.deps,
+    json(_res, status, body, headers) { response = { status, body, headers }; },
+  } };
+  await t.store.readOperation(async () => { await dispatch(buffered); });
+  if (!response) throw new DataError("The read operation produced no response.", 500, "InvalidReadResponse");
+  if (response.raw) {
+    t.res.writeHead(response.status, response.headers);
+    return t.res.end(response.body);
+  }
+  return t.deps.json(t.res, response.status, response.body, response.headers);
 }
 
 function dispatch(t) {
@@ -549,6 +578,7 @@ const pick = (params, names) => {
 };
 const queryOptions = (t, extra = {}) => ({
   dialect: "dataverse",
+  portalRequest: true,
   metadata: t.deps.metadata,
   includeKeys: true,
   ...extra,
@@ -602,7 +632,7 @@ function locate(t, mapping, key) {
 
 const readRecord = (t, mapping, id, key) => {
   if (id == null) throw recordNotFound(mapping, key);
-  const row = t.store.get(mapping.logicalName, id, t.deps.identity);
+  const row = t.store.get(mapping.logicalName, id, t.deps.identity, { portalRequest: true });
   if (!row) throw recordNotFound(mapping, key);
   return row;
 };
@@ -764,6 +794,7 @@ function getFetch(t) {
   const counted = url.searchParams.get("$count") === "true";
   const fetched = store.fetchXml(xml, deps.identity, {
     profile: "webapi",
+    portalRequest: true,
     metadata: deps.metadata,
     returnTotal: counted,
   });
@@ -909,6 +940,7 @@ function assertBindOrigins(t, body) {
 }
 const writeOptions = (t, extra = {}) => ({
   coerce: true,
+  portalRequest: true,
   odataErrorDetails: t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper",
   odataNumberLexemes: t.odataNumberLexemes,
   ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(t.req.headers["content-type"] ?? "")),

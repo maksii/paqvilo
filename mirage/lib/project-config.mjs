@@ -42,6 +42,10 @@ const OBSERVED_CHOICES = {
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
   webApiErrorDetails: ["diagnostic", "odata-wrapper"],
   anonymousDataAccess: ["allowed", "blocked"],
+  // Replay a captured inactive-parent defect only for that evidenced site.
+  // Normal exported permission graphs keep incomplete parent chains closed.
+  tablePermissionOrphans: ["closed", "unrestricted"],
+  tablePermissionQueryPipeline: ["row-filtered", "native-classic"],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
   // Other status values are outside this observation and keep their source behavior.
   redirect301: ["configured", "temporary"],
@@ -89,9 +93,15 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if(value.fetchPreOperationSerialization!=null){
+    const entries=value.fetchPreOperationSerialization;
+    if(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.keys(entries).length>100||Object.entries(entries).some(([entity,mode])=>!/^[_a-z][a-z\d_]{0,127}$/i.test(entity)||mode!=='compact'))
+      throw new Error(`${label}.fetchPreOperationSerialization must map at most 100 exact logical tables to compact`);
+    if(Object.keys(entries).length)observed.fetchPreOperationSerialization={...entries};
+  }
   if (value.formSubmissionErrorMessage != null) {
     if (typeof value.formSubmissionErrorMessage !== 'string' || !value.formSubmissionErrorMessage.trim() || value.formSubmissionErrorMessage.length > 2000) throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
     observed.formSubmissionErrorMessage = value.formSubmissionErrorMessage;

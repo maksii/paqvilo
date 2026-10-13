@@ -147,3 +147,15 @@ test("a join that would materialise more rows than the local bound fails instead
   const xml = `<fetch><entity name="account"><attribute name="name"/><link-entity name="contact" from="parentcustomerid" to="accountid" alias="c"><attribute name="fullname"/><order attribute="fullname"/></link-entity></entity></fetch>`;
   assert.throws(() => bounded.fetchXml(xml, { admin: true }), (error) => error.code === "UnsupportedQuery" && error.details.limit === 1000);
 });
+
+test("one high-fanout root respects the join budget without exceeding JavaScript argument limits", () => {
+  const highFanout = store({ complete: false, accounts: 1, contactsPerAccount: 150000 });
+  const distinct = '<fetch distinct="true"><entity name="account"><attribute name="accountid"/><link-entity name="contact" from="parentcustomerid" to="accountid"/></entity></fetch>';
+  assert.deepEqual(highFanout.fetchXml(distinct, { admin: true }).entities, [{accountid: G(1)}]);
+  const early = highFanout.fetchXml(`<fetch top="1"><entity name="account"><attribute name="name"/>${JOIN}</entity></fetch>`, { admin: true });
+  assert.equal(early.entities.length, 1);
+  assert.equal(early.entities[0].name, 'Account 0000');
+  assert.equal(early.stats.joinedRows, 150000);
+  highFanout.state.settings.fetchJoinRowLimit = 1000;
+  assert.throws(() => highFanout.fetchXml(distinct, { admin: true }), error => error.code === 'UnsupportedQuery' && error.details.limit === 1000);
+});

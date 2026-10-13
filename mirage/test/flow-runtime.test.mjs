@@ -139,7 +139,7 @@ test('GetItem selects columns without a pipeline and preserves attributes added 
  assert.equal(data.get('widgets',row.widgetid,{admin:true}).other,'Unselected');
  const columns=[];data.setPluginPipeline(({stage,columns:columnSet,holder})=>{columns.push(structuredClone(columnSet));if(stage===40){holder.entity.attributes.title='Plugin title';holder.entity.attributes.added='Plugin attribute';}},({operation})=>operation==='retrieve');
  assert.deepEqual(executeFlowDefinition({definition:d,input:{},store:data,serviceProfile:profile}),{status:200,body:{title:'Plugin title',added:'Plugin attribute',widgetid:row.widgetid}});
- assert.deepEqual(columns,[{allColumns:false,columns:['title']},{allColumns:false,columns:['title']}]);
+ assert.deepEqual(columns,[{allColumns:false,columns:['title']},{allColumns:false,columns:['title']},{allColumns:false,columns:['title']}]);
  const denied=structuredClone(profile);denied.grants[0].operations=['create'];
  d.actions.reply.runAfter.read=['Failed'];d.actions.reply.inputs.body="@outputs('read')['error']['code']";
  assert.deepEqual(executeFlowDefinition({definition:d,input:{},store:data,serviceProfile:denied}),{status:200,body:'LocalBackendPermissionDenied'});

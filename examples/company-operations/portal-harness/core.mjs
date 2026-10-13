@@ -34,7 +34,12 @@ export function normalize(value, field) {
   if (['decimal','money','double'].includes(field.type)) {if (!Number.isFinite(Number(value))) throw new Error(`Invalid decimal ${field.name}`);return Number(value).toFixed(field.precision);}
   if (field.type === 'dateonly') {const text=String(value);if (!/^\d{4}-\d\d-\d\d/.test(text)) throw new Error(`Invalid DateOnly ${field.name}`);return text.slice(0,10);}
   if (field.type === 'datetime') return new Date(value).toISOString();
-  if (field.type === 'boolean') return value===true || value==='true';
+  if (field.type === 'boolean') {
+    if(value===true||value===false)return value;
+    if(value===1||value===0)return value===1;
+    if(typeof value==='string'&&/^(?:true|false|0|1)$/i.test(value))return /^(?:true|1)$/i.test(value);
+    throw new Error(`Invalid boolean ${field.name}`);
+  }
   return String(value);
 }
 export function canonicalRows(rows, plan) {
@@ -83,8 +88,8 @@ export function parseLiquid(text, plan, DOMParserClass=globalThis.DOMParser) {
   if(doc.querySelector('parsererror')) throw new Error('Liquid endpoint returned invalid XML (possibly a query error or sign-in page).');
   const root=doc.documentElement;if(root.nodeName!=='co-test-response') throw new Error('Unexpected Liquid response envelope.');
   if(root.getAttribute('outcome')!=='success') throw Object.assign(new Error(root.querySelector('error')?.textContent || `Liquid ${root.getAttribute('outcome')}; no successful records collection.`),{effectiveFetchXml:root.querySelector('effective-fetchxml')?.textContent||null,rawLiquidResponse:text});
-  const rows=[...root.querySelectorAll('records > record')].map(record=>Object.fromEntries([...record.querySelectorAll('field')].map(f=>[f.getAttribute('name'),f.getAttribute('null')==='true'?null:f.textContent])));
-  const more=root.querySelector('paging')?.getAttribute('more');
+  const rows=[...root.querySelectorAll('records > record')].map(record=>Object.fromEntries([...record.querySelectorAll('field')].map(f=>[f.getAttribute('name'),f.getAttribute('null')?.toLowerCase()==='true'?null:f.textContent])));
+  const more=root.querySelector('paging')?.getAttribute('more')?.toLowerCase();
   return {rows,more:more==='true'?true:more==='false'?false:null,cookie:root.querySelector('cookie')?.textContent || null,authoredFetchXml:root.querySelector('authored-fetchxml')?.textContent,effectiveFetchXml:root.querySelector('effective-fetchxml')?.textContent,contactId:guid(root.getAttribute('contact-id')),roles:[...root.querySelectorAll('roles > role')].map(r=>r.textContent),caseId:root.getAttribute('case-id'),operationId:guid(root.getAttribute('operation-id')),datasetVersion:root.getAttribute('dataset-version')};
 }
 export function splitPayload(text,max=240000) {const parts=[];for(let i=0;i<text.length;i+=max){let end=Math.min(text.length,i+max);if(end<text.length && /[\uD800-\uDBFF]/.test(text[end-1])) end--;parts.push(text.slice(i,end));i=end-max;}return parts.length?parts:[''];}

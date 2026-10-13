@@ -20,11 +20,16 @@ namespace Paqvilo.Demo.Lab {
   public string configVersion {get;set;} = "lab-v1";
   public string teamId {get;set;}
   public string[] chainStepIds {get;set;} = new string[0];
+  public bool allowAnonymousObservation {get;set;} = false;
+  public string[] anonymousObservationTables {get;set;} = new string[0];
+  public bool allowOwnedEvidenceDeletion {get;set;} = false;
   public bool ChainStep(Guid id)=>chainStepIds.Any(s=>Guid.TryParse(s,out var g)&&g==id);
   public static Config Parse(string json) {
    var c=string.IsNullOrWhiteSpace(json)?new Config():new JavaScriptSerializer().Deserialize<Config>(json);
    if(c==null||c.schemaVersion!=1||c.timeoutMs<100||c.timeoutMs>2000||!new[]{"TraceOnly","TransactionalLab","DurableCollector"}.Contains(c.captureMode))throw new InvalidPluginExecutionException("CO invalid unsecure configuration.");
    if(c.captureMode=="TransactionalLab"&&!Guid.TryParse(c.writerId,out _))throw new InvalidPluginExecutionException("CO recording writer not configured.");
+   if(c.allowAnonymousObservation&&(c.anonymousObservationTables==null||c.anonymousObservationTables.Length==0||c.anonymousObservationTables.Length>32||c.anonymousObservationTables.Any(t=>string.IsNullOrEmpty(t)||!System.Text.RegularExpressions.Regex.IsMatch(t,"^[a-z][a-z0-9_]*$"))))throw new InvalidPluginExecutionException("CO anonymous observation requires explicit allowed tables.");
+   if(c.allowOwnedEvidenceDeletion&&(!Guid.TryParse(c.writerId,out var maintenanceWriter)||c.trustedWriterIds.Length!=1||!c.Trusted(maintenanceWriter)))throw new InvalidPluginExecutionException("CO owned evidence deletion requires one explicit trusted SDK writer.");
    if(c.captureMode=="DurableCollector"&&(!Uri.TryCreate(c.collectorUrl,UriKind.Absolute,out var u)||u.Scheme!="https"||u.IsLoopback||!string.IsNullOrEmpty(u.Query)||string.IsNullOrEmpty(c.collectorAudience)))throw new InvalidPluginExecutionException("CO durable collector is not configured.");
    return c;
   }

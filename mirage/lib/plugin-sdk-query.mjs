@@ -31,7 +31,12 @@ export function prepareFetchForSdk(xml,store){
 }
 export function fetchResultToSdkCollection(store,entity,answer,convert,{hiddenId=false,rootColumns}={}){
  const mapping=store.resolveMapping(entity),descriptions=answer.columns?.columns??[],byKey=new Map(descriptions.map(column=>[column.key,column]));
- const entities=(answer.entities??[]).map(row=>{const result=convert(store,entity,row,rootColumns??{allColumns:true});for(const[key,value]of Object.entries(row)){const spec=byKey.get(key),alias=key.includes('.')?key.slice(0,key.indexOf('.')):null,logical=spec?.entity??answer.columns?.aliases?.[alias],attribute=spec?.attribute??(alias?key.slice(key.indexOf('.')+1):null);if((spec?.aliased||spec?.alias!=null||alias)&&logical&&attribute){if(value==null){delete result.attributes[key];continue;}const typed=convert(store,logical,{[attribute]:value},{allColumns:true}).attributes[attribute];result.attributes[key]={$type:'AliasedValue',entityLogicalName:logical,attributeLogicalName:attribute,value:typed};}}
+ const entities=(answer.entities??[]).map(row=>{const result=convert(store,entity,row,rootColumns??{allColumns:true});for(const[key,value]of Object.entries(row)){const spec=byKey.get(key),alias=key.includes('.')?key.slice(0,key.indexOf('.')):null,logical=spec?.entity??answer.columns?.aliases?.[alias],attribute=spec?.attribute??(alias?key.slice(key.indexOf('.')+1):null);if((spec?.aliased||spec?.alias!=null||alias)&&logical&&attribute){if(value==null){delete result.attributes[key];continue;}let typed;
+   if(['count','countcolumn'].includes(spec?.aggregate)){typed=Number(isExactNumeric(value)?value.value:value);if(!Number.isInteger(typed)||typed<0||typed>2147483647)fail('SDK Fetch aggregate count exceeds Int32 bounds.');}
+   else {const converted=convert(store,logical,{[attribute]:value},{allColumns:true});typed=converted.attributes[attribute];if(converted.formattedValues?.[attribute]!==undefined)(result.formattedValues??={})[key]=converted.formattedValues[attribute];}
+   if(['count','countcolumn'].includes(spec?.aggregate))(result.formattedValues??={})[key]=String(typed);
+   result.attributes[key]={$type:'AliasedValue',entityLogicalName:logical,attributeLogicalName:attribute,value:typed};
+   if(spec?.groupby&&typed?.$type==='EntityReference'&&typeof typed.name==='string')result.attributes[`${key}_${attribute}name`]={$type:'AliasedValue',entityLogicalName:logical,attributeLogicalName:`${attribute}name`,value:typed.name};}}
   if(hiddenId)delete result.attributes[mapping.idColumn];return result;});
  return {$type:'EntityCollection',entities,moreRecords:Boolean(answer.more_records),pagingCookie:answer.paging_cookie??null,totalRecordCount:answer.total_record_count??-1};
 }

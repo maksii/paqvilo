@@ -7,6 +7,12 @@ import http from "node:http";
 import { createHash } from 'node:crypto';
 import { createSimulator } from "../server.mjs";
 
+test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
+  for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
+    await assert.rejects(createSimulator({ sourceDir: path.join(os.tmpdir(), 'invented-absent-source'), port, watch: false }), /port must be an integer from 0 to 65535/);
+  }
+});
+
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-mirage-server-"));
   const files = {

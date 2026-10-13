@@ -43,7 +43,7 @@ import { operationHandlers, assertOperationRole, runExportedServerLogic, runExpo
 import {createFlowTriggerRunner} from './lib/flow-triggers.mjs';
 import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
 import { pluginHandlers, pluginCatalogue, runPluginPhase } from './lib/exported-plugins.mjs';
-import {pluginRuntimeDescriptors,prepareClrRuntime} from './lib/plugin-clr.mjs';
+import {pluginRuntimeDescriptors,prepareClrRuntime,closeClrHostPool} from './lib/plugin-clr.mjs';
 import {createAsyncPluginRunner} from './lib/plugin-async.mjs';
 import {settleCommittedWork} from './lib/committed-work.mjs';
 import { importCodeComponents, renderCodeComponent } from './lib/code-components.mjs';
@@ -71,6 +71,7 @@ import { authenticationSettings } from "./lib/external-login.mjs";
 import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL } from "./lib/response-headers.mjs";
 import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
+import { runtimePort } from './lib/runtime-port.mjs';
 import { createFrameReadiness } from "./lib/frame-readiness.mjs";
 import { formWriteError } from "./lib/form-error-presentation.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
@@ -251,6 +252,7 @@ export async function createSimulator({
   // .powerpages-site export does not record it and defaults to enhanced.
   dataModel,
 } = {}) {
+  port = runtimePort(port, 0);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
   if (!["127.0.0.1", "localhost", "::1"].includes(host))
     throw error("The simulator binds only to loopback.");
@@ -466,16 +468,19 @@ export async function createSimulator({
     closePromise = null,
     // External sign-in and its local identity provider (lib/sign-in-flow.mjs), set below.
     externalSignIn = null,triggerRunner=null,asyncPluginRunner=null;
-  const activeWrites=new Set();
+  // GET observers may commit SDK writes too. Drain every accepted handler
+  // before stopping its services; event-stream handlers finish on registration.
+  const activeRequests=new Set();
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
     frameReadiness.close();
     closePromise = (async () => {
       await watcher?.close();
-      while(activeWrites.size)await Promise.all([...activeWrites]);
+      while(activeRequests.size)await Promise.all([...activeRequests]);
       await store.queue;
       await settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true});
+      for(const runtime of registeredPluginRuntimes.values())closeClrHostPool({runtime,diagnostic:recordDiagnostic});
       for (const event of events) event.end();
       await live.close();
       // The local identity provider lives and ends with its runtime.
@@ -691,7 +696,7 @@ export async function createSimulator({
     async fetchXml(xml, identity) {
       if (config().mode !== "live")
         return normalizeMockLiquidFetchXml(
-          store.fetchXml(xml, identity, { platformLanguageCode: "en-US" }),
+          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true })),
           xml,
           liveMapping,
         );
@@ -704,7 +709,7 @@ export async function createSimulator({
     async get(entity, id, identity) {
       if (config().mode !== "live")
         return normalizeMockLiquidRecord(
-          store.get(entity, id, identity),
+          await store.readOperation(() => store.get(entity, id, identity, { portalRequest: true })),
           liveMapping(entity),
           { mappings: liveMapping },
         );
@@ -716,7 +721,7 @@ export async function createSimulator({
     },
     async query(entity, params, identity) {
       if (config().mode !== "live") {
-        const result = store.query(entity, params, identity);
+        const result = await store.readOperation(() => store.query(entity, params, identity, undefined, { portalRequest: true }));
         const aggregate = Boolean(
           params instanceof URLSearchParams
             ? params.get("$apply")
@@ -768,8 +773,8 @@ export async function createSimulator({
   const writeFormRecord = async (entity, id, values, identity) => {
     if (config().mode !== "live")
       return id
-        ? store.update(entity, id, values, identity)
-        : store.create(entity, values, identity);
+        ? store.update(entity, id, values, identity, { portalRequest: true })
+        : store.create(entity, values, identity, { portalRequest: true });
     const mapping = liveMapping(entity);
     const response = await live.request(
       `/_api/${mapping.entitySet}${id ? `(${encodeURIComponent(id)})` : ""}`,
@@ -1592,17 +1597,28 @@ export async function createSimulator({
       const state = store.snapshot();
       state.simulator ??= config();
       state.simulator.operations = { ...(state.simulator.operations ?? {}) };
+      const previousRuntime = registeredPluginRuntimes.get(item.id);
+      let preparedRuntime;
       if (method === 'DELETE') delete state.simulator.operations[key];
       else {
         const value = await jsonBody(req);
         validateOperationOverrides({ [key]: value },{pluginStep:item.kind==='plugin-step'?item:undefined});
         if (value.mode === 'handler' && !item.registered) throw error('No trusted project handler is registered for this operation.', 409);
-        if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);registeredPluginRuntimes.set(item.id,await prepareClrRuntime(registeredPluginDescriptors.get(item.id)));}
+        if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);if(!previousRuntime)preparedRuntime=await prepareClrRuntime(registeredPluginDescriptors.get(item.id));}
         if(value.mode==='handler'&&item.unsupported)throw error(item.unsupported,409);
         if (value.mode === 'exported' && !item.definitionAvailable) throw error('The selected sources do not include this operation definition.', 409);
         state.simulator.operations[key] = value;
       }
-      await saveState(state);
+      if(preparedRuntime)registeredPluginRuntimes.set(item.id,preparedRuntime);
+      try { await saveState(state); }
+      catch(cause){
+        if(preparedRuntime){registeredPluginRuntimes.delete(item.id);closeClrHostPool({runtime:preparedRuntime,diagnostic:recordDiagnostic});}
+        throw cause;
+      }
+      if(previousRuntime&&state.simulator.operations[key]?.mode!=='clr'){
+        registeredPluginRuntimes.delete(item.id);
+        closeClrHostPool({runtime:previousRuntime,diagnostic:recordDiagnostic});
+      }
       return json(res, 200, { items: operations() });
     });
     if (method === "POST" && relative === "/shutdown") {
@@ -3438,7 +3454,7 @@ export async function createSimulator({
             error: {
               code: err.code ?? "SIMULATOR_ERROR",
               message: err.message,
-                  ...(req.url.startsWith("/__sim/forms/") && Array.isArray(err.details?.validationErrors) ? { validationErrors: err.details.validationErrors } : {}),
+              ...(req.url.startsWith("/__sim/forms/") && Array.isArray(err.details?.validationErrors) ? { validationErrors: err.details.validationErrors } : {}),
             },
             ...(req.url.startsWith('/__sim/forms/entityform/') && formWriteError(err, config().observed ?? portal.observed) ? { postback: formWriteError(err, config().observed ?? portal.observed) } : {}),
           });
@@ -3453,8 +3469,8 @@ export async function createSimulator({
             `<!doctype html><title>Portal simulation diagnostic</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>Portal rendering needs attention</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
           );
         }
-      }).finally(()=>activeWrites.delete(invocation));
-    if(isWrite(req.method))activeWrites.add(invocation);
+      }).finally(()=>activeRequests.delete(invocation));
+    activeRequests.add(invocation);
   });
   if (startupPreset.applied) await applySelectedPreset(preset);
   await new Promise((resolve, reject) => {

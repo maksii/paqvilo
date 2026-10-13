@@ -16,9 +16,10 @@ child.stdin.on('error',()=>finish({kind:'failure',code:'LocalPluginProtocol',mes
 readline.createInterface({input:child.stdout,crlfDelay:Infinity}).on('line',line=>{
  if(complete)return;if(Buffer.byteLength(line)>4*1024*1024)return finish({kind:'failure',code:'LocalPluginOutputLimit',message:'CLR protocol message exceeded 4 MiB.'});
  let message;try{message=JSON.parse(line);}catch{return finish({kind:'failure',code:'LocalPluginProtocol',message:'CLR host returned an invalid protocol message.'});}
+ if(!message||typeof message!=='object'||Array.isArray(message))return finish({kind:'failure',code:'LocalPluginProtocol',message:'CLR host returned an invalid protocol message.'});
  if(message.kind==='rpc'){if(pending)return finish({kind:'failure',code:'LocalPluginProtocol',message:'Concurrent CLR SDK calls are unsupported.'});pending=true;send(message);}
  else if(message.kind==='trace')send(message);
- else if(['result','failure'].includes(message.kind))finish(message);
+ else if(['result','failure'].includes(message.kind)){if(pending)return finish({kind:'failure',code:'LocalPluginProtocol',message:'CLR completed with a pending SDK callback.'});finish(message);}
  else finish({kind:'failure',code:'LocalPluginProtocol',message:'Unknown CLR host message.'});
 });
 port.on('message',message=>{if(message.kind==='rpc-answer'&&pending&&!complete){pending=false;child.stdin.write(JSON.stringify(message)+'\n');}else if(message.kind==='cancel')finish({kind:'failure',code:'LocalPluginCancelled',message:'CLR execution was cancelled.'});});

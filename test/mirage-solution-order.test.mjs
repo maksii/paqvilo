@@ -119,6 +119,20 @@ test('mirage start hands the Mirage its catalogue Solution roots in dependency o
       assert.deepEqual(session.launch.solutionRoots.map((root) => path.basename(root)), expected);
       const state = await (await fetch(new URL('/_sim/api/state?summary=1', session.url))).json();
       assert.deepEqual(state.status.bootstrap.solutionRoots.map((root) => path.basename(root)), expected, 'the runtime layers them in that order');
+      if (mirage.solutionOrder === 'explicit') {
+        const repeated = run('mirage', 'start', '--config', site.config, '--json');
+        assert.equal(repeated.status, 0, repeated.stdout + repeated.stderr);
+        assert.equal(JSON.parse(repeated.stdout).pid, session.pid, 'the same explicit order reuses its runtime');
+        const catalogue = JSON.parse(fs.readFileSync(site.config, 'utf8'));
+        catalogue.sites.site.mirage.solutionRoots.reverse();
+        fs.writeFileSync(site.config, JSON.stringify(catalogue));
+        const reordered = run('mirage', 'start', '--config', site.config, '--json');
+        assert.equal(reordered.status, 0, reordered.stdout + reordered.stderr);
+        const newSession = JSON.parse(reordered.stdout);
+        assert.notEqual(newSession.pid, session.pid, 'changing explicit layer order must not reuse the old runtime');
+        const newState = await (await fetch(new URL('/_sim/api/state?summary=1', newSession.url))).json();
+        assert.deepEqual(newState.status.bootstrap.solutionRoots.map(root => path.basename(root)), [...expected].reverse());
+      }
     } finally {
       const stopped = run('mirage', 'stop', '--config', site.config, '--json');
       assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);

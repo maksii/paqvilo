@@ -7,6 +7,13 @@ import { execFileSync, spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { bootstrapProject, loadProjectConfig, observedConfig, projectOrigin, projectStateFile, projectSummary } from "../lib/project-config.mjs";
 
+test('inactive-parent permission replay is an explicit site observation requiring evidence', () => {
+  assert.throws(() => observedConfig({tablePermissionOrphans: 'unrestricted'}), /evidence must name/);
+  assert.throws(() => observedConfig({tablePermissionOrphans: 'global', evidence: 'Invented observation'}), /must be closed or unrestricted/);
+  assert.deepEqual(observedConfig({tablePermissionOrphans: 'unrestricted', evidence: 'Invented inactive-parent capture'}),
+    {tablePermissionOrphans: 'unrestricted', evidence: 'Invented inactive-parent capture'});
+});
+
 async function workspace(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-project-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));

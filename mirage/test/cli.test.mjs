@@ -43,6 +43,42 @@ async function run(args, cwd) {
   }
 }
 
+test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 30_000 }, async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'first', path: './portal' }, { id: 'second', path: './portal' }], solutions: [], references: [] }),
+  });
+  const state = path.join(directory, 'invalid-state.json');
+  for (const selection of [['--source', path.join(directory, 'portal')], ['--project', path.join(directory, 'project.json')]]) {
+    for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536']) {
+      const result = await run(['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory);
+      assert.equal(result.code, 1, `${JSON.stringify(port)}: ${result.stderr}`);
+      assert.match(result.stderr, /--port must be an integer/);
+      assert.equal(result.stdout, '');
+    }
+  }
+  await assert.rejects(fs.stat(state), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
+});
+
+test('CLI: multi-portal serve closes its runtime after browser attachment fails', { timeout: 30_000 }, async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'first', path: './portal' }, { id: 'second', path: './portal' }], solutions: [], references: [] }),
+  });
+  const rejectedCdp = http.createServer((_req, res) => { res.writeHead(404); res.end('No browser'); });
+  rejectedCdp.listen(0, '127.0.0.1');
+  await once(rejectedCdp, 'listening');
+  t.after(() => new Promise(resolve => rejectedCdp.close(resolve)));
+  const result = await run(['serve', '--project', path.join(directory, 'project.json'), '--port', '0', '--no-watch', '--cdp', `http://127.0.0.1:${rejectedCdp.address().port}`], directory);
+  assert.equal(result.code, 1, result.stderr);
+  assert.equal(result.signal, null, 'failure exits on its own after closing portal and identity provider');
+  assert.match(result.stderr, /404|browser|CDP/i);
+  assert.equal(result.stdout, '');
+});
+
 test(
   "CLI: standard/enhanced inspect, local render, controlled argument errors and no absolute render traffic",
   { timeout: 60_000 },
