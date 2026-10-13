@@ -551,7 +551,7 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity) {
   const root = parseFetchXml(xml),
     // Aliases follow the evaluator: explicit alias, else {name}{N} where N is
     // the link's position among all link-entity elements in document order.
-    plan = planFetch(root, { profile: "webapi" }),
+    plan = planFetch(root, { profile: "webapi", limits: store.querySettings().fetchLimits }),
     aliases = new Map(),
     attributeAliases = new Set(),
     nodePolicies = new Map(),

@@ -10,6 +10,7 @@ Usage: paqvilo lense <command> [options]
        paqvilo mirage <command> [options]
        paqvilo init [dir] [options]
        paqvilo setup [--config FILE | --project FILE] [--open]
+       paqvilo dataverse <command> [options]
        paqvilo doctor --setup [--json] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
@@ -20,8 +21,9 @@ Usage: paqvilo lense <command> [options]
   doctor  Check installed dependencies and browser readiness.
   init    Scaffold an empty consumer project; --check and --refresh-editor maintain it.
   setup   Local configuration workspace at /_setup/, including incomplete projects.
+  dataverse  Register a provisioning app, plan/apply metadata, publish and export.
 
-Run paqvilo lense --help or paqvilo mirage --help for options.
+Run paqvilo lense --help, paqvilo mirage --help or paqvilo dataverse --help for options.
 `;
 const [product, ...args] = process.argv.slice(2);
 if (['--version', '-v'].includes(product)) {
@@ -51,8 +53,8 @@ if (['--version', '-v'].includes(product)) {
   child.on('error', error => { console.error(error.message); process.exitCode = 1; });
 } else if (product === 'mirage' && Object.hasOwn(MIRAGE_TOOLS, args[0]) && args.some(arg => ['--help', '-h'].includes(arg))) {
   console.log(mirageToolHelp(args[0]));
-} else if (!['lense', 'mirage'].includes(product)) {
-  const message = `Unknown product "${product}". Choose lense or mirage.`;
+} else if (!['lense', 'mirage', 'dataverse'].includes(product)) {
+  const message = `Unknown product "${product}". Choose lense, mirage or dataverse.`;
   if (args.includes('--json')) console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'UNKNOWN_PRODUCT', message } }));
   else console.error(`paqvilo: ${message}`);
   process.exitCode = 1;
@@ -60,7 +62,9 @@ if (['--version', '-v'].includes(product)) {
   const lifecycle = new Set(['init', 'dev', 'start', 'status', 'stop']);
   const tools = new Set(Object.keys(MIRAGE_TOOLS));
   let program, forwarded;
-  if (product === 'lense') {
+  if (product === 'dataverse') {
+    program = '../lense/dataverse/cli.mjs'; forwarded = args;
+  } else if (product === 'lense') {
     program = '../lense/cli.mjs'; forwarded = args;
   } else if (args[0] === 'demo') {
     program = '../lense/commands/demo.mjs'; forwarded = args.slice(1);

@@ -12,6 +12,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Source import, Solutions and bootstrap | [Bootstrap and sources](bootstrap-and-sources.md) |
 | Several portals and state isolation | [Multi-portal projects](multi-portal.md) |
 | Local administration and sign-in | [Simulation administration](sim-administration.md) |
+| Platform rules, site overrides and configuration presets | [Configuration experiments](configuration-experiments.md) |
 | External presets, data and extension contract | [Data packs](data-packs.md) |
 | Liquid behavior and conformance | [Liquid](liquid-parity.md), [conformance](liquid-conformance.md) |
 | Queries, Web API and permissions | [Dataverse](dataverse-parity.md) |

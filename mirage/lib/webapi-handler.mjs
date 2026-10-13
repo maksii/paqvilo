@@ -718,7 +718,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
  * still checked, as the engine checks them.
  */
 function fetchTables(store, xml) {
-  const plan = planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi" });
+  const plan = planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi", limits: store.querySettings().fetchLimits });
   const mappingOf = new Map([[plan.root, store.resolveMapping(plan.root.attrs.name)]]);
   for (const link of plan.links) mappingOf.set(link, store.resolveMapping(link.attrs.name));
   const structural = structuralIntersects(plan, mappingOf);

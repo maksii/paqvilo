@@ -235,7 +235,8 @@ function* xmlTokens(source) {
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal" } = {}) {
+export function planFetch(fetch, { profile = "portal", limits: overrides = {} } = {}) {
+  const limits = { ...FETCH_LIMITS, ...overrides };
   if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
   const strict = profile === "webapi";
   const diagnostics = [];
@@ -285,12 +286,12 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
           );
         links.push(node);
         nextLinkDepth++;
-        if (links.length > FETCH_LIMITS.links)
+        if (links.length > limits.links)
           fail("Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
             innerCode: "0x8004430d",
           });
-        if (nextLinkDepth > FETCH_LIMITS.linkDepth)
-          fail(`FetchXML link nesting exceeds ${FETCH_LIMITS.linkDepth} levels`, 400, "UnsupportedQuery");
+        if (nextLinkDepth > limits.linkDepth)
+          fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, "UnsupportedQuery");
         break;
       }
       case "filter": {
@@ -347,7 +348,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
           fail("A FetchXML order element requires an attribute or alias.", 400, "InvalidFetchXml");
         break;
     }
-    if (conditions + links.length > FETCH_LIMITS.conditionsAndLinks)
+    if (conditions + links.length > limits.conditionsAndLinks)
       fail("Number of conditions in query exceeded maximum limit.", 400, "UnsupportedQuery", {
         innerCode: "0x8004430c",
       });
@@ -403,6 +404,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
     !aggregate &&
     fetch.attrs.returntotalrecordcount == null;
   return {
+    limits,
     fetch,
     root,
     links,
@@ -422,7 +424,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
     rawChoiceOrder: bool(fetch.attrs.useraworderby),
     aggregateLimit: integerAttribute(fetch, "aggregatelimit", {
       min: 1,
-      max: FETCH_LIMITS.aggregateRecords,
+      max: limits.aggregateRecords,
     }),
     retained: /^retained$/i.test(datasource ?? ""),
   };
@@ -1164,7 +1166,7 @@ export function executeFetch(plan, ctx) {
     let input = rows;
     const limit = plan.aggregateLimit;
     if (limit != null) input = input.slice(0, limit + 1);
-    else if (input.length > FETCH_LIMITS.aggregateRecords)
+    else if (input.length > (plan.limits?.aggregateRecords ?? FETCH_LIMITS.aggregateRecords))
       fail("AggregateQueryRecordLimit exceeded. Cannot perform this operation.", 400, "AggregateQueryRecordLimit", {
         innerCode: "0x8004e023",
       });

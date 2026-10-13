@@ -15,6 +15,8 @@ const views = [
   ["overview", "Overview", "◈"],
   ["records", "Data records", "▤"],
   ["portal", "Portal configuration", "✎"],
+  ["platform", "Platform rules", "⚙"],
+  ["overrides", "Settings & snippet overrides", "✎"],
   ["endpoints", "Endpoints", "⇄"],
   ["operations", "Backend operations", ""],
   ["mappings", "Entity mappings", "◇"],
@@ -1325,9 +1327,13 @@ function audit() {
   );
 }
 
-function portal() {
+function portal(overridesOnly=false) {
+  if(overridesOnly)return heading('Settings & snippet overrides','Per-instance values replace exported settings/snippets without editing source files. Reset restores the current source. False and True remain portal strings.')+experimentPanel()+portalValuePanels(true);
   return heading("Portal configuration", "Experiment with local settings, snippets and web roles. Changes persist in this simulator workspace and refresh the portal.") +
-    [ ["portal-settings", "Site settings", "portalSettings"], ["portal-snippets", "Content snippets", "portalSnippets"], ["portal-roles", "Web roles", "portalRoles"] ].map(([kind, title, key]) => {
+    portalValuePanels(false) + accessRulesPanel();
+}
+function portalValuePanels(overridesOnly) {
+  return [ ["portal-settings", "Site settings", "portalSettings"], ["portal-snippets", "Content snippets", "portalSnippets"], ...overridesOnly?[]:[["portal-roles", "Web roles", "portalRoles"]] ].map(([kind, title, key]) => {
       const rows = config()[key] ?? [];
       const page = sliceRows(kind, rows);
       const displayValue = row => {
@@ -1335,8 +1341,16 @@ function portal() {
         if (kind !== "portal-roles") return String(row.value ?? "").slice(0, 160);
         return [row.value?.authenticatedUsersRole && "Signed-in contacts", row.value?.anonymousUsersRole && "Anonymous visitors"].filter(Boolean).join(", ") || "Assigned through contact memberships";
       };
-      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Value"}</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td><button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
-    }).join("") + accessRulesPanel();
+      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Effective value"}</th><th>Source value</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+    }).join("");
+}
+
+function experimentPanel(){
+ return `<section class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete">Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
+}
+function platformRules(){
+ const rows=config().platformSettings??[];
+ return heading('Platform rules','Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+experimentPanel()+`<section class="panel section-gap"><div class="table-wrap"><table><thead><tr><th>Setting / documentation</th><th>Real administration</th><th>Simulation coverage</th><th>Source / effective value</th><th>Instance override</th></tr></thead><tbody>${rows.map(d=>`<tr><td><strong>${escape(d.key)}</strong><p class="row-detail">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function accessRulesPanel() {
@@ -1533,6 +1547,8 @@ function renderView(view) {
     case 'overview': return overview();
     case 'records': return records();
     case 'portal': return portal();
+    case 'overrides': return portal(true);
+    case 'platform': return platformRules();
     case 'endpoints': return configurationView('endpoints');
     case 'operations': return operations();
     case 'mappings': return configurationView('mappings');
@@ -1697,6 +1713,24 @@ async function saveConfig(patch, { form } = {}) {
 }
 
 document.addEventListener("click", async (event) => {
+  const control=event.target.closest('[data-platform-save],[data-platform-reset],[data-experiment],[data-portal-toggle]');
+  if(control){
+    event.preventDefault();control.disabled=true;
+    try{
+      if(control.dataset.portalToggle){await request('/'+control.dataset.portalKind+'/'+encodeURIComponent(control.dataset.portalToggle),{method:'PATCH',body:JSON.stringify({value:control.dataset.portalValue})});}
+      else if(control.dataset.platformSave){const key=control.dataset.platformSave,d=config().platformSettings.find(d=>d.key===key),input=document.getElementById('platform-'+key);if(d.type==='integer'&&!input.value.trim())throw new Error('Enter an integer or use source/default.');const value=d.type==='integer'?Number(input.value):d.type==='boolean'?input.value==='true':input.value;await request('/platform-settings',{method:'PATCH',body:JSON.stringify({[key]:value})});}
+      else if(control.dataset.platformReset)await request('/platform-settings/'+encodeURIComponent(control.dataset.platformReset),{method:'DELETE'});
+      else {
+        const action=control.dataset.experiment,id=$('#experiment-select').value,preset=config().experimentPresets.find(p=>p.id===id);
+        if(action==='apply')await request('/experiments/'+encodeURIComponent(id)+'/apply',{method:'POST',body:'{}'});
+        else if(action==='delete')await request('/experiments/'+encodeURIComponent(id),{method:'DELETE'});
+        else if(action==='save')await request('/experiments',{method:'POST',body:JSON.stringify({id:$('#experiment-id').value,name:$('#experiment-name').value,platformOverrides:config().platformOverrides??{},portalOverrides:{settings:config().portalOverrides?.settings??{},snippets:config().portalOverrides?.snippets??{}}})});
+        else if(action==='import')await request('/experiments',{method:'POST',body:JSON.stringify(JSON.parse($('#experiment-import').value))});
+        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+      }
+      await refresh();notify('Local configuration updated.');
+    }catch(error){notify(error.message,true);}finally{control.disabled=false;}return;
+  }
   const target = event.target.closest("button");
   if (!target) return;
   if (target.dataset.operationReset) {

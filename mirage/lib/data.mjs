@@ -22,6 +22,8 @@ import { expressionOperator } from "./extensions.mjs";
 import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
+import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
+import { validateExperimentPresets } from './experiment-presets.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error-details.mjs";
 import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
 import {odataToSdkQuery} from './plugin-query.mjs';
@@ -480,6 +482,8 @@ function normalizeState(state, presetLibrary = builtinPresets) {
     ),
     settings: { ...emptyState().settings, ...state?.settings },
   };
+  validatePlatformOverrides(result.simulator?.platformOverrides);
+  validateExperimentPresets(result.simulator?.experimentPresets);
   for (const key of ["mappings", "tables", "presets"])
     if (
       !result[key] ||
@@ -1281,6 +1285,7 @@ export class DataStore {
   /** Query evaluation settings: collation, local time zone and fiscal calendar. */
   querySettings() {
     const settings = this.state.settings ?? {};
+    const platform = platformValues(this.state);
     return {
       collation: settings.collation ?? "CI_AI",
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
@@ -1289,7 +1294,8 @@ export class DataStore {
       // the FiscalCalendarStart and FiscalPeriodType of a single local organization row.
       ...this.fiscalSettings(settings),
       // Local bound on intermediate FetchXML join rows (FETCH_LIMITS.joinRows by default).
-      fetchJoinRowLimit: settings.fetchJoinRowLimit,
+      fetchJoinRowLimit: this.state.simulator?.platformOverrides?.FetchJoinRowLimit ?? settings.fetchJoinRowLimit,
+      fetchLimits: { links: platform.QueryLinkEntityLimit, conditionsAndLinks: platform.FetchConditionLimit, aggregateRecords: platform.AggregateQueryRecordLimit, linkDepth: platform.FetchLinkDepth },
       // "strict" rejects FetchXML columns that complete Solution metadata lacks.
       fetchColumnValidation: settings.fetchColumnValidation,
     };
@@ -2510,6 +2516,7 @@ export class DataStore {
       null,
       identity,
     );
+    assertAttachmentPolicy(this.state, m.logicalName, row);
     this.assertAlternateKeys(m, row, rows, -1);
     rows.push(row);
     this.applySecondary(effects);
@@ -2617,6 +2624,10 @@ export class DataStore {
       this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
     }
     const effects = this.applyPlugins(mapping.logicalName, "update", row, rows[index], identity);
+    // Declarative plugins mutate the row directly, independently of Target.
+    // Include their final changes without revalidating untouched legacy files.
+    const effectiveChanges = Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
+    assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
     rows[index] = row;
     this.applySecondary(effects);
@@ -2961,6 +2972,7 @@ export class DataStore {
   fetchXmlCore(xml, identity = {}, options = {}) {
     const plan = planFetch(parseFetchXml(xml), {
       profile: options.profile === "webapi" ? "webapi" : "portal",
+      limits: this.querySettings().fetchLimits,
     });
     // Web API $count=true counts the matching rows like returntotalrecordcount.
     if (options.returnTotal === true && plan.top == null && !plan.aggregate)

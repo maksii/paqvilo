@@ -142,6 +142,8 @@ jobs:
         run: npm test
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
+      - name: Company Operations offline regressions
+        run: npm run test:company
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Lense loopback browser acceptance
@@ -150,6 +152,10 @@ jobs:
           PAQVILO_BROWSER: chromium
       - name: Mirage loopback browser acceptance
         run: npm --prefix mirage run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Company Operations loopback browser acceptance
+        run: npm run test:company:browser
         env:
           PAQVILO_BROWSER: chromium
       - name: Collect only synthetic evidence
@@ -216,6 +222,24 @@ jobs:
           node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-query-paging.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
+
+      - name: Company Operations offline regressions
+        run: npm run test:company
+      - name: Build and execute Company Operations plugin regressions
+        shell: pwsh
+        run: |
+          dotnet restore examples/company-operations/plugins/Tests/Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build examples/company-operations/plugins/Tests/Tests.csproj --no-restore -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($project in @('QueryObservation', 'PipelineTests')) {
+            dotnet restore "examples/company-operations/plugins/$project/$project.csproj" --locked-mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dotnet build "examples/company-operations/plugins/$project/$project.csproj" --no-restore -c Release
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
   package:
     needs: changes

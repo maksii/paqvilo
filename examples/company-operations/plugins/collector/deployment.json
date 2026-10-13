@@ -1,0 +1,12 @@
+{
+  "schemaVersion": 1,
+  "status": "SourcePrepared.NotDeployed.NotQualified",
+  "runtime": "Node.js 24 Azure App Service HTTPS-only",
+  "collectorPath": "/capture",
+  "authentication": {"issuer": "Microsoft Entra tenant v2", "audience": "installation-defined", "applicationRole": "LabCapture.Write", "acceptedTokenVersion": 2},
+  "storage": {"service": "Azure Blob Storage", "publicAccess": "Disabled", "acknowledgement": "Blob committed before HTTP202", "role": "Storage Blob Data Contributor", "idempotence": "operation/event-key + full payload hash", "retentionDays": 30},
+  "environmentVariables": ["CO_COLLECTOR_TENANT", "CO_COLLECTOR_AUDIENCE", "CO_COLLECTOR_BLOB_URL", "CO_COLLECTOR_CONTAINER", "CO_DATAVERSE_URL"],
+  "managedIdentity": {"pluginFederationVersion": 2,"certificateSigning": "Required separately; strong name fixture is insufficient", "collectorAppRoleAssignment": "Required", "workerDataverseApplicationUser": "Narrow evidence recorder role; configure trusted writer ID in deployed guards"},
+  "worker": {"entry": "worker.mjs operation-guid/event-key", "source": "Immutable durable receipt", "retry": "Independent evidence writes only; original business mutation never retried", "unmatched": "Retain durable receipt; no Contact inferred", "queueScheduling": "Installation dependency; receipt replay CLI provided"},
+  "readiness": {"azureResources": false,"federation": false,"collectorAuth": false,"durabilityRollbackQualification": false,"keyVault": false,"flow": false}
+}

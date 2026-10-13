@@ -47,6 +47,8 @@ Run lifecycle commands with the same catalogue or `--project` used to start the 
 
 ## Build scenarios you can repeat
 
+Use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
+
 Local identity comes from a per-runtime cookie. The `_sim` session and Lense Tweaks control only that browser's identity. Your project tests can use the public [session helpers](testing/session.mjs) to sign requests or browser contexts in explicitly. The [project starter](../examples/project/README.md) demonstrates an external pack and a test against invented sources.
 
 ## Understand the simulation boundary

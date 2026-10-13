@@ -28,6 +28,8 @@
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
 
+Use the separate [`paqvilo dataverse` workflow](docs/dataverse-provisioning.md) to register a provisioning application, prepare/reconcile project-owned schema manifests, create metadata through the API, and export/unpack solutions from Dataverse. Lense and Mirage do not provision or deploy.
+
 ## Beyond Fiddler and DevTools overrides
 
 Paqvilo is a Power Pages-specific alternative for developers who need source mapping, live reload and local portal simulation alongside resource overrides.

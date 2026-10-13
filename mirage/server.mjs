@@ -28,6 +28,8 @@ import { observedPageErrorResponse } from "./lib/page-error-presentation.mjs";
 import { initialState } from "./lib/bootstrap.mjs";
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
+import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
+import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment } from './lib/experiment-presets.mjs';
 import { inspectPage } from "./lib/page-resources.mjs";
 import { enrichReference } from "./enrich-reference.mjs";
 import { discoverSourceDependencies, runtimeDependencyPaths, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
@@ -1009,6 +1011,8 @@ export async function createSimulator({
         portalSettings: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "settings"),
         portalSnippets: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "snippets"),
         portalRoles: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "roles"),
+        platformSettings: platformSettingEntries(state),
+        experimentPresets: experimentPresets(state, sourcePortal),
       },
       ...(!summary ? { data: state.tables } : {}),
       status: {
@@ -1140,6 +1144,8 @@ export async function createSimulator({
     return exposedState();
   };
   const validateConfig = (cfg) => {
+    validatePlatformOverrides(cfg.platformOverrides);
+    validateExperimentPresets(cfg.experimentPresets);
     validateOperationOverrides(cfg.operations);
     validatePortalOverrides(cfg.portalOverrides);
     externalFrameOrigins(cfg.externalFrameOrigins);
@@ -1806,6 +1812,28 @@ export async function createSimulator({
         await saveState(next);
         return json(res, 200, { imported: true, revision, tableCounts: store.summary().tableCounts });
       });
+    if(relative==='/platform-settings'&&method==='GET')return json(res,200,platformSettingEntries(store.snapshot()));
+    if(relative==='/platform-settings'&&method==='PATCH')return change(async()=>{
+      const patch=validatePlatformOverrides(await jsonBody(req)),state=store.snapshot();
+      state.simulator.platformOverrides={...state.simulator.platformOverrides,...patch};delete state.simulator.activeExperiment;
+      await saveState(state);return json(res,200,platformSettingEntries(store.snapshot()));
+    });
+    if(relative.startsWith('/platform-settings/')&&method==='DELETE')return change(async()=>{
+      const key=decodeURIComponent(relative.slice('/platform-settings/'.length));if(!platformSettingEntries(store.snapshot()).some(x=>x.key===key))throw error('Unknown platform setting.',404);
+      const state=store.snapshot();delete (state.simulator.platformOverrides??{})[key];delete state.simulator.activeExperiment;await saveState(state);return json(res,200,{reset:key});
+    });
+    const experimentRoute=/^\/experiments(?:\/([^/]+)(\/apply)?)?$/.exec(relative);
+    if(experimentRoute){
+      const id=experimentRoute[1]&&experimentId(decodeURIComponent(experimentRoute[1]));
+      if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot(),sourcePortal),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
+      return change(async()=>{
+        const state=store.snapshot(),presets=experimentPresets(state,sourcePortal),existing=presets.find(p=>p.id===id);
+        if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);await saveState(applyExperiment(state,existing));return json(res,200,{applied:id});}
+        if(method==='POST'&&!id){const p=validateExperiment(await jsonBody(req));if(presets.some(x=>x.id===p.id))throw error('Experiment ID already exists.',409);state.simulator.experimentPresets??={};if(Object.keys(state.simulator.experimentPresets).length>=100)throw error('Experiment preset limit reached.',413);state.simulator.experimentPresets[p.id]=structuredClone(p);await saveState(state);return json(res,201,p);}
+        if(method==='DELETE'&&id&&!experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);if(existing.builtin)throw error('Built-in experiments cannot be deleted.',403);delete state.simulator.experimentPresets[id];await saveState(state);return json(res,200,{deleted:id});}
+        throw error('Unsupported experiment operation.',405);
+      });
+    }
     const portalEntry = /^\/(portal-settings|portal-snippets|portal-roles|portal-access-rules)(?:\/(.+))?$/.exec(relative);
     if (portalEntry) {
       const section = { "portal-settings": "settings", "portal-roles": "roles", "portal-access-rules": "accessRules" }[portalEntry[1]] ?? "snippets";
@@ -1833,6 +1861,7 @@ export async function createSimulator({
         }
         const state = store.snapshot();
         state.simulator.portalOverrides ??= {};
+        delete state.simulator.activeExperiment;
         const entries = state.simulator.portalOverrides[section] ??= {};
         if (method === "DELETE") {
           if (!Object.hasOwn(entries, key)) throw error("Local override not found.", 404);
@@ -1867,6 +1896,7 @@ export async function createSimulator({
           "contactRoles",
           "permissionSource",
           "portalOverrides",
+          "platformOverrides",
           "operations",
         ];
         for (const key of Object.keys(patch))
@@ -1888,6 +1918,7 @@ export async function createSimulator({
           ...patch,
           live: { ...config().live, ...patch.live },
         };
+        if(patch.platformOverrides||patch.portalOverrides)delete state.simulator.activeExperiment;
         validateConfig(state.simulator);
         if (
           patch.contactRoles ||

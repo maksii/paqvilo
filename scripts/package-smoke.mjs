@@ -52,7 +52,7 @@ const cli = (...args) => {
 const readiness = cli('doctor', '--setup', '--json');
 if (!readiness.ready) throw new Error('Plain packed npm installation must be ready before any package-local setup.');
 if (fs.existsSync(path.join(project, 'node_modules/paqvilo/mirage/node_modules'))) throw new Error('Packed consumer unexpectedly needs a duplicate Mirage dependency installation.');
-for (const product of ['lense', 'mirage']) {
+for (const product of ['lense', 'mirage', 'dataverse']) {
   const help = spawnSync(process.execPath, [installed, product, '--help'], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   if (help.status !== 0 || !help.stdout.toLowerCase().includes(product)) throw new Error(`Installed ${product} help failed: ${help.stderr}`);
 }

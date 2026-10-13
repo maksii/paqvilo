@@ -10,6 +10,7 @@ Paqvilo 0.9.4 introduces supported package entry points. Exported names, documen
 | `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
 | `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime` |
 | `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
+| `paqvilo/dataverse` | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md) |
 
 Existing wildcard paths such as `paqvilo/mirage/lib/data.mjs` continue working. Deep imports are deprecated for new integrations and remain available through 0.10.x, providing a complete minor release for migration. Outside the supported entry points, modules are implementation details after that notice period. Existing options remain accepted in 0.9.4.
 

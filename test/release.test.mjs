@@ -9,10 +9,15 @@ import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata } fr
 test('release allowlist includes Mirage runtime and excludes tests, state, profiles and live evidence', () => {
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
   assert.equal(validateReleaseFiles(required), required.length);
+  assert.equal(validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/PaqviloDemoPlugins.dll'}]),required.length+1);
+  assert.throws(()=>validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/Unreviewed.dll'}]),/Unexpected release file/);
   for (const file of ['.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'docs/assets/live.png', 'docs/assets/private.svg', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs','mirage/lib/arbitrary-plugin.cs','mirage/lib/plugin-clr-host.exe','mirage/lib/Microsoft.Xrm.Sdk.dll']) {
     assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);
+  for (const file of ['examples/company-operations/.paqvilo/dataverse/connection.json','examples/company-operations/.paqvilo/dataverse/remote-plan.json','lense/dataverse/private-credential.json','examples/company-operations/plugins/bin/QueryObservation.dll','examples/company-operations/plugins/obj/assets.json','examples/company-operations/forms/native-live-export.xml','examples/company-operations/portal-security/actual-tester-overlay.json']) {
+    assert.throws(()=>validateReleaseFiles([...required,{path:file}]),/Unexpected release file/);
+  }
 });
 
 test('the package names its GitHub repository, which npm provenance requires', () => {

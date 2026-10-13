@@ -11,7 +11,6 @@ const DOCUMENTATION_ASSETS = new Set([
 ]);
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
-
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
 
 export const PROJECT_TEMPLATE_FILES = [
@@ -27,6 +26,23 @@ export const REQUIRED_RELEASE_FILES = [
   'lense/project-workflows.mjs',
   'lense/project-editor.mjs', 'lense/scaffold.mjs', 'lense/dev-messages.mjs', 'docs/project-scaffold.md',
   ...PROJECT_TEMPLATE_FILES,
+  'lense/dataverse/index.mjs', 'lense/dataverse/cli.mjs', 'lense/dataverse/connection.mjs',
+  'lense/dataverse/client.mjs', 'lense/dataverse/manifest.mjs', 'lense/dataverse/provision.mjs', 'lense/dataverse/data.mjs',
+  'docs/dataverse-provisioning.md', 'docs/design/company-operations-demo.md',
+  'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md',
+  'examples/company-operations/README.md', 'examples/company-operations/package.json',
+  'examples/company-operations/prepare-schema.mjs', 'examples/company-operations/dataverse/manifest.json',
+  'examples/company-operations/prepare-data.mjs', 'examples/company-operations/data/catalogue.json',
+  'examples/company-operations/prepare-stress-data.mjs', 'examples/company-operations/data/stress-catalogue.json',
+  'examples/company-operations/forms/catalogue.mjs', 'examples/company-operations/forms/deploy.mjs',
+  'examples/company-operations/forms/import-quickfind.mjs', 'examples/company-operations/forms/update-quickfind.ps1',
+  'examples/company-operations/portal-security/blueprint.mjs', 'examples/company-operations/portal-security/deploy.mjs',
+  'examples/company-operations/portal-security/reference-projections.mjs', 'examples/company-operations/portal-security/package.mjs',
+  'examples/company-operations/portal-harness/compile.mjs', 'examples/company-operations/portal-harness/runtime.mjs',
+  'examples/company-operations/portal-harness/deploy.mjs', 'examples/company-operations/plugins/registration.mjs',
+  'examples/company-operations/plugins/deploy.mjs', 'examples/company-operations/plugins/Shared/Lab.cs',
+  'examples/company-operations/plugins/Shared/Recording.cs', 'examples/company-operations/plugins/QueryObservation/IncomingQueryObserver.cs',
+  'examples/company-operations/plugins/PipelineTests/Pipeline.cs', 'examples/company-operations/plugins/PipelineTests/Guards.cs',
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',
   'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'lense/commands/demo.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
   'mirage/cli.mjs', 'mirage/server.mjs', 'mirage/lib/importer.mjs',
@@ -62,6 +78,8 @@ export const REQUIRED_RELEASE_FILES = [
 ];
 export function validateReleaseFiles(files) {
   const templates = new Set(PROJECT_TEMPLATE_FILES);
+  const provisioningSources = /^examples\/company-operations\/(?:README\.md|package(?:-lock)?\.json|prepare-(?:schema|data|stress-data)\.mjs|dataverse\/manifest\.json|data\/(?:catalogue|stress-catalogue)\.json|data\/reconcile-seed-headers\.mjs|test\/(?:schema|data|stress|forms|portal-security|plugins)\.test\.mjs|forms\/(?:catalogue|deploy|import-quickfind)\.mjs|forms\/update-quickfind\.ps1|portal-security\/(?:README\.md|blueprint\.json|(?:blueprint|deploy|model-audit|role-variant|deep-variant|reference-projections|package|bind-tester|tester-overlay)\.mjs)|portal-harness\/(?:README\.md|browser\.test\.mjs|(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness)\.mjs)|plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json|test\/(?:collector|registration)\.test\.mjs|(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs|(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)|Shared\/(?:Lab|Recording)\.cs|collector\/(?:[a-z-]+\.mjs|(?:deployment|flow-secret-contract)\.json)))$/;
+  const designDocuments = new Set(['docs/design/company-operations-demo.md', 'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md']);
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
   const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);
@@ -71,7 +89,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !templates.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !templates.has(name) && !provisioningSources.test(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

@@ -1,0 +1,24 @@
+{
+  "name": "paqvilo-company-operations",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "schema:prepare": "node prepare-schema.mjs",
+    "schema:plan": "paqvilo dataverse plan --manifest dataverse/manifest.json --out .paqvilo/dataverse/plan.json",
+    "data:prepare": "node prepare-data.mjs",
+    "data:plan": "paqvilo dataverse data-plan --catalogue data/stress-catalogue.json",
+    "data:apply": "paqvilo dataverse data-apply --catalogue data/stress-catalogue.json",
+    "data:compare": "paqvilo dataverse data-compare --catalogue data/stress-catalogue.json",
+    "data:query": "paqvilo dataverse data-query --catalogue data/stress-catalogue.json",
+    "test": "node --test test/*.test.mjs portal-harness/test.mjs plugins/test/*.test.mjs",
+    "stress:prepare": "node prepare-stress-data.mjs",
+    "forms:audit": "node forms/deploy.mjs",
+    "forms:apply": "node forms/deploy.mjs --apply",
+    "test:browser": "node --test portal-harness/browser.test.mjs",
+    "forms:import-quickfind": "node forms/import-quickfind.mjs",
+    "data:reconcile-seed": "node data/reconcile-seed-headers.mjs"
+  },
+  "devDependencies": {
+    "paqvilo": "file:../.."
+  }
+}
