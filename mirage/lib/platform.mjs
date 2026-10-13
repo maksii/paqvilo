@@ -1136,7 +1136,7 @@ async function renderForm(kind, name, context, options) {
   if (notFound)
     return `<div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
   const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
-  if (postback?.validationErrors) record = { ...record, ...postback.values };
+  if (postback?.validationErrors || postback?.outcome?.type === 'error') record = { ...record, ...postback.values };
   // Edit becomes read-only for inactive records or without write permission.
   if (mode === FORM_MODE.edit) {
     const state = scalarValue(record?.statecode);
@@ -1736,6 +1736,7 @@ async function renderForm(kind, name, context, options) {
     const message = `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
     formHtml = message + (postback.outcome.hideForm !== false ? '<div style="display:none;">' + formHtml + '</div>' : formHtml);
   }
+  if (postback?.outcome?.type === 'error') formHtml = `<div id="MessagePanel" class="message alert alert-danger" role="alert"><span id="MessageLabel">${escape(postback.outcome.message)}</span></div>` + formHtml;
   const progressTop = progress && progress.position !== "bottom" ? progress.html : "";
   const progressBottom = progress && progress.position === "bottom" ? progress.html : "";
   // Native order: validation runtime and default hook before the control, custom

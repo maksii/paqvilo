@@ -17,6 +17,13 @@ const D365 = "https://learn.microsoft.com/dynamics365/developer/reference/entiti
 const SYSTEM_OPTION_SETS = {
   field_security_permission_type: { reference: PA + 'fieldpermission#cancreate', values: [[0, 'Not Allowed'], [4, 'Allowed']] },
   activitypointer_isregularactivity: { reference: PA + 'activitypointer#isregularactivity', values: [[0, 'No'], [1, 'Yes']] },
+  activitypointer_deliveryprioritycode: { reference: PA + 'activitypointer#deliveryprioritycode', values: [[0, 'Low'], [1, 'Normal'], [2, 'High']] },
+  activitypointer_prioritycode: { reference: PA + 'activitypointer#prioritycode', values: [[0, 'Low'], [1, 'Normal'], [2, 'High']] },
+  activitypointer_statecode: { reference: PA + 'activitypointer#statecode', values: [[0, 'Open'], [1, 'Completed'], [2, 'Canceled'], [3, 'Scheduled']] },
+  // Status reasons can be extended by an organisation; reference labels provide
+  // defaults without rejecting its additional values when an export omits them.
+  activitypointer_statuscode: { reference: PA + 'activitypointer#statuscode', open: true, values: [[1, 'Open'], [2, 'Completed'], [3, 'Canceled'], [4, 'Scheduled']] },
+  activitypointer_instancetypecode: { reference: PA + 'activitypointer#instancetypecode', values: [[0, 'Not Recurring'], [1, 'Recurring Master'], [2, 'Recurring Instance'], [3, 'Recurring Exception'], [4, 'Recurring Future Exception']] },
   socialprofile_community: { reference: PA + 'socialprofile#community', open: true, values: [[0, 'Other'], [1, 'Facebook'], [2, 'Twitter']] },
   // ActivityTypeCode is EntityName, not a closed numeric choice. Installed and
   // custom activity types vary by organisation; never invent their object codes.

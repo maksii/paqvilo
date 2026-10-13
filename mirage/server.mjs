@@ -71,6 +71,8 @@ import { authenticationSettings } from "./lib/external-login.mjs";
 import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL } from "./lib/response-headers.mjs";
 import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
+import { createFrameReadiness } from "./lib/frame-readiness.mjs";
+import { formWriteError } from "./lib/form-error-presentation.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
 import { discoverPacks } from "./lib/preset-registry.mjs";
 import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
@@ -261,6 +263,7 @@ export async function createSimulator({
   // Options are validated before any source read starts, so a rejected option leaves no
   // read running against the source directory.
   const observed = observedConfig(observedOption);
+  const frameReadiness = createFrameReadiness({ diagnostic: entry => recordDiagnostic(entry) });
   const setupHandler = await createSetupHandler({
     directory: projectRoot,
     ...(setup ?? (project?.configFile ? { project: project.configFile } : {})),
@@ -467,6 +470,7 @@ export async function createSimulator({
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    frameReadiness.close();
     closePromise = (async () => {
       await watcher?.close();
       while(activeWrites.size)await Promise.all([...activeWrites]);
@@ -2596,6 +2600,7 @@ export async function createSimulator({
     // Both spellings expose the same origin-confined admin with identical CSRF checks.
     if (/^\/_sim(?:\/|\?|$)/.test(req.url)) req.url = req.url.replace(/^\/_sim/, "/__sim");
     const url = requestTargetUrl(req.url, localOrigin);
+    if (frameReadiness.handle(req, res, url)) return;
     // Mirage responses only; portal responses carry the HTTP/* site-setting headers.
     if (url.pathname === "/__sim" || url.pathname.startsWith("/__sim/") || url.pathname.startsWith("/__sim-"))
       res.setHeader("X-Content-Type-Options", "nosniff");
@@ -2824,7 +2829,7 @@ export async function createSimulator({
         : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
       return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
-    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => injectLocalHead(html, localOverrides), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
     // Routing and sign-in : repeated slashes collapse before resolution (portal
@@ -2902,6 +2907,12 @@ export async function createSimulator({
         );
       if (nativePostbackEnabled && postedTemplate?.useHeaderFooter !== false && !nativeEntries)
         throw error('Native form postback target required.', 400, 'InvalidNativePostback');
+    } else if (nativePostbackEnabled && req.method === 'POST' && /^\/_portal\/modal-form-template-path(?:\/[^/]+)?\/?$/i.test(url.pathname)) {
+      if (!String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')) throw error('Native form postback requires URLencoded controls.', 415);
+      const controls = new URLSearchParams((await rawBody(req)).toString('utf8'));
+      const tokens = controls.getAll('__RequestVerificationToken');
+      if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
+      nativeEntries = [...controls];
     } else if (!["GET", "HEAD"].includes(req.method))
       throw error("Use the local Web API for writes.", 405);
     if (
@@ -2971,7 +2982,8 @@ export async function createSimulator({
         context.page = null;
         context.sitemap.current = null;
       }
-      const html = await renderComponent("entityform", definition.id, context, {
+      const collected = [];
+      const renderModalForm = () => renderComponent("entityform", definition.id, context, {
         portal,
         store,
         readProvider,
@@ -2979,6 +2991,9 @@ export async function createSimulator({
         metadata: solutionMetadata,
         config: config(),
         modal: true,
+        observed: config().observed ?? portal.observed,
+        onNativePostbackDescriptor: nativePostbackEnabled ? item => collected.push(item) : null,
+        nativePostbackState: trace.getStore()?.nativePostbackState,
         codeComponent: spec => renderCodeComponent({ ...spec, portal, catalog: codeComponents, metadata: solutionMetadata, language: context?.__language ?? portal.language, identity: formIdentity, mappings: store.snapshot({ sections: ['mappings'] }).mappings, diagnostic: entry => recordDiagnostic({ ...entry, path: url.pathname }) }),
         diagnostic: (entry) => recordDiagnostic({ ...entry, path: url.pathname }),
         sourceDependencies,
@@ -2991,6 +3006,25 @@ export async function createSimulator({
         },
         renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
       });
+      let html = await renderModalForm();
+      if (nativeEntries) {
+        const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
+        let response;
+        try {
+          const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url)));
+          response = nativePostbackResponse({ result, context });
+        } catch (cause) {
+          response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
+          trace.getStore().error = cause;
+          recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
+        }
+        if (response.location) {
+          res.writeHead(response.status, { location: response.location, 'cache-control': 'no-store' });
+          return res.end();
+        }
+        trace.getStore().nativePostbackState = response.state;
+        html = await renderModalForm();
+      }
       const resource = (entry, type) =>
         renderShellResource(entry, type, { localOnly: true });
       // Native modal document: the platform bundles in the layout's order with
@@ -3032,7 +3066,7 @@ export async function createSimulator({
       for (const item of formStyleDiagnostics(document, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });
       return res.end(
         injectRuntime(
-          injectLocalHead(document, localOverrides),
+          frameReadiness.decorate(injectLocalHead(document, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }),
           csrf,
           revision,
           formIdentity,
@@ -3209,7 +3243,9 @@ export async function createSimulator({
         const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(pageIdentity, nativeContext?.visitor, url)));
         response = nativePostbackResponse({ result, context });
       } catch (cause) {
-        response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values });
+        response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
+        nativeContext.error = cause;
+        recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
       }
       if (response.location) {
         res.writeHead(response.status, { location: response.location, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
@@ -3402,8 +3438,9 @@ export async function createSimulator({
             error: {
               code: err.code ?? "SIMULATOR_ERROR",
               message: err.message,
-              ...(req.url.startsWith("/__sim/forms/") && Array.isArray(err.details?.validationErrors) ? { validationErrors: err.details.validationErrors } : {}),
+                  ...(req.url.startsWith("/__sim/forms/") && Array.isArray(err.details?.validationErrors) ? { validationErrors: err.details.validationErrors } : {}),
             },
+            ...(req.url.startsWith('/__sim/forms/entityform/') && formWriteError(err, config().observed ?? portal.observed) ? { postback: formWriteError(err, config().observed ?? portal.observed) } : {}),
           });
         else {
           const presentation = observedPageErrorResponse({ method: req.method, error: err, observed: config().observed ?? portal.observed });

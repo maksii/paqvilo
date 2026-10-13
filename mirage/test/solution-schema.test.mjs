@@ -344,6 +344,7 @@ test('documented system global choices fill missing exports, respect solution ov
     'Entities/sample_item/Entity.xml': entityXml('sample_item', { attributes:
       attribute('sample_permission', 'picklist', '<OptionSetName>field_security_permission_type</OptionSetName>') +
       attribute('sample_regular', 'bit', '<OptionSetName>activitypointer_isregularactivity</OptionSetName>') +
+      ['deliveryprioritycode', 'prioritycode', 'statecode', 'statuscode', 'instancetypecode'].map(name => attribute(name, 'picklist', `<OptionSetName>activitypointer_${name}</OptionSetName>`)).join('') +
       attribute('sample_channel', 'picklist', '<OptionSetName>socialprofile_community</OptionSetName>') +
       attribute('sample_activity', 'entityname', '<OptionSetName>activitypointer_activitytypecode</OptionSetName>') +
       attribute('sample_unknown', 'picklist', '<OptionSetName>unknown_fixture_set</OptionSetName>') }),
@@ -353,6 +354,12 @@ test('documented system global choices fill missing exports, respect solution ov
   const fields = tableFields(schema, 'sample_item', { diagnostics });
   assert.deepEqual(fields.sample_permission.options, [{ value: 0, label: 'Not Allowed' }, { value: 4, label: 'Allowed' }]);
   assert.deepEqual(fields.sample_regular.options, [{ value: 0, label: 'No' }, { value: 1, label: 'Yes' }]);
+  assert.deepEqual(fields.deliveryprioritycode.options, [{ value: 0, label: 'Low' }, { value: 1, label: 'Normal' }, { value: 2, label: 'High' }]);
+  assert.deepEqual(fields.prioritycode.options, fields.deliveryprioritycode.options);
+  assert.deepEqual(fields.statecode.options.map(o => o.value), [0, 1, 2, 3]);
+  assert.deepEqual(fields.statuscode.options.map(o => o.value), [1, 2, 3, 4]);
+  assert.equal(fields.statuscode.optionSetOpen, true);
+  assert.deepEqual(fields.instancetypecode.options.map(o => o.label), ['Not Recurring', 'Recurring Master', 'Recurring Instance', 'Recurring Exception', 'Recurring Future Exception']);
   assert.deepEqual(fields.sample_channel.options.map(o => o.label), ['Other', 'Facebook', 'Twitter']);
   assert.equal(fields.sample_permission.optionSetSourceKind, 'dataverse-reference');
   assert.equal(fields.sample_activity.optionSetDynamic, true);

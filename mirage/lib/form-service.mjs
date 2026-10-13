@@ -399,16 +399,22 @@ function nextStepUrl(stepId, session, requestUrl, startNew) {
  * transact over its record operations, else the provider's own operations in sequence.
  */
 async function writeUnit(provider, work) {
-  if (typeof provider.transaction === "function") return provider.transaction(work);
-  if (typeof provider.transact === "function" && typeof provider.createRecord === "function")
-    return provider.transact(() =>
-      work({
-        create: (entity, values, identity) => provider.createRecord(entity, values, identity),
-        update: (entity, id, values, identity) => provider.updateRecord(entity, id, values, identity),
-        associate: (entity, id, navigation, targetId, identity) => provider.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
-      }),
-    );
-  return work(provider);
+  try {
+    if (typeof provider.transaction === "function") return await provider.transaction(work);
+    if (typeof provider.transact === "function" && typeof provider.createRecord === "function")
+      return await provider.transact(() =>
+        work({
+          create: (entity, values, identity) => provider.createRecord(entity, values, identity),
+          update: (entity, id, values, identity) => provider.updateRecord(entity, id, values, identity),
+          associate: (entity, id, navigation, targetId, identity) => provider.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
+        }),
+      );
+    return await work(provider);
+  } catch (cause) {
+    // Only failures inside the atomic write become error postbacks.
+    if (cause && typeof cause === 'object') cause.nativeFormWriteFailure = true;
+    throw cause;
+  }
 }
 
 /** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */

@@ -17,6 +17,21 @@ const live = {
   origin: "https://portal.example.test",
   status: () => ({ connected: true }),
 };
+
+test('large, deep and cyclic schema discovery is bounded and never aborts shell capture', async () => {
+  const schemas = { fields: Array.from({ length: 25000 }, () => ({ name: 'synthetic' })) };
+  schemas.self = schemas;
+  const result = await captureRichTextAssets(null, live, { schemas });
+  assert.equal(result.complete, false);
+  assert.equal(result.skipped, 'SCHEMA_TRUNCATED');
+  assert.equal(result.failures[0].code, 'RICHTEXT_SCHEMA_TRUNCATED');
+  assert.equal(result.failures[0].blocking, false);
+  let deep = {};
+  for (let i = 0; i < 25000; i++) deep = { child: deep };
+  assert.equal((await captureRichTextAssets(null, live, { schemas: deep })).skipped, 'SCHEMA_TRUNCATED');
+  const cycle = {}; cycle.self = cycle;
+  assert.equal((await captureRichTextAssets(null, live, { schemas: cycle })).complete, true);
+});
 function cacheFixture({
   failure,
   config = {

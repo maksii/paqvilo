@@ -3,6 +3,7 @@ import { nativeFormSubmissionContext, submitPortalForm } from './form-service.mj
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
 import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
 import { parseNumericLiteral } from './exact-numeric.mjs';
+import { formWriteError } from './form-error-presentation.mjs';
 
 /** Decode against descriptors collected while rendering this server-owned page. */
 export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
@@ -79,8 +80,10 @@ export async function submitNativePostback(entries, rendered, options) {
     if (control === 'lookup') {
       const relationships = Object.entries(mapping?.relationships ?? {}).filter(([, relation]) => relation.many === false && relation.from === field.name);
       const wire = descriptor.fields.find(item => item.name === field.name)?.wireName;
-      const entities = posted.filter(([name]) => name === wire + '_entityname').map(([, text]) => text);
-      if (entities.length > 1) throw new NativePostbackError('Ambiguous native lookup target');
+      const postedEntities = posted.filter(([name]) => name === wire + '_entityname').map(([, text]) => text);
+      if (postedEntities.length > 1) throw new NativePostbackError('Ambiguous native lookup target');
+      // An unselected native lookup posts both hidden controls as empty.
+      const entities = postedEntities.filter(text => text !== '');
       const targets = entities.length ? relationships.filter(([, relation]) => relation.entity === entities[0]) : relationships;
       if (value == null) {
         if (!relationships.length || (entities.length && !targets.length)) throw new NativePostbackError('Native lookup target is unresolved');
@@ -104,8 +107,10 @@ export async function submitNativePostback(entries, rendered, options) {
 const nativeValidationCodes = new Set(['FormFieldRequired', 'FormFieldInvalid', 'FormFieldOutOfRange', 'FormFieldTooLong']);
 
 /** Only native field validators have an observed successful HTML response status. */
-export function nativePostbackResponse({ result, error, context, values }) {
+export function nativePostbackResponse({ result, error, context, values, observed }) {
   if (error) {
+    const presentation = formWriteError(error, observed, context?.kind);
+    if (presentation) return { status: 200, state: { ...context, values, outcome: presentation } };
     const errors = error.details?.validationErrors;
     if (error.status !== 400 || !Array.isArray(errors) || !errors.length || errors.some(item => !nativeValidationCodes.has(item.code))) throw error;
     return { status: 200, state: { ...context, values, validationErrors: errors } };

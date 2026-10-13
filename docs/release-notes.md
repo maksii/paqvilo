@@ -2,6 +2,16 @@
 
 ## 0.9.4
 
+Consumer feedback 38-42: usable shell captures survive bounded rich-text discovery, and
+default capture exit status follows applied/ready shells (`--strict` requires completeness).
+Additional reference ActivityPointer choices fill partial exports. Local modal/quick-view
+load follows queued jQuery ready handlers, with diagnostics and an evidenced immediate
+override. Atomic basic-form write failures re-render posted values and an error MessagePanel in
+both transports; internal details stay in request evidence. Evidenced plain-text error
+wording can override the toolkit fallback. Empty native lookup entity-name controls no
+longer falsely fail decoding. Advanced forms retain their existing inline save-error contract;
+CSRF and malformed/forged controls retain rejection behavior.
+
 - `paqvilo setup` provides a local `/_setup/` workspace for incomplete or broken projects, with portal/source/Git status, guided settings, shared/personal layers and YAML recovery. Mirage mounts it alongside `/_sim/`; Lense prints and links a separate local workspace. Saves validate and detect concurrent edits, preserve unrelated YAML and report when a preview needs restarting. Generated projects and demos include `npm run configure`. See [project setup](setup.md).
 
 - `paqvilo init` generates an empty consumer project from dedicated templates, with catalogue placeholders, scripts, packs, offline tests, agent guidance and VS Code workflows. `init --check` reports unfinished values without executing packs; `init --refresh-editor` resolves current checkout paths and preserves edited documents. `createMirageContext({ config })` binds all explicitly configured catalogue packs without requiring source exports; pass `site` to retain site-specific imports/runtime defaults. See [project scaffold](project-scaffold.md).

@@ -114,6 +114,11 @@ export async function captureShell({ config, site, env, all = false, path: pageP
       }
       const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
       reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath) });
+    } catch (error) {
+      if (!all) throw error;
+      // One failed local capture must not hide reports from other selected sites.
+      reports.push({ site: cfg.siteName, env: cfg.envName, applied: false, ready: false, complete: false,
+        failures: [{ code: 'SHELL_CAPTURE_FAILED', blocking: true, message: 'Capture failed before a usable shell report was returned.' }] });
     } finally { try { await simulator?.close(); } finally { await browser?.close(); } }
   }
   return { schemaVersion: 1, command: 'capture-shell', reports, skipped, complete: reports.every(report => report.complete) };
@@ -121,17 +126,22 @@ export async function captureShell({ config, site, env, all = false, path: pageP
 
 export function captureSummary(report) {
   return (report.reports ?? []).flatMap(item => {
-    const failures = [...(item.failures ?? [])].sort((a, b) => Number(Boolean(b.blocking)) - Number(Boolean(a.blocking)));
-    return [`Shell ${item.site}: ${item.applied ? 'applied' : 'not applied'}`, ...failures.map(failure =>
-      `  ${failure.blocking ? 'BLOCKING' : 'observed'} ${failure.code}: ${failure.path}${failure.host ? ` [${failure.host}: ${failure.reason ?? 'excluded'}]` : ''} — ${failure.message}`)];
+    const failures = [...(item.failures ?? []), ...(item.richText?.failures ?? []).map(failure => ({ ...failure, blocking: false }))].sort((a, b) => Number(Boolean(b.blocking)) - Number(Boolean(a.blocking)));
+    const diagnostics = item.richText?.complete === false ? item.richText.diagnostics ?? [] : [];
+    return [`Shell ${item.site}: ${item.applied ? 'applied' : 'not applied'}; ${item.ready ? 'ready' : 'not ready'}; ${item.complete ? 'complete' : 'incomplete'}`, ...[...failures, ...diagnostics].map(failure =>
+      `  ${failure.blocking ? 'BLOCKING' : 'observed'} ${failure.code}:${failure.path ? ` ${failure.path}` : ''}${failure.host ? ` [${failure.host}: ${failure.reason ?? 'excluded'}]` : ''} — ${failure.message}`)];
   }).join('\n');
+}
+
+export function captureExitCode(report, { strict = false } = {}) {
+  return (report.reports ?? []).length > 0 && report.reports.every(item => item.applied && item.ready && !(item.failures ?? []).some(failure => failure.blocking)) && (!strict || report.complete) ? 0 : 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' }, strict: { type: 'boolean' } } });
     const report = await captureShell(values);
     if (!values.json) console.error(captureSummary(report));
-    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.complete ? 0 : 1;
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = captureExitCode(report, values);
   } catch (error) { console.error(error.message); process.exitCode = 1; }
 }

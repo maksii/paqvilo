@@ -18,9 +18,15 @@ Local equivalents are derived from reusable platform contracts. Caching a signed
 
 Inspect resource order, failed requests and runtime errors in local browser evidence. A source web file can differ from a managed/deployed platform resource; choose the behavior through exported settings or a per-site observation with evidence. Version and source fingerprints help distinguish implementation changes from cached-state reuse.
 
-Incomplete captures print the full JSON report, including applied state, captured resources,
-failure codes/paths and diagnostics, and exit one. Fully captured platform styles can be
-applied while optional external resources remain missing; check both `applied` and `complete`.
+Captures print the full JSON report, including applied state, captured resources,
+failure codes/paths and diagnostics. Exit zero means every selected shell is `applied` and
+`ready` without blocking failures. `complete` remains a stricter informational flag;
+`--strict` requires it for exit zero. Fully captured platform styles can be applied while
+optional external resources or anonymous rich-text editor observations remain incomplete.
+The summary includes these nonblocking reasons. Rich-text schema discovery is cycle-safe
+and bounded to 20,000 objects or 100,000 properties. `RICHTEXT_SCHEMA_TRUNCATED` leaves
+undiscovered fields unverified, retains usable shell styles, and permits other `--all` sites
+to continue. An empty selection does not count as a successful capture.
 External jQuery references and external font/image references in exported CSS are observed
 external dependencies. Capture neither fetches their bytes nor proves load success. Exported
 templates/styles keep controlling those references; they appear as diagnostics. Missing required

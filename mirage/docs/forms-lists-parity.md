@@ -10,7 +10,20 @@ Native subgrid quick-find visibility follows its exported FormXml flag. Native P
 
 When a form redirects after saving, configure its appended record-ID parameter explicitly. Mirage preserves the exported redirect name and query settings; it does not supply a missing `id` name. Check the resulting page and saved record, not only the successful submit response. See [basic form success settings](https://learn.microsoft.com/en-us/power-pages/configure/basic-forms#on-success-settings).
 
-Sites with captured same-page form evidence can set `observed.nativeFormTransport: "postback"` with an `evidence` reference. The browser then submits URLencoded successful controls to the page's form action. Mirage resolves the page's current forms, actor, record and advanced-form session before decoding the exact WebForms target; posted record or session controls cannot replace that context. Source success settings choose an inline HTML response or the existing redirect target. Native required, format, range and length errors render HTML with status 200; access, CSRF, malformed postbacks and unresolved providers retain their error status. The default JSON submit endpoint remains available and unchanged.
+Sites with captured same-page form evidence can set `observed.nativeFormTransport: "postback"` with an `evidence` reference. The browser then submits URLencoded successful controls to the page's form action, including modal documents. Mirage resolves the page's current forms, actor, record and advanced-form session before decoding the exact WebForms target; posted record or session controls cannot replace that context. Source success settings choose an inline HTML response or the existing redirect target. Native required, format, range and length errors render HTML with status 200. Failed atomic basic-form writes also re-render the form with escaped posted values and `#MessagePanel.alert-danger`; their original error code/text remain in diagnostics and request evidence. CSRF, malformed/forged controls, inaccessible pages and errors before the write provider keep their error status. The default basic-form JSON endpoint retains its error status and adds an error postback presentation; the browser reloads the same document with posted controls and the visible error panel. Advanced forms retain their existing LiquidServerControl inline save-error contract. File selections cannot survive a browser reload and must be selected again.
+
+Modal and quick-view documents use a local pending image to release the browser's actual
+`load` event after jQuery's ready promise and one more macrotask. Without jQuery the image
+is released at DOMContentLoaded; a throwing ready callback does not block other callbacks.
+The blocker fails open after five seconds with `FRAME_READY_TIMEOUT`, and runtime shutdown
+closes owned blockers. `FRAME_LOAD_ORDERING` records the release ordering. This adapter
+stabilizes local resource timing; it does not establish identical timing on every deployment.
+An evidenced `observed.modalLoadOrdering: immediate` opts out.
+
+Permission failures use the existing portal access-denied wording. Other write failures use
+the toolkit fallback "An error occurred while processing your request. Please try again."
+until the site supplies `observed.formSubmissionErrorMessage` with `evidence`. This is plain
+text, escaped in HTML; it does not reproduce a native localized message or exception stack.
 
 Native form redirects include `Content-Type: text/html; charset=utf-8`, matching the captured response header. The redirect body is not qualified by that header comparison.
 

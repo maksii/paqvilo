@@ -494,6 +494,19 @@
     panel.style.display = "";
     if (hide) for (const node of form.querySelectorAll("#EntityFormPanel, #WebFormPanel")) node.style.display = "none";
   }
+  function preservePostedControls(form) {
+    return [...form.querySelectorAll('input, select, textarea')]
+      .filter(node => node.id && !['file', 'submit', 'button'].includes(node.type))
+      .map(node => ({ id: node.id, value: node.value, checked: node.checked,
+        ...(node.multiple ? { selected: [...node.selectedOptions].map(option => option.value) } : {}) }));
+  }
+  function showSaveFailure(form, message) {
+    let panel = form.querySelector('#MessagePanel');
+    if (!panel) { panel = document.createElement('div'); panel.id = 'MessagePanel'; form.prepend(panel); }
+    panel.className = 'message alert alert-danger'; panel.setAttribute('role', 'alert');
+    const label = document.createElement('span'); label.id = 'MessageLabel'; label.textContent = message;
+    panel.replaceChildren(label); panel.style.display = '';
+  }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
@@ -573,6 +586,13 @@
           showValidationErrors(form, result.error.validationErrors);
           return;
         }
+        if (result.postback?.type === 'error') {
+          const target = postbackTarget(form);
+          if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
+          sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ form: form.id, error: result.postback.message, controls: preservePostedControls(form) }));
+          if (target.href === location.href) location.reload(); else location.assign(target.href);
+          return;
+        }
         throw new Error(result.error?.message || result.Message || result.message || "Save failed");
       }
       const outcome = result.outcome ?? {};
@@ -639,6 +659,17 @@
       const state = JSON.parse(saved);
       const form = (state.form && document.getElementById(state.form)) || document.querySelector("[data-pp-native-form]");
       if (!form) return;
+      if (state.error) {
+        for (const control of state.controls ?? []) {
+          const node = document.getElementById(control.id);
+          if (!node || !form.contains(node)) continue;
+          node.value = control.value;
+          if (typeof control.checked === 'boolean') node.checked = control.checked;
+          if (node.multiple && Array.isArray(control.selected)) for (const option of node.options) option.selected = control.selected.includes(option.value);
+        }
+        showSaveFailure(form, state.error);
+        return;
+      }
       showSuccess(form, state.message, state.hideForm);
       const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
       if (idInput && state.id && !idInput.value) idInput.value = state.id;

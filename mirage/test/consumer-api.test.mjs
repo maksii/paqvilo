@@ -10,7 +10,7 @@ import { connectRuntime } from '../testing.mjs';
 import { resolveLocalOverrides } from '../lib/local-overrides.mjs';
 import { injectRuntimeCompatibility } from '../lib/source-dependencies.mjs';
 import { platformStylesStatus, formStyleDiagnostics } from '../lib/platform-styles.mjs';
-import { captureCdpUrl, captureThroughRuntime, captureShell, captureSummary } from '../capture-shell.mjs';
+import { captureCdpUrl, captureThroughRuntime, captureShell, captureSummary, captureExitCode } from '../capture-shell.mjs';
 
 async function project(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-consumer-'));
@@ -38,12 +38,55 @@ test('capture all chooses one safe environment per configured site and reports c
   const report = await captureShell({ config, all: true, cdp: 'http://127.0.0.1:9222', createLocalSimulator: options => {
     starts.push(options.stateFile);
     const bridge = { origin: options.origin, connected: false, configure(value) { this.origin = value.origin; }, status() { return { connected: this.connected }; }, async connect() { this.connected = true; this.context = {}; return this.status(); }, async close() { this.connected = false; this.context = null; }, async request(route) { return { status: 200, headers: { 'content-type': route === '/' ? 'text/html' : route.endsWith('.css') ? 'text/css' : 'text/javascript' }, body: Buffer.from(route === '/' ? '<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script>' : route.endsWith('.css') ? 'body{}' : 'window.jQuery={};') }; } };
-    return createSimulator({ ...options, liveBridge: bridge });
+    return createSimulator({ ...options, liveBridge: bridge }).then(async app => {
+      if (starts.length === 1) {
+        const state = app.store.snapshot();
+        state.simulator.componentSchemas = { large: { fields: Array.from({ length: 25000 }, () => ({ name: 'synthetic' })) } };
+        await app.store.replaceState(state);
+      }
+      return app;
+    });
   } });
-  assert.equal(report.complete, true);
+  assert.equal(report.complete, false);
+  assert.equal(captureExitCode(report), 0);
+  assert.equal(captureExitCode(report, { strict: true }), 1);
+  assert.equal(report.reports[0].applied, true);
+  assert.equal(report.reports[0].shellProfile.platformStyles.mode, 'captured');
+  assert.equal(report.reports[0].richText.failures[0].code, 'RICHTEXT_SCHEMA_TRUNCATED');
+  assert.equal(report.reports[1].complete, true);
   assert.deepEqual(report.reports.map(item => [item.site, item.env]), [['first', 'dev'], ['second', 'dev']]);
   assert.equal(new Set(starts).size, 2);
   assert.deepEqual(report.skipped.map(item => [item.site, item.env]), [['first', 'production'], ['second', 'production']]);
+});
+
+test('capture exit status follows usable shells, with strict completeness available explicitly', () => {
+  const report = { complete: false, reports: [{ applied: true, ready: true, complete: false, failures: [{ code: 'SHELL_RESOURCE_ORIGIN', blocking: false }], richText: { complete: false, failures: [{ code: 'RICHTEXT_SCHEMA_TRUNCATED' }], diagnostics: [{ code: 'RICHTEXT_NATIVE_NOT_READY', message: 'Editor unavailable anonymously.' }] } }] };
+  assert.equal(captureExitCode(report), 0);
+  assert.equal(captureExitCode(report, { strict: true }), 1);
+  assert.match(captureSummary(report), /RICHTEXT_SCHEMA_TRUNCATED/);
+  assert.match(captureSummary(report), /RICHTEXT_NATIVE_NOT_READY/);
+  report.reports[0].failures.push({ blocking: true });
+  assert.equal(captureExitCode(report), 1);
+  assert.equal(captureExitCode({ reports: [] }), 1);
+});
+
+test('installed CLI accepts applied partial shells and strict mode rejects their incompleteness', async t => {
+  const root = await project(t), config = path.join(root, 'paqvilo.config.yml');
+  const bridge = { origin: 'https://invented.example.test', connected: false, configure() {}, status() { return { connected: this.connected }; }, async connect() { this.connected = true; this.context = {}; }, async close() { this.connected = false; this.context = null; },
+    async request(route) { return { status: 200, headers: { 'content-type': route === '/' ? 'text/html' : route.endsWith('.css') ? 'text/css' : 'text/javascript' }, body: Buffer.from(route === '/' ? '<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script><link rel="stylesheet" href="https://third-party.example.test/theme.css">' : route.endsWith('.css') ? 'body{}' : 'window.jQuery={};') }; } };
+  const app = await createSimulator({ sourceDir: path.join(root, 'portal'), origin: bridge.origin, stateFile: path.join(root, '.paqvilo/simulator/invented/state.json'), liveBridge: bridge, watch: false });
+  t.after(() => app.close());
+  await fs.appendFile(config, `    mirage: { port: ${new URL(app.url).port} }\n`);
+  for (const strict of [false, true]) {
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url)), 'mirage', 'capture-shell', '--config', config, '--site', 'invented', '--cdp', 'http://127.0.0.1:9222', ...(strict ? ['--strict'] : [])], { windowsHide: true });
+    let output = '', errors = '';
+    child.stdout.on('data', chunk => { output += chunk; }); child.stderr.on('data', chunk => { errors += chunk; });
+    const code = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
+    assert.equal(code, strict ? 1 : 0, errors);
+    assert.equal(JSON.parse(output).reports[0].applied, true);
+    assert.match(errors, /observed SHELL_RESOURCE_ORIGIN/);
+    assert.equal(bridge.connected, false);
+  }
 });
 
 test('bootstrap preset mode preserves records on restart and always mode resets them', async t => {

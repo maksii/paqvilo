@@ -49,6 +49,7 @@ const OBSERVED_CHOICES = {
   webFileMimeCharset: ["utf8", "source"],
   siteMarkerRedirect: ["resolve", "null-reference"],
   nativeFormTransport: ["json", "postback"],
+  modalLoadOrdering: ["ready", "immediate"],
   subgridLabelMarkup: ["encoded", "sanitized"],
   webApiErrorStacks: ["diagnostic", "response-template"],
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
@@ -88,9 +89,13 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (value.formSubmissionErrorMessage != null) {
+    if (typeof value.formSubmissionErrorMessage !== 'string' || !value.formSubmissionErrorMessage.trim() || value.formSubmissionErrorMessage.length > 2000) throw new Error(`${label}.formSubmissionErrorMessage must be bounded plain text`);
+    observed.formSubmissionErrorMessage = value.formSubmissionErrorMessage;
+  }
   if (value.pluginSources != null) {
     if (!value.pluginSources || typeof value.pluginSources !== 'object' || Array.isArray(value.pluginSources) || Object.keys(value.pluginSources).length > 1000) throw new Error(`${label}.pluginSources must map at most 1000 exact plugin type names to source paths with evidence`);
     observed.pluginSources = {};

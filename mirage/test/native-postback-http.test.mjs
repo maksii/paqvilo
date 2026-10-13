@@ -71,6 +71,8 @@ test('lookup postbacks use only the declared target, preserve omission and clear
   assert.equal(row().customerid.logical_name, 'contact');
   assert.equal((await post({ title: 'Lookup cleared', customerid: '' })).status, 200);
   assert.equal(row().customerid, null);
+  assert.equal((await post({ title: 'Unselected empty native lookup', customerid: '' }, [[controls.names + 'customerid_entityname', '']])).status, 200);
+  assert.equal(row().customerid, null);
 });
 
 test('unknown, ambiguous and repeated lookup targets cannot mutate the selected row', async t => {
