@@ -33,11 +33,12 @@ test('scaffold marker inspection rejects a file replaced after its descriptor is
 test('setup configuration inspection rejects a path swap and preserves its existing read limit', async t => {
   const directory = work(t), file = path.join(directory, 'paqvilo.config.yml'), replacement = path.join(directory, 'replacement');
   fs.writeFileSync(file, 'sites: {}\n'); fs.writeFileSync(replacement, 'sites: { replaced: {} }\n');
+  const target = await fs.promises.realpath(file);
   const original = fs.promises.open;
   let swapped = false;
   t.mock.method(fs.promises, 'open', async (...args) => {
     const handle = await original(...args);
-    if (args[0] === file && !swapped) {
+    if (args[0] === target && !swapped) {
       const stat = handle.stat.bind(handle);
       handle.stat = async (...statArgs) => {
         const info = await stat(...statArgs);
