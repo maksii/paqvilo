@@ -1980,5 +1980,69 @@
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/123"
       }
     ]
+  },
+  "consumerFeedbackReview": {
+    "reviewedAt": "2026-10-13",
+    "analysisId": 1942137874,
+    "commit": "a579cb7ba72fc8c1e7a52c144ed5a3e193b2fe28",
+    "sourceHead": "d200b14a0d00c52aecbfcf3beb6618cf05f5aa7e",
+    "entries": [
+      {
+        "number": 128,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "lense/project-check.mjs",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "disposition": "fix",
+        "evidence": "Marker inspection now uses the existing descriptor-first readLocalFileSync with root confinement, a 1 MiB bound and pathname/inode/version checks. Oversized documents stay ignored; replaced files are rejected.",
+        "verification": "test/setup-security.test.mjs; test/local-file.test.mjs",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/128"
+      },
+      {
+        "number": 132,
+        "rule": "js/xss-through-dom",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "lense/setup/app.mjs",
+          "start_line": 48,
+          "end_line": 59
+        },
+        "disposition": "fix",
+        "evidence": "The layer selector now accepts only shared/personal and assigns literal enum values before rendering. A forged DOM option cannot reach the markup interpolation or select another configuration layer. Authored portal/form label markup is unaffected.",
+        "verification": "test-browser/setup-workspace.test.mjs: forged layer option plus existing shared/personal save flows",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/132"
+      },
+      {
+        "number": 133,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "lense/setup/store.mjs",
+          "start_line": 27,
+          "end_line": 27
+        },
+        "disposition": "fix",
+        "evidence": "Setup configuration reads now reuse readLocalFile with a single validated descriptor, bounded bytes and pathname/inode/version checks. The existing 256 KiB limit still returns 413 and missing optional files remain supported.",
+        "verification": "test/setup-security.test.mjs: path swap and oversized configuration; test/setup-workspace.test.mjs",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/133"
+      },
+      {
+        "number": 134,
+        "rule": "js/http-to-file-access",
+        "securitySeverity": "medium",
+        "originalLocation": {
+          "path": "mirage/verify.mjs",
+          "start_line": 647,
+          "end_line": 647
+        },
+        "disposition": "false-positive",
+        "evidence": "This re-reports the intentional report persistence already reviewed as alert 112. SARIF tracks only loopback simulator metadata into JSON.stringify(result); outputDir is selected by the caller and report.json is a fixed basename. Remote sourceDir text cannot select the destination, and no recorded data is evaluated or installed. Preserve JSON evidence fidelity.",
+        "verification": "mirage/test-browser/parity.test.mjs: parsed report equals returned metadata; network sourceDir cannot create a separate file; attached browser and owned-page cleanup assertions",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/134"
+      }
+    ]
   }
 }

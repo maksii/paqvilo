@@ -62,8 +62,9 @@ function render() {
 $('#content').addEventListener('input', event => { if (event.target.id !== 'layer') dirty = true; });
 $('#content').addEventListener('change', event => {
   if (event.target.id === 'layer') {
+    if (!['shared', 'personal'].includes(event.target.value)) return;
     if (dirty && !confirm('Discard unsaved form changes and switch configuration layer?')) { event.target.value = layer; return; }
-    layer = event.target.value; dirty = false; render();
+    layer = event.target.value === 'personal' ? 'personal' : 'shared'; dirty = false; render();
   }
 });
 $('#content').addEventListener('click', event => {

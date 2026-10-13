@@ -88,6 +88,14 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   }
   assert.match(await page.locator('#overview').innerText(), /Configuration ready/);
   const sharedBefore = await fs.readFile(path.join(consumer, 'paqvilo.config.yml'), 'utf8');
+  await page.evaluate(() => {
+    const selector = document.querySelector('#layer');
+    const option = new Option('Invalid layer', '<img src=x onerror="window.invalidLayerExecuted=true">');
+    selector.append(option); selector.value = option.value;
+    selector.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  assert.equal(await page.evaluate(() => window.invalidLayerExecuted), undefined);
+  assert.equal(await page.locator('form[data-form=site] .hint').filter({ hasText: 'Writes the shared configuration.' }).count(), 2);
   await page.locator('#layer').selectOption('personal');
   form = page.locator('form[data-form=settings]'); await form.locator('[name=browser]').selectOption('chrome'); await saveForm(page, form);
   assert.equal(await fs.readFile(path.join(consumer, 'paqvilo.config.yml'), 'utf8'), sharedBefore);

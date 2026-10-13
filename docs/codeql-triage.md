@@ -1017,3 +1017,9 @@ Rule: `js/remote-property-injection`; first revision: `mirage/lib/auth-session.m
 The complete branch analysis also flagged cookie assignment inside the null-prototype collector. Replace dynamic property writes with Map.has/Map.set and convert to Object.fromEntries at the public boundary. First duplicate wins, special names remain own data and no inherited setter runs.
 
 Validation: mirage/test/security-regressions.test.mjs: prototype-sensitive cookie names and duplicate handling; mirage/test/auth-session.test.mjs.
+
+## Consumer feedback follow-up (2026-10-13)
+
+Analysis 1942137874 reported four findings after the consumer CLI and setup work. Alerts [128](https://github.com/maksii/paqvilo/security/code-scanning/128) and [133](https://github.com/maksii/paqvilo/security/code-scanning/133) now use the existing guarded descriptor readers, preserving the scaffold and configuration size limits. Alert [132](https://github.com/maksii/paqvilo/security/code-scanning/132) traced a DOM-selected layer into HTML; the selector now accepts only shared/personal and renders literal enum values. Portal label markup behavior is unchanged. Synthetic path-swap, size-limit and forged-option regressions cover these changes.
+
+Alert [134](https://github.com/maksii/paqvilo/security/code-scanning/134) repeats the intentional JSON evidence write reviewed in alert 112. Its SARIF source is loopback simulator metadata; the caller selects the output directory and the basename is always report.json. The verifier test now proves that recorded sourceDir text cannot select a second file and that parsed persisted metadata equals the returned result. Recorded data is never evaluated or installed. This finding is a reviewed false positive; the complete JSON evidence remains available.

@@ -6,6 +6,7 @@ import { execFile } from 'node:child_process';
 import YAML from 'yaml';
 import { catalogueRoot, loadCatalogue, readEnvSettings, resolveMirageConfig } from '../config.mjs';
 import { assertScaffoldPath } from '../scaffold.mjs';
+import { readLocalFile } from '../local-file.mjs';
 import { detectFormat, portalSourceDir } from '../portal-model.mjs';
 import { observedConfig, resolveProjectConfig, projectOrigin } from '../../mirage/lib/project-config.mjs';
 import { detectSourceDialect } from '../../mirage/lib/source-dialect.mjs';
@@ -22,10 +23,12 @@ export const setupDocs = Object.fromEntries(Object.entries({ setup: 'docs/gettin
 async function textFile(file) {
   await assertScaffoldPath(file);
   try {
-    const stat = await fs.stat(file);
-    if (stat.size > LIMIT) throw setupError('Configuration exceeds 256 KiB', 413);
-    return await fs.readFile(file, 'utf8');
-  } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
+    return await readLocalFile(file, { root: path.dirname(file), maxBytes: LIMIT, encoding: 'utf8' });
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    if (error.message === 'Local file is not regular or exceeds its read limit') throw setupError('Configuration exceeds 256 KiB', 413);
+    throw error;
+  }
 }
 function document(text, label) {
   const doc = YAML.parseDocument(text ?? '{}\n', { uniqueKeys: true });

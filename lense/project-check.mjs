@@ -3,6 +3,7 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { loadCatalogue, resolveMirageConfig } from './config.mjs';
 import YAML from 'yaml';
+import { readLocalFileSync } from './local-file.mjs';
 
 const MARKER = 'TODO(paqvilo-init):';
 const ignored = new Set(['.git', 'node_modules', '.paqvilo', '.pp-local', 'paqvilo.config.local.yml', 'coverage']);
@@ -39,8 +40,13 @@ export function scaffoldMarkers(directory) {
   const todo = [];
   for (const file of projectFiles(directory)) {
     const filename = path.join(directory, file);
-    if (fs.statSync(filename).size > 1024 * 1024) continue;
-    const lines = fs.readFileSync(filename, 'utf8').split(/\r?\n/);
+    let text;
+    try { text = readLocalFileSync(filename, { root: directory, maxBytes: 1024 * 1024, encoding: 'utf8' }); }
+    catch (error) {
+      if (error.code === 'ENOENT' || error.message === 'Local file is not regular or exceeds its read limit') continue;
+      throw error;
+    }
+    const lines = text.split(/\r?\n/);
     for (const [index, line] of lines.entries()) {
       const at = line.indexOf(MARKER);
       if (at >= 0) todo.push({ file, line: index + 1, kind: 'marker', text: line.slice(at) });
