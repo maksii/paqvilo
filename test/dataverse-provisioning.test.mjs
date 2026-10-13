@@ -10,7 +10,7 @@ import path from 'node:path';
 import { DataverseClient } from '../lense/dataverse/client.mjs';
 import { compileManifest, validateManifest } from '../lense/dataverse/manifest.mjs';
 import { planManifest, applyManifest, checkKeys, publishManifest,compatible,scopeSolutionRoots } from '../lense/dataverse/provision.mjs';
-import { parseRegistrationOutput, parseCredentialFile, publicConnection, environmentOrigin, privateJson } from '../lense/dataverse/connection.mjs';
+import { parseRegistrationOutput, parseCredentialFile, publicConnection, environmentOrigin, privateJson, tokenProvider } from '../lense/dataverse/connection.mjs';
 
 function fixtureManifest() {
   const manifest={schemaVersion:1,publisher:{uniqueName:'fictionalpublisher',friendlyName:'Fictional Publisher',prefix:'tst',optionValuePrefix:12345},solutions:[{uniqueName:'FictionalSchema',friendlyName:'Fictional schema',version:'1.0.0.0'}],choices:[{name:'tst_kind',label:'Kind',solution:'FictionalSchema',options:[{value:123450000,label:'First'},{value:123450001,label:'Second'}]}],tables:[{name:'tst_node',entitySetName:'tst_nodes',label:'Node',pluralLabel:'Nodes',ownership:'organization',solution:'FictionalSchema',primaryName:{name:'tst_name',label:'Name',maxLength:160},columns:[{name:'tst_code',label:'Code',type:'string',maxLength:40,required:'required'},{name:'tst_kind',label:'Kind',type:'choice',choice:'tst_kind'},{name:'tst_notes',label:'Notes',type:'memo',maxLength:262144},{name:'tst_date',label:'Date',type:'datetime',behavior:'DateOnly'}],keys:[{name:'tst_node_code',columns:['tst_code']}]},{name:'tst_leaf',entitySetName:'tst_leaves',label:'Leaf',pluralLabel:'Leaves',ownership:'user',solution:'FictionalSchema',primaryName:{name:'tst_name',label:'Name',maxLength:160},columns:[]}],relationships:[{name:'tst_node_leaves',kind:'oneToMany',parent:'tst_node',child:'tst_leaf',solution:'FictionalSchema',lookup:{name:'tst_nodeid',label:'Node',required:'required'}},{name:'tst_node_peers',kind:'manyToMany',parent:'tst_node',child:'tst_node',intersectName:'tst_nodepeer',intersectColumns:['tst_nodeone','tst_nodetwo'],solution:'FictionalSchema'}]};
@@ -241,4 +241,24 @@ test('remote schema planning honors optional empty manifest sections',async t=>{
  const {client}=await serverFixture(t),manifest=fixtureManifest();
  for(const section of ['choices','tables','relationships','forms','views'])delete manifest[section];
  const plan=await planManifest(manifest,{client});assert.equal(plan.summary.create,2);assert.equal(plan.actions.length,2);
+});
+
+
+test('application authentication confines file-derived configuration to the fixed Entra origin',async()=>{
+ const connection={tenantId:'11111111-1111-4111-8111-111111111111',clientId:'22222222-2222-4222-8222-222222222222',environmentUrl:'https://fictional.crm.example',credentialSource:'environment',secretEnvironmentVariable:'PAQ_TEST_SYNTHETIC_OAUTH'};
+ let calls=0;const old=process.env.PAQ_TEST_SYNTHETIC_OAUTH;process.env.PAQ_TEST_SYNTHETIC_OAUTH='invented-secret';
+ const fetchImpl=async(url,options)=>{calls++;assert.equal(new URL(url).origin,'https://login.microsoftonline.com');assert.equal(new URL(url).pathname,'/'+connection.tenantId+'/oauth2/v2.0/token');assert.equal(options.redirect,'error');assert.equal(options.body.get('scope'),'https://fictional.crm.example/.default');assert.equal(options.body.get('client_secret'),'invented-secret');return {ok:true,json:async()=>({access_token:'invented-token',expires_in:3600})};};
+ try{
+  for(const tenantId of ['../other','valid@malicious.example','invalid?path=redirect'])assert.throws(()=>tokenProvider({...connection,tenantId},{fetchImpl}),/GUID/);
+  assert.throws(()=>tokenProvider({...connection,environmentUrl:'http://malicious.example'},{fetchImpl}),/HTTPS/);
+  assert.equal(calls,0);const token=tokenProvider(connection,{fetchImpl});assert.equal(await token(),'invented-token');assert.equal(await token(),'invented-token');assert.equal(calls,1);
+ }finally{if(old===undefined)delete process.env.PAQ_TEST_SYNTHETIC_OAUTH;else process.env.PAQ_TEST_SYNTHETIC_OAUTH=old;}
+});
+
+
+test('unexpected OAuth transport and response failures never expose credential text',async()=>{
+ const connection={tenantId:'11111111-1111-4111-8111-111111111111',clientId:'22222222-2222-4222-8222-222222222222',environmentUrl:'https://fictional.crm.example',credentialSource:'environment',secretEnvironmentVariable:'PAQ_TEST_SYNTHETIC_OAUTH'};
+ const old=process.env.PAQ_TEST_SYNTHETIC_OAUTH;process.env.PAQ_TEST_SYNTHETIC_OAUTH='invented-secret';
+ try{for(const fetchImpl of [async()=>{throw new Error('invented-private-response');},async()=>({ok:true,json:async()=>{throw new Error('invented-private-response');}})])await assert.rejects(tokenProvider(connection,{fetchImpl})(),e=>e.message.includes('withheld')&&!e.message.includes('invented-private-response'));}
+ finally{if(old===undefined)delete process.env.PAQ_TEST_SYNTHETIC_OAUTH;else process.env.PAQ_TEST_SYNTHETIC_OAUTH=old;}
 });

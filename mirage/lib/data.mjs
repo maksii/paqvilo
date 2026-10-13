@@ -3049,19 +3049,43 @@ export function parseKeySegment(key) {
   const text = String(key ?? "").trim();
   if (!text.includes("=")) return null;
   const parts = {};
-  const pattern = /\s*([A-Za-z_]\w*)\s*=\s*('(?:[^']|'')*'|[^,]+)\s*(?:,|$)/y;
   let index = 0;
+  const whitespace = () => { while (index < text.length && /\s/.test(text[index])) index++; };
+  const invalid = () => { throw new DataError("Invalid alternate key segment", 400, "InvalidKey"); };
   while (index < text.length) {
-    pattern.lastIndex = index;
-    const match = pattern.exec(text);
-    if (!match) throw new DataError(`Invalid key segment (${text})`, 400, "InvalidKey");
-    const raw = match[2].trim();
-    parts[match[1].toLowerCase()] = raw.startsWith("'")
+    whitespace();
+    const nameStart = index;
+    if (!/[A-Za-z_]/.test(text[index] ?? "")) invalid();
+    index++;
+    while (index < text.length && /\w/.test(text[index])) index++;
+    const name = text.slice(nameStart, index).toLowerCase();
+    if (["__proto__", "prototype", "constructor"].includes(name) || own(parts, name)) invalid();
+    whitespace();
+    if (text[index++] !== "=") invalid();
+    whitespace();
+    const valueStart = index;
+    if (text[index] === "'") {
+      index++;
+      let closed = false;
+      while (index < text.length) {
+        if (text[index++] !== "'") continue;
+        if (text[index] === "'") { index++; continue; }
+        closed = true;
+        break;
+      }
+      if (!closed) invalid();
+    } else {
+      while (index < text.length && text[index] !== ",") index++;
+    }
+    const raw = text.slice(valueStart, index).trim();
+    if (!raw) invalid();
+    whitespace();
+    if (index < text.length && text[index++] !== ",") invalid();
+    parts[name] = raw.startsWith("'")
       ? raw.slice(1, -1).replace(/''/g, "'")
       : /^-?\d+(?:\.\d+)?$/.test(raw)
         ? Number(raw)
         : raw.replace(/^\{(.*)\}$/, "$1");
-    index = pattern.lastIndex;
   }
   return parts;
 }

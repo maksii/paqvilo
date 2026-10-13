@@ -24,6 +24,8 @@ The secret file can contain the value alone; a JSON object with `clientId`, `ten
 
 Connection records and secret files must be inside ignored `.paqvilo/`. DPAPI ciphertext works only for its originating Windows user/machine. For a non-Windows runner, author a private connection with `schemaVersion:1`, environmentUrl, tenantId, clientId, optional organisationId, `credentialSource:"environment"` and `secretEnvironmentVariable:"PROJECT_DATAVERSE_SECRET"`. Inject that variable through the runner's secret store. Never put a literal secret in committed JSON or command arguments.
 
+Application authentication intentionally sends the locally configured client credential to Microsoft Entra. The token provider fixes the origin to `https://login.microsoftonline.com`, validates tenant/client GUIDs before constructing the request, confines the scope to the configured HTTPS organization and disables redirects. A regression rejects malformed identities before any network call and verifies the destination and cache behavior with an invented credential. CodeQL's file-data-to-HTTP heuristic for this required OAuth exchange was reviewed as a false positive; file-derived arbitrary hosts are not permitted for the token endpoint.
+
 ## Manifest and execution
 
 Keep `dataverse/manifest.json` in the owning project. Minimal shape:

@@ -162,17 +162,25 @@ export async function loadConnection(file) {
 }
 
 export function tokenProvider(connection, { fetchImpl = fetch } = {}) {
+  // Validate at the API boundary too: connectedClient also accepts caller-owned
+  // objects, rather than only records read through loadConnection.
+  for (const field of ['tenantId','clientId']) if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(connection[field] ?? '')) throw new Error(`Connection ${field} must be a GUID.`);
+  const origin = environmentOrigin(connection.environmentUrl);
+  const endpoint = new URL('https://login.microsoftonline.com/');
+  endpoint.pathname = `/${connection.tenantId}/oauth2/v2.0/token`;
   let cached;
   return async () => {
     if (cached && Date.now() < cached.until) return cached.token;
     const secret = connection.credentialSource === 'environment' ? process.env[connection.secretEnvironmentVariable] : await protectSecret(connection.protectedSecret, true);
     if (!secret) throw new Error('Connection credential is unavailable.');
-    const response = await fetchImpl(`https://login.microsoftonline.com/${connection.tenantId}/oauth2/v2.0/token`, {
+    let response;
+    try { response = await fetchImpl(endpoint.href, {
       method: 'POST', redirect: 'error', signal: AbortSignal.timeout(30_000),
-      body: new URLSearchParams({ client_id: connection.clientId, client_secret: secret, grant_type: 'client_credentials', scope: `${connection.environmentUrl}/.default` }),
-    });
+      body: new URLSearchParams({ client_id: connection.clientId, client_secret: secret, grant_type: 'client_credentials', scope: `${origin}/.default` }),
+    }); } catch { throw new Error('Application token request failed (network/timeout); credential details withheld.'); }
     if (!response.ok) throw new Error(`Application token request failed (HTTP ${response.status}); credential response withheld.`);
-    const body = await response.json();
+    let body;
+    try { body = await response.json(); } catch { throw new Error('Invalid token response; credential details withheld.'); }
     if (typeof body.access_token !== 'string' || !Number.isFinite(Number(body.expires_in))) throw new Error('Invalid token response.');
     cached = { token: body.access_token, until: Date.now() + Math.max(0, Number(body.expires_in) - 120) * 1000 };
     return cached.token;

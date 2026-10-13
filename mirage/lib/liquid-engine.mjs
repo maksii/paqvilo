@@ -235,14 +235,38 @@ export const truthy = (value) => value != null && value !== false;
 // ---------------------------------------------------------------------------
 // Tokenizer (DotLiquid Tokenizer.Tokenize, SyntaxCompatibility.DotLiquid20)
 // ---------------------------------------------------------------------------
+// Scan the whole-template shorthands without overlapping dot/whitespace regex
+// repetitions. Preserve the optional single whitespace and final-newline rules.
+function shorthandBody(text, literal) {
+  let start = literal ? 3 : 1;
+  let end = text.length;
+  if (text.endsWith("\r\n")) end -= 2;
+  else if (/[\n\r\u2028\u2029]/.test(text[end - 1] ?? "")) end--;
+  const space = (index) => /\s/.test(text[index] ?? "");
+  if (literal) {
+    if (!text.startsWith("{{{") || text.slice(end - 3, end) !== "}}}") return null;
+    end -= 3;
+  } else {
+    if (text[0] !== "{" || text[end - 1] !== "}") return null;
+    if (space(start)) start++;
+    if (text[start++] !== "#") return null;
+    end--;
+    if (space(end - 1)) end--;
+    if (text[--end] !== "#") return null;
+  }
+  if (space(start)) start++;
+  if (start > end) return null;
+  const body = text.slice(start, end).trimEnd();
+  return /[\n\r\u2028\u2029]/.test(body) ? null : body;
+}
 export function tokenize(source, rawTags = new Set()) {
   if (source == null || source === "") return [];
   // Comment/literal shorthands only apply when they span the whole template.
   let text = String(source);
-  let m = /^(?:\{\{\{\s?)(.*?)(?:\s*\}\}\})$/.exec(text);
-  if (m) text = `{% literal %}${m[1]}{% endliteral %}`;
-  m = /^(?:\{\s?#\s?)(.*?)(?:\s*#\s?\})$/.exec(text);
-  if (m) text = `{% comment %}${m[1]}{% endcomment %}`;
+  const literal = shorthandBody(text, true);
+  if (literal !== null) text = `{% literal %}${literal}{% endliteral %}`;
+  const comment = shorthandBody(text, false);
+  if (comment !== null) text = `{% comment %}${comment}{% endcomment %}`;
   // Trailing whitespace control: one newline or one run of spaces/tabs, never both.
   text = text.replace(/-(\}\}|%\})(\n|\r\n|[ \t]+)?/g, "$1");
   const tokens = [];
