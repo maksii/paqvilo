@@ -2,6 +2,8 @@
 
 ## 0.9.4
 
+- `paqvilo setup` provides a local `/_setup/` workspace for incomplete or broken projects, with portal/source/Git status, guided settings, shared/personal layers and YAML recovery. Mirage mounts it alongside `/_sim/`; Lense prints and links a separate local workspace. Saves validate and detect concurrent edits, preserve unrelated YAML and report when a preview needs restarting. Generated projects and demos include `npm run configure`. See [project setup](setup.md).
+
 - `paqvilo init` generates an empty consumer project from dedicated templates, with catalogue placeholders, scripts, packs, offline tests, agent guidance and VS Code workflows. `init --check` reports unfinished values without executing packs; `init --refresh-editor` resolves current checkout paths and preserves edited documents. `createMirageContext({ config })` binds all explicitly configured catalogue packs without requiring source exports; pass `site` to retain site-specific imports/runtime defaults. See [project scaffold](project-scaffold.md).
 - Scaffold agent guidance links to maintained online docs instead of duplicating the workflow reference. Editor development tasks follow changed catalogue sites/browser settings, workflow names avoid picker/debugger collisions, completion checks honor shell overrides and Git ignores, and nonempty enhanced/code-site fixtures run through the normal importer. Unsafe editor output paths fail before any document changes.
 

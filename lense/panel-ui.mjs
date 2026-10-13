@@ -453,7 +453,7 @@ export function panelUi(data) {
     };
     let stopDrag = null;
     const startDrag = (e) => {
-      if (e.button !== 0 || e.target.closest('button, input, .seg')) return;
+      if (e.button !== 0 || e.target.closest('a, button, input, .seg')) return;
       stopDrag?.();
       const handle = e.currentTarget;
       const box = (S.ui.open ? el.panel : el.pill).getBoundingClientRect();
@@ -506,7 +506,7 @@ export function panelUi(data) {
       // Without this the browser may begin a drag of its own (of a link of the page that lies
       // under the panel) and take the pointer away after the first few pixels.
       handle.addEventListener('mousedown', (e) => {
-        if (!e.target.closest('button, input, .seg')) e.preventDefault();
+        if (!e.target.closest('a, button, input, .seg')) e.preventDefault();
       });
     }
     window.addEventListener(
@@ -988,6 +988,7 @@ export function panelUi(data) {
         `${dot}<span class="brand">paqvilo</span><span class="tag">${esc(d.site)}</span><span class="tag env">${esc(d.env)}</span>${real}<span class="grow"></span>
          ${d.mirageMode ? '' : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${d.online ? '' : 'on live'}" data-act="mode" data-v="local">Local</button><button class="${d.online ? 'on online' : ''}" data-act="mode" data-v="online">Online</button></span><button class="ib ${d.live ? 'on' : 'warn'}" data-act="live" title="Live reload is ${d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself'}">${icon(d.live ? 'bolt' : 'pause')}</button>`}
          <button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
+         ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup">Setup</a>` : ''}
          <button class="ib" data-act="size" title="${ui.large ? 'Smaller panel' : 'Larger panel'}">${icon('size')}</button>
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,

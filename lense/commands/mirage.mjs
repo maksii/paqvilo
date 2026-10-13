@@ -387,13 +387,14 @@ export function cliArgs(cfg, action, args, project = null) {
   ];
   if (project) {
     const portal = args.portal ?? (action === 'serve' ? project.defaultPortal : null);
-    return { cli, values: [action, '--project', project.configFile, ...(portal ? ['--portal', portal] : []), ...common] };
+    return { cli, values: [action, '--project', project.configFile, ...(portal ? ['--portal', portal] : []),
+      ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []), ...common] };
   }
   const origin = httpsOrigin(cfg.origin);
   const values = [action, '--site', cfg.siteName, '--env', cfg.envName, '--source', cfg.sourceDir, ...(origin ? ['--origin', origin] : []), ...common];
   // The Mirage reads the site's mirage settings (such as observed behaviour) from the
   // catalogue: the same catalogue file and portal checkout the toolkit resolved.
-  if (args.config) values.push('--config', path.resolve(args.config));
+  if (cfg.configFile || args.config) values.push('--config', cfg.configFile ?? path.resolve(args.config));
   if (args.repo) values.push('--repo', path.resolve(args.repo));
   for (const root of args['solution-root'] ?? []) values.push('--solution-root', path.resolve(root));
   // The Mirage layers --solution-root values in their dependency order unless told otherwise.

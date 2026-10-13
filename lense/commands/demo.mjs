@@ -56,6 +56,7 @@ export async function prepareDemo(directory) {
   await fs.writeFile(path.join(target, 'package.json'), JSON.stringify({
     name: 'paqvilo-example', private: true, type: 'module',
     scripts: {
+      configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
       dev: 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0',
       'dev:debug': 'paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0 --debug-port 9222',
       lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',

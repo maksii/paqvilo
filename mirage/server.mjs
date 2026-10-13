@@ -1,4 +1,5 @@
 import http from "node:http";
+import { createSetupHandler } from '../lense/setup/server.mjs';
 import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
 import { attachODataReaderDetails, attachODataJsonSource, odataInvalidJsonDetails } from "./lib/webapi-error-details.mjs";
 import fs from "node:fs/promises";
@@ -224,6 +225,8 @@ export async function createSimulator({
   solutionOrder = "derived",
   environmentVariables = {},
   project = null,
+  // The toolkit catalogue takes precedence over a generated runtime project.
+  setup = null,
   // Explicit external pack modules for embedded runtimes and project-owned tests.
   dataPacks = [],
   packs = [],
@@ -256,6 +259,11 @@ export async function createSimulator({
   // Options are validated before any source read starts, so a rejected option leaves no
   // read running against the source directory.
   const observed = observedConfig(observedOption);
+  const setupHandler = await createSetupHandler({
+    directory: projectRoot,
+    ...(setup ?? (project?.configFile ? { project: project.configFile } : {})),
+    runtime: { product: 'Mirage', sourceDir },
+  });
   const startedAt = performance.now();
   const sourceDigest = sourceDirectoryDigest(sourceDir);
   // Awaited below; a bootstrap failure before then must not leave an unhandled rejection.
@@ -3236,6 +3244,10 @@ export async function createSimulator({
   }
   const server = http.createServer((req, res) => {
     if(closing)return json(res,503,{error:{code:'SIMULATOR_CLOSING',message:'The local runtime is shutting down.'}},{'connection':'close'});
+    if (/^\/_setup(?:\/|$)/.test(req.url?.split('?')[0] ?? '')) {
+      setupHandler(req, res).catch(() => { if (!res.headersSent) json(res, 500, { error: { code: 'SETUP_FAILED', message: 'Setup request failed.' } }); });
+      return;
+    }
     const started = Date.now();
     let url;
     try {
@@ -3505,6 +3517,7 @@ export async function createSimulator({
     },
     url: localOrigin,
     adminUrl: `${localOrigin}/__sim/`,
+    setupUrl: `${localOrigin}/_setup/`,
     // The local identity provider of external sign-in: { available, origin, port, providers, ... }.
     get identityProvider() {
       return externalSignIn.status();

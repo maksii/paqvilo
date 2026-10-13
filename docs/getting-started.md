@@ -85,7 +85,7 @@ npm run setup
 npx paqvilo init --check
 ```
 
-The generated catalogue has inert placeholder URLs and marked source paths. It also supplies npm scripts, VS Code tasks/debugger launches, a project pack, agent instructions and local tests. Fill in the values listed by `init --check`; empty browser fixtures skip with an explicit reason. Generation itself installs nothing and starts no browser. See [scaffold options and editor refresh](project-scaffold.md) for multiple sites/packs, external checkouts, no-pack mode and adding missing files to an existing project.
+The generated catalogue has inert placeholder URLs and marked source paths. It also supplies npm scripts, VS Code tasks/debugger launches, a project pack, agent instructions and local tests. Run `npm run configure` to connect sources and environments in the [local setup workspace](setup.md), then resolve remaining `init --check` findings. Empty browser fixtures skip with an explicit reason. Generation itself installs nothing and starts no browser. See [scaffold options and editor refresh](project-scaffold.md) for multiple sites/packs, external checkouts, no-pack mode and adding missing files to an existing project.
 
 ### Connect exports (or assemble the layout manually)
 

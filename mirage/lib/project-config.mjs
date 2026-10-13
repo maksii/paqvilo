@@ -241,6 +241,12 @@ export async function loadProjectConfig(configFile) {
   const absoluteConfig = path.resolve(configFile);
   const source = await fs.readFile(absoluteConfig, "utf8");
   const raw = /\.json$/i.test(absoluteConfig) ? JSON.parse(source) : YAML.parse(source);
+  return resolveProjectConfig(raw, absoluteConfig);
+}
+
+/** Setup validates structure separately from source readiness, without importing packs. */
+export async function resolveProjectConfig(raw, configFile, { checkSources = true } = {}) {
+  const absoluteConfig = path.resolve(configFile);
   if (!raw || typeof raw !== "object" || Array.isArray(raw))
     throw new Error("Project configuration must be an object");
   if (!VERSIONS.includes(raw.version))
@@ -263,6 +269,7 @@ export async function loadProjectConfig(configFile) {
   const base = path.dirname(absoluteConfig);
   const resolveSource = async (sourcePath, kind, id) => {
     const resolved = path.resolve(base, sourcePath);
+    if (!checkSources) return resolved;
     let stat;
     try { stat = await fs.stat(resolved); }
     catch { throw new Error(`${kind} '${id}' source directory does not exist: ${resolved}`); }
@@ -298,6 +305,7 @@ export async function loadProjectConfig(configFile) {
     throw new Error(`defaultPortal '${defaultPortal}' is not configured`);
   const dataPacks = await Promise.all(list(raw.dataPacks ?? raw.presets, "dataPacks").map(normalizeDataPack).map(async (pack) => {
     const module = path.resolve(base, pack.modulePath);
+    if (!checkSources) return { id: pack.id, module };
     try {
       if (!(await fs.stat(module)).isFile()) throw new Error();
     } catch {

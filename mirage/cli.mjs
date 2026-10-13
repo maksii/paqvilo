@@ -200,6 +200,7 @@ try {
               })()
             : projectStateFile(project, portal.id, path.join(stateDir, "simulator/projects"));
           const simulator = await createSimulator({
+            setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
             sourceDir: portal.sourceDir,
             stateFile,
             preset: args.preset, presetMode: args['preset-mode'] ?? 'always',
@@ -403,6 +404,7 @@ try {
       const solutionRoots = resolvedRoots.roots;
       let stop;
       const simulator = await createSimulator({
+        setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : null,
               sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
         localOverrides: siteMirage?.localOverrides,

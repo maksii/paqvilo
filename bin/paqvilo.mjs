@@ -9,6 +9,7 @@ const HELP = `paqvilo — Power Pages development
 Usage: paqvilo lense <command> [options]
        paqvilo mirage <command> [options]
        paqvilo init [dir] [options]
+       paqvilo setup [--config FILE | --project FILE] [--open]
        paqvilo doctor --setup [--json] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
@@ -18,6 +19,7 @@ Usage: paqvilo lense <command> [options]
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
   doctor  Check installed dependencies and browser readiness.
   init    Scaffold an empty consumer project; --check and --refresh-editor maintain it.
+  setup   Local configuration workspace at /_setup/, including incomplete projects.
 
 Run paqvilo lense --help or paqvilo mirage --help for options.
 `;
@@ -26,6 +28,14 @@ if (['--version', '-v'].includes(product)) {
   console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
 } else if (!product || ['--help', '-h'].includes(product)) {
   console.log(HELP);
+} else if (product === 'setup' || ['lense', 'mirage'].includes(product) && args[0] === 'setup') {
+  const setupArgs = product === 'setup' ? args : args.slice(1);
+  try { process.exitCode = await (await import('../lense/commands/setup.mjs')).runSetup(setupArgs); }
+  catch (error) {
+    if (args.includes('--json')) console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code: 'SETUP_FAILED', message: error.message } }));
+    else console.error(`paqvilo setup: ${error.message}`);
+    process.exitCode = 1;
+  }
 } else if (product === 'init') {
   try { process.exitCode = await (await import('../lense/commands/init.mjs')).runInit(args); }
   catch (error) {

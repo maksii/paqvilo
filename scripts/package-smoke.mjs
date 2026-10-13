@@ -68,6 +68,9 @@ try {
   if (!cli('mirage', 'status', '--json').sessions.some((item) => item.pid === session.pid && item.ready)) throw new Error('Project-scoped status did not discover its runtime.');
   const response = await fetch(session.url);
   if (!response.ok || !(await response.text()).includes('Build it three ways')) throw new Error('Installed lifecycle did not render the project.');
+  const setupStatus = await fetch(session.url + '/_setup/api/status').then(response => response.json());
+  if (setupStatus.kind !== 'catalogue' || setupStatus.layers.shared.file !== path.join(project, 'paqvilo.config.yml') || setupStatus.sites[0]?.id !== 'example') throw new Error('Installed setup did not use the consumer catalogue.');
+  for (const asset of ['', 'app.mjs', 'style.css']) if (!(await fetch(session.url + '/_setup/' + asset)).ok) throw new Error(`Installed setup asset is missing: ${asset}`);
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }

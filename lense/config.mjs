@@ -178,9 +178,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   const configDir = path.dirname(configFile);
   const local = readYamlFile(path.join(configDir, 'paqvilo.config.local.yml'));
   const settings = readEnvSettings(configDir, processEnv);
-  let root = deepMerge(deepMerge(ROOT_DEFAULTS, normalizeCatalogue(base, path.basename(configFile))), normalizeCatalogue(local ?? {}, 'personal config'));
-  root = deepMerge(root, { sites: sitesFromEnv(settings.values) });
-  validateCatalogue(root);
+  const root = catalogueRoot(base, local ?? {}, settings.values);
 
   const sourceRootSetting = opts.repo ?? settings.values.PAQVILO_REPO ?? root.sourceRoot ?? '.';
   if (typeof sourceRootSetting !== 'string' || !sourceRootSetting.trim() || /[\x00-\x1f\x7f]/.test(sourceRootSetting)) throw new Error('Portal repository root must be a non-empty path without control characters');
@@ -210,6 +208,14 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
     }])),
   };
   return { configFile, configDir, sourceRoot, root, sites, settings, provenance };
+}
+
+/** Shared parsing/validation for file loading and setup edits; never executes project modules. */
+export function catalogueRoot(base, local = {}, settings = {}) {
+  let root = deepMerge(deepMerge(ROOT_DEFAULTS, normalizeCatalogue(base, 'catalogue')), normalizeCatalogue(local, 'personal config'));
+  root = deepMerge(root, { sites: sitesFromEnv(settings) });
+  validateCatalogue(root);
+  return root;
 }
 
 export function isExtract(dir) {

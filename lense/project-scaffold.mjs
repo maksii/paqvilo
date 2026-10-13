@@ -35,6 +35,7 @@ export function projectScripts({ sites, browser, packs, vscode }) {
     setup: `npm install --ignore-scripts && paqvilo doctor --setup --browser ${browser}${vscode ? ' && paqvilo init --refresh-editor --config ./paqvilo.config.yml' : ''}`,
     'check:setup': `paqvilo doctor --setup --browser ${browser}`,
     'check:scaffold': 'paqvilo init --check --config ./paqvilo.config.yml',
+    configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
     lense: 'paqvilo lense', mirage: 'paqvilo mirage',
   };
   const workflows = developmentWorkflows({ sites, browser });

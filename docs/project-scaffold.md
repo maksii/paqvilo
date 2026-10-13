@@ -6,10 +6,11 @@
 npx paqvilo@^0.9.4 init ./my-portals --name my-portals --site customer --site partner
 cd my-portals
 npm run setup
+npm run configure
 npx paqvilo init --check
 ```
 
-Generation performs no installation, network access or browser launch. It does not create sources, runtime state, `.env`, a lockfile or `node_modules`. `setup` explicitly installs dependencies, checks the chosen browser and refreshes editor paths. Afterwards, fill in the project values described by its generated `AGENTS.md`.
+Generation performs no installation, network access or browser launch. It does not create sources, runtime state, `.env`, a lockfile or `node_modules`. `setup` explicitly installs dependencies, checks the chosen browser and refreshes editor paths. `configure` opens the [local setup workspace](setup.md) for sources, environments and settings. Afterwards, resolve remaining findings described by the generated `AGENTS.md`.
 
 ## Options
 

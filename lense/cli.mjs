@@ -10,6 +10,7 @@ Usage: paqvilo lense <command> [options]
 
 Commands
   dev      open a browser on the environment with local sources laid over it; reloads on save
+           local setup URL is printed during dev; use paqvilo setup before sources are ready
   list     the sites and environments you can choose from, and what is in effect
   use      remember which site and environment you work on (writes .env):  use [site] [environment]
   map      print how online resources map to local files (add --check to test every URL online)
@@ -242,6 +243,7 @@ try {
 } catch (err) {
   if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, error: { code: 'COMMAND_FAILED', message: err.message } }));
   else console.error(`paqvilo: ${err.message}`);
+  if (!values.json && (command === 'dev' || command === 'mirage' && positionals[1] === 'dev')) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
   if (process.env.PAQVILO_DEBUG) console.error(err.stack);
   process.exitCode = 1;
 }

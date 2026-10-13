@@ -408,12 +408,21 @@ export function watchSources(session, context, { reload = true, log = console.lo
 }
 
 export default async function dev(cfg, args) {
+  const { startSetupServer } = await import('../setup/server.mjs');
+  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir } });
+  console.log(`setup       ${setup.url}`);
+  try { return await develop(cfg, args, setup); }
+  finally { await setup.close(); }
+}
+
+async function develop(cfg, args, setup) {
   // `mirage dev` hands over a prepared selection (local Mirage origins plus live targets).
   const selection = args.devSelection
     ?? (args.mirageTarget
       ? { mode: 'selected', initial: args.mirageTarget, targets: [args.mirageTarget] }
       : await loadDevTargets(args));
   cfg = selection.initial;
+  for (const target of selection.targets) target.setupUrl = setup.url;
   const { startDevSessions } = await import('../dev-sessions.mjs');
   if (selection.mode === 'all') {
     console.log(`portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`);

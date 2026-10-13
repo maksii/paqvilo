@@ -6,6 +6,7 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | --- | --- |
 | Install and open your first portal | [Getting started](getting-started.md) |
 | Generate an empty consumer project and refresh editor paths | [Project scaffold](project-scaffold.md) |
+| Configure a project in the local setup workspace | [Project setup](setup.md) |
 | Explore the populated sample and its sources | [Demo guide](demo.md) |
 | Compare supported workflows and their limits | [Coverage](coverage.md) |
 | Answer common setup and workflow questions | [FAQ](faq.md) |

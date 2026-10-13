@@ -18,7 +18,7 @@ This project owns portal sources, catalogue settings, data packs and acceptance 
 ## Next steps
 
 1. Run `npm run setup`. This installs dependencies, checks browser readiness and refreshes editor paths when enabled.
-2. Copy `.env.example` to `.env` if you need personal settings.
+2. Run `npm run configure` to connect exports and environments in the local setup workspace. Select the personal layer for ignored overrides; `.env` is optional.
 3. Run `npx paqvilo init --check` and resolve the marked catalogue, pack and fixture values.
 4. Inspect each export: `npm run mirage -- inspect --site <site>`; then `npm run doctor -- --all`.
 5. Run `npm run mirage:init` and `npm run mirage:dev` for local work. Use `npm run dev` for authorized live overlays.

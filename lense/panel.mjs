@@ -303,7 +303,7 @@ export function enablePanel(context, session, opts = {}) {
   // The Mirage administration shares the local origin; it is a tool, not a portal page.
   const adminPage = (address) => {
     if (!cfg.mirage) return false;
-    try { return /^\/_{1,2}sim(?:\/|$)/i.test(new URL(address).pathname); } catch { return false; }
+    try { return /^\/(?:_{1,2}sim|_setup)(?:\/|$)/i.test(new URL(address).pathname); } catch { return false; }
   };
   const portalPages = () => context.pages().filter((p) => !p.isClosed() && sameOrigin(p.url(), cfg.origin) && !adminPage(p.url()));
 
@@ -820,6 +820,7 @@ export function enablePanel(context, session, opts = {}) {
       mirage: cfg.mirage ? mirageSummary(page) : null,
       inspection: mirageSummary(page),
       site: cfg.siteName,
+      setupUrl: cfg.setupUrl ?? null,
       env: cfg.envName,
       targets: (cfg.devTargets ?? [{ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin, startPath: cfg.site.startPath ?? '/', caution: cfg.caution }]).map(({ siteName, envName, origin, startPath, caution }) => ({ siteName, envName, origin, startPath, caution: Boolean(caution) })),
       caution: Boolean(cfg.caution),
