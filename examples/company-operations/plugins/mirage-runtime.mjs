@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import {createHash} from 'node:crypto';
 import {parsePluginDocument,importSolutionPlugins,pluginCatalogue,runPluginPhase} from 'paqvilo/mirage/lib/exported-plugins.mjs';
-import {prepareClrRuntime,validateClrDescriptor,canonicalClrDirectory,closeClrHostPool} from 'paqvilo/mirage/lib/plugin-clr.mjs';
+import {prepareClrRuntime,validateClrDescriptor,canonicalClrDirectory,readClrDependency,closeClrHostPool} from 'paqvilo/mirage/lib/plugin-clr.mjs';
 import {parseSolutionXml} from 'paqvilo/mirage/lib/solution-xml.mjs';
 
 const hash=bytes=>createHash('sha256').update(bytes).digest('hex');
@@ -13,7 +13,14 @@ const generatedTime=value=>typeof value==='string'&&/^\/Date\(-?\d+\)\/$/.test(v
 const generatedCaptureTime=value=>typeof value==='string'&&/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{7}Z$/.test(value)&&Number.isFinite(Date.parse(value))?'[generated UTC capture string]':value;
 const child=(node,name)=>node.children?.find(item=>item.name.toLowerCase()===name.toLowerCase());
 const value=(node,name)=>child(node,name)?.text??node.attrs?.[name]??null;
-async function regular(file){const stat=await fs.lstat(file);if(!stat.isFile()||stat.isSymbolicLink()||stat.size>32*1024*1024)throw new Error('Native runtime source must be a bounded regular file.');return fs.readFile(file);}
+async function regular(file){
+ const absolute=path.resolve(file),parent=path.dirname(absolute),canonicalParent=await canonicalClrDirectory(parent);
+ // The shared reader validates the opened object and bounds reads even if a
+ // source grows. Do not reopen a pathname after checking it.
+ const {bytes}=await readClrDependency(canonicalParent,path.basename(absolute));
+ if(await canonicalClrDirectory(parent)!==canonicalParent)throw new Error('Native runtime source directory changed during reading.');
+ return bytes;
+}
 async function files(root){const answer=[];for(const item of await fs.readdir(root,{withFileTypes:true})){const file=path.join(root,item.name);if(item.isSymbolicLink())throw new Error('Native runtime exports cannot contain symbolic links.');if(item.isDirectory())answer.push(...await files(file));else if(item.isFile())answer.push(file);}return answer;}
 
 export function nativeRegistrationFingerprint(registration){
@@ -65,7 +72,7 @@ export async function prepareNativeReplayPlugins({exportRoot,nativeSteps=[],nati
   const file=path.resolve(root,relative),bound=path.relative(root,file);if(bound.startsWith('..')||path.isAbsolute(bound))throw new Error('Assembly export escaped its declared root.');
   const bytes=await regular(file),sha256=hash(bytes),expected=expectedAssemblyHashes?.[assembly.name];
   if(!expected||expected!==sha256)throw new Error('Original assembly bytes do not match the required native receipt.');
-  assemblyFiles.set(assembly.id,{file,sha256});receipts.push({assembly:assembly.name,sha256});
+  assemblyFiles.set(assembly.id,{file,sha256,bytes});receipts.push({assembly:assembly.name,sha256});
  }
  if(!path.isAbsolute(cacheRoot))throw new Error('An explicit absolute owned native runtime cache is required.');
  await fs.mkdir(cacheRoot,{recursive:true});await canonicalClrDirectory(cacheRoot);
@@ -77,7 +84,7 @@ export async function prepareNativeReplayPlugins({exportRoot,nativeSteps=[],nati
   if(!step.enabled||selected&&!selected.has(step.id))continue;
   if(!step.typeName||!step.message)throw new Error('A selected native registration has no resolved type or SDK message.');
   const assembly=assemblyFiles.get(step.assemblyId);if(!assembly)throw new Error('A selected native registration has no verified original assembly.');
-  const assemblyName=path.basename(assembly.file);await fs.writeFile(path.join(workRoot,assemblyName),await regular(assembly.file));
+  const assemblyName=path.basename(assembly.file);await fs.writeFile(path.join(workRoot,assemblyName),assembly.bytes);
   const profile=serviceProfiles.find(profile=>profile.userId.toLowerCase()===(context.userId??context.initiatingUserId).toLowerCase());
   if(!profile)throw new Error('The observed runtime caller has no explicit backend grant profile.');
   const descriptor=validateClrDescriptor({trust:'execute-local-assembly',root:workRoot,assembly:assemblyName,typeName:step.typeName,

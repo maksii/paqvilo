@@ -26,6 +26,7 @@ const COMPANY_QUALIFICATION_SOURCES = new Set([
   'portal-security/qualification-lease.mjs', 'portal-security/qualification-priority.mjs',
   'plugins/mirage-runtime.mjs', 'plugins/test/mirage-runtime.test.mjs',
   'test/native-capture.test.mjs', 'test/qualification-domain.test.mjs', 'test/qualification-role-lattice.test.mjs',
+  'test/native-batch.test.mjs',
   'test/native-archive.test.mjs', 'test/native-paging.test.mjs', 'test/native-profile.test.mjs',
   'test/native-role-lease.test.mjs', 'test/permission-order.test.mjs',
   'test/qualification-lease.test.mjs',

@@ -1,15 +1,72 @@
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
-import { loadConnection, connectedClient } from 'paqvilo/dataverse';
-import { openNativeBrowser } from './native-browser.mjs';
-import { deployBatchEndpoint, prepareBatchIntents, decodeBatchResponse } from './batch-capture.mjs';
-import { authoredQuery, odataRequest, canonicalRows, stable, pageComplete } from './core.mjs';
-import { capturedQueries } from './parity.mjs';
-import { captureNativeSnapshot, compareNativeSnapshots, snapshotHash } from './native-capture.mjs';
-import { nativeRegistrationFingerprint } from '../plugins/mirage-runtime.mjs';
-import { captureNativeRegistry } from './native-registry.mjs';
+import { pathToFileURL } from 'node:url';
 
+// The bridge accepts source text, so serialize inputs as a JSON string consumed
+// by a fixed program. Request metadata never becomes JavaScript object syntax.
+export function nativeBatchProgram({portalOrigin, requests, liquidUrls, capturePort}) {
+  const origin = new URL(portalOrigin);
+  if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.search || origin.hash || origin.username || origin.password)
+    throw new Error('Explicit HTTPS portal origin required.');
+  if (!Number.isInteger(capturePort) || capturePort < 1 || capturePort > 65535)
+    throw new Error('Capture requires an owned loopback port.');
+  if (!Array.isArray(requests) || !Array.isArray(liquidUrls)) throw new Error('Batch request arrays required.');
+  const localRead = (value, prefix) => {
+    if (typeof value !== 'string' || !value.startsWith(prefix) || value.includes('\\') || /[\x00-\x1f\x7f]/.test(value))
+      throw new Error('Batch reads must use portal-relative paths.');
+    const url = new URL(value, origin);
+    if (url.origin !== origin.origin || !url.pathname.startsWith(prefix) || url.hash)
+      throw new Error('Batch read escaped its portal path.');
+  };
+  for (const request of requests) {
+    if (!request || !['webapi', 'liquid'].includes(request.lane)) throw new Error('Unknown batch request lane.');
+    if (request.lane === 'webapi') localRead(request.url, '/_api/');
+  }
+  for (const batch of liquidUrls) {
+    if (!batch || !Array.isArray(batch.ids) || batch.ids.some(id => typeof id !== 'string')) throw new Error('Batch operation IDs required.');
+    localRead(batch.url, '/');
+  }
+  const input = {portalUrl: new URL('/permission-lab/', origin).href, requests, liquidUrls,
+    captureUrl: new URL('/capture', `http://127.0.0.1:${capturePort}`).href};
+  return 'async(page)=>{const input=JSON.parse(' + JSON.stringify(JSON.stringify(input)) + ');return (' + runNativeBatch.toString() + ')(page,input);}';
+}
+
+async function runNativeBatch(page, input) {
+  await page.goto(input.portalUrl, {waitUntil: 'domcontentloaded'});
+  const capture = await page.evaluate(async ({requests, liquidUrls}) => {
+    const token = await new Promise((resolve, reject) => shell.getTokenDeferred().done(resolve).fail(reject));
+    const results = [], start = Date.now(), api = requests.filter(request => request.lane === 'webapi');
+    let index = 0;
+    const workers = Array.from({length: Math.min(4, api.length)}, async () => {
+      while (index < api.length) {
+        const request = api[index++], before = Date.now();
+        const response = await fetch(request.url, {headers: {Accept: 'application/json', __RequestVerificationToken: token}, cache: 'no-store', redirect: 'error'});
+        results.push({...request, status: response.status, mime: response.headers.get('content-type'), body: await response.text(), durationMs: Date.now() - before});
+      }
+    });
+    await Promise.all([...workers, (async () => {
+      for (const batch of liquidUrls) {
+        const before = Date.now(), response = await fetch(batch.url, {cache: 'no-store', redirect: 'error'});
+        results.push({lane: 'liquid-batch', status: response.status, mime: response.headers.get('content-type'), operationIds: batch.ids, body: await response.text(), durationMs: Date.now() - before});
+      }
+    })()]);
+    return {requests, results, durationMs: Date.now() - start};
+  }, {requests: input.requests, liquidUrls: input.liquidUrls});
+  const saved = await fetch(input.captureUrl, {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(capture), redirect: 'error'});
+  if (!saved.ok) throw new Error('Batch capture could not be saved.');
+  return {calls: capture.results.length, statuses: capture.results.map(result => result.status), portalDurationMs: capture.durationMs};
+}
+
+async function main() {
+const [
+  {loadConnection, connectedClient}, {openNativeBrowser}, {deployBatchEndpoint, prepareBatchIntents, decodeBatchResponse},
+  {authoredQuery, odataRequest, canonicalRows, stable, pageComplete}, {capturedQueries},
+  {captureNativeSnapshot, compareNativeSnapshots, snapshotHash}, {nativeRegistrationFingerprint}, {captureNativeRegistry},
+] = await Promise.all([
+  import('paqvilo/dataverse'), import('./native-browser.mjs'), import('./batch-capture.mjs'), import('./core.mjs'),
+  import('./parity.mjs'), import('./native-capture.mjs'), import('../plugins/mirage-runtime.mjs'), import('./native-registry.mjs'),
+]);
 const config = JSON.parse(await readFile(process.argv[2], 'utf8'));
 const load = async file => JSON.parse(await readFile(file, 'utf8'));
 const deployment = await load(config.deployment), manifest = await load(config.manifest);
@@ -54,7 +111,7 @@ try {
   const liquidUrls = Array.from({length: Math.ceil(liquidIds.length / 30)}, (_, index) => ({ids: liquidIds.slice(index * 30, index * 30 + 30),
     url: batch.path + '?suiteVersion=' + encodeURIComponent(manifest.suiteVersion) + '&operationIds=' + encodeURIComponent(liquidIds.slice(index * 30, index * 30 + 30).join('|'))}));
   const capturePort = server.address().port;
-  const summary = await browser.run(`async(page)=>{await page.goto(${JSON.stringify(config.portalOrigin + '/permission-lab/')},{waitUntil:'domcontentloaded'});const capture=await page.evaluate(async()=>{const requests=${JSON.stringify(requests)};const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));const results=[];const start=Date.now();const api=requests.filter(request=>request.lane==='webapi');let index=0;await Promise.all([...(Array.from({length:Math.min(4,api.length)},()=>async()=>{while(index<api.length){const request=api[index++],before=Date.now(),response=await fetch(request.url,{headers:{Accept:'application/json',__RequestVerificationToken:token},cache:'no-store'});results.push({...request,status:response.status,mime:response.headers.get('content-type'),body:await response.text(),durationMs:Date.now()-before});}}).map(worker=>worker())),(async()=>{for(const batch of ${JSON.stringify(liquidUrls)}){const before=Date.now(),response=await fetch(batch.url,{cache:'no-store'});results.push({lane:'liquid-batch',status:response.status,mime:response.headers.get('content-type'),operationIds:batch.ids,body:await response.text(),durationMs:Date.now()-before});}})()]);return {requests,results,durationMs:Date.now()-start};});await fetch('http://127.0.0.1:${capturePort}/capture',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(capture)});return {calls:capture.results.length,statuses:capture.results.map(result=>result.status),portalDurationMs:capture.durationMs};}`, 360000);
+  const summary = await browser.run(nativeBatchProgram({portalOrigin: config.portalOrigin, requests, liquidUrls, capturePort}), 360000);
   if (!capture) throw new Error('Batch capture missing.');
   const liquidPages = capture.results.filter(result => result.lane === 'liquid-batch').flatMap(response => decodeBatchResponse(response.body, {
     operations: prepared.intents.filter(intent => response.operationIds.includes(intent.id)), actor: actor.contactId, roles: actor.roles, datasetVersion: manifest.datasetVersion}));
@@ -91,3 +148,6 @@ try {
     rowComparisons: capture.rowComparisons, outputDir: config.outputDir}));
 } catch (error) {await writeFile(path.join(config.outputDir, 'failure.json'), JSON.stringify({code: error.code ?? 'BatchPrototypeFailed', message: error.message, time: new Date().toISOString()}, null, 2)); console.error('Native batch prototype failed; private diagnostic recorded.'); process.exitCode = 1;}
 finally {await browser.close().catch(() => {}); await new Promise(resolve => server.close(resolve));}
+}
+
+if (process.argv[1] && pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url) await main();
