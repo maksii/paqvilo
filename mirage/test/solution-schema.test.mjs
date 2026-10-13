@@ -382,6 +382,30 @@ test('imported system choices render their reference labels in a synthetic basic
   assert.match(html, /<option value="4"[^>]*>Allowed<\/option>/);
 });
 
+test('reference social channels allow installed extensions while exported choices remain authoritative', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { full: true, attributes:
+      attribute('sample_channel', 'picklist', '<OptionSetName>socialprofile_community</OptionSetName>') }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const { schemaFieldIndex, fieldIndexFromMappings, schemaViolations } = await import('../lib/schema-validation.mjs');
+  const fields = tableFields(schema, 'sample_item');
+  assert.equal(fields.sample_channel.optionSetOpen, true);
+  const mappings = { sample_item: { entitySet: 'sample_items', idColumn: 'sample_itemid', schemaComplete: true, fieldMetadata: fields } };
+  const initial = { mappings, tables: { sample_item: [] }, settings: { permissionMode: 'permissive' } };
+  const store = await new DataStore({ state: initial }).init();
+  await store.create('sample_items', { sample_name: 'Synthetic extension', sample_channel: 17 }, { id: 'fixture', roles: [] }, { coerce: true });
+  const rows = { sample_item: [{ sample_channel: 17 }] };
+  assert.deepEqual(schemaViolations(rows, schemaFieldIndex(schema, ['sample_item'])), []);
+  assert.deepEqual(schemaViolations(rows, fieldIndexFromMappings(mappings)), []);
+  schema.optionSets.socialprofile_community = { source: 'synthetic-solution.xml', options: [{ value: 0, labels: { 1033: 'Exported' } }] };
+  const closed = tableFields(schema, 'sample_item');
+  assert.equal(closed.sample_channel.optionSetOpen, undefined);
+  assert.equal(schemaViolations(rows, schemaFieldIndex(schema, ['sample_item']))[0].kind, 'option-value');
+  const closedStore = await new DataStore({ state: { ...initial, mappings: { sample_item: { ...mappings.sample_item, fieldMetadata: closed } } } }).init();
+  await assert.rejects(closedStore.create('sample_items', { sample_name: 'Synthetic', sample_channel: 17 }, { id: 'fixture', roles: [] }, { coerce: true }), error => error.code === 'PicklistValueOutOfRange');
+});
+
 test("unbalanced XML is recovered with a diagnostic instead of dropping the layer", async (t) => {
   const root = await tree(t, {
     "Entities/sample_item/Entity.xml": entityXml("sample_item", { set: "sample_items" }).replace("</attributes>", "<attribute><LogicalName>sample_x</LogicalName></attributes>"),

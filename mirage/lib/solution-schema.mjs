@@ -1066,6 +1066,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
     dataverseType: type,
     ...(attribute.optionSetName ? { optionSetName: attribute.optionSetName, optionSetSource: globalSet?.source,
       ...(globalSet?.sourceKind ? { optionSetSourceKind: globalSet.sourceKind } : {}),
+      ...(!attribute.optionSet?.options?.length && globalSet?.open ? { optionSetOpen: true } : {}),
       ...(globalSet?.dynamic ? { optionSetDynamic: true } : {}) } : {}),
     ...(states.length ? { states } : {}),
     ...(statuses.length ? { statuses } : {}),

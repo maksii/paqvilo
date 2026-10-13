@@ -3068,7 +3068,7 @@ function assertBounds(value, definition, code, innerCode, { entity, attribute, k
 /** A choice write must be one of the column's exported options (PicklistValueOutOfRange). */
 function assertOption(value, definition, { entity, attribute }) {
   const options = Array.isArray(definition.options) ? definition.options : [];
-  if (options.length && !options.some((option) => Number(option?.value) === value)) {
+  if (definition.optionSetOpen !== true && options.length && !options.some((option) => Number(option?.value) === value)) {
     if (["state", "status"].includes(String(definition.dataverseType ?? definition.type ?? "").toLowerCase()))
       throw new DataError(
         "State code is invalid or state code is valid but status code is invalid for a specified state code.",
