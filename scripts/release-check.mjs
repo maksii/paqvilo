@@ -15,11 +15,12 @@ const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_Ex
 export const PROJECT_TEMPLATE_FILES = [
   'gitignore.template', 'gitattributes.template', 'editorconfig.template', 'README.md', 'AGENTS.md',
   'pack.mjs.template', 'pack.test.mjs.template', 'pack-README.md', 'support-mirage.mjs.template', 'no-pack.test.mjs.template',
-  'test-browser.mjs.template',
+  'test-browser.mjs.template', 'smoke.test.mjs.template',
 ].map(name => `templates/project/${name}`);
 
 export const REQUIRED_RELEASE_FILES = [
   'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',
+  'lense/project-workflows.mjs',
   'lense/project-editor.mjs', 'lense/scaffold.mjs', 'lense/dev-messages.mjs', 'docs/project-scaffold.md',
   ...PROJECT_TEMPLATE_FILES,
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',

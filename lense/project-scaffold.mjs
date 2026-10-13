@@ -4,6 +4,7 @@ import YAML from 'yaml';
 import { writeScaffold } from './scaffold.mjs';
 import { editorFiles } from './project-editor.mjs';
 import { identifier } from './config-schema.mjs';
+import { developmentWorkflows } from './project-workflows.mjs';
 
 const TEMPLATE = new URL('../templates/project/', import.meta.url);
 const json = value => JSON.stringify(value, null, 2) + '\n';
@@ -29,27 +30,22 @@ export function projectScripts({ sites, browser, packs, vscode }) {
   const config = '--config ./paqvilo.config.yml';
   const lense = command => `paqvilo lense ${command} ${config}`;
   const mirage = command => `paqvilo mirage ${command} ${config}`;
-  const dev = `${lense('dev')} --headed --browser ${browser} --profile lense`;
-  const local = `${mirage('dev')} --headed --browser ${browser} --profile mirage --preset-mode bootstrap`;
   const unit = packs.length ? packs.map(pack => `${pack.directory}/test/*.test.mjs`).join(' ') : 'test/*.test.mjs';
   const scripts = {
     setup: `npm install --ignore-scripts && paqvilo doctor --setup --browser ${browser}${vscode ? ' && paqvilo init --refresh-editor --config ./paqvilo.config.yml' : ''}`,
     'check:setup': `paqvilo doctor --setup --browser ${browser}`,
     'check:scaffold': 'paqvilo init --check --config ./paqvilo.config.yml',
     lense: 'paqvilo lense', mirage: 'paqvilo mirage',
-    dev: `${dev} --portals all`, 'dev:pick': `${dev} --pick --portals selected`, 'dev:debug': 'npm run dev -- --debug-port 9222',
   };
-  for (const site of sites) {
-    scripts[`dev:${site}`] = `${dev} --site ${site} --portals selected`;
-    scripts[`dev:${site}:debug`] = `npm run dev:${site} -- --debug-port 9222`;
+  const workflows = developmentWorkflows({ sites, browser });
+  for (const [name, workflow] of Object.entries(workflows)) {
+    scripts[name] = name.endsWith(':debug')
+      ? `npm run ${name.slice(0, -6)} -- --debug-port ${workflow.args.at(-1)}`
+      : `paqvilo ${workflow.args.join(' ')}`;
   }
   for (const command of ['list', 'use', 'doctor', 'map', 'status', 'resources', 'agent', 'verify']) scripts[command] = lense(command);
   scripts['audit:resources'] = lense('audit');
-  Object.assign(scripts, { 'mirage:init': mirage('init'), 'mirage:dev': `${local} --portals all`, 'mirage:dev:debug': 'npm run mirage:dev -- --debug-port 9223' });
-  for (const site of sites) {
-    scripts[`mirage:dev:${site}`] = `${local} --site ${site} --portals selected`;
-    scripts[`mirage:dev:${site}:debug`] = `npm run mirage:dev:${site} -- --debug-port 9223`;
-  }
+  scripts['mirage:init'] = mirage('init');
   for (const command of ['start', 'status', 'stop']) scripts[`mirage:${command}`] = mirage(command);
   scripts['mirage:capture'] = mirage('capture-shell');
   scripts.test = `node --test --test-concurrency=4 --test-timeout=180000 ${unit}`;
@@ -71,7 +67,9 @@ export async function prepareProject(directory, options = {}) {
   if (!['msedge', 'chrome', 'chromium'].includes(browser)) throw new Error('--browser must be msedge, chrome or chromium');
   const sourceRoot = options.sourceRoot ?? './sources';
   if (typeof sourceRoot !== 'string' || !sourceRoot.trim() || /[\x00-\x1f\x7f]/.test(sourceRoot)) throw new Error('--source-root must be a non-empty path without control characters');
-  const { version } = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const metadata = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const { version } = metadata;
+  const docs = metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
   const toolkit = options.toolkit ?? `^${version}`;
   if (!toolkit.trim() || /[\x00-\x1f\x7f]/.test(toolkit)) throw new Error('--toolkit must be a non-empty dependency specification');
   const packs = packIds.map(id => ({ id, directory: packIds.length === 1 ? 'pack' : `packs/${id}` }));
@@ -90,11 +88,11 @@ export async function prepareProject(directory, options = {}) {
   }
   doc.getIn(['defaults', 'mirage', 'solutionRoots'], true).comment = ' TODO(paqvilo-init): list unpacked Solution roots relative to sourceRoot, or confirm none are needed';
   const files = {
-    'package.json': json({ name, private: true, type: 'module', engines: { node: '>=22' }, scripts, devDependencies: { paqvilo: toolkit }, paqvilo: { scaffold: 1, vscode } }),
+    'package.json': json({ name, private: true, type: 'module', engines: { node: metadata.engines.node }, scripts, devDependencies: { paqvilo: toolkit }, paqvilo: { scaffold: 1, vscode } }),
     'paqvilo.config.yml': String(doc),
     '.gitignore': await template('gitignore.template'), '.gitattributes': await template('gitattributes.template'),
-    '.editorconfig': await template('editorconfig.template'), '.node-version': '22\n',
-    'README.md': await template('README.md', { name }), 'AGENTS.md': await template('AGENTS.md', { name }),
+    '.editorconfig': await template('editorconfig.template'), '.node-version': metadata.engines.node.match(/\d+/)[0] + '\n',
+    'README.md': await template('README.md', { name, docs }), 'AGENTS.md': await template('AGENTS.md', { name, docs }),
     'tools/test-browser.mjs': await template('test-browser.mjs.template', { testRoots: JSON.stringify([...packs.map(pack => `${pack.directory}/test-browser`), 'test-browser']) }),
     '.env.example': `# Personal settings; CLI > shell > .env > catalogue. Paths resolve from this catalogue.\n#PAQVILO_REPO=${sourceRoot}\n#PAQVILO_SITE=${sites[0]}\n#PAQVILO_ENV=${env}\n#PAQVILO_BROWSER=${browser}\n#PAQVILO_PROFILE=feature\n#PAQVILO_SCOPE=all\n#PAQVILO_BASELINE=HEAD\n#PAQVILO_PORTALS=all\n` + sites.map(site => /^[a-z0-9]+$/.test(site) ? `#PAQVILO_${site.toUpperCase()}_SOURCE=${sourceRoot}/${site}-portal\n#PAQVILO_${site.toUpperCase()}_ENV_${env.toUpperCase().replaceAll('-', '_')}=https://${site}-${env}.example.test\n` : `# Site ${site}: use paqvilo.config.local.yml for per-site overrides (environment variable site IDs support alphanumerics only).\n`).join(''),
     'docs/workflows.md': '# Project workflows\n\nRun these commands from the project folder. Lense browser actions and explicit shell capture can reach live portals; use only authorized environments. Mirage development and the generated tests use local sources.\n\n| npm script | Command |\n| --- | --- |\n' + Object.entries(scripts).map(([script, command]) => `| \`npm run ${script}\` | \`${command}\` |`).join('\n') + '\n',
@@ -103,12 +101,15 @@ export async function prepareProject(directory, options = {}) {
   else files['test/catalogue.test.mjs'] = await template('no-pack.test.mjs.template');
   for (const pack of packs) {
     files[`${pack.directory}/pack.mjs`] = await template('pack.mjs.template', { pack: pack.id });
-    files[`${pack.directory}/README.md`] = await template('pack-README.md', { pack: pack.id });
+    files[`${pack.directory}/README.md`] = await template('pack-README.md', { pack: pack.id, docs });
     files[`${pack.directory}/test/pack.test.mjs`] = await template('pack.test.mjs.template', { pack: pack.id, support: packs.length === 1 ? '../../support/mirage.mjs' : '../../../support/mirage.mjs' });
     for (const folder of ['lib', 'generators', 'fixtures', 'acceptance', 'tools', 'test-browser']) files[`${pack.directory}/${folder}/.gitkeep`] = '';
   }
   for (const site of sites) files[`test-browser/fixtures/${site}/.gitkeep`] = '';
-  files['test-browser/smoke.test.mjs'] = `import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport fs from 'node:fs';\nimport { fileURLToPath } from 'node:url';\nimport { ${packs.length ? 'mirage' : 'createSimulator'} } from '${packs.length ? '../support/mirage.mjs' : 'paqvilo/mirage'}';\n\n// TODO(paqvilo-init): add exported loopback fixtures and meaningful page assertions\nfor (const site of ${JSON.stringify(sites)}) {\n  const sourceDir = fileURLToPath(new URL(\`./fixtures/\${site}/\`, import.meta.url));\n  const present = fs.existsSync(new URL(\`./fixtures/\${site}/website.yml\`, import.meta.url));\n  test(\`\${site}: local portal smoke\`, { skip: present ? false : 'Add this site fixture (website.yml) before claiming page coverage' }, async () => {\n    const simulator = await ${packs.length ? 'mirage.' : ''}createSimulator({ sourceDir, port: 0, watch: false });\n    try {\n      const response = await fetch(simulator.url, { redirect: 'manual' });\n      assert.equal(response.status, 200);\n    } finally { await simulator.close(); }\n  });\n}\n`;
+  files['test-browser/smoke.test.mjs'] = await template('smoke.test.mjs.template', {
+    binding: packs.length ? "import { mirage } from '../support/mirage.mjs';" : "import { createSimulator } from 'paqvilo/mirage';",
+    factory: packs.length ? 'mirage.createSimulator' : 'createSimulator', sites: JSON.stringify(sites),
+  });
   if (vscode) {
     // Relative initial paths keep scaffolds byte-identical across target folders.
     const webRoot = path.isAbsolute(sourceRoot) ? sourceRoot : '${workspaceFolder}/' + sourceRoot.replaceAll('\\', '/').replace(/^\.\//, '');

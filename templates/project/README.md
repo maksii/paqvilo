@@ -24,4 +24,4 @@ This project owns portal sources, catalogue settings, data packs and acceptance 
 5. Run `npm run mirage:init` and `npm run mirage:dev` for local work. Use `npm run dev` for authorized live overlays.
 6. Run `npm run validate` and `npx paqvilo init --check` before finishing.
 
-See [workflows](docs/workflows.md) for the generated commands and [AGENTS.md](AGENTS.md) for boundaries. Toolkit documentation is available in `node_modules/paqvilo/docs/` and `node_modules/paqvilo/mirage/docs/` after installation.
+See [workflows](docs/workflows.md) for this project's commands, [AGENTS.md](AGENTS.md) for agent instructions, and the maintained [setup]({{docs}}docs/getting-started.md), [configuration]({{docs}}docs/configuration.md), [Lense]({{docs}}docs/lense.md) and [Mirage]({{docs}}mirage/README.md) guides. The installed CLI and bundled documentation describe the installed version when online docs differ.

@@ -7,7 +7,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
-import { checkProject, scaffoldWarning } from '../lense/project-check.mjs';
+import { checkProject as inspectProject, scaffoldWarning } from '../lense/project-check.mjs';
 import { refreshEditor } from '../lense/project-editor.mjs';
 import { loadCatalogue } from '../lense/config.mjs';
 import { createMirageContext } from '../mirage/api.mjs';
@@ -22,6 +22,7 @@ async function project(t) {
 }
 const read = (directory, name) => fs.readFile(path.join(directory, name), 'utf8');
 const readJson = async (directory, name) => JSON.parse(await read(directory, name));
+const checkProject = (directory, options = {}) => inspectProject(directory, { processEnv: {}, ...options });
 const run = (directory, ...args) => spawnSync(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 20000 });
 
 test('defaults generate a complete empty project, valid catalogue and bound offline pack', async t => {
@@ -34,6 +35,8 @@ test('defaults generate a complete empty project, valid catalogue and bound offl
   const manifest = await readJson(directory, 'package.json');
   const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
   assert.equal(manifest.devDependencies.paqvilo, `^${toolkit.version}`);
+  assert.equal(manifest.engines.node, toolkit.engines.node);
+  assert.equal((await read(directory, '.node-version')).trim(), toolkit.engines.node.match(/\d+/)[0]);
   assert.equal(manifest.private, true);
   assert.equal(manifest.paqvilo.scaffold, 1);
   assert.match(manifest.scripts.dev, /--profile lense --portals all/);
@@ -76,7 +79,13 @@ test('multiple sites/packs, chrome, custom paths and dependency specification ar
   const tasks = await readJson(first, '.vscode/tasks.json');
   const launches = await readJson(first, '.vscode/launch.json');
   const labels = new Set(tasks.tasks.map(task => task.label));
-  for (const task of tasks.tasks) assert.ok(manifest.scripts[task.script]);
+  for (const task of tasks.tasks) {
+    if (task.type === 'npm') assert.ok(manifest.scripts[task.script]);
+    else {
+      assert.equal(task.type, 'process');
+      assert.equal(task.args[task.args.indexOf('--browser') + 1], 'chrome');
+    }
+  }
   for (const launch of launches.configurations) {
     assert.equal(launch.type, 'chrome');
     assert.ok(labels.has(launch.preLaunchTask));
@@ -99,6 +108,126 @@ test('no-pack/no-vscode generate runnable tests without pack adapters or editor 
   assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /from 'paqvilo\/mirage'/);
 });
 
+test('agent guidance is concise, covers setup/validation/boundaries and links to maintained toolkit docs', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'guided' });
+  const instructions = await read(directory, 'AGENTS.md');
+  assert.ok(instructions.trim().split(/\s+/).length <= 300);
+  for (const phrase of ['npm run setup', 'init --check', "CLI's `--help`", 'npm run validate', 'caution: true', 'live writes', 'bearer tokens', 'Stop only sessions']) assert.ok(instructions.includes(phrase), phrase);
+  const metadata = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  const base = metadata.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
+  const links = [...instructions.matchAll(/\]\((https:[^)]+)\)/g)].map(match => match[1]);
+  assert.ok(links.length >= 5);
+  for (const link of links) {
+    assert.ok(link.startsWith(base));
+    await fs.access(new URL('../' + link.slice(base.length), import.meta.url));
+  }
+  assert.ok(!instructions.includes('{{'));
+});
+
+test('site IDs that resemble workflow names preserve project-wide picker and debugger scripts', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'names', sites: ['debug', 'pick', 'site'], noPack: true });
+  const manifest = await readJson(directory, 'package.json');
+  assert.equal(manifest.scripts['dev:debug'], 'npm run dev -- --debug-port 9222');
+  assert.match(manifest.scripts['dev:pick'], /--pick --portals selected$/);
+  for (const product of ['dev', 'mirage:dev']) {
+    for (const site of ['debug', 'pick']) {
+      const script = `${product}:site:${site}:dev`;
+      assert.match(manifest.scripts[script], new RegExp(`--site ${site} --portals selected$`));
+      assert.match(manifest.scripts[`${script}:debug`], /--debug-port 922[23]$/);
+    }
+  }
+  const tasks = await readJson(directory, '.vscode/tasks.json');
+  assert.equal(new Set(tasks.tasks.map(task => task.label)).size, tasks.tasks.length);
+  const launches = await readJson(directory, '.vscode/launch.json');
+  assert.equal(launches.configurations.length, 8);
+  for (const launch of launches.configurations) {
+    const task = tasks.tasks.find(task => task.label === launch.preLaunchTask);
+    assert.equal(task.args[task.args.indexOf('--debug-port') + 1], String(launch.port));
+  }
+});
+
+test('refresh adds/removes site tasks and uses catalogue/browser overrides without editing project scripts', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'refresh', sites: ['old'] });
+  const before = await read(directory, 'package.json');
+  const catalogue = YAML.parse(await read(directory, 'paqvilo.config.yml'));
+  catalogue.sites.new = catalogue.sites.old;
+  delete catalogue.sites.old;
+  catalogue.defaultSite = 'new';
+  catalogue.browser.channel = 'chrome';
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(catalogue));
+  await refreshEditor(directory, { processEnv: {} });
+  const tasks = await readJson(directory, '.vscode/tasks.json');
+  assert.ok(!tasks.tasks.some(task => task.label.includes('dev:old')));
+  const task = tasks.tasks.find(task => task.label.endsWith('dev:new:debug'));
+  assert.ok(task);
+  assert.equal(task.args[task.args.indexOf('--site') + 1], 'new');
+  assert.equal(task.args[task.args.indexOf('--browser') + 1], 'chrome');
+  assert.equal(task.args[task.args.indexOf('--config') + 1], path.join(directory, 'paqvilo.config.yml'));
+  assert.equal((await readJson(directory, '.vscode/launch.json')).configurations[0].type, 'chrome');
+  assert.equal(await read(directory, 'package.json'), before);
+  await refreshEditor(directory, { processEnv: { PAQVILO_BROWSER: 'msedge' } });
+  const overridden = (await readJson(directory, '.vscode/tasks.json')).tasks.find(item => item.label === task.label);
+  assert.equal(overridden.args[overridden.args.indexOf('--browser') + 1], 'msedge');
+});
+
+test('completion check follows shell source selection and honors Git ignores even when all text is ignored', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'check' });
+  const source = path.join(directory, 'external/portal-portal');
+  await fs.mkdir(source, { recursive: true });
+  assert.ok(checkProject(directory).todo.some(item => item.kind === 'missing-source'));
+  const selected = checkProject(directory, { processEnv: { PAQVILO_REPO: path.dirname(source) } });
+  assert.ok(!selected.todo.some(item => item.kind === 'missing-source'));
+  const gitEnv = Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith('GIT_')));
+  const init = spawnSync('git', ['init', '-q', directory], { env: gitEnv, windowsHide: true });
+  assert.equal(init.status, 0);
+  await fs.writeFile(path.join(directory, '.gitignore'), '*\n');
+  assert.ok(!checkProject(directory).todo.some(item => item.kind === 'marker'), 'an empty index must not scan ignored text');
+});
+
+test('completion rejects unusable site/environment selections and personal overrides do not hide shared placeholders', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'selections', noPack: true });
+  const catalogue = YAML.parse(await read(directory, 'paqvilo.config.yml'));
+  assert.ok(checkProject(directory, { processEnv: { PAQVILO_PORTAL_ENV_DEV: 'http://127.0.0.1:8787' } }).todo.some(item => item.kind === 'placeholder-origin'));
+  catalogue.defaultSite = 'absent';
+  catalogue.sites.portal.defaultEnv = 'absent';
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(catalogue));
+  const invalid = checkProject(directory).todo.filter(item => item.kind === 'selection');
+  assert.equal(invalid.length, 2);
+  assert.ok(invalid.every(item => item.line > 1));
+  catalogue.defaultSite = 'portal';
+  catalogue.sites.portal.environments = {};
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(catalogue));
+  assert.ok(checkProject(directory).todo.some(item => item.kind === 'selection' && item.text.includes('at least one environment')));
+  delete catalogue.defaultSite;
+  catalogue.sites = {};
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(catalogue));
+  assert.ok(checkProject(directory).todo.some(item => item.kind === 'selection' && item.text.includes('at least one site')));
+});
+
+test('unsafe editor outputs fail before other documents change, and generated alternatives are reported as created', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'safe' });
+  const before = await read(directory, '.vscode/tasks.json');
+  const config = YAML.parse(await read(directory, 'paqvilo.config.yml'));
+  config.browser.channel = 'chrome';
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(config));
+  const launch = path.join(directory, '.vscode/launch.json');
+  await fs.unlink(launch);
+  await fs.mkdir(launch);
+  await assert.rejects(refreshEditor(directory, { processEnv: {} }), /regular file/);
+  assert.equal(await read(directory, '.vscode/tasks.json'), before);
+  await fs.rmdir(launch);
+  await fs.writeFile(launch, '{"custom":true}');
+  const report = await refreshEditor(directory, { processEnv: {} });
+  assert.ok(report.created.includes('.vscode/launch.generated.json'));
+  assert.ok(!report.updated.includes('.vscode/launch.generated.json'));
+});
+
 test('generated browser runner ignores empty pack folders and propagates real test failures', async t => {
   const directory = await project(t);
   await prepareProject(directory, { name: 'runner', packs: ['alpha', 'beta'], noVscode: true });
@@ -113,6 +242,22 @@ test('generated browser runner ignores empty pack folders and propagates real te
   result = execute();
   assert.equal(result.status, 1);
   assert.match(result.stdout, /Expected synthetic failure/);
+});
+
+test('generated smoke exercises enhanced and code-site exports instead of silently skipping them', async t => {
+  for (const format of ['enhanced', 'code-site']) {
+    const directory = await project(t);
+    await prepareProject(directory, { name: 'fixture', noPack: true, noVscode: true });
+    const destination = path.join(directory, 'test-browser/fixtures/portal');
+    await fs.cp(fileURLToPath(new URL(`../test-browser/fixtures/${format}/`, import.meta.url)), destination, { recursive: true });
+    await assert.rejects(fs.access(path.join(destination, 'website.yml')), { code: 'ENOENT' });
+    await fs.mkdir(path.join(directory, 'node_modules'));
+    await fs.symlink(fileURLToPath(new URL('../', import.meta.url)), path.join(directory, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
+    const result = spawnSync(process.execPath, ['tools/test-browser.mjs'], { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+    assert.equal(result.status, 0, result.stdout + result.stderr);
+    assert.match(result.stdout, /pass 1/);
+    assert.match(result.stdout, /skipped 0/);
+  }
 });
 
 test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async t => {

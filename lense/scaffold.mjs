@@ -15,6 +15,7 @@ export async function assertScaffoldPath(file, { directory = false } = {}) {
     if (info.isSymbolicLink() || ((current !== target || directory) && !info.isDirectory())) {
       throw new Error(`Scaffold path must be a regular directory without symbolic links: ${current}`);
     }
+    if (current === target && !directory && !info.isFile()) throw new Error(`Scaffold output must be a regular file: ${current}`);
   }
   return target;
 }

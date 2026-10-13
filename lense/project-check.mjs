@@ -21,7 +21,7 @@ function safeTextFile(directory, name) {
 function projectFiles(directory) {
   // Include untracked starter files, and honor project ignores once Git is initialized.
   const git = spawnSync('git', ['-C', directory, 'ls-files', '-z', '--cached', '--others', '--exclude-standard'], { encoding: 'utf8', windowsHide: true, timeout: 10000, maxBuffer: 4 * 1024 * 1024 });
-  if (git.status === 0 && git.stdout) return [...new Set(git.stdout.split('\0').filter(Boolean))].filter(name => safeTextFile(directory, name)).sort();
+  if (git.status === 0) return [...new Set(git.stdout.split('\0').filter(Boolean))].filter(name => safeTextFile(directory, name)).sort();
   const names = [];
   const walk = (folder, prefix = '') => {
     for (const entry of fs.readdirSync(folder, { withFileTypes: true })) {
@@ -57,7 +57,7 @@ export function scaffoldWarning(directory) {
   return null;
 }
 
-export function checkProject(directory, { config, processEnv = {} } = {}) {
+export function checkProject(directory, { config, processEnv = process.env } = {}) {
   const target = path.resolve(directory);
   const todo = scaffoldMarkers(target);
   const configFile = path.resolve(target, config ?? 'paqvilo.config.yml');
@@ -74,17 +74,35 @@ export function checkProject(directory, { config, processEnv = {} } = {}) {
   try { catalogue = loadCatalogue({ config: configFile }, processEnv); }
   catch (error) { add('schema', error.message, error.message.match(/(?:Unknown setting )?([\w.-]+)(?: must| is|$)/)?.[1]?.replace(/^config\./, '') ?? ''); }
   if (catalogue) {
+    if (!Object.keys(catalogue.sites).length) add('selection', 'Configure at least one site before completing the scaffold', 'sites');
+    if (catalogue.root.defaultSite && !Object.hasOwn(catalogue.sites, catalogue.root.defaultSite)) {
+      add('selection', 'defaultSite does not name a configured site', 'defaultSite');
+    }
+    const originFields = new Set();
+    const origin = (value, field) => {
+      let url;
+      try { url = new URL(value); } catch { return; } // The effective catalogue validator reports malformed URLs.
+      if ((url.hostname === 'example.test' || url.hostname.endsWith('.example.test')) && !originFields.has(field)) {
+        originFields.add(field);
+        add('placeholder-origin', `${field}: replace the placeholder origin`, field);
+      }
+    };
+    // A personal environment must not hide an unfinished shared placeholder.
+    for (const [name, site] of Object.entries(document?.toJS()?.sites ?? {})) {
+      for (const [env, settings] of Object.entries(site?.environments ?? {})) origin(typeof settings === 'string' ? settings : settings?.url, `sites.${name}.environments.${env}`);
+    }
     const folder = (value, field) => {
       try { if (fs.statSync(value).isDirectory()) return; } catch { /* diagnostic below */ }
       add('missing-source', `${field}: folder does not exist: ${value}`, field, 'warning');
     };
     folder(catalogue.sourceRoot, 'sourceRoot');
     for (const [name, site] of Object.entries(catalogue.sites)) {
+      if (!Object.keys(site.environments).length) add('selection', `sites.${name}: configure at least one environment`, `sites.${name}.environments`);
+      if (site.defaultEnv && !Object.hasOwn(site.environments, site.defaultEnv)) add('selection', `sites.${name}.defaultEnv does not name a configured environment`, `sites.${name}.defaultEnv`);
       if (site.sourceDir) folder(site.sourceDir, `sites.${name}.source`);
       else add('missing-source', `sites.${name}.source: select a portal export folder`, `sites.${name}.source`, 'warning');
       for (const [env, settings] of Object.entries(site.environments)) {
-        const host = new URL(settings.url).hostname;
-        if (host === 'example.test' || host.endsWith('.example.test')) add('placeholder-origin', `sites.${name}.environments.${env}: replace the placeholder origin`, `sites.${name}.environments.${env}`);
+        origin(settings.url, `sites.${name}.environments.${env}`);
       }
       const mirage = resolveMirageConfig(site.mirage, catalogue);
       for (const root of mirage.solutionRoots) folder(root, `sites.${name}.mirage.solutionRoots`);

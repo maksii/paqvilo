@@ -5,6 +5,7 @@ import { DEV_BACKGROUND } from './dev-messages.mjs';
 import { assertScaffoldPath } from './scaffold.mjs';
 import { loadCatalogue } from './config.mjs';
 import { resolveCatalogue } from './resolved-catalogue.mjs';
+import { developmentWorkflows, siteWorkflowName } from './project-workflows.mjs';
 
 const json = value => JSON.stringify(value, null, 2) + '\n';
 const digest = value => createHash('sha256').update(json(value)).digest('hex');
@@ -18,22 +19,27 @@ function unedited(body) {
   } catch { return false; }
 }
 
-export function editorFiles({ name, sites, browser, sourceRoot, scripts, folders = ['.'] }) {
+export function editorFiles({ name, sites, browser, sourceRoot, scripts, folders = ['.'], config = '${workspaceFolder}/paqvilo.config.yml' }) {
   const prefix = name[0].toUpperCase() + name.slice(1);
   const label = script => `${prefix}: ${script}`;
-  const tasks = Object.keys(scripts).map(script => {
-    const background = /^(?:dev|mirage:dev)(?::|$)/.test(script) && script !== 'dev:pick';
-    return { label: label(script), type: 'npm', script, options: { cwd: '${workspaceFolder}' },
-      ...(background ? { isBackground: true, problemMatcher: { owner: 'paqvilo', pattern: { regexp: '^(?!)$', file: 1, location: 2, message: 3 }, background: DEV_BACKGROUND } } : { problemMatcher: [] }) };
-  });
+  const workflows = developmentWorkflows({ sites, browser, config });
+  const generatedDev = (script, command) => /^(?:dev|mirage:dev)(?::|$)/.test(script)
+    && /paqvilo (?:lense|mirage) dev\b|npm run (?:dev|mirage:dev).* -- --debug-port/.test(command);
+  const tasks = Object.entries(scripts)
+    .filter(([script, command]) => !workflows[script] && !generatedDev(script, command))
+    .map(([script]) => ({ label: label(script), type: 'npm', script, options: { cwd: '${workspaceFolder}' }, problemMatcher: [] }));
+  for (const [script, workflow] of Object.entries(workflows)) {
+    tasks.push({ label: label(script), type: 'process', command: 'node',
+      args: ['${workspaceFolder}/node_modules/paqvilo/bin/paqvilo.mjs', ...workflow.args], options: { cwd: '${workspaceFolder}' },
+      ...(workflow.background ? { isBackground: true, problemMatcher: { owner: 'paqvilo', pattern: { regexp: '^(?!)()()()$', file: 1, location: 2, message: 3 }, background: DEV_BACKGROUND } } : { problemMatcher: [] }) });
+  }
   const configurations = [];
   for (const product of ['dev', 'mirage:dev']) {
     for (const site of [null, ...sites]) {
-      const script = site ? `${product}:${site}:debug` : `${product}:debug`;
-      if (!scripts[script]) continue;
+      const script = site ? `${siteWorkflowName(product, site)}:debug` : `${product}:debug`;
       configurations.push({ name: label(script), type: browser === 'msedge' ? 'msedge' : 'chrome', request: 'attach',
         port: product === 'dev' ? 9222 : 9223, webRoot: sourceRoot, preLaunchTask: label(script),
-        skipFiles: ['**/bootstrap*.js', '**/jquery*.js', '**/*.min.js'] });
+        skipFiles: ['**/bootstrap*.js', '**/jquery*.js', '**/preform*.bundle*.js', '**/postform*.bundle*.js', '**/*.min.js'] });
     }
   }
   return {
@@ -63,7 +69,14 @@ export async function refreshEditor(directory, { config, workspaceOnly = false, 
   }
   const files = editorFiles({ name: manifest.name, sites: resolved.sites.map(site => site.name),
     browser: catalogue.settings.values.PAQVILO_BROWSER ?? catalogue.root.browser.channel,
-    sourceRoot: resolved.sourceRoot, scripts: manifest.scripts ?? {}, folders });
+    sourceRoot: resolved.sourceRoot, scripts: manifest.scripts ?? {}, folders, config: configFile });
+  // Refuse unsafe output paths before updating any editor document.
+  const outputs = Object.keys(files).filter(name => !workspaceOnly || name.endsWith('.code-workspace'));
+  for (const name of outputs) {
+    await assertScaffoldPath(path.join(target, name));
+    const alternate = name.endsWith('.json') ? name.replace(/\.json$/, '.generated.json') : name.replace(/\.code-workspace$/, '.generated.code-workspace');
+    await assertScaffoldPath(path.join(target, alternate));
+  }
   const created = [], updated = [], skipped = [], conflicts = [];
   for (const [name, body] of Object.entries(files)) {
     if (workspaceOnly && !name.endsWith('.code-workspace')) continue;
@@ -85,7 +98,7 @@ export async function refreshEditor(directory, { config, workspaceOnly = false, 
     }
     await fs.mkdir(path.dirname(destination), { recursive: true });
     await fs.writeFile(destination, body, { flag: destinationExists ? 'w' : 'wx' });
-    (existing === undefined ? created : updated).push(path.relative(target, destination).replaceAll('\\', '/'));
+    (destinationExists ? updated : created).push(path.relative(target, destination).replaceAll('\\', '/'));
   }
   return { schemaVersion: 1, ok: true, directory: target, created, updated, skipped, conflicts };
 }
