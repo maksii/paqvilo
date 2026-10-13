@@ -9,12 +9,13 @@ import { scanSolutionSources, buildSolutionSchema } from "./solution-schema.mjs"
 import { SolutionFileCache } from "./solution-cache.mjs";
 import { applyObserved } from "./redirects.mjs";
 import { isTenantAuthority } from "./external-login.mjs";
+import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles",
 ]);
 
 function list(value, label) {
@@ -194,6 +195,7 @@ function normalizePortal(entry, index) {
     sourcePath,
     origin: entry.origin == null ? null : validateOrigin(entry.origin, `portals[${index}].origin`),
     deploymentProfile: entry.deploymentProfile ?? entry.deployment_profile ?? null,
+    deploymentProfiles: entry.deploymentProfiles,
     solutionIds: solutions,
     reference: entry.reference == null ? null : String(entry.reference),
     observed: observedConfig(entry.observed, `portals[${index}].observed`),
@@ -310,6 +312,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     if (portal.observed?.pluginSources) portal.observed.pluginSources = Object.fromEntries(Object.entries(portal.observed.pluginSources).map(([name, source]) => [name, { ...source, root: source.root ?? base }]));
     return {
       ...portal,
+      deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base),
       sourceDir: await resolveSource(portal.sourcePath, "Portal", portal.id),
       solutions: selected.map((solution) => solution.id),
       solutionRoots: selected.map((solution) => solution.root),
@@ -388,8 +391,8 @@ export function projectSummary(project, portalId = null) {
     watch: project.watch,
     solutionOrder: project.solutionOrder,
     stateDirectory: project.stateDirectory,
-    portals: project.portals.map(({ id, sourceDir, origin, deploymentProfile, solutions, reference, observed, dataModel }) => ({
-      id, sourceDir, origin: origin ?? projectOrigin(project, { origin, reference }), deploymentProfile, solutions, reference, observed: observed ?? null, dataModel: dataModel ?? null,
+    portals: project.portals.map(({ id, sourceDir, origin, deploymentProfile, deploymentProfiles, solutions, reference, observed, dataModel }) => ({
+      id, sourceDir, origin: origin ?? projectOrigin(project, { origin, reference }), deploymentProfile, deploymentProfiles, solutions, reference, observed: observed ?? null, dataModel: dataModel ?? null,
     })),
     solutions: project.solutions.map(({ id, root }) => ({ id, root })),
     references: project.references,
@@ -415,17 +418,20 @@ export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, c
   };
   const portals = [];
   for (const source of project.portals) {
+    if (source.deploymentProfile && Object.keys(source.deploymentProfiles?.profiles ?? {}).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+    const activeProfiles = await loadDeploymentProfiles(source.deploymentProfiles ?? resolveDeploymentProfiles());
     const portal = applyObserved(await importPortal(source.sourceDir, {
       lcid,
       cache: portalCache,
       ...(source.deploymentProfile ? { deploymentProfile: source.deploymentProfile } : {}),
+      ...(activeProfiles.pagesFile ? { deploymentProfile: activeProfiles.profile, deploymentProfileFile: activeProfiles.pagesFile } : {}),
       ...(source.dataModel ? { dataModel: source.dataModel } : {}),
     }), source.observed);
     const roots = source.solutionRoots ?? project.solutionRoots;
     const { scan, schema } = await loadLayers(roots);
     const metadata = await importSolutionMetadata(roots, { portal, lcid, scan, schema, observed: source.observed });
     const solutionData = await importSolutionData(roots, { scan, schema, lcid });
-    portals.push({ ...source, portal, metadata, solutionData });
+    portals.push({ ...source, portal, metadata, solutionData, activeProfiles });
   }
   const shared = await loadLayers(project.solutionRoots);
   const solutionData = await importSolutionData(project.solutionRoots, { ...shared, lcid });

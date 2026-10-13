@@ -226,6 +226,7 @@ export async function resolveTarget(options) {
         project: projectSummary(project, portal.id),
         solutionOrder: project.solutionOrder,
         environmentVariables: project.environmentVariables,
+        deploymentProfiles: portal.deploymentProfiles,
         // Observed platform behaviour recorded for the portal (lib/project-config.mjs).
         observed: portal.observed ?? null,
       },
@@ -259,7 +260,7 @@ export async function resolveTarget(options) {
     stateFile: options.state ?? path.join(cfg.stateDir, "simulator", cfg.siteName, "state.json"),
     preset: options.preset ?? cfg.mirageConfig?.preset ?? null,
     // Observed platform behaviour from the site's mirage settings (paqvilo.config.yml).
-    simulatorOptions: { observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
+    simulatorOptions: { deploymentProfiles: cfg.mirageConfig?.deploymentProfiles, observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
   };
 }
 

@@ -15,6 +15,7 @@ import { parseEnv } from 'node:util';
 import YAML from 'yaml';
 import { renderSettings } from '../mirage/lib/render-settings.mjs';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
+import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
 
@@ -235,6 +236,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
   return {
     project: value.project ? path.resolve(configDir, value.project) : null,
+    ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir) } : {}),
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
     solutionRoots: (value.solutionRoots ?? []).map((root) => path.resolve(sourceRoot, root)),
     // Solution roots are a set layered in their dependency order; explicit keeps the listed order.

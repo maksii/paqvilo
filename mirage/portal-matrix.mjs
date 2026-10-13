@@ -663,9 +663,10 @@ export async function resolveTargets(options) {
           origin: projectOrigin(project, portal),
           reference: portal.reference ?? project.defaultReference?.id ?? null,
           deploymentProfile: portal.deploymentProfile ?? undefined,
+          deploymentProfiles: portal.deploymentProfiles,
           environmentVariables: project.environmentVariables ?? {},
           lcid: project.lcid ?? 1033,
-          simulatorOptions: { project: projectSummary(project, portal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables },
+          simulatorOptions: { project: projectSummary(project, portal.id), deploymentProfiles: portal.deploymentProfiles, solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables },
           sweepOptions: { project: project.configFile, portal: portal.id },
         })),
     };
@@ -689,9 +690,10 @@ export async function resolveTargets(options) {
       origin: cfg.origin ?? null,
       reference: cfg.envName,
       deploymentProfile: undefined,
+      deploymentProfiles: cfg.mirageConfig?.deploymentProfiles,
       environmentVariables: {},
       lcid: 1033,
-      simulatorOptions: {},
+      simulatorOptions: { deploymentProfiles: cfg.mirageConfig?.deploymentProfiles },
       sweepOptions: { site: cfg.siteName, env: cfg.envName, ...(options.config ? { config: options.config } : {}), ...(options.repo ? { repo: options.repo } : {}) },
     });
   }
@@ -705,7 +707,9 @@ async function importStage(target, context) {
   const census = await exportCensus(target.sourceDir);
   const censusMs = elapsed(started);
   started = performance.now();
-  const portal = await importPortal(target.sourceDir, { lcid: target.lcid, ...(target.deploymentProfile ? { deploymentProfile: target.deploymentProfile } : {}) });
+  const { resolveDeploymentProfiles, loadDeploymentProfiles } = await import('./lib/deployment-profiles.mjs');
+  const activeProfiles = await loadDeploymentProfiles(resolveDeploymentProfiles(target.deploymentProfiles));
+  const portal = await importPortal(target.sourceDir, { lcid: target.lcid, deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : target.deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile });
   const importMs = elapsed(started);
   context.census = census;
   context.portal = portal;
@@ -754,6 +758,7 @@ async function bootstrapStage(target, context) {
     solutionRoots: target.solutionRoots,
     order: target.solutionOrder,
     deploymentProfile: target.deploymentProfile,
+    deploymentProfiles: target.deploymentProfiles,
     origin: target.origin,
     environmentVariables: target.environmentVariables,
     lcid: target.lcid,
@@ -1305,6 +1310,7 @@ async function serveStage(resolved, context) {
       ...(portal.origin ? { origin: portal.origin } : {}),
       ...(portal.reference ? { reference: portal.reference } : {}),
       ...(portal.deploymentProfile ? { deploymentProfile: portal.deploymentProfile } : {}),
+      ...(portal.deploymentProfiles ? { deploymentProfiles: portal.deploymentProfiles } : {}),
       solutions: portal.solutions,
     })),
     solutions: project.solutions.map((solution) => ({ id: solution.id, path: solution.root })),

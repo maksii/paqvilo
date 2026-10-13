@@ -52,6 +52,11 @@ Use `portals: all` to support every configured target in one browser. Origins ac
 
 Mirage projects use `version: 2`, `primaryPortal`, `portals`, `solutions`, `references` and `dataPacks`. Each portal specifies `{ id, path, origin?, solutions?, reference?, deploymentProfile?, observed?, dataModel? }`; Solutions specify `{ id, path }`; references specify `{ id, origin, default? }`. Paths are project-relative and every portal gets isolated state. References provide explicit selection context and never authorize network reads or writes. Solution sets are layered in dependency order; `solutionOrder: explicit` preserves a deliberately ordered list.
 
+Mirage also supports [mapped deployment profiles](../mirage/docs/deployment-profiles.md):
+`mirage.deploymentProfiles` in a catalogue, or `deploymentProfiles` at project/portal level.
+Map named profiles to Pages and Solution settings files, choose defaults and required sections,
+then select and pin a local profile under `/_sim/` → Environment.
+
 An `observed` mapping records only behavior not available from exports. Supported fields include login-path, Web API and response-header conventions; validation requires an evidence reference. Use your site's own captured evidence. Never copy another organisation's observations merely because both sites use Power Pages.
 
 `observed.webApiErrorDetails: odata-wrapper` selects evidenced stable OData reader exception messages for supported JSON root and primitive conversion failures. `diagnostic` is the default. The setting preserves HTTP status, rejection and write atomicity; inner messages remain gated by `Webapi/error/innererror`. It adds no CLR stack, source path or generated runtime exception details and does not change SDK or flow errors. Unsupported reader grammar retains its existing diagnostic. Record native message evidence for the site before enabling it; full hosted stack and response-body equality remain separate checks.

@@ -390,6 +390,7 @@ export function cliArgs(cfg, action, args, project = null) {
   if (project) {
     const portal = args.portal ?? (action === 'serve' ? project.defaultPortal : null);
     return { cli, values: [action, '--project', project.configFile, ...(portal ? ['--portal', portal] : []),
+      ...(cfg?.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, project.configFile) ? ['--site', cfg.catalogueSite ?? cfg.siteName, '--env', cfg.envName] : []),
       ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []), ...common] };
   }
   const origin = httpsOrigin(cfg.origin);
@@ -465,6 +466,9 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
       render: renderSettings(cfg.mirageConfig?.render),
+      deploymentProfiles: cfg.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, projectInfo?.configFile)
+        ? cfg.mirageConfig.deploymentProfiles
+        : projectInfo?.portals.find(item => item.id === portalId)?.deploymentProfiles ?? cfg.mirageConfig?.deploymentProfiles ?? null,
     },
     solutionRoots,
   };
@@ -478,6 +482,7 @@ function identityMatches(left, right) {
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
     && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
+    && JSON.stringify(left.deploymentProfiles ?? null) === JSON.stringify(right.deploymentProfiles ?? null)
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
     && left.solutionOrder === right.solutionOrder
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])
@@ -660,6 +665,12 @@ export async function initProject(cfg, args = {}) {
     solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
     solutionOrder,
     references,
+    ...(configured.deploymentProfiles ? { deploymentProfiles: {
+      ...configured.deploymentProfiles,
+      profiles: Object.fromEntries(Object.entries(configured.deploymentProfiles.profiles).map(([id, sources]) => [id,
+        Object.fromEntries(Object.entries(sources).map(([section, source]) => [section, yamlPath(base, source)])),
+      ])),
+    } } : {}),
     ...(configured.dataPacks?.length ? { dataPacks: configured.dataPacks.map(({ id, module }) => ({ ...(id ? { id } : {}), module: yamlPath(base, module) })) } : {}),
   };
   const header = [
@@ -909,7 +920,7 @@ function projectStartPlans(cfg, effective, portals) {
   if (base && base + portals.length - 1 > 65535) throw new Error('The configured portal count exceeds the available port range.');
   return portals.map((portal, index) => ({
     site: portal.id,
-    cfg: { ...cfg, siteName: portal.id, sourceDir: portal.sourceDir },
+    cfg: { ...cfg, catalogueSite: cfg.catalogueSite ?? cfg.siteName, siteName: portal.id, sourceDir: portal.sourceDir },
     args: { ...effective, portal: portal.id, port: String(base === 0 ? 0 : base + index) },
   }));
 }

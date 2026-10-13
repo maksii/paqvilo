@@ -1402,6 +1402,13 @@ function scenarios() {
   );
 }
 
+function deploymentProfileControls(selection) {
+  if (!selection?.profiles?.length) return '<p class="muted">Configure <code>mirage.deploymentProfiles</code> to select and pin mapped profiles here. Legacy exported profiles use <code>--deployment-profile NAME</code>.</p>';
+  const labels = { pages: 'Pages', environmentVariables: 'Environment variables', connectionReferences: 'Connection references' };
+  const option = (value, label, selected) => `<option value="${escape(value)}" ${selected ? 'selected' : ''}>${escape(label)}</option>`;
+  return `<form id="deployment-profile-form" class="form-grid section-gap"><div><label for="deployment-profile-id">Profile</label><select id="deployment-profile-id">${option('', 'No profile', !selection.profile)}${selection.profiles.map(profile => option(profile.id, profile.id, selection.profile === profile.id)).join('')}</select></div><div>${Object.entries(labels).map(([section, label]) => `<label><input type="checkbox" data-profile-section="${section}" ${selection.enabled[section] ? 'checked' : ''} ${selection.required.includes(section) ? 'disabled' : ''}> ${label}${selection.required.includes(section) ? ' (required)' : ''}</label>`).join('')}</div><div class="toolbar"><button class="button primary" type="submit">Apply and pin locally</button><button class="button" type="submit" value="reset">Use configured defaults</button></div><p class="muted">${selection.pinned ? 'Pinned for this workspace.' : 'Following configured defaults.'} Default: ${escape(selection.default ?? 'None')}. Manual site and variable overrides take precedence. Connection references are local simulated records.</p></form>`;
+}
+
 function environment() {
   const env = environmentResult;
   const project = state.status?.project;
@@ -1431,7 +1438,7 @@ function environment() {
         ? "Disabled for this runtime (start the Mirage with --allow-live-writes)"
         : live.allowWrites ? "Allowed" : "Blocked",
     )}</span></div></div><button class="button small section-gap" data-view="connection">Open live connection</button></section>` +
-    `<section class="panel"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.deploymentProfile ? "Applied" : "None applied", env?.deploymentProfile ? "amber" : "")}</div><div class="detail-list"><div class="row"><span class="row-title">Applied profile</span><span class="row-detail">${escape(env?.deploymentProfile || "None")}</span></div><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div><div class="row"><span class="row-title">Source</span><span class="row-detail source-path">${escape(env?.sourceDir || state.status?.sourceDir || "")}</span></div></div><p class="muted">Profiles are applied only when the runtime starts with <code>--deployment-profile NAME</code>; they do not identify the deployed commit.</p></section></div>` +
+    `<section class="panel"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.profileSelection?.profile || env?.deploymentProfile || "None applied")}</div><div class="detail-list"><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div></div>${deploymentProfileControls(env?.profileSelection)}<p class="muted">Profiles apply locally and do not identify the deployed commit.</p></section></div>` +
     `<section class="panel section-gap"><div class="panel-heading"><h2>Environment variables</h2>${badge(variables?.available ? `${variables.definitions.length} definitions` : "Not imported", variables?.available ? "green" : "")}</div><p class="muted">Definitions and values are local Dataverse tables seeded from the Solution sources. A local value is kept as an override until it is reset; then the Solution value or the definition default applies.</p>${
       variables?.available
         ? `<div class="table-wrap"><table><thead><tr><th>Schema name</th><th>Display name</th><th>Default</th><th>Current value</th><th>Effective</th><th>Actions</th></tr></thead><tbody>${
@@ -2071,6 +2078,13 @@ function syncConfinement() {
   options.classList.toggle("is-off", !toggle.checked);
 }
 document.addEventListener("change", (event) => {
+  if (event.target.id === 'deployment-profile-id') {
+    const sources = environmentResult?.profileSelection?.profiles.find(profile => profile.id === event.target.value)?.sources ?? {};
+    for (const control of document.querySelectorAll('[data-profile-section]')) {
+      control.checked = Boolean(sources[control.dataset.profileSection]) && (environmentResult.profileSelection.defaults[control.dataset.profileSection] ?? true);
+      control.disabled = !sources[control.dataset.profileSection] || environmentResult.profileSelection.required.includes(control.dataset.profileSection);
+    }
+  }
   if (event.target.id === "confine-portal-pages") syncConfinement();
   if (event.target.id === "session-contact") {
     sessionPick = event.target.value;
@@ -2341,6 +2355,7 @@ document.addEventListener("submit", async (event) => {
       "create-persona-form",
       "enrichment-form",
       "session-override-form",
+      "deployment-profile-form",
     ].includes(event.target.id) && !event.target.matches('form[data-operation-key]')
   )
     return;
@@ -2348,7 +2363,18 @@ document.addEventListener("submit", async (event) => {
   const button = event.submitter;
   button.disabled = true;
   try {
-    if (event.target.matches('form[data-operation-key]')) {
+    if (event.target.id === 'deployment-profile-form') {
+      const pin = button.value === 'reset' ? null : {
+        profile: $('#deployment-profile-id').value || null,
+        enabled: Object.fromEntries([...document.querySelectorAll('[data-profile-section]')].map(control => [control.dataset.profileSection, control.checked])),
+      };
+      await request('/environment/profiles', { method: 'PUT', body: JSON.stringify(pin) });
+      drafts.delete('deployment-profile-form');
+      await refresh();
+      environmentResult = await request('/environment');
+      render();
+      notify(pin ? 'Deployment profile pinned locally.' : 'Configured profile defaults restored.');
+    } else if (event.target.matches('form[data-operation-key]')) {
       const form = event.target;
       await request(`/operations/${encodeURIComponent(form.dataset.operationKey)}`, { method: 'PATCH', body: JSON.stringify({ mode: form.elements.mode.value, status: Number(form.elements.status.value), body: JSON.parse(form.elements.body.value), ...(form.elements.steps ? {steps:JSON.parse(form.elements.steps.value)} : {}), ...(form.elements.localActivation?.checked ? {activation:'local-enabled'} : {}) }) });
       drafts.delete(form.id);

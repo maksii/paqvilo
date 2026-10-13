@@ -12,6 +12,7 @@ import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { shareSolutionParses } from "./lib/solution-cache.mjs";
 import { runtimePort } from "./lib/runtime-port.mjs";
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
+import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let parsed;
@@ -93,7 +94,7 @@ if (args.help || command === "help") {
 Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
-Default state and evidence paths are under .paqvilo. Deployment profiles require --deployment-profile.
+Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
 Presets (registry; a portal lists only packs that match it): ${Object.entries(
     Object.keys(builtinPresets).reduce((groups, id) => {
       const pack = presetDescriptor(builtinPresets, id)?.pack ?? "generic";
@@ -154,9 +155,10 @@ try {
         defaultPortal: project.defaultPortal,
         lcid: project.lcid,
         solutionOrder: project.solutionOrder,
-        portals: bootstrapped.portals.map(({ id, sourceDir, origin, reference, solutions, portal, metadata, solutionData }) => ({
+        portals: bootstrapped.portals.map(({ id, sourceDir, origin, reference, solutions, portal, metadata, solutionData, deploymentProfiles, activeProfiles }) => ({
           id, sourceDir: portal.sourceDir ?? sourceDir, origin: projectOrigin(project, { origin, reference }), solutions, format: portal.format,
           layout: portal.source?.dialect ?? null, dataModel: portal.dataModel, dataModelSource: portal.dataModelSource,
+          profileSelection: deploymentProfilesSummary(deploymentProfiles, activeProfiles),
           serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
           cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
           solutionData: solutionData.stats,
@@ -210,6 +212,7 @@ try {
             environmentVariables: project.environmentVariables,
             project: projectSummary(project, portal.id),
             deploymentProfile: portal.deploymentProfile ?? undefined,
+            deploymentProfiles: portal.deploymentProfiles,
             observed: portal.observed,
             dataModel: portal.dataModel ?? undefined,
             watch: !args["no-watch"] && project.watch !== false,
@@ -308,12 +311,16 @@ try {
     // site's dataModel, else the source's default (lib/importer.mjs).
     const dataModel = args["data-model"] ?? (project ? configuredPortal?.dataModel : siteMirage?.dataModel) ?? undefined;
     if (command === "inspect") {
+      const profileConfig = resolveDeploymentProfiles(siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles);
+      if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+      const activeProfiles = await loadDeploymentProfiles(profileConfig);
       // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
-      const portal = assertPortalSource(await importPortal(sourceDir, { deploymentProfile, dataModel }));
+      const portal = assertPortalSource(await importPortal(sourceDir, { deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, dataModel }));
       console.log(
         JSON.stringify(
           {
             sourceDir: portal.sourceDir,
+            profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
             format: portal.format,
             layout: portal.source?.dialect ?? null,
             dataModel: portal.dataModel,
@@ -417,6 +424,7 @@ try {
         // Observed site behaviour the export cannot express (project portal or catalogue site).
         observed: project ? configuredPortal.observed : siteMirage?.observed,
         deploymentProfile,
+        deploymentProfiles: siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles,
         dataModel,
         watch: command === "serve" && !args["no-watch"] && project?.watch !== false,
         ...(command === "serve" ? { onShutdown: () => stop?.() } : {}),

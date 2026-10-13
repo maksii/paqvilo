@@ -24,6 +24,7 @@ import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
 import { buildPermissionModel, portalWebRoles } from "./lib/permissions.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { loadProjectConfig, projectOrigin, observedConfig } from "./lib/project-config.mjs";
+import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import { STANDARD_LOOKUP_TARGETS } from "./lib/solution-standard.mjs";
 import { applyObserved, signInPath } from "./lib/redirects.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
@@ -51,6 +52,7 @@ export async function resolveReportInputs(args) {
       solutionRoots: portal.solutionRoots,
       order: project.solutionOrder,
       deploymentProfile: args["deployment-profile"] ?? portal.deploymentProfile ?? undefined,
+      deploymentProfiles: portal.deploymentProfiles,
       dataModel: args["data-model"] ?? portal.dataModel ?? undefined,
       origin: projectOrigin(project, portal),
       observed: portal.observed,
@@ -102,6 +104,7 @@ export async function resolveReportInputs(args) {
     observed: siteMirage?.observed ?? null,
     discovered: resolved.source === "discovered",
     deploymentProfile: args["deployment-profile"],
+    deploymentProfiles: siteMirage?.deploymentProfiles,
     // The data model of a YAML source: --data-model, else the catalogue site's (lib/importer.mjs).
     dataModel: args["data-model"] ?? siteMirage?.dataModel ?? undefined,
     origin,
@@ -114,11 +117,14 @@ export async function resolveReportInputs(args) {
 /** Collect the bootstrap report for one portal and its solution layers. */
 export async function bootstrapReport(inputs, { noCache = false, allFields = false } = {}) {
   const timings = {};
+  const profileConfig = resolveDeploymentProfiles(inputs.deploymentProfiles);
+  if (inputs.deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+  const activeProfiles = await loadDeploymentProfiles(profileConfig);
   let started = performance.now();
   // Duplicate-copy commit lookups are cached beside the solution cache.
   const portalCache = await SolutionFileCache.open(noCache || !inputs.cacheFile ? null : path.join(path.dirname(inputs.cacheFile), "portal-sources.json"));
   // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
-  const portal = assertPortalSource(applyObserved(await importPortal(inputs.sourceDir, { lcid: inputs.lcid, cache: portalCache, ...(inputs.deploymentProfile ? { deploymentProfile: inputs.deploymentProfile } : {}), ...(inputs.dataModel ? { dataModel: inputs.dataModel } : {}) }), observedConfig(inputs.observed)));
+  const portal = assertPortalSource(applyObserved(await importPortal(inputs.sourceDir, { lcid: inputs.lcid, cache: portalCache, deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : inputs.deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, ...(inputs.dataModel ? { dataModel: inputs.dataModel } : {}) }), observedConfig(inputs.observed)));
   await portalCache.save();
   timings.portalMs = Math.round(performance.now() - started);
   started = performance.now();
@@ -136,7 +142,8 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
     .map(([name]) => name.split("/")[1].toLowerCase());
   const state = applySolutionData(initialState(portal, { metadata: data }), data, {
     webApiTables,
-    environmentVariables: inputs.environmentVariables,
+    environmentVariables: Object.fromEntries(Object.entries({ ...activeProfiles.environmentVariables, ...inputs.environmentVariables }).map(([name, value]) => [name.toLowerCase(), value])),
+    connectionReferences: activeProfiles.connectionReferences,
   });
   const configured = buildPermissionModel(portal, state, { relationships: data.relationships, source: "configured" });
   const exported = buildPermissionModel(portal, state, { relationships: data.relationships, source: "exported" });
@@ -307,6 +314,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
       dataModel: portal.dataModel,
       dataModelSource: portal.dataModelSource,
       deploymentProfile: inputs.deploymentProfile ?? null,
+      profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       origin: inputs.origin ?? null,
       solutionRoots: inputs.solutionRoots,
       rootOrder: inputs.order ?? "derived",

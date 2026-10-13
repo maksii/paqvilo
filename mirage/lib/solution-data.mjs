@@ -194,7 +194,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
 }
 
 /** Rows that solution layers contribute to bootstrapped tables (environment variables). */
-export function solutionSeedRows(metadata, { environmentVariables: overrides = {} } = {}) {
+export function solutionSeedRows(metadata, { environmentVariables: overrides = {}, connectionReferences = [] } = {}) {
   const definitions = [],
     values = [];
   const local = new Map(Object.entries(overrides ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
@@ -228,7 +228,14 @@ export function solutionSeedRows(metadata, { environmentVariables: overrides = {
         statuscode: 1,
       });
   }
-  return definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
+  const seeds = definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
+  if (connectionReferences.length) seeds.connectionreference = connectionReferences.map(reference => ({
+    connectionreferenceid: sourceRecordId('connectionreference', reference.logicalName.toLowerCase()),
+    connectionreferencelogicalname: reference.logicalName,
+    connectionid: reference.connectionId, connectorid: reference.connectorId,
+    statecode: 0, statuscode: 1,
+  }));
+  return seeds;
 }
 
 const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { provenance: false });
@@ -241,7 +248,7 @@ const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { pr
  * tables whose complete column metadata is stored on the mapping (`fieldMetadata`
  * and `schemaComplete`) for Web API attribute validation.
  */
-export function applySolutionData(state, metadata, { webApiTables, environmentVariables, presetLibrary } = {}) {
+export function applySolutionData(state, metadata, { webApiTables, environmentVariables, connectionReferences, presetLibrary } = {}) {
   const result = structuredClone({
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
@@ -298,7 +305,10 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     }
   }
   // Source-derived rows: upsert by primary key and remove rows that left the source.
-  const seeds = solutionSeedRows(metadata, { environmentVariables });
+  const seeds = solutionSeedRows(metadata, { environmentVariables, connectionReferences });
+  if (seeds.connectionreference && !result.mappings.connectionreference) result.mappings.connectionreference = {
+    entitySet: 'connectionreferences', idColumn: 'connectionreferenceid', inferred: true,
+  };
   const seeded = {};
   for (const [entity, rows] of Object.entries(seeds)) {
     const key = result.mappings[entity]?.idColumn ?? entity + "id";

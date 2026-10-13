@@ -262,7 +262,7 @@ const localized = (value, lcid = 1033) => {
  */
 export async function importPortal(
   sourceDir,
-  { languageId, lcid = 1033, deploymentProfile, dataModel: requestedDataModel, cache = null, git = gitQueries } = {},
+  { languageId, lcid = 1033, deploymentProfile, deploymentProfileFile, dataModel: requestedDataModel, cache = null, git = gitQueries } = {},
 ) {
   if (requestedDataModel != null && !DATA_MODELS.includes(requestedDataModel))
     throw new Error(`dataModel must be standard or enhanced, not ${JSON.stringify(requestedDataModel)}`);
@@ -543,7 +543,7 @@ export async function importPortal(
     if (!/^[\w.-]+$/.test(deploymentProfile))
       throw new Error("Select a deployment profile by its exported name");
     const profileName = deploymentProfile.replace(/\.deployment\.ya?ml$/i, "");
-    const profile = files.find(
+    const profile = deploymentProfileFile ?? files.find(
       (f) =>
         /[\\/]deployment-profiles[\\/]/i.test(f) &&
         path
@@ -555,7 +555,9 @@ export async function importPortal(
       throw new Error(
         `Deployment profile '${deploymentProfile}' is absent in the export`,
       );
-    const values = YAML.parse(await read(profile, contents));
+    const profileSource = await fs.readFile(profile, 'utf8');
+    const values = /\.json$/i.test(profile) ? JSON.parse(profileSource) : YAML.parse(profileSource);
+    if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Deployment profile must map tables to record patches');
     for (const [entity, rows] of Object.entries(values ?? {})) {
       const raw = entity.replace(/^(?:adx|mspp)_/, "");
       const kind =

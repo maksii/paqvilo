@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { AsyncLocalStorage } from "node:async_hooks";
 import { AuditLog } from "./lib/audit-log.mjs";
 import chokidar from "chokidar";
+import { resolveDeploymentProfiles, loadDeploymentProfiles, profileSelection, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import {
   DataStore,
   parseFetchXml,
@@ -239,6 +240,7 @@ export async function createSimulator({
   localOverrides: overridesOption,
   compat = {}, head = {}, projectRoot = process.cwd(),
   deploymentProfile,
+  deploymentProfiles,
   onShutdown,
   richTextCompatibility: richTextCompatibilityOverride,
   // Per-site observed configuration ({ loginPath, evidence }; lib/project-config.mjs).
@@ -262,6 +264,14 @@ export async function createSimulator({
   if (dataModel != null && !DATA_MODELS.includes(dataModel)) throw error(`dataModel must be standard or enhanced, not ${JSON.stringify(dataModel)}.`);
   // A code-site project serves the site in its .powerpages-site/ folder (lib/source-dialect.mjs).
   sourceDir = portalSourceDir(sourceDir);
+  const profileConfig = resolveDeploymentProfiles(deploymentProfiles, projectRoot);
+  if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw error('Use deploymentProfiles or the legacy deploymentProfile option, not both.');
+  let persistedPin = initial?.simulator?.deploymentProfilePin ?? null;
+  if (stateFile) {
+    try { persistedPin = JSON.parse(await fs.readFile(stateFile, 'utf8')).simulator?.deploymentProfilePin ?? null; }
+    catch (cause) { if (cause.code !== 'ENOENT') throw cause; }
+  }
+  let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin);
   // Bootstrap : portal export + ordered solution layers -> mappings, schemas,
   // permission model. Parsed solution files are cached beside the state file and
   // reused only for files whose size/mtime/ctime/inode are unchanged.
@@ -283,7 +293,10 @@ export async function createSimulator({
   const portalCacheFile = stateFile ? path.join(path.dirname(path.resolve(stateFile)), "cache", "portal-sources.json") : null;
   const importSource = async () => {
     const cache = await SolutionFileCache.open(portalCacheFile);
-    const imported = applyObserved(await importPortal(sourceDir, { deploymentProfile, dataModel, cache }), observed);
+    const imported = applyObserved(await importPortal(sourceDir, {
+      deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile,
+      deploymentProfileFile: activeProfiles.pagesFile, dataModel, cache,
+    }), observed);
     await cache.save();
     bootstrapTimings.portalCache = { ...cache.stats, file: portalCacheFile };
     return imported;
@@ -356,6 +369,7 @@ export async function createSimulator({
       .update(JSON.stringify([...operationWorkflows]))
       .update(JSON.stringify(solutionOperations))
       .update(JSON.stringify([...codeComponents.controls].map(([name, control]) => [name, control.fingerprint])))
+      .update(activeProfiles.fingerprint)
       .digest("hex");
   let fingerprint = await calculateFingerprint(sourceDigest);
   let appliedPermissionModel;
@@ -368,7 +382,8 @@ export async function createSimulator({
       presetLibrary: generatedPresets,
       webApiTables: webApiTables(),
       // Local values set in _sim (simulator.environmentVariables) win over project-level overrides.
-      environmentVariables: { ...environmentVariables, ...(state.simulator?.environmentVariables ?? {}) },
+      environmentVariables: Object.fromEntries(Object.entries({ ...activeProfiles.environmentVariables, ...environmentVariables, ...(state.simulator?.environmentVariables ?? {}) }).map(([name, value]) => [name.toLowerCase(), value])),
+      connectionReferences: activeProfiles.connectionReferences,
     });
   const compilePermissions = (state) => {
     const model = buildPermissionModel(portal, state, {
@@ -1065,6 +1080,7 @@ export async function createSimulator({
         project: projectStatus(), bootstrap: bootstrapStatus(), confinement: confinementStatus(),
         platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
         startupPreset,
+        profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
         ...implementationEvidence(implementationFingerprint, implementationFingerprint),
         format: portal.format,
         site: portal.website.name ?? portal.website.adx_name,
@@ -1109,10 +1125,28 @@ export async function createSimulator({
     return next;
   };
   const saveState = async (state) => {
-    const previousPortal = portal;
-    portal = applyPortalOverrides(sourcePortal, state.simulator?.portalOverrides);
-    try { await replaceCompiledState(state); }
-    catch (cause) { portal = previousPortal; throw cause; }
+    const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets };
+    const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
+    try {
+      if (pinChanged) {
+        activeProfiles = await loadDeploymentProfiles(profileConfig, state.simulator?.deploymentProfilePin ?? null);
+        sourcePortal = await importSource();
+        if (requirePortalSource) assertPortalSource(sourcePortal);
+      }
+      portal = applyPortalOverrides(sourcePortal, state.simulator?.portalOverrides);
+      if (pinChanged) {
+        sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
+        await loadSolutions();
+        generatedPresets = initialState(portal, bootstrapOptions()).presets;
+        store.presetLibrary = generatedPresets;
+        fingerprint = await calculateFingerprint();
+      }
+      await replaceCompiledState(state);
+    } catch (cause) {
+      ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets } = previous);
+      store.presetLibrary = generatedPresets;
+      throw cause;
+    }
     live.configure(config().live ?? {});
     if (cache) cache.origin = live.origin;
     renderer = buildRenderer();
@@ -1157,6 +1191,7 @@ export async function createSimulator({
     return exposedState();
   };
   const validateConfig = (cfg) => {
+    profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
     validatePlatformOverrides(cfg.platformOverrides);
     validateExperimentPresets(cfg.experimentPresets);
     validateOperationOverrides(cfg.operations);
@@ -1341,6 +1376,7 @@ export async function createSimulator({
       platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
       startupPreset,
       deploymentProfile: portal.deploymentProfile ?? null,
+      profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       render,
       observed: config().observed,
       subgridLabelMarkup: config().observed?.subgridLabelMarkup ?? 'sanitized',
@@ -1534,6 +1570,7 @@ export async function createSimulator({
         live: live.status(),
         deploymentProfile: portal.deploymentProfile ?? null,
         deploymentProfiles,
+        profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
         profileChanges: (portal.profileChanges ?? []).length,
         environmentVariables: environmentVariableTable(),
         referenceImports: config().referenceImports ?? [],
@@ -1744,6 +1781,16 @@ export async function createSimulator({
         return json(res, method === "POST" ? 201 : 200, { scenarios: next, activeScenario: state.simulator.activeScenario ?? null });
       });
     }
+    if (method === 'PUT' && relative === '/environment/profiles')
+      return change(async () => {
+        const body = await jsonBody(req);
+        profileSelection(profileConfig, body);
+        const state = store.snapshot();
+        if (body === null) delete state.simulator.deploymentProfilePin;
+        else state.simulator.deploymentProfilePin = body;
+        await saveState(state);
+        return json(res, 200, deploymentProfilesSummary(profileConfig, activeProfiles));
+      });
     if (method === "POST" && relative === "/environment/reference")
       return change(async () => {
         const body = await jsonBody(req);
@@ -3516,11 +3563,13 @@ export async function createSimulator({
           codeComponents,
           fingerprint,
           renderer,
+          activeProfiles,
         };
         try {
           const started = performance.now();
           const changed = [...changedPaths].sort();
           changedPaths.clear();
+          activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
           sourcePortal = await importSource();
           if (requirePortalSource) assertPortalSource(sourcePortal);
           portal = applyPortalOverrides(sourcePortal, config().portalOverrides);
@@ -3559,6 +3608,7 @@ export async function createSimulator({
           codeComponents = previous.codeComponents;
           fingerprint = previous.fingerprint;
           renderer = previous.renderer;
+          activeProfiles = previous.activeProfiles;
           recordDiagnostic({ code: "RELOAD_FAILED", message: err.message });
           throw err;
         }
@@ -3576,7 +3626,7 @@ export async function createSimulator({
     const layers = solutionData.layers ?? [];
     watchedLayers = layerSignature();
     let timer;
-    const pluginSources = solutionMetadata.plugins?.sourceFiles ?? [];
+    const pluginSources = [...solutionMetadata.plugins?.sourceFiles ?? [], ...Object.values(profileConfig.profiles).flatMap(sources => Object.values(sources))];
     const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
     const ignoreSource = solutionWatchFilter({ sourceDir, roots: solutionRoots, layers, exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
     watcher = chokidar.watch([sourceDir, ...solutionRoots, ...pluginSources], {

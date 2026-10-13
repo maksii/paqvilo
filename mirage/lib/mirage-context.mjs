@@ -11,6 +11,7 @@ import { loadProjectConfig, projectSummary, projectOrigin } from './project-conf
 import { resolveSolutionRoots } from './solution-roots.mjs';
 import { fileURLToPath } from 'node:url';
 import { loadCatalogue, resolveMirageConfig } from '../../lense/config.mjs';
+import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 
 /** Bind trusted project packs once. No implicit adjacent module discovery. */
 export async function createMirageContext({ packs = [], config, site, portal, metadata, ...options } = {}) {
@@ -39,7 +40,10 @@ export async function createMirageContext({ packs = [], config, site, portal, me
   // A local-only catalogue target is not a live reference (same rule as mirage/cli.mjs).
   const origin = /^https:\/\//i.test(configuredOrigin ?? '') ? configuredOrigin : null;
   metadata ??= solutionRoots.length ? await importSolutionData(solutionRoots, { order: solutionOrder }) : undefined;
-  portal ??= sourceDir ? await importPortal(sourceDir, { dataModel: selected?.dataModel ?? cfg.mirageConfig?.dataModel }) : undefined;
+  const profileConfig = resolveDeploymentProfiles(cfg?.mirageConfig.deploymentProfiles ?? selected?.deploymentProfiles);
+  if (selected?.deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+  const activeProfiles = sourceDir ? await loadDeploymentProfiles(profileConfig) : null;
+  portal ??= sourceDir ? await importPortal(sourceDir, { deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : selected?.deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, dataModel: selected?.dataModel ?? cfg.mirageConfig?.dataModel }) : undefined;
   const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? allEntries });
   const library = presetLibrary({ packs: loaded, portal, metadata, options });
   class BoundDataStore extends DataStore {
@@ -50,7 +54,7 @@ export async function createMirageContext({ packs = [], config, site, portal, me
     packs: Object.freeze([...loaded]), presetLibrary: library,
     DataStore: BoundDataStore,
     createSimulator: settings => createSimulator({
-      ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
+      ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
       ...(project ? { project: projectSummary(project, selected.id), environmentVariables: project.environmentVariables } : {}),
       ...settings, packs: loaded,
     }),
