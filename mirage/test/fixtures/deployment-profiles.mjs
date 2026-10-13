@@ -4,7 +4,11 @@ import path from 'node:path';
 
 export async function profileFixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-profile-'));
-  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const cleanups = [];
+  t.after(async () => {
+    for (const cleanup of cleanups.reverse()) await cleanup();
+    await fs.rm(root, { recursive: true, force: true, maxRetries: 5 });
+  });
   const sourceDir = path.join(root, 'portal'), solution = path.join(root, 'solution');
   const files = {
     'portal/website.yml': 'adx_websiteid: site\nadx_name: Profile fixture',
@@ -33,5 +37,5 @@ export async function profileFixture(t) {
     dev: { pages: 'profiles/dev.yml', environmentVariables: 'profiles/dev-settings.json', connectionReferences: 'profiles/dev-settings.json' },
     test: { pages: 'profiles/test.json', environmentVariables: 'profiles/test-settings.json', connectionReferences: 'profiles/test-settings.json' },
   } };
-  return { root, sourceDir, solutionRoots: [solution], projectRoot: root, deploymentProfiles, files, stateFile: path.join(root, '.paqvilo', 'state.json') };
+  return { root, sourceDir, solutionRoots: [solution], projectRoot: root, deploymentProfiles, files, stateFile: path.join(root, '.paqvilo', 'state.json'), onCleanup: cleanup => cleanups.push(cleanup) };
 }

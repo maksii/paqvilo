@@ -483,6 +483,7 @@ export async function createSimulator({
   let revision = 1,
     renderer,
     watcher,
+    watcherTimer = null,
     mutation = Promise.resolve(),
     closing = false,
     closePromise = null,
@@ -494,10 +495,14 @@ export async function createSimulator({
   const close = () => {
     if (closePromise) return closePromise;
     closing = true;
+    clearTimeout(watcherTimer);
+    watcherTimer = null;
     frameReadiness.close();
     closePromise = (async () => {
       await watcher?.close();
+      await reloadPromise?.catch(() => {});
       while(activeRequests.size)await Promise.all([...activeRequests]);
+      await mutation;
       await store.queue;
       await settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true});
       for(const runtime of registeredPluginRuntimes.values())closeClrHostPool({runtime,diagnostic:recordDiagnostic});
@@ -3582,7 +3587,9 @@ export async function createSimulator({
   let watchedLayers = "";
   const layerSignature = () => JSON.stringify([(solutionData.layers ?? []).map((layer) => layer.dir), solutionMetadata.plugins?.sourceFiles ?? []]);
   async function reload() {
+    if (closing) return;
     await settleCommittedWork(store,[triggerRunner,asyncPluginRunner]);
+    if (closing) return;
     reloadRequested = true;
     if (reloadPromise) return reloadPromise;
     reloadPromise = (async () => {
@@ -3659,10 +3666,11 @@ export async function createSimulator({
   // solution layer (Entities, Other, OptionSets, environment variables); a change in
   // the set of layers restarts the watcher with the new layer list.
   async function restartWatcher() {
+    if (closing) return;
     const previousWatcher = watcher;
     const layers = solutionData.layers ?? [];
     watchedLayers = layerSignature();
-    let timer;
+    clearTimeout(watcherTimer);
     const pluginSources = [...solutionMetadata.plugins?.sourceFiles ?? [], ...Object.values(profileConfig.profiles).flatMap(sources => Object.values(sources))];
     const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
     const ignoreSource = solutionWatchFilter({ sourceDir, roots: solutionRoots, layers, exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
@@ -3672,9 +3680,10 @@ export async function createSimulator({
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
     });
     watcher.on("all", (_event, file) => {
+      if (closing) return;
       if (file) changedPaths.add(file);
-      clearTimeout(timer);
-      timer = setTimeout(() => {
+      clearTimeout(watcherTimer);
+      watcherTimer = setTimeout(() => {
         if (!closing) reload().catch(() => {});
       }, 250);
     });

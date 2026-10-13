@@ -8,8 +8,9 @@ import { profileFixture } from '../test/fixtures/deployment-profiles.mjs';
 test('Environment controls select, pin, disable optional sections and restore defaults', { timeout: 45000 }, async t => {
   const fixture = await profileFixture(t);
   const app = await createSimulator({ ...fixture, watch: false });
+  fixture.onCleanup(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
-  t.after(async () => { await browser.close(); await app.close(); });
+  fixture.onCleanup(() => browser.close());
   const page = await browser.newPage(), errors = [];
   page.on('pageerror', error => errors.push(error.message));
   await page.goto(app.url + '/_sim/#environment');

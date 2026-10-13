@@ -82,7 +82,7 @@ test('mapped files require correct PAC sections and reject duplicates, empty con
 test('runtime pins profiles atomically, retains overrides and pins across restart, and resets defaults', async t => {
   const fixture = await profileFixture(t);
   let app = await createSimulator({ ...fixture, watch: false });
-  t.after(() => app?.close());
+  fixture.onCleanup(() => app?.close());
   const call = async (route, body) => {
     const response = await fetch(`${app.url}/__sim/api${route}`, body === undefined ? {} : { method: 'PUT', headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, body: JSON.stringify(body) });
     return { status: response.status, body: await response.json() };
@@ -123,7 +123,7 @@ test('runtime pins profiles atomically, retains overrides and pins across restar
 test('optional sections disable cleanly, project variables win case-insensitively, and bootstrap reports apply defaults', async t => {
   const fixture = await profileFixture(t);
   const app = await createSimulator({ ...fixture, environmentVariables: { SAMPLE_URL: 'Project' }, watch: false });
-  t.after(() => app.close());
+  fixture.onCleanup(() => app.close());
   assert.equal(app.state().data.environmentvariablevalue[0].value, 'Project');
   await assert.rejects(createSimulator({ ...fixture, deploymentProfile: 'legacy', watch: false }), /not both/);
   const report = await bootstrapReport({ sourceDir: fixture.sourceDir, solutionRoots: fixture.solutionRoots,
@@ -139,7 +139,7 @@ test('optional sections disable cleanly, project variables win case-insensitivel
 test('external profile changes reload local rendering and seeded values with a new fingerprint', async t => {
   const fixture = await profileFixture(t);
   const app = await createSimulator({ ...fixture, watch: true });
-  t.after(() => app.close());
+  fixture.onCleanup(() => app.close());
   const status = async () => (await (await fetch(app.url + '/__sim/api/status')).json());
   const fingerprint = (await status()).sourceFingerprint;
   await fs.writeFile(path.join(fixture.root, 'profiles/dev.yml'), 'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded');
@@ -159,7 +159,7 @@ test('no-profile pin restores source values, removes owned seeds only and preser
   const fixture = await profileFixture(t);
   fixture.deploymentProfiles.required = [];
   const app = await createSimulator({ ...fixture, watch: false });
-  t.after(() => app.close());
+  fixture.onCleanup(() => app.close());
   const mutate = async (route, method, body) => fetch(app.url + '/__sim/api' + route, {
     method, headers: { 'content-type': 'application/json', 'x-sim-csrf': app.state().csrf }, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -180,4 +180,34 @@ test('no-profile pin restores source values, removes owned seeds only and preser
   // A saved non-null pin must not silently fall back if its mapping disappears.
   await fs.writeFile(fixture.stateFile, JSON.stringify({ simulator: { deploymentProfilePin: { profile: 'test' } } }));
   await assert.rejects(createSimulator({ ...fixture, deploymentProfiles: stale, watch: false }), /configured deployment profile/);
+});
+
+test('shutdown drains an in-flight source reload before fixture removal and rejects later reloads', { timeout: 15000 }, async t => {
+  const fixture = await profileFixture(t);
+  const app = await createSimulator({ ...fixture, watch: true });
+  let release, entered;
+  const blocked = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  fixture.onCleanup(() => { release(); return app.close(); });
+  const replace = app.store.replaceState.bind(app.store);
+  let replacements = 0;
+  app.store.replaceState = async state => {
+    replacements++;
+    entered();
+    await blocked;
+    return replace(state);
+  };
+  const pending = app.reload();
+  await started;
+  let closed = false;
+  const shutdown = app.close().then(() => { closed = true; });
+  await new Promise(resolve => setTimeout(resolve, 40));
+  assert.equal(closed, false, 'shutdown must wait for the accepted reload');
+  release();
+  await Promise.all([pending, shutdown]);
+  await app.reload();
+  assert.equal(replacements, 1, 'a closed runtime cannot schedule another source write');
+  await fs.rm(fixture.root, { recursive: true, force: true, maxRetries: 5 });
+  await new Promise(resolve => setTimeout(resolve, 400));
+  await assert.rejects(fs.stat(fixture.root), { code: 'ENOENT' });
 });
