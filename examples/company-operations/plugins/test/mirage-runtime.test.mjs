@@ -19,23 +19,26 @@ async function sourceFixture(t){
 
 test('Native replay receipts use a bounded opened source handle and reject pathname replacement',async t=>{
  const fixture=await sourceFixture(t),originalOpen=fs.open;
+ const replacement=path.join(fixture.root,'replacement.dll');await fs.writeFile(replacement,'replacement SDK');
  const receipt=await prepareNativeReplayPlugins(fixture.options);
  assert.equal(receipt.receipt.sdkSha256,createHash('sha256').update('invented SDK bytes').digest('hex'));
  let opened;
- fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;await fs.rename(file,file+'.retained');await fs.writeFile(file,'replacement SDK');}return handle;};
+ fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;await fs.rename(file,file+'.retained');await fs.rename(replacement,file);}return handle;};
  try{await assert.rejects(prepareNativeReplayPlugins(fixture.options),/regular DLL/);assert.equal(opened.fd,-1);}finally{fs.open=originalOpen;}
 });
 
 test('Native replay rejects source replacement during reading and closes its original handle',async t=>{
  const fixture=await sourceFixture(t),originalOpen=fs.open;let opened;
- fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;const read=handle.read.bind(handle);let replaced=false;handle.read=async args=>{if(!replaced){replaced=true;await fs.rename(file,file+'.retained');await fs.writeFile(file,'replacement SDK');}return read(args);};}return handle;};
+ const replacement=path.join(fixture.root,'replacement.dll');await fs.writeFile(replacement,'replacement SDK');
+ fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;const read=handle.read.bind(handle);let replaced=false;handle.read=async args=>{if(!replaced){replaced=true;await fs.rename(file,file+'.retained');await fs.rename(replacement,file);}return read(args);};}return handle;};
  try{await assert.rejects(prepareNativeReplayPlugins(fixture.options),/changed during preparation/);assert.equal(opened.fd,-1);}finally{fs.open=originalOpen;}
 });
 
 test('Native replay refuses sources growing past the 32 MiB limit on the opened handle',async t=>{
  const fixture=await sourceFixture(t),originalOpen=fs.open;let opened,total=0;
- fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;const read=handle.read.bind(handle);let grew=false;handle.read=async args=>{if(!grew){grew=true;await fs.truncate(file,32*1024*1024+100);}const answer=await read(args);total+=answer.bytesRead;return answer;};}return handle;};
- try{await assert.rejects(prepareNativeReplayPlugins(fixture.options),/regular DLL/);assert.equal(total,32*1024*1024+1);assert.equal(opened.fd,-1);}finally{fs.open=originalOpen;}
+ const growing=await originalOpen(fixture.sdkAssembly,'r+');
+ fs.open=async function(file,...args){const handle=await originalOpen(file,...args);if(file===fixture.sdkAssembly){opened=handle;const read=handle.read.bind(handle);let grew=false;handle.read=async args=>{if(!grew){grew=true;await growing.truncate(32*1024*1024+100);}const answer=await read(args);total+=answer.bytesRead;return answer;};}return handle;};
+ try{await assert.rejects(prepareNativeReplayPlugins(fixture.options),/regular DLL/);assert.equal(total,32*1024*1024+1);assert.equal(opened.fd,-1);}finally{fs.open=originalOpen;await growing.close();}
 });
 
 test('Native replay rejects SDK directory links introduced between validation and opening',async t=>{
@@ -48,10 +51,11 @@ test('Native replay rejects SDK directory links introduced between validation an
 test('Native replay copies the exact assembly bytes that matched the receipt without reopening the export',async t=>{
  const fixture=await sourceFixture(t),directory=path.join(fixture.exportRoot,'PluginAssemblies');await fs.mkdir(directory);
  const assembly=path.join(directory,'Original.dll'),originalBytes=Buffer.from('invented original DLL');await fs.writeFile(assembly,originalBytes);
+ const replacement=path.join(fixture.root,'replacement.dll');await fs.writeFile(replacement,'unverified replacement DLL');
  const typeId='20000000-0000-0000-0000-000000000001',stepId='30000000-0000-0000-0000-000000000001';
  await fs.writeFile(path.join(directory,'Original.xml'),`<ImportExportXml><PluginAssembly PluginAssemblyId="${id}" Name="Invented.Original"><FileName>/PluginAssemblies/Original.dll</FileName><PluginType PluginTypeId="${typeId}" TypeName="Invented.Original"/></PluginAssembly><SdkMessageProcessingStep SdkMessageProcessingStepId="${stepId}"><PluginTypeId>${typeId}</PluginTypeId><MessageName>Create</MessageName><PrimaryEntity>widget</PrimaryEntity><Stage>20</Stage><Rank>1</Rank><Mode>0</Mode></SdkMessageProcessingStep></ImportExportXml>`);
  const originalMkdir=fs.mkdir;let replacements=0;
- fs.mkdir=async function(directory,...args){if(directory===fixture.cacheRoot){await fs.writeFile(assembly,'unverified replacement DLL');replacements++;}return originalMkdir(directory,...args);};
+ fs.mkdir=async function(directory,...args){if(directory===fixture.cacheRoot){await fs.rename(assembly,assembly+'.retained');await fs.rename(replacement,assembly);replacements++;}return originalMkdir(directory,...args);};
  try{
   await assert.rejects(prepareNativeReplayPlugins({...fixture.options,expectedAssemblyHashes:{'Invented.Original':createHash('sha256').update(originalBytes).digest('hex')}}),error=>['LocalPluginClrBuild','LocalPluginClrUnavailable'].includes(error.code));
   assert.equal(replacements,1);assert.deepEqual(await fs.readFile(path.join(fixture.cacheRoot,'trusted-originals','Original.dll')),originalBytes);
