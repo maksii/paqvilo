@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReleaseFiles } from './release-check.mjs';
+import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -42,6 +43,7 @@ manifest.devDependencies.paqvilo = archive;
 fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], project);
 const installed = path.join(project, 'node_modules/paqvilo/bin/paqvilo.mjs');
+verifyConsumerToolOwnership(installed, project);
 const cli = (...args) => {
   const result = spawnSync(process.execPath, [installed, ...args], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`Installed command failed: ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);

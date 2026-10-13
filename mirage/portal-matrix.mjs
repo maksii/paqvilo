@@ -45,6 +45,7 @@
  * afterwards. Parse caches live in the output directory. Generic: no data pack is required.
  */
 import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
+import { assertProjectOutput } from './lib/project-output.mjs';
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -1808,6 +1809,7 @@ export async function main(argv = process.argv.slice(2)) {
     return options.help ? 0 : 2;
   }
   options.out ??= path.join(options.config || options.project ? path.dirname(path.resolve(options.config ?? options.project)) : process.cwd(), ".paqvilo", "portal-matrix", new Date().toISOString().replace(/[:.]/g, "-"));
+  assertProjectOutput(options.out);
   const matrix = await portalMatrix(options);
   console.log(options.json ? JSON.stringify(matrix, null, 2) : `${formatMatrix(matrix)}\nWritten: ${path.join(path.resolve(options.out), "matrix.md")}`);
   return options.strict && matrix.problems.length ? 1 : 0;

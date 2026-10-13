@@ -27,6 +27,7 @@ import { loadProjectConfig, projectOrigin, observedConfig } from "./lib/project-
 import { STANDARD_LOOKUP_TARGETS } from "./lib/solution-standard.mjs";
 import { applyObserved, signInPath } from "./lib/redirects.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
+import { assertProjectOutput } from './lib/project-output.mjs';
 
 const countBy = (items, key) =>
   items.reduce((counts, item) => {
@@ -438,6 +439,7 @@ if (isMain) {
     const report = await bootstrapReport(inputs, { noCache: args["no-cache"], allFields: args["all-fields"] });
     if (args.output) {
       const output = path.resolve(args.output);
+      assertProjectOutput(output);
       await fs.mkdir(path.dirname(output), { recursive: true });
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n");
     }

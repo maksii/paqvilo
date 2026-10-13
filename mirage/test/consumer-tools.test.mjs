@@ -9,6 +9,7 @@ import { resolveReportInputs, bootstrapReport } from '../bootstrap-report.mjs';
 import { resolveTarget } from '../render-sweep.mjs';
 import { TOOL_OPTIONS, parseToolArgs } from '../tool-options.mjs';
 import { MIRAGE_TOOLS } from '../tool-registry.mjs';
+import { assertProjectOutput } from '../lib/project-output.mjs';
 
 async function fixture(t) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-tool-project-'));
@@ -44,6 +45,17 @@ test('catalogue reports reuse their project cache and sweep selects the same pro
   assert.equal(uncached.summary.timings.cache.hits, 0);
 });
 
+test('generated output rejects the installed package and a junction back into it', async t => {
+  const { root } = await fixture(t);
+  const installed = path.join(root, 'node_modules/paqvilo');
+  await fs.mkdir(installed, { recursive: true });
+  assert.throws(() => assertProjectOutput(path.join(installed, '.paqvilo/cache.json'), installed), /inside the installed package/);
+  assert.doesNotThrow(() => assertProjectOutput(path.join(root, '.paqvilo/cache.json'), installed));
+  const alias = path.join(root, 'aliased-package');
+  await fs.symlink(installed, alias, process.platform === 'win32' ? 'junction' : 'dir');
+  assert.throws(() => assertProjectOutput(path.join(alias, '.paqvilo/cache.json'), installed), /inside the installed package/);
+});
+
 test('catalogue option tables produce registry help accepted by each parser and execute outside the project cwd', async t => {
   const { root, config } = await fixture(t);
   const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
@@ -63,4 +75,22 @@ test('catalogue option tables produce registry help accepted by each parser and 
     assert.ok(JSON.parse(result.stdout));
   }
   assert.ok((await fs.readdir(path.join(root, '.paqvilo/portal-matrix'))).length);
+});
+
+test('parity and conformance help name their real required plan options', async t => {
+  const { root, config } = await fixture(t);
+  const bin = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
+  const missing = path.join(root, 'missing-plan.json');
+  assert.ok(MIRAGE_TOOLS['parity-suite'].includes('--scenarios FILE'));
+  assert.ok(!MIRAGE_TOOLS['parity-suite'].includes('--plan'));
+  assert.ok(MIRAGE_TOOLS['liquid-conformance'].includes('--suite FILE'));
+  for (const args of [
+    ['parity-suite', '--config', config, '--site', 'synthetic', '--out', path.join(root, '.paqvilo/parity'), '--scenarios', missing],
+    ['liquid-conformance', '--suite', missing, '--json'],
+  ]) {
+    const result = spawnSync(process.execPath, [bin, 'mirage', ...args], { cwd: os.tmpdir(), encoding: 'utf8', windowsHide: true, timeout: 10000 });
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, /ENOENT/);
+    assert.doesNotMatch(result.stderr, /Unknown (?:argument|option)|ERR_PARSE_ARGS/);
+  }
 });

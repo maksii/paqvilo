@@ -11,7 +11,7 @@
 const PA = "https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/";
 const D365 = "https://learn.microsoft.com/dynamics365/developer/reference/entities/";
 
-// Microsoft Learn system choices omitted from partial solution exports. Solution
+// Microsoft Learn system choices checked 2026-10-13, omitted from partial exports. Solution
 // definitions always take precedence. English labels are a reference fallback,
 // not evidence of a site's translations or installed application extensions.
 const SYSTEM_OPTION_SETS = {
