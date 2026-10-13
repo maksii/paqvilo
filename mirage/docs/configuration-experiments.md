@@ -52,6 +52,13 @@ The loopback API aliases `/_sim/api` and `/__sim/api` expose:
 
 Mutations require the existing simulator CSRF header and normal loopback administration checks. Unknown controls, invalid types/ranges, prototype keys and invalid preset imports are rejected before persistence. Individual site values continue to use the existing `portal-settings` and `portal-snippets` APIs; DELETE resets the override while a null PATCH locally removes the effective value.
 
+`connectRuntime` from `paqvilo/mirage/testing` wraps these APIs with automatic CSRF:
+`platformSettings`, `setPlatformSettings`, `resetPlatformSetting`, `siteSettings`,
+`setSiteSetting`, `resetSiteSetting`, `setSnippet`, `resetSnippet`, `experiments`,
+`saveExperiment`, `applyExperiment` and `deleteExperiment`. Combine them with
+cookie-isolated visitors and `runSessionMatrix`. Configuration is shared by visitors;
+finish a matrix before changing it or connect separate runtimes for parallel experiments.
+
 Example preset:
 
 ```json

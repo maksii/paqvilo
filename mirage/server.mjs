@@ -44,7 +44,7 @@ import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs"
 import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
 import {createFlowTriggerRunner} from './lib/flow-triggers.mjs';
 import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
-import { pluginHandlers, pluginCatalogue, runPluginPhase } from './lib/exported-plugins.mjs';
+import { pluginHandlers, pluginCatalogue, runPluginPhase, pluginStepMatchesEntity } from './lib/exported-plugins.mjs';
 import {pluginRuntimeDescriptors,prepareClrRuntime,closeClrHostPool} from './lib/plugin-clr.mjs';
 import {createAsyncPluginRunner} from './lib/plugin-async.mjs';
 import {settleCommittedWork} from './lib/committed-work.mjs';
@@ -62,6 +62,7 @@ import {
 } from "./lib/richtext-config.mjs";
 import { pageAccess } from "./lib/page-access.mjs";
 import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
+import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
 import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
 import { scanSolutionSources, buildSolutionSchema } from "./lib/solution-schema.mjs";
@@ -478,6 +479,7 @@ export async function createSimulator({
     : null;
   let evidence = null;
   const csrf = randomBytes(32).toString("hex");
+  const verificationRuntimeId = randomUUID();
   let revision = 1,
     renderer,
     watcher,
@@ -513,6 +515,16 @@ export async function createSimulator({
     requests = [];
   const audit = new AuditLog(),
     trace = new AsyncLocalStorage();
+  // Enforce the visitor's local-only contract at the outbound boundary too:
+  // configuration may change while an asynchronous render is in progress.
+  for (const method of ['request', 'fetchXml']) if (typeof live[method] === 'function') {
+    const invoke = live[method].bind(live);
+    live[method] = (...args) => {
+      if (trace.getStore()?.localOnly)
+        return Promise.reject(error('This visitor requires local Mirage execution.', 409, 'LocalRuntimeRequired'));
+      return invoke(...args);
+    };
+  }
   // Admin live log stream: `log` events on /__sim/events?channels=logs. Nothing is
   // serialized while no administrator is subscribed.
   const logClients = new Set();
@@ -645,7 +657,7 @@ export async function createSimulator({
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
-  store.setPluginPipeline(context => runPluginPhase({ ...context,store,runtimes:registeredPluginRuntimes, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => pluginSteps().some(step => step.enabled && step.entity === entity && String(step.message).toLowerCase() === operation && (!['retrieve','retrievemultiple'].includes(operation)||!['placeholder','disabled'].includes(step.mode))));
+  store.setPluginPipeline(context => runPluginPhase({ ...context,store,runtimes:registeredPluginRuntimes, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => pluginSteps().some(step => step.enabled && pluginStepMatchesEntity(step, entity) && String(step.message).toLowerCase() === operation && (!['retrieve','retrievemultiple'].includes(operation)||!['placeholder','disabled'].includes(step.mode))));
   for(const item of pluginSteps().filter(item=>item.mode==='clr'))try{if(!item.clrAvailable)throw new Error('No exact trusted descriptor');registeredPluginRuntimes.set(item.id,await prepareClrRuntime(registeredPluginDescriptors.get(item.id)));}catch(error){recordDiagnostic({code:'PLUGIN_CLR_PREPARATION_FAILED',stepId:item.id,message:error.message});}
   const acceptedChains=new Set();
   triggerRunner=createFlowTriggerRunner({store,items:operations,workflows:()=>operationWorkflows,identities:()=>registeredOperations.flowIdentities,diagnostic:recordDiagnostic,acceptedChains});
@@ -714,7 +726,7 @@ export async function createSimulator({
     async fetchXml(xml, identity, fetchOptions = {}) {
       if (config().mode !== "live")
         return normalizeMockLiquidFetchXml(
-          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true, fetchCache: fetchOptions.fetchCache })),
+          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true, right: fetchOptions.right, fetchCache: fetchOptions.fetchCache })),
           xml,
           liveMapping,
         );
@@ -958,6 +970,10 @@ export async function createSimulator({
           resolveMapping: name => store.resolveMapping(name),
         });
         return empty ?? readProvider.fetchXml(xml, currentIdentity(), fetchOptions);
+      },
+      previewFetchXml:(xml,_user,_request,fetchOptions)=>{
+        if(config().mode==='live')throw error('A local permission preview cannot qualify remote Liquid execution.',501,'LocalFetchPreviewUnsupported');
+        return store.previewPermissionFetchXml(xml,currentIdentity(),fetchOptions);
       },
       entity: async (entity, id) => observedLiquidEntityRead(
         () => readProvider.get(entity, id, currentIdentity()), config().observed ?? source.observed),
@@ -1550,6 +1566,24 @@ export async function createSimulator({
       return json(res, 200, report);
     }
     if (method === "GET" && relative === "/status") return json(res, 200, statusPayload());
+    if (method === 'GET' && relative === '/verification-witness') {
+      if ([...url.searchParams.keys()].some(key => key !== 'tables') || url.searchParams.getAll('tables').length !== 1)
+        throw error('Select explicit logical fixture tables with one tables query parameter.', 400, 'InvalidVerificationSelection');
+      const selectedTables = url.searchParams.get('tables').split(',');
+      const auth = requestAuth(req, new URL('/', url));
+      const witness = await trace.run({ ...trace.getStore(), auth, localOnly: true }, () => store.readOperation(async () => {
+        verificationTableSelection(selectedTables, store.state);
+        const start = { revision, fingerprint, portal };
+        const [currentSource, currentImplementation] = await Promise.all([calculateFingerprint(), cachedSourceFingerprint(ROOT)]);
+        if (start.revision !== revision || start.fingerprint !== fingerprint || start.portal !== portal)
+          throw error('Runtime source changed while capturing verification evidence.', 409, 'VerificationSourceDrift');
+        return verificationWitness({ state: store.state, tables: selectedTables, identity: currentIdentity(), portal,
+          runtime: { origin: localOrigin, instanceId: verificationRuntimeId, revision, storeRevision: store.revision, loadedSourceFingerprint: fingerprint,
+            currentSourceFingerprint: currentSource, loadedImplementationFingerprint: implementationFingerprint,
+            currentImplementationFingerprint: currentImplementation } });
+      }));
+      return json(res, 200, witness);
+    }
     if (method === "GET" && relative === "/operations") return json(res, 200, { items: operations() });
     if (method === "GET" && relative === "/personas") return json(res, 200, personasPayload());
     if (method === "GET" && relative === "/scenarios")
@@ -2668,6 +2702,8 @@ export async function createSimulator({
     // Both spellings expose the same origin-confined admin with identical CSRF checks.
     if (/^\/_sim(?:\/|\?|$)/.test(req.url)) req.url = req.url.replace(/^\/_sim/, "/__sim");
     const url = requestTargetUrl(req.url, localOrigin);
+    if(req.headers['x-paqvilo-local-only']==='true'&&(config().mode==='live'||config().pageMode==='live'||(config().endpoints??[]).some(endpoint=>endpoint.enabled!==false&&endpoint.path===url.pathname&&endpoint.mode==='live')))
+      throw error('This visitor requires local Mirage execution.',409,'LocalRuntimeRequired');
     if (frameReadiness.handle(req, res, url)) return;
     // Mirage responses only; portal responses carry the HTTP/* site-setting headers.
     if (url.pathname === "/__sim" || url.pathname.startsWith("/__sim/") || url.pathname.startsWith("/__sim-"))
@@ -3443,6 +3479,7 @@ export async function createSimulator({
       method: req.method,
       path: url.pathname,
       auth,
+      localOnly: req.headers['x-paqvilo-local-only'] === 'true',
       visitor: readVisitor(req.headers.cookie, visitorName()),
     };
     if (span) res.setHeader("X-Sim-Trace-Id", span.id);

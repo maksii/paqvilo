@@ -1,7 +1,10 @@
-import { readFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, writeFile, mkdir, open } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { gzipSync } from 'node:zlib';
+import { createHash } from 'node:crypto';
+import {savePrivateJson} from './private-journal.mjs';
 
 // The bridge accepts source text, so serialize inputs as a JSON string consumed
 // by a fixed program. Request metadata never becomes JavaScript object syntax.
@@ -62,10 +65,10 @@ async function main() {
 const [
   {loadConnection, connectedClient}, {openNativeBrowser}, {deployBatchEndpoint, prepareBatchIntents, decodeBatchResponse},
   {authoredQuery, odataRequest, canonicalRows, stable, pageComplete}, {capturedQueries},
-  {captureNativeSnapshot, compareNativeSnapshots, snapshotHash}, {nativeRegistrationFingerprint}, {captureNativeRegistry},
+  {captureNativeSnapshot, compareNativeSnapshots, snapshotHash}, {nativeRegistrationFingerprint}, {captureNativeRegistry}, {persistNativeReadHistory},
 ] = await Promise.all([
   import('paqvilo/dataverse'), import('./native-browser.mjs'), import('./batch-capture.mjs'), import('./core.mjs'),
-  import('./parity.mjs'), import('./native-capture.mjs'), import('../plugins/mirage-runtime.mjs'), import('./native-registry.mjs'),
+  import('./parity.mjs'), import('./native-capture.mjs'), import('../plugins/mirage-runtime.mjs'), import('./native-registry.mjs'), import('./native-history.mjs'),
 ]);
 const config = JSON.parse(await readFile(process.argv[2], 'utf8'));
 const load = async file => JSON.parse(await readFile(file, 'utf8'));
@@ -84,11 +87,17 @@ try {
   let actor = await browser.run(`async(page)=>{await page.goto(${JSON.stringify(config.portalOrigin + '/permission-lab/')},{waitUntil:'domcontentloaded'});return page.evaluate(()=>{const xml=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');return {contactId:xml.documentElement.getAttribute('contact-id'),roles:[...xml.querySelectorAll('role')].map(role=>role.textContent)};});}`);
   if (actor.contactId !== config.contactId) throw new Error('Native actor mismatch.');
   const batch = await deployBatchEndpoint(api, deployment, manifest, path.join(config.outputDir, 'deployment-journal.json'));
+  const cacheJournal = {schemaVersion: 1, actor: actor.contactId, startedAt: new Date().toISOString(), actions: [{name: 'clearConfig', status: 'pending'}, {name: 'clearCache', status: 'planned'}]};
+  const saveCacheJournal = () => savePrivateJson(path.join(config.outputDir, 'cache-journal.json'), structuredClone(cacheJournal));
+  await saveCacheJournal();
   await browser.run(`async(page)=>{await page.goto(${JSON.stringify(config.portalOrigin + '/_services/about')},{waitUntil:'domcontentloaded'});await page.locator('input[name=clearConfig]').click();await page.waitForLoadState('domcontentloaded');return {cleared:true};}`);
+  cacheJournal.actions[0].status = 'completed'; cacheJournal.actions[1].status = 'pending'; await saveCacheJournal();
+  await browser.run(`async(page)=>{await page.goto(${JSON.stringify(config.portalOrigin + '/_services/about')},{waitUntil:'domcontentloaded'});page.once('dialog',dialog=>dialog.accept());await page.locator('input[name=clearCache]').click({timeout:90000});await page.waitForLoadState('domcontentloaded');return {cleared:true};}`, 120000);
+  cacheJournal.actions[1].status = 'completed'; cacheJournal.finishedAt = new Date().toISOString(); await saveCacheJournal();
   actor = await browser.run(`async(page)=>{await page.goto(${JSON.stringify(config.portalOrigin + '/permission-lab/')},{waitUntil:'domcontentloaded'});return page.evaluate(()=>{const xml=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');return {contactId:xml.documentElement.getAttribute('contact-id'),roles:[...xml.querySelectorAll('role')].map(role=>role.textContent)};});}`);
   if (actor.contactId !== config.contactId) throw new Error('Native actor changed during cache refresh.');
   if (config.expectedBusinessRoleNames && stable(actor.roles.filter(name => config.businessRoleNames.includes(name)).sort()) !== stable([...config.expectedBusinessRoleNames].sort())) throw new Error('Native role display has not stabilized after mask update.');
-  const selectedPlans = [...manifest.cases, ...(manifest.stressCases ?? []), ...(manifest.odataVariants ?? [])].filter(plan => (config.caseIds ?? ['R09']).includes(plan.id));
+  const selectedPlans = [...manifest.cases, ...(manifest.stressCases ?? []), ...(manifest.odataVariants ?? []), ...(manifest.odataPositiveVariants ?? [])].filter(plan => (config.caseIds ?? ['R09']).includes(plan.id));
   if (selectedPlans.length !== (config.caseIds ?? ['R09']).length) throw new Error('Requested native plan is missing or duplicated.');
   const plans = selectedPlans.flatMap(plan => (plan.fragments ?? [plan]).flatMap(fragment => (config.pages ?? [config.page ?? 1]).map(page => ({...fragment, page}))));
   const snapshotInput = {siteId: config.siteId, contactId: config.contactId, catalogue: await load(config.catalogue), overlays: await Promise.all(config.overlays.map(load)), resolvedIds: deployment.resolvedIds ?? {}};
@@ -113,6 +122,8 @@ try {
   const capturePort = server.address().port;
   const summary = await browser.run(nativeBatchProgram({portalOrigin: config.portalOrigin, requests, liquidUrls, capturePort}), 360000);
   if (!capture) throw new Error('Batch capture missing.');
+  capture.actorRoles = actor.roles;
+  capture.recordingInputs={run:prepared.runRecord,operations:prepared.intents.map(intent=>intent.operation),qualification:'Actual SDK readbacks before measured portal queries; immutable creator/actor/root/lane/markers and initial RowVersions retained.'};
   const liquidPages = capture.results.filter(result => result.lane === 'liquid-batch').flatMap(response => decodeBatchResponse(response.body, {
     operations: prepared.intents.filter(intent => response.operationIds.includes(intent.id)), actor: actor.contactId, roles: actor.roles, datasetVersion: manifest.datasetVersion}));
   capture.rowComparisons = selectedPlans.map(plan => {
@@ -138,12 +149,25 @@ try {
   await writeFile(path.join(config.outputDir, 'site-components-after.json'), JSON.stringify(sourcesAfter, null, 2));
   const logicalSource = rows => rows.map(row => Object.fromEntries(Object.entries(row).filter(([field]) => !field.startsWith('@')))).sort((a,b) => a.powerpagecomponentid.localeCompare(b.powerpagecomponentid));
   capture.qualification.snapshotComparison = compareNativeSnapshots(before, after);
+  capture.qualification.snapshotHashes = Object.fromEntries(['permissionSnapshotHash', 'membershipSnapshotHash', 'dataSnapshotHash', 'rowVersionSnapshotHash'].map(field => [field, {before: before[field], after: after[field]}]));
   capture.qualification.sourcesStable = snapshotHash(logicalSource(siteSources)) === snapshotHash(logicalSource(sourcesAfter));
+  capture.qualification.siteComponentsSha256 = {before: snapshotHash(logicalSource(siteSources)), after: snapshotHash(logicalSource(sourcesAfter))};
   const registrationAfter = await captureRegistry();
   await writeFile(path.join(config.outputDir, 'plugin-registration-after.json'), JSON.stringify(registrationAfter, null, 2));
   capture.qualification.registrationSha256 = nativeRegistrationFingerprint(registrationBefore);
   capture.qualification.registrationStable = capture.qualification.registrationSha256 === nativeRegistrationFingerprint(registrationAfter);
   await writeFile(path.join(config.outputDir, 'capture.json'), JSON.stringify(capture, null, 2));
+  if (config.persistHistory) {
+    const archive = gzipSync(Buffer.from(JSON.stringify({capture, before, after, siteSources, sourcesAfter, registrationBefore, registrationAfter})), {level: 9});
+    const archiveFile = path.join(config.outputDir, 'immutable-native-read.json.gz'), archiveSha256 = createHash('sha256').update(archive).digest('hex');
+    const archiveHandle = await open(archiveFile, 'wx', 0o600);
+    try {await archiveHandle.writeFile(archive); await archiveHandle.sync();} finally {await archiveHandle.close();}
+    if (createHash('sha256').update(await readFile(archiveFile)).digest('hex') !== archiveSha256) throw new Error('Native read archive readback checksum mismatch.');
+    capture.archive = {file: archiveFile, sha256: archiveSha256, bytes: archive.length};
+    await savePrivateJson(path.join(config.outputDir, 'archive-receipt.json'), capture.archive, {exclusive: true});
+    capture.history = await persistNativeReadHistory(api, {capture, intents: prepared.intents, manifest, campaign: config.campaign, journalFile: path.join(config.outputDir, 'native-history-journal.json')});
+    await writeFile(path.join(config.outputDir, 'capture.json'), JSON.stringify(capture, null, 2));
+  }
   console.log(JSON.stringify({...summary, totalDurationMs: Date.now() - started, events: events.length, capturedQueries: physical.reduce((count, page) => count + page.queries.length, 0), captureErrors: physical.flatMap(page => page.errors).length, portalActorVerified: capture.qualification.portalActorVerified,
     rowComparisons: capture.rowComparisons, outputDir: config.outputDir}));
 } catch (error) {await writeFile(path.join(config.outputDir, 'failure.json'), JSON.stringify({code: error.code ?? 'BatchPrototypeFailed', message: error.message, time: new Date().toISOString()}, null, 2)); console.error('Native batch prototype failed; private diagnostic recorded.'); process.exitCode = 1;}

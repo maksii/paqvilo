@@ -1,5 +1,6 @@
 import { DataError } from './data-error.mjs';
 import { parseXmlDocument, xmlEscapeAttribute } from './fetchxml-engine.mjs';
+import {createHash} from 'node:crypto';
 
 const key = value => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const node = (name, attrs = {}, children = []) => ({ name, attrs, children, text: '' });
@@ -29,6 +30,18 @@ export function serializePermissionFetchXml(element, depth = 0, pretty = true) {
   return `${opening}>${text}${newline}${element.children.map(child => serializePermissionFetchXml(child, depth + 1, pretty)).join(newline)}${newline}${pad}</${element.name}>`;
 }
 const walk = function* (element) { yield element; for (const child of element.children) yield* walk(child); };
+const canonical=value=>Array.isArray(value)?value.map(canonical):value&&typeof value==='object'?Object.fromEntries(Object.entries(value).sort(([a],[b])=>a.localeCompare(b)).map(([name,item])=>[name,canonical(item)])):value;
+export function permissionOrderGraphFingerprint(permissions) {
+  const graph=permissions.map(permission=>({
+    id:key(permission.id),name:permission.name??null,entity:permission.entity,scope:permission.scope??'global',enabled:permission.enabled!==false,
+    operations:[...(permission.operations??['read'])].sort(),roles:[...(permission.roles??[])].sort(),
+    roleIds:(permission.roleIds??[]).map(key).sort(),imported:Boolean(permission.imported),field:permission.field??null,
+    parentPermissionId:key(permission.parentPermissionId??permission.parentId)||null,
+    relationship:permission.relationship??null,identityRelationship:permission.identityRelationship??null,
+    observedOrphanParent:permission.observedOrphanParent??null,
+  })).sort((a,b)=>a.id.localeCompare(b.id));
+  return createHash('sha256').update(JSON.stringify(canonical(graph))).digest('hex');
+}
 
 /**
  * Compile the root table's effective grants into executable FetchXML. The shape
@@ -41,6 +54,8 @@ export function compilePermissionFetchXml(xml, {
   permissions = [], identity = {}, mappings = {}, operation = 'read', rules,
   bypass = false, maxPathDepth = 32,
   linkedPermissionOrdinals = [],
+  grantOrder,
+  unscopedCreate = false,
 } = {}) {
   const tree = parseXmlDocument(xml, { root: 'fetch' });
   const root = tree.children.find(element => element.name === 'entity');
@@ -53,7 +68,7 @@ export function compilePermissionFetchXml(xml, {
   const finish = (permissionGranted, permissionLinkCount = 0, grantIds = []) => {
     const finalLinks = [...walk(tree)].filter(element => element.name === 'link-entity');
     permissionLinkCount = generatedNodes.size;
-    if(normalizeQuery && permissionGranted)tree.attrs.distinct ??= 'true';
+    if(normalizeQuery && permissionGranted && !(unscopedCreate&&operation==='create'))tree.attrs.distinct ??= 'true';
     return ({
     xml: normalizeQuery ? serializePermissionFetchXml(tree) : xml,
     authoredXml: xml, authoredLinkCount, permissionLinkCount,
@@ -86,7 +101,24 @@ export function compilePermissionFetchXml(xml, {
     (identity.roleSource === 'memberships' && (grant.imported || grant.roleIds?.length)
       ? (grant.roleIds ?? []).some(role => availableIds.has(key(role)))
       : !grant.roles?.length || grant.roles.some(role => availableRoles.has(role))));
-  const grants = selected(root.attrs.name, operation);
+  let grants = selected(root.attrs.name, operation);
+  // The independently witnessed Liquid Create right asserts table creation
+  // eligibility and executes the authored read without scoped permission joins.
+  // The caller opts into this contract only for its observed Liquid lane.
+  if(unscopedCreate&&operation==='create'){
+    if(grantOrder&&grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
+    return finish(grants.length>0,0,grants);
+  }
+  if(grantOrder){
+    if(grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
+    const groups=grantOrder.tables?.[root.attrs.name];
+    if(groups){
+      const ranks=new Map(groups.flatMap((group,index)=>group.map(id=>[key(id),index])));
+      if(grants.some(grant=>!ranks.has(key(grant.id))))throw new DataError('Observed permission order does not cover a selected source grant.',501,'PermissionGrantOrderUnqualified');
+      grants=[...grants].sort((a,b)=>ranks.get(key(a.id))-ranks.get(key(b.id)));
+    }else if(grants.length>1&&!grants.some(grant=>(grant.scope??'global')==='global'))
+      throw new DataError('Multiple grants have no observed order for this table.',501,'PermissionGrantOrderUnqualified');
+  }
   // The evidenced classic API lane constrains each authored linked table using
   // existential paths to its principal. Liquid only expands the root grants.
   // These paths come from source permissions, never a recorded query template.

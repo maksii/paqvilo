@@ -31,6 +31,19 @@
       "keys": []
     },
     {
+      "name": "pqvd_currencyreference",
+      "entitySet": "pqvd_currencyreferences",
+      "primaryId": "pqvd_currencyreferenceid",
+      "keys": [
+        [
+          "pqvd_code"
+        ],
+        [
+          "pqvd_systemcurrencyid"
+        ]
+      ]
+    },
+    {
       "name": "pqvd_accessrole",
       "entitySet": "pqvd_accessroles",
       "primaryId": "pqvd_accessroleid",
@@ -14554,7 +14567,7 @@
         "pqvd_name": "Seed fixture — no execution P01",
         "pqvd_runkey": "CO-SEED-P01",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14590,7 +14603,7 @@
         "pqvd_name": "Seed fixture — no execution P02",
         "pqvd_runkey": "CO-SEED-P02",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14626,7 +14639,7 @@
         "pqvd_name": "Seed fixture — no execution P03",
         "pqvd_runkey": "CO-SEED-P03",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14662,7 +14675,7 @@
         "pqvd_name": "Seed fixture — no execution P04",
         "pqvd_runkey": "CO-SEED-P04",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14698,7 +14711,7 @@
         "pqvd_name": "Seed fixture — no execution P05",
         "pqvd_runkey": "CO-SEED-P05",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14734,7 +14747,7 @@
         "pqvd_name": "Seed fixture — no execution P06",
         "pqvd_runkey": "CO-SEED-P06",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14770,7 +14783,7 @@
         "pqvd_name": "Seed fixture — no execution P07",
         "pqvd_runkey": "CO-SEED-P07",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14806,7 +14819,7 @@
         "pqvd_name": "Seed fixture — no execution P08",
         "pqvd_runkey": "CO-SEED-P08",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14842,7 +14855,7 @@
         "pqvd_name": "Seed fixture — no execution P09",
         "pqvd_runkey": "CO-SEED-P09",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14878,7 +14891,7 @@
         "pqvd_name": "Seed fixture — no execution P10",
         "pqvd_runkey": "CO-SEED-P10",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14914,7 +14927,7 @@
         "pqvd_name": "Seed fixture — no execution P11",
         "pqvd_runkey": "CO-SEED-P11",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14950,7 +14963,7 @@
         "pqvd_name": "Seed fixture — no execution P12",
         "pqvd_runkey": "CO-SEED-P12",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -14986,7 +14999,7 @@
         "pqvd_name": "Seed fixture — no execution P13",
         "pqvd_runkey": "CO-SEED-P13",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15022,7 +15035,7 @@
         "pqvd_name": "Seed fixture — no execution P14",
         "pqvd_runkey": "CO-SEED-P14",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15058,7 +15071,7 @@
         "pqvd_name": "Seed fixture — no execution P15",
         "pqvd_runkey": "CO-SEED-P15",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15094,7 +15107,7 @@
         "pqvd_name": "Seed fixture — no execution P16",
         "pqvd_runkey": "CO-SEED-P16",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15130,7 +15143,7 @@
         "pqvd_name": "Seed fixture — no execution P17",
         "pqvd_runkey": "CO-SEED-P17",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15166,7 +15179,7 @@
         "pqvd_name": "Seed fixture — no execution P18",
         "pqvd_runkey": "CO-SEED-P18",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15202,7 +15215,7 @@
         "pqvd_name": "Seed fixture — no execution P19",
         "pqvd_runkey": "CO-SEED-P19",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15238,7 +15251,7 @@
         "pqvd_name": "Seed fixture — no execution P20",
         "pqvd_runkey": "CO-SEED-P20",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15274,7 +15287,7 @@
         "pqvd_name": "Seed fixture — no execution P21",
         "pqvd_runkey": "CO-SEED-P21",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15310,7 +15323,7 @@
         "pqvd_name": "Seed fixture — no execution P22",
         "pqvd_runkey": "CO-SEED-P22",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15346,7 +15359,7 @@
         "pqvd_name": "Seed fixture — no execution P23",
         "pqvd_runkey": "CO-SEED-P23",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15382,7 +15395,7 @@
         "pqvd_name": "Seed fixture — no execution P24",
         "pqvd_runkey": "CO-SEED-P24",
         "pqvd_suiteversion": "seed-only-v1",
-        "pqvd_manifesthash": "ff47adeef96e8a3929f3c785d16686f61eefed17b2f7950e259afbced51876cd",
+        "pqvd_manifesthash": "fe7d1f4051d5383ad3b9f56a728fcbfe20c460dc03361c6f5cdac8c0caa8bcb6",
         "pqvd_datasetversion": "company-operations-v1",
         "pqvd_environment": "fixture-placeholder",
         "pqvd_startedat": "2026-10-12T09:00:00Z",
@@ -15657,6 +15670,36 @@
         "pqvd_operationid": "OP-CHAIN",
         "pqvd_samplecontactid": "P07",
         "pqvd_parentnodeid": "NODE-6"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "currencyreference-USD",
+      "id": "ae01f937-5a36-547a-8494-8931881f9fbd",
+      "table": "pqvd_currencyreference",
+      "fields": {
+        "pqvd_name": "Fixture USD",
+        "pqvd_code": "USD",
+        "pqvd_symbol": "$",
+        "pqvd_precision": 2
+      },
+      "refs": {
+        "pqvd_systemcurrencyid": "currency-USD"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "currencyreference-EUR",
+      "id": "936e4c97-0a21-5f71-990c-c2ba8c11ec32",
+      "table": "pqvd_currencyreference",
+      "fields": {
+        "pqvd_name": "Fixture EUR",
+        "pqvd_code": "EUR",
+        "pqvd_symbol": "€",
+        "pqvd_precision": 2
+      },
+      "refs": {
+        "pqvd_systemcurrencyid": "currency-EUR"
       },
       "deferredRefs": []
     }
@@ -17007,6 +17050,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P01-COMPANYMANAGER-A-1",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P02-BRANCHMANAGER-A-RIV-2",
       "to": [
@@ -17022,12 +17073,25 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P02-BRANCHMANAGER-A-RIV-2",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P03-TEAMLEADER-A-RIV-3",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P03-TEAMLEADER-A-RIV-3",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P03-TEAMLEADER-A-RIV-3",
       "to": []
     },
@@ -17038,6 +17102,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P04-EMPLOYEE-A-RIV-4",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P04-EMPLOYEE-A-RIV-4",
       "to": []
     },
@@ -17048,6 +17117,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P05-CONTRACTOR-B-LAKE-5",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P05-CONTRACTOR-B-LAKE-5",
       "to": []
     },
@@ -17065,12 +17139,25 @@
       "to": []
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P06-HR-A-RIV-6",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P07-IT-A-RIV-7",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P07-IT-A-RIV-7",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P07-IT-A-RIV-7",
       "to": []
     },
@@ -17081,6 +17168,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P08-FACILITIES-A-RIV-8",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P08-FACILITIES-A-RIV-8",
       "to": []
     },
@@ -17100,6 +17192,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P09-PROCUREMENT-A-RIV-9",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P10-AUDITOR-A-10",
       "to": [
@@ -17115,12 +17215,25 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P10-AUDITOR-A-10",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P11-ORGADMIN-A-RIV-11",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P11-ORGADMIN-A-RIV-11",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P11-ORGADMIN-A-RIV-11",
       "to": []
     },
@@ -17140,12 +17253,25 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P12-CTO-A-12",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P13-EMPLOYEE-A-RIV-13",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P13-EMPLOYEE-A-RIV-13",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P13-EMPLOYEE-A-RIV-13",
       "to": []
     },
@@ -17156,6 +17282,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P13-CONTRACTOR-B-LAKE-14",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P13-CONTRACTOR-B-LAKE-14",
       "to": []
     },
@@ -17173,12 +17304,25 @@
       "to": []
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P14-HR-A-RIV-15",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P14-IT-B-LAKE-16",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P14-IT-B-LAKE-16",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P14-IT-B-LAKE-16",
       "to": []
     },
@@ -17194,6 +17338,14 @@
       "relationship": "pqvd_access_referenceaccounts",
       "from": "G-P15-HR-A-RIV-17",
       "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P15-HR-A-RIV-17",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
     },
     {
       "relationship": "pqvd_access_currencies",
@@ -17202,6 +17354,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P15-IT-A-RIV-18",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P15-IT-A-RIV-18",
       "to": []
     },
@@ -17212,6 +17369,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P16-CONTRACTOR-C-STUDIO-19",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P16-CONTRACTOR-C-STUDIO-19",
       "to": []
     },
@@ -17230,12 +17392,24 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P16-HR-C-STUDIO-20",
+      "to": [
+        "currencyreference-EUR"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P16-IT-C-STUDIO-21",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P16-IT-C-STUDIO-21",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P16-IT-C-STUDIO-21",
       "to": []
     },
@@ -17246,6 +17420,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P16-ORGADMIN-C-STUDIO-22",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P16-ORGADMIN-C-STUDIO-22",
       "to": []
     },
@@ -17265,6 +17444,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P16-CTO-C-STUDIO-23",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P17-AUDITOR-A-24",
       "to": [
@@ -17280,12 +17467,25 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P17-AUDITOR-A-24",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P17-IT-A-RIV-25",
       "to": []
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P17-IT-A-RIV-25",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P17-IT-A-RIV-25",
       "to": []
     },
@@ -17305,6 +17505,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P18-BRANCHMANAGER-A-RIV-26",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P18-BRANCHMANAGER-A-HILL-27",
       "to": [
@@ -17317,6 +17525,14 @@
       "from": "G-P18-BRANCHMANAGER-A-HILL-27",
       "to": [
         "V-SUPPLY"
+      ]
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P18-BRANCHMANAGER-A-HILL-27",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
       ]
     },
     {
@@ -17335,6 +17551,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P19-COMPANYMANAGER-A-SERV-28",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P20-BRANCHMANAGER-A-RIV-29",
       "to": [
@@ -17347,6 +17571,14 @@
       "from": "G-P20-BRANCHMANAGER-A-RIV-29",
       "to": [
         "V-SUPPLY"
+      ]
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P20-BRANCHMANAGER-A-RIV-29",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
       ]
     },
     {
@@ -17356,6 +17588,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P20-EMPLOYEE-A-RIV-30",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P20-EMPLOYEE-A-RIV-30",
       "to": []
     },
@@ -17366,6 +17603,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P21-TEAMLEADER-A-RIV-31",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P21-TEAMLEADER-A-RIV-31",
       "to": []
     },
@@ -17376,6 +17618,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P21-IT-A-HILL-32",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P21-IT-A-HILL-32",
       "to": []
     },
@@ -17395,6 +17642,14 @@
       ]
     },
     {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P22-AUDITOR-A-RIV-33",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
+      ]
+    },
+    {
       "relationship": "pqvd_access_currencies",
       "from": "G-P22-CTO-A-RIV-34",
       "to": [
@@ -17407,6 +17662,14 @@
       "from": "G-P22-CTO-A-RIV-34",
       "to": [
         "V-SUPPLY"
+      ]
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
+      "from": "G-P22-CTO-A-RIV-34",
+      "to": [
+        "currencyreference-EUR",
+        "currencyreference-USD"
       ]
     },
     {
@@ -17416,6 +17679,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P22-IT-A-RIV-35",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P22-IT-A-RIV-35",
       "to": []
     },
@@ -17426,6 +17694,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P24-EMPLOYEE-A-RIV-36",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P24-EMPLOYEE-A-RIV-36",
       "to": []
     },
@@ -17436,6 +17709,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P24-CONTRACTOR-B-LAKE-37",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P24-CONTRACTOR-B-LAKE-37",
       "to": []
     },
@@ -17446,6 +17724,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P22-IT-A-HILL-38",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P22-IT-A-HILL-38",
       "to": []
     },
@@ -17456,6 +17739,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P22-IT-A-HILL-39",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P22-IT-A-HILL-39",
       "to": []
     },
@@ -17466,6 +17754,11 @@
     },
     {
       "relationship": "pqvd_access_referenceaccounts",
+      "from": "G-P22-IT-A-HILL-40",
+      "to": []
+    },
+    {
+      "relationship": "pqvd_access_currencyreferences",
       "from": "G-P22-IT-A-HILL-40",
       "to": []
     }
@@ -19976,6 +20269,23 @@
     },
     {
       "id": "R21",
+      "table": "pqvd_currencyreference",
+      "fetchXml": "<fetch><entity name=\"pqvd_currencyreference\"><attribute name=\"pqvd_currencyreferenceid\"/><filter type=\"and\"><condition attribute=\"pqvd_currencyreferenceid\" operator=\"in\"><value>{{ref:currencyreference-USD}}</value><value>{{ref:currencyreference-EUR}}</value></condition><condition attribute=\"pqvd_name\" operator=\"ne\" value=\"{{markerUtc}}\"/><condition attribute=\"pqvd_name\" operator=\"ne\" value=\"{{operationId}}\"/></filter><order attribute=\"pqvd_currencyreferenceid\"/></entity></fetch>",
+      "pageSize": 50,
+      "columns": [
+        "pqvd_currencyreferenceid"
+      ],
+      "expected": [
+        {
+          "pqvd_currencyreferenceid": "@ref:currencyreference-USD"
+        },
+        {
+          "pqvd_currencyreferenceid": "@ref:currencyreference-EUR"
+        }
+      ]
+    },
+    {
+      "id": "SDK-transactioncurrency",
       "table": "transactioncurrency",
       "fetchXml": "<fetch><entity name=\"transactioncurrency\"><attribute name=\"transactioncurrencyid\"/><filter type=\"and\"><condition attribute=\"transactioncurrencyid\" operator=\"in\"><value>{{ref:currency-USD}}</value><value>{{ref:currency-EUR}}</value></condition><condition attribute=\"currencyname\" operator=\"ne\" value=\"{{markerUtc}}\"/><condition attribute=\"currencyname\" operator=\"ne\" value=\"{{operationId}}\"/></filter><order attribute=\"transactioncurrencyid\"/></entity></fetch>",
       "pageSize": 50,
@@ -23444,7 +23754,7 @@
       "readiness": "Portal permissions and mutation invariants/projection maintenance must be installed before positive CRUD runs; this toolkit does not execute destructive CRUD tests."
     },
     {
-      "table": "transactioncurrency",
+      "table": "pqvd_currencyreference",
       "targets": null,
       "mode": "Backend catalogue/reference or grant table; ordinary portal mutation is denied",
       "baselineMutationAllowed": false,

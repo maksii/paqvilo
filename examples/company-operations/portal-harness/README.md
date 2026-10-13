@@ -37,3 +37,135 @@ Artifacts use a versioned UTF-8 base64 envelope with original byte length and SH
 The historical corpus currently contains 45 recorded runs, 117 paired cases and seven observed subsets of the twelve business roles, out of 4,096 possible subsets. These records do not contain authoritative contemporaneous permission and data snapshots for every run. Their reconstructed replay is diagnostic, even when a query structure or row multiset matches. Offline enumeration of subsets is a separate modeled check and cannot fill native coverage gaps. The coverage ledger always reports these gaps; observing every subset would still leave other permission graphs, actors, data states, CRUD rights, query shapes and plugin configurations unqualified.
 
 The stress sequence also records different expanded principal footprints after role changes: two displayed business roles initially produced the preceding one-role query path, and the eight-role zero-authored-join case initially produced the preceding four-role footprint before later requests expanded further. This is consistent with a permission cache lag, but the captures do not prove its cause. The report marks such footprint changes as requiring a cache-controlled native capture. Requalification must record the exact active permission graph, memberships, source/data versions and cache refresh evidence together, then repeat the query until the server-side principal footprint is stable. Do not fit a fixed join-per-role formula to the historical counts.
+
+`node portal-harness/native-campaign.mjs <private-campaign.json>` collects a resumable native role campaign. The private job explicitly enables `allowNativeRoleMutation`, identifies `campaignDir`, `maxMasksPerBatch` (4096 runs the full lattice), `schema`, the normal deployment/connection/browser inputs, `nativeRegistration`, `assemblyReceipt`, and all five `witnesses` returned by `campaignFrozenWitnesses`. Before changing memberships, the runner verifies the actual permission/data/row-version snapshot, complete website source, registration graph including disabled states, and assembly bytes against that freeze. Each invocation preserves memberships outside the twelve business roles and restores the original membership set and both portal caches on exit. After an interruption, the pending lease is reconciled before collection resumes; unknown drift fails closed.
+
+Every job also requires one shared absolute `workerLock` across campaign directories, with filename `<lowercase-site-guid>-<lowercase-contact-guid>.native-campaign.lock.json`. The runner acquires it before recovery or live reads and never steals an existing lock. After a crash, verify that its recorded process is dead and reconcile the owning journal before explicitly removing the stale lock. An optional absolute `stopFile` requests recovery after the current complete role mask; it is retained until the coordinator removes the request. Recovery restores roles and both caches before the worker releases its lock.
+
+Every measured operation retains its authored bytes, canonical native rows/outcome, role snapshot, final backend artifact hashes, source/snapshot hashes and immutable archive checksum in Dataverse history. Full plugin payloads and the before/after source witnesses also remain in a checksummed local gzip archive. Collection follows successful full pages to an observed terminator within the explicit twenty-page bound. Failed or partial attempts remain in history, without becoming completed masks. Collected cells still require exact Mirage replay, stable native principal-path/cache proof and supported backend observability; the runner reports collection separately from parity qualification. The original eight OData variants and the additional eight metadata-valid probes have separate IDs and denominator cells.
+
+`query-drop-probes.mjs` prepares isolated templates for a FetchXML tag with no property access, `.xml` only, `.results` only and both, for admitted and limit-failing queries. The no-access and XML-only templates never dereference results implicitly. These are source-specific execution diagnostics, not a default core policy. Reference tables whose native RetrieveMultiple filters disallow custom plugin registration require a separately supported observation method; an absent observer is never credited as a captured empty backend query.
+# Offline original-plugin campaign replay
+
+`node portal-harness/mirage-campaign-replay.mjs --job <private job.json>` replays
+frozen native captures through the original exported CLR assemblies, the actual
+Mirage Web API handler and the frozen query Liquid templates. It makes no native
+requests or mutations. Keep jobs and outputs under the project's ignored
+`.paqvilo/`; they contain contact, query and recording data.
+
+A schema-version 1 job declares absolute `outputRoot`, `cacheRoot`, `exportRoot`,
+`sdkAssembly`, optional `proxyAssembly`, nonempty `selectedStepIds`, and
+`expectedAssemblyHashes` keyed by assembly name. Its `inputs` and each unique
+`cells[].inputs` contain `{file: <absolute path>, sha256: <actual file SHA256>}`.
+Required inputs are `schema`, `catalogue`, `observed`, `serviceProfiles`,
+`assemblyReceipt`, `snapshotBefore`, `snapshotAfter`, `capture`,
+`registrationBefore`, `registrationAfter`, `siteBefore` and `siteAfter`;
+`overlay` is optional. Cell inputs override common inputs. Native assembly
+receipts require matching installed/exported hashes and `allMatch: true`;
+build-only receipts are insufficient. Backendless cells also require an explicit
+frozen Context7 `context` input. Service profiles are explicit local backend
+grants, not a claim that native Dataverse privileges were fully audited.
+
+The worker derives the signed-in identity from frozen Contact, account lookup,
+same-site memberships and authenticated default role IDs. It requires stable
+native data, versions, memberships, graph, registration and consumed site source
+receipts. It fingerprints installed toolkit and project runtime source before
+and after every cell, saves immutable per-attempt results, and resumes completed
+results only after checking their hashes. Concurrent workers are refused. A
+private content-addressed archive retains the exact explicit input bytes and
+runtime source bytes (including the CLR bridge), with manifests in the ledger;
+mutable source checkout paths are insufficient to reconstruct an older proof.
+A changed source/job requires a new output directory. After an interrupted process,
+inspect its private ledger and confirm the old process has exited before removing
+its owned `worker.lock`; the interrupted cell is rerun. `retryUnqualified: true`
+must be set in the initial job to retry completed diagnostic cells.
+
+For an ongoing collector, omit `cells` and declare an absolute `cellsDirectory`
+and `expectedCells` (at most 4096). Write one immutable JSON cell specification
+per fully frozen native capture into that directory. Repeated worker invocations
+consume new specifications and resume old ones under the same common job receipt;
+changing/removing an existing specification is rejected. Partial collection never
+sets the campaign summary's `allQualified` flag.
+
+For CPU parallelism, run `node portal-harness/mirage-replay-shards.mjs --job
+<private job.json> --workers 10`. This launches up to ten actual Node processes,
+each with separate cell state, SDK cache, CLR host pool and receipt directory.
+Cell IDs select a stable shard; subsequent invocations resume that same layout.
+The parent archives its own runtime sources and verifies every immutable child
+result, source/wire witness, process identity and coverage denominator before
+writing an aggregate receipt. Cancellation stops owned workers; a failed worker
+prevents aggregate qualification. These offline workers create no native login
+sessions and make no native requests.
+
+New native captures include `recordingInputs` with actual pre-query Run and
+operation readbacks. Replay preserves their creator, platform fields and
+RowVersions and validates each actor/root/lane/marker binding. Historical captures
+without these inputs expose `recordingInputWitness.verified: false`; their narrower
+query/context/wire proof does not retroactively prove recorder SDK-object inputs.
+
+Exhaustive role jobs additionally declare `roleCampaign` with `domainHash`, exact
+`actorId`/`siteId`, native `campaignDirectory` and the preserved auxiliary/default
+`auxiliaryRoleIds`. Common immutable inputs include `domain`, `blueprint` and
+`manifest`; each cell is `id: "m<mask>"` with that integer `mask`. A cell includes
+its verified native history readback and every continuation in `nativePages` when
+needed. Replay rebuilds the domain from frozen source definitions, derives the
+mask from actual memberships, checks native campaign/history claims, and requires
+each source fragment/lane/page exactly once through its terminal wire result.
+Missing pages remain incomplete. Runs and operation IDs cannot repeat across role
+cells. Resume and aggregate paths reread every SHA-pinned native/source input and
+revalidate membership/page bindings. Generic jobs expose physical diagnostic scope
+and never set `exhaustiveRoleCoverageQualified`; the role flag requires all 4096
+distinct verified masks with complete qualified page sets.
+
+Qualification covers physical reads, original recorded plugin artifacts/context,
+and actual query-template/API wire results. It does not cover authentication,
+dispatcher/full-page execution, browser JavaScript, anonymous CRUD or unrecorded
+backend fault codes. Failed admitted Liquid queries can have exact observable
+artifacts and wire failures while `allRuntimeFaultCodesQualified` remains false.
+## Stable checkpoint (13 October 2026)
+
+Native work is stopped at the user's request. The existing authenticated Contact
+is the native runner; future runs update its web roles and clear both caches.
+Parallel identities and process workers are local Mirage capabilities.
+
+The current Source4 calibration replay qualifies 184 of 204 physical reads.
+Twenty remain different: six stress Web API budget/URI cases and fourteen OData
+admission failures. The first collected role subset qualifies 203 of 204 reads;
+its outstanding metadata-envelope version needs an independent cohort receipt.
+Two role subsets were collected, with all seven continuation pages for the
+second. This does not establish exhaustive 4,096-subset or configuration coverage.
+Full dispatcher/browser flow, native SDK projection defaults and unobserved
+runtime faults remain outside the qualified scope.
+
+Native memberships, both caches, the 235-step registry, authentication settings
+and private site visibility were verified restored. Opening Microsoft's studio
+added two unrelated default components; they were retained and documented in
+ignored evidence. A future native source freeze must include them.
+
+`native-mask-window.mjs` has tested archive/history and shared-boundary checks,
+but is not connected to the native collector. `continuationPolicy: "mask-window"`
+is rejected before collection; the supported collector uses fresh per-page
+snapshots and cache checks. Source5 lookup tests remain opt-in and undeployed;
+they require the declared variant-length upgrade and fresh native receipts.
+Private source freezes, captures, ledgers and restoration receipts stay under
+ignored `.paqvilo/`; they are excluded from the package.
+
+## Independent metadata envelopes
+
+`metadata-envelope.mjs` reads the official `RetrieveTimestamp()` and bounded
+`RetrieveMetadataChanges` functions through an explicitly supplied Dataverse
+client. It records current timestamps separately from the portal's cached
+`@Microsoft.Dynamics.CRM.globalmetadataversion` value. A prefix match in one
+environment does not prove that every portal cache uses the current timestamp.
+
+Use `readPortalMetadataEnvelope` on an actual actor-owned, immutable TestRun
+before and after a measured cohort. Supply the intended portal origin, frozen
+role IDs and site, registration and dataset hashes. This control performs a
+PK-only GET separate from the measured cases. Bracket those controls with
+`readNativeMetadataEnvelope`, then call `compareMetadataEnvelopeWindow`.
+Only a stable, ordered window with the same source and actor qualifies that
+cohort's observed cache version. Retain the raw control responses independently;
+historical cases cannot obtain a new source receipt retrospectively.
+
+Microsoft documents the [metadata timestamp function](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/retrievetimestamp)
+and [metadata changes function](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/retrievemetadatachanges).

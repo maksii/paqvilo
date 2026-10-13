@@ -7,7 +7,7 @@ import { parseXmlDocument } from 'paqvilo/mirage/lib/fetchxml-engine.mjs';
 
 /** Reconstruct a project fixture state using explicitly supplied native source
  * records. This never contacts Dataverse or changes the portal configuration. */
-export function replayStore({ schema, catalogue, overlay, nativeComponents, roles, contactId, inactivePermissionIds = [], observed = {} }) {
+export function replayStore({ schema, catalogue, overlay, nativeComponents, roles, contactId, nativeRelationships = {}, inactivePermissionIds = [], observed = {} }) {
   const records = [...catalogue.records, ...(overlay?.records ?? [])], byKey = new Map(records.map(record => [record.key, record]));
   const mappings = {}, tables = {}, relationships = {};
   for (const table of schema.tables) {
@@ -27,6 +27,13 @@ export function replayStore({ schema, catalogue, overlay, nativeComponents, role
       relationships[relation.name] = rel;
       mappings[relation.child].fields[relation.lookup.name] = {type: 'lookup', targets: [relation.parent]};
       mappings[relation.child].relationships[relation.name] = {entity: relation.parent, from: relation.lookup.name, to: `${relation.parent}id`};
+      // Schema relationship identities remain in their own index. A lookup's
+      // wire navigation name comes only from explicit source/native metadata.
+      const candidates=(nativeRelationships[relation.child]??[]).filter(row=>row.SchemaName===relation.name&&row.ReferencingEntity===relation.child&&row.ReferencedEntity===relation.parent&&row.ReferencingAttribute===relation.lookup.name&&row.ReferencedAttribute===`${relation.parent}id`),declared=relation.referencingNavigationProperty??relation.ReferencingEntityNavigationPropertyName;
+      if(candidates.length>1)throw new Error('Native single-valued navigation metadata is ambiguous.');
+      const navigation=candidates[0]?.ReferencingEntityNavigationPropertyName??declared;
+      if(declared&&candidates.length&&declared!==navigation)throw new Error('Declared navigation differs from actual native metadata.');
+      if(navigation){if(!/^[a-z][a-z\d_]*$/i.test(navigation)||Object.hasOwn(mappings[relation.child].relationships,navigation)&&navigation!==relation.name)throw new Error('Native navigation name is invalid or conflicts with another relationship.');mappings[relation.child].relationships[navigation]={entity:relation.parent,from:relation.lookup.name,to:`${relation.parent}id`,many:false,schemaName:relation.name};}
     } else {
       const [attribute1, attribute2] = relation.intersectColumns;
       relationships[relation.name] = {schemaName: relation.name, type: 'many-to-many', entity1: relation.parent, entity2: relation.child, intersectEntity: relation.intersectName, attribute1, attribute2};
@@ -62,7 +69,7 @@ export function replayStore({ schema, catalogue, overlay, nativeComponents, role
     ...JSON.parse(record.content), id: record.powerpagecomponentid, kind: record.powerpagecomponenttype === 11 ? 'webrole' : 'tablepermission', name: record.name,
     statecode: inactive.has(record.powerpagecomponentid) ? 1 : record.statecode,
   })) };
-  const state = {mappings, tables, permissions: [], plugins: [], simulator: {permissionSource: 'exported'}, settings: {permissionMode: 'enforce', fetchColumnValidation: 'lenient'}};
+  const state = {mappings, tables, relationships, permissions: [], plugins: [], simulator: {permissionSource: 'exported'}, settings: {permissionMode: 'enforce', fetchColumnValidation: 'lenient'}};
   const model = buildPermissionModel(portal, state, {relationships, source: 'exported'});
   state.permissions = model.permissions;
   const roleIds = portal.records.filter(record => record.kind === 'webrole' && roles.includes(record.name)).map(record => record.id);

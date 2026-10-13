@@ -97,6 +97,8 @@ Source-declared lookup GUIDs are supplied to original CLR plugins as SDK `Entity
 
 Original local CLR shared values preserve byte arrays, explicitly modeled primitive and SDK arrays (including null entries and jagged string arrays), `EntityReference.KeyAttributes`/`RowVersion`, and `EntityCollection.EntityName`/`MinActiveRowVersion`/`TotalRecordCountLimitExceeded`. The installed SDK known-type catalogue and compiled typed readers guide these codecs. Unknown array contracts fail explicitly; metadata/label SDK contracts and request/response collection support remain separate work. Preserving reference metadata does not implement alternate-key backend CRUD.
 
+Supported named SDK requests accept the optional `tag` string (bounded to 8 KiB locally). The tag reaches original CLR shared variables, survives PreValidation parent separation and inherits through nested shortcut service calls. Descendant replacement and plugin mutation fail before a changed tag is propagated; owned request state is restored on failure. Original-DLL regressions exercise `DeleteRequest.Parameters["tag"]`, all three Delete stages and a nested Create. Native fault HRESULTs for prohibited tag changes and portal Web API optional-tag transport require separate qualification.
+
 Configured read mocks can include the optional result metadata above. Pure mock or handler read steps preserve typed results for direct and named original SDK callers, while ordinary reads keep their existing projections. Actual loopback admin regressions also verify that choosing mock or disabled for an original plugin prevents its dependency calls and launches no additional CLR host. These controls do not predict arbitrary external network behavior.
 
 ## Read recording and portal contexts
@@ -112,3 +114,39 @@ Evidence-qualified `context.interfaceVersion: 7` supplies environment ID, tenant
 An explicit mapping `sdkRowVersionColumn` preserves a source integral row version independently of selected SDK Attributes. The original CLR transport retains `Entity.RowVersion` in both directions. Native snapshot replay can supply actual version metadata from a read-only projection or ETag evidence. Local CRUD does not predict the organisation-wide native version sequence or claim native optimistic-concurrency execution.
 
 Fetch aggregate `count` and `countcolumn` aliases carry Int32 values independently of the original column type. Grouped lookup names and choice labels use declared primary-name metadata, source target rows and option labels; missing metadata does not produce an invented name. Supported groupby lookup aliases include the native companion name attribute and formatted values. Culture-sensitive numeric, date and currency display contracts still require their source settings and separate qualification.
+# Read query registration and provider metadata
+
+An explicitly unfiltered synchronous `RetrieveMultiple` step can observe every
+supported queried table. An exported empty SDK filter or explicit `none` binding,
+or a project's exact native null-filter witness, establishes this scope. Missing
+and unresolved filters remain unsupported. The execution context retains the
+actual queried table as `PrimaryEntityName`; scope is never substituted into
+runtime context. Registration acceptance does not establish that a particular
+platform table invokes custom processing. Native callbacks on one supported
+table do not qualify tables which emitted no callback evidence.
+
+SDK QueryExpression paging/count controls retain the authored QueryBase in every
+observer stage. The execution adapter requests totals only when the caller sets
+`PagingInfo.ReturnTotalRecordCount`; pure SDK Fetch without an explicit total
+count request returns `-1`. Provider EntityCollections carry the actual root
+logical name and the source-qualified default minimum active row version `-1`.
+Plugin-created collections keep their SDK constructor defaults. Explicit minimum
+active row version requests require a qualified provider, and fail diagnostically
+otherwise. Counts over the configured maximum preserve the limit-exceeded flag;
+native count-limit campaigns remain a separate qualification gate.
+
+Trusted replay descriptors may set `context.operationCreatedOn` with a canonical
+UTC timestamp (up to seven fractional digits) and bounded
+`operationCreatedOnEvidence`. This is recorded framework request-envelope
+metadata, not an expected query/data result. An existing frame timestamp wins;
+otherwise the explicit timestamp is preserved without rounding .NET ticks. The
+runtime uses its clock when no timestamp is supplied. This supports independent
+historical checks of source plugins that compare their immutable intent time to
+the framework operation time.
+
+Fresh and pooled CLR hosts bind the owning Node process PID and actual .NET
+process birth time. A background host watcher terminates that host when its
+exact owner exits, including an abrupt process kill while plugin code loops
+without returning. Reusing a PID with a different birth time cannot keep the
+host alive. Ordinary cleanup still closes owned hosts and verifies their absence;
+interrupted proof attempts remain incomplete and are rerun from their journals.

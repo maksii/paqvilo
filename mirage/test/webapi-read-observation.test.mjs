@@ -2,7 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {DataStore} from '../lib/data.mjs';
 import {DataError} from '../lib/data-error.mjs';
-import {handleWebApi} from '../lib/webapi-handler.mjs';
+import {handleWebApi,webApiErrorResponse} from '../lib/webapi-handler.mjs';
+import {observedConfig} from '../lib/project-config.mjs';
 import {dispatchSdkCall} from '../lib/plugin-clr.mjs';
 import {mkdtemp, readFile, rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -77,6 +78,86 @@ test('permission-generated Dataverse query limits retain a CDS execution error e
     assert.equal(events[0].status, 400);
     assert.equal(events[1].body.error.code, '9004010D');
   }
+});
+
+test('evidenced CDS code shape preserves the platform code without enabling inner error details',()=>{
+  const failure=new DataError('Bounded query budget exceeded',400,'UnsupportedQuery',{innerCode:'0x8004430d'});
+  const response=webApiErrorResponse(failure,{cdsErrorCode:'cdscode',cdsErrorMessage:'Common Data Service error occurred.'});
+  assert.deepEqual(response.body,{error:{code:'9004010D',message:'Common Data Service error occurred.',cdscode:'0x8004430d'}});
+  assert.equal(response.status,400);
+  assert.equal(webApiErrorResponse(failure).body.error.cdscode,undefined);
+  assert.throws(()=>observedConfig({webApiCdsErrorCode:'cdscode'}),/evidence/);
+});
+
+test('native API authored-budget admission keeps its separate unexpected-error envelope',()=>{
+  const failure=new DataError('Rejected authored query',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+  assert.deepEqual(webApiErrorResponse(failure).body,{error:{code:'9004010A',message:'An unexpected error occurred while processing the request'}});
+  assert.equal(webApiErrorResponse(failure).status,500);
+});
+
+test('actual Web API policy preflight applies native authored-budget admission before table denial',async()=>{
+  const store=fixture();store.state.permissions=[];
+  store.setObserved({tablePermissionQueryPipeline:'native-classic',evidence:'Invented authored-budget admission'});
+  const links=Array.from({length:16},(_,index)=>`<link-entity name="widget" from="widgetid" to="widgetid" alias="w${index}"/>`).join('');
+  const source=`<fetch><entity name="widget"><attribute name="widgetid"/>${links}</entity></fetch>`;
+  const response=await request(store,'/_api/widgets?fetchXml='+encodeURIComponent(source));
+  assert.equal(response[0].status,500);
+  assert.deepEqual(response[1].body,{error:{code:'9004010A',message:'An unexpected error occurred while processing the request'}});
+});
+
+test('an evidenced global metadata version is preserved as an opaque string in the API response',async()=>{
+  const store=fixture();store.setObserved(observedConfig({webApiGlobalMetadataVersion:'9007199254740993',evidence:'Invented frozen organization metadata witness'}));
+  const source='<fetch><entity name="widget"><attribute name="widgetid"/></entity></fetch>';
+  const response=await request(store,'/_api/widgets?fetchXml='+encodeURIComponent(source));
+  assert.equal(response[0].status,200);
+  assert.equal(response[1].body['@Microsoft.Dynamics.CRM.globalmetadataversion'],'9007199254740993');
+  assert.throws(()=>observedConfig({webApiGlobalMetadataVersion:'1'}),/evidence/);
+  assert.throws(()=>observedConfig({webApiGlobalMetadataVersion:1,evidence:'Source'}),/numeric string/);
+});
+
+test('native API permits structural join keys while retaining their projection, filter and order policies',async()=>{
+  const store=fixture();
+  store.state.mappings.detail={entitySet:'details',idColumn:'detailid',fields:{widgetid:{type:'guid'},detailid:{type:'guid'}}};
+  store.state.tables.detail=[{detailid:'30000000-0000-0000-0000-000000000003',widgetid:recordId}];
+  store.state.permissions.push({entity:'detail',scope:'global',operations:['read'],roles:['Reader']});
+  store.setObserved({tablePermissionQueryPipeline:'native-classic',evidence:'Invented structural key and metadata wire fixtures'});
+  const portal={settings:{'Webapi/widget/enabled':'true','Webapi/widget/fields':'title','Webapi/detail/enabled':'true','Webapi/detail/fields':'detailid'}};
+  const run=async(xml)=>{
+    let status,body;
+    await handleWebApi({method:'GET',headers:{}},{headersSent:false},new URL('/_api/widgets?fetchXml='+encodeURIComponent(xml),'http://localhost'),
+      {store,portal,identity:{contactId:recordId,roles:['Reader']},origin:'http://localhost',origins:['http://localhost'],json(_res,s,b){status=s;body=b;}});
+    return {status,body};
+  };
+  const xml=content=>`<fetch returntotalrecordcount="true"><entity name="widget"><attribute name="widgetid"/><link-entity name="detail" from="widgetid" to="widgetid" alias="joined">${content}</link-entity></entity></fetch>`;
+  const result=await run(xml('<attribute name="detailid"/>'));
+  assert.equal(result.status,200);assert.equal(result.body.value.length,1);
+  assert.equal(result.body['@odata.count'],1);
+  assert.equal(result.body['@joined.OData.Community.Display.V1.CurrentEntityField'],'widgetid');
+  for(const content of ['<attribute name="widgetid"/>','<filter><condition attribute="widgetid" operator="not-null"/></filter>','<order attribute="widgetid"/>']){
+    const denied=await run(xml(content));assert.equal(denied.status,403);assert.equal(denied.body.error.code,'90040101');
+  }
+  store.state.permissions=store.state.permissions.filter(rule=>rule.entity!=='detail');
+  const denied=await run(xml('<attribute name="widgetid"/>'));
+  assert.equal(denied.status,403);assert.equal(denied.body.error.code,'90040120');
+});
+
+test('native aggregate context omits an empty select suffix and reports its group count',async()=>{
+  const store=fixture();store.setObserved({tablePermissionQueryPipeline:'native-classic',evidence:'Invented aggregate wire fixture'});
+  const source='<fetch aggregate="true" returntotalrecordcount="true"><entity name="widget"><attribute name="widgetid" alias="total" aggregate="count"/></entity></fetch>';
+  const response=await request(store,'/_api/widgets?fetchXml='+encodeURIComponent(source));
+  assert.equal(response[0].status,200);
+  assert.equal(response[1].body['@odata.context'],'http://localhost/_api/$metadata#widgets');
+  assert.equal(response[1].body['@odata.count'],1);
+});
+
+test('native empty FetchXML responses retain counts while omitting the selected-column context suffix',async()=>{
+  const store=fixture();store.setObserved({tablePermissionQueryPipeline:'native-classic',evidence:'Invented empty wire fixture'});
+  const source='<fetch returntotalrecordcount="true"><entity name="widget"><attribute name="widgetid"/><filter><condition attribute="title" operator="eq" value="Missing"/></filter></entity></fetch>';
+  const response=await request(store,'/_api/widgets?fetchXml='+encodeURIComponent(source));
+  assert.equal(response[0].status,200);
+  assert.deepEqual(response[1].body.value,[]);
+  assert.equal(response[1].body['@odata.context'],'http://localhost/_api/$metadata#widgets');
+  assert.equal(response[1].body['@odata.count'],0);
 });
 
 test('HTTP read observer records through its own SDK grants, including a later failed read', async t => {

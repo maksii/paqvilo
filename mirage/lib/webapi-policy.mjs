@@ -126,9 +126,9 @@ export function webApiPolicy(portal, store, entity) {
       { table: mapping.logicalName },
     );
   const writeFields = new Set(fields);
-  // Dataverse exposes enabled lookup columns as _<logical-name>_value on reads.
-  // Resolve from imported field/relationship metadata instead of allowing arbitrary aliases.
-  for (const field of fields)
+  // Some captured sites require the wire property to be explicitly enabled.
+  // Keep the usual metadata-derived aliases unless that site observation opts in.
+  for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
     if (
       ["lookup", "customer", "owner"].includes(
         portal.webApiEntities?.[mapping.logicalName]?.fields?.[field]
@@ -547,7 +547,7 @@ export function webApiPolicy(portal, store, entity) {
 }
 
 /** Validate every FetchXML table/column and project aliased output explicitly. */
-export function webApiFetchPolicy(portal, store, xml, rootEntity) {
+export function webApiFetchPolicy(portal, store, xml, rootEntity, {structuralJoinFields=false}={}) {
   const root = parseFetchXml(xml),
     // Aliases follow the evaluator: explicit alias, else {name}{N} where N is
     // the link's position among all link-entity elements in document order.
@@ -643,8 +643,11 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity) {
           "WebApiFetchEntityMismatch",
           { innerCode: "0x80040203" },
         );
-      if (node.attrs.from) policy.assert(node.attrs.from);
-      if (node.attrs.to && parent) parent.assert(node.attrs.to);
+      // The evidenced native lane permits relationship keys to join tables
+      // without enabling those keys for projected/filter/order API access.
+      // Dataverse column/type validation remains in the query executor.
+      if (!structuralJoinFields && node.attrs.from) policy.assert(node.attrs.from);
+      if (!structuralJoinFields && node.attrs.to && parent) parent.assert(node.attrs.to);
       for (const child of node.children) {
         if (child.name === "attribute") {
           policy.assert(child.attrs.name);

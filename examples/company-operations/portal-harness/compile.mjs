@@ -57,13 +57,15 @@ export function dispatcher(manifest) {
   return `{% assign dataset_version = '${manifest.datasetVersion}' %}{% assign operation = entities.pqvd_testoperation[request.params.operationId] %}{% assign owned_run = entities.pqvd_testrun[operation.pqvd_runid.id] %}{% assign expected_marker = 'CO-OP:' | append: operation.id %}{% if user and user.roles contains 'CO Test Runner' and request.params.suiteVersion == '${manifest.suiteVersion}' and operation and owned_run and owned_run.pqvd_suiteversion == '${manifest.suiteVersion}' and owned_run.pqvd_manifesthash == '${manifest.manifestHash}' and owned_run.pqvd_runnercontactid.id == user.id and operation.pqvd_runnercontactid.id == user.id and operation.pqvd_lane.value == 183270000 and operation.pqvd_markeroperation == expected_marker and operation.pqvd_markerutc contains 'CO-UTC:' and operation.pqvd_attempt == 1 and operation.pqvd_pagenumber >= 1 and operation.pqvd_pagenumber <= 20 %}\n${branches}\n{% else %}<co-test-response outcome="rejected"><error>Unknown case/table intent.</error></co-test-response>{% endif %}{% else %}<co-test-response outcome="rejected"><error>Authenticated runner with owned stamped Liquid operation required.</error></co-test-response>{% endif %}`;
 }
 
-export async function prepare({resolvedIds={}, readiness={}, navigation={},overlay={},personaRoleOverrides={},artifactTransportBudgetBytes=20*1024*1024}={}) {
-  const catalogue=JSON.parse(await fs.readFile(path.join(here,'../data/stress-catalogue.json'),'utf8').catch(()=>fs.readFile(path.join(here,'../data/catalogue.json'),'utf8')));
+export async function prepare({resolvedIds={}, readiness={}, navigation={},overlay={},personaRoleOverrides={},artifactTransportBudgetBytes=20*1024*1024,odataPositiveVariants=[],
+  schemaFile,catalogueFile,outputDirectory,blueprintFile}={}) {
+  const catalogue=JSON.parse(await (catalogueFile?fs.readFile(catalogueFile,'utf8'):fs.readFile(path.join(here,'../data/stress-catalogue.json'),'utf8').catch(()=>fs.readFile(path.join(here,'../data/catalogue.json'),'utf8'))));
   for(const key of ['records','associations','personas','scenarios']) if(overlay[key])catalogue[key].push(...overlay[key]);
   for(const persona of catalogue.personas) if(personaRoleOverrides[persona.key])persona.webRoles=personaRoleOverrides[persona.key];
-  const schema=JSON.parse(await fs.readFile(path.join(here,'../dataverse/manifest.json'),'utf8'));
+  const schema=JSON.parse(await fs.readFile(schemaFile??path.join(here,'../dataverse/manifest.json'),'utf8'));
   const manifest=compilePlans(catalogue,schema,resolvedIds);Object.assign(manifest.readiness,readiness);manifest.artifactTransportBudgetBytes=artifactTransportBudgetBytes;
   manifest.navigation=navigation;
+  manifest.odataPositiveVariants=structuredClone(odataPositiveVariants);
   manifest.sourceHash=hash((await Promise.all(['compile.mjs','core.mjs','runtime.mjs','deploy.mjs'].map(f=>fs.readFile(path.join(here,f),'utf8')))).join('\n'));
   manifest.pluginProfiles=['ABC','P02','P03','P04','P05','P06','P07','P09','P10','P11','P12'].map(id=>({id,readiness:id==='P05'?'team-dependency-required':'requires-live-qualification'}));
   const equipment=manifest.cases.find(c=>c.id==='R09');manifest.stressCases=Array.from({length:17},(_,joins)=>{const fetchXml=equipment.fetchXml.replace(/(<condition attribute="pqvd_equipmentid" operator="in">)([\s\S]*?)(<\/condition>)/,(_,open,values,close)=>open+values.match(/<value>[^<]+<\/value>/)[0]+close).replace('</entity>',`${Array.from({length:joins},(_,i)=>`<link-entity name="pqvd_equipment" from="pqvd_equipmentid" to="pqvd_equipmentid" alias="budget${i+1}" link-type="outer"></link-entity>`).join('')}</entity>`);return {...equipment,fragments:undefined,id:`S01-J${String(joins).padStart(2,'0')}`,name:`Query budget ${joins} authored joins`,variant:'query-budget',authoredJoinCount:joins,fetchXml,logicalQueryHash:hash(fetchXml)};});
@@ -78,7 +80,7 @@ export async function prepare({resolvedIds={}, readiness={}, navigation={},overl
     }
   }
   try {
-    const blueprint=JSON.parse(await fs.readFile(path.join(here,'../portal-security/blueprint.json'),'utf8'));
+    const blueprint=JSON.parse(await fs.readFile(blueprintFile??path.join(here,'../portal-security/blueprint.json'),'utf8'));
     manifest.configuredPermissionBlueprintHash=hash(JSON.stringify(blueprint));
     manifest.permissionBlueprintHashKind='Portable intended configuration; independent native readback required for deployment attestation.';
     const {evaluateConfiguredGraph}=await import('../portal-security/model-audit.mjs');
@@ -89,7 +91,7 @@ export async function prepare({resolvedIds={}, readiness={}, navigation={},overl
     manifest.oracleMode='Full basic fixture eligibility from independently evaluated configuration graph, plus authored scenario assertions; desired configuration is not server authorization attestation.';
   }catch(error){if(error.code!=='ENOENT') throw error;manifest.visibilityOracle=[];}
   manifest.manifestHash=hash(JSON.stringify(manifest));
-  const output=path.join(here,'../.paqvilo/portal-harness/generated');await fs.mkdir(output,{recursive:true});
+  const output=outputDirectory??path.join(here,'../.paqvilo/portal-harness/generated');await fs.mkdir(output,{recursive:true});
   await fs.writeFile(path.join(output,'manifest.json'),JSON.stringify(manifest,null,2)+'\n');
   const allPlans={...manifest,cases:[...manifest.cases,...manifest.crudReadCases,...manifest.stressCases]};
   const templates=allPlans.cases.flatMap(p=>p.fragments||[p]).map(p=>({name:`CO Query ${p.id}${p.templateSuffix||''}`,source:caseTemplate(p)}));

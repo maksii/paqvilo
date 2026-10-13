@@ -2,6 +2,21 @@
 
 ## 0.9.4
 
+Parallel local testing now has cookie-isolated `createPortalSession` clients,
+`connectRuntime().createSession` and `runSessionMatrix` in `paqvilo/mirage/testing`.
+The runner bounds concurrency, serializes caller-owned result recording, reports
+throughput/latency, and cancels without retrying mutations. Ten actual HTTP visitors
+are covered for scoped Liquid/API reads, own writes and cross-identity denial.
+Protected JSON state storage in `paqvilo/dataverse` keeps generated test credentials
+encrypted with Windows DPAPI and atomic persistence. Native qualification remains
+bound to actual recorded source, actor, query and data witnesses.
+Runtime clients also expose sanitized audit export and diagnostics, with exact
+actor/correlation filters, bounded sequence windows and visible retention loss
+for parallel test investigations.
+Validated platform, site-setting, snippet and preset controls are available on
+runtime clients with automatic CSRF. Parallel matrices preserve each visitor's
+case order while independent visitors advance concurrently.
+
 Consumer feedback 43-45: Liquid has a configurable `mirage.render.timeLimitMs` budget,
 cooperative scheduling and per-render FetchXML planning/read indexes. Budget overruns are
 checked after async nodes as well as during iteration. Dropdown lookups expose the native

@@ -125,10 +125,11 @@ test('Context2 portal identity requires an explicit transport flag and clears on
  assert.equal(clrContext({...args,frame:{}}).context.IsPortalsClientCall,false);
 });
 
-test('Source-qualified empty Fetch cookies and RowVersion metadata do not change selected attributes',()=>{
+test('SDK frames retain independently computed cookies and RowVersion metadata without changing selected attributes',()=>{
  const store=fixture();store.state.mappings.widget.sdkRowVersionColumn='revision';store.state.tables.widget[0].revision='123456789';
- const frame={query:{$type:'FetchExpression',query:'<fetch/>'},collection:{$type:'EntityCollection',entities:[],pagingCookie:null}},args={runtime:{descriptor:{serviceProfile:profile,context:{initiatingUserId:user,organizationId:user,businessUnitId:user,emptyFetchPagingCookie:''}}},store,step:step(40),entity:'widget',operation:'retrievemultiple',stage:40,record:{widgetid:contact},frame,depth:1};
+ const frame={query:{$type:'FetchExpression',query:'<fetch/>'},collection:{$type:'EntityCollection',entities:[],pagingCookie:''}},args={runtime:{descriptor:{serviceProfile:profile,context:{initiatingUserId:user,organizationId:user,businessUnitId:user}}},store,step:step(40),entity:'widget',operation:'retrievemultiple',stage:40,record:{widgetid:contact},frame,depth:1};
  assert.equal(clrContext(args).outputParameters.values.BusinessEntityCollection.pagingCookie,'');
+ frame.collection.pagingCookie=null;assert.equal(clrContext(args).outputParameters.values.BusinessEntityCollection.pagingCookie,null);
  const projected=recordToSdkEntity(store,'widget',{widgetid:contact,title:'Existing'},{columns:['title']});
  assert.equal(projected.rowVersion,'123456789');assert.deepEqual(projected.attributes,{title:'Existing'});
 });

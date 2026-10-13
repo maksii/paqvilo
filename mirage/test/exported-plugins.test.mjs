@@ -6,7 +6,7 @@ import os from 'node:os';
 import { DataStore } from '../lib/data.mjs';
 import { parseSchemaDocument, scanSolutionSources, classifySolutionPath } from '../lib/solution-schema.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { importSolutionPlugins, pluginCatalogue, pluginHandlers, runPluginPhase, parsePluginDocument, resolvePluginSourceFiles } from '../lib/exported-plugins.mjs';
+import { importSolutionPlugins, pluginCatalogue, pluginHandlers, runPluginPhase, parsePluginDocument, resolvePluginSourceFiles, pluginStepMatchesEntity } from '../lib/exported-plugins.mjs';
 import { validateOperationOverrides } from '../lib/operation-catalogue.mjs';
 import { pluginFixture, pluginId, assemblyXml, pluginStepsXml } from './plugin-fixture.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
@@ -81,6 +81,21 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.equal(importSolutionPlugins([{ documents: [{ file: '/invented/Customizations.xml', facts: combined, hash: 'one' }] }]).steps.length, 9);
   const unresolved = parsePluginDocument('<SdkMessageProcessingStep SdkMessageProcessingStepId="x"><SdkMessageId>an-id</SdkMessageId><Stage>10</Stage></SdkMessageProcessingStep>');
   assert.equal(unresolved.steps[0].message, null, 'message GUIDs are never guessed');
+});
+
+test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root and never guesses an unresolved filter',()=>{
+ const step=(id,binding,message='RetrieveMultiple')=>`<SdkMessageProcessingStep SdkMessageProcessingStepId="${pluginId(id)}"><PluginTypeId>${pluginId(2)}</PluginTypeId><SdkMessageName>${message}</SdkMessageName>${binding}<Stage>20</Stage><Rank>${id}</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep>`;
+ const xml=`<ImportExportXml>${assemblyXml}${step(21,'<SdkMessageFilterId/>')}${step(22,'<PrimaryEntity>none</PrimaryEntity>')}${step(23,'')}${step(24,`<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25,'<SdkMessageFilterId/>','Create')}</ImportExportXml>`;
+ const parsed=parsePluginDocument(xml),plugins=importSolutionPlugins([{documents:[{file:'/invented/global.xml',facts:{plugins:parsed}}]}]);
+ for(const id of [21,22]){const declaration=plugins.steps.find(step=>step.id===pluginId(id));assert.equal(declaration.unfiltered,true);assert.equal(declaration.entity,null);assert.equal(declaration.unsupported,null);assert.equal(pluginStepMatchesEntity(declaration,'fixture'),true);}
+ for(const id of [23,24,25])assert.ok(plugins.steps.find(step=>step.id===pluginId(id)).unsupported);
+ const seen=[],handlers=pluginHandlers([{id:'invented-explicit-global',pluginSteps:{[pluginId(21)]:event=>{seen.push(event.entity);},[pluginId(22)]:event=>{seen.push(event.entity);}}}]);
+ const items=pluginCatalogue({plugins,handlers}),store=new DataStore({state:{mappings:{fixture:{idColumn:'fixtureid',entitySet:'fixtures'},other:{idColumn:'otherid',entitySet:'others'}},tables:{fixture:[{fixtureid:pluginId(40)}],other:[]},plugins:[],permissions:[],settings:{permissionMode:'enforce'}}});
+ store.setPluginPipeline(event=>runPluginPhase({...event,store,items,handlers}),event=>items.some(item=>item.enabled&&pluginStepMatchesEntity(item,event.entity)&&item.message.toLowerCase()===event.operation));
+ assert.equal(store.fetchXml('<fetch><entity name="fixture"><attribute name="fixtureid"/></entity></fetch>',{admin:true}).entities.length,1);
+ assert.deepEqual(store.fetchXml('<fetch><entity name="other"><attribute name="otherid"/></entity></fetch>',{admin:true}).entities,[]);assert.deepEqual(seen,['fixture','fixture','other','other']);
+ assert.equal(pluginStepMatchesEntity({entity:null,unfiltered:true,messageFilterId:pluginId(99),message:'RetrieveMultiple'},'fixture'),false);
+ assert.equal(pluginStepMatchesEntity({entity:null,unfiltered:true,messageFilterId:null,message:'RetrieveMultiple',mode:1},'fixture'),false);
 });
 
 test('synchronous trusted plugin phases sort rank, filter submitted columns, reject async handlers and roll back failures', async () => {

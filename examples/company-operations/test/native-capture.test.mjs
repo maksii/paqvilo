@@ -3,6 +3,17 @@ import assert from 'node:assert/strict';
 import { captureNativeSnapshot, compareNativeSnapshots } from '../portal-harness/native-capture.mjs';
 import { batchDispatcher, decodeBatchResponse } from '../portal-harness/batch-capture.mjs';
 import { normalize } from '../portal-harness/core.mjs';
+import {parseExactJson} from 'paqvilo/mirage/lib/exact-numeric.mjs';
+
+test('native canonical results distinguish Int64 and decimal digits beyond JavaScript precision',()=>{
+  const values=parseExactJson('{"one":9007199254740993,"two":9007199254740994,"money":123456789012345.1234}');
+  assert.equal(normalize(values.one,{name:'counter',type:'integer'}),'9007199254740993');
+  assert.notEqual(normalize(values.one,{name:'counter',type:'integer'}),normalize(values.two,{name:'counter',type:'integer'}));
+  assert.equal(normalize(values.money,{name:'amount',type:'money',precision:4}),'123456789012345.1234');
+  assert.equal(normalize('9007199254740993',{name:'counter',type:'integer'}),normalize(values.one,{name:'counter',type:'integer'}));
+  assert.equal(normalize(3,{name:'choice',type:'choice'}),3);
+  assert.throws(()=>normalize('3.5',{name:'counter',type:'integer'}),/Invalid integer/);
+});
 
 test('native snapshots read declared identities, memberships and projections; stable logical values ignore OData etags', async () => {
   const requests = [], version = {value: 1};
@@ -16,7 +27,7 @@ test('native snapshots read declared identities, memberships and projections; st
       if (query.startsWith('widgets?')) return [{widgetid: 'owned', name: 'same', versionnumber: version.value, '@odata.etag': String(version.value)}];
       throw new Error('Unexpected read');
     },
-    async get(query) {requests.push(query); assert.match(query, /EntityDefinitions\(LogicalName='widget_edge'\)/); return {EntitySetName: 'widget_edges'};},
+    async get(query) {requests.push(query); if(query.startsWith('contacts(')) return {contactid:'actor'}; assert.match(query, /EntityDefinitions\(LogicalName='widget_edge'\)/); return {EntitySetName: 'widget_edges'};},
   };
   const input = {siteId: 'site', contactId: 'actor', catalogue: {tables: [{name: 'widget', entitySet: 'widgets', primaryId: 'widgetid'}], records: [{key: 'owned', id: 'owned', table: 'widget'}, {key: 'group', id: 'group', table: 'group'}], associations: [{relationship: 'widget_groups', from: 'owned', to: ['group']}]}};
   const before = await captureNativeSnapshot(client, input); version.value++;
@@ -34,6 +45,17 @@ test('native snapshots read declared identities, memberships and projections; st
   assert.ok(compareNativeSnapshots(missing, missing).changed.includes('incomplete-snapshot'));
   const foreign = await captureNativeSnapshot({...client, list: query => query.startsWith('widget_edges?') ? [{widgetid: 'foreign', groupid: 'group'}] : client.list(query)}, input);
   assert.equal(foreign.complete, false); assert.deepEqual(foreign.completenessErrors.find(error => error.kind === 'projection-identities').unexpected, ['foreign:group']);
+});
+
+test('native actor Account scope resolves unannotated external customers and rejects ambiguous references',async()=>{
+ const calls=[],client={list:async()=>[],get:async query=>({contactid:'actor',_parentcustomerid_value:'external','@odata.etag':'W/"9"'}),optional:async query=>{calls.push(query);return query.startsWith('accounts(')?{accountid:'external',name:'Owned reference','@odata.etag':'W/"12"'}:null;}};
+ const input={siteId:'site',contactId:'actor',catalogue:{tables:[],records:[],associations:[]}};
+ const before=await captureNativeSnapshot(client,input);
+ assert.equal(before.actorBinding.customer.type,'account');assert.equal(before.actorBinding.customer.id,'external');assert.equal(before.rowVersions.actor.contact,'9');assert.equal(before.rowVersions.actor.customer,'12');assert.equal(calls.length,2);
+ const changed=await captureNativeSnapshot({...client,optional:async query=>query.startsWith('accounts(')?{accountid:'external',name:'Changed','@odata.etag':'W/"13"'}:null},input);
+ assert.notEqual(before.dataSnapshotHash,changed.dataSnapshotHash);assert.notEqual(before.rowVersionSnapshotHash,changed.rowVersionSnapshotHash);
+ await assert.rejects(captureNativeSnapshot({...client,optional:async()=>({contactid:'external'})},input),/ambiguous/);
+ await assert.rejects(captureNativeSnapshot({...client,optional:async()=>null},input),/absent/);
 });
 
 test('bounded batch Liquid preserves owned immutable operation guards and clears each previous result', () => {

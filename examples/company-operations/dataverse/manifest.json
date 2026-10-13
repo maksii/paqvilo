@@ -787,6 +787,60 @@
       "keys": []
     },
     {
+      "name": "pqvd_currencyreference",
+      "entitySetName": "pqvd_currencyreferences",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Currency Reference",
+      "pluralLabel": "Currency References",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 3
+        },
+        {
+          "name": "pqvd_symbol",
+          "label": "Symbol",
+          "required": "none",
+          "type": "string",
+          "maxLength": 10
+        },
+        {
+          "name": "pqvd_precision",
+          "label": "Precision",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 4
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_currencyreference_code",
+          "columns": [
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        },
+        {
+          "name": "pqvd_ak_currencyreference_currency",
+          "columns": [
+            "pqvd_systemcurrencyid"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
       "name": "pqvd_accessrole",
       "entitySetName": "pqvd_accessroles",
       "solution": "PaqviloCompanyOperationsCore",
@@ -3171,6 +3225,26 @@
       }
     },
     {
+      "name": "pqvd_transactioncurrency_references",
+      "kind": "oneToMany",
+      "parent": "transactioncurrency",
+      "child": "pqvd_currencyreference",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_systemcurrencyid",
+        "label": "Systemcurrency",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
       "name": "pqvd_account_equipments",
       "kind": "oneToMany",
       "parent": "account",
@@ -3836,6 +3910,18 @@
       "intersectColumns": [
         "pqvd_accesspermissionid",
         "pqvd_employmentid"
+      ]
+    },
+    {
+      "name": "pqvd_access_currencyreferences",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_currencyreference",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_currencyreferences",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_currencyreferenceid"
       ]
     },
     {

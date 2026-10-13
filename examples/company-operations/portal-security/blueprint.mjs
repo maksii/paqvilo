@@ -79,7 +79,12 @@ export function buildBlueprint(schema, catalogue) {
   nodes.find(n=>n.key==='IT-LOCATIONS-ROOM').privileges.append=true;
   if(schema.relationships.some(r=>r.name==='pqvd_access_currencies'))for(const role of referenceRoles){
     const rights=['HR','PROCUREMENT'].includes(role)?'RT':'R';
-    node(role,'CURRENCYREFERENCE','transactioncurrency',rights,roots[role],'pqvd_access_currencies');
+    if(schema.relationships.some(r=>r.name==='pqvd_access_currencyreferences')){
+      node(role,'CURRENCYREFERENCE','pqvd_currencyreference','R',roots[role],'pqvd_access_currencyreferences');
+      // Preserve the original system leaf registry identities. Adding the
+      // custom target must not strand active legacy grants or rename a GUID.
+      node(role,'CURRENCYREFERENCE','transactioncurrency',rights,roots[role],'pqvd_access_currencies');
+    }else node(role,'CURRENCYREFERENCE','transactioncurrency',rights,roots[role],'pqvd_access_currencies');
     node(role,'VENDORREFERENCE','account',rights,roots[role],'pqvd_access_referenceaccounts');
   }
   const contact=node('TESTRUNNER','SELF','contact','RAT',null,null,'Self');

@@ -1,9 +1,10 @@
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import { randomUUID } from 'node:crypto';
 import { dispatcher } from './compile.mjs';
 import { componentId } from './deploy.mjs';
 import { escapeXml, stable } from './core.mjs';
 import { parseXmlDocument } from 'paqvilo/mirage/lib/fetchxml-engine.mjs';
+import { savePrivateJson } from './private-journal.mjs';
 
 export function decodeBatchResponse(body, {operations, actor, roles, datasetVersion}) {
   const root = parseXmlDocument(body, {root: 'co-batch-response'});
@@ -34,17 +35,19 @@ export function batchDispatcher(manifest, maxQueries = 30) {
  * query partials, field allowlists or table-permission graph. */
 export async function deployBatchEndpoint(client, config, manifest, journalFile) {
   const {website, role, published, language} = config;
-  const id = key => componentId(website, 'campaign-batch:' + key);
+  const namespace = config.batchNamespace ?? 'batch', partialUrl = config.batchPartialUrl ?? 'batch', label = config.batchLabel ?? 'Batch';
+  if (!/^[a-z][a-z\d-]{0,31}$/.test(namespace) || !/^[a-z][a-z\d-]{0,31}$/.test(partialUrl) || !/^[A-Za-z ]{1,40}$/.test(label)) throw new Error('Explicit bounded batch endpoint identity required.');
+  const id = key => componentId(website, `campaign-${namespace}:` + key);
   const components = [
-    {key: 'template', type: 8, name: 'CO Campaign Batch Liquid Dispatcher', content: {source: batchDispatcher(manifest), mimetype: 'application/xml'}},
-    {key: 'pagetemplate', type: 6, name: 'CO Campaign Batch Liquid', content: {entityname: 'adx_webpage', type: 756150001, usewebsiteheaderandfooter: false, webtemplateid: id('template')}},
-    {key: 'page', type: 2, name: 'CO Campaign Batch Liquid', content: {isroot: true, parentpageid: componentId(website, 'page:shell'), partialurl: 'batch', pagetemplateid: id('pagetemplate'), publishingstateid: published, title: 'Campaign Batch Liquid', hiddenfromsitemap: true}},
-    {key: 'access', type: 10, name: 'CO Campaign Batch Require Runner', content: {adx_webpageaccesscontrolrule_webrole: [role], right: 2, scope: 1, webpageid: id('page')}},
-    ...(language ? [{key: 'contentpage', type: 2, name: 'CO Campaign Batch Liquid', language, content: {isroot: false, rootwebpageid: id('page'), pagetemplateid: id('pagetemplate'), partialurl: 'batch', publishingstateid: published, title: 'Campaign Batch Liquid', hiddenfromsitemap: true}}] : []),
+    {key: 'template', type: 8, name: `CO Campaign ${label} Liquid Dispatcher`, content: {source: batchDispatcher(manifest), mimetype: 'application/xml'}},
+    {key: 'pagetemplate', type: 6, name: `CO Campaign ${label} Liquid`, content: {entityname: 'adx_webpage', type: 756150001, usewebsiteheaderandfooter: false, webtemplateid: id('template')}},
+    {key: 'page', type: 2, name: `CO Campaign ${label} Liquid`, content: {isroot: true, parentpageid: componentId(website, 'page:shell'), partialurl: partialUrl, pagetemplateid: id('pagetemplate'), publishingstateid: published, title: `Campaign ${label} Liquid`, hiddenfromsitemap: true}},
+    {key: 'access', type: 10, name: `CO Campaign ${label} Require Runner`, content: {adx_webpageaccesscontrolrule_webrole: [role], right: 2, scope: 1, webpageid: id('page')}},
+    ...(language ? [{key: 'contentpage', type: 2, name: `CO Campaign ${label} Liquid`, language, content: {isroot: false, rootwebpageid: id('page'), pagetemplateid: id('pagetemplate'), partialurl: partialUrl, publishingstateid: published, title: `Campaign ${label} Liquid`, hiddenfromsitemap: true}}] : []),
   ];
   const journal = {schemaVersion: 1, siteId: website, startedAt: new Date().toISOString(), manifestHash: manifest.manifestHash, entries: []};
-  const save = () => writeFile(journalFile, JSON.stringify(journal, null, 2) + '\n');
-  await save();
+  const save = () => savePrivateJson(journalFile, structuredClone(journal));
+  await savePrivateJson(journalFile, structuredClone(journal), {exclusive: true});
   for (const component of components) {
     const endpoint = `powerpagecomponents(${id(component.key)})`, before = await client.optional(endpoint);
     if (before && (before._powerpagesiteid_value !== website || before.name !== component.name || before.powerpagecomponenttype !== component.type)) throw new Error('Batch component identity collision.');
@@ -61,7 +64,7 @@ export async function deployBatchEndpoint(client, config, manifest, journalFile)
     entry.status = 'verified'; await save();
   }
   journal.finishedAt = new Date().toISOString(); await save();
-  return {pageId: id('page'), path: '/permission-lab/batch/', components: components.length, journalFile};
+  return {pageId: id('page'), path: `/permission-lab/${partialUrl}/`, components: components.length, journalFile};
 }
 
 /** Precreate recording intents using the configured application. The requests
@@ -71,7 +74,8 @@ export async function prepareBatchIntents(client, {manifest, actor, roles, plans
   if (!Array.isArray(plans) || !plans.length || plans.length > 256) throw new Error('Intent preparation requires 1..256 physical plans.');
   if (plans.some(plan => !Number.isInteger(plan.page ?? 1) || (plan.page ?? 1) < 1 || (plan.page ?? 1) > (manifest.maxPages ?? 20))) throw new Error('Intent page number exceeds the frozen paging bound.');
   const journal = {schemaVersion: 1, startedAt: new Date().toISOString(), actor, roles, source: 'SDK-created immutable recording intents; measured reads are portal requests', runId: randomUUID(), entries: []};
-  const save = () => writeFile(journalFile, JSON.stringify(journal, null, 2) + '\n');
+  const save = () => savePrivateJson(journalFile, structuredClone(journal));
+  await savePrivateJson(journalFile, structuredClone(journal), {exclusive: true});
   const nav = (table, field) => manifest.navigation?.[table]?.[field] ?? (() => {throw new Error('Verified native recording navigation is missing.');})();
   const run = {pqvd_testrunid: journal.runId, pqvd_name: 'CO Campaign ' + new Date().toISOString(), pqvd_runkey: randomUUID(),
     [nav('pqvd_testruns', 'pqvd_runnercontactid') + '@odata.bind']: `/contacts(${actor})`, pqvd_suiteversion: manifest.suiteVersion,
@@ -79,6 +83,9 @@ export async function prepareBatchIntents(client, {manifest, actor, roles, plans
     pqvd_environment: 'Company Operations Demo', pqvd_startedat: new Date().toISOString(), pqvd_runstate: manifest.choices.pqvd_runstate.Running, pqvd_rolesnapshot: stable(roles)};
   journal.entries.push({kind: 'run', status: 'pending', body: run}); await save();
   await client.request('pqvd_testruns', {method: 'POST', body: run}); journal.entries[0].status = 'created'; await save();
+  const runRecord=await client.get(`pqvd_testruns(${journal.runId})`);
+  if(runRecord.pqvd_testrunid!==journal.runId||runRecord._pqvd_runnercontactid_value!==actor||!runRecord['@odata.etag'])throw new Error('Native owned Run readback failed.');
+  journal.runRecord=runRecord;await save();
   const pairIds = new Map(plans.map(plan => [plan.id, randomUUID()]));
   const intents = plans.flatMap(plan => (plan.queryType === 'odata' ? ['webapi'] : ['liquid', 'webapi']).map(lane => ({plan, lane, id: randomUUID(), pairId: pairIds.get(plan.id)})));
   const targets = intents.map(intent => ({'@odata.type': 'Microsoft.Dynamics.CRM.pqvd_testoperation', pqvd_testoperationid: intent.id,
@@ -103,5 +110,5 @@ export async function prepareBatchIntents(client, {manifest, actor, roles, plans
     intent.operation.runId = journal.runId;
   }
   journal.entries[1].status = 'verified'; journal.operations = rows; journal.finishedAt = new Date().toISOString(); await save();
-  return {runId: journal.runId, intents, journalFile};
+  return {runId: journal.runId, intents, runRecord, journalFile};
 }

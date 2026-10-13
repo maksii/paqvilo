@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { queryFingerprint, capturedQueries, compareLane, compareRuns, coverageLedger, normalizeQuerySentinels } from './parity.mjs';
 import { replayStore, replayLane } from './replay.mjs';
+import {createWebApiFormatter,NAVIGATION} from 'paqvilo/mirage/lib/webapi-format.mjs';
 
 const xml = `<fetch distinct="true"><entity name="widget"><attribute name="widgetid"/><filter type="and"><condition attribute="name" operator="ne" value="CO-OP:11111111-1111-4111-8111-111111111111"/></filter><link-entity name="contact" from="contactid" to="owner" alias="generated_alias_contact_0" link-type="outer"/><filter type="or" hint="union"><condition entityname="generated_alias_contact_0" attribute="contactid" operator="eq" value="22222222-2222-4222-8222-222222222222"/></filter></entity></fetch>`;
 const artifact = (query = xml) => {
@@ -102,6 +103,14 @@ function replayFixture(roles = ['Reader']) {
       ...[['reader', true, false], ['writer', false, true], ['observer', true, false]].map(([name, read, write]) => ({powerpagecomponentid: name + '-permission', powerpagecomponenttype: 18, name, statecode: 0, content: JSON.stringify({entitylogicalname: 'widget', scope: 756150001, contactrelationship: 'contact_widgets', read, write, adx_entitypermission_webrole: [name + '-role']})})),
     ]};
 }
+
+test('replay lookup navigation is explicit native metadata while permission schema identity remains unchanged',()=>{
+ const source=replayFixture(),row={SchemaName:'contact_widgets',ReferencingEntity:'widget',ReferencedEntity:'contact',ReferencingAttribute:'owner',ReferencedAttribute:'contactid',ReferencingEntityNavigationPropertyName:'actualOwnerNavigation'};
+ const {store,identity}=replayStore({...source,nativeRelationships:{widget:[row]}});assert.equal(store.state.relationships.contact_widgets.referencingAttribute,'owner');assert.equal(store.resolveMapping('widget').relationships.contact_widgets.many,undefined);assert.equal(store.resolveMapping('widget').relationships.actualOwnerNavigation.many,false);
+ const record=store.tableRows('widget')[0],actual=createWebApiFormatter({store,identity}).formatEntity(record,store.resolveMapping('widget'));assert.equal(actual['_owner_value'+NAVIGATION],'actualOwnerNavigation');
+ const absent=replayStore(source),without=createWebApiFormatter(absent).formatEntity(absent.store.tableRows('widget')[0],absent.store.resolveMapping('widget'));assert.equal(without['_owner_value'+NAVIGATION],undefined,'A relationship schema name cannot invent its wire navigation name.');
+ assert.throws(()=>replayStore({...source,nativeRelationships:{widget:[row,row]}}),/ambiguous/);const conflict=structuredClone(source);conflict.schema.relationships[0].referencingNavigationProperty='declaredOther';assert.throws(()=>replayStore({...conflict,nativeRelationships:{widget:[row]}}),/differs/);
+});
 
 test('explicit native source replay unions mixed read/write roles while isolating foreign records for all eight subsets', () => {
   const roles = ['Reader', 'Writer', 'Observer'];

@@ -8,7 +8,7 @@ Paqvilo 0.9.4 introduces supported package entry points. Exported names, documen
 | `paqvilo/mirage/acceptance` | `runAcceptance`, `verifyParity`, `compareReferenceContracts`, browser launch options, source/state fingerprints, request reconciliation and native network/navigation observation classifiers |
 | `paqvilo/mirage/packs` | Pack validation/discovery, lazy descriptors, bootstrap/compaction/list/resolution, read-only parity paths and plan validation |
 | `paqvilo/mirage/fixtures` | `formatMockRecord`, `mergeDataset`, dangling lookups, schema validation/formatting, offline-state checks, `importPortal`, `createPortalRenderer` |
-| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime` |
+| `paqvilo/mirage/testing` | `signInHeaders`, `signInContext`, `connectRuntime`, `createPortalSession`, `runSessionMatrix` |
 | `paqvilo/lense` | `loadCatalogue`, `loadConfig`, `loadDevTargets`, `resolveMirageConfig`, `resolveCatalogue` |
 | `paqvilo/dataverse` | Schema planning/provisioning/export, `readCatalogue`, `validateCatalogue`, `planData`, `applyData`, `compareData`, `runDataQueries`, `retrieveFetchXml`, `connectedClient`, connection helpers; see [Dataverse toolkit](dataverse-provisioning.md) |
 
@@ -59,6 +59,61 @@ await sim.signOut();
 Alternatively pass `{ origin: 'http://127.0.0.1:8787' }`. The client resolves an owned running runtime (including dynamic ports), otherwise the configured port, and checks its source folder. All origins are confined to loopback. Methods: `status()`, `state({ summary })`, `signIn(contextOrNull, { contactId, roles, configuredPersona })`, `signOut(contextOrNull)`, `records(table, query)`, `setSnippet(name, value)`, `liveConnect(cdp)`, `liveDisconnect()` and `captureShell(path)`. Writes fetch/send CSRF automatically. Fetch sign-in returns a cookie header; Playwright uses its context request cookies. The client starts and stops no runtime.
 
 `records` is an administrative local read. Test portal permissions through portal/Web API routes with sign-in headers. Configured-persona sign-in preserves membership roles or explicit role overrides.
+
+Scenario controls wrap the existing validated administration APIs with automatic CSRF:
+`platformSettings()`, `setPlatformSettings(overrides)`, `resetPlatformSetting(key)`,
+`siteSettings()`, `setSiteSetting(name, value)`, `resetSiteSetting(name)`,
+`setSnippet(name, value)`, `resetSnippet(name)`, `experiments(id?)`,
+`saveExperiment(preset)`, `applyExperiment(id)` and `deleteExperiment(id)`.
+Values and presets follow [configuration experiments](../mirage/docs/configuration-experiments.md).
+Site/snippet values stay strings; a null value removes the effective entry and a reset
+restores its source. Overrides affect every visitor on that runtime. Apply configuration
+between completed matrix runs, or use separate runtime origins for simultaneous settings.
+
+`audit(filters)`, `exportAudit(filters)` and `diagnostics()` read the existing runtime's sanitized evidence. A visitor's `json()` response supplies `traceId`; use `audit({correlationId: traceId})` to inspect its nested request entries. Filters also support `contactId`, `afterSequence` (exclusive), `throughSequence` (inclusive), kind, path, entity, method, status and outcome. Capture `latestSequence` as the upper bound for stable pagination during concurrent traffic. `oldestSequence` and `dropped` disclose bounded retention loss. Sequences identify request starts; wait for the tested requests to complete before advancing a completion checkpoint. Exported entries retain sanitized queries and outcomes, without HTTP headers or row bodies.
+
+## Test many visitors concurrently
+
+```js
+import { connectRuntime, runSessionMatrix } from 'paqvilo/mirage/testing';
+const runtime = await connectRuntime({ origin: 'http://127.0.0.1:8787' });
+const visitors = await Promise.all(contactIds.map(contactId =>
+  runtime.createSession({ id: contactId, contactId })));
+try {
+  const report = await runSessionMatrix({ sessions: visitors, concurrency: 10,
+    cases: [{ id: 'visible-records', run: async (visitor, { signal }) =>
+      visitor.json('/_api/widgets?$select=widgetid', { signal }) }] });
+  // Check actual statuses and rows in report.results before qualifying access.
+} finally { visitors.forEach(visitor => visitor.close()); }
+```
+
+`createPortalSession({ origin, contactId?, roles?, id?, timeoutMs?, signal? })` and
+`runtime.createSession(options)` connect independent cookie jars to the same local
+runtime. Omit `contactId` for an anonymous visitor; membership roles are the default.
+Methods are `session()`, `signIn(contactId, { roles })`, `signOut()`, `setRoles(rolesOrNull)`,
+`request(path, fetchOptions)`, `json(path, { method, body, headers, signal })` and `close()`.
+The JSON method returns `{ status, traceId, body }`; `traceId` links to the runtime's
+request evidence, and requests preserve HTTP permission denials.
+Web API writes obtain the local verification header automatically. Identity changes
+and closing refuse while that visitor's requests are pending. Cookies stay private;
+session descriptions omit cookie values. Visitor/form cookies retain their path and
+expiry scope alongside authentication cookies. Requests are confined to portal paths on
+loopback, cannot override the visitor's identity headers, and refuse live runtime
+execution even if its mode changes after connecting. Administration remains separate.
+
+`runSessionMatrix({ sessions, cases, concurrency, signal, onResult, failFast, maxCells })`
+runs the full visitor/case product once, distributing visitors across the first wave.
+Cases run in their declared order for each visitor, with at most one case active
+per visitor; different visitors can advance independently.
+Each case has a unique `id` and `run(visitor, { signal, index, sessionId, caseId })`.
+Concurrency defaults to 10 and is bounded to 64; the default maximum is 1,000,000 cells.
+Results retain case order, duration, returned values or safe error codes. The report
+includes completed/failed/cancelled/unstarted counts, peak concurrency, throughput and
+p50/p95/max latency. Cancellation drains started work without retries. `onResult` is
+serialized for a caller-owned durable journal. Visitors share one data store: use
+distinct disposable write fixtures, or separate runtime processes for independent
+configuration and CPU isolation. Local parallel passes still require native evidence
+before they can qualify platform parity.
 
 ## Resolve editor paths
 

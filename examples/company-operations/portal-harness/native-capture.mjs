@@ -27,6 +27,23 @@ export async function captureNativeSnapshot(client, {siteId, contactId, catalogu
   const memberships = await client.list(`contacts(${contactId})/powerpagecomponent_mspp_webrole_contact?$select=powerpagecomponentid,name,statecode,statuscode,_powerpagesiteid_value`);
   const records = [...catalogue.records, ...overlays.flatMap(overlay => overlay.records ?? [])];
   const tables = {}, rowVersions = {}, completenessErrors = [];
+  const actor = await client.get(`contacts(${contactId})?$select=contactid,_parentcustomerid_value,statecode,statuscode`);
+  if (identity(actor.contactid) !== identity(contactId)) throw new Error('Native actor identity readback failed.');
+  const customerId = actor._parentcustomerid_value;
+  let actorCustomer = null;
+  if (customerId) {
+    const annotatedType = actor['_parentcustomerid_value@Microsoft.Dynamics.CRM.lookuplogicalname'];
+    if (annotatedType && !['account', 'contact'].includes(annotatedType)) throw new Error('Unsupported native actor customer type.');
+    // Resolve an unannotated polymorphic reference through its actual typed row.
+    const candidates = [];
+    for (const type of annotatedType ? [annotatedType] : ['account', 'contact']) {
+      const endpoint = type === 'account' ? `accounts(${customerId})?$select=accountid,name,accountnumber,_parentaccountid_value,statecode,statuscode` : `contacts(${customerId})?$select=contactid,_parentcustomerid_value,statecode,statuscode`;
+      const row = await client.optional(endpoint);
+      if (row) candidates.push({type, id: identity(customerId), row: omitVolatile(row), rowVersion: /^W\/"(\d+)"$/.exec(String(row['@odata.etag'] ?? ''))?.[1] ?? null});
+    }
+    if (candidates.length !== 1) throw new Error('Native actor customer binding is absent or ambiguous.');
+    actorCustomer = candidates[0];
+  }
   if (components.some(component => component._powerpagesiteid_value !== undefined && identity(component._powerpagesiteid_value) !== identity(siteId))) completenessErrors.push({kind: 'foreign-site-component'});
   const siteMemberships = memberships.filter(role => !role._powerpagesiteid_value || identity(role._powerpagesiteid_value) === identity(siteId));
   for (const role of siteMemberships) if (!components.some(component => component.powerpagecomponenttype === 11 && identity(component.powerpagecomponentid) === identity(role.powerpagecomponentid) && component.statecode === 0)) completenessErrors.push({kind: 'membership-role-unresolved', roleId: role.powerpagecomponentid});
@@ -89,8 +106,11 @@ export async function captureNativeSnapshot(client, {siteId, contactId, catalogu
     projections[relation] = sortedRows(rows);
   }
   const permissions = sortedRows(components), members = sortedRows(memberships);
+  const actorBinding = {actor: omitVolatile(actor), customer: actorCustomer ? {type:actorCustomer.type,id:actorCustomer.id,row:actorCustomer.row} : null};
+  rowVersions.actor = {contact: /^W\/"(\d+)"$/.exec(String(actor['@odata.etag'] ?? ''))?.[1] ?? null};
+  if(actorCustomer)rowVersions.actor.customer=actorCustomer.rowVersion;
   return {schemaVersion: 1, capturedAt: new Date().toISOString(), siteId, contactId, excludedColumnPolicy: 'Credential/token/password/securitystamp/secret/salt column names are excluded from fixture rows; portal request artifacts remain verbatim.', permissions, memberships: members, siteMemberships: sortedRows(siteMemberships), foreignSiteMemberships: sortedRows(memberships.filter(role => !siteMemberships.includes(role))), tables, projections, inactiveProjectionSources, projectionCatalogueAligned: projectionCatalogueDifferences.length === 0, projectionCatalogueDifferences, rowVersions, rowVersionSnapshotHash: snapshotHash(rowVersions), complete: completenessErrors.length === 0, completenessErrors,
-    permissionSnapshotHash: snapshotHash(permissions), membershipSnapshotHash: snapshotHash(members), dataSnapshotHash: snapshotHash({tables, projections})};
+    actorBinding, permissionSnapshotHash: snapshotHash(permissions), membershipSnapshotHash: snapshotHash(members), dataSnapshotHash: snapshotHash({tables, projections, actorBinding})};
 }
 
 export function compareNativeSnapshots(before, after) {

@@ -1,4 +1,5 @@
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile} from 'node:fs/promises';
+import {savePrivateJson} from './private-journal.mjs';
 import {snapshotHash} from './native-capture.mjs';
 const sort=ids=>[...new Set(ids)].sort();
 const equal=(a,b)=>JSON.stringify(sort(a))===JSON.stringify(sort(b));
@@ -10,13 +11,13 @@ export async function beginRoleLease(client,{siteId,contactId,roleIds,journalFil
  if(!roleIds.length||sort(roleIds).length!==roleIds.length||roleIds.some(id=>!components.some(row=>row.powerpagecomponentid===id&&row.powerpagecomponenttype===11&&row.statecode===0)))throw new Error('Role lease requires distinct active target-site role IDs.');
  const baseline=await readRoles(client,contactId),baselineIds=sort(baseline.map(row=>row.powerpagecomponentid));
  const journal={schemaVersion:1,kind:'NativeRoleMaskLease',siteId,contactId,roleIds:sort(roleIds),baseline,baselineIds,expectedIds:baselineIds,sourceHash:snapshotHash(components),startedAt:new Date().toISOString(),entries:[],state:'baseline'};
- await writeFile(journalFile,JSON.stringify(journal,null,2)+'\n',{flag:'wx'});return journal;
+ await savePrivateJson(journalFile,journal,{exclusive:true});return journal;
 }
 export async function setLeasedRoles(client,journalFile,selectedIds) {
  const journal=JSON.parse(await readFile(journalFile,'utf8'));
  if(journal.kind!=='NativeRoleMaskLease'||journal.entries.some(entry=>entry.status==='pending'))throw new Error('Role lease requires reconciliation of a pending mutation.');
  if(selectedIds.some(id=>!journal.roleIds.includes(id)))throw new Error('Requested role is outside the frozen role domain.');
- const save=()=>writeFile(journalFile,JSON.stringify(journal,null,2)+'\n');
+ const save=()=>savePrivateJson(journalFile,journal);
  const actual=sort((await readRoles(client,journal.contactId)).map(row=>row.powerpagecomponentid));
  if(!equal(actual,journal.expectedIds))throw new Error('Contact memberships changed outside the role lease.');
  const desired=sort([...journal.baselineIds.filter(id=>!journal.roleIds.includes(id)),...selectedIds]);
@@ -33,8 +34,8 @@ export async function recoverRoleLease(client,journalFile,{restore=true}={}) {
  const journal=JSON.parse(await readFile(journalFile,'utf8'));if(journal.kind!=='NativeRoleMaskLease')throw new Error('Unknown role lease.');
  const pending=journal.entries.filter(entry=>entry.status==='pending');if(pending.length>1)throw new Error('Ambiguous role lease pending history.');
  const actual=sort((await readRoles(client,journal.contactId)).map(row=>row.powerpagecomponentid));
- if(pending.length){const entry=pending[0];if(!equal(actual,entry.beforeIds)&&!equal(actual,entry.nextIds))throw new Error('Unknown role membership drift after interrupted mutation.');journal.expectedIds=actual;entry.status=equal(actual,entry.nextIds)?'verified-after-recovery':'not-committed';await writeFile(journalFile,JSON.stringify(journal,null,2)+'\n');}
+ if(pending.length){const entry=pending[0];if(!equal(actual,entry.beforeIds)&&!equal(actual,entry.nextIds))throw new Error('Unknown role membership drift after interrupted mutation.');journal.expectedIds=actual;entry.status=equal(actual,entry.nextIds)?'verified-after-recovery':'not-committed';await savePrivateJson(journalFile,journal);}
  else if(!equal(actual,journal.expectedIds))throw new Error('Role lease recovery refused membership drift.');
- if(restore){await setLeasedRoles(client,journalFile,journal.baselineIds.filter(id=>journal.roleIds.includes(id)));const restored=JSON.parse(await readFile(journalFile,'utf8'));restored.state='restored';restored.restoredAt=new Date().toISOString();await writeFile(journalFile,JSON.stringify(restored,null,2)+'\n');return restored;}
+ if(restore){await setLeasedRoles(client,journalFile,journal.baselineIds.filter(id=>journal.roleIds.includes(id)));const restored=JSON.parse(await readFile(journalFile,'utf8'));restored.state='restored';restored.restoredAt=new Date().toISOString();await savePrivateJson(journalFile,restored);return restored;}
  return journal;
 }

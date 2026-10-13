@@ -6,7 +6,8 @@ import { compilePermissionFetchXml } from 'paqvilo/mirage/lib/permission-query.m
 import { buildBlueprint } from '../portal-security/blueprint.mjs';
 import { caseTemplate, dispatcher } from '../portal-harness/compile.mjs';
 import { permissionPathSequence, permissionPathCatalogue, learnPermissionOrder,
-  compareFilteredPermissionOrder, buildPermissionOrderProbe, diagnosePermissionOrder } from '../portal-security/permission-order.mjs';
+  compareFilteredPermissionOrder, buildPermissionOrderProbe, diagnosePermissionOrder,
+  permissionOrderGraphFingerprint } from '../portal-security/permission-order.mjs';
 
 const authoredXml = '<fetch><entity name="asset"><attribute name="assetid"/><link-entity name="team" from="teamid" to="teamid" alias="authored_team" link-type="outer"/></entity></fetch>';
 const actor = { contactId: '00000000-0000-0000-0000-000000000001', roleIds: ['ra', 'rb'], roleSource: 'memberships' };
@@ -62,6 +63,15 @@ test('identical grant paths remain ambiguous source groups instead of invented n
   assert.deepEqual(master.orderedPermissionGroups[0], ['a-leaf', 'duplicate-leaf']);
 });
 
+test('graph fingerprint is independent of export order but invalidates scope, flags and relationship changes', () => {
+  const graph = permissionOrderGraphFingerprint(permissions);
+  assert.equal(permissionOrderGraphFingerprint([...permissions].reverse()), graph);
+  assert.notEqual(permissionOrderGraphFingerprint(permissions.map(permission => ({ ...permission, operations: ['read', 'delete'] }))), graph);
+  assert.notEqual(permissionOrderGraphFingerprint(permissions.map(permission => ({ ...permission, field: 'otherprincipalid' }))), graph);
+  assert.notEqual(permissionOrderGraphFingerprint(permissions.map(permission => permission.relationship
+    ? { ...permission, relationship: { ...permission.relationship, from: 'othergrantid' } } : permission)), graph);
+});
+
 test('same-table parent singleton catalogue retains ancestors and never falsely reports an unresolved path', () => {
   const ancestor = { id: 'ancestor', entity: 'asset', scope: 'contact', field: 'contactid', operations: ['read'], roleIds: ['ra'] };
   const child = { id: 'child', entity: 'asset', scope: 'parent', parentPermissionId: 'ancestor', operations: ['read'], roleIds: ['ra'],
@@ -78,9 +88,11 @@ test('current-source master probe has bounded independent requests and explicit 
   const probe = buildPermissionOrderProbe({ schema, catalogue: records, blueprint: buildBlueprint(schema, records), permissionsSnapshotHash: 'a'.repeat(64) });
   assert.equal(probe.masterMask, 4095);
   assert.equal(probe.representativeMasks.length, 92);
-  assert.equal(probe.cases.length, 19);
-  assert.equal(probe.calibrationCells, 3496);
-  assert.equal(probe.exhaustiveSubsetCells, 155648);
+  assert.equal(probe.cases.length, 20);
+  assert.equal(probe.calibrationCells, 3680);
+  assert.equal(probe.exhaustiveSubsetCells, 163840);
+  assert.ok(probe.cases.some(plan=>plan.table==='pqvd_currencyreference'));
+  assert.ok(probe.cases.some(plan=>plan.table==='transactioncurrency'));
   assert.equal(probe.universalPermissionParity, false);
   for (const plan of probe.cases) {
     assert.equal(plan.authoredJoinCount, 0);

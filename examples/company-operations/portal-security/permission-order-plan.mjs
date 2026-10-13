@@ -32,6 +32,11 @@ const capturedPaths = [];
 if (job.capture) {
   const capture = await read(job.capture);
   for (const request of capture.requests) {
+    if (typeof request.authoredFetchXml !== 'string' || !/^\s*<fetch\b/.test(request.authoredFetchXml)) {
+      capturedPaths.push({ caseId: request.caseId, lane: request.lane, qualification: 'not-a-fetchxml-order-probe',
+        reason: 'OData construction/order is a separate source contract; do not feed its URI to the FetchXML path comparator.' });
+      continue;
+    }
     const events = capture.backendEvents.filter(event => event._pqvd_operationid_value === request.operationId);
     const checked = capturedQueries(events, { operationId: request.operationId });
     if (checked.errors.length || !checked.queries.length) {

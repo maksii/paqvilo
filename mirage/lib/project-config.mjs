@@ -37,6 +37,7 @@ function validateOrigin(value, label) {
 const OBSERVED_CHOICES = {
   webApiInnerError: ["all-errors", "dataverse-errors"],
   webApiCdsErrorMessage: ["CDS error occurred.", "Common Data Service error occurred."],
+  webApiCdsErrorCode: ["innererror", "cdscode"],
   webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
   webApiReferenceErrors: ["dataverse", "unexpected"],
   webApiInvalidDate: ["invalid-format", "crm-minimum"],
@@ -47,6 +48,11 @@ const OBSERVED_CHOICES = {
   // Normal exported permission graphs keep incomplete parent chains closed.
   tablePermissionOrphans: ["closed", "unrestricted"],
   tablePermissionQueryPipeline: ["row-filtered", "native-classic"],
+  odataPermissionQueryPipeline: ["modeled", "native-classic"],
+  odataSameTableParentAnchor: ["shared-root"],
+  liquidFetchExecution: ["eager", "lazy-query-drop"],
+  liquidFetchRights: ["read-only", "native-classic"],
+  liquidFetchErrorMessage: ["diagnostic", "target-invocation"],
   // Some deployments return 302 for an explicitly configured 301 redirect record.
   // Other status values are outside this observation and keep their source behavior.
   redirect301: ["configured", "temporary"],
@@ -63,6 +69,7 @@ const OBSERVED_CHOICES = {
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ["enforced", "exempt"],
+  webApiLookupFields: ["logical-aliases", "explicit-wire"],
   // A site's Liquid math adapter may convert string inputs before decimal multiplication.
   // The pinned DotLiquid contract remains the default; a different result needs site evidence.
   liquidDecimalStringMultiply: ["dotliquid", "convert"],
@@ -94,9 +101,38 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder']) if (value[field] != null) {
+    const order = value[field];
+    const object = item => item && typeof item === 'object' && !Array.isArray(item);
+    if (!object(order) || Object.keys(order).some(key => !['normalizedGraphHash', 'tables'].includes(key)) ||
+      typeof order.normalizedGraphHash !== 'string' || !/^[a-f\d]{64}$/.test(order.normalizedGraphHash) ||
+      !object(order.tables) || Object.keys(order.tables).length > 100)
+      throw new Error(`${label}.${field} requires a normalized graph SHA256 and at most 100 logical tables`);
+    const tables = {}; let total = 0;
+    for (const [table, groups] of Object.entries(order.tables)) {
+      const seen = new Set();
+      if (!/^[_a-z][a-z\d_]{0,127}$/i.test(table) || !Array.isArray(groups) || groups.length > 5000)
+        throw new Error(`${label}.${field} requires bounded ordered GUID groups for each logical table`);
+      tables[table] = groups.map(group => {
+        if (!Array.isArray(group) || !group.length || group.length > 5000)
+          throw new Error(`${label}.${field} requires nonempty bounded GUID groups`);
+        return group.map(id => {
+          if (typeof id !== 'string' || !/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(id) || seen.has(id.toLowerCase()) || ++total > 5000)
+            throw new Error(`${label}.${field} contains invalid, duplicate or excessive permission GUIDs`);
+          seen.add(id.toLowerCase()); return id.toLowerCase();
+        });
+      });
+    }
+    observed[field] = {normalizedGraphHash: order.normalizedGraphHash, tables};
+  }
+  if(value.webApiGlobalMetadataVersion!=null){
+    if(typeof value.webApiGlobalMetadataVersion!=='string'||!/^\d{1,20}$/.test(value.webApiGlobalMetadataVersion))
+      throw new Error(`${label}.webApiGlobalMetadataVersion must be a bounded numeric string`);
+    observed.webApiGlobalMetadataVersion=value.webApiGlobalMetadataVersion;
+  }
   if(value.fetchPreOperationSerialization!=null){
     const entries=value.fetchPreOperationSerialization;
     if(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.keys(entries).length>100||Object.entries(entries).some(([entity,mode])=>!/^[_a-z][a-z\d_]{0,127}$/i.test(entity)||mode!=='compact'))

@@ -1,6 +1,7 @@
 import { loadConfig } from '../../lense/config.mjs';
 import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
+import {createPortalSession} from './sessions.mjs';
 
 function requestError(status, value, label = 'Local runtime request') {
   const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
@@ -52,10 +53,32 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   };
   const status = await request('/status');
   if (cfg && !samePath(status.sourceDir, cfg.sourceDir)) throw new Error('Runtime source does not match the catalogue site');
+  const setPortalValue = async (section, name, value) => {
+    const existing = await request(`/${section}`);
+    return existing.some(item => item.id === name)
+      ? request(`/${section}/${encodeURIComponent(name)}`, {method: 'PATCH', body: {value}})
+      : request(`/${section}`, {method: 'POST', body: {name, value}});
+  };
   return Object.freeze({
     origin,
+    createSession: options => createPortalSession({...options,origin,fetchImpl}),
     status: () => request('/status'),
     state: ({ summary = false } = {}) => request(`/state${summary ? '?summary=1' : ''}`),
+    witness: ({ tables } = {}) => request(`/verification-witness?tables=${encodeURIComponent(Array.isArray(tables) ? tables.join(',') : '')}`),
+    audit: (filters = {}) => request(`/audit?${new URLSearchParams(filters)}`),
+    exportAudit: (filters = {}) => request(`/audit/export?${new URLSearchParams(filters)}`),
+    diagnostics: () => request('/diagnostics'),
+    platformSettings: () => request('/platform-settings'),
+    setPlatformSettings: overrides => request('/platform-settings', {method: 'PATCH', body: overrides}),
+    resetPlatformSetting: key => request(`/platform-settings/${encodeURIComponent(key)}`, {method: 'DELETE'}),
+    siteSettings: () => request('/portal-settings'),
+    setSiteSetting: (name, value) => setPortalValue('portal-settings', name, value),
+    resetSiteSetting: name => request(`/portal-settings/${encodeURIComponent(name)}`, {method: 'DELETE'}),
+    resetSnippet: name => request(`/portal-snippets/${encodeURIComponent(name)}`, {method: 'DELETE'}),
+    experiments: id => request(`/experiments${id === undefined ? '' : '/' + encodeURIComponent(id)}`),
+    saveExperiment: preset => request('/experiments', {method: 'POST', body: preset}),
+    applyExperiment: id => request(`/experiments/${encodeURIComponent(id)}/apply`, {method: 'POST', body: {}}),
+    deleteExperiment: id => request(`/experiments/${encodeURIComponent(id)}`, {method: 'DELETE'}),
     async signIn(context = null, { contactId, roles, configuredPersona = false } = {}) {
       const state = await request('/state?summary=1');
       if (configuredPersona) {
@@ -79,10 +102,7 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
       return response.json();
     },
     records: (table, query = {}) => request(`/records/${encodeURIComponent(table)}?${new URLSearchParams(query)}`),
-    async setSnippet(name, value) {
-      const existing = await request('/portal-snippets');
-      return existing.some(item => item.id === name) ? request(`/portal-snippets/${encodeURIComponent(name)}`, { method: 'PATCH', body: { value } }) : request('/portal-snippets', { method: 'POST', body: { name, value } });
-    },
+    setSnippet: (name, value) => setPortalValue('portal-snippets', name, value),
     liveConnect: cdpUrl => request('/live/connect', { method: 'POST', body: { cdpUrl } }),
     liveDisconnect: () => request('/live/disconnect', { method: 'POST', body: {} }),
     captureShell: path => request('/assets/capture-shell', { method: 'POST', body: { path }, captureReport: true }),

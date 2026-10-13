@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Collections.Generic;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
 using Microsoft.Xrm.Sdk.Messages;
@@ -7,9 +8,51 @@ using Microsoft.Crm.Sdk.Messages;
 using Paqvilo.Demo.Lab;
 
 namespace Paqvilo.Demo.PipelineTests {
+ public sealed class EquipmentCrudObserver:LabPlugin {
+  public EquipmentCrudObserver(string u,string s):base(u,s){}
+  public override void Execute(IServiceProvider p){
+   var c=Context(p);if(c.PrimaryEntityName!="pqvd_equipment"||c.Depth!=1||!new[]{"Create","Update","Delete"}.Contains(c.MessageName)||!(c is IPluginExecutionContext2 portal))return;
+   Guid actor;try{if(!portal.IsPortalsClientCall||(actor=portal.PortalsContactId)==Guid.Empty)return;}catch{return;}
+   var target=c.InputParameters.Contains("Target")?c.InputParameters["Target"]:null;var entity=target as Entity;var targetId=entity?.Id??(target as EntityReference)?.Id??Guid.Empty;
+   if(targetId==Guid.Empty&&entity!=null)targetId=entity.GetAttributeValue<Guid>("pqvd_equipmentid");if(targetId==Guid.Empty||c.PrimaryEntityId!=Guid.Empty&&c.PrimaryEntityId!=targetId)return;
+   if(!Guid.TryParse(Configuration.writerId,out var writer)||!Configuration.Trusted(writer))return;var svc=Service(p,writer);
+   Entity equipment;if(c.MessageName=="Create")equipment=entity;else {equipment=c.Stage==10?svc.Retrieve("pqvd_equipment",targetId,new ColumnSet("pqvd_name","pqvd_canaryrunid","pqvd_assettag","pqvd_equipmentstate","pqvd_currentassignmentid")):Before(c);if(equipment==null||equipment.Id!=targetId)return;}
+   var marker=(c.MessageName=="Delete"?equipment:entity)?.GetAttributeValue<string>("pqvd_name");if(marker?.StartsWith("CO-OP:",StringComparison.Ordinal)!=true||!Guid.TryParse(marker.Substring(6),out var operation)||marker!="CO-OP:"+operation.ToString("D").ToLowerInvariant())return;
+   var append=Configuration.allowOwnedEquipmentLookupTests&&c.MessageName=="Update"&&entity?.Contains("pqvd_roomid")==true;if(append&&(entity.GetAttributeValue<EntityReference>("pqvd_roomid")?.LogicalName!="pqvd_room"||Lookup(entity,"pqvd_roomid")==Guid.Empty))return;
+   var caseId=append?"PORTAL-EQUIPMENT-APPEND":"PORTAL-EQUIPMENT-CRUD";var variant="TARGET:"+targetId.ToString("D").ToLowerInvariant()+(append?";ROOM:"+Lookup(entity,"pqvd_roomid").ToString("D"):"");
+   var runId=Lookup(equipment,"pqvd_canaryrunid");if(runId==Guid.Empty||equipment.GetAttributeValue<string>("pqvd_assettag")?.StartsWith("CO-CANARY-",StringComparison.Ordinal)!=true||Lookup(equipment,"pqvd_currentassignmentid")!=Guid.Empty||equipment.GetAttributeValue<OptionSetValue>("pqvd_equipmentstate")?.Value!=183270000)return;
+   var intents=new QueryExpression("pqvd_testoperation"){TopCount=2,ColumnSet=new ColumnSet("pqvd_runid","pqvd_runnercontactid","pqvd_expectedmessage","pqvd_roottable","pqvd_lane","pqvd_actorprovenance","pqvd_caseid","pqvd_variant","pqvd_markertime","pqvd_markeroperation","createdby")};
+   intents.Criteria.AddCondition("pqvd_testoperationid",ConditionOperator.Equal,operation);
+   foreach(var pair in new[]{new KeyValuePair<string,object>("pqvd_caseid",caseId),new KeyValuePair<string,object>("pqvd_variant",variant),new KeyValuePair<string,object>("pqvd_expectedmessage",c.MessageName),new KeyValuePair<string,object>("pqvd_roottable","pqvd_equipment"),new KeyValuePair<string,object>("pqvd_runid",runId),new KeyValuePair<string,object>("pqvd_runnercontactid",actor),new KeyValuePair<string,object>("pqvd_lane",183270001),new KeyValuePair<string,object>("pqvd_actorprovenance","SDKConfiguredIdentity.RelationshipClaim")})intents.Criteria.AddCondition(pair.Key,ConditionOperator.Equal,pair.Value);
+   var found=svc.RetrieveMultiple(intents).Entities;if(found.Count!=1)return;var intent=found[0];var created=Lookup(intent,"createdby");var when=intent.GetAttributeValue<DateTime>("pqvd_markertime");var age=c.OperationCreatedOn.ToUniversalTime()-when.ToUniversalTime();if(intent.Id!=operation||!Configuration.Trusted(created)||age<TimeSpan.Zero||age>TimeSpan.FromMinutes(30)||intent.GetAttributeValue<string>("pqvd_markeroperation")!=marker)return;
+   if(intent.GetAttributeValue<string>("pqvd_caseid")!=caseId||intent.GetAttributeValue<string>("pqvd_variant")!=variant||intent.GetAttributeValue<string>("pqvd_expectedmessage")!=c.MessageName||intent.GetAttributeValue<string>("pqvd_roottable")!="pqvd_equipment"||intent.GetAttributeValue<string>("pqvd_actorprovenance")!="SDKConfiguredIdentity.RelationshipClaim"||intent.GetAttributeValue<OptionSetValue>("pqvd_lane")?.Value!=183270001||Lookup(intent,"pqvd_runid")!=runId||Lookup(intent,"pqvd_runnercontactid")!=actor)return;
+   var run=svc.Retrieve("pqvd_testrun",runId,new ColumnSet("pqvd_runnercontactid","createdby"));if(Lookup(run,"pqvd_runnercontactid")!=actor||!Configuration.Trusted(Lookup(run,"createdby")))return;
+   Recording.Capture(p,Configuration,intent.Id,"EquipmentCrud."+c.MessageName+".Stage"+c.Stage+".Order"+Configuration.order,new{actorBinding="RuntimePortalsContactMatched.ConfiguredSDKTargetIntent",targetId,runId,expectedMessage=c.MessageName,provenance=c.MessageName=="Create"?"ExplicitCreateTarget.OwnedStockCanary":c.Stage==10?"PreValidationSDKRead.OwnedStockCanary":"BeforeImage.OwnedStockCanary",boundEquipment=Snapshot.Value(equipment)});
+  }
+ }
  public sealed class PipelineContextObserver:LabPlugin {
   public PipelineContextObserver(string u,string s):base(u,s){}
-  public override void Execute(IServiceProvider p){var c=Context(p);var targetReference=c.InputParameters.Contains("Target")?c.InputParameters["Target"] as EntityReference:null;var names=new[]{"pqvd_crudprobe","pqvd_chainnode"};var entity=names.Contains(c.PrimaryEntityName)?c.PrimaryEntityName:targetReference?.LogicalName;if(!names.Contains(entity))return;var op=Recording.Operation(c);if(op==Guid.Empty&&c.Depth>1&&targetReference?.LogicalName=="pqvd_chainnode"&&Configuration.Trusted(c.InitiatingUserId)){var query=new QueryExpression("pqvd_chainnode"){TopCount=1,ColumnSet=new ColumnSet("pqvd_operationid")};query.Criteria.AddCondition("pqvd_chainnodeid",ConditionOperator.Equal,targetReference.Id);var row=Service(p,c.UserId).RetrieveMultiple(query).Entities.FirstOrDefault();op=Lookup(row,"pqvd_operationid");}if(op==Guid.Empty)return;if(c.Stage==10&&!c.SharedVariables.Contains("pqvd.lab.prevalidation"))c.SharedVariables["pqvd.lab.prevalidation"]="observed";Recording.Capture(p,Configuration,op,"PipelineContext.Stage"+c.Stage+".Order"+Configuration.order,new{secureConfiguration=new{present=SecurePresent,valid=SecureValid,version=SecureVersion},unsecureVersion=Configuration.configVersion});}
+  public override void Execute(IServiceProvider p){
+   var c=Context(p);var targetReference=c.InputParameters.Contains("Target")?c.InputParameters["Target"] as EntityReference:null;var names=new[]{"pqvd_crudprobe","pqvd_chainnode"};var entity=names.Contains(c.PrimaryEntityName)?c.PrimaryEntityName:targetReference?.LogicalName;if(!names.Contains(entity))return;var op=Recording.Operation(c);
+   if(entity=="pqvd_crudprobe"&&Configuration.allowOwnedEquipmentLookupTests&&Guid.TryParse(Configuration.writerId,out var writer)&&Configuration.Trusted(writer)){
+    var target=Target(c);var service=Service(p,writer);var probe=Before(c);
+    if(target?.Contains("pqvd_equipmentid")==true&&c.MessageName=="Update"){
+     if(!Configuration.allowOwnedEquipmentLookupTests||!OwnedLookupTest.Actor(c,out _))return;
+     if(c.Stage==10)probe=service.Retrieve("pqvd_crudprobe",target.Id,new ColumnSet("pqvd_ownercontactid","pqvd_runid","pqvd_activeoperationid","pqvd_equipmentid"));
+     if(probe==null||probe.Id!=target.Id||target.GetAttributeValue<EntityReference>("pqvd_equipmentid")?.LogicalName!="pqvd_equipment")return;
+     op=Lookup(probe,"pqvd_activeoperationid");var run=Lookup(probe,"pqvd_runid");var desired=Lookup(target,"pqvd_equipmentid");if(desired==Guid.Empty)return;
+     if(OwnedLookupTest.Intent(service,Configuration,c,op,run,target.Id,"pqvd_crudprobe","PORTAL-EQUIPMENT-APPENDTO","TARGET:"+target.Id.ToString("D")+";EQUIPMENT:"+desired.ToString("D"))==null)return;
+     var equipment=service.Retrieve("pqvd_equipment",desired,new ColumnSet("pqvd_canaryrunid","pqvd_assettag","pqvd_currentassignmentid","pqvd_equipmentstate"));if(equipment.Id!=desired||!OwnedLookupTest.Stock(equipment,run))return;
+    }else if(op!=Guid.Empty){
+     var intent=service.Retrieve("pqvd_testoperation",op,new ColumnSet("pqvd_caseid"));
+     // SDK preparation stamps ActiveOperation before source freeze. That setup
+     // is not a portal AppendTo call and must not enter its measured artifact set.
+     if(intent.GetAttributeValue<string>("pqvd_caseid")=="PORTAL-EQUIPMENT-APPENDTO")return;
+    }
+   }
+   if(op==Guid.Empty&&c.Depth>1&&targetReference?.LogicalName=="pqvd_chainnode"&&Configuration.Trusted(c.InitiatingUserId)){var query=new QueryExpression("pqvd_chainnode"){TopCount=1,ColumnSet=new ColumnSet("pqvd_operationid")};query.Criteria.AddCondition("pqvd_chainnodeid",ConditionOperator.Equal,targetReference.Id);var row=Service(p,c.UserId).RetrieveMultiple(query).Entities.FirstOrDefault();op=Lookup(row,"pqvd_operationid");}
+   if(op==Guid.Empty)return;if(c.Stage==10&&!c.SharedVariables.Contains("pqvd.lab.prevalidation"))c.SharedVariables["pqvd.lab.prevalidation"]="observed";Recording.Capture(p,Configuration,op,"PipelineContext.Stage"+c.Stage+".Order"+Configuration.order,new{secureConfiguration=new{present=SecurePresent,valid=SecureValid,version=SecureVersion},unsecureVersion=Configuration.configVersion});
+  }
  }
  public sealed class ChainA:LabPlugin {
   public ChainA(string u,string s):base(u,s){}

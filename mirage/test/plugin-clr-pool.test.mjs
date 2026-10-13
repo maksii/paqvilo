@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import {spawnSync} from 'node:child_process';
+import {spawnSync,spawn} from 'node:child_process';
+import {setTimeout as delay} from 'node:timers/promises';
 import {Worker,MessageChannel} from 'node:worker_threads';
 import {createHash} from 'node:crypto';
 import {DataStore} from '../lib/data.mjs';
@@ -72,7 +73,7 @@ test('pooled process reuse, runtime isolation, snapshot tampering and throwing c
   t.after(()=>closeClrHostPool());
   t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
   const source=path.join(root,'Protocol.cs'),executable=path.join(root,'Protocol.exe');
-  await fs.writeFile(source,'using System;public static class Protocol{public static void Main(){while(Console.ReadLine()!=null)Console.WriteLine("{\\\"kind\\\":\\\"result\\\"}");}}');
+  await fs.writeFile(source,'using System;using System.Diagnostics;public static class Protocol{public static void Main(string[] args){if(args.Length==2&&args[0]=="--process-start"){Console.Write(Process.GetProcessById(Int32.Parse(args[1])).StartTime.ToUniversalTime().Ticks);return;}while(Console.ReadLine()!=null)Console.WriteLine("{\\\"kind\\\":\\\"result\\\"}");}}');
   const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe');
   const build=spawnSync(compiler,['/nologo','/target:exe','/out:'+executable,source],{shell:false,windowsHide:true,encoding:'utf8',timeout:20000});
   assert.equal(build.status,0,build.stdout+build.stderr);
@@ -101,6 +102,24 @@ test('pooled process reuse, runtime isolation, snapshot tampering and throwing c
   assert.deepEqual(clrHostPoolStatus(),[]);
   assert.equal((await fs.readdir(root)).filter(name=>name.startsWith('clr-pool-')).length,0);
   invoke(second);assert.equal(clrHostPoolStatus().length,1,'tampered host must be replaceable by a verified fresh snapshot');
+});
+
+test('exact parent incarnation closes fresh and pooled CPU-hung CLR hosts after abrupt Node death',{skip:!available},async t=>{
+ const root=await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-clr-parent-death-'))),sdk=path.resolve(process.env.PAQ_TEST_XRM_SDK),source=path.join(root,'Hang.cs'),assembly=path.join(root,'Hang.dll');t.after(()=>fs.rm(root,{recursive:true,force:true,maxRetries:5}));
+ await fs.writeFile(source,'using System;using Microsoft.Xrm.Sdk;namespace Invented{public sealed class Hang:IPlugin{public void Execute(IServiceProvider p){((ITracingService)p.GetService(typeof(ITracingService))).Trace("entered-cpu-loop");while(true){}}}}');
+ const compiler=path.join(process.env.WINDIR??'C:/Windows','Microsoft.NET/Framework64/v4.0.30319/csc.exe'),build=spawnSync(compiler,['/nologo','/target:library','/out:'+assembly,'/reference:'+sdk,source],{windowsHide:true,encoding:'utf8',timeout:20000});assert.equal(build.status,0,build.stdout+build.stderr);
+ const runtime=await prepareClrRuntime({trust:'execute-local-assembly',root,assembly:'Hang.dll',typeName:'Invented.Hang',sdkRoot:path.dirname(sdk),sdkAssembly:path.basename(sdk),cacheRoot:path.join(root,'cache'),serviceProfile:{userId:user,evidence:'Invented backend',grants:[]},context:{initiatingUserId:user,organizationId:user,businessUnitId:user},timeoutMs:10000});
+ const born=spawnSync(runtime.executable,['--process-start',String(process.pid)],{windowsHide:true,encoding:'utf8',timeout:3000});assert.equal(born.status,0);assert.match(born.stdout,/^\d+$/);
+ const reused=spawnSync(runtime.executable,['--parent',String(process.pid),'--parent-start',String(BigInt(born.stdout)+1n)],{windowsHide:true,encoding:'utf8',timeout:3000});assert.equal(reused.status,74,'An existing PID with a different birth time cannot authorize this host.');
+ for(const persistentHost of [false,true])await t.test(persistentHost?'pooled':'fresh',async()=>{
+  const runtimeFile=path.join(root,'runtime-'+persistentHost+'.json'),script=path.join(root,'parent-'+persistentHost+'.mjs');await fs.writeFile(runtimeFile,JSON.stringify({...runtime,descriptor:{...runtime.descriptor,persistentHost}}));
+  await fs.writeFile(script,`import fs from'node:fs';import http from'node:http';import{executeClrPlugin,clrContext}from${JSON.stringify(new URL('../lib/plugin-clr.mjs',import.meta.url).href)};import{DataStore}from${JSON.stringify(new URL('../lib/data.mjs',import.meta.url).href)};const runtime=JSON.parse(fs.readFileSync(process.argv[2]));const server=http.createServer((q,s)=>s.end('owned'));await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));fs.writeSync(1,JSON.stringify({port:server.address().port})+'\\n');const store=new DataStore({state:{mappings:{widget:{idColumn:'widgetid'}},tables:{widget:[]}}}),step={id:'${user}',name:'Invented',images:[]};executeClrPlugin(runtime,clrContext({runtime,store,step,entity:'widget',operation:'create',stage:20,target:{},record:{widgetid:'${rowId}'},frame:{},depth:1}),{store,diagnostic:note=>fs.writeSync(1,JSON.stringify(note)+'\\n')});`);
+  const child=spawn(process.execPath,[script,runtimeFile],{windowsHide:true,stdio:['ignore','pipe','pipe']});let hostPid,port,buffer='',error='';child.stdout.setEncoding('utf8');child.stderr.setEncoding('utf8');child.stderr.on('data',chunk=>{error+=chunk;});
+  try{await new Promise((resolve,reject)=>{const timeout=setTimeout(()=>reject(new Error('Invented child did not enter its CLR loop: '+error)),7000);child.once('exit',code=>{clearTimeout(timeout);reject(new Error('Invented child exited early: '+code+' '+error));});child.stdout.on('data',chunk=>{buffer+=chunk;for(;;){const end=buffer.indexOf('\n');if(end<0)break;const row=JSON.parse(buffer.slice(0,end));buffer=buffer.slice(end+1);if(row.port)port=row.port;if(row.code==='PLUGIN_CLR_HOST_STARTED')hostPid=row.pid;if(row.code==='PLUGIN_CLR_TRACE'&&row.message==='entered-cpu-loop'){clearTimeout(timeout);resolve();}}});});
+   assert.ok(hostPid>0);const exited=new Promise(resolve=>child.once('exit',resolve));child.kill('SIGKILL');await exited;
+   let absent=false;for(let attempt=0;attempt<50;attempt++){try{process.kill(hostPid,0);}catch(cause){if(cause.code==='ESRCH'){absent=true;break;}throw cause;}await delay(40);}assert.equal(absent,true,'Only the recorded orphan host must terminate, even while plugin code never returns.');await assert.rejects(fetch('http://127.0.0.1:'+port));
+  }finally{child.kill();if(hostPid)try{process.kill(hostPid);}catch{}}
+ });
 });
 
 test('pooled original DLL gets fresh instance, configuration, context, frame and SDK callbacks; failures close owned hosts', {skip:!available},async t=>{

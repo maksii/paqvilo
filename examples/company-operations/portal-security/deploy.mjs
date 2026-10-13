@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { loadConnection, connectedClient } from '../../../lense/dataverse/index.mjs';
+import { loadConnection, connectedClient } from 'paqvilo/dataverse';
 import { buildBlueprint, validateBlueprint, assertNoActiveOrphans } from './blueprint.mjs';
 
 const project=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');

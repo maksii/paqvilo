@@ -8,6 +8,7 @@ const registry=()=>({messages:[{name:'RetrieveMultiple',sdkmessageid:'rm'}],step
 test('late query profile preserves final stage and refuses ambiguous or foreign observers',()=>{
  const source=registry();source.steps.push({...source.steps[0],sdkmessageprocessingstepid:'foreign',_eventhandler_value:'business'});
  const plan=planLateQueryProfile(source,'observer');assert.equal(plan.changes.length,3);assert.equal(plan.preserved,1);assert.ok(!plan.changes.some(change=>change.id==='2'||change.id==='foreign'));
+ const global={...source.steps[0],sdkmessageprocessingstepid:'global',_sdkmessagefilterid_value:null,statecode:1,statuscode:2};source.steps.push(global);assert.equal(planLateQueryProfile(source,'observer').changes.length,3);global.statecode=0;assert.throws(()=>planLateQueryProfile(source,'observer'),/Active global/);source.steps.pop();
  source.steps.push({...source.steps[2],sdkmessageprocessingstepid:'duplicate'});assert.throws(()=>planLateQueryProfile(source,'observer'),/one active/);
 });
 test('journal recovers an interrupted conditional profile mutation and rejects unrelated configuration drift',async()=>{

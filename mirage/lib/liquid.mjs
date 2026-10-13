@@ -447,6 +447,40 @@ async function evaluateAttributes(markup, context) {
   for (const { key, value } of tagAttributes(markup).values()) args[key] = await context.resolve(value);
   return args;
 }
+class LazyFetchXmlQueryDrop extends LiquidDrop {
+  constructor({xml,preview,host,context,right}) {
+    super();this.xml=xml;this.preview=preview;this.host=host;this.context=context;this.right=right;this.pending=null;
+  }
+  liquidGet(key) {
+    switch(String(key).toLowerCase()) {
+      case 'xml': return this.preview.xml;
+      case 'permission_granted': return this.preview.permissionGranted??true;
+      case 'global_permission_granted': return this.preview.globalPermissionGranted??false;
+      case 'rules_exist': return this.preview.rules_exist??true;
+      case 'results':
+        this.pending??=this.load();
+        return this.pending;
+      default:return undefined;
+    }
+  }
+  async load() {
+    let result;
+    try {result=await this.host.fetchXml(this.xml,this.host.user(this.context),this.host.request(this.context),{right:this.right,fetchCache:this.context.state.fetchCache??=new FetchRenderCache()})??{};}
+    catch(error) {
+      if(isInfrastructureError(error))throw error;
+      if(Number(error?.status)===403)result={entities:[],permission_granted:false,global_permission_granted:false};
+      else if(this.host.observed?.liquidFetchErrorMessage==='target-invocation')throw new LiquidError('Exception has been thrown by the target of an invocation.',{cause:error});
+      else throw error;
+    }
+    return {
+      entity_name:result.entity_name??/<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(this.xml)?.[1]??null,
+      min_active_row_version:result.min_active_row_version??null,
+      more_records:result.more_records??false,paging_cookie:result.paging_cookie??null,
+      total_record_count:result.total_record_count??-1,total_record_count_limit_exceeded:result.total_record_count_limit_exceeded??false,
+      ...result,entities:(result.entities??[]).map(row=>liquidRecord(row)),
+    };
+  }
+}
 class FetchXmlTag extends Block {
   parse(tokens) {
     const m = /([\p{L}\p{Mn}\p{Nd}\p{Pc}]+)/u.exec(this.markup);
@@ -462,6 +496,13 @@ class FetchXmlTag extends Block {
     const host = context.engine.portalHost;
     if (!host.fetchXml) throw new LiquidError("FetchXML data provider is not configured");
     const right = this.attributes.get("right") ? formatItem(await context.resolve(this.attributes.get("right").value)) : undefined;
+    if(host.observed?.liquidFetchExecution==='lazy-query-drop') {
+      if(!host.previewFetchXml)throw new LiquidError('Lazy FetchXML requires a source permission preview provider.');
+      const preview=await host.previewFetchXml(xml,host.user(context),host.request(context),{right});
+      if(typeof preview?.xml!=='string')throw new LiquidError('Lazy FetchXML preview has no compiled query.');
+      context.assignGlobal(this.variable,new LazyFetchXmlQueryDrop({xml,preview,host,context,right}));
+      return;
+    }
     let results;
     try {
       results = (await host.fetchXml(xml, host.user(context), host.request(context), { right, fetchCache: context.state.fetchCache ??= new FetchRenderCache() })) ?? {};
@@ -859,6 +900,7 @@ export function createPortalRenderer(portal, options = {}) {
     get fetchXml() {
       return options.fetchXml;
     },
+    get previewFetchXml() {return options.previewFetchXml;},
     get renderComponent() {
       return options.renderComponent ? (tag, args, snapshot, p) => options.renderComponent(tag, args, snapshot, p) : null;
     },

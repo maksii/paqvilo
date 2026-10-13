@@ -2,6 +2,14 @@
   "major": 0,
   "introduced": "0.9.4",
   "surfaces": {
+    "paqvilo/dataverse": [
+      "DataverseClient", "connectedClient", "loadConnection", "publicConnection",
+      "registerApplication", "connectExistingApplication", "saveProtectedState", "loadProtectedState",
+      "readPowerPagesSites", "readPowerPagesSite", "setPowerPagesSiteVisibility",
+      "readManifest", "validateManifest", "compileManifest", "planManifest", "applyManifest",
+      "publishManifest", "checkKeys", "exportSolution", "completeLookupAuditing", "scopeSolutionRoots",
+      "readCatalogue", "validateCatalogue", "planData", "applyData", "compareData", "runDataQueries", "retrieveFetchXml"
+    ],
     "paqvilo/mirage": [
       "DataError",
       "DataStore",
@@ -47,6 +55,8 @@
     ],
     "paqvilo/mirage/testing": [
       "connectRuntime",
+      "createPortalSession",
+      "runSessionMatrix",
       "signInContext",
       "signInHeaders"
     ],

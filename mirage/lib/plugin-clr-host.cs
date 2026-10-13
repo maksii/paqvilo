@@ -10,6 +10,8 @@ using System.Runtime.Remoting.Messaging;
 using System.Runtime.Remoting.Proxies;
 using System.Runtime.Remoting;
 using System.ServiceModel;
+using System.Diagnostics;
+using System.Threading;
 using System.Web.Script.Serialization;
 using Microsoft.Xrm.Sdk;
 using Microsoft.Xrm.Sdk.Query;
@@ -18,6 +20,7 @@ public static class PaqviloPluginHost {
  static readonly JavaScriptSerializer Json=new JavaScriptSerializer {MaxJsonLength=4*1024*1024,RecursionLimit=64};
  static TextWriter Output;
  static Dictionary<string,object> CurrentContext;
+ static Timer ParentWatcher;
  static Dictionary<string,object> Map(object value){return value as Dictionary<string,object> ?? new Dictionary<string,object>();}
  static object Get(Dictionary<string,object> map,string key,object fallback=null){object value;return map.TryGetValue(key,out value)?value:fallback;}
  static string Str(Dictionary<string,object> map,string key,string fallback=""){return Convert.ToString(Get(map,key,fallback),CultureInfo.InvariantCulture);}
@@ -59,7 +62,7 @@ public static class PaqviloPluginHost {
   }
  }
  static ColumnSet Columns(object value){var m=Map(value);return Convert.ToBoolean(Get(m,"allColumns",false))?new ColumnSet(true):new ColumnSet(Array(Get(m,"columns")).Select(v=>Convert.ToString(v)).ToArray());}
- static PagingInfo DecodePaging(PagingInfo page,object value){if(value==null)return null;page=page??new PagingInfo();var m=Map(value);page.Count=Convert.ToInt32(Get(m,"count",0));page.PageNumber=Convert.ToInt32(Get(m,"pageNumber",0));page.PagingCookie=Get(m,"pagingCookie") as string;return page;}
+ static PagingInfo DecodePaging(PagingInfo page,object value){if(value==null)return null;page=page??new PagingInfo();var m=Map(value);page.Count=Convert.ToInt32(Get(m,"count",0));page.PageNumber=Convert.ToInt32(Get(m,"pageNumber",0));page.PagingCookie=Get(m,"pagingCookie") as string;page.ReturnTotalRecordCount=Convert.ToBoolean(Get(m,"returnTotalRecordCount",false));return page;}
  static FilterExpression DecodeFilter(object value){var m=Map(value);var f=new FilterExpression(Str(m,"operatorName","And")=="Or"?LogicalOperator.Or:LogicalOperator.And);foreach(var item in Array(Get(m,"conditions"))){var c=Map(item);var condition=new ConditionExpression(Str(c,"attributeName"),(ConditionOperator)Enum.Parse(typeof(ConditionOperator),Str(c,"operatorName")),Array(Get(c,"values")).Select(Decode).ToArray());condition.EntityName=Get(c,"entityName") as string;f.Conditions.Add(condition);}foreach(var child in Array(Get(m,"filters")))f.Filters.Add(DecodeFilter(child));return f;}
  static object Encode(object value,int depth=0){
   if(depth>64)throw new NotSupportedException("SDK value nesting exceeds 64.");if(value is long)return new Dictionary<string,object>{{"$type","Int64"},{"value",((long)value).ToString(CultureInfo.InvariantCulture)}};if(value is decimal)return new Dictionary<string,object>{{"$type","Decimal"},{"value",((decimal)value).ToString(CultureInfo.InvariantCulture)}};if(value is double){var number=(double)value;if(Double.IsNaN(number)||Double.IsInfinity(number))throw new NotSupportedException("SDK Double requires a finite numeric value.");return new Dictionary<string,object>{{"$type","Double"},{"value",number.ToString("R",CultureInfo.InvariantCulture)}};}if(value==null||value is string||value is bool||value is int)return value;
@@ -92,7 +95,7 @@ public static class PaqviloPluginHost {
  }
  static object Wire(object value,int depth=0){return value is Guid?new Dictionary<string,object>{{"$type","Guid"},{"value",value.ToString()}}:Encode(value,depth);}
  static void RejectConfigured(object value,params string[] names){foreach(var name in names){var property=value.GetType().GetProperty(name);if(property==null)continue;var item=property.GetValue(value,null);if(item==null||item is bool&&!(bool)item||item is string&&((string)item).Length==0||item is IEnumerable&&!((IEnumerable)item).Cast<object>().Any())continue;throw new NotSupportedException("Unsupported configured SDK property: "+value.GetType().Name+"."+name);}}
- static object Paging(PagingInfo page){if(page==null)return null;RejectConfigured(page,"ReturnTotalRecordCount");return new {count=page.Count,pageNumber=page.PageNumber,pagingCookie=page.PagingCookie};}
+ static object Paging(PagingInfo page){if(page==null)return null;return new {count=page.Count,pageNumber=page.PageNumber,pagingCookie=page.PagingCookie,returnTotalRecordCount=page.ReturnTotalRecordCount};}
  static object Orders(IEnumerable<OrderExpression> orders){return orders.Select(o=>{RejectConfigured(o,"EntityName","Alias");return new {attributeName=o.AttributeName,descending=o.OrderType==OrderType.Descending};}).ToArray();}
  static object Filter(FilterExpression filter){RejectConfigured(filter,"AnyAllFilterLinkEntity","FilterHint","IsQuickFindFilter");return new {operatorName=filter.FilterOperator.ToString(),conditions=filter.Conditions.Select(c=>{RejectConfigured(c,"CompareColumns");return new {attributeName=c.AttributeName,entityName=c.EntityName,operatorName=c.Operator.ToString(),values=c.Values.Select(v=>Wire(v)).ToArray()};}).ToArray(),filters=filter.Filters.Select(Filter).ToArray()};}
  static object EncodeContext(Dictionary<string,object> context,int depth=0){return new Dictionary<string,object>{{"$type","ExecutionContext"},{"values",context.ToDictionary(p=>p.Key,p=>Wire(p.Value,depth+1))}};}
@@ -118,9 +121,16 @@ public static class PaqviloPluginHost {
  }
  static EntityImageCollection Images(object value){var result=new EntityImageCollection();foreach(var pair in Map(value))result[pair.Key]=(Entity)Decode(pair.Value);return result;}
  public static int Main(string[] args){
+  // An owned host watches the exact parent process incarnation, not just a PID.
+  // This also stops CPU-bound plugin code after abrupt Node/process termination.
+  if(args.Length==2&&args[0]=="--process-start"){int id;if(!Int32.TryParse(args[1],out id)||id<=0)return 73;try{using(var parent=Process.GetProcessById(id))Console.Write(parent.StartTime.ToUniversalTime().Ticks.ToString(CultureInfo.InvariantCulture));return 0;}catch{return 73;}}
+  bool persistent=args.Length>0&&args[0]=="--persistent";int offset=persistent?1:0;
+  if(args.Length!=offset+4||args[offset]!="--parent"||args[offset+2]!="--parent-start")return 73;
+  int parentId;long parentStart;if(!Int32.TryParse(args[offset+1],out parentId)||parentId<=0||!Int64.TryParse(args[offset+3],out parentStart)||parentStart<=0)return 73;
+  Process owner;try{owner=Process.GetProcessById(parentId);if(owner.StartTime.ToUniversalTime().Ticks!=parentStart||owner.HasExited)return 74;}catch{return 74;}
+  ParentWatcher=new Timer(_=>{try{if(owner.HasExited||owner.StartTime.ToUniversalTime().Ticks!=parentStart)Environment.Exit(74);}catch{Environment.Exit(74);}},null,100,100);
   Output=Console.Out;Console.SetOut(TextWriter.Null);
-  var persistent=args.Length==1&&args[0]=="--persistent";
-  do{var line=Console.ReadLine();if(line==null)return 0;var result=ExecuteLine(line);if(!persistent)return result;}while(true);
+  try{do{var line=Console.ReadLine();if(line==null)return 0;var result=ExecuteLine(line);if(!persistent)return result;}while(true);}finally{ParentWatcher.Dispose();owner.Dispose();}
  }
  static int ExecuteLine(string line){
   try{

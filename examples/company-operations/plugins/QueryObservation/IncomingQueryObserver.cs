@@ -41,11 +41,19 @@ namespace Paqvilo.Demo.QueryObservation {
    else if(q is QueryByAttribute b&&b.EntityName=="pqvd_chainnode"){
     entity=b.EntityName;for(int i=0;i<b.Attributes.Count;i++){if(b.Attributes[i]=="pqvd_operationid"){var id=b.Values[i] is Guid g?g:(b.Values[i] as EntityReference)?.Id??Guid.Empty;if(id!=Guid.Empty)operations.Add("CO-OP:"+id);}if(b.Attributes[i]=="pqvd_querymarkerutc")times.Add(Convert.ToString(b.Values[i]));}
    }else return;
+   if(Configuration.observationTables.Length>0&&!Configuration.observationTables.Contains(entity,StringComparer.OrdinalIgnoreCase))return;
    var ops=operations.Distinct().ToArray();var utc=times.Distinct().ToArray();if(ops.Length!=1||utc.Length!=1||!Guid.TryParse(ops[0].Substring(6),out var operation))return;
    if(!DateTime.TryParseExact(utc[0].Substring(7),"yyyy-MM-ddTHH:mm:ss.fffZ",System.Globalization.CultureInfo.InvariantCulture,System.Globalization.DateTimeStyles.AssumeUniversal,out _))return;
+   // Marker-only diagnostics precede admission. They neither authorize writes nor
+   // disclose query text, marker timestamps, headers or configuration values.
+   if(Configuration.traceObservationAdmission){var parent=c.ParentContext;var portal=c as IPluginExecutionContext2;string portalCall="unavailable";try{if(portal!=null)portalCall=portal.IsPortalsClientCall.ToString();}catch{portalCall="getter-failed";}
+    ((ITracingService)provider.GetService(typeof(ITracingService))).Trace("CO observation invocation entity={0} operation={1} primary={2} stage={3} depth={4} user={5} initiating={6} parentPresent={7} parentMessage={8} parentEntity={9} parentDepth={10} parentStage={11} parentStep={12} portal={13} rootAdmission={14}",entity,operation,c.PrimaryEntityName,c.Stage,c.Depth,c.UserId,c.InitiatingUserId,parent!=null,parent?.MessageName,parent?.PrimaryEntityName,parent?.Depth,parent?.Stage,parent?.OwningExtension?.Id,portalCall,!Configuration.rootObservationOnly||(c.Depth==1&&parent==null));}
+   if(Configuration.rootObservationOnly&&(c.Depth!=1||c.ParentContext!=null))return;
+   if(Configuration.observationTables.Length>0&&!string.IsNullOrEmpty(c.PrimaryEntityName)&&c.PrimaryEntityName!="none"&&!Configuration.observationTables.Contains(c.PrimaryEntityName,StringComparer.OrdinalIgnoreCase))return;
    // Validated immutable intent, not inferred authentication from markers.
    var service=Service(provider,Guid.TryParse(Configuration.writerId,out var writer)?writer:c.UserId);var intentQuery=new QueryExpression("pqvd_testoperation"){TopCount=1,ColumnSet=new ColumnSet("pqvd_markerutc","pqvd_markeroperation","pqvd_roottable","pqvd_expectedmessage","pqvd_lane","pqvd_runid","pqvd_runnercontactid","pqvd_actorprovenance","createdby")};intentQuery.Criteria.AddCondition("pqvd_testoperationid",ConditionOperator.Equal,operation);var operationRow=service.RetrieveMultiple(intentQuery).Entities.FirstOrDefault();if(operationRow==null)return;
    if(operationRow.GetAttributeValue<string>("pqvd_markerutc")!=utc[0]||operationRow.GetAttributeValue<string>("pqvd_markeroperation")!=ops[0]||!operationRow.Contains("pqvd_runid"))return;
+   if(Configuration.observationTables.Length>0&&(operationRow.GetAttributeValue<string>("pqvd_roottable")!=entity||operationRow.GetAttributeValue<string>("pqvd_expectedmessage")!="RetrieveMultiple"))return;
    var lane=operationRow.GetAttributeValue<OptionSetValue>("pqvd_lane")?.Value??0;
    var provenance=operationRow.GetAttributeValue<string>("pqvd_actorprovenance");
    if(lane==183270002&&(!Configuration.Trusted(c.UserId)||provenance!="SDKConfiguredIdentity.RelationshipClaim")){((ITracingService)provider.GetService(typeof(ITracingService))).Trace("CO query capture withheld: SDK intent requires configured caller and provenance operation={0}",operation);return;}

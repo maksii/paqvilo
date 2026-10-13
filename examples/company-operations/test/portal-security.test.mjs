@@ -105,7 +105,7 @@ test('scoped reference projections are idempotent, revoked grants clear, leaves 
   const s=extendReferenceSchema(structuredClone(schema)),c=extendReferenceCatalogue(structuredClone(catalogue),s),original=c.associations.length;
   extendReferenceSchema(s);extendReferenceCatalogue(c,s);assert.equal(c.associations.length,original);
   const b=buildBlueprint(s,c),leaves=b.nodes.filter(n=>n.key.includes('REFERENCE'));
-  assert.equal(leaves.length,12);for(const leaf of leaves){assert.equal(b.nodes.some(n=>n.parent===leaf.key),false);assert.equal(leaf.privileges.create,false);assert.equal(leaf.privileges.write,false);assert.equal(leaf.privileges.delete,false);}
+  assert.equal(leaves.length,18);for(const leaf of leaves){assert.equal(b.nodes.some(n=>n.parent===leaf.key),false);assert.equal(leaf.privileges.create,false);assert.equal(leaf.privileges.write,false);assert.equal(leaf.privileges.delete,false);}
   for(const grant of c.records.filter(r=>r.table==='pqvd_accesspermission'&&!Object.keys(r.refs).some(k=>k.endsWith('principalid')&&r.refs[k])))assert.equal(c.associations.filter(a=>a.from===grant.key&&a.relationship.startsWith('pqvd_access_reference')).flatMap(a=>a.to).length,0);
   const hr=c.personas.find(p=>p.key==='P14').grants.find(key=>c.records.find(r=>r.key===key).refs.pqvd_hrprincipalid);
   assert.ok(c.associations.find(a=>a.from===hr&&a.relationship==='pqvd_access_currencies').to.length);

@@ -25,7 +25,7 @@ namespace Paqvilo.Demo.Lab {
    var trace=(ITracingService)provider.GetService(typeof(ITracingService));
    var span=Guid.NewGuid();c.SharedVariables["pqvd.lab.operation"]=operation.ToString();c.SharedVariables["pqvd.lab.span"]=span.ToString();
    string parentSpan=null;var p=c.ParentContext;for(int i=0;p!=null&&i<12;i++,p=p.ParentContext){if(p.SharedVariables.Contains("pqvd.lab.span")){parentSpan=Convert.ToString(p.SharedVariables["pqvd.lab.span"]);break;}}
-   var payload=Snapshot.Json(new{schemaVersion=1,assemblyIdentity=AssemblyIdentity(),captureTime=DateTime.UtcNow.ToString("o"),operationId=operation,spanId=span,parentSpanId=parentSpan,artifact,context=Snapshot.Context(c,cfg.order),content,durability=cfg.captureMode=="TransactionalLab"?"DataverseTransaction.RollbackVulnerable":cfg.captureMode});
+   var payload=Snapshot.Json(new{schemaVersion=Snapshot.SchemaVersion,assemblyIdentity=AssemblyIdentity(),captureTime=DateTime.UtcNow.ToString("o"),operationId=operation,spanId=span,parentSpanId=parentSpan,artifact,context=Snapshot.Context(c,cfg.order),content,durability=cfg.captureMode=="TransactionalLab"?"DataverseTransaction.RollbackVulnerable":cfg.captureMode});
    var hash=Snapshot.Hash(payload);var eventKey=Snapshot.Hash(span+":"+c.Stage+":"+c.OwningExtension.Id+":"+artifact);
    if(Encoding.UTF8.GetByteCount(payload)>2097152){trace.Trace("CO capture incomplete oversized operation={0} hash={1}",operation,hash);return false;}
    if(cfg.captureMode=="TraceOnly"){trace.Trace("CO backend capture blocked: collector missing operation={0} artifact={1} hash={2}",operation,artifact,hash);return false;}

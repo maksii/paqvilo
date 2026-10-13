@@ -49,11 +49,14 @@ export function parsePluginDocument(xml) {
     const id = canonical(value(step, 'SdkMessageProcessingStepId'));
     if (!id) continue;
     const filter = child(step, 'SdkMessageFilterId');
+    const primary=canonical(value(step,'PrimaryEntity')||value(step,'PrimaryEntityName')||value(step,'PrimaryEntityTypeCode')||value(step,'PrimaryObjectTypeCode')||value(filter,'PrimaryObjectTypeCode'));
+    const messageFilterId=lookupId(step,'SdkMessageFilterId')||null;
+    const unfiltered=(primary==='none'||Boolean(filter&&!messageFilterId&&!(filter.text??'').trim()&&!filter.children?.length))&&!messageFilterId;
     steps.push({
       id, name: value(step, 'Name') || id, typeId: lookupId(step, 'PluginTypeId') || lookupId(step, 'EventHandler') || null,
       typeName: value(step, 'PluginTypeName') || lookupName(step, 'PluginTypeId') || lookupName(step, 'EventHandler') || null,
       messageId: lookupId(step, 'SdkMessageId') || null, message: value(step, 'SdkMessageName') || lookupName(step, 'SdkMessageId') || value(step, 'MessageName') || null,
-      entity: canonical(value(step, 'PrimaryEntity') || value(step, 'PrimaryEntityName') || value(step, 'PrimaryEntityTypeCode') || value(step, 'PrimaryObjectTypeCode') || value(filter, 'PrimaryObjectTypeCode')) || null,
+      entity: primary&&primary!=='none'?primary:null,messageFilterId,unfiltered,
       stage: numeric(value(step, 'Stage')), rank: numeric(value(step, 'Rank')), mode: numeric(value(step, 'Mode')),
       supportedDeployment: numeric(value(step, 'SupportedDeployment')), enabled: numeric(value(step, 'StateCode') ?? '0') === 0,
       filteringAttributes: String(value(step, 'FilteringAttributes') ?? '').split(',').map(canonical).filter(Boolean),
@@ -131,7 +134,8 @@ export function pluginUnsupported(step,{images=false}={}) {
   if (!stages[step.stage]) return 'Only synchronous stages 10, 20 and 40 are simulated.';
   if (!step.message) return 'The SDK message name is not exported. Add evidence-backed observed.sdkMessages or exported SDK message metadata; the step label is not used to guess behavior.';
   if (!['create', 'update', 'delete','retrieve','retrievemultiple','createmultiple','updatemultiple','associate','disassociate'].includes(String(step.message ?? '').toLowerCase())) return 'This message has no configured local execution pipeline.';
-  if (!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity)) return 'An explicit logical table binding is required.';
+  if(step.unfiltered===true&&(step.entity||step.messageFilterId||String(step.message).toLowerCase()!=='retrievemultiple'||step.mode!==0))return 'Unfiltered execution requires an explicit null filter on synchronous RetrieveMultiple.';
+  if (step.unfiltered!==true&&(!step.entity || !/^[a-z][a-z0-9_]*$/i.test(step.entity))) return 'An explicit logical table binding is required.';
   if (!Number.isInteger(step.rank)) return 'An explicit execution rank is required.';
   if (![0, 2].includes(step.supportedDeployment)) return 'Server deployment is missing or unsupported.';
   if (step.impersonatingUserId) return 'Impersonated execution requires an explicit identity adapter.';
@@ -143,6 +147,7 @@ export function pluginUnsupported(step,{images=false}={}) {
 }
 
 /** Trusted project packs map exact exported step IDs to synchronous functions. */
+export function pluginStepMatchesEntity(step,entity){return step.entity===entity||step.unfiltered===true&&step.entity==null&&step.messageFilterId==null&&String(step.message).toLowerCase()==='retrievemultiple'&&(step.contract?.mode??step.mode)===0;}
 export function pluginHandlers(packs = []) {
   const result = new Map();
   for (const pack of packs) {
@@ -174,7 +179,7 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),store, enti
   if(stage===10&&!asyncExecution&&!['retrieve','retrievemultiple'].includes(operation))executionFrames.set(record,{});
   if(initialFrame)executionFrames.set(record,structuredClone(initialFrame));
   const attributes = new Set(changedAttributes.map(canonical)),read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
-  const matched = items.filter(item => item.enabled && (item.contract?.mode===1)===asyncExecution && item.entity === entity && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update','updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  const matched = items.filter(item => item.enabled && (item.contract?.mode===1)===asyncExecution && pluginStepMatchesEntity(item,entity) && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update','updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
   // Mock/handler read outputs also belong to the SDK response frame. Keep ordinary
   // reads without an executing observer on their existing projection path.
   if(stage===40&&read&&!asyncExecution&&!executionFrames.has(record)&&matched.some(item=>['clr','handler','mock'].includes(item.mode)&&(!item.unsupported||item.mode==='mock')))executionFrames.set(record,{});
@@ -195,7 +200,7 @@ export function runPluginPhase({ items, handlers, runtimes=new Map(),store, enti
     try {
       if(item.mode==='clr'){
         const runtime=runtimes.get(item.id);if(!runtime||!item.clrAvailable||!store)throw error('No trusted original CLR runtime is registered for this exact exported type/step.','LocalPluginClrUnavailable',501);
-        let frame=executionFrames.get(record);if(!frame){frame={};const inherited=store.pluginParentContext?.values?.SharedVariables?.values,tag=store.pluginSdkTag??inherited?.tag;if(tag!==undefined)frame.sharedVariables={$type:'ParameterCollection',values:{tag}};executionFrames.set(record,frame);}
+        let frame=executionFrames.get(record);if(!frame){frame={};executionFrames.set(record,frame);}if(!frame.sharedVariables){const inherited=store.pluginParentContext?.values?.SharedVariables?.values,tag=store.pluginSdkTag??inherited?.tag;if(tag!==undefined)frame.sharedVariables={$type:'ParameterCollection',values:{tag}};}
         frame.portalContactId=portalRequest&&!store.pluginParentContext&&!identity?.admin?(identity?.contactId??identity?.id??null):null;
         frame.portalRequest=portalRequest&&!store.pluginParentContext&&!identity?.admin;
         if(read){frame.query=query;frame.collection=collection;frame.entity=holder?.entity;frame.columns=columns;}

@@ -4,11 +4,11 @@ import { readManifest,compileManifest } from 'paqvilo/dataverse';
 
 test('company manifest has complete schema inventory and protected role anchors',async()=>{
   const manifest=await readManifest(new URL('../dataverse/manifest.json',import.meta.url));
-  assert.equal(manifest.tables.length,27);
-  assert.equal(manifest.tables.filter(t=>!t.existing).length,24);
+  assert.equal(manifest.tables.length,28);
+  assert.equal(manifest.tables.filter(t=>!t.existing).length,25);
   assert.equal(manifest.choices.length,26);
-  assert.equal(manifest.relationships.length,71);
-  assert.equal(manifest.tables.reduce((n,t)=>n+t.keys.length,0),27);
+  assert.equal(manifest.relationships.length,73);
+  assert.equal(manifest.tables.reduce((n,t)=>n+t.keys.length,0),29);
   assert.equal(manifest.relationships.filter(r=>r.kind==='oneToMany'&&r.child==='pqvd_accesspermission'&&r.lookup.name.endsWith('principalid')).length,12);
   assert.equal(manifest.tables.find(t=>t.name==='pqvd_employmentterms').entitySetName,'pqvd_employmenttermrecords');
   assert.equal(manifest.tables.find(t=>t.name==='pqvd_chainnode').ownership,'user');

@@ -44,6 +44,15 @@ test('native API expanded join budgets reject before plugins, while Liquid recor
   assert.deepEqual(stages,[10,20]);
 });
 
+test('native authored join overflow rejects API before root grants while denied Liquid skips backend budgets',()=>{
+  const store=fixture(),stages=[];store.setPluginPipeline(event=>stages.push(event.stage),()=>true);
+  const links=Array.from({length:16},(_,index)=>`<link-entity name="widget" from="widgetid" to="widgetid" alias="w${index}"/>`).join('');
+  const source=`<fetch><entity name="widget"><attribute name="widgetid"/>${links}</entity></fetch>`;
+  assert.throws(()=>store.fetchXml(source,visitor,{portalRequest:true,profile:'webapi'}),error=>error.status===500&&error.code==='PortalQueryAdmissionFailure');
+  assert.deepEqual(store.fetchXml(source,visitor,{portalRequest:true}).entities,[]);
+  assert.deepEqual(stages,[]);
+});
+
 test('native lane observations require a named source witness',()=>{
   assert.throws(()=>observedConfig({tablePermissionQueryPipeline:'native-classic'}),/evidence/);
   assert.equal(observedConfig(observed).tablePermissionQueryPipeline,'native-classic');
@@ -71,6 +80,12 @@ test('native distinct projections without primary keys and linked sorting retain
   const source='<fetch><entity name="widget"><attribute name="widgetid"/><link-entity name="detail" from="widgetid" to="widgetid" alias="d"><attribute name="amount"/><order attribute="amount"/></link-entity></entity></fetch>';
   const linked=store.fetchXml(source,visitor,{portalRequest:true});
   assert.equal(linked.paging_cookie,'');
+  const emptyLinked=store.fetchXml(source.replace('<attribute name="widgetid"/>','<attribute name="widgetid"/><filter><condition attribute="widgetid" operator="eq" value="absent"/></filter>'),visitor,{portalRequest:true});
+  assert.equal(emptyLinked.paging_cookie,'','Linked-order cookie support is a query property, including empty results');
+  const empty=store.fetchXml('<fetch><entity name="widget"><attribute name="widgetid"/><filter><condition attribute="widgetid" operator="eq" value="absent"/></filter></entity></fetch>',visitor,{portalRequest:true});
+  assert.equal(empty.paging_cookie,'','A supported empty page derives its native cookie without a recorded result override');
+  const emptyDistinct=store.fetchXml('<fetch><entity name="widget"><attribute name="owner"/><filter><condition attribute="widgetid" operator="eq" value="absent"/></filter></entity></fetch>',visitor,{portalRequest:true});
+  assert.equal(emptyDistinct.paging_cookie,null,'Unsupported distinct paging stays null when there are no rows');
 });
 
 test('native Liquid executes the backend predicate after a trusted observer changes the compiled query',()=>{

@@ -26,6 +26,17 @@ Connection records and secret files must be inside ignored `.paqvilo/`. DPAPI ci
 
 Application authentication intentionally sends the locally configured client credential to Microsoft Entra. The token provider fixes the origin to `https://login.microsoftonline.com`, validates tenant/client GUIDs before constructing the request, confines the scope to the configured HTTPS organization and disables redirects. A regression rejects malformed identities before any network call and verifies the destination and cache behavior with an invented credential. CodeQL's file-data-to-HTTP heuristic for this required OAuth exchange was reviewed as a false positive; file-derived arbitrary hosts are not permitted for the token endpoint.
 
+For caller-generated test credentials or private runtime configuration, the public
+`paqvilo/dataverse` API also exports `saveProtectedState(file, value, { purpose,
+exclusive })` and `loadProtectedState(file, { purpose })`. They store plain JSON
+values encrypted with Windows DPAPI CurrentUser under ignored `.paqvilo/`, with
+atomic fsynced persistence. Exclusive creation is the default; replacing credentials
+requires `exclusive: false`. A bounded purpose label is verified both outside and
+inside the encrypted payload. Save generated credentials before consuming them in
+an external operation. Save returns metadata only; load decrypts into memory, and
+the caller must keep that value out of logs. There is no plaintext fallback on other
+platforms. This API stores credentials; it does not create or authenticate identities.
+
 ## Manifest and execution
 
 Keep `dataverse/manifest.json` in the owning project. Minimal shape:

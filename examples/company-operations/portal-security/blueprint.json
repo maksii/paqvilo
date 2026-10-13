@@ -4409,6 +4409,25 @@
       }
     },
     {
+      "key": "COMPANYMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "40cd0cd3-84b6-52de-8bcb-5d82cef6be40",
+      "name": "CO COMPANYMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
       "key": "COMPANYMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
       "id": "d7cdaaae-dc8c-5a10-8fe4-4a2b7e5d54d6",
       "name": "CO COMPANYMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
@@ -4436,6 +4455,25 @@
       "scope": "Parent",
       "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
       "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "18bb0b1e-c16b-5d9d-87b9-d4c729d7007e",
+      "name": "CO BRANCHMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
       "active": true,
       "privileges": {
         "read": true,
@@ -4485,6 +4523,25 @@
       }
     },
     {
+      "key": "HR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "7e9f65a1-24af-516d-839d-9037b4d090e4",
+      "name": "CO HR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "HR",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "HR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
       "key": "HR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
       "id": "4264e9c5-a512-5dac-87bc-7fbf9328b001",
       "name": "CO HR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
@@ -4520,6 +4577,25 @@
         "delete": false,
         "append": false,
         "appendTo": true
+      }
+    },
+    {
+      "key": "PROCUREMENT-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "9db1a3fd-fa60-5d4c-8435-3adcfa55c838",
+      "name": "CO PROCUREMENT-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "PROCUREMENT",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
       }
     },
     {
@@ -4561,6 +4637,25 @@
       }
     },
     {
+      "key": "AUDITOR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "64408470-9655-5533-841f-6259b4bc3eb7",
+      "name": "CO AUDITOR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "AUDITOR",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
       "key": "AUDITOR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
       "id": "45553204-f148-57b0-87c1-70b7f744d1f5",
       "name": "CO AUDITOR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
@@ -4588,6 +4683,25 @@
       "scope": "Parent",
       "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
       "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "8b21be2f-91df-5002-8b69-1bdf9f59f6c8",
+      "name": "CO CTO-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "CTO",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "CTO-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
       "active": true,
       "privileges": {
         "read": true,

@@ -15,6 +15,11 @@ const fail=(message,code='LocalPluginClrConfiguration',status=409)=>{throw new D
 const canon=id=>String(id??'').replace(/[{}]/g,'').toLowerCase();
 const hostSource=fileURLToPath(new URL('./plugin-clr-host.cs',import.meta.url));
 let executionDepth=0;
+let parentStartTicks;
+function clrParentIdentity(executable){
+ if(!parentStartTicks){const answer=spawnSync(executable,['--process-start',String(process.pid)],{shell:false,windowsHide:true,encoding:'utf8',timeout:3000,maxBuffer:1024});if(answer.status!==0||!/^\d{1,19}$/.test(answer.stdout??''))fail('Owned CLR host cannot bind its parent process incarnation.','LocalPluginParentUnavailable');parentStartTicks=answer.stdout;}
+ return {parentProcessId:process.pid,parentStartTicks};
+}
 const pooledHosts=new Map();
 process.once('exit',()=>{for(const session of pooledHosts.values())if(session.pid)try{process.kill(session.pid);}catch{}});
 export const clrExecutionDepth=()=>executionDepth;
@@ -37,7 +42,8 @@ export function validateClrDescriptor(value){
  for(const field of ['executionUserId','tenantId'])if(value.context[field]!==undefined&&!uuid.test(value.context[field]))fail('CLR context '+field+' must be a GUID.');
  if(value.context.interfaceVersion===7&&(typeof value.context.environmentId!=='string'||typeof value.context.isApplicationUser!=='boolean'||typeof value.context.initiatingUserAgentPresent!=='boolean'||!uuid.test(value.context.tenantId??'')))fail('Context7 requires explicit environment, tenant, application-user and user-agent-presence observations.');
  if(value.context.portalInputParameters!==undefined){const values=value.context.portalInputParameters;if(!values||typeof values!=='object'||Array.isArray(values)||Object.keys(values).length>16||Object.entries(values).some(([key,item])=>!['AppModuleId','IsAppModuleContext','IncludeAnnotations'].includes(key)||key==='AppModuleId'&&(item?.$type!=='Guid'||!uuid.test(item.value??''))||['IsAppModuleContext','IncludeAnnotations'].includes(key)&&typeof item!=='boolean'))fail('Portal input observations support only a typed AppModuleId and Boolean app-module/annotation flags.');}
- if(value.context.emptyFetchPagingCookie!==undefined&&value.context.emptyFetchPagingCookie!=='')fail('Observed empty Fetch paging cookie must be an empty string.');
+ if(value.context.operationCreatedOn!==undefined){const clock=value.context.operationCreatedOn,evidence=value.context.operationCreatedOnEvidence;if(typeof clock!=='string'||!/^(?!0000)\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,7})?Z$/.test(clock)||!Number.isFinite(Date.parse(clock))||new Date(Date.parse(clock)).toISOString().slice(0,19)!==clock.slice(0,19)||typeof evidence!=='string'||!evidence.trim()||evidence.length>2048)fail('Observed framework operationCreatedOn requires a valid canonical UTC timestamp and bounded source evidence.');}
+ if(value.context.emptyFetchPagingCookie!==undefined)fail('Empty Fetch paging cookies must be derived from the executed query, not a CLR context override.');
  validateServiceProfile(value.serviceProfile);return value;
 }
 function pathParts(file) {
@@ -206,6 +212,7 @@ export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
  return {$type:'Entity',logicalName:mapping.logicalName,id,attributes,...(versionColumn?{rowVersion}:{}),...(Object.keys(formattedValues).length?{formattedValues}:{})};
 }
 export function sdkQueryParameters(query){
+ if(query.pageInfo?.returnTotalRecordCount===true)fail('SDK total counts require the Fetch/QueryExpression execution adapter.','LocalPluginSdkUnsupported',501);
  if(query.linkEntities?.length)fail('Linked QueryExpression requires the typed FetchXML execution adapter.','LocalPluginSdkUnsupported',501);
  const name=value=>{if(typeof value!=='string'||!/^[a-z][\w]*$/i.test(value))fail('Unsupported SDK query column.','LocalPluginSdkUnsupported',501);return value;};
  const literal=value=>{value=sdkValueToRecord(value);if(value===null)return 'null';if(isExactNumeric(value))return value.value;if(typeof value==='boolean'||typeof value==='number')return String(value);if(typeof value==='string')return "'"+value.replaceAll("'","''")+"'";fail('Unsupported SDK query value.','LocalPluginSdkUnsupported',501);};
@@ -269,10 +276,10 @@ function executeSdkMethod({store,service,message,responseToken}){
   case 'Delete':service.remove(args[0],sdkValueToRecord(args[1]),{responseToken});return null;
   case 'Associate':case 'Disassociate':return service.associate(args[0],sdkValueToRecord(args[1]),args[2],args[3],message.method==='Associate',{responseToken});
   case 'Retrieve':return recordToSdkEntity(store,args[0],service.get(args[0],sdkValueToRecord(args[1]),args[2],{responseToken}),args[2]);
-  case 'RetrieveMultiple':{const query=args[0];let rows,entity=query.entityName;if(query.$type==='FetchExpression'||query.$type==='QueryExpression'&&query.linkEntities?.length){
+  case 'RetrieveMultiple':{const query=args[0];let rows,entity=query.entityName;if(query.$type==='FetchExpression'||query.$type==='QueryExpression'&&(query.linkEntities?.length||query.pageInfo?.count>0||query.pageInfo?.returnTotalRecordCount===true)){
    const xml=query.$type==='FetchExpression'?query.query:queryExpressionToFetch(query,store);entity=/<entity\s[^>]*name=["'](\w+)["']/i.exec(xml)?.[1];const answer=service.fetch(xml,{sdkResult:true,sdkQuery:query,sdkResponseToken:responseToken});return answer.sdkCollection??fetchResultToSdkCollection(store,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet});
   }else if(['QueryExpression','QueryByAttribute'].includes(query.$type)){const params=sdkQueryParameters(query),primary=service.mapping(entity).idColumn;if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)params.$select=primary;if(params.$select&&!params.$select.split(',').includes(primary))params.$select+=','+primary;const answer=service.query(entity,params,{responseToken,sdkQuery:query});if(answer.sdkCollection)return answer.sdkCollection;rows=answer.value;}
-  else fail('Unsupported SDK query structure.','LocalPluginSdkUnsupported',501);return {$type:'EntityCollection',entities:rows.map(row=>recordToSdkEntity(store,entity,row,query.columnSet??{allColumns:true})),moreRecords:false,totalRecordCount:-1,pagingCookie:null};}
+  else fail('Unsupported SDK query structure.','LocalPluginSdkUnsupported',501);return {$type:'EntityCollection',entities:rows.map(row=>recordToSdkEntity(store,entity,row,query.columnSet??{allColumns:true})),entityName:entity,minActiveRowVersion:'-1',moreRecords:false,totalRecordCount:-1,pagingCookie:null};}
   default:fail('Unsupported SDK service method: '+message.method,'LocalPluginSdkUnsupported',501);
  }
 }
@@ -349,8 +356,9 @@ function executePooledClr(runtime,input,options,verified){
   const directory=syncFs.mkdtempSync(path.join(path.dirname(runtime.directory),'clr-pool-'));
   try{for(const file of verified)syncFs.writeFileSync(path.join(directory,file.name),file.bytes,{flag:'wx'});}catch(cause){removeClrSnapshot(directory,verified);throw cause;}
   const snapshot={directory,executable:path.join(directory,path.basename(runtime.executable)),assembly:path.join(directory,path.basename(runtime.assembly))};
+  let parentIdentity;try{parentIdentity=clrParentIdentity(snapshot.executable);}catch(cause){removeClrSnapshot(directory,verified);throw cause;}
   const {port1,port2}=new MessageChannel(),signal=new SharedArrayBuffer(4),flags=new Int32Array(signal);
-  const worker=new Worker(new URL('./plugin-clr-pool-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable},transferList:[port2]});
+  const worker=new Worker(new URL('./plugin-clr-pool-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,...parentIdentity},transferList:[port2]});
   worker.on('error',()=>{});worker.unref();port1.unref();
   session={key,runtimeDirectory:runtime.directory,typeName:runtime.descriptor.typeName,depth,snapshot,files:verified.map(file=>({name:file.name})),worker,port1,signal,flags,active:false};
   pooledHosts.set(key,session);
@@ -365,10 +373,11 @@ function executePooledClr(runtime,input,options,verified){
 }
 function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot,session){
  const timeout=clrTimeout(runtime.descriptor);
+ const parentIdentity=session?null:clrParentIdentity(snapshot.executable);
  const channels=session??new MessageChannel(),port1=channels.port1,port2=channels.port2,signal=session?.signal??new SharedArrayBuffer(4),flags=session?.flags??new Int32Array(signal);
  const invocationId=session?randomUUID():null;
  const invocation={...input,assembly:snapshot.assembly,typeName:runtime.descriptor.typeName,unsecureConfiguration:runtime.descriptor.unsecureConfiguration??null,secureConfiguration:runtime.descriptor.secureConfiguration??null};
- const worker=session?.worker??new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,input:invocation,timeout},transferList:[port2]});
+ const worker=session?.worker??new Worker(new URL('./plugin-clr-worker.mjs',import.meta.url),{workerData:{port:port2,signal,executable:snapshot.executable,input:invocation,timeout,...parentIdentity},transferList:[port2]});
  if(session){session.active=true;port1.postMessage({kind:'invoke',invocationId,input:invocation,timeout});}
  else worker.on('error',()=>{});
  const deadline=Date.now()+timeout+1000;
@@ -419,7 +428,7 @@ function executeClrSnapshot(runtime,input,{store,diagnostic},snapshot,session){
 export function clrContext({runtime,store,step,entity,operation,stage,target,record,previous,frame,depth}){
  const descriptor=runtime.descriptor,context=descriptor.context,parent=store.pluginParentContext,primary=store.resolveMapping(entity).idColumn;
  const preValidationParent=stage!==10&&(step.contract?.mode??0)===0&&['create','update','delete'].includes(operation)&&frame.preValidationContext;
- if(preValidationParent&&!frame.preValidationSharedDetached){frame.sharedVariables={$type:'ParameterCollection',values:{}};frame.preValidationSharedDetached=true;}
+ if(preValidationParent&&!frame.preValidationSharedDetached){const prior=frame.sharedVariables?.values??{};frame.sharedVariables={$type:'ParameterCollection',values:Object.hasOwn(prior,'tag')?{tag:prior.tag}:{}};frame.preValidationSharedDetached=true;}
  const image=(row,registration)=>{if(!row)return null;return recordToSdkEntity(store,entity,row,{allColumns:!registration.attributes?.length,columns:registration.attributes??[]});};const preImages={},postImages={};for(const registration of step.images??[]){if([0,2].includes(registration.type)&&previous)preImages[registration.alias||registration.name]=image(previous,registration);if([1,2].includes(registration.type)&&stage===40&&operation!=='delete')postImages[registration.alias||registration.name]=image(record,registration);}
  const bulk=['createmultiple','updatemultiple'].includes(operation),messageName={retrievemultiple:'RetrieveMultiple',createmultiple:'CreateMultiple',updatemultiple:'UpdateMultiple'}[operation]??operation[0].toUpperCase()+operation.slice(1);
  const portalRequest=frame.portalRequest===true&&!parent,portalContactId=portalRequest&&uuid.test(frame.portalContactId??'')?frame.portalContactId:'00000000-0000-0000-0000-000000000000';
@@ -427,7 +436,7 @@ export function clrContext({runtime,store,step,entity,operation,stage,target,rec
  // The main operation populates system results once. Keep custom values and
  // subsequent PostOperation replacements across ranks for every message shape.
  frame.outputParameters??={$type:'ParameterCollection',values:{}};
- if(stage===40&&operation==='retrievemultiple'&&frame.query?.$type==='FetchExpression'&&frame.collection?.entities?.length===0&&frame.collection.pagingCookie==null&&context.emptyFetchPagingCookie==='')frame.collection.pagingCookie='';
+ if(frame.createdOn==null&&context.operationCreatedOn!==undefined)frame.createdOn=context.operationCreatedOn;
  if(stage===40&&!frame.systemOutputsPopulated){
   const values=operation==='create'?{id:typed('Guid',record[primary])}:operation==='createmultiple'?{Ids:{$type:'GuidArray',values:record.bulkIds.map(value=>typed('Guid',value))}}:operation==='retrieve'?{BusinessEntity:frame.entity}:operation==='retrievemultiple'?{BusinessEntityCollection:frame.collection}:{};
   frame.outputParameters={$type:'ParameterCollection',values:{...frame.outputParameters.values,...values}};frame.systemOutputsPopulated=true;

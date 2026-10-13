@@ -2,7 +2,10 @@ import fs from 'node:fs/promises';
 import {createHash} from 'node:crypto';
 import {readCatalogue,readManifest,validateCatalogue} from 'paqvilo/dataverse';
 import {extendReferenceCatalogue} from './portal-security/reference-projections.mjs';
-const catalogue=await readCatalogue(new URL('./data/catalogue.json',import.meta.url)),schema=await readManifest(new URL('./dataverse/manifest.json',import.meta.url));
+import {parseArgs} from 'node:util';
+import path from 'node:path';
+const {values:args}=parseArgs({options:{schema:{type:'string'},catalogue:{type:'string'},out:{type:'string'}}});
+const catalogue=await readCatalogue(args.catalogue?path.resolve(args.catalogue):new URL('./data/catalogue.json',import.meta.url)),schema=await readManifest(args.schema?path.resolve(args.schema):new URL('./dataverse/manifest.json',import.meta.url));
 const guid=key=>{const b=createHash('sha1').update('paqvilo-company-operations-fixtures-v1:'+key).digest().subarray(0,16);b[6]=(b[6]&15)|80;b[8]=(b[8]&63)|128;const h=b.toString('hex');return`${h.slice(0,8)}-${h.slice(8,12)}-${h.slice(12,16)}-${h.slice(16,20)}-${h.slice(20)}`;};
 const choice=(name,label)=>schema.choices.find(c=>c.name===name).options.find(o=>o.label===label).value;
 const add=(key,table,name,fields,refs={})=>catalogue.records.push({key,id:guid(key),table,fields:{...(table.startsWith('pqvd_')?{pqvd_name:name}:{}),...fields},refs,deferredRefs:[]});
@@ -34,5 +37,7 @@ for(const q of catalogue.queries){if(q.id==='R25'){rebind(q,catalogue.records.fi
 for(const g of catalogue.records.filter(r=>r.table==='pqvd_accesspermission'&&r.refs.pqvd_teamleaderprincipalid)){const employmentKeys=catalogue.associations.find(a=>a.from===g.key&&a.relationship==='pqvd_access_employments').to;catalogue.associations.find(a=>a.from===g.key&&a.relationship==='pqvd_access_equipments').to=[...new Set(catalogue.records.filter(r=>r.table==='pqvd_assignment'&&r.fields.pqvd_assignmentstate===choice('pqvd_assignmentstate','Issued')&&employmentKeys.includes(r.refs.pqvd_employmentid)).map(r=>r.refs.pqvd_equipmentid))];}
 catalogue.coverage.stress='Additional independent persona with all twelve effective scoped roles and 0/1/2/4/8/12 website-role variants';
 extendReferenceCatalogue(catalogue,schema);
-await fs.writeFile(new URL('./data/stress-catalogue.json',import.meta.url),JSON.stringify(validateCatalogue(catalogue),null,2)+'\n');
+const output=args.out?path.resolve(args.out):new URL('./data/stress-catalogue.json',import.meta.url);
+if(args.out)await fs.mkdir(path.dirname(output),{recursive:true});
+await fs.writeFile(output,JSON.stringify(validateCatalogue(catalogue),null,2)+'\n');
 console.log(JSON.stringify({records:catalogue.records.length,personas:catalogue.personas.length,scenarios:catalogue.scenarios.length,stressContactId:persona.contactId,stressRoles:roles.length,links:catalogue.associations.reduce((n,a)=>n+a.to.length,0)}));

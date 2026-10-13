@@ -231,7 +231,7 @@ const ERROR_TYPES = Object.freeze({
  * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
+export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
@@ -249,6 +249,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
+  if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission')
+    return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
   if (details.phase === "query" && QUERY_CODES.has(internal))
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
   // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation
@@ -316,7 +318,7 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // Everything else is Dataverse rejecting the request: CDSError with the
   // platform error code and message in innererror.
   const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? "0x80040203");
-  return respond(status, "9004010D", cdsErrorMessage, {
+  const response = respond(status, "9004010D", cdsErrorMessage, {
     code: innerCode,
     message: internal === "InvalidDateTime" && details.failedDateConversion && invalidDate === "crm-minimum"
       ? "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
@@ -325,6 +327,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
         return observed === null ? error?.message ?? "" : appendObservedWebApiErrorTemplate(error, observed, { mode: errorStacks, templates: errorTemplates, method: errorMethod });
       })(),
   });
+  if (cdsErrorCode === 'cdscode') response.body.error.cdscode = innerCode;
+  return response;
 }
 
 /**
@@ -340,6 +344,7 @@ export async function handleWebApi(req, res, url, deps) {
       innerError: settingTrue(deps.portal?.settings, "Webapi/error/innererror"),
       innerErrorScope: deps.portal?.observed?.webApiInnerError,
       cdsErrorMessage: deps.portal?.observed?.webApiCdsErrorMessage,
+      cdsErrorCode: deps.portal?.observed?.webApiCdsErrorCode,
       antiForgery: deps.portal?.observed?.webApiAntiForgery,
       invalidDate: deps.portal?.observed?.webApiInvalidDate,
       errorDetails: deps.portal?.observed?.webApiErrorDetails,
@@ -551,6 +556,7 @@ const metadataVersions = new WeakMap();
  * number derived from the table mappings (synthetic, never a live value).
  */
 function globalMetadataVersion(store) {
+  if(store.observed?.webApiGlobalMetadataVersion!=null)return store.observed.webApiGlobalMetadataVersion;
   const mappings = store.state.mappings ?? {};
   if (!metadataVersions.has(mappings)) {
     const digest = createHash("sha256").update(JSON.stringify(mappings)).digest("hex");
@@ -761,7 +767,8 @@ function fetchTables(store, xml) {
  * lookups as _x_value,x, followed by x() for each lookup. The primary key
  * leads when the query doesn't select it.
  */
-function fetchContext(t, mapping, info) {
+function fetchContext(t, mapping, info, {empty=false}={}) {
+  if((info.aggregate||empty)&&t.store.observed?.tablePermissionQueryPipeline==='native-classic')return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}`;
   const columns = info.columns.filter((column) => column.alias == null && !column.aliased && !column.aggregate);
   const parts = [],
     lookups = [];
@@ -781,16 +788,25 @@ function fetchContext(t, mapping, info) {
 function getFetch(t) {
   const { url, store, deps, mapping } = t;
   const xml = url.searchParams.get("fetchXml");
-  const project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName);
+  const nativePolicy=!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic';
+  const admitTables=()=>{
+    if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
+      for(const logical of fetchTables(store,xml))if(!store.rules(logical,'read',deps.identity).length)
+        throw new DataError(`Table permission denies read on ${logical}`,403,'PermissionDenied',{operation:'read',table:logical});
+  };
+  let project;
+  try {
+    if(nativePolicy)admitTables();
+    project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName,{structuralJoinFields:nativePolicy});
+  }
+  catch(cause) {
+    if(!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic'&&cause.details?.innerCode==='0x8004430d')
+      throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+    throw cause;
+  }
   // Return 403 90040120 when any table the query reads (root or link-entity)
   // has no read permission for the caller, instead of silently empty joins.
-  if (!deps.identity?.admin && store.state.settings?.permissionMode !== "permissive")
-    for (const logical of fetchTables(store, xml))
-      if (!store.rules(logical, "read", deps.identity).length)
-        throw new DataError(`Table permission denies read on ${logical}`, 403, "PermissionDenied", {
-          operation: "read",
-          table: logical,
-        });
+  if(!nativePolicy)admitTables();
   const counted = url.searchParams.get("$count") === "true";
   const fetched = store.fetchXml(xml, deps.identity, {
     profile: "webapi",
@@ -799,11 +815,16 @@ function getFetch(t) {
     returnTotal: counted,
   });
   const info = fetched.columns;
-  const body = { "@odata.context": fetchContext(t, mapping, info) };
-  if (counted) body["@odata.count"] = Math.max(fetched.total_record_count, 0);
+  const body = { "@odata.context": fetchContext(t, mapping, info,{empty:fetched.entities.length===0}) };
+  if (counted || nativePolicy && fetched.total_record_count >= 0) body["@odata.count"] = Math.max(fetched.total_record_count, 0);
   body["@Microsoft.Dynamics.CRM.totalrecordcount"] = fetched.total_record_count;
   body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"] = fetched.total_record_count_limit_exceeded;
   body["@Microsoft.Dynamics.CRM.globalmetadataversion"] = globalMetadataVersion(store);
+  if(nativePolicy){
+    const executed=planFetch(parseXmlDocument(fetched.executedXml??fetched.xml??xml,{root:'fetch'}),{profile:'webapi',limits:store.querySettings().fetchLimits});
+    for(const link of executed.root.children.filter(node=>node.name==='link-entity'))
+      body[`@${executed.aliasOf.get(link)}.OData.Community.Display.V1.CurrentEntityField`]=link.attrs.to;
+  }
   // The final page carries neither morerecords nor the paging cookie
   // (fetchxml/page-results).
   if (fetched.more_records) {

@@ -28,6 +28,7 @@ import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error
 import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
 import {odataToSdkQuery} from './plugin-query.mjs';
 import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
+import {compileODataPermissionQuery,authoredScalarODataFetch} from './odata-permission-query.mjs';
 import {recordToSdkEntity,sdkQueryParameters,executeSdkFetch} from './plugin-clr.mjs';
 import {queryExpressionToFetch,fetchResultToSdkCollection} from './plugin-sdk-query.mjs';
 import {sdkValueToRecord} from './local-organization-service.mjs';
@@ -1590,6 +1591,28 @@ export class DataStore {
     const p=params instanceof URLSearchParams?Object.fromEntries(params):params;
     if(p.fetchXml||p.fetchxml)return this.queryCore(entity,params,identity,paging,options);
     const mapping=this.resolveMapping(entity);
+    if(options.portalRequest===true&&!identity.admin&&this.observed?.odataPermissionQueryPipeline==='native-classic') {
+      if(paging&&(paging.offset!==0||paging.pageSize!==5000||paging.preferenceApplied)||options.id!=null||options.ids||Object.keys(p).some(key=>!['$select','$filter','$orderby','$count'].includes(key))||
+        p.$count!==undefined&&!['true','false'].includes(p.$count)||Object.values(p).some(value=>String(value).includes('/')))
+        throw new DataError('This OData navigation, paging or option conversion requires a qualified native adapter.',501,'ODataPermissionQueryUnsupported');
+      const scalarParams={...p};delete scalarParams.$count;
+      const resolveAttribute=(table,attribute)=>{
+        const lookup=/^_(.+)_value$/.exec(attribute);
+        return lookup&&fieldKind(this.fieldDefinition(table,attribute,options.metadata))==='lookup'?lookup[1]:attribute;
+      };
+      const permissionQuery=compileODataPermissionQuery(authoredScalarODataFetch(mapping.logicalName,scalarParams,{resolveAttribute}),{
+        permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),
+        bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed.odataPermissionGrantOrder,
+        sameTableParentAnchor:this.observed.odataSameTableParentAnchor,
+        resolveAttribute,
+        columnType:(table,attribute)=>fieldKind(this.fieldDefinition(table,attribute,options.metadata)),
+      });
+      const answer=this.executePermissionFetchXml(permissionQuery.xml,identity,{...options,profile:'webapi'},permissionQuery);
+      const result={value:answer.entities};if(p.$count==='true')result['@odata.count']=answer.total_record_count;
+      if(paging)result.paging={nextOffset:answer.entities.length,moreRecords:answer.more_records,totalCount:answer.total_record_count};
+      Object.defineProperty(result,'permissionQuery',{value:permissionQuery,configurable:true});
+      return result;
+    }
     // This explicit portal transport uses the supported scalar OData adapter to
     // expose modeled permission-expanded input to observers. Proprietary native
     // OData-to-QueryBase conversion, navigation and aggregation are not inferred.
@@ -1621,10 +1644,10 @@ export class DataStore {
     this.pluginReadOnly=!this.pluginRollbackBoundary;
     try {
       this.pluginPipeline({entity,operation:'retrievemultiple',stage:10,query,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
-      if(options.portalRequest===true&&query.$type==='FetchExpression'&&this.observed?.fetchPreOperationSerialization?.[entity]==='compact')
+      if(options.portalRequest===true&&options.queryTransport!=='source-derived-scalar-odata'&&query.$type==='FetchExpression'&&this.observed?.fetchPreOperationSerialization?.[entity]==='compact')
         query.query=serializePermissionFetchXml(parseFetchXml(query.query),0,false);
       this.pluginPipeline({entity,operation:'retrievemultiple',stage:20,query,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
-      const answer=execute(query),collection=key==='entities'?fetchResultToSdkCollection(this,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet}):{$type:'EntityCollection',entities:(answer[key]??[]).map(row=>recordToSdkEntity(this,entity,row,query.columnSet??{allColumns:true})),moreRecords:Boolean(answer['@odata.nextLink']??answer.more_records),pagingCookie:answer.paging_cookie??null,totalRecordCount:answer['@odata.count']??answer.total_record_count??-1};
+      const answer=execute(query),collection=key==='entities'?fetchResultToSdkCollection(this,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet}):{$type:'EntityCollection',entities:(answer[key]??[]).map(row=>recordToSdkEntity(this,entity,row,query.columnSet??{allColumns:true})),entityName:entity,minActiveRowVersion:'-1',moreRecords:Boolean(answer['@odata.nextLink']??answer.more_records),pagingCookie:answer.paging_cookie??null,totalRecordCount:answer['@odata.count']??answer.total_record_count??-1};
       const responseFrame=this.pluginPipeline({entity,operation:'retrievemultiple',stage:40,query,collection,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
       handoffPluginResponse(this,'retrievemultiple',mapping.logicalName,responseFrame,responseToken);
       if(collection.$type!=='EntityCollection'||!Array.isArray(collection.entities)||collection.entities.some(e=>e.$type!=='Entity'||e.logicalName!==entity))throw new DataError('RetrieveMultiple output must preserve the bound EntityCollection.',501,'LocalPluginQueryUnsupported');
@@ -3015,6 +3038,15 @@ export class DataStore {
    * Dataverse schema strictly (public /_api?fetchXml=); the default "portal"
    * profile models Liquid/list/lookup execution through the portal.
    */
+  liquidFetchPermissionOptions(options={}) {
+    if(this.observed?.liquidFetchRights!=='native-classic'||options.profile==='webapi')return {};
+    const right=String(options.right??'read').toLowerCase();
+    const operation=right==='write'?'update':right==='create'?'create':right==='delete'?'delete':right==='append'?'append':right==='appendto'?'appendTo':'read';
+    return {operation,unscopedCreate:operation==='create'};
+  }
+  previewPermissionFetchXml(xml,identity={},options={}) {
+    return compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,...this.liquidFetchPermissionOptions(options)});
+  }
   fetchXml(xml, identity = {}, options = {}) {
     const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
     // Observers may mutate data inside a read transaction before its revision advances.
@@ -3029,7 +3061,12 @@ export class DataStore {
       // The native API checks authored tables and the expanded execution budget
       // before admitting RetrieveMultiple. Liquid admits its expanded query and
       // encounters backend budgets after PreOperation instead.
-      const authored=planFetch(parseFetchXml(xml),{profile:'webapi',limits:this.querySettings().fetchLimits});
+      let authored;
+      try {authored=planFetch(parseFetchXml(xml),{profile:'webapi',limits:this.querySettings().fetchLimits});}
+      catch(cause) {
+        if(cause.details?.innerCode==='0x8004430d')throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+        throw cause;
+      }
       const mappingOf=new Map([authored.root,...authored.links].map(node=>[node,this.resolveMapping(node.attrs.name)]));
       const intersects=structuralIntersects(authored,mappingOf);
       linkedPermissionOrdinals=authored.links.flatMap((link,index)=>intersects.has(link)?[]:[index]);
@@ -3037,9 +3074,15 @@ export class DataStore {
       if(this.state.settings.permissionMode!=='permissive')for(const name of names)if(!this.rules(name,'read',identity).length)
         throw new DataError('Table permission denies read on '+name,403,'PermissionDenied',{operation:'read',table:name});
     }
-    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals});
+    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
+    const result=this.executePermissionFetchXml(xml,identity,options,permissionQuery);
+    return options.portalRequest===true&&options.profile!=='webapi'?Object.assign(result,{permission_granted:permissionQuery.permissionGranted,global_permission_granted:permissionQuery.globalPermissionGranted,rules_exist:true}):result;
+  }
+  executePermissionFetchXml(xml,identity,options,permissionQuery) {
+    const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
+    const nativeAdmission=options.portalRequest===true&&!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
     const executionOptions={...options,permissionQuery};
-    if(nativeAdmission&&options.profile==='webapi')planFetch(parseFetchXml(permissionQuery.xml),{profile:'webapi',limits:this.querySettings().fetchLimits});
+    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')planFetch(parseFetchXml(permissionQuery.xml),{profile:'webapi',limits:this.querySettings().fetchLimits});
     if(nativeAdmission&&options.profile!=='webapi'&&!permissionQuery.permissionGranted){
       // A denied Liquid root returns its normalized authored XML and an empty
       // result, without a Dataverse invocation or a generated DISTINCT default.
@@ -3053,12 +3096,13 @@ export class DataStore {
     const compiledLinkStructure=permissionQuery.permissionLinkCount?linkStructure(permissionQuery.xml):null;
     const execute=source=>{if(compiledLinkStructure!==null&&linkStructure(source)!==compiledLinkStructure)throw new DataError('Changing permission-expanded query link structure requires a source-qualified mutation adapter.',501,'LocalPluginQueryUnsupported');const result=executeSdkFetch(this,source,prepared=>this.fetchXmlCore(prepared,identity,executionOptions));return Object.assign(result,{xml:nativeAdmission&&options.profile!=='webapi'?permissionQuery.xml:source,executedXml:source,permissionQuery:{qualification:permissionQuery.qualification,authoredLinkCount:permissionQuery.authoredLinkCount,permissionLinkCount:permissionQuery.permissionLinkCount,totalLinkCount:permissionQuery.totalLinkCount,diagnostics:permissionQuery.diagnostics}});};
     if(!entity||!this.pluginPipeline||!this.pluginPipelineActive({entity,operation:'retrievemultiple'}))return options.sdkResult?execute(permissionQuery.xml):Object.assign(this.fetchXmlCore(permissionQuery.xml,identity,executionOptions),{xml:permissionQuery.xml,permissionQuery:{qualification:permissionQuery.qualification,authoredLinkCount:permissionQuery.authoredLinkCount,permissionLinkCount:permissionQuery.permissionLinkCount,totalLinkCount:permissionQuery.totalLinkCount,diagnostics:permissionQuery.diagnostics}});
-    return this.retrieveMultipleOperation(entity,identity.admin&&options.sdkQuery?options.sdkQuery:{$type:'FetchExpression',query:permissionQuery.xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken,options);
+    return this.retrieveMultipleOperation(entity,identity.admin&&options.sdkQuery?options.sdkQuery:{$type:'FetchExpression',query:permissionQuery.xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken,{...options,queryTransport:permissionQuery.transport});
   }
   fetchXmlCore(xml, identity = {}, options = {}) {
     const planOptions = {
-      profile: options.profile === "webapi" ? "webapi" : "portal",
+      profile: options.sdkResult===true&&options.portalRequest!==true ? "sdk" : options.profile === "webapi" ? "webapi" : "portal",
       limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
+      generatedAnyAllAliases: options.permissionQuery?.generatedAnyAllAliases ?? [],
     };
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
     const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();

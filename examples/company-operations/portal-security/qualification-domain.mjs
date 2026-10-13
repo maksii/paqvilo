@@ -16,9 +16,11 @@ export function buildQualificationDomain({ blueprint, schema, catalogue, manifes
     throw new Error('The source-role campaign requires the twelve distinct authored business roles.');
   if (!Array.isArray(blueprint.nodes) || new Set(blueprint.nodes.map(node => node.id)).size !== blueprint.nodes.length)
     throw new Error('The source permission graph contains duplicate or missing definitions.');
-  const queries = [...(manifest.cases ?? []), ...(manifest.stressCases ?? []), ...(manifest.odataVariants ?? [])]
+  const queries = [...(manifest.cases ?? []), ...(manifest.stressCases ?? []), ...(manifest.odataVariants ?? []), ...(manifest.odataPositiveVariants ?? [])]
     .map(plan => ({ id: plan.id, table: plan.table, variant: plan.variant,
-      authoredQueryHash: digest({ fetchXml: plan.fetchXml, queryType: plan.queryType ?? 'fetchxml', fields: plan.fields }),
+      authoredQueryHash: digest({ fetchXml: plan.fetchXml, queryType: plan.queryType ?? 'fetchxml', fields: plan.fields,
+        ...(plan.queryType === 'odata' ? { fixtureIds: plan.fixtureIds, primaryId: plan.primaryId, primaryName: plan.primaryName,
+          variant: plan.variant } : {}) }),
       lanes: plan.queryType === 'odata' ? ['webapi'] : ['liquid', 'webapi'],
       maxPages: 20, pageSize: plan.pageSize, fragments: (plan.fragments ?? []).map(fragment => fragment.variant) }));
   if (!queries.length || new Set(queries.map(query => query.id)).size !== queries.length)
@@ -38,6 +40,7 @@ export function buildQualificationDomain({ blueprint, schema, catalogue, manifes
     requiredNativeWitnesses, missingNativeWitnesses: requiredNativeWitnesses.filter(name => !witnesses[name]),
     iterationOrder: 'binary-reflected-gray-code',
     readDomain: { roleMasks: roleMaskCount, queryVariants: queries.length, laneCellsPerMask: readCellsPerMask,
+      originalODataVariants: manifest.odataVariants?.length ?? 0, additionalWellFormedODataVariants: manifest.odataPositiveVariants?.length ?? 0,
       denominator: roleMaskCount * readCellsPerMask, pagination: 'Each cell includes every fragment and complete page sequence.' },
     privilegeLedgerDomain: { roleMasks: roleMaskCount, tables: mutationTables, privileges: privilegeNames,
       sides: ['A', 'B'], denominator: roleMaskCount * mutationTables.length * privilegeNames.length * 2,
@@ -380,16 +383,20 @@ export function materializeScopeHierarchyVariant(variant, { schema, catalogue })
     nativeQualifiedCells: 0, qualification: 'requires-materialization-and-native-evidence', nativeExecution: false };
 }
 
-export function sealConfigurationWitnesses(configuration, { witnesses, boundQuery }) {
+export function sealConfigurationWitnesses(configuration, { witnesses, boundQuery, boundOperation }) {
   if (!configuration?.configurationCells || requiredNativeWitnesses.some(name => !hashPattern.test(witnesses?.[name] ?? '')))
     throw new Error('Seal the configuration with all five frozen native witness hashes.');
   if (!boundQuery || boundQuery.id !== configuration.query.id || boundQuery.table !== configuration.query.table ||
       boundQuery.fetchXml.includes('{{qualificationRecordIdValues}}') || boundQuery.fixtureBindings?.length)
     throw new Error('A configuration proof needs its verified native fixture query binding.');
   const nativeWitnesses = Object.fromEntries(requiredNativeWitnesses.map(name => [name, witnesses[name]]));
+  if (boundOperation && (!boundOperation.target || !/^[a-z][a-z0-9_]*$/.test(boundOperation.target.table ?? '') ||
+      !/^[a-f0-9-]{36}$/i.test(boundOperation.target.id ?? '') || !['Create', 'Update', 'Delete', 'Associate', 'Disassociate'].includes(boundOperation.expectedMessage)))
+    throw new Error('Seal only the actual metadata-bound mutation target and expected runtime message.');
   const inputHash = digest({ variantId: configuration.variantId, sourceHashes: configuration.sourceHashes,
-    nativeWitnesses, boundQuery: { id: boundQuery.id, table: boundQuery.table, fetchXml: boundQuery.fetchXml } });
+    nativeWitnesses, boundQuery: { id: boundQuery.id, table: boundQuery.table, fetchXml: boundQuery.fetchXml }, ...(boundOperation ? { boundOperation } : {}) });
   return { ...configuration, query: boundQuery, nativeWitnesses, missingNativeWitnesses: [], inputHash,
+    ...(boundOperation ? { boundOperation } : {}),
     qualification: 'sealed-inputs-await-native-comparison' };
 }
 

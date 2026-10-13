@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { parseXmlDocument } from 'paqvilo/mirage/lib/fetchxml-engine.mjs';
-import { compilePermissionFetchXml } from 'paqvilo/mirage/lib/permission-query.mjs';
+import { compilePermissionFetchXml,permissionOrderGraphFingerprint } from 'paqvilo/mirage/lib/permission-query.mjs';
+export {permissionOrderGraphFingerprint};
 import { xmlEscape } from '../portal-harness/compile.mjs';
 import { normalizeQuerySentinels } from '../portal-harness/parity.mjs';
 
@@ -10,6 +11,10 @@ const hash = value => createHash('sha256').update(stable(value)).digest('hex');
 const bytesHash = value => createHash('sha256').update(value).digest('hex');
 const walk = function* (element) { yield element; for (const child of element.children) yield* walk(child); };
 const id = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+
+/** Order-independent fingerprint of the normalized graph used by the compiler.
+ * Native raw snapshot hashes remain separate provenance. Membership/actor
+ * values are intentionally absent; they are separate qualification domains. */
 
 /** Ordered terminal paths, independent of generated alias numbers. Authored
  * aliases remain excluded. This is diagnostic normalization, never permission
@@ -87,7 +92,7 @@ export function permissionPathCatalogue({ permissions, identity, mappings, table
   if (permissionsSnapshotHash != null && !/^[a-f0-9]{64}$/.test(permissionsSnapshotHash))
     throw new Error('Native permissionsSnapshotHash must be SHA-256.');
   return { table, permissionsSnapshotHash: permissionsSnapshotHash ?? hash(permissions),
-    normalizedModelHash: hash(permissions), entries, diagnostics };
+    normalizedModelHash: permissionOrderGraphFingerprint(permissions), entries, diagnostics };
 }
 
 export function learnPermissionOrder(catalogue, masterWitness) {

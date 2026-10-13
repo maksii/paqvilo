@@ -23,6 +23,10 @@ namespace Paqvilo.Demo.Lab {
   public bool allowAnonymousObservation {get;set;} = false;
   public string[] anonymousObservationTables {get;set;} = new string[0];
   public bool allowOwnedEvidenceDeletion {get;set;} = false;
+  public string[] observationTables {get;set;} = new string[0];
+  public bool rootObservationOnly {get;set;} = false;
+  public bool traceObservationAdmission {get;set;} = false;
+  public bool allowOwnedEquipmentLookupTests {get;set;} = false;
   public bool ChainStep(Guid id)=>chainStepIds.Any(s=>Guid.TryParse(s,out var g)&&g==id);
   public static Config Parse(string json) {
    var c=string.IsNullOrWhiteSpace(json)?new Config():new JavaScriptSerializer().Deserialize<Config>(json);
@@ -30,6 +34,9 @@ namespace Paqvilo.Demo.Lab {
    if(c.captureMode=="TransactionalLab"&&!Guid.TryParse(c.writerId,out _))throw new InvalidPluginExecutionException("CO recording writer not configured.");
    if(c.allowAnonymousObservation&&(c.anonymousObservationTables==null||c.anonymousObservationTables.Length==0||c.anonymousObservationTables.Length>32||c.anonymousObservationTables.Any(t=>string.IsNullOrEmpty(t)||!System.Text.RegularExpressions.Regex.IsMatch(t,"^[a-z][a-z0-9_]*$"))))throw new InvalidPluginExecutionException("CO anonymous observation requires explicit allowed tables.");
    if(c.allowOwnedEvidenceDeletion&&(!Guid.TryParse(c.writerId,out var maintenanceWriter)||c.trustedWriterIds.Length!=1||!c.Trusted(maintenanceWriter)))throw new InvalidPluginExecutionException("CO owned evidence deletion requires one explicit trusted SDK writer.");
+   if(c.allowOwnedEquipmentLookupTests&&(!Guid.TryParse(c.writerId,out var lookupWriter)||!c.Trusted(lookupWriter)))throw new InvalidPluginExecutionException("CO equipment lookup tests require an explicit trusted SDK writer.");
+   if(c.observationTables==null||c.observationTables.Length>32||c.observationTables.Any(t=>string.IsNullOrEmpty(t)||!System.Text.RegularExpressions.Regex.IsMatch(t,"^[a-z][a-z0-9_]*$")))throw new InvalidPluginExecutionException("CO query observation tables must be an explicit bounded logical-name list.");
+   if(c.traceObservationAdmission&&(c.observationTables.Length==0||!Guid.TryParse(c.writerId,out var diagnosticWriter)||!c.Trusted(diagnosticWriter)))throw new InvalidPluginExecutionException("CO observation diagnostics require explicit tables and a trusted configured writer.");
    if(c.captureMode=="DurableCollector"&&(!Uri.TryCreate(c.collectorUrl,UriKind.Absolute,out var u)||u.Scheme!="https"||u.IsLoopback||!string.IsNullOrEmpty(u.Query)||string.IsNullOrEmpty(c.collectorAudience)))throw new InvalidPluginExecutionException("CO durable collector is not configured.");
    return c;
   }
@@ -51,6 +58,7 @@ namespace Paqvilo.Demo.Lab {
   protected static void Require(bool value,string message){if(!value)throw new InvalidPluginExecutionException("CO "+message);}
  }
  public static class Snapshot {
+  public const int SchemaVersion=2;
   public static string Json(object x)=>new JavaScriptSerializer{MaxJsonLength=2097152,RecursionLimit=80}.Serialize(x);
   public static string Hash(string x){using(var h=SHA256.Create())return string.Concat(h.ComputeHash(Encoding.UTF8.GetBytes(x)).Select(b=>b.ToString("x2")));}
   static bool Sensitive(string key)=>new[]{"secret","token","password","authorization","cookie","credential","secureconfiguration","header"}.Any(s=>key.IndexOf(s,StringComparison.OrdinalIgnoreCase)>=0);
@@ -59,8 +67,8 @@ namespace Paqvilo.Demo.Lab {
    if(depth>10)return new{type=x?.GetType().FullName,truncated=true};
    if(x==null)return null;
    if(x is Entity e)return new{type="Entity",logicalName=e.LogicalName,id=e.Id,attributes=e.Attributes.ToDictionary(a=>a.Key,a=>Value(a.Value,depth+1,a.Key)),keyAttributes=e.KeyAttributes.ToDictionary(a=>a.Key,a=>Value(a.Value,depth+1,a.Key)),rowVersion=e.RowVersion,entityState=e.EntityState?.ToString(),formattedValues=e.FormattedValues.ToDictionary(a=>a.Key,a=>(object)(Sensitive(a.Key)?"[redacted]":a.Value)),relatedEntities=e.RelatedEntities.Count};
-   if(x is EntityReference r)return new{type="EntityReference",logicalName=r.LogicalName,id=r.Id,name=r.Name,keyAttributes=r.KeyAttributes.ToDictionary(a=>a.Key,a=>Value(a.Value,depth+1,a.Key))};
-   if(x is EntityCollection ec)return new{type="EntityCollection",count=ec.Entities.Count,moreRecords=ec.MoreRecords,pagingCookie=ec.PagingCookie,totalRecordCount=ec.TotalRecordCount,totalRecordCountLimitExceeded=ec.TotalRecordCountLimitExceeded,entities=ec.Entities.Take(250).Select(a=>Value(a,depth+1)).ToArray(),truncated=ec.Entities.Count>250};
+   if(x is EntityReference r)return new{type="EntityReference",logicalName=r.LogicalName,id=r.Id,name=r.Name,rowVersion=r.RowVersion,keyAttributes=r.KeyAttributes.ToDictionary(a=>a.Key,a=>Value(a.Value,depth+1,a.Key))};
+   if(x is EntityCollection ec)return new{type="EntityCollection",entityName=ec.EntityName,minActiveRowVersion=ec.MinActiveRowVersion,count=ec.Entities.Count,moreRecords=ec.MoreRecords,pagingCookie=ec.PagingCookie,totalRecordCount=ec.TotalRecordCount,totalRecordCountLimitExceeded=ec.TotalRecordCountLimitExceeded,entities=ec.Entities.Take(250).Select(a=>Value(a,depth+1)).ToArray(),truncated=ec.Entities.Count>250};
    if(x is EntityReferenceCollection refs)return refs.Select(a=>Value(a,depth+1)).ToArray();
    if(x is Money m)return new{type="Money",value=m.Value};
    if(x is OptionSetValue o)return new{type="OptionSetValue",value=o.Value};
@@ -100,7 +108,7 @@ namespace Paqvilo.Demo.Lab {
   public static object Context(IPluginExecutionContext c,int order){
    var parents=new List<object>();var p=c.ParentContext;
    while(p!=null&&parents.Count<12){parents.Add(new{p.MessageName,p.PrimaryEntityName,p.PrimaryEntityId,p.Stage,p.Mode,p.Depth,p.IsInTransaction,p.UserId,p.InitiatingUserId,p.CorrelationId,p.RequestId,owningExtension=Value(p.OwningExtension),interfaceVersion=ContextVersion(p),extensions=Extensions(p),sharedVariables=Variables(p.SharedVariables)});p=p.ParentContext;}
-   return new{schemaVersion=1,c.MessageName,c.PrimaryEntityName,c.PrimaryEntityId,c.SecondaryEntityName,c.Stage,c.Mode,executionOrder=order,c.Depth,c.IsInTransaction,c.UserId,c.InitiatingUserId,c.BusinessUnitId,c.OrganizationId,organizationName=Value(c.OrganizationName),c.CorrelationId,c.RequestId,c.OperationId,c.OperationCreatedOn,c.IsolationMode,c.IsExecutingOffline,c.IsOfflinePlayback,owningExtension=Value(c.OwningExtension),interfaceVersion=ContextVersion(c),extensions=Extensions(c),input=c.InputParameters.ToDictionary(a=>a.Key,a=>Value(a.Value,0,a.Key)),output=c.OutputParameters.ToDictionary(a=>a.Key,a=>Value(a.Value,0,a.Key)),preImages=c.PreEntityImages.ToDictionary(a=>a.Key,a=>Value(a.Value)),postImages=c.PostEntityImages.ToDictionary(a=>a.Key,a=>Value(a.Value)),sharedVariables=Variables(c.SharedVariables),parents,parentTruncated=p!=null};
+   return new{schemaVersion=SchemaVersion,c.MessageName,c.PrimaryEntityName,c.PrimaryEntityId,c.SecondaryEntityName,c.Stage,c.Mode,executionOrder=order,c.Depth,c.IsInTransaction,c.UserId,c.InitiatingUserId,c.BusinessUnitId,c.OrganizationId,organizationName=Value(c.OrganizationName),c.CorrelationId,c.RequestId,c.OperationId,c.OperationCreatedOn,c.IsolationMode,c.IsExecutingOffline,c.IsOfflinePlayback,owningExtension=Value(c.OwningExtension),interfaceVersion=ContextVersion(c),extensions=Extensions(c),input=c.InputParameters.ToDictionary(a=>a.Key,a=>Value(a.Value,0,a.Key)),output=c.OutputParameters.ToDictionary(a=>a.Key,a=>Value(a.Value,0,a.Key)),preImages=c.PreEntityImages.ToDictionary(a=>a.Key,a=>Value(a.Value)),postImages=c.PostEntityImages.ToDictionary(a=>a.Key,a=>Value(a.Value)),sharedVariables=Variables(c.SharedVariables),parents,parentTruncated=p!=null};
   }
  }
 }

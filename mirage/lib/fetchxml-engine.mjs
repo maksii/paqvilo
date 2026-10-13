@@ -228,18 +228,38 @@ function* xmlTokens(source) {
 
 /**
  * Validate a parsed <fetch> against the documented schema and query limits.
- * profile "webapi": Dataverse validates the schema, so undeclared attributes fail.
+ * profiles "webapi" and "sdk": Dataverse validates the schema, so undeclared attributes fail.
  * profile "portal" (Liquid, lists, lookups): the portal re-serialises the query
  * through its own object model, which drops unmodelled attributes; they are
  * ignored and reported in plan.diagnostics. The documented Liquid `xml`
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal", limits: overrides = {} } = {}) {
+export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [] } = {}) {
   const limits = { ...FETCH_LIMITS, ...overrides };
   if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
-  const strict = profile === "webapi";
+  const strict = profile === "webapi" || profile === "sdk";
   const diagnostics = [];
+  // The portal's OData compiler emits this private annotation. Admit only the
+  // exact compiler-owned filter positions, leaving authored strict FetchXML
+  // validation unchanged. Predicate execution comes from the any/inner links.
+  const filters = [], gatherFilters = node => {
+    if (node.name === 'filter') filters.push(node);
+    for (const child of node.children ?? []) gatherFilters(child);
+  };
+  gatherFilters(fetch);
+  const qualifiedFilters = new Set();
+  if (!Array.isArray(generatedAnyAllAliases) || generatedAnyAllAliases.length > 5000)
+    fail('Invalid generated OData filter annotations.', 501, 'LocalPluginQueryUnsupported');
+  for (const annotation of generatedAnyAllAliases) {
+    const filter = filters[annotation?.filterOrdinal];
+    if (!annotation || Object.keys(annotation).some(key => !['filterOrdinal', 'alias'].includes(key)) ||
+      !Number.isInteger(annotation.filterOrdinal) || annotation.filterOrdinal < 0 ||
+      typeof annotation.alias !== 'string' || !/^[a-z_][a-z\d_]{0,127}$/i.test(annotation.alias) ||
+      !filter || filter.attrs.anyallalias !== annotation.alias || qualifiedFilters.has(filter))
+      fail('Generated OData filter annotations do not match the execution tree.', 501, 'LocalPluginQueryUnsupported');
+    qualifiedFilters.add(filter);
+  }
   const links = [];
   let conditions = 0,
     unionHints = 0;
@@ -255,7 +275,7 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {} } 
     for (const [key, reason] of Object.entries(FETCH_UNSUPPORTED_ATTRIBUTES[node.name] ?? {}))
       if (node.attrs[key] != null) fail(reason, 400, "UnsupportedQuery");
     for (const key of Object.keys(node.attrs))
-      if (!schema.attributes.includes(key) && !/^xmlns(?::|$)/.test(key)) {
+      if (!schema.attributes.includes(key) && !/^xmlns(?::|$)/.test(key) && !(key === 'anyallalias' && qualifiedFilters.has(node))) {
         if (strict)
           fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, "InvalidFetchXml");
         diagnostics.push({
@@ -1196,7 +1216,9 @@ export function executeFetch(plan, ctx) {
   const pageEntities = entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
-  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && keys.some(item=>item.specs?.some(spec=>spec.alias!=null)))
+  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && orderSpecs.some(spec=>spec.alias!=null))
+    pagingCookie='';
+  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && cookieSupported && !pageEntities.length)
     pagingCookie='';
   const result = {
     entities: pageEntities,

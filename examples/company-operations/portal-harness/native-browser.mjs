@@ -19,7 +19,17 @@ export async function openNativeBrowser(config) {
       catch {throw new Error('Native browser operation failed; extension transport details withheld.');}
       const text = result.content?.filter(block => block.type === 'text').map(block => block.text).join('\n') ?? '';
       const match = text.match(/### Result\s*([\s\S]*?)(?:\n### |$)/);
-      try {return JSON.parse(match?.[1]);} catch {throw new Error('Native browser result unavailable; extension output withheld.');}
+      try {return JSON.parse(match?.[1]);} catch {
+        const diagnostic = /timeout/i.test(text) ? 'BROWSER_TIMEOUT' : /dialog/i.test(text) ? 'BROWSER_DIALOG' : /error/i.test(text) ? 'BROWSER_ERROR' : 'BROWSER_RESULT';
+        throw Object.assign(new Error('Native browser result unavailable; extension output withheld.'), {code: diagnostic});
+      }
+    },
+    async acceptDialog() {
+      const available = await client.listTools();
+      if (!available.tools.some(tool => tool.name === 'browser_handle_dialog')) throw new Error('Native browser dialog control is unavailable.');
+      const result = await client.callTool({name: 'browser_handle_dialog', arguments: {accept: true}});
+      if (result.isError) throw new Error('Native browser confirmation could not be accepted; extension output withheld.');
+      return {accepted: true};
     },
     close: () => client.close(),
   };

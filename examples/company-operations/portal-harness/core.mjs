@@ -30,8 +30,21 @@ export function normalize(value, field) {
   if (value === undefined) return null; // Documented FetchXML null attributes are omitted by API.
   if (value === null) return null;
   if (field.type === 'guid') return guid(typeof value==='object' ? value.id ?? value.Id : value);
-  if (field.type === 'integer' || field.type === 'choice') {const n=Number(typeof value === 'object' ? value.value : value);if (!Number.isFinite(n)) throw new Error(`Invalid numeric ${field.name}`);return n;}
-  if (['decimal','money','double'].includes(field.type)) {if (!Number.isFinite(Number(value))) throw new Error(`Invalid decimal ${field.name}`);return Number(value).toFixed(field.precision);}
+  if (field.type === 'integer' || field.type === 'choice') {
+    const literal=typeof value==='object'?value.value:value,parts=numericParts(literal);
+    if(!parts||parts.scale!==0)throw new Error(`Invalid integer ${field.name}`);
+    const n=Number(parts.coefficient);return Number.isSafeInteger(n)?n:parts.coefficient.toString();
+  }
+  if (['decimal','money','double'].includes(field.type)) {
+    const parts=numericParts(typeof value==='object'?value.value:value),precision=Number(field.precision??0);
+    if(!parts||!Number.isInteger(precision)||precision<0||precision>28)throw new Error(`Invalid decimal ${field.name}`);
+    let coefficient=parts.coefficient;
+    if(parts.scale>precision){const divisor=10n**BigInt(parts.scale-precision),negative=coefficient<0n,absolute=negative?-coefficient:coefficient;
+      coefficient=(absolute/divisor+(absolute%divisor*2n>=divisor?1n:0n))*(negative?-1n:1n);
+    }else coefficient*=10n**BigInt(precision-parts.scale);
+    const negative=coefficient<0n,digits=(negative?-coefficient:coefficient).toString().padStart(precision+1,'0');
+    return (negative?'-':'')+(precision?digits.slice(0,-precision)+'.'+digits.slice(-precision):digits);
+  }
   if (field.type === 'dateonly') {const text=String(value);if (!/^\d{4}-\d\d-\d\d/.test(text)) throw new Error(`Invalid DateOnly ${field.name}`);return text.slice(0,10);}
   if (field.type === 'datetime') return new Date(value).toISOString();
   if (field.type === 'boolean') {
@@ -41,6 +54,15 @@ export function normalize(value, field) {
     throw new Error(`Invalid boolean ${field.name}`);
   }
   return String(value);
+}
+function numericParts(value) {
+  const text=String(value);if(text.length>160)return null;
+  const match=/^([+-]?)(\d+)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/.exec(text);if(!match)return null;
+  const exponent=Number(match[4]??0);if(Math.abs(exponent)>128)return null;
+  let coefficient=BigInt((match[1]==='-'?'-':'')+match[2]+(match[3]??'')),scale=(match[3]?.length??0)-exponent;
+  if(scale<0){coefficient*=10n**BigInt(-scale);scale=0;}
+  while(scale>0&&coefficient%10n===0n){coefficient/=10n;scale--;}
+  return {coefficient,scale};
 }
 export function canonicalRows(rows, plan) {
   return rows.map(row=>Object.fromEntries(plan.fields.map(field=>[field.name,normalize(row[field.name] ?? row[`_${field.source}_value`],field)]))).sort((a,b)=>stable(a).localeCompare(stable(b)));

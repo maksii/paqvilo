@@ -1,9 +1,9 @@
 import {workerData} from 'node:worker_threads';
 import {spawn} from 'node:child_process';
 import readline from 'node:readline';
-const {port,signal,executable,input,timeout}=workerData,flags=new Int32Array(signal);
+const {port,signal,executable,input,timeout,parentProcessId,parentStartTicks}=workerData,flags=new Int32Array(signal);
 let complete=false,pending=false,bytes=0,stderr=0;
-const child=spawn(executable,[],{shell:false,windowsHide:true,stdio:['pipe','pipe','pipe']});
+const child=spawn(executable,['--parent',String(parentProcessId),'--parent-start',String(parentStartTicks)],{shell:false,windowsHide:true,stdio:['pipe','pipe','pipe']});
 child.on('spawn',()=>send({kind:'owned-child',pid:child.pid}));
 function send(message){port.postMessage(message);Atomics.store(flags,0,1);Atomics.notify(flags,0);}
 function finish(message){if(complete)return;complete=true;clearTimeout(timer);child.kill();send(message);port.close();}
