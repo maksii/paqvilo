@@ -2,6 +2,19 @@
 
 ## 0.9.4
 
+Consumer feedback 43-45: Liquid has a configurable `mirage.render.timeLimitMs` budget,
+cooperative scheduling and per-render FetchXML planning/read indexes. Budget overruns are
+checked after async nodes as well as during iteration. Dropdown lookups expose the native
+prefixed hidden `_entityname` input, including an empty selection. Synthetic regressions
+cover nested queries, concurrent status, budget errors, cache invalidation and lookup anchors.
+
+Outer-link `entityname` NULL conditions already join readable intersect rows by their explicit
+columns, with or without relationship metadata; regression tests now cover both. Under
+permission enforcement an unmapped intersect remains an ordinary table and needs its own
+read grant. A pack can instead declare the N:N relationship for existing structural traversal
+with endpoint permissions. Query column names do not establish permission to read private
+intersection rows.
+
 Consumer feedback 38-42: usable shell captures survive bounded rich-text discovery, and
 default capture exit status follows applied/ready shells (`--strict` requires completeness).
 Additional reference ActivityPointer choices fill partial exports. Local modal/quick-view

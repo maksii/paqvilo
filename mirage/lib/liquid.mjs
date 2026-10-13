@@ -1,4 +1,6 @@
 // Power Pages Liquid rendering for exported portal sources.
+import { renderSettings } from './render-settings.mjs';
+import { FetchRenderCache } from './fetch-render-cache.mjs';
 //
 // The engine (liquid-engine.mjs) reproduces DotLiquid at SyntaxCompatibility.DotLiquid20,
 // the dialect Power Pages runs; this module supplies the portal object model (page,
@@ -462,7 +464,7 @@ class FetchXmlTag extends Block {
     const right = this.attributes.get("right") ? formatItem(await context.resolve(this.attributes.get("right").value)) : undefined;
     let results;
     try {
-      results = (await host.fetchXml(xml, host.user(context), host.request(context), { right })) ?? {};
+      results = (await host.fetchXml(xml, host.user(context), host.request(context), { right, fetchCache: context.state.fetchCache ??= new FetchRenderCache() })) ?? {};
     } catch (error) {
       // FetchXmlQueryDrop: without a table permission granting read, results is an empty
       // collection rather than an error; simulator infrastructure failures still propagate.
@@ -754,6 +756,7 @@ export function createPortalRenderer(portal, options = {}) {
     localizeRecordType: (logicalName) => logicalName,
   };
   const engine = new LiquidEngine({
+    timeoutMs: renderSettings(options.render).timeLimitMs,
     filters: createFilters(filterHost),
     filterSignatures: createFilterSignatures(filterHost),
     runtimeCompatibility: (options.observed ?? portal.observed)?.liquidRuntimeCompatibility,

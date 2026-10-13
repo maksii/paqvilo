@@ -723,7 +723,17 @@ export class LiquidContext {
       error.renderLimit = true;
       throw error;
     }
-    if ((this.state.iterations & 1023) === 0 && Date.now() - this.state.started > this.engine.timeoutMs) {
+    this.checkTimeLimit();
+  }
+  async yieldIfNeeded() {
+    const now = Date.now();
+    if (now - (this.state.lastYield ?? this.state.started) < 8) return;
+    await new Promise(resolve => setImmediate(resolve));
+    this.state.lastYield = Date.now();
+    this.checkTimeLimit();
+  }
+  checkTimeLimit() {
+    if (Date.now() - this.state.started >= this.engine.timeoutMs) {
       const error = new LiquidError(`Render Error - local render time limit of ${this.engine.timeoutMs} ms exceeded`);
       error.renderLimit = true;
       throw error;
@@ -807,9 +817,11 @@ export function isInfrastructureError(error) {
 export async function renderAll(nodes, context, out) {
   for (const node of nodes) {
     context.checkLimits();
+    await context.yieldIfNeeded();
     try {
       if (typeof node === "string") out.push(node);
       else await node.render(context, out);
+      context.checkTimeLimit();
     } catch (error) {
       out.push(context.handleError(error));
     }
@@ -1065,6 +1077,7 @@ class ForTag extends Block {
       }
       for (let index = 0; index < segment.length; index++) {
         context.checkLimits();
+        await context.yieldIfNeeded();
         const item = segment[index];
         context.set(
           this.variableName,

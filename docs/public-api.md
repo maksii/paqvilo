@@ -14,6 +14,22 @@ Paqvilo 0.9.4 introduces supported package entry points. Exported names, documen
 
 Existing wildcard paths such as `paqvilo/mirage/lib/data.mjs` continue working. Deep imports are deprecated for new integrations and remain available through 0.10.x, providing a complete minor release for migration. Outside the supported entry points, modules are implementation details after that notice period. Existing options remain accepted in 0.9.4.
 
+## Render local pages within a budget
+
+Local Liquid rendering uses a 60,000 ms budget. Set `sites.<id>.mirage.render.timeLimitMs`
+(or `defaults.mirage.render.timeLimitMs`) to an integer from 1 to 3,600,000. Embedded
+runtimes and renderers accept `render: { timeLimitMs: 120000 }` through `createSimulator`
+and `createPortalRenderer`. Restart a running runtime after changing the catalogue;
+`/_sim/api/status` reports the effective `render` settings. Exceeding the budget returns
+HTTP 500 with `local render time limit of <n> ms exceeded`.
+
+Liquid yields to the event loop between nodes and loop iterations. Individual synchronous
+FetchXML queries remain subject to the existing query complexity and join-row limits;
+the render budget detects an overrun after that query returns. Within one render, Mirage
+reuses planned FetchXML and permission-filtered inputs, and indexes GUID equality lookups.
+It does not cache query results or suppress plugin calls. Data mutations and identity
+changes invalidate read inputs.
+
 ## Bind project packs once
 
 ```js

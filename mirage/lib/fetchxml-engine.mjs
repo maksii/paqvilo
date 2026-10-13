@@ -960,7 +960,24 @@ export function executeFetch(plan, ctx) {
   }
 
   // ---- evaluate ------------------------------------------------------------
-  let rows = plan.retained ? [] : pkSort(ctx.readableRows(rootMapping.logicalName, root), rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
+  let inputs = plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
+  // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
+  // Text/numeric/date comparisons retain their existing collation and coercion rules.
+  const narrow = filter => {
+    if ((filter.attrs.type ?? 'and') !== 'and') return;
+    for (const condition of filter.children) {
+      if (condition.name === 'filter') narrow(condition);
+      else if (condition.name === 'condition' && condition.attrs.operator === 'eq' &&
+        !condition.attrs.entityname && !condition.attrs.valueof && condition.attrs.value != null) {
+        const column = condition.attrs.attribute;
+        const type = definition(root, column)?.dataverseType;
+        if (column === rootMapping.idColumn || ['lookup','customer','owner','uniqueidentifier','primarykey'].includes(type))
+          inputs = ctx.equalRows(inputs, column, condition.attrs.value);
+      }
+    }
+  };
+  if (ctx.equalRows) for (const filter of children(root, 'filter')) narrow(filter);
+  let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, "filter").some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);

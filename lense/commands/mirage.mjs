@@ -2,6 +2,7 @@
 // It only stops loopback Mirage processes it started itself (recorded with their process start
 // identity), and it never contacts a portal environment.
 import fs from 'node:fs/promises';
+import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -463,6 +464,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
       solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
+      render: renderSettings(cfg.mirageConfig?.render),
     },
     solutionRoots,
   };
@@ -475,6 +477,7 @@ function identityMatches(left, right) {
     && (left.portal ?? null) === (right.portal ?? null)
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
+    && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
     && left.solutionOrder === right.solutionOrder
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])

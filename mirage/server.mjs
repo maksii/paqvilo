@@ -1,4 +1,5 @@
 import http from "node:http";
+import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
 import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
 import { attachODataReaderDetails, attachODataJsonSource, odataInvalidJsonDetails } from "./lib/webapi-error-details.mjs";
@@ -242,6 +243,7 @@ export async function createSimulator({
   richTextCompatibility: richTextCompatibilityOverride,
   // Per-site observed configuration ({ loginPath, evidence }; lib/project-config.mjs).
   observed: observedOption = null,
+  render: renderOption,
   // `serve` refuses a source with zero recognised pages, naming its layout
   // (lib/source-dialect.mjs); embedded uses (tests, tools) may serve page-less fixtures.
   requirePortalSource = false,
@@ -253,6 +255,7 @@ export async function createSimulator({
   dataModel,
 } = {}) {
   port = runtimePort(port, 0);
+  const render = renderSettings(renderOption);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
   if (!["127.0.0.1", "localhost", "::1"].includes(host))
     throw error("The simulator binds only to loopback.");
@@ -693,10 +696,10 @@ export async function createSimulator({
     }
   };
   const rawReadProvider = {
-    async fetchXml(xml, identity) {
+    async fetchXml(xml, identity, fetchOptions = {}) {
       if (config().mode !== "live")
         return normalizeMockLiquidFetchXml(
-          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true })),
+          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true, fetchCache: fetchOptions.fetchCache })),
           xml,
           liveMapping,
         );
@@ -753,13 +756,13 @@ export async function createSimulator({
     },
   };
   const readProvider = {
-    fetchXml: (xml, identity) =>
+    fetchXml: (xml, identity, fetchOptions) =>
       auditRead(
         "liquid-fetchxml",
         /<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(xml)?.[1],
         xml,
         identity,
-        () => rawReadProvider.fetchXml(xml, identity),
+        () => rawReadProvider.fetchXml(xml, identity, fetchOptions),
       ),
     get: (entity, id, identity) =>
       auditRead("entity-read", entity, { id }, identity, () =>
@@ -919,6 +922,7 @@ export async function createSimulator({
   };
   const buildRenderer = (source = portal) =>
     createPortalRenderer(source, {
+      render,
       observed: config().observed ?? source.observed,
       serverLogic: async ({ name, operation, input }) => {
         try {
@@ -933,12 +937,12 @@ export async function createSimulator({
       },
       observationOrigin: live.origin,
       sourceDependencies,
-      fetchXml: async (xml) => {
+      fetchXml: async (xml, _user, _request, fetchOptions) => {
         const empty = config().mode === "live" ? null : emptyUnmappedLiquidFetchXml(xml, {
           observed: config().observed ?? source.observed,
           resolveMapping: name => store.resolveMapping(name),
         });
-        return empty ?? readProvider.fetchXml(xml, currentIdentity());
+        return empty ?? readProvider.fetchXml(xml, currentIdentity(), fetchOptions);
       },
       entity: async (entity, id) => observedLiquidEntityRead(
         () => readProvider.get(entity, id, currentIdentity()), config().observed ?? source.observed),
@@ -1337,6 +1341,7 @@ export async function createSimulator({
       platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
       startupPreset,
       deploymentProfile: portal.deploymentProfile ?? null,
+      render,
       observed: config().observed,
       subgridLabelMarkup: config().observed?.subgridLabelMarkup ?? 'sanitized',
       sourceFingerprint: fingerprint,

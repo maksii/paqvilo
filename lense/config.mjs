@@ -13,6 +13,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
+import { renderSettings } from '../mirage/lib/render-settings.mjs';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
@@ -244,6 +245,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
     port: Number.isInteger(value.port) ? value.port : null,
     preset: value.preset ?? null,
     ...(value.presetMode ? { presetMode: value.presetMode } : {}),
+    ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
     // Passed through as configured; the Mirage validates it (observedConfig).
     observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
     // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).

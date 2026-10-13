@@ -1331,7 +1331,7 @@ export class DataStore {
    * relationship indexes. Never share them across requests or mutations.
    */
   queryContext(identity = {}, options = {}) {
-    const readable = new Map();
+    const readable = options.fetchCache && !options.backendRowsFilter ? options.fetchCache.readable(this, identity) : new Map();
     const readRows = (logical, node) => {
       const name = this.resolveMapping(logical).logicalName;
       if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node)) {
@@ -3017,6 +3017,12 @@ export class DataStore {
    */
   fetchXml(xml, identity = {}, options = {}) {
     const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
+    // Observers may mutate data inside a read transaction before its revision advances.
+    // Keep every plugin invocation and discard cached row inputs at that boundary.
+    if (options.fetchCache && this.pluginPipeline && this.pluginPipelineActive({entity, operation:'retrievemultiple'})) {
+      options.fetchCache.invalidate(this);
+      options = { ...options, fetchCache: undefined };
+    }
     const nativeAdmission=options.portalRequest===true&&!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
     let linkedPermissionOrdinals=[];
     if(nativeAdmission&&options.profile==='webapi'){
@@ -3050,10 +3056,12 @@ export class DataStore {
     return this.retrieveMultipleOperation(entity,identity.admin&&options.sdkQuery?options.sdkQuery:{$type:'FetchExpression',query:permissionQuery.xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken,options);
   }
   fetchXmlCore(xml, identity = {}, options = {}) {
-    const plan = planFetch(parseFetchXml(xml), {
+    const planOptions = {
       profile: options.profile === "webapi" ? "webapi" : "portal",
       limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
-    });
+    };
+    const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
+    const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();
     // Web API $count=true counts the matching rows like returntotalrecordcount.
     if (options.returnTotal === true && plan.top == null && !plan.aggregate)
       plan.returnTotal = true;
@@ -3075,6 +3083,7 @@ export class DataStore {
       settings: ctx.settings,
       now: ctx.now,
       platformLanguageCode: options.platformLanguageCode,
+      equalRows: options.fetchCache ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value) : undefined,
     });
   }
 }
