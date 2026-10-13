@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import { spawn } from 'node:child_process';
 import { constants } from 'node:fs';
+import { assertScaffoldPath, prepareScaffoldDirectory } from '../scaffold.mjs';
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const STARTER = path.join(ROOT, 'examples/project');
@@ -12,17 +13,19 @@ const MARKER = '.paqvilo/demo.json';
 
 async function prepareEditorFiles(target) {
   const folder = path.join(target, '.vscode');
+  await assertScaffoldPath(folder, { directory: true });
   await fs.mkdir(folder, { recursive: true });
   const info = await fs.lstat(folder);
   if (!info.isDirectory() || info.isSymbolicLink()) throw new Error(`Demo editor folder must be a regular directory: ${folder}`);
   for (const file of ['.vscode/tasks.json', '.vscode/launch.json', 'paqvilo-demo.code-workspace']) {
+    await assertScaffoldPath(path.join(target, file));
     try { await fs.copyFile(path.join(STARTER, file), path.join(target, file), constants.COPYFILE_EXCL); }
     catch (error) { if (error.code !== 'EEXIST') throw error; }
   }
 }
 
 export async function prepareDemo(directory) {
-  const target = path.resolve(directory);
+  const target = await assertScaffoldPath(directory, { directory: true });
   let existing = null;
   try { existing = await fs.lstat(target); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (existing) {
@@ -36,7 +39,8 @@ export async function prepareDemo(directory) {
     }
     // Never replace the user's project, including an incomplete earlier copy.
     if ((await fs.readdir(target)).length) throw new Error(`Folder is not a Paqvilo demo: ${target}. Choose a new folder with --dir <path>. No files were changed.`);
-  } else await fs.mkdir(target, { recursive: true });
+  }
+  await prepareScaffoldDirectory(target);
 
   for (const name of ['portal', 'solution', 'code-solution', 'metadata', 'pack', 'test', 'components', 'deployment', '.vscode', 'paqvilo-demo.code-workspace', 'paqvilo.config.yml', 'README.md']) {
     await fs.cp(path.join(STARTER, name), path.join(target, name), {

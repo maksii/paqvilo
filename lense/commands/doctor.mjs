@@ -5,6 +5,7 @@ import { performance } from 'node:perf_hooks';
 import { loadCatalogue, loadConfig, TOOL_ROOT } from '../config.mjs';
 import { OverlaySession } from '../session.mjs';
 import { mirageReadiness, observedText } from './mirage.mjs';
+import { scaffoldWarning } from '../project-check.mjs';
 
 export function inspectCheckout(cfg, { started = performance.now(), session = new OverlaySession(cfg) } = {}) {
   const errors = [];
@@ -67,10 +68,12 @@ export default async function doctor(_cfg, args) {
     if (port && others.length) item.mirage.warnings.push(`Mirage port ${port} is also configured for ${others.join(', ')}; mirage dev with portals=all needs a distinct port per site (sites.<id>.mirage.port, or 0 for any free port).`);
   }
   const ready = reports.length > 0 && reports.every((r) => r.ready);
-  const report = { offline: true, ready, reports };
+  const warning = scaffoldWarning(catalogue.configDir);
+  const report = { offline: true, ready, reports, ...(warning ? { warnings: [warning] } : {}) };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Offline checkout diagnostics (no browser or portal requests)');
+    if (warning) console.log(`WARNING: ${warning}`);
     for (const item of reports) {
       console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}`);
       if (item.counts) console.log(`  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`);

@@ -1,0 +1,13 @@
+export default {
+  id: '{{pack}}',
+  name: '{{pack}}',
+  description: 'Empty project pack', // TODO(paqvilo-init): describe this project-owned pack
+  matches: () => false, // TODO(paqvilo-init): match this export's website identity
+  presets: () => ({
+    '{{pack}}-empty': {
+      name: 'Empty project tables',
+      description: 'Configuration-only starting point',
+      load: () => ({ tables: {} }),
+    },
+  }),
+};

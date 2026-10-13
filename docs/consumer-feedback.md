@@ -2,6 +2,8 @@
 
 These changes use invented data, exported fixture structures and loopback services. Customer exports, business rules, capture receipts, personas and acceptance suites remain in their own project. See [project extensions](project-extensions.md), [public APIs](public-api.md) and [release notes](release-notes.md).
 
+The scaffold request is implemented as [top-level `paqvilo init`](project-scaffold.md), distinct from Mirage runtime initialization. Dedicated empty templates generate the project contract; no demo data is copied. Completion checks stay read-only, and editor ownership hashes preserve edited files during refresh. Single/multiple pack layouts follow the existing extension guidance. Generation accepts portable lowercase IDs; raw CLI wrappers use the project catalogue by default, while concrete workflow scripts pass `--config` explicitly. A generated browser-test runner collects actual files, preserving intentionally empty pack folders without unmatched globs. Context binding without `site` loads every explicitly registered catalogue/project pack without importing sources. Unit regressions cover generation, exclusive writes, schema/readiness diagnostics and refresh; packed smoke installs and runs default, no-pack and multi-pack projects offline.
+
 | # | Toolkit implementation and intended use | Verification |
 | --- | --- | --- |
 | 1 | Reversible footer repair checks clipping and hit testing; fixed/sticky/modal layers are excluded. `mirage.compat.footerSpacing: false` omits the fallback. | Footer browser regression and local override tests |

@@ -1,5 +1,6 @@
 // `paqvilo dev`: the development loop.
 import path from 'node:path';
+import { DEV_READY } from '../dev-messages.mjs';
 import chokidar from 'chokidar';
 import { openBrowser, refreshPages } from '../browser.mjs';
 import { loadDevTargets } from '../config.mjs';
@@ -440,7 +441,7 @@ export default async function dev(cfg, args) {
     }
     const startUrl = cfg.origin + (cfg.site.startPath ?? '/');
     const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
-    console.log(`\nopening ${startUrl}\nedit a file under the sources and the browser follows. Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
+    console.log(`\nopening ${startUrl}\n${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
     await Promise.race([stopped, page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch((err) => console.log(`could not open ${startUrl}: ${err.message}`))]);
 
     await stopped;

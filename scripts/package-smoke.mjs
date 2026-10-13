@@ -24,6 +24,15 @@ const bootstrap = path.join(work, 'bootstrap');
 fs.mkdirSync(bootstrap);
 fs.writeFileSync(path.join(bootstrap, 'package.json'), JSON.stringify({ name: 'paqvilo-smoke-bootstrap', private: true, dependencies: { paqvilo: archive } }));
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
+// Exercise empty consumer templates from the actual archive, independently of the demo.
+for (const options of [[], ['--no-pack', '--no-vscode'], ['--pack', 'alpha', '--pack', 'beta', '--site', 'one', '--site', 'two']]) {
+  const consumer = path.join(work, `consumer-${options.length}`);
+  const init = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'init', consumer, '--name', 'smoke', '--toolkit', archive, '--json', ...options], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  if (init.status !== 0 || !JSON.parse(init.stdout).ok) throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
+  run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
+  console.log(run(['test'], consumer).trim());
+  console.log(run(['run', 'test:browser'], consumer).trim());
+}
 const project = path.join(work, 'project');
 const scaffold = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'mirage', 'demo', '--scaffold', '--dir', project], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 120_000 });
 if (scaffold.status !== 0 || !scaffold.stdout.includes('No runtime was started.')) throw new Error(`Installed scaffold failed: ${scaffold.stdout}\n${scaffold.stderr}`);

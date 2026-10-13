@@ -1,0 +1,216 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL, fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+import YAML from 'yaml';
+import { prepareProject } from '../lense/project-scaffold.mjs';
+import { checkProject, scaffoldWarning } from '../lense/project-check.mjs';
+import { refreshEditor } from '../lense/project-editor.mjs';
+import { loadCatalogue } from '../lense/config.mjs';
+import { createMirageContext } from '../mirage/api.mjs';
+import { DEV_READY, DEV_BACKGROUND } from '../lense/dev-messages.mjs';
+
+const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('PAQVILO_')));
+async function project(t) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-init-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }));
+  return directory;
+}
+const read = (directory, name) => fs.readFile(path.join(directory, name), 'utf8');
+const readJson = async (directory, name) => JSON.parse(await read(directory, name));
+const run = (directory, ...args) => spawnSync(process.execPath, [cli, 'init', directory, ...args], { env, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+
+test('defaults generate a complete empty project, valid catalogue and bound offline pack', async t => {
+  const directory = await project(t);
+  const result = await prepareProject(directory, { name: 'sample' });
+  assert.equal(result.schemaVersion, 1);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.skipped, []);
+  for (const absent of ['.env', '.paqvilo', 'node_modules', 'package-lock.json', 'sources']) await assert.rejects(fs.access(path.join(directory, absent)), { code: 'ENOENT' });
+  const manifest = await readJson(directory, 'package.json');
+  const toolkit = JSON.parse(await fs.readFile(new URL('../package.json', import.meta.url), 'utf8'));
+  assert.equal(manifest.devDependencies.paqvilo, `^${toolkit.version}`);
+  assert.equal(manifest.private, true);
+  assert.equal(manifest.paqvilo.scaffold, 1);
+  assert.match(manifest.scripts.dev, /--profile lense --portals all/);
+  assert.match(manifest.scripts['mirage:dev'], /--profile mirage --preset-mode bootstrap/);
+  assert.ok(!Object.values(manifest.scripts).some(script => /--preset\s/.test(script)));
+  const catalogue = loadCatalogue({ config: path.join(directory, 'paqvilo.config.yml') }, {});
+  assert.equal(catalogue.sites.portal.mirage.port, 8787);
+  const context = await createMirageContext({ config: pathToFileURL(path.join(directory, 'paqvilo.config.yml')) });
+  assert.deepEqual(context.packs.map(pack => pack.id), ['sample']);
+  const store = new context.DataStore();
+  await store.applyPreset('sample-empty');
+  assert.deepEqual(store.snapshot().tables, {});
+  const files = await fs.readdir(directory);
+  assert.ok(files.includes('sample.code-workspace'));
+  const unfinished = checkProject(directory);
+  assert.equal(unfinished.ok, false);
+  assert.equal(unfinished.todo.filter(item => item.kind === 'marker').length, 7);
+  assert.ok(unfinished.todo.every(item => item.line > 0 && item.file));
+  assert.match(scaffoldWarning(directory), /paqvilo init --check/);
+});
+
+test('multiple sites/packs, chrome, custom paths and dependency specification are deterministic', async t => {
+  const first = path.join(await project(t), 'first'), second = path.join(await project(t), 'second');
+  const options = { name: 'sample', sites: ['one', 'two'], packs: ['alpha', 'beta'], browser: 'chrome', defaultEnv: 'sandbox', sourceRoot: '../exports', toolkit: 'file:../toolkit' };
+  const plan = await prepareProject(first, options);
+  await prepareProject(second, options);
+  for (const file of plan.created) assert.equal(await read(first, file), await read(second, file), file);
+  const manifest = await readJson(first, 'package.json');
+  assert.equal(manifest.devDependencies.paqvilo, 'file:../toolkit');
+  for (const site of options.sites) {
+    assert.match(manifest.scripts[`dev:${site}`], /--portals selected/);
+    assert.match(manifest.scripts[`dev:${site}:debug`], /9222/);
+    assert.match(manifest.scripts[`mirage:dev:${site}:debug`], /9223/);
+    await fs.access(path.join(first, `test-browser/fixtures/${site}/.gitkeep`));
+  }
+  const catalogue = YAML.parse(await read(first, 'paqvilo.config.yml'));
+  assert.equal(catalogue.sites.one.mirage.port, 8787);
+  assert.equal(catalogue.sites.two.mirage.port, 8788);
+  assert.equal(catalogue.sites.two.mirage.dataPacks.length, 2);
+  const tasks = await readJson(first, '.vscode/tasks.json');
+  const launches = await readJson(first, '.vscode/launch.json');
+  const labels = new Set(tasks.tasks.map(task => task.label));
+  for (const task of tasks.tasks) assert.ok(manifest.scripts[task.script]);
+  for (const launch of launches.configurations) {
+    assert.equal(launch.type, 'chrome');
+    assert.ok(labels.has(launch.preLaunchTask));
+    assert.equal(launch.webRoot, '${workspaceFolder}/../exports');
+  }
+  assert.equal(launches.configurations.length, 6);
+  assert.ok(new RegExp(DEV_BACKGROUND.endsPattern).test(DEV_READY));
+  const context = await createMirageContext({ config: pathToFileURL(path.join(first, 'paqvilo.config.yml')) });
+  assert.deepEqual(context.packs.map(pack => pack.id), ['alpha', 'beta'], 'repeated per-site registration is deduplicated');
+});
+
+test('no-pack/no-vscode generate runnable tests without pack adapters or editor references', async t => {
+  const directory = await project(t);
+  const plan = await prepareProject(directory, { name: 'bare', noPack: true, noVscode: true });
+  assert.ok(!plan.created.some(file => file.startsWith('pack/') || file.startsWith('support/') || file.startsWith('.vscode/') || file.endsWith('.code-workspace')));
+  const manifest = await readJson(directory, 'package.json');
+  assert.ok(!manifest.scripts.setup.includes('refresh-editor'));
+  assert.equal(YAML.parse(await read(directory, 'paqvilo.config.yml')).sites.portal.mirage.dataPacks, undefined);
+  assert.match(manifest.scripts.test, /test\/\*\.test\.mjs$/);
+  assert.match(await read(directory, 'test-browser/smoke.test.mjs'), /from 'paqvilo\/mirage'/);
+});
+
+test('generated browser runner ignores empty pack folders and propagates real test failures', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'runner', packs: ['alpha', 'beta'], noVscode: true });
+  await fs.rm(path.join(directory, 'test-browser/smoke.test.mjs'));
+  const execute = () => spawnSync(process.execPath, ['tools/test-browser.mjs'], { cwd: directory, env, encoding: 'utf8', windowsHide: true, timeout: 20000 });
+  assert.equal(execute().status, 0, 'all-empty directories are allowed');
+  await fs.writeFile(path.join(directory, 'packs/alpha/test-browser/local.test.mjs'), "import test from 'node:test'; test('invented loopback contract', () => {});\n");
+  let result = execute();
+  assert.equal(result.status, 0, result.stdout + result.stderr);
+  assert.match(result.stdout, /invented loopback contract/);
+  await fs.writeFile(path.join(directory, 'test-browser/failure.test.mjs'), "import test from 'node:test'; test('failure propagates', () => { throw new Error('Expected synthetic failure'); });\n");
+  result = execute();
+  assert.equal(result.status, 1);
+  assert.match(result.stdout, /Expected synthetic failure/);
+});
+
+test('CLI help, JSON errors and exclusive writes protect unrelated content and symbolic paths', async t => {
+  const directory = await project(t);
+  const unrelated = path.join(directory, 'project');
+  await fs.mkdir(unrelated);
+  await fs.writeFile(path.join(unrelated, 'package.json'), '{"keep":true}\n');
+  let result = run(unrelated, '--name', 'sample', '--json');
+  assert.equal(result.status, 1);
+  assert.equal(JSON.parse(result.stdout).ok, false);
+  assert.equal(await read(unrelated, 'package.json'), '{"keep":true}\n');
+  result = run(unrelated, '--name', 'sample', '--into-existing', '--json');
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout).skipped, ['package.json']);
+  const before = await read(unrelated, 'paqvilo.config.yml');
+  result = run(unrelated, '--name', 'sample', '--into-existing', '--json');
+  assert.equal(JSON.parse(result.stdout).created.length, 0);
+  assert.equal(await read(unrelated, 'paqvilo.config.yml'), before);
+  const linked = path.join(directory, 'linked');
+  await fs.symlink(unrelated, linked, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(prepareProject(linked, { name: 'sample', intoExisting: true }), /symbolic links/);
+  await assert.rejects(prepareProject(path.join(linked, 'child'), { name: 'sample' }), /symbolic links/);
+  const nested = path.join(directory, 'nested');
+  await fs.mkdir(nested);
+  await fs.symlink(unrelated, path.join(nested, 'pack'), process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(prepareProject(nested, { name: 'sample', intoExisting: true }), /symbolic links/);
+  assert.deepEqual(await fs.readdir(nested), ['pack'], 'preflight refuses before writing any files');
+  for (const args of [['--name', '../escape'], ['--site', 'con'], ['--site', 'x', '--site', 'x'], ['--pack', 'a', '--no-pack'], ['--browser', 'firefox'], ['--workspace-only'], ['--check', '--refresh-editor'], ['--wat']]) {
+    assert.equal(run(path.join(directory, 'invalid'), ...args, '--json').status, 1, args.join(' '));
+  }
+  assert.match(run(directory, '--help').stdout, /Unlike mirage init/);
+  const rootHelp = spawnSync(process.execPath, [cli, '--help'], { encoding: 'utf8', windowsHide: true });
+  assert.match(rootHelp.stdout, /paqvilo init/);
+});
+
+test('completion checks report schema, packs, origins, paths and markers without writing or importing packs', async t => {
+  const directory = await project(t);
+  const plan = await prepareProject(directory, { name: 'sample' });
+  const before = new Map(await Promise.all(plan.created.map(async name => [name, await read(directory, name)])));
+  const fresh = run(directory, '--check', '--json');
+  assert.equal(fresh.status, 1);
+  assert.equal(JSON.parse(fresh.stdout).todo.filter(item => item.kind === 'marker').length, 7);
+  for (const [name, body] of before) assert.equal(await read(directory, name), body);
+  await fs.writeFile(path.join(directory, 'pack/pack.mjs'), "throw new Error('Checker must not execute trusted modules');\n");
+  assert.doesNotThrow(() => checkProject(directory));
+  await fs.rm(path.join(directory, 'pack/pack.mjs'));
+  assert.ok(checkProject(directory).todo.some(item => item.kind === 'missing-pack'));
+  await fs.writeFile(path.join(directory, 'pack/pack.mjs'), before.get('pack/pack.mjs'));
+  await fs.appendFile(path.join(directory, 'paqvilo.config.yml'), 'unknownSetting: true\n');
+  assert.ok(checkProject(directory).todo.some(item => item.kind === 'schema' && /Unknown setting/.test(item.text)));
+  for (const [name, body] of before) {
+    const completed = body.replace(/^.*TODO\(paqvilo-init\):.*$/gm, line => line.replace(/(?:#|\/\/) TODO\(paqvilo-init\):.*$/, '')).replaceAll('https://portal-dev.example.test', 'http://127.0.0.1:8787');
+    await fs.writeFile(path.join(directory, name), completed);
+  }
+  await fs.mkdir(path.join(directory, 'sources/portal-portal'), { recursive: true });
+  await fs.writeFile(path.join(directory, 'sources/portal-portal/website.yml'), 'adx_name: Invented\n');
+  await fs.writeFile(path.join(directory, '.env'), 'SECRET=TODO(paqvilo-init): do not read\n');
+  await fs.mkdir(path.join(directory, '.paqvilo'));
+  await fs.writeFile(path.join(directory, '.paqvilo/discovery.json'), 'TODO(paqvilo-init): do not read\n');
+  assert.equal(checkProject(directory).ok, true);
+  assert.equal(scaffoldWarning(directory), null);
+  assert.equal(run(directory, '--check', '--json').status, 0);
+  const doctor = spawnSync(process.execPath, [cli, 'lense', 'doctor', '--config', path.join(directory, 'paqvilo.config.yml'), '--all', '--json'], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  assert.equal(JSON.parse(doctor.stdout).warnings, undefined);
+  await fs.appendFile(path.join(directory, 'README.md'), '\nTODO(paqvilo-init): complete this\n');
+  const warned = spawnSync(process.execPath, [cli, 'lense', 'doctor', '--config', path.join(directory, 'paqvilo.config.yml'), '--all', '--json'], { env, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  assert.match(JSON.parse(warned.stdout).warnings[0], /init --check/);
+  assert.equal(warned.status, doctor.status, 'guidance does not alter doctor readiness');
+});
+
+test('editor refresh follows catalogue/.env/worktree paths and preserves edited files and alternatives', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'sample' });
+  const sources = path.join(directory, 'external');
+  await fs.mkdir(path.join(sources, 'portal-portal'), { recursive: true });
+  let config = await read(directory, 'paqvilo.config.yml');
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), config.replace('./sources', './external'));
+  const report = await refreshEditor(directory, { processEnv: {} });
+  assert.ok(report.updated.includes('.vscode/launch.json'));
+  let launches = await readJson(directory, '.vscode/launch.json');
+  assert.equal(launches.configurations[0].webRoot, sources);
+  let workspace = await readJson(directory, 'sample.code-workspace');
+  assert.deepEqual(workspace.folders.map(item => item.path), [directory, sources, path.join(sources, 'portal-portal')]);
+  const worktree = path.join(directory, 'worktree');
+  await fs.mkdir(path.join(worktree, 'portal-portal'), { recursive: true });
+  await refreshEditor(directory, { processEnv: { PAQVILO_REPO: worktree } });
+  launches = await readJson(directory, '.vscode/launch.json');
+  assert.equal(launches.configurations[0].webRoot, worktree);
+  const customized = JSON.stringify({ ...launches, configurations: [{ name: 'My launch', type: 'chrome', request: 'attach', port: 9999 }] });
+  await fs.writeFile(path.join(directory, '.vscode/launch.json'), customized);
+  const conflict = await refreshEditor(directory, { processEnv: {} });
+  assert.equal(await read(directory, '.vscode/launch.json'), customized);
+  assert.equal(conflict.conflicts[0].generated, '.vscode/launch.generated.json');
+  assert.equal((await readJson(directory, '.vscode/launch.generated.json')).configurations[0].webRoot, sources);
+  await fs.writeFile(path.join(directory, '.vscode/launch.generated.json'), 'Keep my comparison');
+  await refreshEditor(directory, { processEnv: {} });
+  assert.equal(await read(directory, '.vscode/launch.generated.json'), 'Keep my comparison');
+  const before = await read(directory, '.vscode/tasks.json');
+  await refreshEditor(directory, { workspaceOnly: true, processEnv: { PAQVILO_REPO: worktree } });
+  assert.equal(await read(directory, '.vscode/tasks.json'), before);
+});

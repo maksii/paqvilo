@@ -1,0 +1,9 @@
+node_modules/
+.paqvilo/
+.pp-local/
+.env*
+!.env.example
+paqvilo.config.local.yml
+coverage/
+*.log
+*.code-workspace

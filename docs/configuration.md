@@ -1,5 +1,7 @@
 # Configuration
 
+For a new consumer project, use [paqvilo init](project-scaffold.md) to generate the catalogue and its surrounding scripts/tests. Unknown source paths and development URLs carry `TODO(paqvilo-init):` markers. Run `paqvilo init --check` to list markers with file/line, catalogue schema failures, inert placeholder origins, missing pack modules and missing source/Solution folders. The check is read-only and does not execute pack modules. It exits one while any item remains; `lense doctor` adds a nonfatal reminder for unfinished generated projects. Personal settings still follow the precedence below.
+
 ## Local project additions (0.9.4)
 
 Configure these in `defaults.mirage` or `sites.<id>.mirage`, including in ignored `paqvilo.config.local.yml`:

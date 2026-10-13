@@ -3,7 +3,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const textFile = /\.(?:mjs|js|json|html|css|md|xml|ya?ml)$/;
+const textFile = /\.(?:mjs|js|json|html|css|md|xml|ya?ml|template)$/;
 
 // Project extensions enter through the explicit registry API, never as built-in dependencies.
 function runtimeImports(source, file, directory) {
@@ -31,13 +31,20 @@ export function inspectProjectBoundary(directory = root) {
       if (entry.isDirectory()) walk(file);
       else if (textFile.test(entry.name)) {
         const source = fs.readFileSync(file, 'utf8');
+        if (rel.startsWith('templates/')) {
+          if (/\b[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\b/i.test(source)) findings.push(`${rel}: project identity in empty template`);
+          for (const match of source.matchAll(/https?:\/\/([a-z0-9.-]+)/gi)) {
+            if (!/(?:^|\.)example\.test$/.test(match[1]) && !match[1].endsWith('.invalid')) findings.push(`${rel}: non-placeholder origin in empty template`);
+          }
+          if (/\bobserved\s*:\s*\{/.test(source)) findings.push(`${rel}: project observation in empty template`);
+        }
         if (/^(?:lense|mirage)\//.test(rel) && !/^(?:lense|mirage)\/(?:test|test-browser|testing|docs)\//.test(rel) && /\.[cm]?js$/.test(entry.name)) {
           for (const finding of runtimeImports(source, file, directory)) findings.push(`${rel}: ${finding}`);
         }
       }
     }
   };
-  for (const name of ['bin', 'lense', 'mirage', 'scripts', 'test', 'test-browser', 'docs', 'examples', '.github']) {
+  for (const name of ['bin', 'lense', 'mirage', 'scripts', 'test', 'test-browser', 'docs', 'examples', 'templates', '.github']) {
     const dir = path.join(directory, name);
     if (fs.existsSync(dir)) walk(dir);
   }

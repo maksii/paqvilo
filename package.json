@@ -43,6 +43,7 @@
     "NOTICE",
     "docs/",
     "examples/",
+    "templates/",
     "npm-shrinkwrap.json"
   ],
   "type": "module",

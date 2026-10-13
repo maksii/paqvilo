@@ -51,6 +51,8 @@ For linked worktrees, keep the catalogue, ignored `paqvilo.config.local.yml` and
 
 ## Pack authors and project test runners
 
+`createMirageContext({ config })` accepts a catalogue path or file URL. Omitting `site` binds packs explicitly registered across every catalogue site and its Mirage project, deduplicating repeated modules without importing portal exports or Solution metadata. Supply `sourceDir` to `createSimulator` or an imported portal to `initialState` in this project-wide binding. Pass `site` to import that site's source/metadata and bind its runtime defaults. Runtime pack activation still requires `matches({ portal })`; registering a pack for tests does not activate it on unrelated exports. See [project scaffold](project-scaffold.md).
+
 Use `paqvilo/mirage/packs` for `validatePack`, `presetDescriptor`, `defineLazyPreset`,
 `bootstrapPresetLibrary`, `compactBuiltinPresets`, `listPresets` and
 `resolvePreset(state, name, library)`. Pass your context's library to use the same explicitly

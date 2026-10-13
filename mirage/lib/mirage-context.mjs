@@ -3,16 +3,33 @@ import { DataStore } from './data.mjs';
 import { initialState } from './bootstrap.mjs';
 import { applySolutionData, importSolutionData } from './solution-data.mjs';
 import { migrateScenarioState } from './state-migration.mjs';
-import { discoverPacks, presetLibrary, presetDescriptor } from './preset-registry.mjs';
+import { discoverPacks, presetLibrary, presetDescriptor, packModules } from './preset-registry.mjs';
 import { activatePackDeniedRoutes } from '../parity-suite.mjs';
 import { importPortal } from './importer.mjs';
 import { loadConfig } from '../../lense/config.mjs';
 import { loadProjectConfig, projectSummary, projectOrigin } from './project-config.mjs';
 import { resolveSolutionRoots } from './solution-roots.mjs';
+import { fileURLToPath } from 'node:url';
+import { loadCatalogue, resolveMirageConfig } from '../../lense/config.mjs';
 
 /** Bind trusted project packs once. No implicit adjacent module discovery. */
 export async function createMirageContext({ packs = [], config, site, portal, metadata, ...options } = {}) {
-  const cfg = config ? await loadConfig({ config, site }, process.env) : null;
+  if (config instanceof URL) config = fileURLToPath(config);
+  // A catalogue without a selected site is a pack binding for project tests. Do not
+  // import an arbitrary default portal or require its checkout to exist.
+  const allEntries = [];
+  if (config && site === undefined) {
+    const catalogue = loadCatalogue({ config }, process.env);
+    for (const settings of Object.values(catalogue.sites)) {
+      const mirage = resolveMirageConfig(settings.mirage, catalogue);
+      allEntries.push(...mirage.dataPacks);
+      if (mirage.project) {
+        const project = await loadProjectConfig(mirage.project);
+        allEntries.push(...await packModules({ project }));
+      }
+    }
+  }
+  const cfg = config && site !== undefined ? await loadConfig({ config, site }, process.env) : null;
   const project = cfg?.mirageConfig.project ? await loadProjectConfig(cfg.mirageConfig.project) : null;
   const selected = project?.portals.find(item => item.sourceDir === cfg.sourceDir) ?? project?.portals.find(item => item.id === project.defaultPortal);
   const sourceDir = selected?.sourceDir ?? cfg?.sourceDir;
@@ -23,7 +40,7 @@ export async function createMirageContext({ packs = [], config, site, portal, me
   const origin = /^https:\/\//i.test(configuredOrigin ?? '') ? configuredOrigin : null;
   metadata ??= solutionRoots.length ? await importSolutionData(solutionRoots, { order: solutionOrder }) : undefined;
   portal ??= sourceDir ? await importPortal(sourceDir, { dataModel: selected?.dataModel ?? cfg.mirageConfig?.dataModel }) : undefined;
-  const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? [] });
+  const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? allEntries });
   const library = presetLibrary({ packs: loaded, portal, metadata, options });
   class BoundDataStore extends DataStore {
     constructor(settings = {}) { super({ ...settings, presetLibrary: settings.presetLibrary ?? library }); }

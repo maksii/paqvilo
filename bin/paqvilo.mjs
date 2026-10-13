@@ -8,6 +8,7 @@ const HELP = `paqvilo — Power Pages development
 
 Usage: paqvilo lense <command> [options]
        paqvilo mirage <command> [options]
+       paqvilo init [dir] [options]
        paqvilo doctor --setup [--json] [--browser CHANNEL]
 
   lense   Overlay local sources, inspect resources and browser sessions.
@@ -16,6 +17,7 @@ Usage: paqvilo lense <command> [options]
           demo, init, dev, start, status, stop, serve, inspect, data, presets
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
   doctor  Check installed dependencies and browser readiness.
+  init    Scaffold an empty consumer project; --check and --refresh-editor maintain it.
 
 Run paqvilo lense --help or paqvilo mirage --help for options.
 `;
@@ -24,6 +26,13 @@ if (['--version', '-v'].includes(product)) {
   console.log(JSON.parse(fs.readFileSync(new URL('../package.json', import.meta.url))).version);
 } else if (!product || ['--help', '-h'].includes(product)) {
   console.log(HELP);
+} else if (product === 'init') {
+  try { process.exitCode = await (await import('../lense/commands/init.mjs')).runInit(args); }
+  catch (error) {
+    if (args.includes('--json')) console.log(JSON.stringify({ schemaVersion: 1, ok: false, error: { code: error.code ?? 'INIT_FAILED', message: error.message } }));
+    else console.error(`paqvilo init: ${error.message.replace(/[\r\n]+/g, ' ')}`);
+    process.exitCode = 1;
+  }
 } else if (product === 'doctor' && args.some(arg => ['--help', '-h'].includes(arg))) {
   console.log('Usage: paqvilo doctor --setup [--json] [--browser CHANNEL]\n\n  --setup    Check installed dependencies and browser readiness.\n  --json     Print the readiness report as JSON.\n  --browser  Browser channel to check (for example msedge or chromium).');
 } else if (product === 'doctor' && args.includes('--setup')) {

@@ -2,6 +2,11 @@
 
 Maintain a separate repository for your portal and business behavior. A typical structure is:
 
+Generate the empty layout with `npx paqvilo init ./my-portal-project --name my-portal-project`.
+The [scaffold command](project-scaffold.md) includes `AGENTS.md`, `.env.example`, scripts,
+editor files, `support/mirage.mjs`, pack tests and per-site `test-browser/fixtures/<site>/`.
+One pack uses `pack/`; several explicit `--pack` options use `packs/<id>/`.
+
 ```text
 my-portal-project/
   package.json
@@ -11,8 +16,11 @@ my-portal-project/
   pack/pack.mjs
   pack/generators/
   pack/fixtures/
+  pack/test/pack.test.mjs
+  support/mirage.mjs
   test/
   test-browser/
+  test-browser/fixtures/portal/
   .vscode/launch.json       # project browser/debugger workflows
   .vscode/tasks.json        # project commands and validation
   .paqvilo/                 # ignored state, screenshots and reference evidence
@@ -41,6 +49,16 @@ const headers = signInHeaders(simulator, 'your-synthetic-contact-id');
 ```
 
 Use absolute pack/source paths when a test's working directory is not predictable. A Mirage project's `dataPacks` is also supported; it resolves modules relative to that project file. Loading a pack executes trusted JavaScript and is an explicit project decision.
+
+The generated adapter binds all explicitly registered catalogue packs once, without selecting or importing an export:
+
+```js
+import { createMirageContext } from 'paqvilo/mirage';
+export const mirage = await createMirageContext({ config: new URL('../paqvilo.config.yml', import.meta.url) });
+export const { DataStore, createSimulator, initialState, activatePackDeniedRoutes, presetLibrary } = mirage;
+```
+
+With `site` omitted, pack unit tests can run before source checkouts exist. Supply `sourceDir` to the bound simulator, or an imported portal to `initialState`. With `site` supplied, the context imports that site's sources/metadata and applies its runtime defaults. Runtime discovery still filters packs against the exported portal; the project binding does not enable a pack whose `matches()` returns false.
 
 Do not depend on a pack being a global builtin. Supply the pack library to `DataStore.applyPreset` and explicit modules to `createSimulator` or a project file. The default preset library contains only `empty-local`, `open-sandbox`, `strict-permissions` and `contact-demo`. Presets from one matching project must never appear in another portal's runtime.
 

@@ -74,7 +74,20 @@ For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./ano
 
 `mirage serve` is a server-only command. It neither opens the development browser nor loads a project's data pack when given only `--source`. Use `demo` for the first trial and `dev` for your own configured project.
 
-## 2. Connect your site
+## 2. Scaffold your project
+
+Create the empty consumer layout before connecting your exports:
+
+```sh
+npx paqvilo@^0.9.4 init ./my-portal-project --name my-portal-project --site portal
+cd my-portal-project
+npm run setup
+npx paqvilo init --check
+```
+
+The generated catalogue has inert placeholder URLs and marked source paths. It also supplies npm scripts, VS Code tasks/debugger launches, a project pack, agent instructions and local tests. Fill in the values listed by `init --check`; empty browser fixtures skip with an explicit reason. Generation itself installs nothing and starts no browser. See [scaffold options and editor refresh](project-scaffold.md) for multiple sites/packs, external checkouts, no-pack mode and adding missing files to an existing project.
+
+### Connect exports (or assemble the layout manually)
 
 You need a local Power Pages export. If you do not have one, follow Microsoft's [download website content guide](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#download-website-content). Paqvilo reads exported files; it does not download or deploy the site.
 

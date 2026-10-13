@@ -12,7 +12,16 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
 
+export const PROJECT_TEMPLATE_FILES = [
+  'gitignore.template', 'gitattributes.template', 'editorconfig.template', 'README.md', 'AGENTS.md',
+  'pack.mjs.template', 'pack.test.mjs.template', 'pack-README.md', 'support-mirage.mjs.template', 'no-pack.test.mjs.template',
+  'test-browser.mjs.template',
+].map(name => `templates/project/${name}`);
+
 export const REQUIRED_RELEASE_FILES = [
+  'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',
+  'lense/project-editor.mjs', 'lense/scaffold.mjs', 'lense/dev-messages.mjs', 'docs/project-scaffold.md',
+  ...PROJECT_TEMPLATE_FILES,
   'package.json', 'README.md', 'CONTRIBUTING.md', 'AGENTS.md', '.env.example',
   'paqvilo.config.yml', 'npm-shrinkwrap.json', 'bin/paqvilo.mjs', 'lense/cli.mjs', 'lense/commands/demo.mjs', 'scripts/ensure-dependencies.mjs', 'LICENSE', 'NOTICE',
   'mirage/cli.mjs', 'mirage/server.mjs', 'mirage/lib/importer.mjs',
@@ -47,6 +56,7 @@ export const REQUIRED_RELEASE_FILES = [
   'examples/project/metadata/Other/Relationships.xml',
 ];
 export function validateReleaseFiles(files) {
+  const templates = new Set(PROJECT_TEMPLATE_FILES);
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
   const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);
@@ -56,7 +66,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !templates.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }
@@ -79,7 +89,7 @@ function checkEditorTasks(root) {
 }
 
 function checkDocumentation(root) {
-  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/lense.md', 'docs/configuration.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md', 'mirage/docs/code-components.md', 'mirage/docs/operations.md', 'mirage/docs/dataverse-plugins.md']) {
+  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/project-scaffold.md', 'docs/lense.md', 'docs/configuration.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md', 'mirage/docs/code-components.md', 'mirage/docs/operations.md', 'mirage/docs/dataverse-plugins.md']) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];
