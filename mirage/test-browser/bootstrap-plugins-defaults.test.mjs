@@ -133,6 +133,40 @@ test("a modal opens on .modal() without arguments and through the data API, as w
   assert.deepEqual(errors, []);
 });
 
+test('local plugins expose patchable Bootstrap 3 constructors, instances, noConflict and button state', async t => {
+  const { page, errors, origin } = await open(t);
+  await page.goto(`${origin}/modal`);
+  const facts = await page.evaluate(async () => {
+    const $ = window.jQuery;
+    const names = ['tab', 'modal', 'collapse', 'dropdown', 'alert', 'popover', 'tooltip', 'button'];
+    const facts = names.map(name => [name, $.fn[name].Constructor.VERSION, typeof $.fn[name].noConflict]);
+    let patched = 0;
+    const prototype = $.fn.modal.Constructor.prototype;
+    const show = prototype.show;
+    prototype.show = function (...args) { patched++; return show.apply(this, args); };
+    const modal = $('.modal').first();
+    modal.modal('show');
+    facts.push(['patch', patched, modal.data('bs.modal') instanceof $.fn.modal.Constructor]);
+    modal.modal('hide');
+    const element = document.createElement('button'); element.textContent = 'Ready'; document.body.append(element);
+    const plugin = $.fn.button.noConflict();
+    facts.push(['noConflict', $.fn.button === undefined, plugin.__ppSimCompat]);
+    $.fn.fixtureButton = plugin;
+    $(element).fixtureButton('toggle');
+    facts.push(['toggle', element.classList.contains('active'), element.getAttribute('aria-pressed')]);
+    $(element).fixtureButton('loading');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    facts.push(['loading', element.disabled, element.textContent]);
+    $(element).fixtureButton('reset');
+    await new Promise(resolve => setTimeout(resolve, 10));
+    facts.push(['reset', element.disabled, element.textContent]);
+    return facts;
+  });
+  assert.deepEqual(facts.slice(0, 8).map(row => row.slice(1)), Array.from({ length: 8 }, () => ['3.4.1', 'function']));
+  assert.deepEqual(facts.slice(8), [['patch', 1, true], ['noConflict', true, true], ['toggle', true, 'true'], ['loading', true, 'loading...'], ['reset', false, 'Ready']]);
+  assert.deepEqual(errors, []);
+});
+
 test("collapse, dropdown, tab, popover and alert calls follow Bootstrap 3.4.1 defaults; the data API takes data-bs-*", async (t) => {
   const { page, errors, origin } = await open(t);
   await page.goto(`${origin}/controls`);

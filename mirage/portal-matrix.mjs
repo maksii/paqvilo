@@ -44,6 +44,7 @@
  * browser. Runtimes bind to loopback on free ports with temporary state that is removed
  * afterwards. Parse caches live in the output directory. Generic: no data pack is required.
  */
+import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -52,7 +53,6 @@ import { fileURLToPath } from "node:url";
 import YAML from "yaml";
 
 const MIRAGE_ROOT = path.dirname(fileURLToPath(import.meta.url));
-const TOOLKIT_ROOT = path.resolve(MIRAGE_ROOT, "..");
 export const STAGES = ["import", "bootstrap", "liquid", "webapi", "sweep", "scaffold", "runtime", "serve"];
 export const PERSONAS = ["anonymous", "authenticated", "all-roles"];
 export const SCAFFOLD_PERSONAS = ["anonymous", "all-roles"];
@@ -669,12 +669,13 @@ export async function resolveTargets(options) {
         })),
     };
   }
+  if (options.catalogueSites) options.sites = Object.keys((await (await import("../lense/config.mjs")).loadCatalogue({ config: options.config })).sites);
   if (!options.sites?.length) throw new Error("Select portals with --project FILE or --sites a,b");
   const { loadConfig } = await import("../lense/config.mjs");
   const { discoverSolutionRoots } = await import("./lib/solution-roots.mjs");
   const targets = [];
   for (const site of options.sites) {
-    const cfg = await loadConfig({ site, ...(options.env?.[site] ? { env: options.env[site] } : {}), ...(options.repo ? { repo: options.repo } : {}) });
+    const cfg = await loadConfig({ site, ...(options.config ? { config: options.config } : {}), ...(options.env?.[site] ? { env: options.env[site] } : {}), ...(options.repo ? { repo: options.repo } : {}) });
     const catalogued = cfg.mirageConfig?.solutionRoots ?? [];
     targets.push({
       id: cfg.siteName,
@@ -690,7 +691,7 @@ export async function resolveTargets(options) {
       environmentVariables: {},
       lcid: 1033,
       simulatorOptions: {},
-      sweepOptions: { site: cfg.siteName, env: cfg.envName, ...(options.repo ? { repo: options.repo } : {}) },
+      sweepOptions: { site: cfg.siteName, env: cfg.envName, ...(options.config ? { config: options.config } : {}), ...(options.repo ? { repo: options.repo } : {}) },
     });
   }
   return { mode: "sites", project: null, targets };
@@ -1775,61 +1776,38 @@ export function formatMatrix(matrix) {
 
 // ---------------------------------------------------------------------------------- CLI
 export function parseArgs(argv) {
-  const options = { portals: [], presets: {}, env: {}, json: false, strict: false, useState: false };
-  const list = (value) => value.split(",").map((item) => item.trim()).filter(Boolean);
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const value = () => {
-      const next = argv[++i];
-      if (next == null || next.startsWith("--")) throw new Error(`${arg} requires a value`);
-      return next;
-    };
-    if (arg === "--project") options.project = value();
-    else if (arg === "--samples") options.samples = value();
-    else if (arg === "--portal") options.portals.push(...list(value()));
-    else if (arg === "--sites") options.sites = list(value());
-    else if (arg === "--env") {
-      const [site, env] = value().split("=");
-      if (!env) throw new Error("--env takes SITE=ENV");
-      options.env[site] = env;
-    } else if (arg === "--repo") options.repo = value();
-    else if (arg === "--out") options.out = value();
-    else if (arg === "--only") options.only = list(value());
-    else if (arg === "--skip") options.skip = list(value());
-    else if (arg === "--personas") options.personas = list(value());
-    else if (arg === "--scaffold-personas") options.scaffoldPersonas = list(value());
-    else if (arg === "--scaffold-profile") options.scaffoldProfile = value();
-    else if (arg === "--limit") {
-      options.limit = Number(value());
-      if (!Number.isInteger(options.limit) || options.limit < 1) throw new Error("--limit must be a positive integer");
-    } else if (arg === "--path") options.pathPrefix = value();
-    else if (arg === "--preset") {
-      const [portal, preset] = value().split("=");
-      if (!preset) throw new Error("--preset takes PORTAL=NAME");
-      options.presets[portal] = preset;
-    } else if (arg === "--use-state") options.useState = true;
-    else if (arg === "--json") options.json = true;
-    else if (arg === "--strict") options.strict = true;
-    else if (arg === "--help" || arg === "-h") options.help = true;
-    else throw new Error(`Unknown argument ${arg}`);
+  const args = parseToolArgs("portal-matrix", argv);
+  const list = value => value?.split(",").map(item => item.trim()).filter(Boolean);
+  const assignments = (values, flag) => Object.fromEntries((values ?? []).map(value => {
+    const separator = value.indexOf("=");
+    if (separator < 1 || separator === value.length - 1) throw new Error(`${flag} takes ${flag === "--env" ? "SITE=ENV" : "PORTAL=NAME"}`);
+    return [value.slice(0, separator), value.slice(separator + 1)];
+  }));
+  const options = { ...args, portals: (args.portal ?? []).flatMap(list), presets: assignments(args.preset, "--preset"),
+    env: assignments(args.env, "--env"), sites: list(args.sites), only: list(args.only), skip: list(args.skip),
+    personas: list(args.personas), scaffoldPersonas: list(args["scaffold-personas"]), scaffoldProfile: args["scaffold-profile"],
+    pathPrefix: args.path, useState: args["use-state"] ?? false, json: args.json ?? false, strict: args.strict ?? false };
+  if (args.limit != null) {
+    options.limit = Number(args.limit);
+    if (!Number.isInteger(options.limit) || options.limit < 1) throw new Error("--limit must be a positive integer");
+  }
+  if (options.config && !options.project && !options.samples && !options.sites) {
+    // --config alone selects every site in that catalogue.
+    options.catalogueSites = true;
   }
   if ([options.project, options.sites, options.samples].filter(Boolean).length > 1) throw new Error("Use one of --project, --sites or --samples.");
   if (options.portals.length && !options.project && !options.samples) throw new Error("--portal selects portals of --project or samples of --samples.");
   return options;
 }
 
-const USAGE = `Usage: node mirage/portal-matrix.mjs (--project FILE [--portal ID]... | --sites a,b [--env SITE=ENV] [--repo DIR] | --samples DIR [--portal ID]...)
-       [--out DIR] [--json] [--only|--skip ${STAGES.join(",")}] [--personas ${PERSONAS.join(",")}]
-       [--scaffold-personas ${SCAFFOLD_PERSONAS.join(",")}] [--scaffold-profile smoke|dev]
-       [--limit N] [--path PREFIX] [--preset PORTAL=NAME] [--use-state] [--strict]`;
 
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
-  if (options.help || (!options.project && !options.sites && !options.samples)) {
-    console.log(USAGE);
+  if (options.help || (!options.project && !options.sites && !options.samples && !options.config)) {
+    console.log(`Usage: paqvilo mirage portal-matrix ${toolOptionsHelp("portal-matrix")}`);
     return options.help ? 0 : 2;
   }
-  options.out ??= path.join(TOOLKIT_ROOT, ".paqvilo", "portal-matrix", new Date().toISOString().replace(/[:.]/g, "-"));
+  options.out ??= path.join(options.config || options.project ? path.dirname(path.resolve(options.config ?? options.project)) : process.cwd(), ".paqvilo", "portal-matrix", new Date().toISOString().replace(/[:.]/g, "-"));
   const matrix = await portalMatrix(options);
   console.log(options.json ? JSON.stringify(matrix, null, 2) : `${formatMatrix(matrix)}\nWritten: ${path.join(path.resolve(options.out), "matrix.md")}`);
   return options.strict && matrix.problems.length ? 1 : 0;

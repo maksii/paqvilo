@@ -28,7 +28,6 @@ import { STANDARD_LOOKUP_TARGETS } from "./lib/solution-standard.mjs";
 import { applyObserved, signInPath } from "./lib/redirects.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const countBy = (items, key) =>
   items.reduce((counts, item) => {
     const value = typeof key === "function" ? key(item) : item[key];
@@ -56,13 +55,15 @@ export async function resolveReportInputs(args) {
       observed: portal.observed,
       environmentVariables: project.environmentVariables,
       lcid: project.lcid,
-      cacheFile: path.join(project.stateDirectory ?? path.join(ROOT, ".paqvilo/simulator/projects", project.stateNamespace), portal.id, "cache", "solution-sources.json"),
+      cacheFile: path.join(project.stateDirectory ?? path.join(path.dirname(project.configFile), ".paqvilo/simulator/projects", project.stateNamespace), portal.id, "cache", "solution-sources.json"),
     };
   }
   let sourceDir = args.source,
     origin = null,
     label = args.source ? path.basename(args.source) : null,
-    siteMirage = null;
+    siteMirage = null,
+    stateDir = path.join(process.cwd(), ".paqvilo"),
+    siteName = args.site ?? "default";
   if (!sourceDir) {
     const { loadConfig } = await import("../lense/config.mjs");
     const cfg = await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
@@ -70,13 +71,18 @@ export async function resolveReportInputs(args) {
     origin = cfg.origin ?? null;
     label = `${args.site ?? "default"}/${args.env ?? "default"}`;
     siteMirage = cfg.mirageConfig ?? null;
+    stateDir = cfg.stateDir;
+    siteName = cfg.siteName;
   } else if (args.site) {
     // --source with a catalogued --site: the site's mirage settings still apply.
     const { loadConfig } = await import("../lense/config.mjs");
-    siteMirage = (await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) })).mirageConfig ?? null;
+    const cfg = await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
+    siteMirage = cfg.mirageConfig ?? null;
+    stateDir = cfg.stateDir;
+    siteName = cfg.siteName;
   }
   // The same cache as `cli.mjs serve` for this site (next to its state; "default" without --site).
-  const cacheFile = path.join(ROOT, ".paqvilo/simulator", args.site ?? "default", "cache", "solution-sources.json");
+  const cacheFile = path.join(stateDir, "simulator", siteName, "cache", "solution-sources.json");
   // The same resolution as `cli.mjs serve`: --solution-root, else the catalogue site's
   // mirage solutionRoots, else discovery; derived order unless explicitly requested.
   const resolved = await resolveSolutionRoots({

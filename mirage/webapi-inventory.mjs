@@ -2,6 +2,7 @@
 // Static inventory of portal Web API (/_api) request shapes and FetchXML
 // features, compared with what the local Dataverse implementation supports.
 // Reads exported sources only; never contacts a portal.
+import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -704,20 +705,12 @@ export async function inventoryWebApi(portalRoot, { solutionRoots = [], includeF
 }
 
 async function main(args) {
-  let portal,
-    json = false;
-  const solutionRoots = [];
-  const clientWrappers = [];
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--portal") portal = args[++i];
-    else if (args[i] === "--solution-root") solutionRoots.push(args[++i]);
-    else if (args[i] === "--client-wrapper") clientWrappers.push(args[++i]);
-    else if (args[i] === "--json") json = true;
-    else throw new Error(`Unknown argument ${args[i]}`);
-  }
-  if (!portal)
-    throw new Error("Usage: node mirage/webapi-inventory.mjs --portal <portal-source-dir> [--solution-root <dir>]... [--client-wrapper <object name>]... [--json]");
-  const result = await inventoryWebApi(portal, { solutionRoots, clientWrappers });
+  const options = parseToolArgs("webapi-inventory", args);
+  if (options.help) { console.log(`Usage: paqvilo mirage webapi-inventory ${toolOptionsHelp("webapi-inventory")}`); return; }
+  if (!(options.portal || options.config || options.site)) throw new Error("Select --portal DIR or --config FILE --site ID.");
+  const inputs = await inventoryInputs(options);
+  const result = await inventoryWebApi(inputs.sourceDir, { solutionRoots: inputs.solutionRoots, clientWrappers: options["client-wrapper"] ?? [] });
+  const json = options.json;
   if (json) {
     console.log(JSON.stringify(result, null, 2));
     return;

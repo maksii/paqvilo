@@ -8,6 +8,21 @@ import { createSimulator } from "../server.mjs";
 import { runAcceptance } from "../acceptance.mjs";
 import { signInContext } from "../testing/session.mjs";
 
+test('acceptance retains Chromium script SyntaxErrors even when their stack is empty', { timeout: 30000 }, async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  await fs.writeFile(path.join(directory, 'Home.webpage.yml'), 'adx_webpageid: home\nadx_name: Syntax fixture\nadx_partialurl: /\n');
+  await fs.writeFile(path.join(directory, 'Home.webpage.copy.html'), '<h1>Syntax fixture</h1><script>const duplicatedFixture = 1;</script><script>const duplicatedFixture = 2;</script>');
+  const app = await createSimulator({ sourceDir: directory, stateFile: path.join(directory, 'state.json'), watch: false });
+  t.after(() => app.close());
+  const report = await runAcceptance({ localUrl: app.url, flows: [{ name: 'Syntax fixture', steps: [{ action: 'navigate', path: '/' }] }], outputDir: path.join(directory, 'evidence') });
+  assert.equal(report.passed, false);
+  assert.match(report.flows[0].pageErrors[0], /Identifier 'duplicatedFixture' has already been declared/);
+  assert.equal(report.flows[0].pageErrorDetails[0].name, 'SyntaxError');
+  assert.match(report.flows[0].pageErrorDetails[0].message, /already been declared/);
+  assert.equal(typeof report.flows[0].pageErrorDetails[0].stack, 'string');
+});
+
 test(
   "acceptance records actual role refresh, create/edit persistence, screenshots and failed assertions",
   { timeout: 45000 },

@@ -15,6 +15,7 @@ import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
 import { parsePluginDocument } from './exported-plugins.mjs';
 import {
   standardTable,
+  standardOptionSet,
   standardRelationships,
   pluralizeEntitySetName,
   IMPLICIT_SYSTEM_COLUMNS,
@@ -1023,10 +1024,10 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
   const options = (attribute.optionSet?.options ?? [])
     .map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) }))
     .concat(states, statuses);
-  const globalSet = attribute.optionSetName ? schema.optionSets[norm(attribute.optionSetName)] : null;
+  const globalSet = attribute.optionSetName ? schema.optionSets[norm(attribute.optionSetName)] ?? standardOptionSet(attribute.optionSetName) : null;
   if (!options.length && globalSet)
     options.push(...(globalSet.options ?? []).map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) })));
-  if (attribute.optionSetName && !options.length)
+  if (attribute.optionSetName && !options.length && !globalSet?.dynamic)
     diagnostics?.push({
       code: "SOLUTION_OPTIONSET_UNRESOLVED",
       file: attribute.source,
@@ -1035,7 +1036,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       optionSetName: attribute.optionSetName,
       message: `Global option set ${attribute.optionSetName} is not available in the selected solution roots.`,
     });
-  const type = attribute.type ?? "nvarchar";
+  const type = !options.length && globalSet?.dynamic ? "entityname" : attribute.type ?? "nvarchar";
   const sourceLookupTargets =
     schema.targets[tableName + "/" + attribute.name] ??
     (attribute.intersectTarget ? [attribute.intersectTarget] : undefined) ??
@@ -1063,7 +1064,9 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
     ...(attribute.validForUpdate !== undefined ? { validForUpdate: attribute.validForUpdate } : {}),
     label: labelText(attribute.labels, attribute.name),
     dataverseType: type,
-    ...(attribute.optionSetName ? { optionSetName: attribute.optionSetName, optionSetSource: globalSet?.source } : {}),
+    ...(attribute.optionSetName ? { optionSetName: attribute.optionSetName, optionSetSource: globalSet?.source,
+      ...(globalSet?.sourceKind ? { optionSetSourceKind: globalSet.sourceKind } : {}),
+      ...(globalSet?.dynamic ? { optionSetDynamic: true } : {}) } : {}),
     ...(states.length ? { states } : {}),
     ...(statuses.length ? { statuses } : {}),
     type: SIMPLE_TYPES[type] ?? "text",

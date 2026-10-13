@@ -11,6 +11,24 @@
 const PA = "https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/";
 const D365 = "https://learn.microsoft.com/dynamics365/developer/reference/entities/";
 
+// Microsoft Learn system choices omitted from partial solution exports. Solution
+// definitions always take precedence. English labels are a reference fallback,
+// not evidence of a site's translations or installed application extensions.
+const SYSTEM_OPTION_SETS = {
+  field_security_permission_type: { reference: PA + 'fieldpermission#cancreate', values: [[0, 'Not Allowed'], [4, 'Allowed']] },
+  activitypointer_isregularactivity: { reference: PA + 'activitypointer#isregularactivity', values: [[0, 'No'], [1, 'Yes']] },
+  socialprofile_community: { reference: PA + 'socialprofile#community', values: [[0, 'Other'], [1, 'Facebook'], [2, 'Twitter']] },
+  // ActivityTypeCode is EntityName, not a closed numeric choice. Installed and
+  // custom activity types vary by organisation; never invent their object codes.
+  activitypointer_activitytypecode: { reference: PA + 'activitypointer#activitytypecode', dynamic: true, values: [] },
+};
+
+export function standardOptionSet(name) {
+  const entry = SYSTEM_OPTION_SETS[String(name).toLowerCase()];
+  return entry ? { name, source: entry.reference, sourceKind: 'dataverse-reference', dynamic: entry.dynamic ?? false,
+    options: entry.values.map(([value, label]) => ({ value, labels: { 1033: label } })) } : null;
+}
+
 // logicalName -> [EntitySetName, PrimaryIdAttribute, PrimaryNameAttribute|null, reference base]
 const TABLES = {
   account: ["accounts", "accountid", "name", PA],

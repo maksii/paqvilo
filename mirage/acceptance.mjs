@@ -259,6 +259,7 @@ export async function runAcceptance({
         steps: [],
         consoleErrors: [],
         pageErrors: [],
+        pageErrorDetails: [],
         failedRequests: [],
         failedResponses: [],
         blockedRequests: [],
@@ -398,9 +399,14 @@ export async function runAcceptance({
           });
         }
       });
-      page.on("pageerror", (error) =>
-        observation.pageErrors.push(safeMessage(error.stack ?? error.message)),
-      );
+      page.on("pageerror", (error) => {
+        observation.pageErrors.push(safeMessage(error.stack || error.message));
+        observation.pageErrorDetails.push({
+          name: safeMessage(error.name),
+          message: safeMessage(error.message),
+          stack: safeMessage(error.stack || ""),
+        });
+      });
       page.on("requestfailed", (request) => {
         const record = pending.get(request),
           requestKey = String(record?.order ?? "");

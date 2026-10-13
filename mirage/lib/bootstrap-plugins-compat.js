@@ -17,6 +17,11 @@
   const create = (element, name, value) => {
     let all = instances.get(element);
     if (!all) instances.set(element, (all = {}));
+    const $ = window.jQuery;
+    const Constructor = $.fn[name]?.Constructor;
+    if (Constructor) Object.setPrototypeOf(value, Constructor.prototype);
+    value.$element = $(element);
+    $(element).data("bs." + name, value);
     return (all[name] = value);
   };
   const event = (element, name, properties) => {
@@ -271,34 +276,81 @@
     },
     tab(element, argument) { if (typeof argument === "string") tab[argument]?.(element); },
     alert(element, argument) { if (typeof argument === "string") alertBox[argument]?.(element); },
+    button(element, argument) {
+      const $ = window.jQuery;
+      const state = instance(element, "button") ?? create(element, "button", { options: { loadingText: "loading..." } });
+      if (argument === "toggle") {
+        const group = element.closest('[data-toggle="buttons"]');
+        const input = element.querySelector('input[type="radio"],input[type="checkbox"]');
+        if (group && input) {
+          if (input.type === "radio") {
+            if (input.checked && element.classList.contains("active")) return;
+            for (const active of group.querySelectorAll('.btn.active')) active.classList.remove("active");
+          }
+          input.checked = !element.classList.contains("active");
+          $(input).trigger("change");
+        } else element.setAttribute("aria-pressed", String(!element.classList.contains("active")));
+        element.classList.toggle("active");
+      } else if (typeof argument === "string") {
+        const input = element.tagName === "INPUT";
+        state.resetText ??= input ? element.value : element.innerHTML;
+        setTimeout(() => {
+          const text = argument === "reset" ? state.resetText : $(element).data(argument + "Text") ?? state.options[argument + "Text"];
+          if (text != null) { if (input) element.value = text; else element.innerHTML = text; }
+          if (argument === "loading") {
+            state.loading = true; element.classList.add("disabled"); element.setAttribute("disabled", "disabled");
+          } else if (state.loading) {
+            state.loading = false; element.classList.remove("disabled"); element.removeAttribute("disabled");
+          }
+        }, 0);
+      }
+    },
   };
   const attach = ($) => {
   if (typeof $?.fn?.jquery !== "string") return;
   for (const [name, run] of Object.entries(plugins)) {
     if ($.fn[name]) continue;
+    const previous = $.fn[name];
+    function Constructor(element, options) { this.$element = $(element); this.options = options ?? {}; }
+    Constructor.VERSION = "3.4.1";
+    const methods = { modal: ["show", "hide", "toggle"], collapse: ["show", "hide", "toggle"],
+      dropdown: ["toggle"], tab: ["show"], alert: ["close"],
+      tooltip: ["show", "hide", "toggle", "destroy", "dispose"], popover: ["show", "hide", "toggle", "destroy", "dispose"], button: ["toggle"] }[name];
+    for (const method of methods) Constructor.prototype[method] = function (relatedTarget) { run(this.$element[0], method, relatedTarget); };
     const plugin = function (argument, relatedTarget) {
       return this.each(function () {
-        run(this, argument, relatedTarget);
+        if (typeof argument === "string" && Constructor.prototype[argument]) {
+          if (!instance(this, name)) {
+            run(this, { show: false, toggle: false });
+            if (!instance(this, name)) create(this, name, new Constructor(this));
+          }
+          // noConflict permits registering this same plugin under another name.
+          if (!(instance(this, name) instanceof Constructor)) Object.setPrototypeOf(instance(this, name), Constructor.prototype);
+          instance(this, name)[argument](relatedTarget);
+        } else {
+          run(this, argument, relatedTarget);
+          if (!instance(this, name)) create(this, name, new Constructor(this, argument));
+        }
       });
     };
     plugin.__ppSimCompat = true;
+    plugin.Constructor = Constructor;
+    plugin.noConflict = () => { $.fn[name] = previous; return plugin; };
     $.fn[name] = plugin;
   }
-  if ($.fn.popover && !$.fn.popover.Constructor) {
-    $.fn.popover.Constructor = function LocalPopover() {};
-    $.fn.popover.Constructor.prototype.getPosition = function ($element) {
+  if ($.fn.popover?.__ppSimCompat) {
+    $.fn.popover.Constructor.prototype.getPosition ??= function ($element) {
       const element = ($element ?? this.$element)?.[0];
       if (!element) return { width: 0, height: 0, top: 0, left: 0, scroll: 0 };
       const rect = element.getBoundingClientRect();
       return { width: rect.width || element.offsetWidth, height: rect.height || element.offsetHeight, top: rect.top + window.pageYOffset, left: rect.left + window.pageXOffset, scroll: 0 };
     };
-    $.fn.popover.Constructor.prototype.replaceArrow = function (delta, dimension, isVertical) {
+    $.fn.popover.Constructor.prototype.replaceArrow ??= function (delta, dimension, isVertical) {
       const arrow = this.arrow();
       if (isVertical) arrow.css("left", "50%").css("top", "");
       else arrow.css("top", "50%").css("left", "");
     };
   }
-  if ($.fn.tooltip && !$.fn.tooltip.Constructor) $.fn.tooltip.Constructor = function LocalTooltip() {};
   };
   compat.bootstrapPlugins = attach;
   attach(window.jQuery);
@@ -309,6 +361,13 @@
     const $ = window.jQuery;
     const source = click.target instanceof Element ? click.target : click.target?.parentElement;
     if (!$ || !source) return;
+    const buttonToggle = source.closest('[data-toggle^="button"],[data-bs-toggle="button"]');
+    if (buttonToggle && local("button")) {
+      const button = source.closest(".btn") ?? buttonToggle;
+      $(button).button("toggle");
+      if (!source.matches('input[type="radio"],input[type="checkbox"]')) click.preventDefault();
+      return;
+    }
     // Bootstrap 3 (data-*) and Bootstrap 5 (data-bs-*) data API: the platform bundle's local
     // equivalent serves both builds (lib/platform-manifest.mjs).
     const menuToggle = source.closest(DROPDOWN_TOGGLES);
@@ -347,7 +406,7 @@
   };
   document.addEventListener("click", handleCompatibilityClick);
   ((globalThis.__portalSimulation ||= {}).compatibility ||= {}).bootstrapPluginsMode = "local-compatibility";
-  console.info("Local Bootstrap interaction compatibility active for tooltip, popover, modal, dropdown, tab, collapse, and alert controls.");
+  console.info("Local Bootstrap 3.4.1 interaction compatibility active for tooltip, popover, modal, dropdown, tab, collapse, alert, and button controls.");
   /** Re-attach this adapter whenever a later script replaces window.jQuery. */
   function watchJQuery(registry, attach) {
     (registry.jqueryWatchers ||= new Set()).add(attach);

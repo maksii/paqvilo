@@ -41,3 +41,13 @@ Public API additions: `paqvilo/mirage`, `paqvilo/mirage/acceptance`, `paqvilo/mi
 - Stable footer repairs avoid repeated style restoration on harmless tooltip mutations, preserving hover. Layout, source-style and stacking changes still re-evaluate overlap and restore the footer when appropriate.
 
 Public API names are unchanged; capture and status reports gain additive provider, observation and failure details.
+
+## Follow-up consumer feedback (32–37)
+
+- Keep report caches, sweep state selection and matrix output in the consumer project, including when the catalogue is outside the working directory. Discovery with no explicit cache performs no writes. Installed-package checks pin cold/warm cache reuse; `--no-cache` remains explicit.
+- Inventories and matrix accept `--config`; shared option tables generate registry help and drive all four source-tool parsers.
+- Acceptance preserves messages for Chromium SyntaxErrors with an empty stack. `pageErrors` stays a string array; additive `pageErrorDetails` records name, message and stack with the existing redaction policy.
+- Local Bootstrap 3.4.1 compatibility exposes plugin constructors, patchable prototypes, instances and `noConflict()`, and supports button toggle/loading/reset. Native plugin implementations stay authoritative; the adapter remains visible in diagnostics.
+- Supply missing system choices from the documented [FieldPermission](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/fieldpermission), [ActivityPointer](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/activitypointer) and [SocialProfile](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/reference/entities/socialprofile) references. Solution definitions take precedence. ActivityTypeCode is an open EntityName, so installed/custom activity object codes are not invented. Reference labels are English fallbacks; translations and application-specific extensions come from exported metadata.
+
+No stable public API names are removed. System-choice field metadata gains additive provenance and open-choice indicators.

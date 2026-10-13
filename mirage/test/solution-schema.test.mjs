@@ -339,6 +339,49 @@ test("parsed files are cached by file identity and re-read after any change", as
   assert.equal((await SolutionFileCache.open(cacheFile)).entries.size, 0);
 });
 
+test('documented system global choices fill missing exports, respect solution overrides and preserve unknown diagnostics', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { attributes:
+      attribute('sample_permission', 'picklist', '<OptionSetName>field_security_permission_type</OptionSetName>') +
+      attribute('sample_regular', 'bit', '<OptionSetName>activitypointer_isregularactivity</OptionSetName>') +
+      attribute('sample_channel', 'picklist', '<OptionSetName>socialprofile_community</OptionSetName>') +
+      attribute('sample_activity', 'entityname', '<OptionSetName>activitypointer_activitytypecode</OptionSetName>') +
+      attribute('sample_unknown', 'picklist', '<OptionSetName>unknown_fixture_set</OptionSetName>') }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const diagnostics = [];
+  const fields = tableFields(schema, 'sample_item', { diagnostics });
+  assert.deepEqual(fields.sample_permission.options, [{ value: 0, label: 'Not Allowed' }, { value: 4, label: 'Allowed' }]);
+  assert.deepEqual(fields.sample_regular.options, [{ value: 0, label: 'No' }, { value: 1, label: 'Yes' }]);
+  assert.deepEqual(fields.sample_channel.options.map(o => o.label), ['Other', 'Facebook', 'Twitter']);
+  assert.equal(fields.sample_permission.optionSetSourceKind, 'dataverse-reference');
+  assert.equal(fields.sample_activity.optionSetDynamic, true);
+  assert.equal(fields.sample_activity.dataverseType, 'entityname');
+  assert.equal(fields.sample_activity.type, 'text');
+  assert.deepEqual(diagnostics.map(d => d.optionSetName), ['unknown_fixture_set']);
+  schema.optionSets.field_security_permission_type = { source: 'synthetic-solution.xml', options: [{ value: 4, labels: { 1033: 'Solution label' } }] };
+  assert.deepEqual(tableFields(schema, 'sample_item').sample_permission.options, [{ value: 4, label: 'Solution label' }]);
+});
+
+test('imported system choices render their reference labels in a synthetic basic form', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { attributes:
+      attribute('sample_permission', 'picklist', '<OptionSetName>field_security_permission_type</OptionSetName>') }),
+  });
+  const data = await importSolutionData([root]);
+  assert.ok(!data.diagnostics.some(d => d.code === 'SOLUTION_OPTIONSET_UNRESOLVED'));
+  const { renderComponent } = await import('../lib/platform.mjs');
+  const fields = Object.values(tableFields(data.schema, 'sample_item'));
+  const portal = { forms: [{ id: 'permission', name: 'Permission', mode: 100000000 }], settings: {}, records: [] };
+  const store = await new DataStore({ state: { mappings: data.mappings, tables: { sample_item: [] }, settings: { permissionMode: 'permissive' } } }).init();
+  const html = await renderComponent('entityform', 'Permission', { request: { params: {} }, user: null }, {
+    portal, schemas: { permission: { entity: 'sample_item', mode: 100000000, fields } },
+    store, readProvider: store, renderLiquid: async source => source,
+  });
+  assert.match(html, /<option value="0"[^>]*>Not Allowed<\/option>/);
+  assert.match(html, /<option value="4"[^>]*>Allowed<\/option>/);
+});
+
 test("unbalanced XML is recovered with a diagnostic instead of dropping the layer", async (t) => {
   const root = await tree(t, {
     "Entities/sample_item/Entity.xml": entityXml("sample_item", { set: "sample_items" }).replace("</attributes>", "<attribute><LogicalName>sample_x</LogicalName></attributes>"),
