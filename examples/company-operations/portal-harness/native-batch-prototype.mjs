@@ -6,6 +6,24 @@ import { gzipSync } from 'node:zlib';
 import { createHash } from 'node:crypto';
 import {savePrivateJson} from './private-journal.mjs';
 
+/** Verify the owned exclusive descriptor, rather than reopening its pathname. */
+export async function saveNativeReadArchive(file, archive) {
+  const sha256 = createHash('sha256').update(archive).digest('hex');
+  const handle = await open(file, 'wx+', 0o600);
+  try {
+    await handle.writeFile(archive); await handle.sync();
+    const readback = Buffer.alloc(archive.length);
+    let offset = 0;
+    while (offset < readback.length) {
+      const {bytesRead} = await handle.read(readback, offset, readback.length - offset, offset);
+      if (!bytesRead) throw new Error('Native read archive readback ended early.');
+      offset += bytesRead;
+    }
+    if (createHash('sha256').update(readback).digest('hex') !== sha256) throw new Error('Native read archive readback checksum mismatch.');
+    return {file, sha256, bytes: archive.length};
+  } finally { await handle.close(); }
+}
+
 // The bridge accepts source text, so serialize inputs as a JSON string consumed
 // by a fixed program. Request metadata never becomes JavaScript object syntax.
 export function nativeBatchProgram({portalOrigin, requests, liquidUrls, capturePort}) {
@@ -159,11 +177,7 @@ try {
   await writeFile(path.join(config.outputDir, 'capture.json'), JSON.stringify(capture, null, 2));
   if (config.persistHistory) {
     const archive = gzipSync(Buffer.from(JSON.stringify({capture, before, after, siteSources, sourcesAfter, registrationBefore, registrationAfter})), {level: 9});
-    const archiveFile = path.join(config.outputDir, 'immutable-native-read.json.gz'), archiveSha256 = createHash('sha256').update(archive).digest('hex');
-    const archiveHandle = await open(archiveFile, 'wx', 0o600);
-    try {await archiveHandle.writeFile(archive); await archiveHandle.sync();} finally {await archiveHandle.close();}
-    if (createHash('sha256').update(await readFile(archiveFile)).digest('hex') !== archiveSha256) throw new Error('Native read archive readback checksum mismatch.');
-    capture.archive = {file: archiveFile, sha256: archiveSha256, bytes: archive.length};
+    capture.archive = await saveNativeReadArchive(path.join(config.outputDir, 'immutable-native-read.json.gz'), archive);
     await savePrivateJson(path.join(config.outputDir, 'archive-receipt.json'), capture.archive, {exclusive: true});
     capture.history = await persistNativeReadHistory(api, {capture, intents: prepared.intents, manifest, campaign: config.campaign, journalFile: path.join(config.outputDir, 'native-history-journal.json')});
     await writeFile(path.join(config.outputDir, 'capture.json'), JSON.stringify(capture, null, 2));

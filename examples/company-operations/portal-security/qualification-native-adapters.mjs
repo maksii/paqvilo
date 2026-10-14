@@ -182,19 +182,32 @@ export async function executeQualificationPortalRequest(browser, { portalOrigin,
   request, journalFile, anonymous = false } = {}) {
   const origin = new URL(portalOrigin);
   if (origin.protocol !== 'https:' || origin.pathname !== '/' || origin.search || origin.hash || !guid.test(actorContactId ?? '') ||
-      !['GET', 'POST', 'PATCH', 'DELETE'].includes(request?.method)) throw new Error('Bounded native portal request inputs required.');
+      !['GET', 'POST', 'PATCH', 'DELETE'].includes(request?.method) || typeof anonymous !== 'boolean') throw new Error('Bounded native portal request inputs required.');
   const target = new URL(request.url, origin), shell = new URL(shellPath, origin);
   if (target.origin !== origin.origin || shell.origin !== origin.origin || origin.username || origin.password ||
       !target.pathname.startsWith('/_api/') && !target.pathname.startsWith('/permission-lab/')) throw new Error('Portal request escaped the configured origin/test routes.');
   const journal = { request, actorContactId, anonymous, status: 'prepared', attempt: 1 };
   await savePrivateJson(journalFile, journal, { exclusive: true });
   try {
-    const result = await browser.run(`async(page)=>{await page.goto(${JSON.stringify(shell.href)},{waitUntil:'domcontentloaded'});return page.evaluate(async input=>{const doc=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');const actor=doc.documentElement.getAttribute('contact-id');if(input.anonymous?actor&&actor!=='00000000-0000-0000-0000-000000000000':actor!==input.actor)throw new Error('Native portal actor changed');const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));const response=await fetch(input.request.url,{method:input.request.method,headers:{Accept:'application/json','Content-Type':'application/json','__RequestVerificationToken':token,...(input.request.ifMatch?{'If-Match':input.request.ifMatch}:{})},body:input.request.body===undefined?undefined:JSON.stringify(input.request.body),credentials:'same-origin',redirect:'error',cache:'no-store'});return{identityReceipt:{serverVerified:true,contactId:actor||'00000000-0000-0000-0000-000000000000',roleNames:[...doc.querySelectorAll('role')].map(role=>role.textContent)},wire:{status:response.status,mime:response.headers.get('content-type'),body:await response.text()},entityId:response.headers.get('entityid')};},{actor:${JSON.stringify(actorContactId)},anonymous:${anonymous},request:${JSON.stringify({ ...request, url: target.pathname + target.search })}});}`);
+    const input = {portalUrl: shell.href, actor: actorContactId, anonymous, request: {...request, url: target.pathname + target.search}};
+    const result = await browser.run('async(page)=>{const input=JSON.parse(' + JSON.stringify(JSON.stringify(input)) + ');return (' + runQualificationPortalRequest.toString() + ')(page,input);}');
     journal.status = 'response-received'; journal.result = result; await savePrivateJson(journalFile, journal); return result;
   } catch {
     journal.status = 'unknown'; await savePrivateJson(journalFile, journal);
     throw new Error('Native portal request outcome unknown; inspect target/intent journal and do not repeat mutation.');
   }
+}
+
+async function runQualificationPortalRequest(page, input) {
+  await page.goto(input.portalUrl, {waitUntil:'domcontentloaded'});
+  return page.evaluate(async input=>{
+    const doc=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');
+    const actor=doc.documentElement.getAttribute('contact-id');
+    if(input.anonymous?actor&&actor!=='00000000-0000-0000-0000-000000000000':actor!==input.actor)throw new Error('Native portal actor changed');
+    const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));
+    const response=await fetch(input.request.url,{method:input.request.method,headers:{Accept:'application/json','Content-Type':'application/json','__RequestVerificationToken':token,...(input.request.ifMatch?{'If-Match':input.request.ifMatch}:{})},body:input.request.body===undefined?undefined:JSON.stringify(input.request.body),credentials:'same-origin',redirect:'error',cache:'no-store'});
+    return {identityReceipt:{serverVerified:true,contactId:actor||'00000000-0000-0000-0000-000000000000',roleNames:[...doc.querySelectorAll('role')].map(role=>role.textContent)},wire:{status:response.status,mime:response.headers.get('content-type'),body:await response.text()},entityId:response.headers.get('entityid')};
+  }, input);
 }
 
 /** Metadata-bound operations test the named table as Append source or AppendTo

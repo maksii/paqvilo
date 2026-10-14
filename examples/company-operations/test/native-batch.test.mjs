@@ -1,7 +1,21 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import vm from 'node:vm';
-import {nativeBatchProgram} from '../portal-harness/native-batch-prototype.mjs';
+import {nativeBatchProgram, saveNativeReadArchive} from '../portal-harness/native-batch-prototype.mjs';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import {createHash} from 'node:crypto';
+
+test('native archive verifies its exclusive file descriptor and refuses replacement',async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'native-archive-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const file=path.join(root,'read.gz'),bytes=Buffer.alloc(260000,73);
+  const receipt=await saveNativeReadArchive(file,bytes);
+  assert.equal(receipt.sha256,createHash('sha256').update(bytes).digest('hex'));
+  assert.equal(receipt.bytes,bytes.length);assert.deepEqual(await fs.readFile(file),bytes);
+  await assert.rejects(saveNativeReadArchive(file,Buffer.from('replacement')),{code:'EEXIST'});
+  assert.deepEqual(await fs.readFile(file),bytes);
+});
 
 const input = () => ({portalOrigin: 'https://portal.example.test', capturePort: 12345,
   requests: [{lane: 'webapi', url: '/_api/widgets?query=one', operationId: 'one'}, {lane: 'liquid', operationId: 'two'}],

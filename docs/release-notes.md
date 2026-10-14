@@ -2,6 +2,10 @@
 
 ## 0.9.4
 
+Example qualification tools serialize browser request inputs as data, verify immutable
+archive bytes through the exclusive file descriptor, and normalize every relative archive
+label prefix. Hostile-input and archive replacement regressions cover these security fixes.
+
 Consumer feedback 44, 46-56: declared N:N traversals may select their structural intersect
 keys under endpoint permissions, without granting arbitrary intersect-table reads.
 Permission joins preserve authored `distinct=false`, including row multiplication.
