@@ -29,8 +29,10 @@ sites:
             connectionReferences: ../solution-project/profiles/test.json
 ```
 
-Paths resolve relative to the catalogue directory, including in personal overrides,
-and never relative to `sourceRoot`. Absolute paths are also accepted. For an embedded
+String paths resolve relative to the catalogue directory, including in personal overrides.
+Absolute paths are also accepted. Use `{ source: deployment-profiles/dev.yml }` to resolve
+against the selected portal source folder, or `{ sourceRoot: profiles/dev.json }` against
+the resolved source root. These references follow `--repo` and worktree selection. For an embedded
 `createSimulator({ deploymentProfiles, projectRoot })`, relative paths resolve against
 `projectRoot` (the current directory by default).
 
@@ -52,7 +54,22 @@ The three sections are independently mapped and enabled:
 | `environmentVariables` | PAC deployment-settings object containing an `EnvironmentVariables` array | Sets current values of exported Solution variable definitions |
 | `connectionReferences` | PAC deployment-settings object containing a `ConnectionReferences` array | Seeds local `connectionreference` records with deterministic IDs |
 
-Both Solution sections can point to the same JSON file or to separate files. For example:
+Both Solution sections can point to the same JSON file or to separate files, and accept
+ordered lists of files. Later files replace entries with the same case-insensitive schema
+or logical name; other entries remain. Pages accepts one file. For example:
+
+```yaml
+dev:
+  pages: { source: deployment-profiles/dev.yml }
+  environmentVariables:
+    - { sourceRoot: settings/shared.json }
+    - { sourceRoot: settings/dev.json }
+  connectionReferences:
+    - { sourceRoot: settings/shared.json }
+    - { sourceRoot: settings/dev.json }
+```
+
+An individual Solution settings file has this structure:
 
 ```json
 {
@@ -76,8 +93,14 @@ Mapped sections are enabled by default. `enabled` overrides those defaults, and 
 lists sections that must remain enabled with a file mapping. Omitting `default` applies no
 profile until one is pinned; required sections therefore require a valid configured default.
 Required means a section and its file are required, not that every patch target exists.
-Unknown IDs, unsupported fields, duplicate variable/reference names, malformed active files
-and empty connection IDs are rejected. Disabled files are not read.
+Unknown IDs, unsupported fields, duplicate variable/reference names within one file and
+malformed active files are rejected. Empty connection IDs represent unset references:
+they are skipped and reported as `DEPLOYMENT_PROFILE_CONNECTION_UNSET` with names/counts.
+An unset entry does not remove an active reference from an earlier file. Disabled files
+are not read. Doctor reports file and parse readiness for each configured profile; YAML
+parse errors include a safe filename, parser code and line/column without source excerpts.
+An explicitly selected invalid profile fails startup so it cannot silently apply a partial
+environment configuration. Repair the file or explicitly select another profile.
 
 In `/_sim/` → **Environment**, select a registered profile, choose its optional sections,
 and click **Apply and pin locally**. This recompiles the portal and seeded data immediately

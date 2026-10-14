@@ -19,6 +19,15 @@ test('mapped structural N:N traversal needs endpoint permissions, not an indepen
   assert.deepEqual(store.fetchXml(query,{roles:['reader']}).entities.map(row=>row.childid),['c2']);
   assert.deepEqual(store.rows('edge',{roles:['reader']}),[]);
 });
+test('a declared outer N:N link can project its endpoint key without linking the other table', () => {
+  const selected = '<fetch distinct="true"><entity name="child"><attribute name="childid"/><link-entity name="edge" from="childid" to="childid" intersect="true" link-type="outer" alias="MO"><attribute name="parentid"/></link-entity><filter><condition entityname="MO" attribute="parentid" operator="null"/></filter></entity></fetch>';
+  for (const declared of [true,false]) {
+    const data=state(declared);data.permissions=data.permissions.filter(rule=>rule.entity!=='edge');
+    const store=new DataStore({state:data});
+    assert.deepEqual(store.fetchXml(selected,{roles:['reader']}).entities.map(row=>row.childid),declared?['c2']:['c1','c2']);
+    assert.deepEqual(store.rows('edge',{roles:['reader']}),[]);
+  }
+});
 test('query column names never grant intersection reads without mapped structural evidence',()=>{
   const data=state(false); data.permissions=data.permissions.filter(rule=>rule.entity!=='edge');
   const store=new DataStore({state:data});
@@ -27,4 +36,14 @@ test('query column names never grant intersection reads without mapped structura
   // An unreadable ordinary join has no visible related row; column names alone
   // must not turn it into privileged structural N:N traversal.
   assert.deepEqual(store.fetchXml(query,{roles:['reader']}).entities.map(row=>row.childid),['c1','c2']);
+});
+
+test('structural endpoint projections do not expose arbitrary intersection columns',()=>{
+  const data=state(true);data.permissions=data.permissions.filter(rule=>rule.entity!=='edge');
+  data.tables.edge[0].privatevalue='hidden';
+  const store=new DataStore({state:data});
+  const xml='<fetch><entity name="child"><attribute name="childid"/><link-entity name="edge" from="childid" to="childid" link-type="outer" alias="MO"><attribute name="privatevalue"/></link-entity></entity></fetch>';
+  const result=store.fetchXml(xml,{roles:['reader']});
+  assert.ok(result.entities.every(row=>row['MO.privatevalue']==null));
+  assert.deepEqual(store.rows('edge',{roles:['reader']}),[]);
 });

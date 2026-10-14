@@ -28,6 +28,8 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(async () => { await browser.close(); readiness.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const page = await browser.newPage();
+  const failedRequests=[];
+  page.on('requestfailed',request=>failedRequests.push({url:request.url(),error:request.failure()?.errorText}));
   await page.goto(`http://127.0.0.1:${server.address().port}/?none`);
   for (const query of ['', '?throw', '?none']) {
     await page.evaluate(query => {
@@ -46,9 +48,10 @@ test('real frame load follows queued ready handlers, tolerates exceptions and do
   }
   assert.ok(diagnostics.some(item => item.ordering === 'jquery-ready'));
   assert.ok(!diagnostics.some(item => item.code === 'FRAME_READY_TIMEOUT'));
+  assert.deepEqual(failedRequests,[]);
 });
 
-async function fixture(t, transport) {
+async function fixture(t, transport, errorMarkup = 'inline') {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'frame-save-feedback-'));
   const files = {
     'website.yml': 'adx_websiteid: invented-site\nadx_name: Invented frame',
@@ -61,21 +64,21 @@ async function fixture(t, transport) {
   };
   for (const [name, source] of Object.entries(files)) await fs.writeFile(path.join(root, name), source);
   const fields = [{ name: 'title', label: 'Title', type: 'text', required: true }, { name: 'parentid', label: 'Parent', type: 'lookup', targets: ['account'] }];
-  const app = await createSimulator({ sourceDir: root, watch: false, observed: { nativeFormTransport: transport, evidence: 'Synthetic loopback submission fixture' }, initial: {
+  const app = await createSimulator({ sourceDir: root, watch: false, observed: { nativeFormTransport: transport, formSubmissionErrorMarkup:errorMarkup, evidence: 'Synthetic loopback submission fixture' }, initial: {
     mappings: { sample: { entitySet: 'samples', idColumn: 'sampleid', fields: { title: { dataverseType: 'nvarchar' } }, relationships: { parent_account: { entity: 'account', from: 'parentid', to: 'accountid', many: false } } }, account: { entitySet: 'accounts', idColumn: 'accountid', nameColumn: 'name' }, contact: { entitySet: 'contacts', idColumn: 'contactid' } },
     tables: { sample: [], account: [{ accountid: '22222222-2222-4222-8222-222222222222', name: 'Invented parent', ownercontact: 'editor' }], contact: [{ contactid: 'editor', fullname: 'Synthetic editor' }] },
     permissions: [
       { id: 'parent-own', entity: 'account', roles: ['Editor'], scope: 'contact', field: 'ownercontact', operations: ['read', 'appendTo'] },
       { id: 'child', entity: 'sample', roles: ['Editor'], scope: 'parent', parentPermissionId: 'parent-own', relationship: { entity: 'account', from: 'parentid', to: 'accountid', many: false }, operations: ['read', 'create', 'append'] },
     ], settings: { permissionMode: 'enforce' },
-    simulator: { mode: 'local', pageMode: 'local', live: {}, identity: { roles: [] }, endpoints: [], componentSchemas: { create: { entity: 'sample', fields } }, observed: { nativeFormTransport: transport, evidence: 'Synthetic loopback submission fixture' } },
+    simulator: { mode: 'local', pageMode: 'local', live: {}, identity: { roles: [] }, endpoints: [], componentSchemas: { create: { entity: 'sample', fields } }, observed: { nativeFormTransport: transport, formSubmissionErrorMarkup: errorMarkup, evidence: 'Synthetic loopback submission fixture' } },
   } });
   t.after(async () => { await app.close(); await fs.rm(root, { recursive: true, force: true }); });
   return app;
 }
 
-for (const transport of ['json', 'postback']) test(`${transport} modal save failures re-render posted values and support a successful retry`, async t => {
-  const app = await fixture(t, transport);
+for (const transport of ['json', 'postback']) for (const markup of ['inline','paragraph']) test(`${transport} ${markup} modal save failures re-render posted values and support a successful retry`, async t => {
+  const app = await fixture(t, transport, markup);
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
   t.after(() => browser.close());
   const context = await browser.newContext();
@@ -110,6 +113,7 @@ for (const transport of ['json', 'postback']) test(`${transport} modal save fail
   assert.equal(await frame.locator('#title').inputValue(), title);
   assert.equal(await frame.locator('#MessagePanel.alert-danger').isVisible(), true);
   assert.match(await frame.locator('#MessagePanel').innerText(), /appropriate permissions/);
+  if(markup==='paragraph')assert.match(await frame.locator('#MessagePanel p').innerText(),/appropriate permissions/);
   assert.equal(await frame.locator('#EntityFormPanel').isVisible(), true);
   assert.equal(app.store.snapshot().tables.sample.length, 0);
   assert.ok(app.state().diagnostics.some(item => item.code === 'PermissionDenied'));

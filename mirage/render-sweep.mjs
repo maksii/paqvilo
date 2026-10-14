@@ -195,6 +195,7 @@ export function classifyResponse({ status, contentType, body, diagnostics }) {
     liquidErrors: liquid.filter((diagnostic) => LIQUID_ERROR_CODES.has(diagnostic.code)),
     liquidNotices: liquid.filter((diagnostic) => !LIQUID_ERROR_CODES.has(diagnostic.code)),
     otherDiagnostics: diagnostics.filter((diagnostic) => !String(diagnostic.code ?? "").startsWith("liquid-")).map((diagnostic) => diagnostic.code),
+    permissionQueries: diagnostics.filter(diagnostic=>diagnostic.code==='PERMISSION_QUERY_ROW_MULTIPLICATION'),
   };
 }
 
@@ -227,6 +228,7 @@ export async function resolveTarget(options) {
         solutionOrder: project.solutionOrder,
         environmentVariables: project.environmentVariables,
         deploymentProfiles: portal.deploymentProfiles,
+        platform: portal.platform,
         // Observed platform behaviour recorded for the portal (lib/project-config.mjs).
         observed: portal.observed ?? null,
       },
@@ -260,7 +262,7 @@ export async function resolveTarget(options) {
     stateFile: options.state ?? path.join(cfg.stateDir, "simulator", cfg.siteName, "state.json"),
     preset: options.preset ?? cfg.mirageConfig?.preset ?? null,
     // Observed platform behaviour from the site's mirage settings (paqvilo.config.yml).
-    simulatorOptions: { deploymentProfiles: cfg.mirageConfig?.deploymentProfiles, observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
+    simulatorOptions: { platform: cfg.mirageConfig?.platform, render: cfg.mirageConfig?.render, deploymentProfiles: cfg.mirageConfig?.deploymentProfiles, observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
   };
 }
 
@@ -393,6 +395,7 @@ async function sweepPersona(target, persona, options) {
       requests: results.length,
       byStatus,
       liquidDiagnosticCounts: codeCounts,
+      permissionQueries: results.flatMap(result=>(result.permissionQueries??[]).map(diagnostic=>({...diagnostic,path:result.url}))),
       liquidErrorPages: results.filter((result) => result.liquidErrors.length || result.inlineErrors.length).map((result) => result.url),
       injectedNonDocuments: results.filter((result) => result.injected.length).map((result) => ({ url: result.url, markers: result.injected })),
       failures: results.filter((result) => result.failure || result.status >= 500).map((result) => ({ url: result.url, status: result.status, failure: result.failure ?? null })),
@@ -451,6 +454,7 @@ export function ciSummary(report, run) {
     missingTemplateUses: run.liquidDiagnosticCounts["liquid-template-not-found"] ?? 0,
     unsupported: report.inventory?.unsupported.length ?? null,
     authoredSyntaxErrors: report.inventory?.syntaxErrors.length ?? null,
+    permissionRowMultiplication: run.permissionQueries ?? [],
     injectedNonDocuments: run.injectedNonDocuments.length,
     failures: run.failures.length,
   };

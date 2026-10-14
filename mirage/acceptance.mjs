@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -548,7 +549,7 @@ export async function runAcceptance({
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
           timeout,
-          ignore: (row) => row.path.startsWith("/__sim/events"),
+          ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
         (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
       };
@@ -557,7 +558,7 @@ export async function runAcceptance({
           [...pending.values()].filter(
             (record) =>
               record.type !== "eventsource" &&
-              !record.url.endsWith("/__sim/events"),
+              !simulatorBackgroundRequest(record.url, origin),
           );
         const deadline = Date.now() + timeout;
         let lastProofCheck = 0;
@@ -868,7 +869,7 @@ export async function runAcceptance({
           (await page.locator("input[type=password]:visible").count())
         )
           throw new Error("Sign-in or origin redirect was observed.");
-        let unexpectedRequests = observation.failedRequests,
+        let unexpectedRequests = observation.failedRequests.filter(failure => !simulatorBackgroundRequest(failure.url, origin)),
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];

@@ -110,7 +110,7 @@ export function checkProject(directory, { config, processEnv = process.env } = {
       for (const [env, settings] of Object.entries(site.environments)) {
         origin(settings.url, `sites.${name}.environments.${env}`);
       }
-      const mirage = resolveMirageConfig(site.mirage, catalogue);
+      const mirage = resolveMirageConfig(site.mirage, {...catalogue,sourceDir:site.sourceDir});
       for (const root of mirage.solutionRoots) folder(root, `sites.${name}.mirage.solutionRoots`);
       for (const pack of mirage.dataPacks) {
         try { if (fs.statSync(pack.module).isFile()) continue; } catch { /* diagnostic below */ }

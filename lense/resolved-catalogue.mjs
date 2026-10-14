@@ -10,7 +10,7 @@ export async function resolveCatalogue(options = {}, processEnv = process.env) {
   for (const [name, site] of Object.entries(catalogue.sites)) {
     if (options.site && options.site !== name) continue;
     const cfg = await loadConfig({ ...options, site: name }, processEnv, { checkSource: false });
-    const mirage = resolveMirageConfig(site.mirage, catalogue);
+    const mirage = resolveMirageConfig(site.mirage, {...catalogue,sourceDir:cfg.sourceDir});
     const project = mirage.project ? await loadProjectConfig(mirage.project) : null;
     const portal = project?.portals.find(portal => portal.sourceDir === cfg.sourceDir) ?? project?.portals.find(portal => portal.id === project.defaultPortal);
     const roots = project ? portal.solutionRoots : (await resolveSolutionRoots({ sourceDir: cfg.sourceDir, catalogue: mirage })).roots;

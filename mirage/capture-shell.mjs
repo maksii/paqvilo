@@ -34,12 +34,12 @@ async function launchCaptureBrowser(channel) {
 }
 
 /** Always disconnect, including a partial/failed connect. */
-export async function captureThroughRuntime(client, cdp, pagePath) {
-  try { await client.liveConnect(cdp); return await client.captureShell(pagePath); }
+export async function captureThroughRuntime(client, cdp, pagePath, options = {}) {
+  try { await client.liveConnect(cdp); return await client.captureShell(pagePath, options); }
   finally { await client.liveDisconnect(); }
 }
 
-export async function captureShell({ config, site, env, all = false, path: pagePath = '/', cdp, launchBrowser = launchCaptureBrowser, createLocalSimulator = createSimulator } = {}) {
+export async function captureShell({ config, site, env, all = false, path: pagePath = '/', cdp, 'no-rich-text': noRichText = false, launchBrowser = launchCaptureBrowser, createLocalSimulator = createSimulator } = {}) {
   validateLivePath(pagePath);
   if (all && env) throw new Error('--all and --env are mutually exclusive');
   if (cdp) cdp = captureCdpUrl(cdp);
@@ -113,7 +113,7 @@ export async function captureShell({ config, site, env, all = false, path: pageP
         client = await connectRuntime({ origin: simulator.url });
       }
       const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
-      reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath) });
+      reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath, { richText: !noRichText }) });
     } catch (error) {
       if (!all) throw error;
       // One failed local capture must not hide reports from other selected sites.
@@ -139,7 +139,7 @@ export function captureExitCode(report, { strict = false } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' }, strict: { type: 'boolean' } } });
+    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' }, strict: { type: 'boolean' }, 'no-rich-text': {type:'boolean'} } });
     const report = await captureShell(values);
     if (!values.json) console.error(captureSummary(report));
     console.log(JSON.stringify(report, null, 2)); process.exitCode = captureExitCode(report, values);

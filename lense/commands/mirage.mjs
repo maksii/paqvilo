@@ -223,6 +223,7 @@ export async function discoveries(paths = DEFAULT_PATHS, { probe = true } = {}) 
   const sessions = [];
   for (const { record, file } of await discoveryRecords(paths)) {
     const processAlive = isAlive(record.pid);
+    if (!processAlive && !isAlive(record.pid)) { await fs.rm(file,{force:true}).catch(()=>{}); continue; }
     const { portals, ...base } = record;
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
@@ -466,6 +467,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
       render: renderSettings(cfg.mirageConfig?.render),
+      platform: cfg.mirageConfig?.platform ?? projectInfo?.portals.find(item=>item.id===portalId)?.platform ?? null,
       deploymentProfiles: cfg.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, projectInfo?.configFile)
         ? cfg.mirageConfig.deploymentProfiles
         : projectInfo?.portals.find(item => item.id === portalId)?.deploymentProfiles ?? cfg.mirageConfig?.deploymentProfiles ?? null,
@@ -482,6 +484,7 @@ function identityMatches(left, right) {
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
     && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
+    && JSON.stringify(left.platform ?? null) === JSON.stringify(right.platform ?? null)
     && JSON.stringify(left.deploymentProfiles ?? null) === JSON.stringify(right.deploymentProfiles ?? null)
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
     && left.solutionOrder === right.solutionOrder
@@ -662,13 +665,14 @@ export async function initProject(cfg, args = {}) {
     defaultPortal: cfg.siteName,
     // dataModel: the catalogue site's data model for a source that does not record it (.powerpages-site).
     portals: [{ id: cfg.siteName, path: yamlPath(base, cfg.sourceDir), ...(origin ? { origin } : {}), ...(observed ? { observed } : {}), ...(configured.dataModel ? { dataModel: configured.dataModel } : {}) }],
+    ...(configured.platform ? {platform:configured.platform} : {}),
     solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
     solutionOrder,
     references,
     ...(configured.deploymentProfiles ? { deploymentProfiles: {
       ...configured.deploymentProfiles,
       profiles: Object.fromEntries(Object.entries(configured.deploymentProfiles.profiles).map(([id, sources]) => [id,
-        Object.fromEntries(Object.entries(sources).map(([section, source]) => [section, yamlPath(base, source)])),
+        Object.fromEntries(Object.entries(sources).map(([section, source]) => [section, Array.isArray(source) ? source.map(file=>yamlPath(base,file)) : yamlPath(base, source)])),
       ])),
     } } : {}),
     ...(configured.dataPacks?.length ? { dataPacks: configured.dataPacks.map(({ id, module }) => ({ ...(id ? { id } : {}), module: yamlPath(base, module) })) } : {}),
@@ -823,7 +827,13 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
     const file = projectPortal && loaded ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(loaded, projectPortal.id, path.join(miragePaths(cfg).discoveryRoot, 'projects')) : path.join(miragePaths(cfg).discoveryRoot, cfg.siteName, 'state.json');
     platformStyles = platformStylesStatus(JSON.parse(await fs.readFile(file, 'utf8')).simulator?.shellProfile);
   } catch { /* Missing state uses the structural fallback. */ }
-  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, platformStyles, localOverrides: configured.localOverrides, errors, warnings };
+  const {deploymentProfilesStatus,resolveDeploymentProfiles}=await import('../../mirage/lib/deployment-profiles.mjs');
+  const deploymentProfiles=await deploymentProfilesStatus(configured.deploymentProfiles ?? projectPortal?.deploymentProfiles ?? resolveDeploymentProfiles());
+  for(const profile of deploymentProfiles.profiles)if(!profile.valid) {
+    const message=`Deployment profile '${profile.id}': ${profile.error.message}`;
+    (profile.id===deploymentProfiles.default?errors:warnings).push(message);
+  }
+  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, platformStyles, deploymentProfiles, platform: configured.platform ?? projectPortal?.platform ?? null, localOverrides: configured.localOverrides, errors, warnings };
 }
 
 // ------------------------------------------------------------------------------ output

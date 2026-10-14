@@ -138,7 +138,7 @@ test("capture derives bounded plugins and exact timestamp sprite URLs without ex
   assert.ok(cache.calls.includes(editor + "plugins/icons.png?t=O7L9"));
   assert.ok(!cache.calls.includes(editor + "lang/en.js"));
   assert.ok(
-    !cache.calls.includes(editor + "lang/editor-language-resources.js"),
+    cache.calls.includes(editor + "lang/editor-language-resources.js"),
   );
   assert.equal(result.nativeReady, false);
   assert.equal(result.complete, false);

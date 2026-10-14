@@ -23,6 +23,7 @@ import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
+import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
 import { validateExperimentPresets } from './experiment-presets.mjs';
 import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error-details.mjs";
 import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
@@ -475,7 +476,7 @@ export function reconcilePermissionDiagnostics(state) {
   state.simulator.importDiagnostics = existing;
   return state;
 }
-function normalizeState(state, presetLibrary = builtinPresets) {
+function normalizeState(state, presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults) {
   const result = {
     ...emptyState(),
     ...clone(
@@ -670,14 +671,15 @@ function normalizeState(state, presetLibrary = builtinPresets) {
         }
     }
   }
-  return reconcilePermissionDiagnostics(result);
+  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
 export class DataStore {
-  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets } = {}) {
+  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults } = {}) {
     this.file = file;
     this.presetLibrary = presetLibrary;
-    this.state = normalizeState(state, this.presetLibrary);
+    this.platformConfig = platformConfig(platform);
+    this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
     this.persistedDigest = null;
     this.queue = Promise.resolve();
     // Advances with every committed change (transact), so consumers such as OData
@@ -700,7 +702,7 @@ export class DataStore {
     if (this.file) {
       try {
         const raw = await readFile(this.file, "utf8");
-        this.state = normalizeState(JSON.parse(raw), this.presetLibrary);
+        this.state = normalizeState(JSON.parse(raw), this.presetLibrary, this.platformConfig);
         this.persistedDigest = this.digest(raw);
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
@@ -913,7 +915,7 @@ export class DataStore {
     return this.transact(() => {
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
-      this.state = normalizeState(state, this.presetLibrary);
+      this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
       return this.snapshot();
     });
   }
@@ -3029,7 +3031,7 @@ export class DataStore {
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
     return this.transact(() => {
       applyPresetSections(this.state, preset);
-      this.state = normalizeState(this.state, this.presetLibrary);
+      this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig);
       return this.snapshot();
     });
   }
@@ -3048,7 +3050,8 @@ export class DataStore {
     return compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,...this.liquidFetchPermissionOptions(options)});
   }
   fetchXml(xml, identity = {}, options = {}) {
-    const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
+    const authoredFetch=parseFetchXml(xml);
+    const entity=authoredFetch.children.find(node=>node.name==='entity')?.attrs.name;
     // Observers may mutate data inside a read transaction before its revision advances.
     // Keep every plugin invocation and discard cached row inputs at that boundary.
     if (options.fetchCache && this.pluginPipeline && this.pluginPipelineActive({entity, operation:'retrievemultiple'})) {
@@ -3075,7 +3078,28 @@ export class DataStore {
         throw new DataError('Table permission denies read on '+name,403,'PermissionDenied',{operation:'read',table:name});
     }
     const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
-    const result=this.executePermissionFetchXml(xml,identity,options,permissionQuery);
+    let result;
+    try { result=this.executePermissionFetchXml(xml,identity,options,permissionQuery); }
+    catch(cause) {
+      if (options.portalRequest && permissionQuery.permissionLinkCount > 0 && cause.details?.innerCode === '0x8004430d') {
+        const diagnostic={code:'PERMISSION_LINK_BUDGET_EXCEEDED',severity:'warning',table:entity,
+          authoredLinks:permissionQuery.authoredLinkCount,generatedLinks:permissionQuery.permissionLinkCount,
+          totalLinks:permissionQuery.totalLinkCount,limit:this.querySettings().fetchLimits.links,grantPaths:permissionQuery.grantPaths,
+          message:`Table permissions expanded ${permissionQuery.authoredLinkCount} authored links to ${permissionQuery.totalLinkCount} total links; QueryLinkEntityLimit is ${this.querySettings().fetchLimits.links}.`};
+        cause.details={...cause.details,permissionDiagnostic:diagnostic};
+        options.diagnostic?.(diagnostic);
+      }
+      throw cause;
+    }
+    if (options.portalRequest && ['false','0'].includes(authoredFetch.attrs.distinct?.toLowerCase()) && permissionQuery.multiplicativePaths.length && !result.columns?.aggregate) {
+      const mapping=this.resolveMapping(entity);
+      const returnedRows=result.entities.length,uniqueRootRows=new Set(result.entities.map(row=>row[mapping.idColumn])).size;
+      const diagnostic={code:'PERMISSION_QUERY_ROW_MULTIPLICATION',severity:'info',table:entity,returnedRows,uniqueRootRows,additionalRows:returnedRows-uniqueRootRows,
+        generatedLinks:permissionQuery.permissionLinkCount,grantPaths:permissionQuery.multiplicativePaths,
+        message:`Permission joins with distinct=false returned ${returnedRows} rows for ${uniqueRootRows} unique ${entity} roots.`};
+      permissionQuery.diagnostics.push(diagnostic);
+      options.diagnostic?.(diagnostic);
+    }
     return options.portalRequest===true&&options.profile!=='webapi'?Object.assign(result,{permission_granted:permissionQuery.permissionGranted,global_permission_granted:permissionQuery.globalPermissionGranted,rules_exist:true}):result;
   }
   executePermissionFetchXml(xml,identity,options,permissionQuery) {

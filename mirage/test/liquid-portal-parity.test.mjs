@@ -836,6 +836,7 @@ test("render sweep resolves export directories and Mirage projects and summarise
     missingTemplateUses: 0,
     unsupported: 0,
     authoredSyntaxErrors: 1,
+    permissionRowMultiplication: [],
     injectedNonDocuments: 0,
     failures: 0,
   });

@@ -1,4 +1,5 @@
 import http from "node:http";
+import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
 import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
@@ -247,6 +248,7 @@ export async function createSimulator({
   // Per-site observed configuration ({ loginPath, evidence }; lib/project-config.mjs).
   observed: observedOption = null,
   render: renderOption,
+  platform: platformOption = initial?.simulator?.platformDefaults ?? null,
   // `serve` refuses a source with zero recognised pages, naming its layout
   // (lib/source-dialect.mjs); embedded uses (tests, tools) may serve page-less fixtures.
   requirePortalSource = false,
@@ -265,7 +267,7 @@ export async function createSimulator({
   if (dataModel != null && !DATA_MODELS.includes(dataModel)) throw error(`dataModel must be standard or enhanced, not ${JSON.stringify(dataModel)}.`);
   // A code-site project serves the site in its .powerpages-site/ folder (lib/source-dialect.mjs).
   sourceDir = portalSourceDir(sourceDir);
-  const profileConfig = resolveDeploymentProfiles(deploymentProfiles, projectRoot);
+  const profileConfig = resolveDeploymentProfiles(deploymentProfiles, projectRoot, {sourceDir,sourceRoot:projectRoot});
   if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw error('Use deploymentProfiles or the legacy deploymentProfile option, not both.');
   let persistedPin = initial?.simulator?.deploymentProfilePin ?? null;
   if (stateFile) {
@@ -411,6 +413,7 @@ export async function createSimulator({
   const store = await new DataStore({
     file: stateFile,
     presetLibrary: generatedPresets,
+    platform: platformOption,
     state: applySolutions(initial ?? initialState(portal, bootstrapOptions())),
   }).init();
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
@@ -470,10 +473,14 @@ export async function createSimulator({
         origin: live.origin,
       }).init()
     : null;
-  const richTextCompatibility = () =>
-    richTextCompatibilityOverride ?? !cache?.manifest().assets.some((item) =>
-      /\/ckeditor\.js(?:\?|$)/i.test(item.path ?? item.requestedPath ?? ""),
-    );
+  const richTextCompatibility = () => {
+    const manifest=cache?.manifest();
+    const capturedCore=manifest?.assets.some(asset=>asset.origin===live.origin&&/\/ckeditor\.js(?:\?|$)/i.test(asset.path??''));
+    // An explicit external native provider remains usable in embedded tests.
+    // An incomplete captured editor must never activate merely from its core file.
+    if(richTextCompatibilityOverride===false&&!capturedCore)return false;
+    return richTextCompatibilityOverride===true||!nativeRichTextReady(manifest,config().shellProfile,live.origin);
+  };
   const evidenceDir = stateFile
     ? path.join(path.dirname(path.resolve(stateFile)), "evidence/latest")
     : null;
@@ -731,7 +738,7 @@ export async function createSimulator({
     async fetchXml(xml, identity, fetchOptions = {}) {
       if (config().mode !== "live")
         return normalizeMockLiquidFetchXml(
-          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true, right: fetchOptions.right, fetchCache: fetchOptions.fetchCache })),
+          await store.readOperation(() => store.fetchXml(xml, identity, { platformLanguageCode: "en-US", portalRequest: true, right: fetchOptions.right, fetchCache: fetchOptions.fetchCache, diagnostic: fetchOptions.diagnostic })),
           xml,
           liveMapping,
         );
@@ -974,7 +981,7 @@ export async function createSimulator({
           observed: config().observed ?? source.observed,
           resolveMapping: name => store.resolveMapping(name),
         });
-        return empty ?? readProvider.fetchXml(xml, currentIdentity(), fetchOptions);
+        return empty ?? readProvider.fetchXml(xml, currentIdentity(), { ...fetchOptions, diagnostic: entry => recordDiagnostic({...entry,path:_request?.path}) });
       },
       previewFetchXml:(xml,_user,_request,fetchOptions)=>{
         if(config().mode==='live')throw error('A local permission preview cannot qualify remote Liquid execution.',501,'LocalFetchPreviewUnsupported');
@@ -1133,6 +1140,7 @@ export async function createSimulator({
       },
       diagnostics: [
         ...portal.diagnostics,
+        ...(activeProfiles.diagnostics ?? []),
         ...(cfg.importDiagnostics ?? []),
         ...permissionModel.diagnostics,
         ...diagnostics,
@@ -1375,6 +1383,7 @@ export async function createSimulator({
     return value;
   };
   const allDiagnostics = () => [
+    ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
     ...(config().importDiagnostics ?? []),
     ...(appliedPermissionModel?.diagnostics ?? []),
@@ -1399,7 +1408,9 @@ export async function createSimulator({
       deploymentProfile: portal.deploymentProfile ?? null,
       profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       render,
+      platformSettings: platformSettingEntries(state),
       observed: config().observed,
+      richText: {mode:richTextCompatibility()?'compatibility':'native',nativeReady:nativeRichTextReady(cache?.manifest(),config().shellProfile,live.origin)},
       subgridLabelMarkup: config().observed?.subgridLabelMarkup ?? 'sanitized',
       sourceFingerprint: fingerprint,
       loadedImplementationFingerprint: implementationFingerprint,
@@ -2170,7 +2181,8 @@ export async function createSimulator({
           },
         });
         if (!report.ready) return json(res, 409, { ...report, applied: false });
-        const richText = await captureRichTextAssets(cache, live, {
+        if (body.richText !== undefined && typeof body.richText !== 'boolean') throw error('richText must be boolean.');
+        const richText = body.richText === false ? { required: false, skipped: 'DISABLED', complete: true, nativeReady: false, managedControls: {}, diagnostics: [] } : await captureRichTextAssets(cache, live, {
           schemas: {
             ...solutionMetadata.componentSchemas,
             ...config().componentSchemas,
@@ -2188,6 +2200,7 @@ export async function createSimulator({
           report.shellProfile.richTextConfigurations =
             richText.configurationBaselines;
         report.richText = richText;
+        if (richText.required) report.shellProfile.richTextReadiness = { nativeReady: richText.nativeReady === true, capturedAt: new Date().toISOString(), origin:live.origin };
         report.complete = report.complete && richText.complete;
         const state = store.snapshot();
         report.shellProfile = mergeShellProfile(
@@ -2443,6 +2456,7 @@ export async function createSimulator({
       jsonBody,
       change,
       onError: (cause, response) => {
+        if(cause.details?.permissionDiagnostic)recordDiagnostic({...cause.details.permissionDiagnostic,path:url.pathname});
         if (context) context.error = cause;
         recordDiagnostic({
           code: cause.code ?? "RUNTIME_ERROR",
@@ -3527,6 +3541,7 @@ export async function createSimulator({
       .run(context, () => handle(req, res))
       .catch((err) => {
         context.error = err;
+        if(err.details?.permissionDiagnostic)recordDiagnostic({...err.details.permissionDiagnostic,path:req.url?.split('?')[0]});
         // Administration API errors are answered to their caller; they are not portal runtime observations.
         if (!req.url?.startsWith("/__sim/api"))
           recordDiagnostic({
@@ -3671,7 +3686,7 @@ export async function createSimulator({
     const layers = solutionData.layers ?? [];
     watchedLayers = layerSignature();
     clearTimeout(watcherTimer);
-    const pluginSources = [...solutionMetadata.plugins?.sourceFiles ?? [], ...Object.values(profileConfig.profiles).flatMap(sources => Object.values(sources))];
+    const pluginSources = [...solutionMetadata.plugins?.sourceFiles ?? [], ...Object.values(profileConfig.profiles).flatMap(sources => Object.values(sources).flat())];
     const pluginSourceKeys = new Set(pluginSources.map(file => path.resolve(file).toLowerCase()));
     const ignoreSource = solutionWatchFilter({ sourceDir, roots: solutionRoots, layers, exclude: stateFile ? [path.dirname(path.resolve(stateFile))] : [] });
     watcher = chokidar.watch([sourceDir, ...solutionRoots, ...pluginSources], {

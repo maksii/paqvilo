@@ -64,6 +64,7 @@ export function compilePermissionFetchXml(xml, {
   const authoredLinks = [...walk(tree)].filter(element => element.name === 'link-entity');
   const generatedNodes = new Set();
   const diagnostics = [];
+  const grantPaths = [];
   let normalizeQuery = false;
   const finish = (permissionGranted, permissionLinkCount = 0, grantIds = []) => {
     const finalLinks = [...walk(tree)].filter(element => element.name === 'link-entity');
@@ -80,6 +81,7 @@ export function compilePermissionFetchXml(xml, {
       .flatMap(element => [...walk(element)].filter(child => child.name === 'condition').map(child => ({...child.attrs}))),
     permissionGranted, globalPermissionGranted: permissionGranted && grantIds.some(grant => grant.scope === 'global'),
     grantIds: grantIds.map(grant => grant.id), qualification: 'modeled', diagnostics,
+    grantPaths, multiplicativePaths: grantPaths.filter(path => path.multiplicative),
     });
   };
   if (bypass || identity.admin) return finish(true);
@@ -172,6 +174,7 @@ export function compilePermissionFetchXml(xml, {
       const signature = JSON.stringify(alternative);
       if (seen.has(signature)) continue;
       seen.add(signature); alternatives.push(alternative);
+      grantPaths.push(...single.grantPaths.map(path=>({...path,authoredTable:link.attrs.name,multiplicative:false})));
       for (const element of walk(alternative)) if (element.name === 'link-entity') generatedNodes.add(element);
     }
     if (!alternatives.length) throw new DataError('Table permission denies the authored linked table.', 403, 'PermissionDenied', {operation:'read',table:link.attrs.name});
@@ -238,6 +241,9 @@ export function compilePermissionFetchXml(xml, {
     const signature = JSON.stringify({ descriptors, terminal });
     if (seenPaths.has(signature)) continue;
     seenPaths.add(signature); accepted.push(grant);
+    grantPaths.push({ grantId: grant.id, tables: [grant.entity, ...descriptors.map(relation => relation.entity)],
+      links: descriptors.map(({entity,from,to,many,intersect}) => ({entity,from,to,many:many===true, ...(intersect?{intersect:{entity:intersect.entity,from:intersect.from,to:intersect.to}}:{})})),
+      multiplicative: descriptors.some(relation => relation.many === true || Boolean(relation.intersect)) });
     let first, last, terminalAlias;
     for (const relationship of descriptors) {
       let join;

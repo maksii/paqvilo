@@ -65,12 +65,12 @@ test('mirage init preserves profile paths and launches pass catalogue profile ov
   assert.equal(explicitProject.includes('--site'), false);
 });
 
-test('mapped files require correct PAC sections and reject duplicates, empty connections and invalid Pages patches', async t => {
+test('mapped files require correct PAC sections and reject duplicates, malformed connections and invalid Pages patches', async t => {
   const fixture = await profileFixture(t);
   const config = resolveDeploymentProfiles(fixture.deploymentProfiles, fixture.root);
   for (const contents of [{}, { EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: {} }] },
     { EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'a' }, { SchemaName: 'SAMPLE_URL', Value: 'b' }] },
-    { EnvironmentVariables: [], ConnectionReferences: [{ LogicalName: 'sample_Api', ConnectionId: '', ConnectorId: 'api' }] }]) {
+    { EnvironmentVariables: [], ConnectionReferences: [{ LogicalName: 'sample_Api', ConnectionId: null, ConnectorId: 'api' }] }]) {
     await fs.writeFile(config.profiles.dev.environmentVariables, JSON.stringify(contents));
     await assert.rejects(loadDeploymentProfiles(config));
   }
@@ -138,6 +138,11 @@ test('optional sections disable cleanly, project variables win case-insensitivel
 
 test('external profile changes reload local rendering and seeded values with a new fingerprint', async t => {
   const fixture = await profileFixture(t);
+  // Ordered file-list mappings must participate in normal watched development.
+  for (const profile of Object.values(fixture.deploymentProfiles.profiles)) {
+    profile.environmentVariables = [profile.environmentVariables];
+    profile.connectionReferences = [profile.connectionReferences];
+  }
   const app = await createSimulator({ ...fixture, watch: true });
   fixture.onCleanup(() => app.close());
   const status = async () => (await (await fetch(app.url + '/__sim/api/status')).json());

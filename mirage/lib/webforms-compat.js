@@ -500,11 +500,13 @@
       .map(node => ({ id: node.id, value: node.value, checked: node.checked,
         ...(node.multiple ? { selected: [...node.selectedOptions].map(option => option.value) } : {}) }));
   }
-  function showSaveFailure(form, message) {
+  function showSaveFailure(form, message, markup) {
     let panel = form.querySelector('#MessagePanel');
     if (!panel) { panel = document.createElement('div'); panel.id = 'MessagePanel'; form.prepend(panel); }
     panel.className = 'message alert alert-danger'; panel.setAttribute('role', 'alert');
-    const label = document.createElement('span'); label.id = 'MessageLabel'; label.textContent = message;
+    const label = document.createElement('span'); label.id = 'MessageLabel';
+    if (markup === 'paragraph') { const paragraph = document.createElement('p'); paragraph.textContent = message; label.append(paragraph); }
+    else label.textContent = message;
     panel.replaceChildren(label); panel.style.display = '';
   }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
@@ -589,7 +591,7 @@
         if (result.postback?.type === 'error') {
           const target = postbackTarget(form);
           if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
-          sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ form: form.id, error: result.postback.message, controls: preservePostedControls(form) }));
+          sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ form: form.id, error: result.postback.message, errorMarkup: result.postback.markup, controls: preservePostedControls(form) }));
           if (target.href === location.href) location.reload(); else location.assign(target.href);
           return;
         }
@@ -667,7 +669,7 @@
           if (typeof control.checked === 'boolean') node.checked = control.checked;
           if (node.multiple && Array.isArray(control.selected)) for (const option of node.options) option.selected = control.selected.includes(option.value);
         }
-        showSaveFailure(form, state.error);
+        showSaveFailure(form, state.error, state.errorMarkup);
         return;
       }
       showSuccess(form, state.message, state.hideForm);

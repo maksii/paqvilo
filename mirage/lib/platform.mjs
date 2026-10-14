@@ -950,12 +950,13 @@ async function renderForm(kind, name, context, options) {
     store,
     readProvider = store,
     schemas = {},
-    managedControls = {},
+    managedControls: capturedManagedControls = {},
     richTextCompatibility = false,
     renderLiquid,
     metadata,
     modal = false,
   } = options;
+  let managedControls = capturedManagedControls;
   // Labels and messages in the request's website language (context.__language).
   const formLanguage = requestLanguage(context, portal);
   const formLabel = (value, fallback = "") => formText(value, fallback, formLanguage);
@@ -1196,6 +1197,10 @@ async function renderForm(kind, name, context, options) {
     };
   });
   const byName = new Map(fields.map((field) => [field.name, field]));
+  if (richTextCompatibility) {
+    managedControls = {...managedControls};
+    for (const field of fields) if(field.richText?.name)delete managedControls[field.richText.name];
+  }
   // Native "reference entity" query parameters prefill the referencing lookup.
   const reference = mode === FORM_MODE.insert && params.refentity && params.refid && params.refrel ? { entity: params.refentity, id: params.refid, rel: params.refrel } : null;
   const value = (field) => {
@@ -1738,7 +1743,11 @@ async function renderForm(kind, name, context, options) {
     const message = `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
     formHtml = message + (postback.outcome.hideForm !== false ? '<div style="display:none;">' + formHtml + '</div>' : formHtml);
   }
-  if (postback?.outcome?.type === 'error') formHtml = `<div id="MessagePanel" class="message alert alert-danger" role="alert"><span id="MessageLabel">${escape(postback.outcome.message)}</span></div>` + formHtml;
+  if (postback?.outcome?.type === 'error') {
+    const message = escape(postback.outcome.message);
+    const markup = postback.outcome.markup === 'paragraph' ? `<p>${message}</p>` : message;
+    formHtml = `<div id="MessagePanel" class="message alert alert-danger" role="alert"><span id="MessageLabel">${markup}</span></div>` + formHtml;
+  }
   const progressTop = progress && progress.position !== "bottom" ? progress.html : "";
   const progressBottom = progress && progress.position === "bottom" ? progress.html : "";
   // Native order: validation runtime and default hook before the control, custom

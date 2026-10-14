@@ -8,6 +8,18 @@ import { createSimulator } from "../server.mjs";
 import { runAcceptance } from "../acceptance.mjs";
 import { signInContext } from "../testing/session.mjs";
 
+test('acceptance opens and settles a modal without counting frame lifecycle requests as portal failures', {timeout:30000}, async t=>{
+  const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-modal-acceptance-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  await fs.writeFile(path.join(root,'website.yml'),'adx_websiteid: site\nadx_name: Modal fixture');
+  await fs.writeFile(path.join(root,'Home.webpage.yml'),'adx_webpageid: home\nadx_name: Host\nadx_partialurl: /\n');
+  await fs.writeFile(path.join(root,'Home.webpage.copy.html'),'<button id="open" onclick="document.getElementById(\'holder\').innerHTML=\'<iframe id=modal src=/_portal/modal-form-template-path/site?entityformid=create></iframe>\'">Open</button><div id="holder"></div>');
+  await fs.writeFile(path.join(root,'Create.basicform.yml'),'adx_entityformid: create\nadx_name: Create\nadx_entityname: sample\nadx_mode: 100000000');
+  const app=await createSimulator({sourceDir:root,stateFile:path.join(root,'state.json'),watch:false,initial:{settings:{permissionMode:'permissive'},mappings:{sample:{idColumn:'sampleid'}},tables:{sample:[]},simulator:{mode:'local',pageMode:'local',live:{allowWrites:false},endpoints:[],componentSchemas:{create:{entity:'sample',fields:[{name:'name',type:'text'}]}}}}});t.after(()=>app.close());
+  const report=await runAcceptance({localUrl:app.url,outputDir:path.join(root,'evidence'),flows:[{name:'Modal',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#open'},{action:'visible',frame:'#modal',selector:'#name'},{action:'settle'}]}]});
+  assert.equal(report.passed,true,JSON.stringify(report.flows.map(flow=>({error:flow.error,failedResponses:flow.failedResponses,pageErrors:flow.pageErrors,failedRequests:flow.failedRequests}))));
+  assert.equal(report.flows[0].failedRequests.length,0);
+});
+
 test('acceptance retains Chromium script SyntaxErrors even when their stack is empty', { timeout: 30000 }, async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-syntax-flow-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));

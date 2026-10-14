@@ -140,8 +140,31 @@ The acceptance entry point also exports `AssetCache`, `validateLivePath`, `decod
 runner surface; source configuration parsing and editor-host implementation modules remain internal.
 
 `connectRuntime().captureShell(path)` returns the full report even for HTTP 409 incomplete
-captures. Check `applied` and `complete`; the command exits one for an incomplete report.
+captures. Check `applied` and `complete`; default command success follows `applied`/`ready`,
+including usable captures with nonblocking gaps. `--strict` requires `complete` as well.
 Other API errors carry `status` and the parsed `response`, and include the server message.
+
+`paqvilo mirage capture-shell --no-rich-text` captures the shell/styles without discovering
+editor resources. The equivalent client call is `captureShell(path, { richText: false })`.
+An incomplete cached editor uses the compatibility control, including when a partial
+managed-control definition was captured. Native editing requires a qualified capture or a
+legacy core plus language resources; merely caching `ckeditor.js` is insufficient.
+
+Evidenced platform defaults are accepted in catalogue `defaults.mirage.platform` and
+`sites.<id>.mirage.platform`, or a Mirage project's root/portal `platform` object:
+`{ QueryLinkEntityLimit: 50, evidence: 'Recorded sandbox organization setting' }`.
+The same `platform` option works with `initialState`, `DataStore` and `createSimulator`;
+catalogue contexts, bootstrap reports and render sweeps use the resolved configuration.
+Existing setting validation applies. Manual local overrides take precedence; runtime status
+reports the effective value and its `Catalogue` origin and evidence.
+
+Owned loopback `/__sim/events` and `/__sim/frame-ready/<uuid>` requests remain in network
+observations but do not hold acceptance settling or count as navigation failures.
+
+Set evidenced `observed.formSubmissionErrorMarkup: paragraph` when a site's recorded host
+contract reads `#MessagePanel p`. The default remains `inline`; both JSON and native
+postback errors retain escaped message text. This is a site observation, not an assertion
+that every hosted form uses paragraph markup.
 
 `createSimulator({ preset, presetMode: 'bootstrap', stateFile })` applies the preset only when
 the state file does not exist. The default mode is `always`. Runtime status and startup JSON

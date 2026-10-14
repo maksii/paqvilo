@@ -12,6 +12,7 @@
  *   Options: --deployment-profile NAME, --data-model standard|enhanced, --no-cache, --all-fields, --lcid N
  */
 import fs from "node:fs/promises";
+import { platformSettingEntries } from './lib/platform-settings.mjs';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -56,6 +57,7 @@ export async function resolveReportInputs(args) {
       dataModel: args["data-model"] ?? portal.dataModel ?? undefined,
       origin: projectOrigin(project, portal),
       observed: portal.observed,
+      platform: portal.platform,
       environmentVariables: project.environmentVariables,
       lcid: project.lcid,
       cacheFile: path.join(project.stateDirectory ?? path.join(path.dirname(project.configFile), ".paqvilo/simulator/projects", project.stateNamespace), portal.id, "cache", "solution-sources.json"),
@@ -102,6 +104,7 @@ export async function resolveReportInputs(args) {
     order: resolved.order,
     rootSource: resolved.source,
     observed: siteMirage?.observed ?? null,
+    platform: siteMirage?.platform,
     discovered: resolved.source === "discovered",
     deploymentProfile: args["deployment-profile"],
     deploymentProfiles: siteMirage?.deploymentProfiles,
@@ -117,7 +120,7 @@ export async function resolveReportInputs(args) {
 /** Collect the bootstrap report for one portal and its solution layers. */
 export async function bootstrapReport(inputs, { noCache = false, allFields = false } = {}) {
   const timings = {};
-  const profileConfig = resolveDeploymentProfiles(inputs.deploymentProfiles);
+  const profileConfig = resolveDeploymentProfiles(inputs.deploymentProfiles,process.cwd(),{sourceDir:inputs.sourceDir,sourceRoot:inputs.sourceDir});
   if (inputs.deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
   const activeProfiles = await loadDeploymentProfiles(profileConfig);
   let started = performance.now();
@@ -140,7 +143,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
   const webApiTables = Object.entries(portal.settings)
     .filter(([name, value]) => /^Webapi\/[^/]+\/enabled$/i.test(name) && String(value).toLowerCase() === "true")
     .map(([name]) => name.split("/")[1].toLowerCase());
-  const state = applySolutionData(initialState(portal, { metadata: data }), data, {
+  const state = applySolutionData(initialState(portal, { metadata: data, platform: inputs.platform }), data, {
     webApiTables,
     environmentVariables: Object.fromEntries(Object.entries({ ...activeProfiles.environmentVariables, ...inputs.environmentVariables }).map(([name, value]) => [name.toLowerCase(), value])),
     connectionReferences: activeProfiles.connectionReferences,
@@ -305,6 +308,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
     ...(state.simulator.importDiagnostics ?? []).map((d) => ({ ...d, origin: "bootstrap" })),
   ];
   const report = {
+    platformSettings: platformSettingEntries(state),
     generatedAt: new Date().toISOString(),
     inputs: {
       label: inputs.label,

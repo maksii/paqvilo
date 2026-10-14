@@ -447,6 +447,10 @@ async function evaluateAttributes(markup, context) {
   for (const { key, value } of tagAttributes(markup).values()) args[key] = await context.resolve(value);
   return args;
 }
+function fetchDiagnostics(context, value) {
+  const diagnostics = value?.permissionQuery?.diagnostics ?? (value?.details?.permissionDiagnostic ? [value.details.permissionDiagnostic] : []);
+  for (const diagnostic of diagnostics) context.diagnostic(diagnostic.code, diagnostic.message, {...diagnostic,path:context.engine.portalHost.request(context)?.path});
+}
 class LazyFetchXmlQueryDrop extends LiquidDrop {
   constructor({xml,preview,host,context,right}) {
     super();this.xml=xml;this.preview=preview;this.host=host;this.context=context;this.right=right;this.pending=null;
@@ -467,11 +471,13 @@ class LazyFetchXmlQueryDrop extends LiquidDrop {
     let result;
     try {result=await this.host.fetchXml(this.xml,this.host.user(this.context),this.host.request(this.context),{right:this.right,fetchCache:this.context.state.fetchCache??=new FetchRenderCache()})??{};}
     catch(error) {
+      fetchDiagnostics(this.context, error);
       if(isInfrastructureError(error))throw error;
       if(Number(error?.status)===403)result={entities:[],permission_granted:false,global_permission_granted:false};
       else if(this.host.observed?.liquidFetchErrorMessage==='target-invocation')throw new LiquidError('Exception has been thrown by the target of an invocation.',{cause:error});
       else throw error;
     }
+    fetchDiagnostics(this.context, result);
     return {
       entity_name:result.entity_name??/<entity\b[^>]*\bname\s*=\s*["']([^"']+)/i.exec(this.xml)?.[1]??null,
       min_active_row_version:result.min_active_row_version??null,
@@ -508,10 +514,12 @@ class FetchXmlTag extends Block {
       results = (await host.fetchXml(xml, host.user(context), host.request(context), { right, fetchCache: context.state.fetchCache ??= new FetchRenderCache() })) ?? {};
     } catch (error) {
       // FetchXmlQueryDrop: without a table permission granting read, results is an empty
+      fetchDiagnostics(context, error);
       // collection rather than an error; simulator infrastructure failures still propagate.
       if (isInfrastructureError(error) || Number(error?.status) !== 403) throw error;
       results = { entities: [], permission_granted: false, global_permission_granted: false };
     }
+    fetchDiagnostics(context, results);
     const entities = (results.entities ?? []).map((row) => liquidRecord(row));
     // FetchXmlQueryDrop: results exposes the EntityCollection members; xml the executed query.
     context.assignGlobal(this.variable, {

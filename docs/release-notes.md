@@ -2,6 +2,28 @@
 
 ## 0.9.4
 
+Consumer feedback 44, 46-56: declared N:N traversals may select their structural intersect
+keys under endpoint permissions, without granting arbitrary intersect-table reads.
+Permission joins preserve authored `distinct=false`, including row multiplication.
+`PERMISSION_QUERY_ROW_MULTIPLICATION` reports returned/unique roots and grant paths in page
+diagnostics and render-sweep summaries. For consumer queries, retain the generated default
+`distinct=true`, explicitly select the root primary key, and select only needed columns.
+`QueryLinkEntityLimit` includes generated permission links; `PERMISSION_LINK_BUDGET_EXCEEDED`
+reports authored/generated counts and grant paths. Evidenced catalogue/project `platform`
+defaults reach runtimes, contexts and bootstrap/sweep tools; local overrides still win.
+
+Frame release consumes its response and simulator background traffic no longer delays
+acceptance settling. Evidenced paragraph error markup supports hosts reading MessagePanel
+paragraphs. Incomplete cached rich-text resources retain compatibility controls; styles-only
+capture is available with `--no-rich-text`. Capture success follows usable applied shells,
+while `--strict` requires completeness.
+
+Deployment profiles accept source-relative paths and ordered Solution settings file lists.
+Unset connection references are skipped with a named diagnostic; malformed entries still
+fail. Doctor reports profile file/parse readiness, and YAML errors identify safe file and
+line/column locations. Explicitly selected invalid profiles remain startup errors. Dead
+runtime discovery records are pruned without removing records owned by living processes.
+
 Parallel local testing now has cookie-isolated `createPortalSession` clients,
 `connectRuntime().createSession` and `runSessionMatrix` in `paqvilo/mirage/testing`.
 The runner bounds concurrency, serializes caller-owned result recording, reports

@@ -511,12 +511,12 @@ const cookieValue = (value) => {
 
 /**
  * Structural many-to-many traversals of a planned query: link-entities to an
- * intersect that the parent table's relationships declare, selecting none of its
- * columns, whose own links lead only to the relationship's other table. They read
+ * intersect that the parent table's relationships declare, selecting only its
+ * structural endpoint keys, whose own links lead only to the other table. They read
  * the intersect without exposing it as an independently readable table, so the
  * intersect needs no table permission of its own; the tables on both sides do.
  * mappingOf maps the root and each link to its table mapping.
- * Returns Map(link -> { relation, columns }).
+ * Returns Map(link -> { relation, columns, selectable }).
  */
 export function structuralIntersects(plan, mappingOf) {
   const structural = new Map();
@@ -525,12 +525,14 @@ export function structuralIntersects(plan, mappingOf) {
     if (!parent || parent.name === "filter") continue;
     const parentMapping = mappingOf.get(parent);
     const lm = mappingOf.get(link);
-    if (children(link, "attribute").length || children(link, "all-attributes").length) continue;
+    if (children(link, "all-attributes").length) continue;
     const relation = Object.values(parentMapping.relationships ?? {}).find(
       (rel) =>
         rel.intersect?.entity === lm.logicalName &&
         rel.intersect.from === link.attrs.from &&
         rel.from === link.attrs.to &&
+        children(link, "attribute").every(attribute =>
+          [rel.intersect.from, rel.intersect.to].includes(attribute.attrs.name) && !attribute.attrs.aggregate && !attribute.attrs.groupby) &&
         children(link, "link-entity").every(
           (target) =>
             target.attrs.name === rel.entity &&
@@ -542,6 +544,7 @@ export function structuralIntersects(plan, mappingOf) {
       structural.set(link, {
         relation,
         columns: new Set([relation.intersect.from, relation.intersect.to, lm.idColumn]),
+        selectable: new Set([relation.intersect.from, relation.intersect.to]),
       });
   }
   return structural;
@@ -656,7 +659,7 @@ export function executeFetch(plan, ctx) {
     const link = alias == null ? null : plan.byAlias.get(alias);
     const info = link && structural.get(link);
     if (!info) return;
-    if (kind === "attribute")
+    if (kind === "attribute" && !info.selectable.has(attribute))
       fail("FetchXML intersection columns cannot be returned without table permission", 403, "InvalidIntersectionQuery");
     if (!info.columns.has(attribute))
       fail("FetchXML intersection may only inspect mapped structural columns", 403, "InvalidIntersectionQuery");

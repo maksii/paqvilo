@@ -52,7 +52,7 @@ export default async function list(_cfg, args) {
   const rel = (dir) => path.relative(catalogue.configDir, dir).replace(/\\/g, '/') || '.';
 
   // Mirage settings as written (merged over defaults.mirage) and as the mirage command uses them.
-  const mirageOf = (site) => ({ configured: site.mirage ?? null, resolved: resolveMirageConfig(site.mirage, { configDir: catalogue.configDir, sourceRoot: catalogue.sourceRoot }) });
+  const mirageOf = (site) => ({ configured: site.mirage ?? null, resolved: resolveMirageConfig(site.mirage, { configDir: catalogue.configDir, sourceRoot: catalogue.sourceRoot, sourceDir: site.sourceDir }) });
   const mirageText = (resolved, { port = true } = {}) => [
     resolved.project ? `project ${rel(resolved.project)}` : null,
     resolved.solutionRoots.length ? `${resolved.solutionRoots.length} Solution root(s)` : null,

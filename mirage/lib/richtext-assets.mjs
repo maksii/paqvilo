@@ -697,6 +697,7 @@ export async function captureRichTextAssets(
   // A supported-language list in the core library is not a separate language file.
   const languageScripts = [
     editor + "ckeditor.js",
+    editor + "lang/editor-language-resources.js",
     ...Object.values(result.managedControls).flatMap(
       (definition) => definition.scripts ?? [],
     ),
@@ -709,6 +710,7 @@ export async function captureRichTextAssets(
     ))
       bundledLanguages.add((match[1] ?? match[2]).toLowerCase());
   }
+  if (!bundledLanguages.size && library) await capture([editor + 'lang/editor-language-resources.js']);
   result.bundledLanguages = [...bundledLanguages].sort();
   if (observed.fonts.length) {
     try {
@@ -765,6 +767,7 @@ export async function captureRichTextAssets(
   const definitions = Object.values(result.managedControls);
   result.nativeReady =
     result.assetsComplete &&
+    (bundledLanguages.size > 0 || available.includes(editor + 'lang/editor-language-resources.js')) &&
     result.assetFallbacks.length === 0 &&
     !diagnostics.some((diagnostic) =>
       [

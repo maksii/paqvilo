@@ -26,7 +26,7 @@ export function mergeShellProfile(
       !pagePath ||
       normalizePortalPath(item.path) !== normalizePortalPath(pagePath),
   );
-  for (const key of ["footerLogos", "headerNotifications"])
+  for (const key of ["footerLogos", "headerNotifications", "richTextReadiness"])
     if (!Object.hasOwn(observed, key) && previous[key])
       result[key] = structuredClone(previous[key]);
   if (previous.managedControls || observed.managedControls)

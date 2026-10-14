@@ -14,6 +14,7 @@ import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
 import { renderSettings } from '../mirage/lib/render-settings.mjs';
+import { platformConfig } from '../mirage/lib/platform-config.mjs';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
@@ -231,12 +232,12 @@ export function isExtract(dir) {
  * @param {object|null|undefined} raw the site's `mirage` mapping merged over `defaults.mirage`
  * @param {{configDir: string, sourceRoot: string}} where
  */
-export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
+export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
   return {
     project: value.project ? path.resolve(configDir, value.project) : null,
-    ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir) } : {}),
+    ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
     solutionRoots: (value.solutionRoots ?? []).map((root) => path.resolve(sourceRoot, root)),
     // Solution roots are a set layered in their dependency order; explicit keeps the listed order.
@@ -248,6 +249,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
     preset: value.preset ?? null,
     ...(value.presetMode ? { presetMode: value.presetMode } : {}),
     ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
+    ...(value.platform !== undefined ? { platform: platformConfig(value.platform) } : {}),
     // Passed through as configured; the Mirage validates it (observedConfig).
     observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
     // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).
@@ -383,7 +385,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
     sourceMaps: s.PAQVILO_SOURCE_MAPS ? bool(s.PAQVILO_SOURCE_MAPS, 'PAQVILO_SOURCE_MAPS') : root.sourceMaps,
     stateDir: path.join(configDir, '.paqvilo'),
     /** local Mirage runtime settings (`sites.<id>.mirage` over `defaults.mirage`), absolute */
-    mirageConfig: resolveMirageConfig(site.mirage, { configDir, sourceRoot: catalogue.sourceRoot }),
+    mirageConfig: resolveMirageConfig(site.mirage, { configDir, sourceRoot: catalogue.sourceRoot, sourceDir }),
     /** where the choice of site and environment came from, for the summary */
     chosen: { site: siteFrom, env: envFrom },
     notes,

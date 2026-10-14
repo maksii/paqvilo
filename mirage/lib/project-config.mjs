@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import YAML from "yaml";
+import { platformConfig } from './platform-config.mjs';
 import { importPortal } from "./importer.mjs";
 import { importSolutionMetadata } from "./solution-metadata.mjs";
 import { importSolutionData } from "./solution-data.mjs";
@@ -15,7 +16,7 @@ const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform",
 ]);
 
 function list(value, label) {
@@ -35,6 +36,7 @@ function validateOrigin(value, label) {
 
 /** Observed values that are a choice between documented behaviours (B: Web API, data). */
 const OBSERVED_CHOICES = {
+  formSubmissionErrorMarkup: ['inline', 'paragraph'],
   webApiInnerError: ["all-errors", "dataverse-errors"],
   webApiCdsErrorMessage: ["CDS error occurred.", "Common Data Service error occurred."],
   webApiCdsErrorCode: ["innererror", "cdscode"],
@@ -232,6 +234,7 @@ function normalizePortal(entry, index) {
     origin: entry.origin == null ? null : validateOrigin(entry.origin, `portals[${index}].origin`),
     deploymentProfile: entry.deploymentProfile ?? entry.deployment_profile ?? null,
     deploymentProfiles: entry.deploymentProfiles,
+    platform: entry.platform,
     solutionIds: solutions,
     reference: entry.reference == null ? null : String(entry.reference),
     observed: observedConfig(entry.observed, `portals[${index}].observed`),
@@ -346,10 +349,12 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
       throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
     const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) => byId.get(solutionId));
     if (portal.observed?.pluginSources) portal.observed.pluginSources = Object.fromEntries(Object.entries(portal.observed.pluginSources).map(([name, source]) => [name, { ...source, root: source.root ?? base }]));
+    const sourceDir = await resolveSource(portal.sourcePath, "Portal", portal.id);
     return {
       ...portal,
-      deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base),
-      sourceDir: await resolveSource(portal.sourcePath, "Portal", portal.id),
+      platform: platformConfig(portal.platform ?? raw.platform, `portals.${portal.id}.platform`),
+      deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {sourceDir,sourceRoot:base}),
+      sourceDir,
       solutions: selected.map((solution) => solution.id),
       solutionRoots: selected.map((solution) => solution.root),
     };
@@ -427,8 +432,9 @@ export function projectSummary(project, portalId = null) {
     watch: project.watch,
     solutionOrder: project.solutionOrder,
     stateDirectory: project.stateDirectory,
-    portals: project.portals.map(({ id, sourceDir, origin, deploymentProfile, deploymentProfiles, solutions, reference, observed, dataModel }) => ({
+    portals: project.portals.map(({ id, sourceDir, origin, deploymentProfile, deploymentProfiles, platform, solutions, reference, observed, dataModel }) => ({
       id, sourceDir, origin: origin ?? projectOrigin(project, { origin, reference }), deploymentProfile, deploymentProfiles, solutions, reference, observed: observed ?? null, dataModel: dataModel ?? null,
+      ...(platform?{platform}:{}),
     })),
     solutions: project.solutions.map(({ id, root }) => ({ id, root })),
     references: project.references,

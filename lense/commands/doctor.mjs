@@ -82,6 +82,8 @@ export default async function doctor(_cfg, args) {
       for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
       const mirage = item.mirage;
       if (mirage) {
+        if(mirage.deploymentProfiles?.profiles.length)console.log(`  deployment profiles: default ${mirage.deploymentProfiles.default ?? 'none'}; ${mirage.deploymentProfiles.profiles.map(profile=>`${profile.id} ${profile.valid?'valid':'invalid'} (${profile.files.map(file=>`${file.section}: ${file.exists?'found':'missing'}`).join(', ')})`).join('; ')}`);
+        if(mirage.platform)console.log(`  platform defaults (catalogue): ${JSON.stringify(mirage.platform)}`);
         console.log(`  platform stylesheets: ${mirage.platformStyles?.mode === 'captured' ? `captured ${mirage.platformStyles.capturedAt} from ${mirage.platformStyles.origin}` : 'placeholder (local structural form rules)'}`);
         if (mirage.localOverrides?.assets.length || Object.keys(mirage.localOverrides?.compat ?? {}).length) console.log(`  local-only overrides: ${JSON.stringify(mirage.localOverrides)}`);
         const roots = mirage.solutionRoots.roots;

@@ -28,7 +28,7 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       // The image is parsed before DOMContentLoaded. jQuery 3 ready handlers are
       // asynchronous; queue behind them and allow one further macrotask. A
       // throwing ready handler does not prevent the global ready promise settling.
-      const markup = `<img hidden alt="" aria-hidden="true" src="${route}"><script>(function(){document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});})();</script>`;
+      const markup = `<img hidden alt="" aria-hidden="true" src="${route}"><script>(function(){document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){return response.arrayBuffer();}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});})();</script>`;
       return html.slice(0, bodyEnd) + markup + html.slice(bodyEnd);
     },
     handle(req, res, url) {

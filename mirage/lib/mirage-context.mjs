@@ -47,18 +47,20 @@ export async function createMirageContext({ packs = [], config, site, portal, me
   const loaded = await discoverPacks({ portal, packs, project, explicit: cfg?.mirageConfig?.dataPacks ?? allEntries });
   const library = presetLibrary({ packs: loaded, portal, metadata, options });
   class BoundDataStore extends DataStore {
-    constructor(settings = {}) { super({ ...settings, presetLibrary: settings.presetLibrary ?? library }); }
+    constructor(settings = {}) { super({ platform: cfg?.mirageConfig.platform ?? selected?.platform, ...settings, presetLibrary: settings.presetLibrary ?? library }); }
     applyPreset(name, settings = {}) { return super.applyPreset(name, { generatedPresets: library, ...settings }); }
   }
   return Object.freeze({
     packs: Object.freeze([...loaded]), presetLibrary: library,
     DataStore: BoundDataStore,
     createSimulator: settings => createSimulator({
+      platform: cfg?.mirageConfig.platform ?? selected?.platform,
+      render: cfg?.mirageConfig.render,
       ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
       ...(project ? { project: projectSummary(project, selected.id), environmentVariables: project.environmentVariables } : {}),
       ...settings, packs: loaded,
     }),
-    initialState: (source = portal, settings = {}) => initialState(source, { metadata, origin, ...settings, packs: loaded }),
+    initialState: (source = portal, settings = {}) => initialState(source, { metadata, origin, platform: cfg?.mirageConfig.platform ?? selected?.platform, ...settings, packs: loaded }),
     applySolutionData: (state, sourceMetadata = metadata, settings = {}) => applySolutionData(state, sourceMetadata, { ...settings, presetLibrary: library }),
     migrateScenarioState: (state, settings = {}) => migrateScenarioState(state, { ...settings, presetLibrary: library }),
     discoverPacks: async () => [...loaded],

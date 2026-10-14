@@ -105,6 +105,6 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     setSnippet: (name, value) => setPortalValue('portal-snippets', name, value),
     liveConnect: cdpUrl => request('/live/connect', { method: 'POST', body: { cdpUrl } }),
     liveDisconnect: () => request('/live/disconnect', { method: 'POST', body: {} }),
-    captureShell: path => request('/assets/capture-shell', { method: 'POST', body: { path }, captureReport: true }),
+    captureShell: (path, options = {}) => request('/assets/capture-shell', { method: 'POST', body: { path, ...(options.richText === false ? {richText:false} : {}) }, captureReport: true }),
   });
 }
