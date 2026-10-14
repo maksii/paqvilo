@@ -1,0 +1,8 @@
+adx_description: 'Baseline: JSON web template without header and footer.'
+adx_entityname: adx_webpage
+adx_isdefault: false
+adx_name: Baseline Json Template
+adx_pagetemplateid: c8da2ce8-d492-4121-897f-eb15e847a201
+adx_type: 756150001
+adx_usewebsiteheaderandfooter: false
+adx_webtemplateid: 43e70e38-8b45-4373-85cb-995aa7ef4188

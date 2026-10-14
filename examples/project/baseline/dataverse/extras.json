@@ -1,0 +1,565 @@
+{
+  "version": 1,
+  "solution": "PaqviloBaseline",
+  "columns": [
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_richtext",
+      "label": "Rich text",
+      "richText": true,
+      "viaManifest": true
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_autonumber",
+      "label": "Auto number",
+      "kind": "autonumber",
+      "format": "BLI-{SEQNUM:5}",
+      "maxLength": 20,
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_duration",
+      "label": "Duration",
+      "kind": "integer",
+      "format": "Duration",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_timezone",
+      "label": "Time zone",
+      "kind": "integer",
+      "format": "TimeZone",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_language",
+      "label": "Language",
+      "kind": "integer",
+      "format": "Language",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_locale",
+      "label": "Locale",
+      "kind": "integer",
+      "format": "Locale",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_bigint",
+      "label": "Big integer",
+      "kind": "bigint",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_dateonlyuserlocal",
+      "label": "Date only user local",
+      "kind": "datetime",
+      "behavior": "UserLocal",
+      "format": "DateOnly",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_localchoice",
+      "label": "Local choice",
+      "kind": "localchoice",
+      "options": [
+        [
+          "Alpha",
+          1
+        ],
+        [
+          "Beta",
+          2
+        ],
+        [
+          "Gamma",
+          3
+        ]
+      ],
+      "default": 2,
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_secret",
+      "label": "Secret",
+      "secured": true,
+      "viaManifest": true
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_notupdatable",
+      "label": "Not updatable",
+      "kind": "string",
+      "maxLength": 50,
+      "isValidForUpdate": false,
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_calculated",
+      "label": "Calculated",
+      "kind": "calculated",
+      "maxLength": 4000,
+      "manual": "formula",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_formula",
+      "label": "Formula",
+      "kind": "formula",
+      "maxLength": 200,
+      "formula": "Concatenate(pqvd_name, \" / \", pqvd_code)",
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "name": "pqvd_file",
+      "label": "File",
+      "kind": "file",
+      "maxSizeKb": 1024,
+      "viaManifest": false
+    },
+    {
+      "table": "pqvd_baselineparent",
+      "name": "pqvd_rollup",
+      "label": "Rollup",
+      "kind": "rollup",
+      "manual": true,
+      "related": "pqvd_baselineitem",
+      "lookup": "pqvd_parentid",
+      "viaManifest": false
+    }
+  ],
+  "forms": [
+    {
+      "id": "bf599af2-f636-414f-8a8d-05a4306b92ac",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Item",
+      "type": 2,
+      "file": "formxml/item-main.xml"
+    },
+    {
+      "id": "9c8f6aaa-ef77-423f-81fe-7b58b8a19f5e",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Item Compact",
+      "type": 2,
+      "file": "formxml/item-compact.xml"
+    },
+    {
+      "id": "4f4c63fe-2ebe-4a24-8cb3-a1d926f33c47",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Item Lookup Create",
+      "type": 2,
+      "file": "formxml/item-lookup-create.xml"
+    },
+    {
+      "id": "15c3f6a8-774a-4b19-8ead-e64e6505a72e",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Item Card",
+      "type": 11,
+      "file": "formxml/item-card.xml"
+    },
+    {
+      "id": "0b56975b-fd29-4034-808e-1c8b5ff65d8e",
+      "table": "pqvd_baselineparent",
+      "name": "Baseline Parent",
+      "type": 2,
+      "file": "formxml/parent-main.xml"
+    },
+    {
+      "id": "492166ca-e374-4333-8071-1f1945e9ebf0",
+      "table": "pqvd_baselineparent",
+      "name": "Baseline Parent",
+      "type": 11,
+      "file": "formxml/parent-card.xml"
+    },
+    {
+      "id": "aa1000e2-2347-4bc2-893a-4550e96b9531",
+      "table": "pqvd_baselineparent",
+      "name": "Baseline Parent Quick View",
+      "type": 6,
+      "file": "formxml/parent-quick-view.xml"
+    },
+    {
+      "id": "28ed8f58-20fa-434f-8c1b-af99a0294c8e",
+      "table": "pqvd_baselinechild",
+      "name": "Baseline Child",
+      "type": 2,
+      "file": "formxml/child-main.xml"
+    }
+  ],
+  "views": [
+    {
+      "id": "62b3ced1-b09b-4335-833a-138dbbb64555",
+      "table": "pqvd_baselineitem",
+      "name": "Active Baseline Items",
+      "queryType": 0,
+      "fetchFile": "views/item-active.fetch.xml",
+      "layoutFile": "views/item-active.layout.xml",
+      "isDefault": true,
+      "isQuickFind": false
+    },
+    {
+      "id": "54ba3d2e-1978-46b9-8117-187a1f7fbabf",
+      "table": "pqvd_baselineitem",
+      "name": "Inactive Baseline Items",
+      "queryType": 0,
+      "fetchFile": "views/item-inactive.fetch.xml",
+      "layoutFile": "views/item-inactive.layout.xml",
+      "isDefault": false,
+      "isQuickFind": false
+    },
+    {
+      "id": "bc1ea6e1-71fb-45cf-83fd-31496eef427a",
+      "table": "pqvd_baselineitem",
+      "name": "All Baseline Items",
+      "queryType": 0,
+      "fetchFile": "views/item-all.fetch.xml",
+      "layoutFile": "views/item-all.layout.xml",
+      "isDefault": false,
+      "isQuickFind": false
+    },
+    {
+      "id": "7f40c970-3b39-4545-8132-d5643f31998c",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Items by Parent",
+      "queryType": 0,
+      "fetchFile": "views/item-by-parent.fetch.xml",
+      "layoutFile": "views/item-by-parent.layout.xml",
+      "isDefault": false,
+      "isQuickFind": false
+    },
+    {
+      "id": "44824ee4-4326-47ab-80f2-1445f50a5078",
+      "table": "pqvd_baselineparent",
+      "name": "Active Baseline Parents",
+      "queryType": 0,
+      "fetchFile": "views/parent-active.fetch.xml",
+      "layoutFile": "views/parent-active.layout.xml",
+      "isDefault": true,
+      "isQuickFind": false
+    },
+    {
+      "id": "4316e055-456c-401c-8db6-1ddd9afc5b7d",
+      "table": "pqvd_baselinechild",
+      "name": "Active Baseline Children",
+      "queryType": 0,
+      "fetchFile": "views/child-active.fetch.xml",
+      "layoutFile": "views/child-active.layout.xml",
+      "isDefault": true,
+      "isQuickFind": false
+    }
+  ],
+  "platformViewAdjustments": [
+    {
+      "table": "pqvd_baselineitem",
+      "queryType": 4,
+      "retainDefault": true,
+      "retiredFixtureViewId": "6ce4a0fc-b3d8-44dc-8d48-14931aaa9a94"
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "queryType": 64,
+      "fetchFile": "views/item-lookup.fetch.xml",
+      "layoutFile": "views/item-lookup.layout.xml",
+      "retiredFixtureViewId": "e7f6a9aa-32a5-445a-8c8c-a7fe64b87a0f"
+    },
+    {
+      "table": "pqvd_baselineitem",
+      "queryType": 2,
+      "fetchFile": "views/item-associated.fetch.xml",
+      "layoutFile": "views/item-associated.layout.xml",
+      "retiredFixtureViewId": "5d289ad1-174f-4307-8b2b-fa37cfcfcb91"
+    },
+    {
+      "table": "pqvd_baselineparent",
+      "queryType": 4,
+      "retainDefault": true,
+      "retiredFixtureViewId": "a30c0560-66d9-41ca-8025-39b712bb2a9a"
+    },
+    {
+      "table": "pqvd_baselineparent",
+      "queryType": 64,
+      "fetchFile": "views/parent-lookup.fetch.xml",
+      "layoutFile": "views/parent-lookup.layout.xml",
+      "retiredFixtureViewId": "212db7a3-74eb-4391-8aaa-fdd1edc8f272"
+    },
+    {
+      "table": "pqvd_baselinechild",
+      "queryType": 2,
+      "fetchFile": "views/child-associated.fetch.xml",
+      "layoutFile": "views/child-associated.layout.xml",
+      "retiredFixtureViewId": "a4d6aa13-cd5a-40b3-8e21-4f7faf99c5c5"
+    },
+    {
+      "table": "pqvd_baselinechild",
+      "queryType": 4,
+      "retainDefault": true,
+      "retiredFixtureViewId": "ee9ff1fd-4c6e-45f8-8cb8-8e4ceb83c105"
+    }
+  ],
+  "customerLookup": {
+    "table": "pqvd_baselineitem",
+    "name": "pqvd_customerid",
+    "label": "Customer",
+    "relationships": {
+      "account": "pqvd_account_baselineitem_customer",
+      "contact": "pqvd_contact_baselineitem_customer"
+    }
+  },
+  "polymorphicLookup": {
+    "table": "pqvd_baselineitem",
+    "name": "pqvd_anyid",
+    "label": "Any record",
+    "targets": [
+      "pqvd_baselineparent",
+      "account"
+    ],
+    "relationships": {
+      "pqvd_baselineparent": "pqvd_baselineparent_baselineitem_any",
+      "account": "pqvd_account_baselineitem_any"
+    }
+  },
+  "image": {
+    "table": "pqvd_baselineitem",
+    "schemaName": "EntityImage",
+    "maxSizeKb": 1024
+  },
+  "statusReasons": {
+    "pqvd_baselineitem": [
+      {
+        "state": 0,
+        "value": 18327020,
+        "label": "Reviewed"
+      },
+      {
+        "state": 1,
+        "value": 18327021,
+        "label": "Archived"
+      }
+    ]
+  },
+  "defaultViews": [
+    {
+      "id": "62b3ced1-b09b-4335-833a-138dbbb64555",
+      "table": "pqvd_baselineitem"
+    },
+    {
+      "id": "44824ee4-4326-47ab-80f2-1445f50a5078",
+      "table": "pqvd_baselineparent"
+    },
+    {
+      "id": "4316e055-456c-401c-8db6-1ddd9afc5b7d",
+      "table": "pqvd_baselinechild"
+    }
+  ],
+  "businessRules": [
+    {
+      "id": "cdf42a22-0507-4aa3-8662-3a7938dff7d9",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline hide by flag",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_flag",
+        "equals": false
+      },
+      "actions": [
+        {
+          "type": "visibility",
+          "field": "pqvd_hiddenbyrule",
+          "visible": false
+        }
+      ],
+      "otherwise": [
+        {
+          "type": "visibility",
+          "field": "pqvd_hiddenbyrule",
+          "visible": true
+        }
+      ]
+    },
+    {
+      "id": "8d42a73f-e3a0-4bf1-8940-50242da61ed1",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline lock by flag",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_flag",
+        "equals": true
+      },
+      "actions": [
+        {
+          "type": "lock",
+          "field": "pqvd_lockedbyrule",
+          "locked": true
+        }
+      ],
+      "otherwise": [
+        {
+          "type": "lock",
+          "field": "pqvd_lockedbyrule",
+          "locked": false
+        }
+      ]
+    },
+    {
+      "id": "6c8ca0b8-222b-4488-884a-6fa1ea94c250",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline require by text",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_text",
+        "equals": "require"
+      },
+      "actions": [
+        {
+          "type": "required",
+          "field": "pqvd_requiredbyrule",
+          "required": true
+        }
+      ],
+      "otherwise": [
+        {
+          "type": "required",
+          "field": "pqvd_requiredbyrule",
+          "required": false
+        }
+      ]
+    },
+    {
+      "id": "a2b83aea-9197-4e59-8fc7-261b9673d849",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline default value",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_defaultbyrule",
+        "isNull": true
+      },
+      "actions": [
+        {
+          "type": "setDefault",
+          "field": "pqvd_defaultbyrule",
+          "value": "rule default"
+        }
+      ]
+    },
+    {
+      "id": "420b3213-6647-4a34-8dbf-0848b8420beb",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline set value",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_flag",
+        "equals": true
+      },
+      "actions": [
+        {
+          "type": "setValue",
+          "field": "pqvd_setbyrule",
+          "value": "set by rule"
+        }
+      ]
+    },
+    {
+      "id": "24e03a61-ff76-4f60-8e57-b38d8a6d5244",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline show error",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_ruleerror",
+        "greaterThan": 500
+      },
+      "actions": [
+        {
+          "type": "error",
+          "field": "pqvd_ruleerror",
+          "message": "Rule error must be 500 or less"
+        }
+      ]
+    },
+    {
+      "id": "0681666e-2049-44fb-8d0f-a619286ca13b",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline clear value",
+      "scope": "entity",
+      "when": {
+        "field": "pqvd_flag",
+        "equals": false
+      },
+      "actions": [
+        {
+          "type": "clearValue",
+          "field": "pqvd_setbyrule"
+        }
+      ]
+    },
+    {
+      "id": "936fe4a4-93ed-44a6-8c1e-bbbcd0b9b39e",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline all forms scope",
+      "scope": "all-forms",
+      "when": {
+        "field": "pqvd_text",
+        "equals": "all-forms"
+      },
+      "actions": [
+        {
+          "type": "required",
+          "field": "pqvd_recommended",
+          "required": true
+        }
+      ]
+    },
+    {
+      "id": "6e7ade5f-551e-45c9-830c-aa6e9d8bf702",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline form scope",
+      "scope": "form",
+      "formId": "bf599af2-f636-414f-8a8d-05a4306b92ac",
+      "when": {
+        "field": "pqvd_text",
+        "equals": "form-scope"
+      },
+      "actions": [
+        {
+          "type": "visibility",
+          "field": "pqvd_recommended",
+          "visible": false
+        }
+      ]
+    }
+  ],
+  "columnSecurityProfile": {
+    "name": "Paqvilo baseline secured columns",
+    "columns": [
+      {
+        "table": "pqvd_baselineitem",
+        "name": "pqvd_secret",
+        "read": 0,
+        "update": 0,
+        "create": 0
+      }
+    ]
+  },
+  "webResource": {
+    "name": "pqvd_baseline_icon.svg",
+    "displayName": "Baseline icon",
+    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\"><rect width=\"16\" height=\"16\" rx=\"3\" fill=\"#4a6cf7\"/><text x=\"8\" y=\"12\" font-size=\"9\" text-anchor=\"middle\" fill=\"#fff\">B</text></svg>"
+  },
+  "includeAllSubcomponents": [
+    "pqvd_baselineparent",
+    "pqvd_baselineitem",
+    "pqvd_baselinechild"
+  ]
+}

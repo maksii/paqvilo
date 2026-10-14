@@ -1,0 +1,17 @@
+adx_captcharequired: false
+adx_entityformid: afa6e3b5-2e66-4417-80f6-499646568f47
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Contact Reference
+adx_onsuccess: 756150000
+adx_populatereferenceentitylookupfield: true
+adx_referenceentitylogicalname: contact
+adx_referenceentityrelationshipname: pqvd_contact_baselineitem
+adx_referenceentitysourcetype: 756150001
+adx_referencetargetlookupattributelogicalname: pqvd_contactid
+adx_setentityreference: true
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

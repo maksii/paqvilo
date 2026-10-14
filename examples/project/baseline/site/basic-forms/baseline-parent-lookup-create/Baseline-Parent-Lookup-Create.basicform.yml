@@ -1,0 +1,11 @@
+adx_captcharequired: false
+adx_entityformid: afb21148-d182-4b0c-804b-2af70e263224
+adx_entityname: pqvd_baselineparent
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Parent
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Parent Lookup Create
+adx_onsuccess: 756150000
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

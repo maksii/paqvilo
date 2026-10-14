@@ -107,6 +107,16 @@ test('offline compiler orders dependencies and emits global bindings, ownership 
   const form=plan.actions.find(a=>a.kind==='form');assert.equal(form.body.formid,'fa140000-0000-4000-8000-000000000001');assert.equal(form.body.systemformid,undefined);
 });
 
+test('table notes and activities flags reach the entity payload and default to false',()=>{
+  const manifest=fixtureManifest();
+  manifest.tables[0].notes=true; manifest.tables[0].activities=true;
+  const plan=compileManifest(manifest);
+  const node=plan.actions.find(a=>a.key==='table:tst_node').body, leaf=plan.actions.find(a=>a.key==='table:tst_leaf').body;
+  assert.equal(node.HasNotes,true); assert.equal(node.HasActivities,true); assert.equal(leaf.HasNotes,false); assert.equal(leaf.HasActivities,false);
+  manifest.tables[0].notes='yes';
+  assert.throws(()=>compileManifest(manifest),/notes must be boolean/);
+});
+
 test('published XML syntax normalizes without hiding filter, value or ordering drift',()=>{
  const expected={savedqueryid:'fa140000-0000-4000-8000-000000000002',fetchxml:'<fetch><entity name="tst_node"><attribute name="tst_nodeid"/><filter><condition attribute="tst_code" operator="eq" value="x &amp; y"/></filter></entity></fetch>'};
  const actual={...expected,fetchxml:'<fetch savedqueryid="fa140000-0000-4000-8000-000000000002">\n<entity name="tst_node"><attribute name="tst_nodeid" /><filter><condition value="x &amp; y" operator="eq" attribute="tst_code" /></filter></entity></fetch>'};assert.equal(compatible(actual,expected),true);assert.equal(compatible({...actual,fetchxml:actual.fetchxml.replace('x &amp; y','other')},expected),false);assert.equal(compatible({...actual,fetchxml:actual.fetchxml.replace('operator="eq"','operator="ne"')},expected),false);

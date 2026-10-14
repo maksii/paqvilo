@@ -1,0 +1,160 @@
+adx_captcharequired: false
+adx_entityformid: 27876f1e-5529-4588-8d0b-6d6fb8663c99
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000001
+adx_name: Baseline Item Edit Actions
+adx_onsuccess: 756150000
+adx_recordidquerystringparametername: id
+adx_settings: >-
+  {
+    "ActionButtonPlacement": 1,
+    "ActionButtonAlignment": 0,
+    "Actions": [
+      {
+        "Type": "SubmitAction",
+        "ButtonLabel": [
+          {
+            "LCID": 1033,
+            "Value": "Save baseline item"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "LCID": 1033,
+            "Value": "Save the baseline item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "DeleteAction",
+        "ButtonLabel": [
+          {
+            "LCID": 1033,
+            "Value": "Delete baseline item"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "LCID": 1033,
+            "Value": "Delete the baseline item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action",
+        "ConfirmationRequired": true,
+        "Confirmation": [
+          {
+            "LCID": 1033,
+            "Value": "Delete this baseline item?"
+          }
+        ],
+        "RedirectWebpageId": "f7bfd9e2-bb9f-411e-8364-a1c426316aa4"
+      },
+      {
+        "Type": "ActivateAction",
+        "ButtonLabel": [
+          {
+            "LCID": 1033,
+            "Value": "Activate baseline item"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "LCID": 1033,
+            "Value": "Activate"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "DeactivateAction",
+        "ButtonLabel": [
+          {
+            "LCID": 1033,
+            "Value": "Deactivate baseline item"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "LCID": 1033,
+            "Value": "Deactivate"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "CreateRelatedRecordAction",
+        "EntityFormId": "e3e16411-3741-477d-83a1-891c50788e72",
+        "Relationship": "pqvd_baselineitem_baselinechild",
+        "ButtonLabel": [
+          {
+            "LCID": 1033,
+            "Value": "Add baseline child"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "LCID": 1033,
+            "Value": "Create a related child"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      }
+    ],
+    "DeleteDialog": {
+      "Type": "DeleteModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading delete baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Delete baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    }
+  }
+adx_showunsupportedfields: false
+adx_submitbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Save baseline item"
+    }
+  ]
+adx_validationsummarylinksenabled: true

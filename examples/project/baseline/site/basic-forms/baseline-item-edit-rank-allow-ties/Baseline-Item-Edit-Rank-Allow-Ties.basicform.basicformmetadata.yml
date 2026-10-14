@@ -1,0 +1,39 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_controlstyle: 100000005
+  adx_descriptionposition: 100000000
+  adx_entityform: 2c25ccd5-fdf9-4567-8daa-7340b10ca9af
+  adx_entityformmetadataid: 602d07bb-5cde-49dd-8562-c2204df3d697
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-allow-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank Allow Ties pqvd_wholenumber
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_controlstyle: 100000005
+  adx_descriptionposition: 100000000
+  adx_entityform: 2c25ccd5-fdf9-4567-8daa-7340b10ca9af
+  adx_entityformmetadataid: 8c53a0a7-c00a-4152-8af7-868c9bd08add
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-allow-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank Allow Ties pqvd_ruleerror
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_defaulted
+  adx_controlstyle: 100000005
+  adx_descriptionposition: 100000000
+  adx_entityform: 2c25ccd5-fdf9-4567-8daa-7340b10ca9af
+  adx_entityformmetadataid: fd3eb9dd-2233-405b-8c91-f32bd2a76f5f
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-allow-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank Allow Ties pqvd_defaulted
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false

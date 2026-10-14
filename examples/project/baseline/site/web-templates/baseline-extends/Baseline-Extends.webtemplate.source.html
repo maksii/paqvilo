@@ -1,0 +1,1 @@
+{% extends 'Baseline Layout' %}{% block main %}{% include 'Baseline Include Part' part_label: 'Baseline included part' %}<div class="baseline-snippet-text">{{ snippets['Baseline Text Snippet'] }}</div>{% editable snippets 'Baseline Html Snippet' type: 'html', default: 'Baseline snippet missing' %}{{ page.adx_copy }}{% endblock %}

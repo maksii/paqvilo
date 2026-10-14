@@ -7,6 +7,7 @@ export const MIRAGE_TOOLS = Object.freeze({
   'webapi-inventory': toolOptionsHelp('webapi-inventory'),
   'portal-matrix': toolOptionsHelp('portal-matrix'),
   'parity-suite': '--config FILE --site ID --out DIRECTORY [--scenarios FILE] [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL]',
+  'baseline-suite': 'capture|compare --matrix FILE --out DIRECTORY [--side live|mirage] [--config FILE --site ID] [--ids FILE] [--allow-writes] [--allowlist FILE] [--second-live LABEL]',
   'liquid-conformance': '--suite FILE [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
   acceptance: '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY]',
   'enrich-reference': '--state FILE --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE',

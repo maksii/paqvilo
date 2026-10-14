@@ -1,0 +1,117 @@
+adx_createbuttonlabel: New baseline item
+adx_detailsbuttonlabel: View
+adx_emptylisttext: No baseline items.
+adx_entitylistid: 20fa6034-9d07-4bae-84ef-8111a0c24623
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_idquerystringparametername: id
+adx_name: Baseline Item List
+adx_pagesize: 5
+adx_searchenabled: true
+adx_searchplaceholdertext: Search baseline items
+adx_settings: >-
+  {
+    "Type": "CrmEntityFormView-GridMetadata",
+    "ViewActions": [
+      {
+        "Type": "CrmEntityFormView-CreateAction",
+        "TargetType": 1,
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "New baseline item"
+          }
+        ],
+        "RedirectWebpageId": "2753fd10-a83f-46f3-815c-67c431fb6e17"
+      }
+    ],
+    "ItemActions": [
+      {
+        "Type": "CrmEntityFormView-DetailsAction",
+        "TargetType": 1,
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "View"
+          }
+        ],
+        "RedirectWebpageId": "39e68b8c-c898-42a9-8176-0ef87b1e8889"
+      },
+      {
+        "Type": "CrmEntityFormView-EditAction",
+        "TargetType": 1,
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit"
+          }
+        ],
+        "RedirectWebpageId": "bd56474e-c9a6-4328-8388-308e263956d0"
+      },
+      {
+        "Type": "CrmEntityFormView-DeleteAction",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete"
+          }
+        ],
+        "Confirmation": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete this baseline item?"
+          }
+        ]
+      }
+    ],
+    "ExtendedViewActions": [],
+    "ExtendedItemActions": [],
+    "ColumnOverrides": [],
+    "GridColumnWidthStyle": 1
+  }
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555
+adx_views: >-
+  {
+    "Type": "ViewMetadata",
+    "Views": [
+      {
+        "Type": "View",
+        "ViewId": "62b3ced1-b09b-4335-833a-138dbbb64555",
+        "DisplayName": [
+          {
+            "LCID": 1033,
+            "Value": "Active Baseline Items"
+          }
+        ]
+      },
+      {
+        "Type": "View",
+        "ViewId": "54ba3d2e-1978-46b9-8117-187a1f7fbabf",
+        "DisplayName": [
+          {
+            "LCID": 1033,
+            "Value": "Inactive Baseline Items"
+          }
+        ]
+      },
+      {
+        "Type": "View",
+        "ViewId": "bc1ea6e1-71fb-45cf-83fd-31496eef427a",
+        "DisplayName": [
+          {
+            "LCID": 1033,
+            "Value": "All Baseline Items"
+          }
+        ]
+      }
+    ]
+  }
+adx_webpageforcreate: 2753fd10-a83f-46f3-815c-67c431fb6e17
+adx_webpagefordetailsview: 39e68b8c-c898-42a9-8176-0ef87b1e8889

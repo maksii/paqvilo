@@ -1,0 +1,12 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_itemid
+  adx_descriptionposition: 100000000
+  adx_entityform: d9a54c38-32fa-434a-815e-10462e3aaca2
+  adx_entityformforcreate: c67b55ff-055e-41c4-8d57-139239401b4b
+  adx_entityformmetadataid: e6ad509a-2834-457a-86f1-933daa77d7db
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Child Edit Lookup pqvd_itemid
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false

@@ -1,0 +1,11 @@
+adx_captcharequired: false
+adx_entityformid: 3d8a7e86-47b8-4786-821a-4bc5a78f988b
+adx_entityname: pqvd_baselinechild
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Child
+adx_mode: 100000002
+adx_name: Baseline Child Read
+adx_recordidquerystringparametername: id
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

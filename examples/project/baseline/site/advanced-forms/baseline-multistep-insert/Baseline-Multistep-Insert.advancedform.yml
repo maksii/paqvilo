@@ -1,0 +1,13 @@
+adx_authenticationrequired: false
+adx_editexistingrecordpermitted: true
+adx_multiplerecordsperuserpermitted: true
+adx_name: Baseline Multistep Insert
+adx_progressindicatorenabled: true
+adx_progressindicatorignorelaststep: false
+adx_progressindicatorposition: 756150002
+adx_progressindicatorprependstepnum: true
+adx_progressindicatortype: 756150002
+adx_savechangeswarningonclose: false
+adx_startnewsessiononload: false
+adx_startstep: 0b4ddba7-b12a-46dd-8865-30f67d37af05
+adx_webformid: 7bb270b5-0c1b-466d-8230-2e3cbbc776b1

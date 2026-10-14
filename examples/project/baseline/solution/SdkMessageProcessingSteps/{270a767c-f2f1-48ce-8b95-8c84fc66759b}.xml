@@ -1,0 +1,20 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<SdkMessageProcessingStep Name="Baseline: Update pqvd_baselineitem mutate" SdkMessageProcessingStepId="{270a767c-f2f1-48ce-8b95-8c84fc66759b}" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SdkMessageId>20bebb1b-ea3e-db11-86a7-000a3a5473e8</SdkMessageId>
+  <PluginTypeName>Paqvilo.Demo.Plugins.BaselineRules, Paqvilo.Demo.Plugins, Version=1.0.0.0, Culture=neutral, PublicKeyToken=70fb5a9b55e65c6c</PluginTypeName>
+  <PluginTypeId>f717477f-a9da-413a-8131-e7ce1e463800</PluginTypeId>
+  <PrimaryEntity>pqvd_baselineitem</PrimaryEntity>
+  <AsyncAutoDelete>0</AsyncAutoDelete>
+  <Configuration>mutate</Configuration>
+  <FilteringAttributes>pqvd_ticker,pqvd_textarea</FilteringAttributes>
+  <InvocationSource>1</InvocationSource>
+  <Mode>0</Mode>
+  <Rank>20</Rank>
+  <EventHandlerTypeCode>4602</EventHandlerTypeCode>
+  <Stage>20</Stage>
+  <IsCustomizable>1</IsCustomizable>
+  <IsHidden>0</IsHidden>
+  <SupportedDeployment>0</SupportedDeployment>
+  <IntroducedVersion>1.0.0.0</IntroducedVersion>
+  <SdkMessageProcessingStepImages />
+</SdkMessageProcessingStep>

@@ -1,0 +1,107 @@
+#!/usr/bin/env node
+// Generates the offline reference (mirage/docs/baseline/reference.md) from captured live
+// evidence: per component, variation, state and persona it records what rendered, which request
+// sequence fired, which configuration record drives the page (site manifest + catalog ids) and the
+// inventory rows that explain it. Only minimal, redacted excerpts are written; bulk evidence stays
+// in the project's ignored evidence folder.
+//
+//   node scripts/baseline-reference.mjs --evidence <dir> --matrix <matrix.json> [--label live] [--out mirage/docs/baseline/reference.md]
+import fs from "node:fs/promises";
+import path from "node:path";
+import { parseArgs } from "node:util";
+import { fileURLToPath } from "node:url";
+
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const readJson = async (file, fallback = null) => {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch {
+    return fallback;
+  }
+};
+const escape = (text) => String(text ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+function textOf(html) {
+  return html.replace(/<script[\s\S]*?<\/script>/gi, "").replace(/<style[\s\S]*?<\/style>/gi, "").replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function renderSummary(elements, dom) {
+  const visible = elements.filter((e) => e.visible);
+  const controls = visible.filter((e) => ["input", "select", "textarea"].includes(e.tag) && !["hidden", "submit", "button"].includes(e.attributes.type ?? ""));
+  const buttons = visible.filter((e) => (e.tag === "input" && ["submit", "button"].includes(e.attributes.type ?? "")) || e.tag === "button");
+  const text = textOf(dom);
+  const markers = [];
+  for (const [label, pattern] of [["success message", /Submission completed successfully\.|was saved successfully|successfully/i], ["validation summary", /validation-summary|is a required field|field is required/i], ["permission denied", /You don't have the appropriate permissions|appropriate permissions|access denied/i], ["error panel", /An error has occurred|error occurred/i], ["duplicate field notice", /field is present multiple times on this form/i]]) if (pattern.test(text) || pattern.test(dom)) markers.push(label);
+  const grids = visible.filter((e) => e.tag === "table").length;
+  const rows = visible.filter((e) => e.tag === "tr" && e.attributes["data-id"]).length;
+  const modals = elements.filter((e) => /\bmodal\b/.test(e.classes.join(" ")) && e.visible).length;
+  return {
+    controls: controls.length,
+    required: controls.filter((e) => e.required).length,
+    disabled: controls.filter((e) => e.disabled || e.readonly).length,
+    buttons: buttons.map((e) => e.attributes.value ?? e.attributes.title ?? e.attributes["aria-label"] ?? "").filter(Boolean).slice(0, 6),
+    grids,
+    rows,
+    modals,
+    markers,
+    controlIds: controls.map((e) => e.attributes.id ?? e.attributes.name ?? "").filter(Boolean).slice(0, 40),
+  };
+}
+
+function requestSummary(requests) {
+  return requests
+    .filter((r) => r.resourceType === "document" || r.resourceType === "xhr" || r.resourceType === "fetch")
+    .map((r) => `${r.method} ${r.url.replace(GUID, "{guid}").slice(0, 90)} → ${r.response?.status ?? "—"}`);
+}
+
+async function main() {
+  const { values } = parseArgs({ options: { evidence: { type: "string" }, matrix: { type: "string" }, label: { type: "string" }, out: { type: "string" } } });
+  if (!values.evidence || !values.matrix) throw new Error("--evidence and --matrix are required");
+  const label = values.label ?? "live";
+  const matrix = JSON.parse(await fs.readFile(values.matrix, "utf8"));
+  const manifest = await readJson(path.join(root, "examples/project/baseline/site-manifest.json"), { records: [] });
+  const catalog = await readJson(path.join(root, "mirage/docs/baseline/catalog/power-pages.json"), { items: [] });
+  const catalogName = new Map(catalog.items.map((item) => [item.id, item.name]));
+  const byPath = new Map(manifest.records.filter((r) => r.path).map((r) => [r.path, r]));
+  const sections = new Map();
+  let captured = 0;
+  for (const scenario of matrix.scenarios) {
+    const folder = path.join(values.evidence, ...scenario.id.split("/"), label);
+    const meta = await readJson(path.join(folder, "meta.json"));
+    if (!meta) continue;
+    const key = `${scenario.component} · ${scenario.variation}`;
+    const list = sections.get(key) ?? [];
+    const entry = { scenario, meta };
+    if (meta.status === "captured") {
+      captured++;
+      entry.render = renderSummary(await readJson(path.join(folder, "elements.json"), []), await fs.readFile(path.join(folder, "dom.html"), "utf8").catch(() => ""));
+      entry.requests = requestSummary(await readJson(path.join(folder, "requests.json"), []));
+    }
+    list.push(entry);
+    sections.set(key, list);
+  }
+  const lines = ["# Native component reference (offline)", "", `Generated by \`scripts/baseline-reference.mjs\` from the project's captured live evidence (label \`${label}\`), the scenario matrix and the fixture site manifest. Per component and state: what rendered, which requests fired (documents and XHR, query values redacted), which configuration record drives the page and the catalog items it exercises (the inventories explain each item). Captures whose status is not \`captured\` are listed as not observed. Do not edit by hand.`, "", `Scenarios in the matrix: ${matrix.scenarios.length}. Observed: ${captured}.`, ""];
+  for (const [key, entries] of [...sections].sort()) {
+    lines.push(`## ${key}`, "");
+    const page = entries[0].scenario.steps.find((s) => s.goto)?.goto?.split("?")[0];
+    const record = page ? byPath.get(page) : null;
+    if (record) lines.push(`Configuration: ${record.kind} \`${record.name}\` at \`${record.path}\` (${escape(record.variation ?? "")}); catalog items: ${(record.catalog ?? []).slice(0, 12).map((id) => `\`${id}\``).join(", ")}${(record.catalog ?? []).length > 12 ? ", …" : ""}. See the [Power Pages inventory](power-pages-inventory.md) rows for these ids and the [Dataverse inventory](dataverse-inventory.md) for the form/view/column rows named by the page.`, "");
+    lines.push("| State | Persona | Observed | Rendered | Requests (documents and XHR) |", "| --- | --- | --- | --- | --- |");
+    for (const { scenario, meta, render, requests } of entries) {
+      const observed = meta.status === "captured" ? "yes" : `no (${escape(meta.problems?.join("; ") ?? meta.status)})`;
+      const rendered = render ? `title "${escape(meta.title)}"; ${render.controls} controls (${render.required} required, ${render.disabled} read-only); buttons ${render.buttons.map((b) => `"${escape(b)}"`).join(", ") || "none"}; ${render.grids} grids / ${render.rows} rows; ${render.modals} open modals; markers: ${render.markers.join(", ") || "none"}` : "—";
+      const seq = requests ? requests.slice(0, 8).map(escape).join("<br>") + (requests.length > 8 ? `<br>… ${requests.length - 8} more` : "") : "—";
+      lines.push(`| ${scenario.state} | ${scenario.persona ?? "anonymous"} | ${observed} | ${rendered} | ${seq} |`);
+    }
+    lines.push("");
+  }
+  const out = values.out ?? path.join(root, "mirage/docs/baseline/reference.md");
+  await fs.writeFile(out, lines.join("\n"));
+  console.log(JSON.stringify({ out, sections: sections.size, scenarios: matrix.scenarios.length, captured }));
+}
+
+main().catch((error) => {
+  console.error(error.message);
+  process.exitCode = 1;
+});

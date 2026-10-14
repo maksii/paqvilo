@@ -1,0 +1,13 @@
+adx_captcharequired: false
+adx_entityformid: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000001
+adx_name: Baseline Item Edit
+adx_onsuccess: 756150000
+adx_recordidquerystringparametername: id
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

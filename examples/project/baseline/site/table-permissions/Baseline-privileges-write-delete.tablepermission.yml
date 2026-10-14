@@ -1,0 +1,12 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: true
+adx_entitylogicalname: pqvd_baselineitem
+adx_entityname: Baseline privileges write delete
+adx_entitypermission_webrole:
+- 5d031fb8-a8ea-4eae-8dd5-6baf1d414731
+adx_entitypermissionid: 8d28e615-8eec-49fc-898f-67f5e21fb805
+adx_read: false
+adx_scope: 756150000
+adx_write: true

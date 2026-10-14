@@ -1,0 +1,39 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_controlstyle: 100000008
+  adx_descriptionposition: 100000000
+  adx_entityform: 63196fab-acce-47c2-827d-48fdb1f807c2
+  adx_entityformmetadataid: 55f46635-f436-4ee9-82eb-d86b8f24d906
+  adx_fieldisrequired: false
+  adx_groupname: baseline-stack-rank
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Stack Rank pqvd_wholenumber
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_controlstyle: 100000008
+  adx_descriptionposition: 100000000
+  adx_entityform: 63196fab-acce-47c2-827d-48fdb1f807c2
+  adx_entityformmetadataid: c9034e92-9428-498a-8b6c-650557182d8d
+  adx_fieldisrequired: false
+  adx_groupname: baseline-stack-rank
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Stack Rank pqvd_ruleerror
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_defaulted
+  adx_controlstyle: 100000008
+  adx_descriptionposition: 100000000
+  adx_entityform: 63196fab-acce-47c2-827d-48fdb1f807c2
+  adx_entityformmetadataid: 52de67a5-a6e4-4802-82b1-bdafa6fe4768
+  adx_fieldisrequired: false
+  adx_groupname: baseline-stack-rank
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Stack Rank pqvd_defaulted
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false

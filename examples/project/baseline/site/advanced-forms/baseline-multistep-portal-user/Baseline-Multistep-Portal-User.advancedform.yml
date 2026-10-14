@@ -1,0 +1,13 @@
+adx_authenticationrequired: false
+adx_editexistingrecordpermitted: true
+adx_multiplerecordsperuserpermitted: true
+adx_name: Baseline Multistep Portal User
+adx_progressindicatorenabled: true
+adx_progressindicatorignorelaststep: false
+adx_progressindicatorposition: 756150003
+adx_progressindicatorprependstepnum: true
+adx_progressindicatortype: 756150000
+adx_savechangeswarningonclose: false
+adx_startnewsessiononload: false
+adx_startstep: f7880a2e-16ec-4005-8100-248750399228
+adx_webformid: ae2d0336-d8f2-4008-85ae-cfe81d5f3bdf

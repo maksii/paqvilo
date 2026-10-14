@@ -1,0 +1,29 @@
+adx_authenticationrequired: false
+adx_editexistingrecordpermitted: true
+adx_editexpiredmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "This baseline item can no longer be edited."
+    }
+  ]
+adx_editexpiredstatecode: 1
+adx_editexpiredstatuscode: 2
+adx_editnotpermittedmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "You cannot edit this baseline item."
+    }
+  ]
+adx_multiplerecordsperuserpermitted: true
+adx_name: Baseline Multistep
+adx_progressindicatorenabled: true
+adx_progressindicatorignorelaststep: false
+adx_progressindicatorposition: 756150000
+adx_progressindicatorprependstepnum: true
+adx_progressindicatortype: 756150000
+adx_savechangeswarningonclose: false
+adx_startnewsessiononload: false
+adx_startstep: 915a6dab-c0dd-409a-87c4-2672d10e3a02
+adx_webformid: 66333f6d-30ea-41fd-801f-2cbf5c235f17

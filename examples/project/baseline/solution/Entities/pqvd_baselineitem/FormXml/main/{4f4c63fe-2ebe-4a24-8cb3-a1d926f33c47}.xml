@@ -1,0 +1,60 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{4f4c63fe-2ebe-4a24-8cb3-a1d926f33c47}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="create" id="{9CFCA27D-84E1-4DB2-8E21-63DEFCFA6DBA}" IsUserDefined="1" showlabel="true" expanded="true">
+          <labels>
+            <label description="Create" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="create" id="{BED16B67-337F-4087-89EA-DE22973083E7}" showlabel="true" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="Create" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{82D1055C-251B-418A-86F8-8338F159168D}" showlabel="true">
+                        <labels>
+                          <label description="Name" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_name" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{718D86F1-A34C-48DD-84F4-C25E97078DB8}" showlabel="true">
+                        <labels>
+                          <label description="Code" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_code" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_code" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{4EC1A1F2-E008-4128-8120-92B762DBDDF6}" showlabel="true">
+                        <labels>
+                          <label description="Required" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_required" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_required" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Item Lookup Create" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

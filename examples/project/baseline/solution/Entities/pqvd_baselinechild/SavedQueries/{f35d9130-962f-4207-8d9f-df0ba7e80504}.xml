@@ -1,0 +1,36 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<savedqueries xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <savedquery>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>0</CanBeDeleted>
+    <isquickfindquery>0</isquickfindquery>
+    <isprivate>0</isprivate>
+    <isdefault>1</isdefault>
+    <savedqueryid>{f35d9130-962f-4207-8d9f-df0ba7e80504}</savedqueryid>
+    <layoutxml>
+      <grid name="resultset" jump="pqvd_name" select="1" icon="1" preview="1">
+        <row name="result" id="pqvd_baselinechildid">
+          <cell name="pqvd_name" width="200" />
+          <cell name="pqvd_sortorder" width="80" />
+          <cell name="pqvd_note" width="200" />
+        </row>
+      </grid>
+    </layoutxml>
+    <querytype>2</querytype>
+    <fetchxml>
+      <fetch version="1.0" output-format="xml-platform" mapping="logical" distinct="false">
+        <entity name="pqvd_baselinechild">
+          <attribute name="pqvd_baselinechildid" />
+          <attribute name="pqvd_name" />
+          <attribute name="pqvd_sortorder" />
+          <attribute name="pqvd_note" />
+          <order attribute="pqvd_sortorder" descending="false" />
+        </entity>
+      </fetch>
+    </fetchxml>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Child Associated View" languagecode="1033" />
+    </LocalizedNames>
+  </savedquery>
+</savedqueries>

@@ -1,0 +1,60 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{aa1000e2-2347-4bc2-893a-4550e96b9531}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="quick" id="{76384E98-752C-4FBC-826C-1CFA6A4047E0}" IsUserDefined="1" showlabel="true" expanded="true">
+          <labels>
+            <label description="Quick view" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="quick" id="{82DD80F9-BCB6-41F8-84DA-5E5EAA6D9199}" showlabel="true" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="Quick view" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{82D1055C-251B-418A-86F8-8338F159168D}" showlabel="true">
+                        <labels>
+                          <label description="Name" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_name" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{ABAB6FD0-FBC5-4BBC-8D63-5B4E668F1813}" showlabel="true">
+                        <labels>
+                          <label description="Code" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_code" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_code" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{4DA9161C-CADF-4BB7-8E61-C91278844AEE}" showlabel="true">
+                        <labels>
+                          <label description="Rank" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_rank" classid="{C6D124CA-7EDA-4A60-AEA9-7FB8D318B68F}" datafieldname="pqvd_rank" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Parent Quick View" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

@@ -1,0 +1,12 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: contact
+adx_entityname: Baseline Contact Scope self
+adx_entitypermission_webrole:
+- 5d983ff1-320d-440d-8ac6-32d5a4d310ac
+adx_entitypermissionid: b7d3003b-a11e-42e0-8573-884c92aaaa04
+adx_read: true
+adx_scope: 756150004
+adx_write: false

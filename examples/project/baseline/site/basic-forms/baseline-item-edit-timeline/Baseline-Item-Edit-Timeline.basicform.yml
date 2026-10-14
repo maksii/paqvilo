@@ -1,0 +1,13 @@
+adx_captcharequired: false
+adx_entityformid: ea78ecf6-eb67-4a64-8a6c-3a4cb4d4758b
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000001
+adx_name: Baseline Item Edit Timeline
+adx_onsuccess: 756150000
+adx_recordidquerystringparametername: id
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

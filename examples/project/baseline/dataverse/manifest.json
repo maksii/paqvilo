@@ -1,0 +1,469 @@
+{
+  "schemaVersion": 1,
+  "language": 1033,
+  "publisher": {
+    "uniqueName": "Paqvilo",
+    "friendlyName": "Paqvilo",
+    "prefix": "pqvd",
+    "optionValuePrefix": 18327
+  },
+  "solutions": [
+    {
+      "uniqueName": "PaqviloBaseline",
+      "friendlyName": "Paqvilo baseline fixture",
+      "version": "1.0.0.0"
+    }
+  ],
+  "choices": [
+    {
+      "name": "pqvd_baselinecolor",
+      "label": "Baseline color",
+      "solution": "PaqviloBaseline",
+      "options": [
+        {
+          "value": 18327000,
+          "label": "Red"
+        },
+        {
+          "value": 18327001,
+          "label": "Green"
+        },
+        {
+          "value": 18327002,
+          "label": "Blue"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_baselinetag",
+      "label": "Baseline tag",
+      "solution": "PaqviloBaseline",
+      "options": [
+        {
+          "value": 18327010,
+          "label": "North"
+        },
+        {
+          "value": 18327011,
+          "label": "East"
+        },
+        {
+          "value": 18327012,
+          "label": "South"
+        },
+        {
+          "value": 18327013,
+          "label": "West"
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "name": "account",
+      "existing": true,
+      "solution": "PaqviloBaseline",
+      "existingColumns": [
+        "accountid"
+      ]
+    },
+    {
+      "name": "contact",
+      "existing": true,
+      "solution": "PaqviloBaseline",
+      "existingColumns": [
+        "contactid"
+      ]
+    },
+    {
+      "name": "pqvd_baselineparent",
+      "schemaName": "pqvd_baselineparent",
+      "entitySetName": "pqvd_baselineparents",
+      "label": "Baseline Parent",
+      "pluralLabel": "Baseline Parents",
+      "ownership": "organization",
+      "notes": true,
+      "solution": "PaqviloBaseline",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 100,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "type": "string",
+          "maxLength": 20,
+          "required": "required"
+        },
+        {
+          "name": "pqvd_rank",
+          "label": "Rank",
+          "type": "integer",
+          "min": 0,
+          "max": 100
+        },
+        {
+          "name": "pqvd_description",
+          "label": "Description",
+          "type": "memo",
+          "maxLength": 2000
+        }
+      ],
+      "keys": []
+    },
+    {
+      "name": "pqvd_baselineitem",
+      "schemaName": "pqvd_baselineitem",
+      "entitySetName": "pqvd_baselineitems",
+      "label": "Baseline Item",
+      "pluralLabel": "Baseline Items",
+      "ownership": "user",
+      "notes": true,
+      "activities": true,
+      "solution": "PaqviloBaseline",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 100,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "type": "string",
+          "maxLength": 40,
+          "required": "required"
+        },
+        {
+          "name": "pqvd_text",
+          "label": "Text",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_textarea",
+          "label": "Text area",
+          "type": "string",
+          "maxLength": 500,
+          "format": "TextArea"
+        },
+        {
+          "name": "pqvd_email",
+          "label": "Email",
+          "type": "string",
+          "maxLength": 100,
+          "format": "Email"
+        },
+        {
+          "name": "pqvd_url",
+          "label": "Url",
+          "type": "string",
+          "maxLength": 200,
+          "format": "Url"
+        },
+        {
+          "name": "pqvd_phone",
+          "label": "Phone",
+          "type": "string",
+          "maxLength": 50,
+          "format": "Phone"
+        },
+        {
+          "name": "pqvd_ticker",
+          "label": "Ticker",
+          "type": "string",
+          "maxLength": 10,
+          "format": "TickerSymbol"
+        },
+        {
+          "name": "pqvd_richtext",
+          "label": "Rich text",
+          "type": "memo",
+          "maxLength": 4000
+        },
+        {
+          "name": "pqvd_memo",
+          "label": "Memo",
+          "type": "memo",
+          "maxLength": 2000
+        },
+        {
+          "name": "pqvd_wholenumber",
+          "label": "Whole number",
+          "type": "integer",
+          "min": 0,
+          "max": 1000
+        },
+        {
+          "name": "pqvd_decimal",
+          "label": "Decimal",
+          "type": "decimal",
+          "min": -1000,
+          "max": 1000,
+          "precision": 2
+        },
+        {
+          "name": "pqvd_float",
+          "label": "Float",
+          "type": "double",
+          "min": -100000,
+          "max": 100000,
+          "precision": 3
+        },
+        {
+          "name": "pqvd_amount",
+          "label": "Amount",
+          "type": "money",
+          "min": 0,
+          "max": 1000000,
+          "precision": 2
+        },
+        {
+          "name": "pqvd_datetime",
+          "label": "Date and time",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_dateonly",
+          "label": "Date only",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_datetimetzi",
+          "label": "Date time independent",
+          "type": "datetime",
+          "behavior": "TimeZoneIndependent"
+        },
+        {
+          "name": "pqvd_globalchoice",
+          "label": "Global choice",
+          "type": "choice",
+          "choice": "pqvd_baselinecolor",
+          "default": 18327001
+        },
+        {
+          "name": "pqvd_multichoice",
+          "label": "Multi choice",
+          "type": "multichoice",
+          "choice": "pqvd_baselinetag"
+        },
+        {
+          "name": "pqvd_flag",
+          "label": "Flag",
+          "type": "boolean",
+          "default": true
+        },
+        {
+          "name": "pqvd_flagcheckbox",
+          "label": "Flag checkbox",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pqvd_required",
+          "label": "Required",
+          "type": "string",
+          "maxLength": 50,
+          "required": "required"
+        },
+        {
+          "name": "pqvd_recommended",
+          "label": "Recommended",
+          "type": "string",
+          "maxLength": 50,
+          "required": "recommended"
+        },
+        {
+          "name": "pqvd_readonly",
+          "label": "Read only",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_hidden",
+          "label": "Hidden",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_nolabel",
+          "label": "No label",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_wide",
+          "label": "Wide",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_relabelled",
+          "label": "Relabelled",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_hiddenbyrule",
+          "label": "Hidden by rule",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_lockedbyrule",
+          "label": "Locked by rule",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_requiredbyrule",
+          "label": "Required by rule",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_defaultbyrule",
+          "label": "Default by rule",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_setbyrule",
+          "label": "Set by rule",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_ruleerror",
+          "label": "Rule error",
+          "type": "integer",
+          "min": 0,
+          "max": 100000
+        },
+        {
+          "name": "pqvd_secret",
+          "label": "Secret",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_defaulted",
+          "label": "Defaulted",
+          "type": "integer",
+          "min": 0,
+          "max": 100
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_baselineitem_code",
+          "label": "Baseline item code",
+          "columns": [
+            "pqvd_code"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "pqvd_baselinechild",
+      "schemaName": "pqvd_baselinechild",
+      "entitySetName": "pqvd_baselinechilds",
+      "label": "Baseline Child",
+      "pluralLabel": "Baseline Children",
+      "ownership": "user",
+      "solution": "PaqviloBaseline",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 100,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_note",
+          "label": "Note",
+          "type": "memo",
+          "maxLength": 2000
+        },
+        {
+          "name": "pqvd_sortorder",
+          "label": "Sort order",
+          "type": "integer",
+          "min": 0,
+          "max": 1000
+        }
+      ],
+      "keys": []
+    }
+  ],
+  "relationships": [
+    {
+      "name": "pqvd_baselineparent_baselineitem",
+      "kind": "oneToMany",
+      "parent": "pqvd_baselineparent",
+      "child": "pqvd_baselineitem",
+      "solution": "PaqviloBaseline",
+      "lookup": {
+        "name": "pqvd_parentid",
+        "label": "Parent",
+        "required": "recommended"
+      },
+      "cascade": {
+        "Delete": "RemoveLink"
+      }
+    },
+    {
+      "name": "pqvd_contact_baselineitem",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_baselineitem",
+      "solution": "PaqviloBaseline",
+      "lookup": {
+        "name": "pqvd_contactid",
+        "label": "Contact"
+      },
+      "cascade": {
+        "Delete": "RemoveLink",
+        "Merge": "Cascade"
+      }
+    },
+    {
+      "name": "pqvd_account_baselineitem",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_baselineitem",
+      "solution": "PaqviloBaseline",
+      "lookup": {
+        "name": "pqvd_accountid",
+        "label": "Account"
+      },
+      "cascade": {
+        "Delete": "RemoveLink",
+        "Merge": "Cascade"
+      }
+    },
+    {
+      "name": "pqvd_baselineitem_baselinechild",
+      "kind": "oneToMany",
+      "parent": "pqvd_baselineitem",
+      "child": "pqvd_baselinechild",
+      "solution": "PaqviloBaseline",
+      "lookup": {
+        "name": "pqvd_itemid",
+        "label": "Item",
+        "required": "required"
+      },
+      "cascade": {
+        "Delete": "Cascade"
+      }
+    }
+  ],
+  "forms": [],
+  "views": []
+}

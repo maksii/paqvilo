@@ -1,0 +1,8 @@
+adx_description: 'Baseline: web template that extends Baseline Layout, includes Baseline Include Part and places the Baseline snippets.'
+adx_entityname: adx_webpage
+adx_isdefault: false
+adx_name: Baseline Extends Template
+adx_pagetemplateid: 014520f7-8827-4b71-8b66-568017a00d05
+adx_type: 756150001
+adx_usewebsiteheaderandfooter: true
+adx_webtemplateid: 39147c14-3e80-4299-8669-57e66364c372

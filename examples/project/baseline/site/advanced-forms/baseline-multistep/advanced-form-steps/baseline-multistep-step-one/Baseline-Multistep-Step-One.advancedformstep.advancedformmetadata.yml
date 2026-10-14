@@ -1,0 +1,44 @@
+- adx_adddescription: true
+  adx_attributelogicalname: pqvd_text
+  adx_description: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Shown below the field"
+      }
+    ]
+  adx_descriptionposition: 100000001
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_label: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline step text"
+      }
+    ]
+  adx_randomizeoptionsetvalues: false
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: 0d507480-959d-441f-829d-731414d64325
+  adx_webformstep: 915a6dab-c0dd-409a-87c4-2672d10e3a02
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_globalchoice
+  adx_controlstyle: 100000001
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: true
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_requiredfieldvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Choose a baseline colour."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: c90e553d-85a8-49c3-8a31-16f88620c576
+  adx_webformstep: 915a6dab-c0dd-409a-87c4-2672d10e3a02

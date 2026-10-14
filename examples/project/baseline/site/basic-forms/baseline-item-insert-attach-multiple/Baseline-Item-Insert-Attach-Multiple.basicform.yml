@@ -1,0 +1,48 @@
+adx_attachfile: true
+adx_attachfileaccept: application/pdf
+adx_attachfileacceptextensions: '.pdf'
+adx_attachfileallowmultiple: true
+adx_attachfilelabel: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline PDFs"
+    }
+  ]
+adx_attachfilemaxsize: 2048
+adx_attachfilerequired: true
+adx_attachfilerequirederrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Attach at least one baseline PDF."
+    }
+  ]
+adx_attachfilerestrictaccept: true
+adx_attachfilesaveoption: 756150001
+adx_attachfilesizeerrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline attachments must be 2 MB or smaller."
+    }
+  ]
+adx_attachfilestoragelocation: 756150000
+adx_attachfiletypeerrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline attachments must be PDF files."
+    }
+  ]
+adx_captcharequired: false
+adx_entityformid: 4ef8a9ed-9d48-4861-8b21-571f490d20f4
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Attach Multiple
+adx_onsuccess: 756150000
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

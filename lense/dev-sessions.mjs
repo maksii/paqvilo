@@ -64,6 +64,8 @@ export async function startDevSessions(context, selection, { args = {}, attached
             record.stopComparisons = trackOnlineState(session, { compare: (origin, target, options) => compareWebFile(origin, target, { ...options, request: context.request }) });
           }
           session.liveReload = cfg.mirage ? true : Boolean(cfg.liveReload && !args['no-reload']);
+          // Reference captures want the site exactly as the environment serves it: no overlay at all.
+          if (!cfg.mirage && args['no-overrides']) session.bypass = true;
           if (cfg.panel) record.panel = enablePanel(context, session);
           // Mirage watches and reloads its own renderer. Keep this watcher only to refresh
           // the toolkit's source inventory; a second page reload can execute handlers twice.

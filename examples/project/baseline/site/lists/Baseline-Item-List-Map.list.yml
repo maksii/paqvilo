@@ -1,0 +1,22 @@
+adx_entitylistid: 9ea636e3-b28c-457d-8c16-d1b6d5e56678
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_idquerystringparametername: id
+adx_map_distanceunits: 756150001
+adx_map_distancevalues: 5,10,25,50,100
+adx_map_enabled: true
+adx_map_infoboxdescriptionfieldname: pqvd_text
+adx_map_infoboxoffsetx: 25
+adx_map_infoboxoffsety: 46
+adx_map_infoboxtitlefieldname: pqvd_name
+adx_map_latitudefieldname: pqvd_float
+adx_map_longitudefieldname: pqvd_decimal
+adx_map_pushpinheight: 39
+adx_map_pushpinurl: /baseline/baseline-pushpin.png
+adx_map_pushpinwidth: 32
+adx_map_resturl: https://dev.virtualearth.net/REST/v1/Locations
+adx_map_type: 756150000
+adx_map_zoom: 12
+adx_name: Baseline Item List Map
+adx_pagesize: 5
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

@@ -127,6 +127,7 @@ try {
       headed: { type: 'boolean' },
       'signed-in': { type: 'boolean' },
       'no-reload': { type: 'boolean' },
+      'no-overrides': { type: 'boolean' },
       'debug-port': { type: 'string' },
       check: { type: 'boolean' },
       settings: { type: 'boolean' },
@@ -208,7 +209,7 @@ try {
   const selection = ['site', 'env', 'url', 'source', 'repo', 'config', 'scope', 'baseline'];
   const browserSelection = ['browser', 'profile', 'user-data-dir', 'profile-directory'];
   const allowed = {
-    dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'debug-port'],
+    dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'no-overrides', 'debug-port'],
     map: [...selection, 'pick', 'check', 'json'], status: [...selection, 'pick', 'json'],
     verify: [...selection, ...browserSelection, 'pick', 'path', 'headless', 'headed', 'signed-in', 'json', 'strict', 'sign-in-timeout'],
     doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],

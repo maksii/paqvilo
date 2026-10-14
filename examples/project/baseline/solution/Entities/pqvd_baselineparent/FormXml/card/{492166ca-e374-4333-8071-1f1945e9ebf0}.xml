@@ -1,0 +1,89 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{492166ca-e374-4333-8071-1f1945e9ebf0}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="card" id="{CEC7514A-E765-46B9-8313-19F2A27CF1B9}" IsUserDefined="1" showlabel="false" expanded="true">
+          <labels>
+            <label description="Card" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="card:pqvd_baselineparent:ColorStrip" id="{898FA8D5-97C1-4965-8595-83D7F413A8ED}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="ColorStrip" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{AF98D1D1-C29A-499D-8E6D-52C885619C37}" showlabel="true">
+                        <labels>
+                          <label description="Status reason" languagecode="1033" />
+                        </labels>
+                        <control id="statuscode" classid="{5D68B988-0661-4DB2-BC3E-17598AD3BE6C}" datafieldname="statuscode" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineparent:CardHeader" id="{0597CE3A-1F75-49BA-8D2D-8BB8A648F7D2}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardHeader" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{DB2B1D2B-F74A-4642-881F-2A1D16DDE4B6}" showlabel="true">
+                        <labels>
+                          <label description="Name" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_name" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineparent:CardDetails" id="{0F294373-F59F-409A-834D-38EB814777BC}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardDetails" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{3BADC54B-97D9-4A00-8B13-CA366063F2E0}" showlabel="true">
+                        <labels>
+                          <label description="Code" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_code" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_code" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineparent:CardFooter" id="{EC41D3E5-F954-4B61-8465-C9097EF374B1}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardFooter" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{F4AC7C61-D209-4093-8831-EC8742DA5232}" showlabel="true">
+                        <labels>
+                          <label description="Rank" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_rank" classid="{C6D124CA-7EDA-4A60-AEA9-7FB8D318B68F}" datafieldname="pqvd_rank" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Parent" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

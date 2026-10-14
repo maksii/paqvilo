@@ -50,6 +50,7 @@ export function validateManifest(input) {
       customName(table.schemaName ?? table.name); ensure((table.schemaName ?? table.name).toLowerCase() === table.name, 'table schemaName must lowercase to name');
       identifier(table.entitySetName); ensure(table.label && table.pluralLabel && ['organization', 'user'].includes(table.ownership), 'new table label/pluralLabel/ownership required');
       ensure(table.primaryName?.name && table.primaryName.label, 'primaryName required'); customName(table.primaryName.name);
+      for (const flag of ['notes', 'activities']) ensure(table[flag] === undefined || typeof table[flag] === 'boolean', `table ${flag} must be boolean`);
     }
     unique(table.columns, c => c.name, `column on ${table.name}`);
     for (const column of [...table.columns, ...(table.existing ? [] : [table.primaryName])]) {
@@ -133,7 +134,7 @@ export function attributePayload(column, language) {
 }
 
 export function tablePayload(table, language) {
-  return { '@odata.type':'Microsoft.Dynamics.CRM.EntityMetadata', SchemaName:table.schemaName??table.name, EntitySetName:table.entitySetName, DisplayName:label(table.label,language), DisplayCollectionName:label(table.pluralLabel,language), Description:label(table.description??table.label,language), OwnershipType:table.ownership==='user'?'UserOwned':'OrganizationOwned', IsActivity:false, HasActivities:false, HasNotes:false, IsAuditEnabled:managed(table.audit??true), PrimaryNameAttribute:table.primaryName.name, Attributes:[{...attributePayload(table.primaryName,language),IsPrimaryName:true}] };
+  return { '@odata.type':'Microsoft.Dynamics.CRM.EntityMetadata', SchemaName:table.schemaName??table.name, EntitySetName:table.entitySetName, DisplayName:label(table.label,language), DisplayCollectionName:label(table.pluralLabel,language), Description:label(table.description??table.label,language), OwnershipType:table.ownership==='user'?'UserOwned':'OrganizationOwned', IsActivity:false, HasActivities:table.activities===true, HasNotes:table.notes===true, IsAuditEnabled:managed(table.audit??true), PrimaryNameAttribute:table.primaryName.name, Attributes:[{...attributePayload(table.primaryName,language),IsPrimaryName:true}] };
 }
 
 export function relationshipPayload(r, language) {

@@ -1,0 +1,28 @@
+adx_autogeneratesteps: true
+adx_captcharequired: false
+adx_entityformid: 8de5ac6a-682c-4076-850f-22ab95ce8e39
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Steps
+adx_nextbuttoncssclass: btn btn-primary baseline-next
+adx_nextbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Next baseline tab"
+    }
+  ]
+adx_onsuccess: 756150000
+adx_previousbuttoncssclass: btn btn-default baseline-previous
+adx_previousbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Previous baseline tab"
+    }
+  ]
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

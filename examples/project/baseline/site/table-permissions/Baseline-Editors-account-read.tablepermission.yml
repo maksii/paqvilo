@@ -1,0 +1,12 @@
+adx_append: true
+adx_appendto: true
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: account
+adx_entityname: Baseline Editors account read
+adx_entitypermission_webrole:
+- 1bb50c54-0208-489d-8e45-cbcbce1ba837
+adx_entitypermissionid: 00a6e9a9-d2d6-499b-852f-a9066395c453
+adx_read: true
+adx_scope: 756150000
+adx_write: false

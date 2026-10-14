@@ -42,7 +42,7 @@ export async function prepareDemo(directory) {
   }
   await prepareScaffoldDirectory(target);
 
-  for (const name of ['portal', 'solution', 'code-solution', 'metadata', 'pack', 'test', 'components', 'deployment', '.vscode', 'paqvilo-demo.code-workspace', 'paqvilo.config.yml', 'README.md']) {
+  for (const name of ['portal', 'solution', 'code-solution', 'metadata', 'pack', 'test', 'components', 'deployment', 'baseline', '.vscode', 'paqvilo-demo.code-workspace', 'paqvilo.config.yml', 'README.md']) {
     await fs.cp(path.join(STARTER, name), path.join(target, name), {
       recursive: true, errorOnExist: true, force: false,
       // A development checkout can contain build outputs absent from the npm archive.

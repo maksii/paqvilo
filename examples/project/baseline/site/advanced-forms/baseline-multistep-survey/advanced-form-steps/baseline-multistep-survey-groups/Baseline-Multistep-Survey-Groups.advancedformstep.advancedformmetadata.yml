@@ -1,0 +1,114 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_constantsummaximumtotal: 100
+  adx_constantsumminimumtotal: 0
+  adx_constantsumvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "The baseline totals must add up to between 0 and 100."
+      }
+    ]
+  adx_controlstyle: 100000003
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-constant-sum
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: db18bc35-d4c9-4c95-8cf0-a811d5a0a5fb
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_constantsummaximumtotal: 100
+  adx_constantsumminimumtotal: 0
+  adx_constantsumvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "The baseline totals must add up to between 0 and 100."
+      }
+    ]
+  adx_controlstyle: 100000003
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-constant-sum
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: c919351b-e672-4bf8-8965-c0ec0893a9aa
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_flag
+  adx_controlstyle: 100000007
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-multiple-choice
+  adx_ignoredefaultvalue: false
+  adx_maxmultiplechoiceselectedcount: 2
+  adx_minmultiplechoiceselectedcount: 1
+  adx_multiplechoicevalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Choose one or two baseline flags."
+      }
+    ]
+  adx_randomizeoptionsetvalues: false
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: c8ef6cc3-9e9c-4b87-8980-5e8233f609c3
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_flagcheckbox
+  adx_controlstyle: 100000007
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-multiple-choice
+  adx_ignoredefaultvalue: false
+  adx_maxmultiplechoiceselectedcount: 2
+  adx_minmultiplechoiceselectedcount: 1
+  adx_multiplechoicevalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Choose one or two baseline flags."
+      }
+    ]
+  adx_randomizeoptionsetvalues: false
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: 2c275904-da2b-4776-88c3-8d28df835385
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_localchoice
+  adx_controlstyle: 100000006
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-matrix
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: true
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: 18a07946-aa8e-45b9-809f-4fc7129ae401
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_globalchoice
+  adx_controlstyle: 100000006
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-matrix
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: true
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: f7deee3e-652a-482e-82c8-29eec82bf075
+  adx_webformstep: 4f0898bd-99d3-4116-88d8-e20f81221f4d

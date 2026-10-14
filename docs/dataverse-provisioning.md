@@ -95,6 +95,7 @@ One narrow creation-completion step is supported: Dataverse can ignore lookup au
 
 ## Supported components and constraints
 
+- Tables: label, plural label, organisation or user ownership, optional `notes: true` (attachments through annotations) and `activities: true`; both default to false.
 - Columns: string, memo, integer, decimal, double, money, Boolean, DateTime with explicit behaviour, global choice and multi-select choice. Use `maxLength`, numeric min/max/precision, required level, audit flag and optional defaults. DateOnly uses DateOnly behaviour. Each new table has an explicit primary-name definition and organisation or user/team ownership.
 - `existing:true` declares a standard/external table; it must exist remotely. `existingColumns` permits known standard fields in keys. Only declared custom extensions are created. `column.solution` can assign a later extension to a different solution; keys inherit table ownership unless overridden.
 - Choices provide explicit integer values and labels. Columns bind `GlobalOptionSet@odata.bind`; they do not recreate an existing global choice as a local one. Offline plans reference names; apply resolves them to the server's MetadataId for the binding URI. This avoids the GUID parsing failure observed with Name-key write bindings on the connected environment. [Choice API](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/create-update-optionsets).

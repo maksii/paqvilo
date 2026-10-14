@@ -1,0 +1,301 @@
+// Baseline comparison: field-by-field differences between a live capture folder and a Mirage
+// capture folder (requests, responses, DOM, elements), classified against a reviewed allowlist.
+// A second independent live capture, when present, proves which differences are live-run
+// variance. No normalisation hides a difference: every delta is listed, allowed or not.
+import fs from "node:fs/promises";
+import path from "node:path";
+import { createHash } from "node:crypto";
+import { parse, parseFragment, defaultTreeAdapter as adapter } from "parse5";
+
+const sha = (value) => createHash("sha256").update(String(value)).digest("hex").slice(0, 12);
+const readJson = async (file, fallback = null) => {
+  try {
+    return JSON.parse(await fs.readFile(file, "utf8"));
+  } catch (error) {
+    if (error.code === "ENOENT") return fallback;
+    throw error;
+  }
+};
+
+/** Allowlist entries: { id, scope: request|response|dom|element|console, pattern, field, reason, proof, evidence }. */
+export async function loadAllowlist(file) {
+  const data = JSON.parse(await fs.readFile(file, "utf8"));
+  if (data.version !== 1 || !Array.isArray(data.entries)) throw new Error("Allowlist version 1 with entries is required.");
+  for (const entry of data.entries) {
+    for (const key of ["id", "scope", "pattern", "field", "reason", "proof", "evidence"]) if (typeof entry[key] !== "string" || !entry[key]) throw new Error(`Allowlist entry ${entry.id ?? "?"} lacks ${key}.`);
+    if (!["request", "response", "dom", "element", "console"].includes(entry.scope)) throw new Error(`Allowlist entry ${entry.id} has an unknown scope.`);
+    if (!["live-run-variance", "platform-generated"].includes(entry.proof)) throw new Error(`Allowlist entry ${entry.id} needs proof live-run-variance or platform-generated.`);
+    entry.regex = new RegExp(entry.pattern);
+    entry.fieldRegex = new RegExp(entry.field);
+  }
+  return data;
+}
+
+function allowed(delta, allowlist) {
+  for (const entry of allowlist.entries ?? []) if (entry.scope === delta.scope && entry.regex.test(delta.location) && entry.fieldRegex.test(delta.field)) return entry.id;
+  return null;
+}
+
+const delta = (scope, location, field, live, mirage, extra = {}) => ({ scope, location, field, live, mirage, signature: sha(`${scope}|${field}|${typeof live}|${typeof mirage}|${String(live).slice(0, 40)}|${String(mirage).slice(0, 40)}`), ...extra });
+
+function canonicalBody(body, contentType = "") {
+  if (body === null || body === undefined) return null;
+  const text = String(body);
+  if (/json/i.test(contentType) || /^\s*[[{]/.test(text)) {
+    try {
+      return { kind: "json", value: JSON.parse(text) };
+    } catch {
+      /* not JSON */
+    }
+  }
+  if (/x-www-form-urlencoded/i.test(contentType) || (!text.includes("<") && /^[^=&\s]+=[^&]*(?:&[^=&\s]+=[^&]*)*$/.test(text))) {
+    const params = new URLSearchParams(text);
+    return { kind: "form", value: Object.fromEntries([...params.keys()].sort().map((key) => [key, params.getAll(key)])) };
+  }
+  return { kind: "text", value: text };
+}
+
+function diffValue(scope, location, field, a, b, out, depth = 0) {
+  if (depth > 12) return;
+  if (a && b && typeof a === "object" && typeof b === "object" && !Array.isArray(a) && !Array.isArray(b)) {
+    for (const key of new Set([...Object.keys(a), ...Object.keys(b)]).values()) diffValue(scope, location, `${field}.${key}`, a[key], b[key], out, depth + 1);
+    return;
+  }
+  if (Array.isArray(a) && Array.isArray(b)) {
+    if (a.length !== b.length) out.push(delta(scope, location, `${field}.length`, a.length, b.length));
+    for (let i = 0; i < Math.min(a.length, b.length); i++) diffValue(scope, location, `${field}[${i}]`, a[i], b[i], out, depth + 1);
+    return;
+  }
+  if (JSON.stringify(a) !== JSON.stringify(b)) out.push(delta(scope, location, field, a === undefined ? "(absent)" : a, b === undefined ? "(absent)" : b));
+}
+
+function requestKey(request) {
+  return `${request.method} ${request.url.replace(/\?.*$/, "")}`;
+}
+
+/** Align two request sequences in order, then compare each aligned pair field by field. */
+export function compareRequests(live = [], mirage = []) {
+  const out = [];
+  const keysA = live.map(requestKey);
+  const keysB = mirage.map(requestKey);
+  // Longest common subsequence alignment keeps order significant.
+  const dp = Array.from({ length: keysA.length + 1 }, () => new Uint16Array(keysB.length + 1));
+  for (let i = keysA.length - 1; i >= 0; i--) for (let j = keysB.length - 1; j >= 0; j--) dp[i][j] = keysA[i] === keysB[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+  const pairs = [];
+  let i = 0;
+  let j = 0;
+  while (i < keysA.length && j < keysB.length) {
+    if (keysA[i] === keysB[j]) {
+      pairs.push([i, j]);
+      i++;
+      j++;
+    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+      out.push(delta("request", `#${live[i].seq} ${keysA[i]}`, "presence", "present", "(absent)", { position: i }));
+      i++;
+    } else {
+      out.push(delta("request", `#${mirage[j].seq} ${keysB[j]}`, "presence", "(absent)", "present", { position: j }));
+      j++;
+    }
+  }
+  for (; i < keysA.length; i++) out.push(delta("request", `#${live[i].seq} ${keysA[i]}`, "presence", "present", "(absent)", { position: i }));
+  for (; j < keysB.length; j++) out.push(delta("request", `#${mirage[j].seq} ${keysB[j]}`, "presence", "(absent)", "present", { position: j }));
+  for (const [a, b] of pairs) {
+    const A = live[a];
+    const B = mirage[b];
+    const location = `#${A.seq}/${B.seq} ${keysA[a]}`;
+    if (A.url !== B.url) out.push(delta("request", location, "query", A.url, B.url));
+    if (A.resourceType !== B.resourceType) out.push(delta("request", location, "resourceType", A.resourceType, B.resourceType));
+    diffValue("request", location, "headers", A.headers, B.headers, out);
+    const bodyA = canonicalBody(A.body, A.headers?.["content-type"]);
+    const bodyB = canonicalBody(B.body, B.headers?.["content-type"]);
+    if ((bodyA?.kind ?? null) !== (bodyB?.kind ?? null)) out.push(delta("request", location, "body.kind", bodyA?.kind ?? null, bodyB?.kind ?? null));
+    else if (bodyA) diffValue("request", location, "body", bodyA.value, bodyB.value, out);
+    const ra = A.response ?? {};
+    const rb = B.response ?? {};
+    if (ra.status !== rb.status) out.push(delta("response", location, "status", ra.status ?? null, rb.status ?? null));
+    diffValue("response", location, "headers", ra.headers ?? {}, rb.headers ?? {}, out);
+    const typeA = ra.headers?.["content-type"] ?? "";
+    if (ra.body !== undefined || rb.body !== undefined) {
+      if (/text\/html/i.test(typeA) && ra.body && rb.body) diffDom(parse(ra.body), parse(rb.body), out, `${location} body`);
+      else {
+        const ca = canonicalBody(ra.body, typeA);
+        const cb = canonicalBody(rb.body, rb.headers?.["content-type"] ?? "");
+        if ((ca?.kind ?? null) !== (cb?.kind ?? null)) out.push(delta("response", location, "body.kind", ca?.kind ?? null, cb?.kind ?? null));
+        else if (ca) diffValue("response", location, "body", ca.value, cb.value, out);
+      }
+    }
+    if (ra.body === null && rb.body === null && (ra.bodySha256 !== rb.bodySha256 || ra.bodyBytes !== rb.bodyBytes)) out.push(delta("response", location, "body.bytes", `${ra.bodyBytes}:${ra.bodySha256?.slice(0, 12)}`, `${rb.bodyBytes}:${rb.bodySha256?.slice(0, 12)}`));
+  }
+  return out;
+}
+
+const IGNORED_TAGS = new Set(["#comment"]);
+const nodePath = (parents) => parents.join(">");
+const elementKey = (node, index) => `${node.tagName}${node.attrs?.find((a) => a.name === "id")?.value ? "#" + node.attrs.find((a) => a.name === "id").value : `:nth(${index})`}`;
+
+function childElements(node) {
+  return (adapter.getChildNodes(node) ?? []).filter((child) => !IGNORED_TAGS.has(child.nodeName) && child.nodeName !== "#documentType" && !(child.nodeName === "#text" && !child.value.trim()) && !(adapter.isElementNode(child) && (child.tagName === "script" && !isJsonScript(child)) ) && !isPanel(child));
+}
+const isJsonScript = (node) => node.attrs?.some((a) => a.name === "type" && /json/i.test(a.value));
+const isPanel = (node) => adapter.isElementNode(node) && node.attrs?.some((a) => (a.name === "id" && a.value === "paqvilo-panel") || a.name.startsWith("data-paqvilo"));
+const textOf = (node) => (adapter.isTextNode(node) ? node.value.replace(/\s+/g, " ").trim() : adapter.getChildNodes(node)?.map(textOf).join("") ?? "");
+
+/** Structural DOM comparison: tag, attributes (class as ordered list), text of leaf nodes, child order. */
+export function diffDom(a, b, out, root = "dom") {
+  const walk = (x, y, parents, index) => {
+    const location = `${root} ${nodePath(parents)}`;
+    if (adapter.isTextNode(x) || adapter.isTextNode(y)) {
+      const tx = adapter.isTextNode(x) ? x.value.replace(/\s+/g, " ").trim() : `<${x.tagName}>`;
+      const ty = adapter.isTextNode(y) ? y.value.replace(/\s+/g, " ").trim() : `<${y.tagName}>`;
+      if (tx !== ty) out.push(delta("dom", location, "text", tx.slice(0, 400), ty.slice(0, 400)));
+      return;
+    }
+    if (x.tagName !== y.tagName) {
+      out.push(delta("dom", location, "tag", x.tagName, y.tagName));
+      return;
+    }
+    const attrsA = Object.fromEntries((x.attrs ?? []).filter((a) => a.name !== "nonce" && a.name !== "style").map((a) => [a.name, a.value]));
+    const attrsB = Object.fromEntries((y.attrs ?? []).filter((a) => a.name !== "nonce" && a.name !== "style").map((a) => [a.name, a.value]));
+    const here = `${location}>${elementKey(x, index)}`.replace(/^dom >/, "dom ");
+    for (const name of new Set([...Object.keys(attrsA), ...Object.keys(attrsB)])) {
+      if (name === "class") {
+        const ca = (attrsA.class ?? "").split(/\s+/).filter(Boolean).join(" ");
+        const cb = (attrsB.class ?? "").split(/\s+/).filter(Boolean).join(" ");
+        if (ca !== cb) out.push(delta("dom", here, "class", ca, cb));
+      } else if (attrsA[name] !== attrsB[name]) out.push(delta("dom", here, `attr.${name}`, attrsA[name] ?? "(absent)", attrsB[name] ?? "(absent)"));
+    }
+    const styleA = (x.attrs ?? []).find((a) => a.name === "style")?.value?.replace(/\s+/g, "").replace(/;$/, "") ?? "";
+    const styleB = (y.attrs ?? []).find((a) => a.name === "style")?.value?.replace(/\s+/g, "").replace(/;$/, "") ?? "";
+    if (styleA !== styleB) out.push(delta("dom", here, "attr.style", styleA, styleB));
+    if (["script", "style"].includes(x.tagName)) {
+      const sa = textOf(x);
+      const sb = textOf(y);
+      if (sa !== sb) out.push(delta("dom", here, "content", sa.slice(0, 300), sb.slice(0, 300), { contentSha: [sha(sa), sha(sb)] }));
+      return;
+    }
+    const ka = childElements(x);
+    const kb = childElements(y);
+    if (ka.length !== kb.length) out.push(delta("dom", here, "children.length", ka.length, kb.length));
+    const next = [...parents, elementKey(x, index)];
+    for (let k = 0; k < Math.min(ka.length, kb.length); k++) walk(ka[k], kb[k], next, k);
+  };
+  const ra = childElements(a).find((n) => adapter.isElementNode(n)) ?? a;
+  const rb = childElements(b).find((n) => adapter.isElementNode(n)) ?? b;
+  walk(ra, rb, [], 0);
+  return out;
+}
+
+export function compareElements(live = [], mirage = [], out = []) {
+  const byKey = (items) => new Map(items.map((item) => [item.selector, item]));
+  const A = byKey(live);
+  const B = byKey(mirage);
+  for (const [selector, a] of A) {
+    const b = B.get(selector);
+    if (!b) {
+      out.push(delta("element", selector, "presence", "present", "(absent)"));
+      continue;
+    }
+    for (const field of ["tag", "visible", "disabled", "readonly", "required", "value"]) if (JSON.stringify(a[field]) !== JSON.stringify(b[field])) out.push(delta("element", selector, field, a[field] ?? "(absent)", b[field] ?? "(absent)"));
+    if (a.classes.join(" ") !== b.classes.join(" ")) out.push(delta("element", selector, "classes", a.classes.join(" "), b.classes.join(" ")));
+    diffValue("element", selector, "attributes", a.attributes, b.attributes, out);
+  }
+  for (const selector of B.keys()) if (!A.has(selector)) out.push(delta("element", selector, "presence", "(absent)", "present"));
+  return out;
+}
+
+export function compareConsole(live, mirage, out = []) {
+  const norm = (entries) => (entries?.console ?? []).filter((e) => ["error", "warning"].includes(e.type)).map((e) => `${e.type}: ${e.text}`);
+  const a = norm(live);
+  const b = norm(mirage);
+  for (const line of a) if (!b.includes(line)) out.push(delta("console", "console", "entry", line, "(absent)"));
+  for (const line of b) if (!a.includes(line)) out.push(delta("console", "console", "entry", "(absent)", line));
+  for (const line of live?.pageErrors ?? []) if (!(mirage?.pageErrors ?? []).includes(line)) out.push(delta("console", "pageErrors", "entry", line, "(absent)"));
+  for (const line of mirage?.pageErrors ?? []) if (!(live?.pageErrors ?? []).includes(line)) out.push(delta("console", "pageErrors", "entry", "(absent)", line));
+  return out;
+}
+
+async function loadCapture(dir) {
+  const meta = await readJson(path.join(dir, "meta.json"));
+  if (!meta) return null;
+  return {
+    meta,
+    requests: (await readJson(path.join(dir, "requests.json"), [])),
+    elements: (await readJson(path.join(dir, "elements.json"), [])),
+    console: (await readJson(path.join(dir, "console.json"), { console: [], pageErrors: [] })),
+    dom: await fs.readFile(path.join(dir, "dom.html"), "utf8").catch(() => ""),
+  };
+}
+
+export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist }) {
+  const live = await loadCapture(liveDir);
+  const mirage = await loadCapture(mirageDir);
+  const result = { id: scenario.id, verdict: "error", counts: { total: 0, allowed: 0, unexplained: 0 }, deltas: [], variance: null, signatures: [] };
+  if (!live || !mirage) {
+    result.reason = !live ? "live capture missing" : "mirage capture missing";
+    return result;
+  }
+  if (live.meta.status !== "captured" || mirage.meta.status !== "captured") {
+    result.reason = `capture not usable as evidence (live: ${live.meta.status}, mirage: ${mirage.meta.status})`;
+    result.problems = { live: live.meta.problems, mirage: mirage.meta.problems };
+    return result;
+  }
+  const deltas = [];
+  deltas.push(...compareRequests(live.requests, mirage.requests));
+  if (live.meta.finalUrl !== mirage.meta.finalUrl) deltas.push(delta("dom", "finalUrl", "url", live.meta.finalUrl, mirage.meta.finalUrl));
+  if (live.meta.title !== mirage.meta.title) deltas.push(delta("dom", "title", "text", live.meta.title, mirage.meta.title));
+  diffDom(parse(live.dom), parse(mirage.dom), deltas);
+  compareElements(live.elements, mirage.elements, deltas);
+  compareConsole(live.console, mirage.console, deltas);
+  // Live-run variance: deltas that also appear between two independent live captures are reported with that proof.
+  let variance = null;
+  if (secondDir) {
+    const second = await loadCapture(secondDir);
+    if (second?.meta.status === "captured") {
+      const between = [];
+      between.push(...compareRequests(live.requests, second.requests));
+      diffDom(parse(live.dom), parse(second.dom), between);
+      compareElements(live.elements, second.elements, between);
+      variance = new Set(between.map((d) => `${d.scope}|${d.location}|${d.field}`));
+      result.variance = { deltas: between.length, folder: path.basename(secondDir) };
+    }
+  }
+  for (const item of deltas) {
+    item.allowlist = allowed(item, allowlist);
+    if (variance?.has(`${item.scope}|${item.location}|${item.field}`)) item.liveVariance = true;
+  }
+  result.deltas = deltas;
+  result.counts = { total: deltas.length, allowed: deltas.filter((d) => d.allowlist).length, unexplained: deltas.filter((d) => !d.allowlist).length };
+  result.verdict = deltas.length === 0 ? "PASS" : result.counts.unexplained === 0 ? "ALLOWED" : "FAIL";
+  const groups = new Map();
+  for (const item of deltas) {
+    const key = `${item.scope}:${item.field.replace(/\[\d+\]/g, "[n]").replace(/\.\d+/g, ".n")}:${item.signature}`;
+    const group = groups.get(key) ?? { signature: key, scope: item.scope, field: item.field, count: 0, allowed: Boolean(item.allowlist), example: { location: item.location, live: String(item.live).slice(0, 120), mirage: String(item.mirage).slice(0, 120) } };
+    group.count++;
+    groups.set(key, group);
+  }
+  result.signatures = [...groups.values()].sort((a, b) => b.count - a.count);
+  return result;
+}
+
+export function summarize(report) {
+  const totals = { pass: 0, allowed: 0, fail: 0, error: 0 };
+  const bySignature = new Map();
+  for (const scenario of report.scenarios) {
+    totals[scenario.verdict === "PASS" ? "pass" : scenario.verdict === "ALLOWED" ? "allowed" : scenario.verdict === "FAIL" ? "fail" : "error"]++;
+    for (const group of scenario.signatures ?? []) {
+      const entry = bySignature.get(group.signature) ?? { ...group, scenarios: 0, count: 0 };
+      entry.scenarios++;
+      entry.count += group.count;
+      bySignature.set(group.signature, entry);
+    }
+  }
+  return { totals, bySignature: [...bySignature.values()].sort((a, b) => (a.allowed === b.allowed ? b.count - a.count : a.allowed ? 1 : -1)) };
+}
+
+export function summaryMarkdown(report) {
+  const lines = [`# Baseline comparison ${report.generatedAt}`, "", `PASS ${report.totals.pass} · ALLOWED ${report.totals.allowed} · FAIL ${report.totals.fail} · ERROR ${report.totals.error}`, "", "| Scenario | Verdict | Deltas | Allowed | Unexplained |", "| --- | --- | ---: | ---: | ---: |"];
+  for (const scenario of report.scenarios) lines.push(`| ${scenario.id} | ${scenario.verdict} | ${scenario.counts.total} | ${scenario.counts.allowed} | ${scenario.counts.unexplained} |`);
+  lines.push("", "## Distinct differences (unexplained first)", "", "| Signature | Scope | Field | Scenarios | Count | Allowed | Example |", "| --- | --- | --- | ---: | ---: | --- | --- |");
+  for (const group of report.bySignature.slice(0, 200)) lines.push(`| ${group.signature.slice(-12)} | ${group.scope} | ${group.field} | ${group.scenarios} | ${group.count} | ${group.allowed ? "yes" : "no"} | ${group.example.location.slice(0, 80)}: ${JSON.stringify(group.example.live).slice(0, 60)} vs ${JSON.stringify(group.example.mirage).slice(0, 60)} |`);
+  return lines.join("\n") + "\n";
+}

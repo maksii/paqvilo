@@ -1,0 +1,116 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_constantsummaximumtotal: 100
+  adx_constantsumminimumtotal: 0
+  adx_constantsumvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "The baseline totals must add up to between 0 and 100."
+      }
+    ]
+  adx_controlstyle: 100000003
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: 0649941d-ac36-4cfb-88ec-13bdf2e02f1f
+  adx_fieldisrequired: false
+  adx_groupname: baseline-constant-sum
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Survey pqvd_wholenumber
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_constantsummaximumtotal: 100
+  adx_constantsumminimumtotal: 0
+  adx_constantsumvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "The baseline totals must add up to between 0 and 100."
+      }
+    ]
+  adx_controlstyle: 100000003
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: 8f104db8-3a8b-493a-81b8-cc1647f8cd79
+  adx_fieldisrequired: false
+  adx_groupname: baseline-constant-sum
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Survey pqvd_ruleerror
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_flag
+  adx_controlstyle: 100000007
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: 164bc529-5cc0-4183-8d82-5b0ea36249fd
+  adx_fieldisrequired: false
+  adx_groupname: baseline-multiple-choice
+  adx_ignoredefaultvalue: false
+  adx_maxmultiplechoiceselectedcount: 2
+  adx_minmultiplechoiceselectedcount: 1
+  adx_multiplechoicevalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Choose one or two baseline flags."
+      }
+    ]
+  adx_name: Baseline Item Edit Survey pqvd_flag
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_flagcheckbox
+  adx_controlstyle: 100000007
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: 82da2c7e-0fd5-4b29-8e3c-d4122eb5f5aa
+  adx_fieldisrequired: false
+  adx_groupname: baseline-multiple-choice
+  adx_ignoredefaultvalue: false
+  adx_maxmultiplechoiceselectedcount: 2
+  adx_minmultiplechoiceselectedcount: 1
+  adx_multiplechoicevalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Choose one or two baseline flags."
+      }
+    ]
+  adx_name: Baseline Item Edit Survey pqvd_flagcheckbox
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_localchoice
+  adx_controlstyle: 100000006
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: b3846d07-8776-418e-8db4-e79975e1a399
+  adx_fieldisrequired: false
+  adx_groupname: baseline-matrix
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Survey pqvd_localchoice
+  adx_randomizeoptionsetvalues: true
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_globalchoice
+  adx_controlstyle: 100000006
+  adx_descriptionposition: 100000000
+  adx_entityform: e538589e-00de-4595-88d1-5cd6659b3fd8
+  adx_entityformmetadataid: 982488bf-b0a7-43c5-8f8d-39fd572eec5a
+  adx_fieldisrequired: false
+  adx_groupname: baseline-matrix
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Survey pqvd_globalchoice
+  adx_randomizeoptionsetvalues: true
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false

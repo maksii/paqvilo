@@ -1,0 +1,19 @@
+adx_calendar_alldayfieldname: pqvd_flag
+adx_calendar_descriptionfieldname: pqvd_text
+adx_calendar_enabled: true
+adx_calendar_enddatefieldname: pqvd_datetimetzi
+adx_calendar_initialdate: 2026-01-01T00:00:00.0000000
+adx_calendar_initialview: 756150002
+adx_calendar_locationfieldname: pqvd_wide
+adx_calendar_organizerfieldname: pqvd_email
+adx_calendar_startdatefieldname: pqvd_datetime
+adx_calendar_style: 756150000
+adx_calendar_summaryfieldname: pqvd_name
+adx_calendar_timezonemode: 756150000
+adx_entitylistid: 22cfe29f-523b-4006-83e0-787ae48efcc3
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_idquerystringparametername: id
+adx_name: Baseline Item List Calendar Week
+adx_pagesize: 5
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

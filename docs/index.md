@@ -16,6 +16,7 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | Set sources, environments and browser choices | [Configuration](configuration.md) |
 | Add personas, datasets and acceptance tests | [Project starter](../examples/project/README.md), [extensions](project-extensions.md) |
 | Use the browser agent API | [Lense automation](lense.md#automation-and-evidence) |
+| Rerun the native-component baseline comparison | [Baseline runbook](baseline/rerun.md) |
 | Understand support and project boundaries | [Architecture](architecture.md) |
 | Contribute to the toolkit | [Contributing](../CONTRIBUTING.md) |
 

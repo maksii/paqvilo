@@ -1,0 +1,386 @@
+{
+  "schemaVersion": 1,
+  "datasetId": "paqvilo-baseline",
+  "version": "1.0.0",
+  "clock": "2026-10-01T00:00:00Z",
+  "tables": [
+    {
+      "name": "account",
+      "entitySet": "accounts",
+      "primaryId": "accountid",
+      "keys": [
+        [
+          "accountnumber"
+        ]
+      ]
+    },
+    {
+      "name": "contact",
+      "entitySet": "contacts",
+      "primaryId": "contactid",
+      "keys": []
+    },
+    {
+      "name": "pqvd_baselineparent",
+      "entitySet": "pqvd_baselineparents",
+      "primaryId": "pqvd_baselineparentid",
+      "keys": [
+        [
+          "pqvd_code"
+        ]
+      ]
+    },
+    {
+      "name": "pqvd_baselineitem",
+      "entitySet": "pqvd_baselineitems",
+      "primaryId": "pqvd_baselineitemid",
+      "keys": [
+        [
+          "pqvd_code"
+        ]
+      ]
+    },
+    {
+      "name": "pqvd_baselinechild",
+      "entitySet": "pqvd_baselinechilds",
+      "primaryId": "pqvd_baselinechildid",
+      "keys": []
+    },
+    {
+      "name": "annotation",
+      "entitySet": "annotations",
+      "primaryId": "annotationid",
+      "keys": []
+    }
+  ],
+  "records": [
+    {
+      "key": "account",
+      "id": "21e6aa30-190d-4345-8924-b5db0b5de816",
+      "table": "account",
+      "fields": {
+        "name": "Baseline Account",
+        "accountnumber": "BL-ACC-1",
+        "telephone1": "+1 555 0199"
+      },
+      "refs": {},
+      "deferredRefs": []
+    },
+    {
+      "key": "other",
+      "id": "abb1e658-a1e2-4b5b-8c8e-8cc6574a5d02",
+      "table": "contact",
+      "fields": {
+        "firstname": "Baseline",
+        "lastname": "Other Contact",
+        "emailaddress1": "baseline.other@example.invalid"
+      },
+      "refs": {},
+      "deferredRefs": []
+    },
+    {
+      "key": "parent1",
+      "id": "e42440d3-b57b-4900-87e3-a60aec9d1639",
+      "table": "pqvd_baselineparent",
+      "fields": {
+        "pqvd_name": "Baseline Parent One",
+        "pqvd_code": "P-001",
+        "pqvd_rank": 1,
+        "pqvd_description": "First invented parent."
+      },
+      "refs": {},
+      "deferredRefs": []
+    },
+    {
+      "key": "parent2",
+      "id": "215035b3-5028-4100-82a6-0fac42941979",
+      "table": "pqvd_baselineparent",
+      "fields": {
+        "pqvd_name": "Baseline Parent Two",
+        "pqvd_code": "P-002",
+        "pqvd_rank": 2,
+        "pqvd_description": "Second invented parent."
+      },
+      "refs": {},
+      "deferredRefs": []
+    },
+    {
+      "key": "item1",
+      "id": "ba05e707-4ddb-4f85-8054-213c2ea86866",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Alpha",
+        "pqvd_code": "I-001",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_text": "alpha text",
+        "pqvd_textarea": "line one\nline two",
+        "pqvd_email": "alpha@example.invalid",
+        "pqvd_url": "https://example.invalid/alpha",
+        "pqvd_phone": "+1 555 0100",
+        "pqvd_ticker": "ALP",
+        "pqvd_richtext": "<p>Rich <strong>text</strong> value</p>",
+        "pqvd_memo": "Memo paragraph one.\n\nMemo paragraph two.",
+        "pqvd_wholenumber": 42,
+        "pqvd_duration": 90,
+        "pqvd_timezone": 85,
+        "pqvd_language": 1033,
+        "pqvd_decimal": 12.34,
+        "pqvd_float": 1.5,
+        "pqvd_amount": 199.99,
+        "pqvd_bigint": 9007199254740992,
+        "pqvd_datetime": "2026-03-04T10:30:00Z",
+        "pqvd_dateonly": "2026-03-05",
+        "pqvd_datetimetzi": "2026-03-06T08:00:00Z",
+        "pqvd_dateonlyuserlocal": "2026-03-07T00:00:00Z",
+        "pqvd_localchoice": 2,
+        "pqvd_globalchoice": 18327002,
+        "pqvd_multichoice": "18327010,18327012",
+        "pqvd_flag": true,
+        "pqvd_flagcheckbox": true,
+        "pqvd_recommended": "recommended value",
+        "pqvd_readonly": "read only value",
+        "pqvd_hidden": "hidden value",
+        "pqvd_nolabel": "no label value",
+        "pqvd_wide": "wide value",
+        "pqvd_relabelled": "relabelled value",
+        "pqvd_hiddenbyrule": "hidden by rule value",
+        "pqvd_lockedbyrule": "locked by rule value",
+        "pqvd_requiredbyrule": "required by rule value",
+        "pqvd_defaultbyrule": "existing value",
+        "pqvd_setbyrule": "initial",
+        "pqvd_ruleerror": 10,
+        "pqvd_secret": "secret value",
+        "pqvd_notupdatable": "fixed at create",
+        "pqvd_defaulted": 7
+      },
+      "refs": {
+        "pqvd_parentid": "parent1",
+        "pqvd_contactid": null,
+        "pqvd_accountid": "account",
+        "pqvd_customerid": "account",
+        "pqvd_anyid": "parent2"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item2",
+      "id": "7038247f-dfde-4d21-8a94-d9d4a9a5c083",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Beta",
+        "pqvd_code": "I-002",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_flag": false,
+        "pqvd_wholenumber": 7,
+        "pqvd_globalchoice": 18327000,
+        "pqvd_datetime": "2026-01-15T09:00:00Z"
+      },
+      "refs": {
+        "pqvd_parentid": "parent1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item3",
+      "id": "470a6dae-c0e5-4a72-85c0-b2601b2f0e4d",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Gamma",
+        "pqvd_code": "I-003",
+        "pqvd_required": "required value",
+        "statecode": 1,
+        "statuscode": 2,
+        "pqvd_wholenumber": 3
+      },
+      "refs": {
+        "pqvd_parentid": "parent2"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item4",
+      "id": "ab0d551c-46bd-4b40-8c32-d97ef4a7be5b",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Delta",
+        "pqvd_code": "I-004",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_ruleerror": 0,
+        "pqvd_wholenumber": 400,
+        "pqvd_globalchoice": 18327001
+      },
+      "refs": {
+        "pqvd_parentid": "parent2",
+        "pqvd_contactid": "other"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item5",
+      "id": "8f5437f0-e1c8-4356-8dcb-493d849d6c37",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Epsilon",
+        "pqvd_code": "I-005",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 50,
+        "pqvd_decimal": 5.5,
+        "pqvd_datetime": "2026-05-05T05:05:00Z"
+      },
+      "refs": {
+        "pqvd_parentid": "parent1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item6",
+      "id": "47359187-6312-4b12-8b21-7439a701bbfb",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Zeta",
+        "pqvd_code": "I-006",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 60,
+        "pqvd_decimal": 6.5
+      },
+      "refs": {
+        "pqvd_parentid": "parent2"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item7",
+      "id": "76219d19-34f4-45b3-8427-5525cfcb0e94",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Eta",
+        "pqvd_code": "I-007",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 70,
+        "pqvd_multichoice": "18327011"
+      },
+      "refs": {
+        "pqvd_parentid": "parent1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item8",
+      "id": "da17d708-2953-4645-83b8-33b0ec8a0dc3",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Theta",
+        "pqvd_code": "I-008",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 80,
+        "pqvd_flag": false,
+        "pqvd_dateonly": "2026-08-08"
+      },
+      "refs": {
+        "pqvd_parentid": "parent2",
+        "pqvd_contactid": null
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "child1",
+      "id": "9c12a74d-d0e5-4387-89dd-67a0813443ad",
+      "table": "pqvd_baselinechild",
+      "fields": {
+        "pqvd_name": "Child One",
+        "pqvd_sortorder": 1,
+        "pqvd_note": "First child."
+      },
+      "refs": {
+        "pqvd_itemid": "item1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "child2",
+      "id": "f1c21e83-fffe-457a-8429-a9b3e06d99b9",
+      "table": "pqvd_baselinechild",
+      "fields": {
+        "pqvd_name": "Child Two",
+        "pqvd_sortorder": 2,
+        "pqvd_note": "Second child."
+      },
+      "refs": {
+        "pqvd_itemid": "item1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "child3",
+      "id": "18a4e82b-575e-4b92-8f81-79e9618e9a25",
+      "table": "pqvd_baselinechild",
+      "fields": {
+        "pqvd_name": "Child Three",
+        "pqvd_sortorder": 3
+      },
+      "refs": {
+        "pqvd_itemid": "item1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "child4",
+      "id": "3a1d325b-cb8b-4006-88be-b028b4a57196",
+      "table": "pqvd_baselinechild",
+      "fields": {
+        "pqvd_name": "Child Four",
+        "pqvd_sortorder": 1
+      },
+      "refs": {
+        "pqvd_itemid": "item2"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "note1",
+      "id": "b94ddcfe-450e-40c0-89eb-ad26cd3b16ab",
+      "table": "annotation",
+      "fields": {
+        "subject": "Baseline note",
+        "notetext": "A plain note on the alpha item."
+      },
+      "refs": {
+        "objectid": "item1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "note2",
+      "id": "eff0be0b-b0e7-4e44-87e8-561b4162a3b0",
+      "table": "annotation",
+      "fields": {
+        "subject": "Baseline attachment",
+        "notetext": "A note with a text attachment.",
+        "filename": "baseline-brief.txt",
+        "mimetype": "text/plain",
+        "documentbody": "QmFzZWxpbmUgZml4dHVyZSBhdHRhY2htZW50LgpUaGlzIGZpbGUgaXMgaW52ZW50ZWQgdGVzdCBkYXRhLgo=",
+        "isdocument": true
+      },
+      "refs": {
+        "objectid": "item1"
+      },
+      "deferredRefs": []
+    }
+  ],
+  "associations": [],
+  "queries": []
+}

@@ -1,0 +1,304 @@
+adx_entitylistid: 965358d2-15a7-46df-8938-4b84df29216d
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_filteraccount: pqvd_accountid
+adx_idquerystringparametername: id
+adx_key: baseline-item-list-options
+adx_name: Baseline Item List Options
+adx_pagesize: 5
+adx_primarykeyname: pqvd_baselineitemid
+adx_searchenabled: true
+adx_searchtooltiptext: Search baseline items by name
+adx_settings: >-
+  {
+    "Type": "CrmEntityFormView-GridMetadata",
+    "ViewFormats": [],
+    "ViewActions": [
+      {
+        "Type": "CrmEntityFormView-CreateAction",
+        "TargetType": 2,
+        "RedirectUrl": "/baseline/item-create/",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "New baseline item"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Create a baseline item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "CrmEntityFormView-DownloadAction",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Download"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Download the baseline items"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      }
+    ],
+    "ItemActions": [
+      {
+        "Type": "CrmEntityFormView-DetailsAction",
+        "TargetType": 2,
+        "RedirectUrl": "/baseline/item-read/",
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "View"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "View the item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "CrmEntityFormView-EditAction",
+        "TargetType": 2,
+        "RedirectUrl": "/baseline/item-edit/",
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit the item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "CrmEntityFormView-DeleteAction",
+        "ConfirmationRequired": true,
+        "Confirmation": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete this baseline item?"
+          }
+        ],
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete the item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "ActivateAction",
+        "ConfirmationRequired": true,
+        "Confirmation": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Activate this baseline item?"
+          }
+        ],
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Activate"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Activate the item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      },
+      {
+        "Type": "DeactivateAction",
+        "ConfirmationRequired": false,
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Deactivate"
+          }
+        ],
+        "ButtonTooltip": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Deactivate the item"
+          }
+        ],
+        "ButtonCssClass": "btn btn-default baseline-action"
+      }
+    ],
+    "ExtendedViewActions": [],
+    "ExtendedItemActions": [],
+    "ColumnOverrides": [
+      {
+        "AttributeLogicalName": "pqvd_code",
+        "DisplayName": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline code"
+          }
+        ],
+        "Width": 120
+      }
+    ],
+    "LoadingMessage": [
+      {
+        "Type": "LanguageResources",
+        "LCID": 1033,
+        "Value": "Loading baseline items..."
+      }
+    ],
+    "ErrorMessage": [
+      {
+        "Type": "LanguageResources",
+        "LCID": 1033,
+        "Value": "Could not load baseline items."
+      }
+    ],
+    "AccessDeniedMessage": [
+      {
+        "Type": "LanguageResources",
+        "LCID": 1033,
+        "Value": "You do not have access to baseline items."
+      }
+    ],
+    "EmptyMessage": [
+      {
+        "Type": "LanguageResources",
+        "LCID": 1033,
+        "Value": "No baseline items."
+      }
+    ],
+    "CssClass": "baseline-grid",
+    "GridCssClass": "table-striped",
+    "GridColumnWidthStyle": 0,
+    "DeleteDialog": {
+      "Type": "CrmEntityFormView-GridDeleteModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading delete baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Delete baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 1,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "ErrorDialog": {
+      "Type": "CrmEntityFormView-ErrorModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading baseline item error..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Baseline item error"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    }
+  }
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

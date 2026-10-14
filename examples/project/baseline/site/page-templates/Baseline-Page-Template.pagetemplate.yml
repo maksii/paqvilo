@@ -1,0 +1,8 @@
+adx_description: 'Baseline: web template with the site header and footer.'
+adx_entityname: adx_webpage
+adx_isdefault: false
+adx_name: Baseline Page Template
+adx_pagetemplateid: 481945a4-8345-4b09-8099-ca6003810ce3
+adx_type: 756150001
+adx_usewebsiteheaderandfooter: true
+adx_webtemplateid: dcc2122b-176e-4d0d-8ac2-5be4ad0b15ca

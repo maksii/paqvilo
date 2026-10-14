@@ -1,0 +1,15 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<FieldSecurityProfiles xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <FieldSecurityProfile name="Paqvilo baseline secured columns" description="Paqvilo baseline fixture: denies the secured column" fieldsecurityprofileid="{b1310735-13c8-f111-a059-00224899e2a7}">
+    <FieldPermissions>
+      <FieldPermission>
+        <EntityName>pqvd_baselineitem</EntityName>
+        <AttributeName>pqvd_secret</AttributeName>
+        <CanRead>0</CanRead>
+        <CanUpdate>0</CanUpdate>
+        <CanCreate>0</CanCreate>
+        <CanReadUnmasked>0</CanReadUnmasked>
+      </FieldPermission>
+    </FieldPermissions>
+  </FieldSecurityProfile>
+</FieldSecurityProfiles>

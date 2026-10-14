@@ -1,0 +1,238 @@
+adx_entitylistid: d55fd249-2a23-494b-85d5-f214e67a9d27
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_idquerystringparametername: id
+adx_name: Baseline Item List Modal
+adx_pagesize: 5
+adx_settings: >-
+  {
+    "Type": "CrmEntityFormView-GridMetadata",
+    "ViewActions": [
+      {
+        "Type": "CrmEntityFormView-CreateAction",
+        "EntityFormId": "ac7c9ab4-d5b2-4cc7-8e57-5fb22e802a6e",
+        "TargetType": 0,
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "New baseline item"
+          }
+        ]
+      }
+    ],
+    "ItemActions": [
+      {
+        "Type": "CrmEntityFormView-DetailsAction",
+        "EntityFormId": "57774f0b-68ae-4ffa-831a-5728bafb6b60",
+        "TargetType": 0,
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "View"
+          }
+        ]
+      },
+      {
+        "Type": "CrmEntityFormView-EditAction",
+        "EntityFormId": "54fc8e2f-0f98-4338-8521-e61ba0a7a318",
+        "TargetType": 0,
+        "RecordIdQueryStringParameterName": "id",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit"
+          }
+        ]
+      },
+      {
+        "Type": "CrmEntityFormView-DeleteAction",
+        "ButtonLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete"
+          }
+        ]
+      }
+    ],
+    "ExtendedViewActions": [],
+    "ExtendedItemActions": [],
+    "ColumnOverrides": [],
+    "CreateFormDialog": {
+      "Type": "CrmEntityFormView-CreateFormModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading create baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Create baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "DetailsFormDialog": {
+      "Type": "CrmEntityFormView-DetailsFormModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "EditFormDialog": {
+      "Type": "CrmEntityFormView-EditFormModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading edit baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Edit baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "DeleteDialog": {
+      "Type": "CrmEntityFormView-GridDeleteModal",
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading delete baseline item..."
+        }
+      ],
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Delete baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    }
+  }
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555
