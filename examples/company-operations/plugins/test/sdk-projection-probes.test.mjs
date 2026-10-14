@@ -19,7 +19,8 @@ test('actual compiled SDK driver selects TLS 1.2 before reading invalid local in
  const directory=await fs.mkdtemp(path.join(os.tmpdir(),'paq-sdk-transport-'));
  try{
   const project=fileURLToPath(new URL('../SdkProbes/SdkProbes.csproj',import.meta.url));
-  const build=spawnSync('dotnet',['build',project,'--configuration','Release','--output',directory,'--property:RestoreLockedMode=true'],{windowsHide:true,encoding:'utf8',timeout:120000});assert.equal(build.status,0,build.stdout+build.stderr);
+  const restored=process.env.PAQ_TEST_SDK_PROBES_RESTORED==='1';
+  const build=spawnSync('dotnet',['build',project,'--disable-build-servers',...(restored?['--no-restore']:[]),'--configuration','Release','--output',directory,'--property:RestoreLockedMode=true'],{windowsHide:true,encoding:'utf8',timeout:120000});assert.equal(build.status,0,[build.error?.message,build.stdout,build.stderr].filter(Boolean).join('\n'));
   const driver=path.join(directory,'SdkProbes.exe'),source=path.join(directory,'TransportTest.cs'),testExe=path.join(directory,'TransportTest.exe');
   await fs.writeFile(source,'using System;using System.IO;using System.Net;public static class TransportTest{public static int Main(){ServicePointManager.SecurityProtocol=SecurityProtocolType.Tls;Console.SetIn(new StringReader("{invalid\\n"));Console.SetOut(new StringWriter());var exit=SdkProjectionDriver.Main();return exit==2&&ServicePointManager.SecurityProtocol==SecurityProtocolType.Tls12?0:1;}}');
   const compile=spawnSync(path.join(process.env.WINDIR,'Microsoft.NET/Framework64/v4.0.30319/csc.exe'),['/nologo','/target:exe','/out:'+testExe,'/reference:'+driver,source],{windowsHide:true,encoding:'utf8',timeout:20000});assert.equal(compile.status,0,compile.stdout+compile.stderr);

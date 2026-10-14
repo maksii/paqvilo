@@ -223,6 +223,12 @@ jobs:
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
 
+      - name: Restore locked SDK projection driver fixture
+        shell: pwsh
+        run: |
+          dotnet restore examples/company-operations/plugins/SdkProbes/SdkProbes.csproj --locked-mode --disable-build-servers
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PAQ_TEST_SDK_PROBES_RESTORED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
       - name: Company Operations offline regressions
         run: npm run test:company
       - name: Build and execute Company Operations plugin regressions

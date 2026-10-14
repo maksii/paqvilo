@@ -7,6 +7,8 @@ archive bytes through the exclusive file descriptor, and normalize every relativ
 label prefix. A bounded parser reads the collector's fixed identity context as data without
 building a DOM from page text. Hostile-input and archive replacement regressions cover these
 security fixes.
+Windows CI restores the locked SDK driver fixture explicitly before its offline test;
+the test compiles without restore/shared build servers and still executes the TLS assertion.
 
 Consumer feedback 44, 46-56: declared N:N traversals may select their structural intersect
 keys under endpoint permissions, without granting arbitrary intersect-table reads.
