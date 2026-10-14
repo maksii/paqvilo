@@ -114,7 +114,8 @@ export async function pageRunner(page, options) {
     const entry = { seq: ++seq, method, url: request.url(), resourceType: request.resourceType(), headers: request.headers(), body: method === "GET" || method === "HEAD" ? null : request.postData() ?? "", response: null };
     entries.set(request, entry);
     raw.requests.push(entry);
-    inflight.add(request);
+    // Persistent streams (a local runtime's /__sim/events, EventSource, WebSocket) never finish: not in-flight work.
+    if (!/^(?:eventsource|websocket)$/.test(entry.resourceType) && !/^\/__sim\//.test(new URL(entry.url).pathname)) inflight.add(request);
   });
   owned.on("requestfailed", (request) => {
     inflight.delete(request);
@@ -252,12 +253,17 @@ export async function pageRunner(page, options) {
     }
     return out;
   };
+  const started = Date.now();
+  summary.timeline = [];
+  const mark = (name) => summary.timeline.push({ at: Date.now() - started, name });
   try {
     for (const step of scenario.steps ?? []) {
       await runStep(step);
       summary.steps++;
+      mark("step " + summary.steps + " " + Object.keys(step)[0]);
     }
     await settle();
+    mark("settled");
     const url = new URL(owned.url());
     if (url.origin !== origin) summary.problems.push("page left the portal origin (" + url.hostname + ")");
     for (const marker of signInMarkers) if (await owned.locator(marker).count().catch(() => 0)) summary.problems.push("sign-in marker present: " + marker);
@@ -271,8 +277,10 @@ export async function pageRunner(page, options) {
     summary.problems.push(String((error && error.message) || error).slice(0, 500));
   }
   if (summary.problems.length && summary.status === "captured") summary.status = "failed";
+  mark("checked");
   raw.dom = await owned.evaluate(() => document.documentElement.outerHTML).catch(() => "");
   raw.elements = await owned.evaluate(elementInventory).catch(() => []);
+  mark("inventoried");
   raw.title = await owned.title().catch(() => "");
   raw.finalUrl = owned.url();
   try {
@@ -280,6 +288,7 @@ export async function pageRunner(page, options) {
   } catch (error) {
     summary.problems.push("screenshot: " + String(error && error.message).slice(0, 200));
   }
+  mark("screenshot");
   await owned.unroute((url) => url.origin === origin, guard).catch(() => {});
   await owned.close().catch(() => {});
   summary.finishedAt = new Date().toISOString();
@@ -335,6 +344,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
     ...meta,
     capturedAt: summary.finishedAt ?? new Date().toISOString(),
     startedAt: summary.startedAt,
+    timeline: summary.timeline ?? [],
     status: summary.status,
     problems: summary.problems,
     title: normalizeText(raw.title ?? ""),

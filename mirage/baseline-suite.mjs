@@ -114,23 +114,47 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   };
   // Optional scripted portal sign-in through the profile's identity provider. No credentials are
   // involved: the profile's SSO either completes or the run stops and names the human step.
-  if (bridge.signIn) {
+  const fail = async (message, result, folder) => {
+    if (signInOut && result) await writeCapture(result, { outDir: path.join(signInOut, folder), origin: matrix.origin, side: folder, meta: { runtime: "reference" } }).catch(() => {});
+    await saver.close();
+    await client.close();
+    throw new Error(message);
+  };
+  const ensureSignedIn = async () => {
+    if (!bridge.signIn) return;
     const expect = { absent: ["form[action*='/Account/Login/ExternalLogin']", ...(bridge.signIn.expectAbsent ?? [])], present: bridge.signIn.expectPresent ?? [] };
     // Already signed in: the first navigation alone shows the signed-in markers, so the provider click is skipped.
     const first = bridge.signIn.steps.find((step) => step.goto);
     let result = first ? await runInBridge({ id: "sign-in", steps: [first, { wait: 1500 }], expect }, { allowWrites: false }) : { summary: { status: "skipped" } };
     if (result.summary.status !== "captured") result = await runInBridge({ id: "sign-in", steps: bridge.signIn.steps, expect }, { allowWrites: false });
-    if (result.summary.status !== "captured") {
-      if (signInOut) await writeCapture(result, { outDir: signInOut, origin: matrix.origin, side: "sign-in", meta: { runtime: "reference" } }).catch(() => {});
-      await saver.close();
-      await client.close();
-      throw new Error(`Portal sign-in did not complete through the browser profile (${result.summary.problems.join("; ")}). Sign in once in that profile (credential or MFA prompt), then rerun.`);
+    if (result.summary.status !== "captured") await fail(`Portal sign-in did not complete through the browser profile (${result.summary.problems.join("; ")}). Sign in once in that profile (credential or MFA prompt), then rerun.`, result, "sign-in");
+  };
+  const signOut = async () => {
+    if (!bridge.signOut) throw new Error("matrix.live.signOut is required for anonymous scenarios on the live side (steps that sign the portal session out).");
+    const expect = { absent: bridge.signIn?.expectPresent ?? [], ...(bridge.signOut.expect ?? {}) };
+    const result = await runInBridge({ id: "sign-out", steps: bridge.signOut.steps, expect }, { allowWrites: false });
+    if (result.summary.status !== "captured") await fail(`Portal sign-out did not complete (${result.summary.problems.join("; ")}).`, result, "sign-out");
+  };
+  // Role changes reach the portal through its cache: a persona is in effect only once its verification probe passes.
+  const verifyPersona = async (name, verify, ids) => {
+    const attempts = verify.attempts ?? 12;
+    let result;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+      result = await runInBridge({ id: `persona-${name}`, steps: verify.steps, expect: verify.expect ?? {} }, { ids, allowWrites: false });
+      if (result.summary.status === "captured") return attempt;
+      await sleep(verify.delay ?? 15000);
     }
-  }
+    await fail(`Persona ${name} did not take effect on the portal after ${attempts} probes (${result.summary.problems.join("; ")}).`, result, `persona-${name}`);
+  };
+  await ensureSignedIn();
   return {
     name: "live",
-    async persona(name) {
+    async persona(name, { ids = {} } = {}) {
+      const persona = matrix.personas?.[name] ?? {};
       await runHook(matrix.hooks?.livePersona, { persona: name, cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
+      if (persona.anonymous) await signOut();
+      else await ensureSignedIn();
+      if (persona.verify) await verifyPersona(name, persona.verify, ids);
     },
     async reset() {
       await runHook(matrix.hooks?.liveReset, { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
@@ -228,20 +252,28 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
   for (const scenario of selected) {
     const folder = scenarioDir(outDir, scenario, label);
     const personaName = scenario.persona ?? null;
-    const summary = { id: scenario.id, folder: path.relative(outDir, folder) };
+    const summary = { id: scenario.id, folder: path.relative(outDir, folder), ms: {} };
+    const timed = async (name, work) => {
+      const started = Date.now();
+      try {
+        return await work();
+      } finally {
+        summary.ms[name] = Date.now() - started;
+      }
+    };
     try {
       if (personaName !== currentPersona) {
-        await side.persona(personaName ?? "anonymous");
+        await timed("persona", () => side.persona(personaName ?? "anonymous", { ids }));
         currentPersona = personaName;
       }
-      if (scenario.reset !== false) await side.reset();
-      const capture = await side.capture(scenario, { outDir: folder, ids, label, meta: { persona: personaName, component: scenario.component ?? null, variation: scenario.variation ?? null, state: scenario.state ?? null } });
+      if (scenario.reset !== false) await timed("reset", () => side.reset());
+      const capture = await timed("capture", () => side.capture(scenario, { outDir: folder, ids, label, meta: { persona: personaName, component: scenario.component ?? null, variation: scenario.variation ?? null, state: scenario.state ?? null } }));
       Object.assign(summary, { status: capture.status, problems: capture.problems, requests: capture.requests, elements: capture.elements, blockedWrites: capture.blockedWrites?.length ?? 0 });
     } catch (error) {
       Object.assign(summary, { status: "error", problems: [String(error.message).slice(0, 500), ...side.diagnostics().slice(-3)] });
     }
     results.push(summary);
-    console.log(JSON.stringify({ scenario: scenario.id, side: label, status: summary.status, problems: summary.problems ?? [] }));
+    console.log(JSON.stringify({ scenario: scenario.id, side: label, status: summary.status, problems: summary.problems ?? [], ms: summary.ms }));
     await sleep(matrix.delayMs ?? 250);
   }
   return results;

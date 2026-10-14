@@ -13,14 +13,18 @@ import { parseArgs } from "node:util";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+// `verify` is the probe the live side repeats until the portal's permission cache reflects the role change.
+const SIGNED_IN = "a[href*='/Account/Login/LogOff'], a[href*='SignOut'], a[href*='LogOff']";
+const verify = (goto, expect) => ({ steps: [{ goto }, { wait: 1000 }], expect, attempts: 12, delay: 15000 });
 const PERSONAS = {
-  editor: { roles: ["Baseline Editors"] },
-  reader: { roles: ["Baseline Readers"] },
-  "contact-scope": { roles: ["Baseline Contact Scope"] },
-  "account-scope": { roles: ["Baseline Account Scope"] },
-  "parent-scope": { roles: ["Baseline Parent Scope"] },
-  none: { roles: [] },
-  anonymous: { anonymous: true },
+  editor: { roles: ["Baseline Editors"], verify: verify("/baseline/item-create/", { present: ["#pqvd_name", SIGNED_IN] }) },
+  reader: { roles: ["Baseline Readers"], verify: verify("/baseline/item-create/", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
+  "contact-scope": { roles: ["Baseline Contact Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  "account-scope": { roles: ["Baseline Account Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  "parent-scope": { roles: ["Baseline Parent Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  // Lists render their table shell whatever the roles, so "none" is verified on the edit form of a readable record.
+  none: { roles: [], verify: verify("/baseline/item-edit/?id={id:item1}", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
+  anonymous: { anonymous: true, verify: verify("/baseline/item-create/", { absent: [SIGNED_IN] }) },
 };
 const SUBMIT = "input[name$='InsertButton'], input[name$='UpdateButton']";
 const SIGN_IN = [".login-heading-section"];
