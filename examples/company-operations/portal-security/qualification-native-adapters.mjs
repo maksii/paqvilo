@@ -201,12 +201,28 @@ export async function executeQualificationPortalRequest(browser, { portalOrigin,
 async function runQualificationPortalRequest(page, input) {
   await page.goto(input.portalUrl, {waitUntil:'domcontentloaded'});
   return page.evaluate(async input=>{
-    const doc=new DOMParser().parseFromString(document.getElementById('co-context').textContent,'application/xml');
-    const actor=doc.documentElement.getAttribute('contact-id');
+    // The collector owns this fixed context schema. Read it as bounded data,
+    // never reinterpret page text as a DOM document or render decoded role text.
+    const text=document.getElementById('co-context')?.textContent??'';
+    const context=text.length<=65536&&/^\s*<context\s+contact-id="([a-f\d-]*?)"\s*>\s*<roles>([\s\S]*?)<\/roles>\s*<\/context>\s*$/i.exec(text);
+    if(!context||context[1]&&!/^[a-f\d]{8}-(?:[a-f\d]{4}-){3}[a-f\d]{12}$/i.test(context[1]))throw new Error('Invalid native portal context');
+    const actor=context[1],roles=[...context[2].matchAll(/<role>([^<]*)<\/role>/g)];
+    if(roles.length>256||context[2].replaceAll(/<role>[^<]*<\/role>/g,'').trim())throw new Error('Invalid native portal roles');
+    const decode=value=>{
+      if(value.length>4096||/&(?!(?:amp|lt|gt|quot|apos|#\d+|#x[a-f\d]+);)/i.test(value))throw new Error('Invalid native portal role text');
+      return value.replace(/&(amp|lt|gt|quot|apos|#\d+|#x[a-f\d]+);/gi,(_match,entity)=>{
+        const named={amp:'&',lt:'<',gt:'>',quot:'"',apos:"'"};
+        if(Object.hasOwn(named,entity))return named[entity];
+        const point=entity.startsWith('#x')?parseInt(entity.slice(2),16):Number(entity.slice(1));
+        if(!Number.isInteger(point)||point<32&&![9,10,13].includes(point)||point>0x10ffff||point>=0xd800&&point<=0xdfff||point===0xfffe||point===0xffff)throw new Error('Invalid native portal role entity');
+        return String.fromCodePoint(point);
+      });
+    };
+    const roleNames=roles.map(role=>decode(role[1]));
     if(input.anonymous?actor&&actor!=='00000000-0000-0000-0000-000000000000':actor!==input.actor)throw new Error('Native portal actor changed');
     const token=await new Promise((resolve,reject)=>shell.getTokenDeferred().done(resolve).fail(reject));
     const response=await fetch(input.request.url,{method:input.request.method,headers:{Accept:'application/json','Content-Type':'application/json','__RequestVerificationToken':token,...(input.request.ifMatch?{'If-Match':input.request.ifMatch}:{})},body:input.request.body===undefined?undefined:JSON.stringify(input.request.body),credentials:'same-origin',redirect:'error',cache:'no-store'});
-    return {identityReceipt:{serverVerified:true,contactId:actor||'00000000-0000-0000-0000-000000000000',roleNames:[...doc.querySelectorAll('role')].map(role=>role.textContent)},wire:{status:response.status,mime:response.headers.get('content-type'),body:await response.text()},entityId:response.headers.get('entityid')};
+    return {identityReceipt:{serverVerified:true,contactId:actor||'00000000-0000-0000-0000-000000000000',roleNames},wire:{status:response.status,mime:response.headers.get('content-type'),body:await response.text()},entityId:response.headers.get('entityid')};
   }, input);
 }
 

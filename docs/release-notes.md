@@ -4,7 +4,9 @@
 
 Example qualification tools serialize browser request inputs as data, verify immutable
 archive bytes through the exclusive file descriptor, and normalize every relative archive
-label prefix. Hostile-input and archive replacement regressions cover these security fixes.
+label prefix. A bounded parser reads the collector's fixed identity context as data without
+building a DOM from page text. Hostile-input and archive replacement regressions cover these
+security fixes.
 
 Consumer feedback 44, 46-56: declared N:N traversals may select their structural intersect
 keys under endpoint permissions, without granting arbitrary intersect-table reads.

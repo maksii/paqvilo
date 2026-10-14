@@ -77,8 +77,7 @@ test('portal qualification serializes hostile request values as data and rejects
   const hostile='"});globalThis.injected=true;//` ${globalThis.injected=true}\u2028\u2029';
   let browserCalls=0,fetchCalls=0,body;
   const context=vm.createContext({
-    document:{getElementById:()=>({textContent:'synthetic context'})},
-    DOMParser:class {parseFromString(){return {documentElement:{getAttribute:()=>actor},querySelectorAll:()=>[]};}},
+    document:{getElementById:()=>({textContent:`<context contact-id="${actor}"><roles><role>A &amp; B &lt;x&gt; &#x1F680;</role></roles></context>`})},
     shell:{getTokenDeferred:()=>({done(resolve){resolve('invented-token');return this;},fail(){return this;}})},
     fetch:async(url,options)=>{fetchCalls++;body=JSON.parse(options.body);assert.equal(options.redirect,'error');assert.equal(options.headers['If-Match'],hostile);return {status:200,headers:{get:()=>null},text:async()=>'{}'};},
   });
@@ -89,8 +88,19 @@ test('portal qualification serializes hostile request values as data and rejects
   const result=await executeQualificationPortalRequest(browser,options);
   assert.equal(result.wire.status,200);assert.equal(browserCalls,1);assert.equal(fetchCalls,1);
   assert.equal(body.name,hostile);assert.equal(context.injected,undefined);
+  assert.deepEqual(Array.from(result.identityReceipt.roleNames),['A & B <x> 🚀']);
   assert.equal(JSON.parse(await fs.readFile(journalFile)).status,'response-received');
 }));
+
+test('portal qualification rejects malformed context or embedded markup before any mutation',async()=>{
+  for(const text of ['<context contact-id="wrong"><roles/></context>',`<context contact-id="${actor}"><roles><role><script>bad</script></role></roles></context>`,`<context contact-id="${actor}"><roles><role>&unknown;</role></roles></context>`])await workspace(async journalFile=>{
+    let writes=0;
+    const context=vm.createContext({document:{getElementById:()=>({textContent:text})},fetch:async()=>{writes++;throw new Error('must not write');}});
+    const browser={run:async program=>vm.runInContext(program,context)({goto:async()=>{},evaluate:async(callback,input)=>callback(input)})};
+    await assert.rejects(executeQualificationPortalRequest(browser,{portalOrigin:'https://portal.invalid',actorContactId:actor,request:{method:'DELETE',url:`/_api/assets(${id(3)})`},journalFile}),/outcome unknown/);
+    assert.equal(writes,0);
+  });
+});
 
 test('CRUD planning uses independent Create identities and binds Append source versus AppendTo destination by native navigation', () => {
   const fixtures = fixture(), own = fixtures.records[0], parent = { ...own, id: id(8), table: 'container', fields: { title: token }, refs: {} };
