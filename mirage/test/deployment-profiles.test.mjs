@@ -150,9 +150,13 @@ test('external profile changes reload local rendering and seeded values with a n
   await fs.writeFile(path.join(fixture.root, 'profiles/dev.yml'), 'adx_contentsnippet:\n- adx_contentsnippetid: greeting\n  adx_value: Reloaded');
   // Poll the bounded local watcher rather than assuming a fixed delay.
   const end = Date.now() + 10000;
-  while (app.portal.snippets.Greeting !== 'Reloaded' && Date.now() < end) await new Promise(resolve => setTimeout(resolve, 50));
+  let published = await status();
+  while ((app.portal.snippets.Greeting !== 'Reloaded' || published.sourceFingerprint === fingerprint) && Date.now() < end) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    published = await status();
+  }
   assert.equal(app.portal.snippets.Greeting, 'Reloaded');
-  assert.notEqual((await status()).sourceFingerprint, fingerprint);
+  assert.notEqual(published.sourceFingerprint, fingerprint);
   await fs.writeFile(path.join(fixture.root, 'profiles/dev-settings.json'), JSON.stringify({ EnvironmentVariables: [{ SchemaName: 'sample_Url', Value: 'Reloaded variable' }], ConnectionReferences: [] }));
   const valuesEnd = Date.now() + 10000;
   while (app.state().data.environmentvariablevalue[0].value !== 'Reloaded variable' && Date.now() < valuesEnd) await new Promise(resolve => setTimeout(resolve, 50));
