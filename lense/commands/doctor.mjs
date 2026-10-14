@@ -42,7 +42,7 @@ export default async function doctor(_cfg, args) {
   const catalogue = loadCatalogue(args);
   const reports = [];
   const names = args.all ? Object.keys(catalogue.sites) : [args.site];
-  // Mirage readiness is reported beside the overlay checks; it does not change their verdict.
+  // Opt in to gating on Mirage while preserving the Lense-only default verdict.
   const { dependencyReadiness } = await import('../../scripts/ensure-dependencies.mjs');
   const dependencies = dependencyReadiness(TOOL_ROOT);
   for (const site of names) {
@@ -51,6 +51,8 @@ export default async function doctor(_cfg, args) {
       const started = performance.now();
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
       report.mirage = await mirageReadiness(cfg, { dependencies });
+      report.lenseReady = report.ready;
+      if (args.mirage) report.ready = report.ready && report.mirage.ready;
       reports.push(report);
     } catch (err) {
       reports.push({ site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite, ready: false, errors: [err.message], warnings: [] });
@@ -69,20 +71,20 @@ export default async function doctor(_cfg, args) {
   }
   const ready = reports.length > 0 && reports.every((r) => r.ready);
   const warning = scaffoldWarning(catalogue.configDir);
-  const report = { offline: true, ready, reports, ...(warning ? { warnings: [warning] } : {}) };
+  const report = { offline: true, ready, checks: args.mirage ? ['lense', 'mirage'] : ['lense'], reports, ...(warning ? { warnings: [warning] } : {}) };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Offline checkout diagnostics (no browser or portal requests)');
     if (warning) console.log(`WARNING: ${warning}`);
     for (const item of reports) {
-      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}`);
+      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.lenseReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate both)'}` : ''}`);
       if (item.counts) console.log(`  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`);
       for (const error of item.errors) console.log(`  ERROR: ${error}`);
       for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
       for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
       const mirage = item.mirage;
       if (mirage) {
-        if(mirage.deploymentProfiles?.profiles.length)console.log(`  deployment profiles: default ${mirage.deploymentProfiles.default ?? 'none'}; ${mirage.deploymentProfiles.profiles.map(profile=>`${profile.id} ${profile.valid?'valid':'invalid'} (${profile.files.map(file=>`${file.section}: ${file.exists?'found':'missing'}`).join(', ')})`).join('; ')}`);
+        if(mirage.deploymentProfiles?.profiles.length)console.log(`  deployment profiles: default ${mirage.deploymentProfiles.default ?? 'none'}; ${mirage.deploymentProfiles.profiles.map(profile=>`${profile.id} ${profile.valid?'valid':'invalid'} (${profile.files.map(file=>`${file.section} ${path.relative(catalogue.configDir, file.file)}: ${file.exists?'found':'missing'}`).join(', ')})`).join('; ')}`);
         if(mirage.platform)console.log(`  platform defaults (catalogue): ${JSON.stringify(mirage.platform)}`);
         console.log(`  platform stylesheets: ${mirage.platformStyles?.mode === 'captured' ? `captured ${mirage.platformStyles.capturedAt} from ${mirage.platformStyles.origin}` : 'placeholder (local structural form rules)'}`);
         if (mirage.localOverrides?.assets.length || Object.keys(mirage.localOverrides?.compat ?? {}).length) console.log(`  local-only overrides: ${JSON.stringify(mirage.localOverrides)}`);

@@ -288,6 +288,7 @@ export function resolveScopedRelationship(rel, permission, target, mappings = {}
           entity: target,
           from: rel.referencedAttribute ?? mappings[permission.entity]?.idColumn,
           to: rel.referencingAttribute,
+          many: true,
         },
       };
   }

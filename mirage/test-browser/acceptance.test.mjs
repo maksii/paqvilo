@@ -8,6 +8,45 @@ import { createSimulator } from "../server.mjs";
 import { runAcceptance } from "../acceptance.mjs";
 import { signInContext } from "../testing/session.mjs";
 
+test('acceptance settles abandoned frame writes and records navigation cancellations', {timeout: 30000}, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-detached-flow-'));
+  t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const state = {config: {mode: 'local', pageMode: 'local', endpoints: []}, status: {sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic'}};
+  const server = http.createServer((req, res) => {
+    const route = new URL(req.url, 'http://fixture').pathname;
+    if (route === '/__sim/api/state' || route === '/__sim/api/audit/export') { res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(route.endsWith('/state') ? state : {events: []})); }
+    if (route === '/slow-one' || route === '/slow-two') {req.resume(); return;}
+    res.setHeader('content-type', 'text/html');
+    if (route === '/frame') return res.end(`<button id="save" onclick="fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});setTimeout(()=>{parent.document.querySelector('#done').hidden=false;parent.document.querySelector('iframe').remove()},100)">Save</button>`);
+    res.end('<iframe id="child" src="/frame"></iframe><p id="done" hidden>Saved</p>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  const result = await runAcceptance({localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout: 3000,
+    flows: [{name: 'Detached form frame', steps: [{action: 'navigate', path: '/'}, {action: 'visible', frame: '#child', selector: '#save'}, {action: 'click', frame: '#child', selector: '#save'}, {action: 'settle'}, {action: 'visible', selector: '#done'}]}]});
+  assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+  const cancelled = result.flows[0].navigationCancelledRequests;
+  assert.equal(cancelled.length, 2);
+  assert.deepEqual(cancelled.map(row => row.method).sort(), ['PATCH', 'POST']);
+  assert.ok(cancelled.every(row => row.reason === 'frame-detached' && Number.isFinite(Date.parse(row.at))));
+});
+
+test('acceptance records old main-document reads as cancelled after navigation commits', {timeout: 30000}, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-replaced-flow-')); t.after(() => fs.rm(root, {recursive: true, force: true}));
+  const server = http.createServer((req, res) => {
+    const route = new URL(req.url, 'http://fixture').pathname;
+    if (route.startsWith('/__sim/api/')) {res.setHeader('content-type', 'application/json'); return res.end(JSON.stringify(route.endsWith('/state') ? {config: {mode: 'local', pageMode: 'local', endpoints: []}, status: {sourceFingerprint: 'synthetic', implementationFingerprint: 'synthetic'}} : {events: []}));}
+    if (route.startsWith('/slow-')) return;
+    res.setHeader('content-type', 'text/html');
+    res.end(route === '/done' ? '<p id="done">Saved</p>' : `<button id="save" onclick="fetch('/slow-one').catch(()=>{});fetch('/slow-two').catch(()=>{});setTimeout(()=>location.href='/done',100)">Save</button>`);
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(async () => {server.closeAllConnections(); await new Promise(resolve => server.close(resolve));});
+  const result = await runAcceptance({localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout: 3000, flows: [{name: 'Replaced page', steps: [{action: 'navigate', path: '/'}, {action: 'click', selector: '#save'}, {action: 'visible', selector: '#done'}, {action: 'settle'}]}]});
+  assert.equal(result.passed, true, JSON.stringify(result.flows[0]));
+  assert.equal(result.flows[0].navigationCancelledRequests.length, 2);
+  assert.ok(result.flows[0].navigationCancelledRequests.every(row => row.reason === 'document-replaced'));
+});
+
 test('acceptance opens and settles a modal without counting frame lifecycle requests as portal failures', {timeout:30000}, async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-modal-acceptance-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.writeFile(path.join(root,'website.yml'),'adx_websiteid: site\nadx_name: Modal fixture');

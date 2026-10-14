@@ -37,6 +37,7 @@
       "observedEvidence",
       "reconcileSupersededRead",
       "runAcceptance",
+      "simulatorBackgroundRequest",
       "sourceFingerprint",
       "stateFingerprint",
       "validateNativeNetworkBaseline",

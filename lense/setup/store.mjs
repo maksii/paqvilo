@@ -37,7 +37,7 @@ function document(text, label) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw setupError(`${label} must be a mapping`);
   return { doc, raw };
 }
-async function sourceStatus(directory, { portal = false } = {}) {
+export async function sourceStatus(directory, { portal = false, runGit = run, gitQueues = new Map() } = {}) {
   const status = { path: directory, exists: false, format: null, git: null };
   if (!directory) return status;
   try { status.exists = (await fs.stat(directory)).isDirectory(); } catch { return status; }
@@ -48,15 +48,21 @@ async function sourceStatus(directory, { portal = false } = {}) {
   }
   try {
     const opts = { cwd: directory, windowsHide: true, timeout: 3000, maxBuffer: 1024 * 1024, env: { ...process.env, GIT_OPTIONAL_LOCKS: '0' } };
-    const results = await Promise.allSettled([
-      run('git', ['-c', 'core.fsmonitor=false', 'rev-parse', '--abbrev-ref', 'HEAD'], opts),
-      run('git', ['-c', 'core.fsmonitor=false', 'rev-parse', '--short', 'HEAD'], opts),
-      run('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '-uno'], opts),
-    ]);
-    if (results.some(result => result.status === 'rejected')) return status;
-    const [branch, commit, changes] = results.map(result => result.value);
-    status.git = { branch: branch.stdout.trim(), commit: commit.stdout.trim(), changed: Boolean(changes.stdout.trim()) };
-  } catch { /* An export need not be in Git or have its first commit yet. */ }
+    const location = await runGit('git', ['-c', 'core.fsmonitor=false', 'rev-parse', '--show-toplevel', '--abbrev-ref', 'HEAD'], opts);
+    const [repository, branch] = location.stdout.trim().split(/\r?\n/);
+    const commit = await runGit('git', ['-c', 'core.fsmonitor=false', 'rev-parse', '--short', 'HEAD'], opts);
+    status.git = { branch, commit: commit.stdout.trim(), changed: null };
+    // Serialize expensive status calls sharing a checkout and scope each label to its folder.
+    const previous = gitQueues.get(repository) ?? Promise.resolve();
+    const changes = previous.catch(() => {}).then(() => runGit('git', ['-c', 'core.fsmonitor=false', 'status', '--porcelain', '-uno', '--', '.'], opts));
+    gitQueues.set(repository, changes);
+    try { status.git.changed = Boolean((await changes).stdout.trim()); status.gitState = 'ready'; }
+    catch (error) { status.gitState = error.killed || error.code === 'ETIMEDOUT' ? 'timeout' : 'unavailable'; }
+  } catch (error) {
+    status.gitState = error.killed || error.code === 'ETIMEDOUT' ? 'timeout'
+      : /not a git repository/i.test(error.stderr ?? '') ? 'not-checkout'
+      : /ambiguous argument ['"]?HEAD|unknown revision|does not have any commits/i.test(error.stderr ?? '') ? 'uncommitted' : 'unavailable';
+  }
   return status;
 }
 const placeholder = value => { try { return /(?:^|\.)example\.test$/.test(new URL(value).hostname); } catch { return true; } };
@@ -92,6 +98,8 @@ export class SetupStore {
     return root;
   }
   async snapshot() {
+    const gitQueues = new Map();
+    const inspectSource = (directory, options = {}) => sourceStatus(directory, { ...options, gitQueues });
     const files = await this.files();
     const result = {
       schemaVersion: 1, kind: this.kind, directory: this.directory, version: docs.version, docs: setupDocs,
@@ -109,8 +117,8 @@ export class SetupStore {
         result.sites = await Promise.all(valid.portals.map(async site => {
           const origin = projectOrigin(valid, site);
           return { id: site.id, source: site.sourcePath, packs,
-            sourceStatus: await sourceStatus(site.sourceDir, { portal: true }), environments: origin ? { reference: { url: origin } } : {},
-            mirage: { solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => sourceStatus(folder))) };
+            sourceStatus: await inspectSource(site.sourceDir, { portal: true }), environments: origin ? { reference: { url: origin } } : {},
+            mirage: { solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => inspectSource(folder))) };
         }));
       } else {
         const catalogue = loadCatalogue({ config: this.file }, this.processEnv);
@@ -125,8 +133,8 @@ export class SetupStore {
           const mirage = resolveMirageConfig(site.mirage, catalogue);
           return { id, source: site.source ?? '', defaultEnv: site.defaultEnv ?? '', environments: site.environments,
             startPath: site.startPath, scope: site.scope, routes: site.routes, mirage: site.mirage ?? {},
-            sourceStatus: await sourceStatus(site.sourceDir, { portal: true }),
-            solutions: await Promise.all(mirage.solutionRoots.map(folder => sourceStatus(folder))),
+            sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
+            solutions: await Promise.all(mirage.solutionRoots.map(folder => inspectSource(folder))),
             packs: await Promise.all(mirage.dataPacks.map(async pack => ({ id: pack.id, path: pack.module, exists: await fs.stat(pack.module).then(stat => stat.isFile(), () => false) }))),
           };
         }));

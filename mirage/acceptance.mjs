@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
+import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -288,6 +289,26 @@ export async function runAcceptance({
       }
       const pending = new Map(),
         responseObservations = [];
+      const requestRecords = new Map(), navigationCandidates = new WeakMap();
+      const requestFrame = request => { try { return request.frame(); } catch { return null; } };
+      const cancelRequests = (requests, reason) => {
+        const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
+        if (cancelled.length) {
+          (observation.navigationCancelledRequests ??= []).push(...cancelled);
+          lastRequestActivity = Date.now();
+        }
+      };
+      page.on('framedetached', frame => cancelRequests([...requestRecords.keys()].filter(request => {
+        if (requestFrame(request) !== frame) return false;
+        const record = requestRecords.get(request);
+        // Chromium can emit ERR_ABORTED just before Playwright emits framedetached.
+        // Keep unrelated/older failures; recognize only the same detach event's aborts.
+        return pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250;
+      }), 'frame-detached'));
+      page.on('framenavigated', frame => {
+        cancelRequests(navigationCandidates.get(frame) ?? [], 'document-replaced');
+        navigationCandidates.delete(frame);
+      });
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
         frameEvents = [];
@@ -409,7 +430,7 @@ export async function runAcceptance({
         });
       });
       page.on("requestfailed", (request) => {
-        const record = pending.get(request),
+        const record = requestRecords.get(request),
           requestKey = String(record?.order ?? "");
         if (!isLive) {
           let target = null;
@@ -481,6 +502,9 @@ export async function runAcceptance({
       const proofInputs = new Map();
       let lastRequestActivity = Date.now();
       page.on("request", (request) => {
+        const frame = requestFrame(request);
+        if (frame && request.isNavigationRequest()) navigationCandidates.set(frame,
+          [...pending.keys()].filter(previous => requestFrame(previous) === frame && previous.resourceType() !== 'document'));
         const record = {
           order: observation.resources.length + 1,
           method: request.method(),
@@ -489,6 +513,7 @@ export async function runAcceptance({
           started: Date.now(),
         };
         pending.set(request, record);
+        requestRecords.set(request, record);
         if (record.type !== "eventsource") lastRequestActivity = Date.now();
         const url = new URL(request.url());
         proofInputs.set(request, {
@@ -513,6 +538,7 @@ export async function runAcceptance({
           if (record) {
             if (record.type !== "eventsource") lastRequestActivity = Date.now();
             record.durationMs = Date.now() - record.started;
+            record.endedAt = Date.now();
             record.finished = event === "requestfinished";
             pending.delete(request);
           }
@@ -869,7 +895,8 @@ export async function runAcceptance({
           (await page.locator("input[type=password]:visible").count())
         )
           throw new Error("Sign-in or origin redirect was observed.");
-        let unexpectedRequests = observation.failedRequests.filter(failure => !simulatorBackgroundRequest(failure.url, origin)),
+        let unexpectedRequests = observation.failedRequests.filter(failure => !simulatorBackgroundRequest(failure.url, origin) &&
+          !(failure.errorText === 'net::ERR_ABORTED' && (observation.navigationCancelledRequests ?? []).some(cancelled => cancelled.requestKey === failure.requestKey))),
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];

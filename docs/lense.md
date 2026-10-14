@@ -37,6 +37,11 @@ Close the dedicated browser or use Ctrl+C to end the dev session. Browser intera
 ## Commands at a glance
 
 Run `npx --no-install paqvilo lense --help` for the full command/options reference.
+`paqvilo lense doctor --all --mirage --json` gates on both Lense and Mirage readiness.
+Without `--mirage` its exit status covers Lense; each site line still names both states.
+Deployment profile lines list each file relative to the catalogue and its parse readiness.
+Setup's Git badges scope tracked changes to each source folder and report unavailable or
+timed-out status separately from a checkout without commits.
 
 | Command | Purpose |
 | --- | --- |

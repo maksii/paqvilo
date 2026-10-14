@@ -5,7 +5,7 @@ import {createPortalSession} from './sessions.mjs';
 
 function requestError(status, value, label = 'Local runtime request') {
   const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
-  return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), { status, response: value });
+  return Object.assign(new Error(`${label} failed (${status})${detail ? `: ${detail}` : ''}`), { status, code: value?.error?.code, response: value });
 }
 
 export function runtimeOrigin(value) {
@@ -36,20 +36,27 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   }
   origin = runtimeOrigin(origin);
   let cookie = '';
-  const request = async (route, { method = 'GET', body, headers = {}, captureReport = false } = {}) => {
+  const request = async (route, { method = 'GET', body, headers = {}, captureReport = false, timeoutMs = 30000 } = {}) => {
+    if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647) throw new Error('timeoutMs must be an integer from 0 to 2147483647 (0 disables the client timeout)');
     if (method !== 'GET') headers['x-sim-csrf'] = (await request('/state?summary=1')).csrf;
-    const response = await fetchImpl(`${origin}/_sim/api${route}`, {
-      method, headers: { ...(cookie ? { cookie } : {}), ...headers, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
-      ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'error', signal: AbortSignal.timeout(30000),
-    });
-    if (response.status === 204) return null;
-    const value = await response.json().catch(() => null);
-    if (!response.ok && !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))) {
-      throw requestError(response.status, value);
+    const signal = timeoutMs > 0 ? AbortSignal.timeout(timeoutMs) : undefined;
+    try {
+      const response = await fetchImpl(`${origin}/_sim/api${route}`, {
+        method, headers: { ...(cookie ? { cookie } : {}), ...headers, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
+        ...(body !== undefined ? { body: JSON.stringify(body) } : {}), redirect: 'error', ...(signal ? { signal } : {}),
+      });
+      if (response.status === 204) return null;
+      const value = await response.json().catch(error => { if (signal?.aborted) throw error; return null; });
+      if (!response.ok && !(captureReport && response.status === 409 && value?.shellProfile && Array.isArray(value.failures))) {
+        throw requestError(response.status, value);
+      }
+      const returnedCookie = response.headers.get('set-cookie');
+      if (returnedCookie) cookie = returnedCookie.split(';', 1)[0];
+      return value;
+    } catch (cause) {
+      if (captureReport && signal?.aborted) throw Object.assign(new Error(`Shell capture client stopped waiting after ${timeoutMs} ms. Increase captureShell(path, { timeoutMs }) or capture-shell --timeout <milliseconds> (0 disables the timeout). The server may still be working.`, { cause }), { code: 'SHELL_CAPTURE_TIMEOUT', timeoutMs });
+      throw cause;
     }
-    const returnedCookie = response.headers.get('set-cookie');
-    if (returnedCookie) cookie = returnedCookie.split(';', 1)[0];
-    return value;
   };
   const status = await request('/status');
   if (cfg && !samePath(status.sourceDir, cfg.sourceDir)) throw new Error('Runtime source does not match the catalogue site');
@@ -105,6 +112,6 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     setSnippet: (name, value) => setPortalValue('portal-snippets', name, value),
     liveConnect: cdpUrl => request('/live/connect', { method: 'POST', body: { cdpUrl } }),
     liveDisconnect: () => request('/live/disconnect', { method: 'POST', body: {} }),
-    captureShell: (path, options = {}) => request('/assets/capture-shell', { method: 'POST', body: { path, ...(options.richText === false ? {richText:false} : {}) }, captureReport: true }),
+    captureShell: (path, options = {}) => request('/assets/capture-shell', { method: 'POST', body: { path, ...(options.richText === false ? {richText:false} : {}) }, captureReport: true, timeoutMs: options.timeoutMs ?? 0 }),
   });
 }

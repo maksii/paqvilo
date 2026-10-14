@@ -143,6 +143,12 @@ runner surface; source configuration parsing and editor-host implementation modu
 captures. Check `applied` and `complete`; default command success follows `applied`/`ready`,
 including usable captures with nonblocking gaps. `--strict` requires `complete` as well.
 Other API errors carry `status` and the parsed `response`, and include the server message.
+Shell capture has no client deadline by default; ordinary admin calls retain their 30-second
+deadline. Set `captureShell(path, { timeoutMs: 120000 })` or CLI `--timeout 120000` to bound
+waiting in milliseconds (`0` disables this deadline). `SHELL_CAPTURE_TIMEOUT` names the
+option and warns that the server may still be working. Non-JSON CLI captures print progress
+to stderr every 15 seconds. `--all` preserves each failed site's sanitized message, HTTP
+`status` and `causeCode`, continues other sites, and attempts disconnect even on failure.
 
 `paqvilo mirage capture-shell --no-rich-text` captures the shell/styles without discovering
 editor resources. The equivalent client call is `captureShell(path, { richText: false })`.
@@ -160,6 +166,12 @@ reports the effective value and its `Catalogue` origin and evidence.
 
 Owned loopback `/__sim/events` and `/__sim/frame-ready/<uuid>` requests remain in network
 observations but do not hold acceptance settling or count as navigation failures.
+Import `simulatorBackgroundRequest(urlOrPath, origin)` from `paqvilo/mirage/acceptance`
+for project request listeners; supply the runtime origin to keep the rule origin-confined.
+`runAcceptance` records abandoned requests in `navigationCancelledRequests` with request
+key, method, sanitized URL, cancellation reason and time. Detached frames and committed
+document replacements release their pending work; unrelated failures remain failures.
+A cancelled write is an observation of browser lifecycle, not proof that the server saved it.
 
 Set evidenced `observed.formSubmissionErrorMarkup: paragraph` when a site's recorded host
 contract reads `#MessagePanel p`. The default remains `inline`; both JSON and native

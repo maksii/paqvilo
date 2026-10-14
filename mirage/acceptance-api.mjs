@@ -1,4 +1,5 @@
 export { runAcceptance } from './acceptance.mjs';
+export { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 export { verifyParity } from './verify.mjs';
 export { compareReferenceContracts } from './reference-parity.mjs';
 export * from './lib/browser-launch.mjs';

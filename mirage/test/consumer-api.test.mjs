@@ -59,6 +59,22 @@ test('capture all chooses one safe environment per configured site and reports c
   assert.deepEqual(report.skipped.map(item => [item.site, item.env]), [['first', 'production'], ['second', 'production']]);
 });
 
+test('all-site capture retains a sanitized failure reason and continues other sites', async t => {
+  const root = await project(t), config = path.join(root, 'paqvilo.config.yml');
+  await fs.writeFile(config, 'sourceRoot: .\nsites:\n  failed:\n    source: portal\n    mirage: { port: 0 }\n    environments: { dev: https://invented.example.test }\n  captured:\n    source: portal\n    mirage: { port: 0 }\n    environments: { dev: https://invented.example.test }\n');
+  let attempts = 0;
+  const report = await captureShell({config, all: true, cdp: 'http://127.0.0.1:9222', createLocalSimulator: options => {
+    if (++attempts === 1) throw Object.assign(new Error('Synthetic service unavailable at https://user:private@invented.example.test/capture?token=private access_token=private'), {status: 503, code: 'SYNTHETIC_UNAVAILABLE'});
+    const bridge = {origin: options.origin, connected: false, configure() {}, status() {return {connected: this.connected};}, async connect() {this.connected = true; this.context = {};}, async close() {this.connected = false;}, async request(route) {return {status: 200, headers: {'content-type': route === '/' ? 'text/html' : route.endsWith('.css') ? 'text/css' : 'text/javascript'}, body: Buffer.from(route === '/' ? '<link rel="stylesheet" href="/theme.css"><script src="/jquery.js"></script>' : route.endsWith('.css') ? 'body{}' : 'window.jQuery={};')};}};
+    return createSimulator({...options, liveBridge: bridge});
+  }});
+  assert.equal(report.reports[1].applied, true, JSON.stringify(report.reports[1]));
+  const failure = report.reports[0].failures[0];
+  assert.match(failure.message, /Synthetic service unavailable/);
+  assert.equal(failure.status, 503); assert.equal(failure.causeCode, 'SYNTHETIC_UNAVAILABLE');
+  assert.equal(JSON.stringify(report).includes('private'), false);
+});
+
 test('capture exit status follows usable shells, with strict completeness available explicitly', () => {
   const report = { complete: false, reports: [{ applied: true, ready: true, complete: false, failures: [{ code: 'SHELL_RESOURCE_ORIGIN', blocking: false }], richText: { complete: false, failures: [{ code: 'RICHTEXT_SCHEMA_TRUNCATED' }], diagnostics: [{ code: 'RICHTEXT_NATIVE_NOT_READY', message: 'Editor unavailable anonymously.' }] } }] };
   assert.equal(captureExitCode(report), 0);

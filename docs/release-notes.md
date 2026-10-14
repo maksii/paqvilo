@@ -2,6 +2,17 @@
 
 ## 0.9.4
 
+Consumer feedback 57-63: Solution-resolved permission paths now classify the referenced
+side of one-to-many joins as multiplicative, including when recompiling saved states.
+Capture no longer inherits the runtime client's 30-second deadline; optional `--timeout`
+and `captureShell(path, { timeoutMs })` bound waiting, and the CLI prints progress.
+All-site failures retain sanitized cause messages/status/codes. The supported acceptance
+entry point now exports `simulatorBackgroundRequest`. Acceptance records requests abandoned
+by frame/document replacement as navigation cancellations, while retaining unrelated failures.
+`lense doctor --mirage` gates on both workflows and names profile files. Setup scopes Git
+changes to each folder, serializes status calls sharing a checkout, and distinguishes Git
+timeouts from missing/uncommitted repositories.
+
 Example qualification tools serialize browser request inputs as data, verify immutable
 archive bytes through the exclusive file descriptor, and normalize every relative archive
 label prefix. A bounded parser reads the collector's fixed identity context as data without

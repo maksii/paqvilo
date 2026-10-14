@@ -58,6 +58,7 @@ Other
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
   --all             doctor/audit: check every configured site's default environment offline
+  --mirage          doctor: also fail when Mirage configuration is not ready
   --json            list/map/status/doctor/audit/resources/verify: machine readable output
 
 Offline resource discovery
@@ -160,6 +161,7 @@ try {
       out: { type: 'string' },
       force: { type: 'boolean' },
       strict: { type: 'boolean' },
+      mirage: { type: 'boolean' },
       json: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -209,7 +211,7 @@ try {
     dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'debug-port'],
     map: [...selection, 'pick', 'check', 'json'], status: [...selection, 'pick', 'json'],
     verify: [...selection, ...browserSelection, 'pick', 'path', 'headless', 'headed', 'signed-in', 'json', 'strict', 'sign-in-timeout'],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
+    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],

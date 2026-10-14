@@ -10,6 +10,13 @@ paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --cdp 
 
 Without `--cdp`, capture owns an anonymous temporary browser using the configured channel and removes its profile afterward. `--all` selects all sites with a configured Mirage port (or just `--site` when supplied), once per state file, and cannot combine with `--env`. It uses each safe default environment, or the environment already used by a matching runtime. Caution environments and other environments sharing that state are listed as skipped. Caution environments, external paths and non-loopback CDP are refused. A matching running runtime receives captures through its CSRF-protected admin API with disconnect cleanup; mismatched runtimes and existing live connections are refused. Otherwise capture closes a temporary local simulator after saving the site's state/cache. Reference reads are explicit and authorize no live writes.
 
+Captures wait without a client deadline by default, including rich-text discovery. Use
+`--timeout 120000` to stop waiting after 120 seconds (`0` disables the deadline); this does
+not guarantee server cancellation. The normal CLI prints waiting progress every 15 seconds.
+`--all` retains each site's sanitized error message, HTTP status and cause code while
+continuing other sites. Disconnect is attempted after success, timeout and failure; a
+failed cleanup is reported as `disconnectFailed` without replacing the capture's cause.
+
 Capture records date/origin and lists missing directly referenced head stylesheets. Confirmed native HTTP errors retain their status as `NATIVE_ASSET_HTTP`; a native stylesheet answered with a non-CSS content type is `NATIVE_ASSET_CONTENT_TYPE`. Both carry `nativeOriginFailed: true`, remain visible and do not block application or completeness. Unusable native head references are omitted from the applied profile, and their response bodies are not cached. Literal percent-encoded quotes in CSS URLs are requested unchanged, so a native 404 is distinguishable from a path-validation failure. Timeouts, unsafe resources and unverified failures remain failures. No credentials, inline page data or bearer tokens are saved.
 
 Mirage serves local equivalents of required platform clients, styles and resources in their page-kind order. Compatibility modules cover form/grid controls, Bootstrap plugins, date formatting, accessibility, portal objects and service endpoints. Third-party packages and fonts retain their upstream licenses.

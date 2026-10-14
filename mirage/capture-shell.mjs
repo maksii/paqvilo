@@ -35,11 +35,30 @@ async function launchCaptureBrowser(channel) {
 
 /** Always disconnect, including a partial/failed connect. */
 export async function captureThroughRuntime(client, cdp, pagePath, options = {}) {
+  let failure;
   try { await client.liveConnect(cdp); return await client.captureShell(pagePath, options); }
-  finally { await client.liveDisconnect(); }
+  catch (error) { failure = error; throw error; }
+  finally {
+    try { await client.liveDisconnect(); }
+    catch (error) { if (!failure) throw error; failure.disconnectFailed = true; }
+  }
 }
 
-export async function captureShell({ config, site, env, all = false, path: pagePath = '/', cdp, 'no-rich-text': noRichText = false, launchBrowser = launchCaptureBrowser, createLocalSimulator = createSimulator } = {}) {
+function captureFailure(error) {
+  const message = String(error?.message ?? 'Capture failed before a usable shell report was returned.')
+    .replace(/Bearer\s+\S+/gi, 'Bearer [redacted]')
+    .replace(/((?:access_token|id_token|password|secret|authorization|cookie|csrf|api[_-]?key)\s*[=:]\s*)[^\s&]+/gi, '$1[redacted]')
+    .replace(/https?:\/\/[^\s)]+/gi, value => { try { const url = new URL(value); return url.origin + url.pathname; } catch { return '<invalid URL>'; } })
+    .slice(0, 2000);
+  return { code: 'SHELL_CAPTURE_FAILED', blocking: true, message,
+    ...(error?.disconnectFailed ? { disconnectFailed: true } : {}),
+    ...(Number.isInteger(error?.status) ? { status: error.status } : {}),
+    ...(typeof error?.code === 'string' && /^[A-Z0-9_]{1,80}$/.test(error.code) ? { causeCode: error.code } : {}) };
+}
+
+export async function captureShell({ config, site, env, all = false, path: pagePath = '/', cdp, timeout = 0, onProgress, 'no-rich-text': noRichText = false, launchBrowser = launchCaptureBrowser, createLocalSimulator = createSimulator } = {}) {
+  const timeoutMs = typeof timeout === 'string' && /^\d+$/.test(timeout) ? Number(timeout) : timeout;
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 0 || timeoutMs > 2147483647) throw new Error('--timeout must be an integer from 0 to 2147483647 milliseconds (0 disables the client timeout)');
   validateLivePath(pagePath);
   if (all && env) throw new Error('--all and --env are mutually exclusive');
   if (cdp) cdp = captureCdpUrl(cdp);
@@ -69,7 +88,7 @@ export async function captureShell({ config, site, env, all = false, path: pageP
   for (const entry of targets) {
     let { cfg } = entry;
     const { target } = entry;
-    let browser, simulator;
+    let browser, simulator, progress;
     try {
       const running = (await discoveries(miragePaths(cfg), { probe: false })).filter(item => item.processAlive && (item.stateFile ? samePath(item.stateFile, target.mirage.stateFile) : samePath(item.sourceDir, target.sourceDir)));
       if (!running.length && target.mirage.port > 0) {
@@ -113,13 +132,16 @@ export async function captureShell({ config, site, env, all = false, path: pageP
         client = await connectRuntime({ origin: simulator.url });
       }
       const cdpUrl = cdp ?? (browser = await launchBrowser(cfg.browser.channel)).cdp;
-      reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath, { richText: !noRichText }) });
+      const started = Date.now();
+      onProgress?.({ site: cfg.siteName, phase: 'started', elapsedMs: 0 });
+      if (onProgress) progress = setInterval(() => onProgress({ site: cfg.siteName, phase: 'waiting', elapsedMs: Date.now() - started }), 15000);
+      reports.push({ site: cfg.siteName, env: cfg.envName, ...await captureThroughRuntime(client, cdpUrl, pagePath, { richText: !noRichText, timeoutMs }) });
     } catch (error) {
       if (!all) throw error;
       // One failed local capture must not hide reports from other selected sites.
       reports.push({ site: cfg.siteName, env: cfg.envName, applied: false, ready: false, complete: false,
-        failures: [{ code: 'SHELL_CAPTURE_FAILED', blocking: true, message: 'Capture failed before a usable shell report was returned.' }] });
-    } finally { try { await simulator?.close(); } finally { await browser?.close(); } }
+        failures: [captureFailure(error)] });
+    } finally { clearInterval(progress); try { await simulator?.close(); } finally { await browser?.close(); } }
   }
   return { schemaVersion: 1, command: 'capture-shell', reports, skipped, complete: reports.every(report => report.complete) };
 }
@@ -139,9 +161,9 @@ export function captureExitCode(report, { strict = false } = {}) {
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, json: { type: 'boolean' }, strict: { type: 'boolean' }, 'no-rich-text': {type:'boolean'} } });
-    const report = await captureShell(values);
+    const { values } = parseArgs({ options: { config: { type: 'string' }, site: { type: 'string' }, env: { type: 'string' }, all: { type: 'boolean' }, path: { type: 'string' }, cdp: { type: 'string' }, timeout: { type: 'string' }, json: { type: 'boolean' }, strict: { type: 'boolean' }, 'no-rich-text': {type:'boolean'} } });
+    const report = await captureShell({ ...values, ...(!values.json ? { onProgress: ({ site, phase, elapsedMs }) => console.error(`Shell ${site}: ${phase === 'started' ? 'capturing shell and editor resources' : `still capturing (${Math.floor(elapsedMs / 1000)} s)`}`) } : {}) });
     if (!values.json) console.error(captureSummary(report));
     console.log(JSON.stringify(report, null, 2)); process.exitCode = captureExitCode(report, values);
-  } catch (error) { console.error(error.message); process.exitCode = 1; }
+  } catch (error) { console.error(captureFailure(error).message); process.exitCode = 1; }
 }

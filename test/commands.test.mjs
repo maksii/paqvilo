@@ -21,6 +21,24 @@ function runWithin(timeout, ...args) {
 }
 const run = (...args) => runWithin(30_000, ...args);
 
+test('doctor Mirage gate diagnoses an invalid default profile and names every catalogue-relative file', () => {
+  const config = fx.file('profile-doctor.json'), first = fx.file('profile-first.json'), second = fx.file('profile-second.json');
+  fs.writeFileSync(first, JSON.stringify({EnvironmentVariables: [{SchemaName: 'sample_one', Value: 'one'}]}));
+  fs.writeFileSync(second, JSON.stringify({EnvironmentVariables: [{SchemaName: 'sample_two', Value: 'two'}]}));
+  fs.writeFileSync(config, JSON.stringify({sites: {test: {source: '.', environments: {dev: 'https://portal.example.test'}, mirage: {port: 0, deploymentProfiles: {default: 'dev', profiles: {dev: {environmentVariables: ['profile-first.json', 'profile-second.json']}}}}}}}));
+  const valid = run('doctor', '--config', config, '--mirage', '--json');
+  assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+  fs.writeFileSync(second, '{invalid');
+  const plain = run('doctor', '--config', config);
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.match(plain.stdout, /environmentVariables profile-first.json: found, environmentVariables profile-second.json: found/);
+  const gated = run('doctor', '--config', config, '--mirage', '--json');
+  assert.equal(gated.status, 1, gated.stdout + gated.stderr);
+  const report = JSON.parse(gated.stdout);
+  assert.equal(report.ready, false); assert.equal(report.reports[0].lenseReady, true);
+  assert.equal(report.reports[0].mirage.ready, false);
+});
+
 test('offline doctor diagnoses the extract and unavailable baseline without fetch', (t) => {
   t.mock.method(globalThis, 'fetch', () => { throw new Error('Network access is forbidden in offline diagnostics'); });
   const cfg = { siteName: 'test', envName: 'dev', origin: 'https://portal.example', sourceDir: fx.dir, site: structuredClone(SITE) };
@@ -347,6 +365,12 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     const doctor = run('doctor', '--config', config, '--repo', fx.dir, '--all', '--json');
     assert.equal(doctor.status, 0, doctor.stdout + doctor.stderr);
     const reports = JSON.parse(doctor.stdout).reports;
+    const gated = run('doctor', '--config', config, '--repo', fx.dir, '--all', '--mirage', '--json');
+    assert.equal(gated.status, 1, gated.stdout + gated.stderr);
+    assert.equal(JSON.parse(gated.stdout).ready, false);
+    assert.deepEqual(JSON.parse(gated.stdout).checks, ['lense', 'mirage']);
+    assert.equal(JSON.parse(gated.stdout).reports.find(item => item.site === 'broken').lenseReady, true);
+    assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--all').stdout, /Mirage NOT READY \(use --mirage to gate both\)/);
     const ready = reports.find((item) => item.site === 'test').mirage;
     assert.equal(ready.ready, true, JSON.stringify(ready));
     assert.equal(ready.dependencies.ready, true);
