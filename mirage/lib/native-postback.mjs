@@ -14,7 +14,9 @@ export const compactNativeControlId = (value) => String(value ?? "")
 
 export function nativeFormControlIds(kind, id, { modal = false, pageControl = false } = {}) {
   const N = compactNativeControlId(id);
-  const prefix = "ctl00$ContentContainer$MainContent$EntityControls$";
+  // Legacy ASPX page templates nest the content master in the site master: the page controls sit
+  // under ctl00$ctl00$ (live bound-entityform and bound-webform pages).
+  const prefix = "ctl00$ctl00$ContentContainer$MainContent$EntityControls$";
   if (kind === "webform") return pageControl
     ? { wrapper: "WebFormControl", panel: "WebFormPanel", view: "EntityFormView", names: `${prefix}WebFormControl$EntityFormView$`, buttons: `${prefix}WebFormControl$` }
     : { wrapper: `WebFormControl_${N}`, panel: "WebFormPanel", view: "EntityFormView", names: `ctl00$ContentContainer$WebFormControl_${N}$EntityFormView$`, buttons: `ctl00$ContentContainer$WebFormControl_${N}$` };

@@ -118,3 +118,19 @@ test("Authored recently-added queries include only the previous specified hours,
   for (const value of ["0", "-1", "bad", "1.5", "99999999999999999999"])
     assert.throws(() => store.fetchXml(xml(value)), /positive integer/);
 });
+
+test("a configured (preset) mapping keeps the Solution's create defaults it does not name", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-state-default-preset-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const source = path.join(dir, "Entity.xml");
+  await fs.writeFile(
+    source,
+    '<Entity><Name>package</Name><EntityInfo><entity Name="package"><EntitySetName>packages</EntitySetName><attributes><attribute><LogicalName>packageid</LogicalName><Type>primarykey</Type></attribute><attribute><LogicalName>fragile</LogicalName><Type>bit</Type><AppDefaultValue>1</AppDefaultValue></attribute><attribute><LogicalName>statecode</LogicalName><Type>state</Type><optionset><states><state value="0" defaultstatus="10" invariantname="Active"/><state value="1" defaultstatus="20" invariantname="Inactive"/></states></optionset></attribute></attributes></entity></EntityInfo></Entity>',
+  );
+  const metadata = await importSolutionData([source]);
+  // A data pack's preset names only the entity set and key column (no metadataSources: configured).
+  const state = applySolutionData({ mappings: { package: { entitySet: "packages", idColumn: "packageid" } }, tables: {}, permissions: [], plugins: [], settings: { permissionMode: "permissive" } }, metadata);
+  const store = await new DataStore({ state }).init();
+  const created = store.createRecord("package", { name: "Preset row" }, { admin: true });
+  assert.deepEqual([created.statecode, created.statuscode, created.fragile], [0, 10, true]);
+});

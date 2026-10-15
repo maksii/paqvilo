@@ -267,7 +267,7 @@ async function loadCapture(dir) {
 // the element, only the token is normalised, so a missing element still shows up as a delta (decision D11).
 // Also: ASP.NET control counters in generated control names ($ctl<n>), per-render GUID values of data-content-id
 // attributes, and each side's own origin in absolute self links ({origin}).
-const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"], [/\$ctl\d+/g, "$ctl{n}"], [/(data-content-id=\\?")[0-9a-f-]{36}/g, "$1{guid}"]];
+const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"], [/\$ctl\d+/g, "$ctl{n}"], [/(data-content-id=\\?")[0-9a-f-]{36}/g, "$1{guid}"], [/("data-content-id"\s*:\s*")[0-9a-f-]{36}/g, "$1{guid}"], [/popoverUpdateButton_[0-9a-f-]{36}/g, "popoverUpdateButton_{guid}"]];
 const LOOPBACK_ORIGIN = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+/g;
 export const normalizeGeneratedIds = (text, origins = []) => {
   let out = GENERATED_IDS.reduce((acc, [pattern, token]) => acc.replace(pattern, token), text);
@@ -276,7 +276,8 @@ export const normalizeGeneratedIds = (text, origins = []) => {
 };
 const normalizedCapture = (capture, origins = []) => {
   if (!capture) return capture;
-  return { ...capture, dom: normalizeGeneratedIds(capture.dom ?? "", origins), elements: JSON.parse(normalizeGeneratedIds(JSON.stringify(capture.elements ?? []), origins)) };
+  const normalizeJson = (value) => JSON.parse(normalizeGeneratedIds(JSON.stringify(value ?? []), origins));
+  return { ...capture, dom: normalizeGeneratedIds(capture.dom ?? "", origins), elements: normalizeJson(capture.elements), requests: normalizeJson(capture.requests) };
 };
 
 export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist, origins = [] }) {

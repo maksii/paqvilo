@@ -314,7 +314,7 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
   assert.deepEqual(layout.Columns.map((column) => column.LogicalName), ["name"]);
   // Page.aspx (WebFormsContent.master): two columns, the static EntityFormControl, sidebar.
   const profile = await body("/profile/");
-  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<!--pp-native-form--><div id="EntityFormControl">', 'name="ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
+  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<!--pp-native-form--><div id="EntityFormControl">', 'name="ctl00$ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
   assert.match(profile, /<script src="\/xrm-adx\/js\/crmentityformview\.js"/);
   // A page whose attached basic form is not in the export renders without it.
   const missing = await (await fetch(app.url + "/missing/", { headers: session })).text();

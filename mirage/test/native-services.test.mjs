@@ -279,3 +279,14 @@ test("portal notes follow the KnowledgeManagement/NotesFilter site setting, *WEB
   assert.deepEqual(portalNotes(rows, {}).map((row) => row.notetext), ["*WEB*web"]);
   assert.deepEqual(portalNotes(rows, {}, "*PORTAL*").map((row) => row.notetext), ["*PORTAL*portal"]);
 });
+
+test("notes follow the request's createdon direction and keep creation order for notes of the same instant", async (t) => {
+  const { app, post } = await fixture(t);
+  const state = app.store.snapshot();
+  const twin = "a0000000-0000-4000-8000-0000000000aa";
+  state.tables.annotation.push({ annotationid: twin, notetext: "*WEB*Twin note", subject: "Twin", objecttypecode: "contact", objectid: { id: CONTACT, logical_name: "contact" }, createdon: "2026-01-02T03:04:05Z" });
+  await app.store.replaceState(state);
+  const ids = async (Direction) => (await (await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT }, orders: [{ Attribute: "createdon", Alias: null, Direction }], page: 1, pageSize: 10 })).json()).Records.map((record) => record.Id);
+  assert.deepEqual(await ids(null), [NOTE, twin]);
+  assert.deepEqual(await ids(1), [twin, NOTE]);
+});

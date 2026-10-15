@@ -1847,11 +1847,28 @@ export function portalNotes(rows, identity, prefix = "*WEB*") {
   });
 }
 
-async function annotationRows(context, entity, id) {
+// The notes service orders by createdon as the request's orders say (Direction 1 descending, null ascending;
+// live basic-form/item-edit/lookup-clear vs item-edit-actions/create-related-dialog); notes of the same instant keep
+// creation order ascending and its reverse descending.
+async function annotationRows(context, entity, id, descending = true) {
   const mapping = mappingFor(context.store, "annotation");
-  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon" descending="true"/></entity></fetch>`;
+  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/></entity></fetch>`;
   const result = await context.readProvider.fetchXml(xml, context.identity);
-  return (result.entities ?? result.value ?? []).filter(
+  // Notes of the same instant (seeded together) keep the order they were created in, as the live
+  // reset's sequential creates do; the query's own tie-break is the table's key order.
+  let created = new Map();
+  try {
+    created = new Map((context.store?.tableRows?.("annotation") ?? []).map((row, index) => [canonical(row[mapping.idColumn]), index]));
+  } catch {
+    created = new Map();
+  }
+  const time = (row) => Date.parse(row.createdon ?? "") || 0;
+  const rows = [...(result.entities ?? result.value ?? [])]
+    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn])) ?? Infinity }))
+    .sort((a, b) => time(a.row) - time(b.row) || (a.order === b.order ? a.index - b.index : a.order < b.order ? -1 : 1))
+    .map((entry) => entry.row);
+  if (descending) rows.reverse();
+  return rows.filter(
     (row) => !row.objecttypecode || canonical(scalar(row.objecttypecode)) === canonical(entity) || canonical(row.objectid?.logical_name) === canonical(entity),
   ).map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
 }
@@ -1869,7 +1886,9 @@ async function handleNotes(action, req, res, context) {
     const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
     const page = Math.max(1, Number(body.page) || 1);
     const prefix = notesFilter(context.portal);
-    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id), context.identity, prefix);
+    const order = Array.isArray(body.orders) ? body.orders.find((entry) => String(entry?.Attribute ?? "").toLowerCase() === "createdon") : null;
+    const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
+    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id, descending), context.identity, prefix);
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
     const records = rows.slice((page - 1) * pageSize, page * pageSize).map((row) => {
       const id = canonical(row.annotationid);

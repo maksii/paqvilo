@@ -271,9 +271,10 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
       result.mappings[name] = structuredClone(rest);
     } else {
-      // A configured mapping keeps the Solution's relationships and primary name column when it
-      // names none (as a preset layered over the imported mappings does).
-      for (const key of ["relationships", "nameColumn"])
+      // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
+      // and create defaults (column defaults, state/status pairs) when it names none (as a preset
+      // layered over the imported mappings does): a record created through it gets what Dataverse sets.
+      for (const key of ["relationships", "nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults"])
         if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
     }
     result.tables[name] ??= [];

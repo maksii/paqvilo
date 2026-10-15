@@ -34,7 +34,7 @@ test("shared native IDs retain GUID and schema-only source name rules", () => {
 });
 
 test("legacy ASPX, modal and Liquid forms keep distinct source control prefixes", () => {
-  const pagePrefix = "ctl00$ContentContainer$MainContent$EntityControls$";
+  const pagePrefix = "ctl00$ctl00$ContentContainer$MainContent$EntityControls$";
   assert.equal(nativeFormControlIds("entityform", firstId, { pageControl: true }).names, pagePrefix + "EntityFormControl$EntityFormControl_EntityFormView$");
   assert.equal(nativeFormControlIds("entityform", firstId, { modal: true }).names, "ctl00$ContentContainer$MainContent$EntityFormControl$EntityFormControl_EntityFormView$");
   assert.equal(nativeFormControlIds("webform", firstId, { pageControl: true }).names, pagePrefix + "WebFormControl$EntityFormView$");

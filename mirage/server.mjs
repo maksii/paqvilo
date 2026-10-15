@@ -2677,7 +2677,8 @@ export async function createSimulator({
       // The platform's account pages are not site map nodes (live sign-in: data-sitemap-state "/").
       outsideSitemap: true,
       name: exported?.name ?? "Sign in",
-      title: exported?.title ?? "Sign in",
+      // Outside the site map the layout title is the home page's (live sign-in: "Home").
+      title: exported?.title ?? servicePages(portal).home?.title ?? "Sign in",
       url: "/SignIn/",
       parentId: exported?.parentId ?? servicePages(portal).home?.id ?? null,
       pageTemplateId: null,
@@ -3137,7 +3138,9 @@ export async function createSimulator({
     if (url.pathname.includes("//")) url.pathname = url.pathname.replace(/\/{2,}/g, "/");
     const language = languageRoute(portal, url, req.method);
     if (language?.kind === "redirect") {
-      res.writeHead(language.status, { location: language.location, "cache-control": "no-store", "x-sim-route": "language" });
+      // The platform's language redirect carries its page caching headers (live 302 to /SignIn).
+      const { vary: _languageVary, ...languageHeaders } = PAGE_HEADERS;
+      res.writeHead(language.status, { location: language.location, "content-type": "text/html; charset=utf-8", ...languageHeaders, "x-frame-options": siteHeaders(portal)["x-frame-options"], "x-sim-route": "language" });
       return res.end();
     }
     if (language?.kind === "rewrite") url.pathname = language.pathname;
@@ -3606,7 +3609,8 @@ export async function createSimulator({
       ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: "page" }),
     };
-    if (route?.kind === "redirect") Object.assign(headers, { location: route.location, "x-sim-route": route.source ?? "redirect" });
+    // A redirecting page answer has no Vary header (live sign-in redirect).
+    if (route?.kind === "redirect") { delete headers.vary; Object.assign(headers, { location: route.location, "x-sim-route": route.source ?? "redirect" }); }
     // Local compatibility adapters in the document are reported here, not as page attributes;
     // their runtime modes are in window.__portalSimulation.compatibility.
     if (isDocument) {

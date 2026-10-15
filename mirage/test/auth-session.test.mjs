@@ -306,7 +306,8 @@ test("the sign-in page renders in the site shell; sign-in validates personas and
   const html = await text(page);
   assert.match(html, /<header id="site-header"><a id="sign-in"/);
   assert.match(html, /<footer id="site-footer">Session footer<\/footer>/);
-  assert.match(html, /<title>Sign in/);
+  // Outside the site map the layout title is the home page title; the page script then shows the active tab.
+  assert.match(html, /<title>Home/);
   assert.match(html, /Local sign-in simulation/);
   assert.match(html, /<strong>Alex Local<\/strong> · Helios <span class="label label-info">default persona<\/span><br><small>[^<]*Member/);
   assert.match(html, /<strong>Blair Local<\/strong> · Boreal<br>/);
