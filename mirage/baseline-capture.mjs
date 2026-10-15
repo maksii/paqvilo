@@ -324,7 +324,8 @@ export const pageRunnerSource = () => pageRunner.toString();
 export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {} }) {
   await fs.mkdir(outDir, { recursive: true });
   const origins = [origin];
-  const requests = raw.requests.map((entry) => {
+  // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
+  const requests = raw.requests.filter((entry) => !/\/__sim\//.test(entry.url ?? "")).map((entry) => {
     const response = entry.response
       ? {
           status: entry.response.status,

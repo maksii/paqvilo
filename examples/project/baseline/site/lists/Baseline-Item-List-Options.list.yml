@@ -257,15 +257,80 @@ adx_settings: >-
       "PrimaryButtonCssClass": "btn btn-primary",
       "CloseButtonCssClass": "btn btn-default"
     },
-    "ErrorDialog": {
-      "Type": "CrmEntityFormView-ErrorModal",
-      "LoadingMessage": [
+    "ActivateDialog": {
+      "Type": "ActivateModal",
+      "Title": [
         {
           "Type": "LanguageResources",
           "LCID": 1033,
-          "Value": "Loading baseline item error..."
+          "Value": "Activate baseline item"
         }
       ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "DeactivateDialog": {
+      "Type": "DeactivateModal",
+      "Title": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Deactivate baseline item"
+        }
+      ],
+      "PrimaryButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "OK"
+        }
+      ],
+      "CloseButtonText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close"
+        }
+      ],
+      "DismissButtonSrText": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Close dialog"
+        }
+      ],
+      "Size": 0,
+      "CssClass": "baseline-dialog",
+      "TitleCssClass": "baseline-dialog-title",
+      "PrimaryButtonCssClass": "btn btn-primary",
+      "CloseButtonCssClass": "btn btn-default"
+    },
+    "ErrorDialog": {
+      "Type": "CrmEntityFormView-ErrorModal",
       "Title": [
         {
           "Type": "LanguageResources",
@@ -298,7 +363,14 @@ adx_settings: >-
       "CssClass": "baseline-dialog",
       "TitleCssClass": "baseline-dialog-title",
       "PrimaryButtonCssClass": "btn btn-primary",
-      "CloseButtonCssClass": "btn btn-default"
+      "CloseButtonCssClass": "btn btn-default",
+      "Body": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Baseline item error."
+        }
+      ]
     }
   }
 adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

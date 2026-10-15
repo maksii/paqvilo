@@ -5,7 +5,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { parseFragment } from "parse5";
-import { compareRequests, diffDom, compareElements, compareConsole, compareScenario, loadAllowlist, summarize, summaryMarkdown } from "../baseline-compare.mjs";
+import { compareRequests, diffDom, compareElements, compareConsole, compareScenario, loadAllowlist, summarize, summaryMarkdown, normalizeGeneratedIds } from "../baseline-compare.mjs";
 import { validateMatrix, scenarioDir, captureMatrix } from "../baseline-suite.mjs";
 
 const req = (seq, url, extra = {}) => ({ seq, method: "GET", url, resourceType: "fetch", headers: { accept: "*/*" }, body: null, response: { status: 200, headers: { "content-type": "application/json" }, body: "{}" }, ...extra });
@@ -188,4 +188,11 @@ test("captureMatrix switches personas only on change, honours reset:false and re
   assert.deepEqual(results.map((r) => r.status), ["captured", "captured", "error"]);
   assert.equal(results[0].blockedWrites, 1);
   assert.deepEqual(results[2].problems, ["bridge down", "diag"]);
+});
+
+test("request-side x-sim-* headers are instrumentation and generated ids are normalised", () => {
+  const req = (headers) => ({ seq: 1, method: "GET", url: "/a", resourceType: "fetch", headers, response: { status: 200, headers: {} } });
+  const out = compareRequests([req({ accept: "*/*" })], [req({ accept: "*/*", "x-sim-parent-trace": "t" })]);
+  assert.equal(out.length, 0);
+  assert.equal(normalizeGeneratedIds('<div id="PcfControl_4eb7269f8c084cd683f6361ce8864541"><div id="UpdMSPicklistControl7_outer">'), '<div id="PcfControl_{hex32}"><div id="UpdMSPicklistControl{n}_outer">');
 });

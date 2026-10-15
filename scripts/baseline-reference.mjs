@@ -94,7 +94,35 @@ function renderSummary(elements, dom, scenario) {
   // Only data grids (Bootstrap tables of an entity list, subgrid or lookup) count; form sections are tables too.
   const grids = visible.filter((e) => e.tag === "table" && e.classes.includes("table")).length;
   const rows = visible.filter((e) => e.tag === "tr" && e.attributes["data-id"]).length;
-  const modals = visible.filter((e) => e.classes.includes("modal") && (e.classes.includes("in") || e.classes.includes("show"))).length;
+  // Open dialogs with their size class (modal-lg, modal-sm or default) and title; the inventory is in document order, so a
+  // dialog's descendants carry its selector as prefix.
+  const textAt = (element) => {
+    const node = resolve(tree, element.selector);
+    return node ? textOf(node).replace(/\s+/g, " ").trim() : "";
+  };
+  const dialogs = visible.filter((e) => e.classes.includes("modal") && (e.classes.includes("in") || e.classes.includes("show"))).map((modal) => {
+    const inside = elements.filter((e) => e.selector.startsWith(`${modal.selector}>`));
+    const size = inside.find((e) => e.classes.includes("modal-dialog"))?.classes.find((c) => c === "modal-lg" || c === "modal-sm") ?? "default";
+    const title = inside.find((e) => e.classes.includes("modal-title"));
+    return `${size}${title ? ` "${clip(textAt(title), 60)}"` : ""}`;
+  });
+  // Form action bar (basic form settings) placement relative to the form's tabs.
+  const tabs = elements.flatMap((e, position) => (e.visible && e.tag === "div" && e.classes.includes("tab") ? [position] : []));
+  const bars = elements.flatMap((e, position) => (e.visible && e.classes.includes("form-custom-actions") ? [position] : []));
+  const actionsBar = bars.length && tabs.length ? [...new Set(bars.map((position) => (position < tabs[0] ? "above" : position > tabs.at(-1) ? "below" : "between the tabs of")))].join(" and ") : null;
+  // A document the browser shows as plain text (JSON or text templates): the body is one <pre>.
+  const pre = tree.body ? children(tree.body).filter((child) => child.tagName === "pre") : [];
+  const bodyText = pre.length === 1 ? textOf(pre[0]).trim() : null;
+  let body = null;
+  if (bodyText !== null) {
+    let valid = true;
+    try {
+      JSON.parse(bodyText);
+    } catch {
+      valid = false;
+    }
+    body = `"${clip(bodyText.replace(GUID, "{guid}"), 100)}" (${valid ? "valid JSON" : "not valid JSON"})`;
+  }
   // Controls the scenario filled or named in `watch`: their visibility and value after the capture.
   const watched = [...new Set([...(scenario.watch ?? []), ...(scenario.steps ?? []).map((step) => /^#([\w-]+)$/.exec(step.fill ?? step.clear ?? "")?.[1]).filter(Boolean)])];
   const values = watched.map((id) => {
@@ -109,7 +137,9 @@ function renderSummary(elements, dom, scenario) {
     buttons: buttons.map((e) => e.attributes.value ?? e.attributes.title ?? e.attributes["aria-label"] ?? "").filter(Boolean).slice(0, 6),
     grids,
     rows,
-    modals,
+    dialogs,
+    actionsBar,
+    body,
     messages: messages.map((text) => clip(text.replace(GUID, "{guid}").replace(QUERY, "?…"))).slice(0, 5),
     values,
   };
@@ -130,9 +160,11 @@ async function main() {
   // A page is described by its component record (basic form, list, multistep form), not by the web page record that hosts it.
   const byPath = new Map();
   for (const record of manifest.records.filter((r) => r.path)) if (!byPath.has(record.path) || ["webpage", "website"].includes(byPath.get(record.path).kind)) byPath.set(record.path, record);
-  // Reviewed reasons (`--reasons <json>`: scenario id → text) explain a state the live portal cannot reach or a captured page
-  // that does not show the promised state; they are printed whether or not the capture succeeded.
+  // Reviewed reasons (`--reasons <json>`: scenario id → text, or → { "notObserved": text }) explain a state the live portal
+  // cannot reach or a captured page that does not show the promised state. A text is a note printed whether or not the
+  // capture succeeded; `notObserved` lists a captured page as not observed (its rendered summary stays printed).
   const reasons = values.reasons ? await readJson(values.reasons, {}) : {};
+  const reasonOf = (id) => (typeof reasons[id] === "string" ? { note: reasons[id] } : reasons[id]?.notObserved ? { notObserved: reasons[id].notObserved } : {});
   const sections = new Map();
   let captured = 0;
   let noted = 0;
@@ -145,31 +177,47 @@ async function main() {
     const entry = { scenario, meta };
     if (!meta) missing++;
     else if (meta.status === "captured") {
-      captured++;
-      if (reasons[scenario.id]) noted++;
+      // A write the capture's guard aborted means the page never reached the promised state.
+      entry.blocked = (meta.blockedWrites ?? []).map((write) => `${write.method} ${write.path.replace(GUID, "{guid}")}`);
+      if (!entry.blocked.length && !reasonOf(scenario.id).notObserved) {
+        captured++;
+        if (reasonOf(scenario.id).note) noted++;
+      }
       entry.render = renderSummary(await readJson(path.join(folder, "elements.json"), []), await fs.readFile(path.join(folder, "dom.html"), "utf8").catch(() => ""), scenario);
       entry.requests = requestSummary(await readJson(path.join(folder, "requests.json"), []));
     }
     list.push(entry);
     sections.set(key, list);
   }
-  const lines = ["# Native component reference (offline)", "", `Generated by \`scripts/baseline-reference.mjs\` from the project's captured live evidence (label \`${label}\`), the scenario matrix and the fixture site manifest. Per component and state: what was visible (controls, buttons, data grids and rows, open dialogs, the text of visible validation summaries, alerts and messages, the values of the controls the scenario filled or watches), which requests fired (documents and XHR, query values redacted), which configuration record drives the page and the catalog items it exercises (the inventories explain each item). Captures whose status is not \`captured\` are listed as not observed; a reviewed note explains a page that does not reach the state its name promises. Do not edit by hand.`, "", `Scenarios in the matrix: ${matrix.scenarios.length}. Observed: ${captured} (${noted} with a reviewed note). Not observed: ${matrix.scenarios.length - captured} (${missing} without evidence).`, ""];
+  const lines = ["# Native component reference (offline)", "", `Generated by \`scripts/baseline-reference.mjs\` from the project's captured live evidence (label \`${label}\`), the scenario matrix and the fixture site manifest. Per component and state: what was visible (controls, buttons, data grids and rows, open dialogs, the text of visible validation summaries, alerts and messages, the values of the controls the scenario filled or watches), which requests fired (documents and XHR, query values redacted), which configuration record drives the page and the catalog items it exercises (the inventories explain each item). Captures whose status is not \`captured\`, whose write the capture harness blocked, or whose reviewed reason says the state is not reachable are listed as not observed; a reviewed note explains a page that does not reach the state its name promises. Do not edit by hand.`, "", `Scenarios in the matrix: ${matrix.scenarios.length}. Observed: ${captured} (${noted} with a reviewed note). Not observed: ${matrix.scenarios.length - captured} (${missing} without evidence).`, ""];
   for (const [key, entries] of [...sections].sort()) {
     lines.push(`## ${key}`, "");
     const page = entries[0].scenario.steps.find((s) => s.goto)?.goto?.split("?")[0];
     const record = page ? byPath.get(page) : null;
     if (record) lines.push(`Configuration: ${record.kind} \`${record.name}\` at \`${record.path}\` (${escape(record.variation ?? "")}); catalog items: ${(record.catalog ?? []).slice(0, 12).map((id) => `\`${id}\``).join(", ")}${(record.catalog ?? []).length > 12 ? ", …" : ""}. See the [Power Pages inventory](power-pages-inventory.md) rows for these ids and the [Dataverse inventory](dataverse-inventory.md) for the form/view/column rows named by the page.`, "");
     lines.push("| State | Persona | Observed | Rendered | Requests (documents and XHR) |", "| --- | --- | --- | --- | --- |");
-    for (const { scenario, meta, render, requests } of entries) {
-      const reason = reasons[scenario.id] ? escape(reasons[scenario.id]) : "";
-      const observed = !meta ? `no evidence${reason ? ` — ${reason}` : ""}` : meta.status === "captured" ? `yes${reason ? ` — note: ${reason}` : ""}` : `no — ${reason || "not reviewed"} (capture ${meta.status}: ${escape((meta.problems?.[0] ?? "").split("\n")[0].slice(0, 120))})`;
+    for (const { scenario, meta, render, requests, blocked } of entries) {
+      const { note, notObserved } = reasonOf(scenario.id);
+      const reason = escape(note ?? notObserved ?? "");
+      const problem = escape((meta?.problems?.[0] ?? "").split("\n")[0].slice(0, 120));
+      const observed = !meta
+        ? `no evidence${reason ? ` — ${reason}` : ""}`
+        : meta.status !== "captured"
+          ? `no — ${reason || "not reviewed"} (capture ${meta.status}: ${problem})`
+          : blocked.length
+            ? `no — not observed: the harness blocked ${escape(blocked.join(", "))}${reason ? `; ${reason}` : ""}`
+            : notObserved
+              ? `no — ${reason} (captured page summarised)`
+              : `yes${reason ? ` — note: ${reason}` : ""}`;
       const rendered = render
         ? [
             `title "${escape(meta.title)}"`,
             `${render.controls} controls (${render.required} required, ${render.disabled} read-only)`,
             `buttons ${render.buttons.map((b) => `"${escape(b)}"`).join(", ") || "none"}`,
             `${render.grids} data grids / ${render.rows} rows`,
-            `${render.modals} open dialogs`,
+            `${render.dialogs.length} open dialogs${render.dialogs.length ? ` (${render.dialogs.map(escape).join(", ")})` : ""}`,
+            ...(render.actionsBar ? [`actions bar ${render.actionsBar} the form`] : []),
+            ...(render.body ? [`body ${escape(render.body)}`] : []),
             `messages: ${render.messages.map((m) => `"${escape(m)}"`).join("; ") || "none"}`,
             ...(render.values.length ? [`values: ${render.values.map(escape).join(", ")}`] : []),
           ].join("; ")

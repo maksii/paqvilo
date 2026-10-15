@@ -167,14 +167,22 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     }
     await fail(`Persona ${name} did not take effect on the portal after ${attempts} attempts (probe ${failedProbe}: ${result.summary.problems.join("; ")}).`, result, `persona-${name}`);
   };
+  // Optional cache refresh after a persona switch (`matrix.live.refresh`: steps the signed-in session runs, such as
+  // the portal's own clear-cache control), so role changes reach the pages at once instead of after the cache lag.
+  const refresh = async () => {
+    if (!bridge.refresh) return;
+    const result = await runInBridge({ id: "refresh", steps: bridge.refresh.steps, expect: bridge.refresh.expect ?? {} }, { allowWrites: true });
+    if (result.summary.status !== "captured") await fail(`Portal cache refresh did not complete (${result.summary.problems.join("; ")}).`, result, "refresh");
+  };
   await ensureSignedIn();
   return {
     name: "live",
     async persona(name, { ids = {} } = {}) {
       const persona = matrix.personas?.[name] ?? {};
       await runHook(matrix.hooks?.livePersona, { persona: name, cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
+      await ensureSignedIn();
+      await refresh();
       if (persona.anonymous) await signOut();
-      else await ensureSignedIn();
       if (persona.verify) await verifyPersona(name, persona.verify, ids);
     },
     async reset() {
@@ -368,6 +376,8 @@ async function main() {
     const run = { version: 1, action, side: values.side, label, startedAt, finishedAt: new Date().toISOString(), allowWrites: Boolean(values["allow-writes"]), scenarios: results, totals: { captured: results.filter((r) => r.status === "captured").length, failed: results.filter((r) => r.status === "failed").length, error: results.filter((r) => r.status === "error").length, blockedWrites: results.reduce((sum, r) => sum + (r.blockedWrites ?? 0), 0) } };
     await fs.mkdir(outDir, { recursive: true });
     await fs.writeFile(path.join(outDir, `run-${label}.json`), JSON.stringify(run, null, 2));
+    // Keep every run: run-<label>.json is the latest, run-<label>-<startedAt>.json (colon-free) the history.
+    await fs.writeFile(path.join(outDir, `run-${label}-${startedAt.replace(/:/g, "")}.json`), JSON.stringify(run, null, 2));
     console.log(JSON.stringify({ run: path.join(outDir, `run-${label}.json`), totals: run.totals }));
     process.exitCode = run.totals.error ? 2 : 0;
     return;

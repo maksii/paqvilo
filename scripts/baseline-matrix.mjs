@@ -18,25 +18,27 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // not probed yet (run 5b: the role-less persona was denied the edit form while the modal list still served the reader's
 // rows), so each persona is told apart from the editor and from the persona captured before it (run order: editor, reader,
 // none, contact-scope, account-scope, parent-scope, anonymous) with the fixture's table permissions:
-// item1 is the tester contact's and the fixture account's; item5 is the account's only; item4 is another contact's
-// (parent2); every item reads through its parent for the parent-scope role (read only, so the edit form renders read-only).
+// item1 is the tester contact's and the fixture account's; item5 is the account's only (contact-scope is denied it, account-scope
+// edits it); item4 is another contact's (parent2); the parent-scope role reads items only through their parent (read only, so
+// the edit form renders read-only), so item11, which has no parent, is denied to it while the reader's global read opens it.
 const SIGNED_IN = "a[href*='/Account/Login/LogOff'], a[href*='SignOut'], a[href*='LogOff']";
 const UPDATE = "input[name$='UpdateButton']";
 const probe = (goto, expect) => ({ steps: [{ goto }, { wait: 1500 }], expect });
 const edit = (alias) => `/baseline/item-edit/?id={id:${alias}}`;
-// The portal's permission cache took over 5 min after a site upload (run 5); `settleMs` lets the pages not probed catch up.
-const verify = (...probes) => ({ probes, attempts: 80, delay: 15000, settleMs: 20000 });
+// The live side clears the portal cache after each persona switch (`live.refresh`), so the probes only cover the
+// seconds the portal needs to reload; without a refresh the permission cache lagged minutes to over an hour (runs 5-6b).
+const verify = (...probes) => ({ probes, attempts: 8, delay: 10000, settleMs: 3000 });
 const PERSONAS = {
   editor: { roles: ["Baseline Editors"], verify: verify(probe("/baseline/item-create/", { present: ["#pqvd_name", SIGNED_IN] }), probe(edit("item7"), { present: ["#pqvd_name", UPDATE] })) },
   reader: { roles: ["Baseline Readers"], verify: verify(probe("/baseline/item-create/", { absent: ["#pqvd_name"], present: [SIGNED_IN] }), probe(edit("item1"), { present: ["#pqvd_name[readonly]"], absent: [UPDATE] })) },
   // Lists render their table shell whatever the roles: "none" is verified on the edit form of a readable record and on the
   // modal list's grid data (no rows once the role-less contact is in effect; the reader before it saw every item).
   none: { roles: [], verify: verify(probe(edit("item1"), { absent: ["#pqvd_name"], present: [SIGNED_IN] }), probe("/baseline/item-list-modal/", { absent: ["tr[data-id]"], present: [SIGNED_IN] })) },
-  "contact-scope": { roles: ["Baseline Contact Scope"], verify: verify(probe(edit("item1"), { present: ["#pqvd_name", UPDATE] }), probe(edit("item7"), { absent: ["#pqvd_name"], present: [SIGNED_IN] })) },
+  "contact-scope": { roles: ["Baseline Contact Scope"], verify: verify(probe(edit("item1"), { present: ["#pqvd_name", UPDATE] }), probe(edit("item7"), { absent: ["#pqvd_name"], present: [SIGNED_IN] }), probe(edit("item5"), { absent: ["#pqvd_name"], present: [SIGNED_IN] })) },
   // `account` marks the persona whose contact belongs to the fixture account (persona.mjs sets parentcustomerid): lists
   // filtered by account run their editor states under it.
   "account-scope": { roles: ["Baseline Account Scope"], account: true, verify: verify(probe(edit("item5"), { present: ["#pqvd_name", UPDATE] }), probe(edit("item7"), { absent: ["#pqvd_name"], present: [SIGNED_IN] })) },
-  "parent-scope": { roles: ["Baseline Parent Scope"], verify: verify(probe(edit("item1"), { present: ["#pqvd_name[readonly]"], absent: [UPDATE] })) },
+  "parent-scope": { roles: ["Baseline Parent Scope"], verify: verify(probe(edit("item1"), { present: ["#pqvd_name[readonly]"], absent: [UPDATE] }), probe(edit("item11"), { absent: ["#pqvd_name"], present: [SIGNED_IN] })) },
   anonymous: { anonymous: true, verify: verify(probe("/baseline/item-create/", { absent: [SIGNED_IN] })) },
 };
 const SUBMIT = "input[name$='InsertButton'], input[name$='UpdateButton']";
@@ -129,17 +131,23 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     out.push(scenario(`basic-form/${idSuffix("populated")}`, { ...parts, state: "populated" }, [{ goto: open(T.record) }], { present: [FORM, "#pqvd_name"] }));
     if (full) out.push(scenario(`basic-form/${idSuffix("minimal")}`, { ...parts, state: "minimal" }, [{ goto: open(T.minimal) }], { present: [FORM] }));
     if (full) out.push(scenario(`basic-form/${idSuffix("inactive-record")}`, { ...parts, state: "inactive-record" }, [{ goto: open(T.inactive) }], {}));
-    // The record-not-found message needs an id no record has (`missing` resolves to the zero GUID).
-    if (cites(record, "pp.basicform.record-not-found-message")) out.push(scenario(`basic-form/${idSuffix("record-not-found")}`, { ...parts, state: "record-not-found" }, [{ goto: open("missing") }], {}));
+    // The configured record-not-found message renders when the page has no (or an empty or malformed) id; a well-formed id
+    // no record has (`missing`, the zero GUID) renders the platform exception instead (live, 2026-10-15).
+    if (cites(record, "pp.basicform.record-not-found-message")) {
+      out.push(scenario(`basic-form/${idSuffix("record-not-found")}`, { ...parts, state: "record-not-found" }, [{ goto: page }], {}));
+      out.push(scenario(`basic-form/${idSuffix("record-missing-id")}`, { ...parts, state: "record-missing-id" }, [{ goto: open("missing") }], {}));
+    }
     if (full && T.rules) out.push(scenario(`basic-form/${idSuffix("hidden-by-rule")}`, { ...parts, state: "hidden-by-rule" }, [{ goto: open(T.ruled) }], { present: [FORM] }, { watch: ["pqvd_hiddenbyrule", "pqvd_flag"] }));
     out.push(scenario(`basic-form/${idSuffix("save-text")}`, { ...parts, state: "save-text" }, [{ goto: open(T.record) }, { fill: T.text, value: "edited by baseline" }, ...submit, { wait: { navigation: true } }], {}));
     // Variants that change the validation summary (links, header, CSS) show it on a missing required value.
     if (full || /summary/i.test(record.variation ?? "")) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: open(T.record) }, { clear: T.required }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
     rules(() => [], [{ goto: open(T.record) }]);
     if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-update-${stage}`)}`, { ...parts, state: `plugin-error-update-${stage}` }, [{ goto: open(T.record) }, { fill: "#pqvd_text", value: `plugin-fail-update-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
-    // The postback re-renders the form from the record the plugin mutated (run 5 evidence: the response carries the mutated
-    // values while a reload 16 s later still served the pre-save record from the portal's read cache), so the postback is the evidence.
-    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [{ goto: open(T.record) }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }], { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
+    // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
+    // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
+    const mutate = [{ goto: open(T.record) }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }];
+    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [...mutate, { wait: 3000 }, { goto: open(T.record) }, { wait: 1500 }], { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
+    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation-postback")}`, { ...parts, state: "plugin-mutation-postback" }, mutate, { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
     if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-dialog-open")}`, { ...parts, state: "lookup-dialog-open" }, [{ goto: open(T.record) }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: MODAL, state: "visible" } }, { wait: 1500 }], { present: [".modal"] }));
     if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-search")}`, { ...parts, state: "lookup-search" }, [{ goto: open(T.record) }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: MODAL, state: "visible" } }, { fill: ".modal.in input.query, .modal.show input.query", value: "*Other" }, { press: ".modal.in input.query, .modal.show input.query", key: "Enter" }, { wait: 1500 }], { present: [".modal"] }));
     if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-select")}`, { ...parts, state: "lookup-select" }, [{ goto: open(T.record) }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: MODAL, state: "visible" } }, { wait: 1500 }, { click: ".modal.in table tbody tr:nth-child(2), .modal.show table tbody tr:nth-child(2)" }, { click: ".modal.in button.primary, .modal.show button.primary" }, { wait: 1000 }], { present: [FORM] }, { watch: ["pqvd_contactid_name"] }));
@@ -169,7 +177,7 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     // A deactivated basic form record renders no form on live: whatever the page shows is the evidence.
     const inactiveForm = cites(record, "pp.basicform.statecode");
     out.push(scenario(`basic-form/${idSuffix("read-only")}`, { ...parts, state: "read-only" }, [{ goto: open(T.record) }], inactiveForm ? {} : { present: [FORM] }));
-    if (personas) for (const persona of ["reader", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("read-only", persona)}`, { ...parts, persona, state: "read-only" }, [{ goto: open(T.record) }], {}));
+    if (personas) for (const persona of ["reader", "contact-scope", "account-scope", "parent-scope", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("read-only", persona)}`, { ...parts, persona, state: "read-only" }, [{ goto: open(T.record) }], {}));
   }
   return out;
 }
@@ -240,8 +248,11 @@ function multistepScenarios(record, steps = []) {
 }
 
 // Pages that host no form, list or multistep form (the root index, page-rule pages, template, Liquid and bound pages,
-// the pushpin web file) render once; a page with a web page access control rule renders for each persona the rule names
-// plus the first role persona it leaves out. Every page copy carries the page name; the pushpin is an image.
+// the pushpin web file) render once, opened with the query their variation names (`?id=<id>` for a page whose read form
+// takes its record from the query string); a page with a web page access control rule renders for each persona the rule
+// names, the first role persona it leaves out and the anonymous visitor (every signed-in persona holds Administrators,
+// whose site-wide grant-change rule overrides restrict-read, so only the visitor can show the rule's effect). Every page
+// copy carries the page name; the pushpin is an image.
 function pageScenarios(record, manifest) {
   const out = [];
   const rule = manifest.records.find((r) => r.kind === "webpagerule" && r.path === record.path);
@@ -249,13 +260,16 @@ function pageScenarios(record, manifest) {
   const parts = { component: "page", variation: rule ? `${record.name}: ${rule.variation}` : template ? `${record.name}: ${template.variation}` : record.name };
   const expectText = record.kind === "webfile" ? {} : { text: [record.name] };
   if (!rule) {
-    out.push(scenario(`page/${record.slug}/render/editor`, { ...parts, persona: "editor", state: "render" }, [{ goto: record.path }], expectText));
+    out.push(scenario(`page/${record.slug}/render/editor`, { ...parts, persona: "editor", state: "render" }, [{ goto: record.path + recordQuery(record) }], expectText));
     return out;
   }
   const named = Object.entries(PERSONAS).filter(([, persona]) => persona.roles?.some((role) => rule.roles?.includes(role))).map(([name]) => name);
   const excluded = Object.entries(PERSONAS).find(([name, persona]) => persona.roles?.length && !named.includes(name))?.[0];
   const restrictRead = cites(rule, "pp.pagerule.right.restrictread");
-  for (const persona of [...named, ...(excluded ? [excluded] : [])]) out.push(scenario(`page/${record.slug}/access/${persona}`, { ...parts, persona, state: "access" }, [{ goto: record.path }], restrictRead && !named.includes(persona) ? {} : expectText));
+  for (const persona of [...named, ...(excluded ? [excluded] : []), "anonymous"]) {
+    const expect = restrictRead && !named.includes(persona) ? {} : expectText;
+    out.push(scenario(`page/${record.slug}/access/${persona}`, { ...parts, persona, state: "access" }, [{ goto: record.path }], persona === "anonymous" ? { ...expect, absent: [] } : expect));
+  }
   return out;
 }
 
@@ -280,7 +294,7 @@ export function buildMatrix(manifest, project = {}) {
     origin: project.origin ?? "https://example.invalid",
     live: project.live,
     hooks: project.hooks,
-    writeScope: { paths: ["^/baseline/", "^/_services/", "^/_portal/"], entitySets: ["pqvd_baselineitems", "pqvd_baselinechilds", "pqvd_baselineparents", "annotations"] },
+    writeScope: { paths: ["^/baseline/", "^/_services/", "^/_portal/", "^/_api/"], entitySets: ["pqvd_baselineitems", "pqvd_baselinechilds", "pqvd_baselineparents", "annotations"] },
     // The project's `mirageIdentity` mirrors what the live portal shows for the signed-in tester (name, parent account,
     // the base roles it holds besides the baseline ones); Mirage personas carry those roles on top of their own.
     personas: Object.fromEntries(Object.entries(PERSONAS).map(([name, { account, ...persona }]) => [name, { ...persona, ...(persona.roles && project.mirageIdentity?.roles ? { roles: [...persona.roles, ...project.mirageIdentity.roles] } : {}), ...(persona.anonymous ? {} : { mirageContact: project.mirageContact }) }])),

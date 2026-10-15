@@ -181,6 +181,9 @@ const dialog = (type, title, size = "default", extra = {}) => ({
   Type: type, LoadingMessage: res(`Loading ${title.toLowerCase()}...`), Title: res(title), PrimaryButtonText: res("OK"), CloseButtonText: res("Close"), DismissButtonSrText: res("Close dialog"),
   Size: SIZE[size], CssClass: "baseline-dialog", TitleCssClass: "baseline-dialog-title", PrimaryButtonCssClass: "btn btn-primary", CloseButtonCssClass: "btn btn-default", ...extra,
 });
+// Activate/Deactivate dialogs and the error dialog as the platform writes them (no LoadingMessage; the error dialog has Body).
+const confirmDialog = (type, title) => { const { LoadingMessage, ...rest } = dialog(type, title); return rest; };
+const errorDialog = (title) => { const { LoadingMessage, ...rest } = dialog("CrmEntityFormView-ErrorModal", title); return { ...rest, Body: res(`${title}.`) }; };
 // Notes dialogs carry no Type discriminator in exported settings (PAC rejects unknown Type values).
 const untypedDialog = (...args) => { const { Type, ...rest } = dialog(...args); return rest; };
 const gridMessages = (what) => ({ LoadingMessage: res(`Loading ${what}...`), ErrorMessage: res(`Could not load ${what}.`), AccessDeniedMessage: res(`You do not have access to ${what}.`), EmptyMessage: res(`No ${what}.`), CssClass: "baseline-grid", GridCssClass: "table-striped" });
@@ -223,7 +226,7 @@ export function buildSite(identity = readIdentity()) {
     put(`${dir}/${base}.webpage.copy.html`, html);
     put(`${dir}/content-pages/${base}.en-US.webpage.yml`, yamlRecord({ ...common, adx_isroot: false, adx_rootwebpageid: entry.id, adx_title: entry.name, adx_webpageid: id(`page:${entry.key}:en-US`), adx_webpagelanguageid: LANGUAGE_ID }));
     put(`${dir}/content-pages/${base}.en-US.webpage.copy.html`, html);
-    record("webpage", entry.id, entry.name, isRoot ? "root page, hidden from sitemap" : `page for ${entry.key}`, [...catalog, ...liquidIds(copy)], { path: entry.path, contentPageId: id(`page:${entry.key}:en-US`) });
+    record("webpage", entry.id, entry.name, isRoot ? "root page, hidden from sitemap" : `page for ${entry.key}${entry.query ? `, opened with ${entry.query} (the read form takes its record from the query string)` : ""}`, [...catalog, ...liquidIds(copy)], { path: entry.path, contentPageId: id(`page:${entry.key}:en-US`) });
   }
 
   // Basic forms --------------------------------------------------------------
@@ -291,7 +294,7 @@ export function buildSite(identity = readIdentity()) {
   basicForm("item-create-owner", { name: "Baseline Item Insert Owner", mode: INSERT, fields: { ...MESSAGE, adx_associatecurrentportaluser: true, adx_targetentityportaluserlookupattribute: "pqvd_contactid", adx_portaluserlookupattributeisactivityparty: false }, variation: "insert, associate the current portal user through pqvd_contactid (not an activity party)", page: "item-create-owner" });
   const REFERENCE_ITEM = { adx_setentityreference: true, adx_referenceentitylogicalname: ITEM, adx_referenceentityrelationshipname: "pqvd_baselineitem_baselinechild", adx_referencetargetlookupattributelogicalname: "pqvd_itemid" };
   basicForm("child-create-reference", { name: "Baseline Child Insert Reference", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "itemid", adx_referencequerystringisprimarykey: true, adx_referenceentityshowreadonlyform: true, adx_referenceentityreadonlyformname: "Baseline Item" }, variation: "insert child, reference the item from ?itemid=<id>, populate the lookup, show the item read-only", page: "child-create-reference" });
-  basicForm("child-create-reference-code", { name: "Baseline Child Insert Reference Code", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_referenceentityshowreadonlyform: false }, variation: "insert child, reference the item whose pqvd_code matches ?code= and populate the lookup (the child form's item lookup is required: left empty, the client validator blocks the insert), no read-only form", page: "child-create-reference-code" });
+  basicForm("child-create-reference-code", { name: "Baseline Child Insert Reference Code", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_referenceentityshowreadonlyform: false }, variation: "insert child, reference the item whose pqvd_code matches ?code= and populate the required item lookup, no read-only form", page: "child-create-reference-code" });
   basicForm("item-create-contact-reference", { name: "Baseline Item Insert Contact Reference", mode: INSERT, fields: { ...MESSAGE, adx_setentityreference: true, adx_referenceentitylogicalname: "contact", adx_referenceentityrelationshipname: "pqvd_contact_baselineitem", adx_referencetargetlookupattributelogicalname: "pqvd_contactid", adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150001 }, variation: "insert item, reference the record associated to the current portal user (contact)", page: "item-create-contact-reference" });
   const actionCss = { ButtonCssClass: "btn btn-default baseline-action" };
   const actionsSettings = (size, placement, deleteTarget) => json({
@@ -524,7 +527,13 @@ export function buildSite(identity = readIdentity()) {
       ...gridMessages("baseline items"),
       GridColumnWidthStyle: 0,
       DeleteDialog: dialog("CrmEntityFormView-GridDeleteModal", "Delete baseline item", "large"),
-      ErrorDialog: dialog("CrmEntityFormView-ErrorModal", "Baseline item error"),
+      // Shapes of the platform-written lists in the export (Active Accounts…, op-mv2sgrtr account list): every action with
+      // ConfirmationRequired has its dialog (ActivateModal/DeactivateModal), and the error dialog carries Body, no
+      // LoadingMessage. Run 6 rendered this list with the settings' defaults (no actions, no column override, null
+      // messages in data-view-layouts) while Activate required a confirmation without an ActivateDialog.
+      ActivateDialog: confirmDialog("ActivateModal", "Activate baseline item"),
+      DeactivateDialog: confirmDialog("DeactivateModal", "Deactivate baseline item"),
+      ErrorDialog: errorDialog("Baseline item error"),
     }),
   }, "key, primary key name, search tooltip, account filter; actions to URLs, download, activate/deactivate, tooltips/CSS/confirmation, grid messages and CSS, pixel widths, column override, large delete dialog, error dialog, custom JavaScript", [
     ...ACTIONS, "pp.list.action.confirmationrequired", "pp.list.action.confirmation", "pp.list.action.buttonlabel", "pp.list.action.buttontooltip", "pp.list.action.buttoncssclass", "pp.list.action.redirecturl", "pp.list.action.activate", "pp.list.action.deactivate",
@@ -744,13 +753,18 @@ export function buildSite(identity = readIdentity()) {
     perm(`${label_} notes`, "annotation", 756150003, privileges, roles, { adx_parententitypermission: parentId, adx_parentrelationship: "pqvd_baselineitem_Annotations" }, "notes through the item permission");
   };
   const personaRoles = roleNames.slice(0, 5);
-  const parentGlobal = perm("Baseline parent global read", PARENT, 756150000, READ_APPEND, personaRoles, {}, "parent lookup read for every baseline role");
+  // A child (parent-scoped) permission inherits the web roles of its parent permission (Learn: "Configure child
+  // permissions", roles are inherited from the parent table permission), so the parent-scope chain gets its own root:
+  // with the shared lookup-read permission as its parent, every baseline role read every item through the chain
+  // (live run 6b: the contact- and account-scope personas rendered a foreign item read-only).
+  const parentGlobal = perm("Baseline parent global read", PARENT, 756150000, READ_APPEND, personaRoles.filter((name) => name !== "Baseline Parent Scope"), {}, "parent lookup read for the baseline roles outside the parent-scope chain");
+  const parentScopeRoot = perm("Baseline Parent Scope parents", PARENT, 756150000, READ_APPEND, ["Baseline Parent Scope"], {}, "root of the parent-scope chain; its child permissions inherit this role");
   perm("Baseline Editors parents", PARENT, 756150000, ALL, ["Baseline Editors"], {}, "editors edit parents and associate items");
   withChildren(perm("Baseline Editors items", ITEM, 756150000, ALL, ["Baseline Editors"], {}, "global full privileges"), "Baseline Editors items", ALL, ["Baseline Editors"]);
   withChildren(perm("Baseline Readers items", ITEM, 756150000, READ, ["Baseline Readers"], {}, "global read only"), "Baseline Readers items", READ, ["Baseline Readers"]);
   withChildren(perm("Baseline Contact Scope items", ITEM, 756150001, ALL, ["Baseline Contact Scope"], { adx_contactrelationship: "pqvd_contact_baselineitem" }, "contact scope through pqvd_contact_baselineitem"), "Baseline Contact Scope items", ALL, ["Baseline Contact Scope"]);
   withChildren(perm("Baseline Account Scope items", ITEM, 756150002, ALL, ["Baseline Account Scope"], { adx_accountrelationship: "pqvd_account_baselineitem" }, "account scope through pqvd_account_baselineitem"), "Baseline Account Scope items", ALL, ["Baseline Account Scope"]);
-  withChildren(perm("Baseline Parent Scope items", ITEM, 756150003, READ, ["Baseline Parent Scope"], { adx_parententitypermission: parentGlobal, adx_parentrelationship: "pqvd_baselineparent_baselineitem" }, "items read through the parent permission (its children and notes form a parent chain two levels deep)"), "Baseline Parent Scope items", READ, ["Baseline Parent Scope"]);
+  withChildren(perm("Baseline Parent Scope items", ITEM, 756150003, READ, ["Baseline Parent Scope"], { adx_parententitypermission: parentScopeRoot, adx_parentrelationship: "pqvd_baselineparent_baselineitem" }, "items read through the parent permission (its children and notes form a parent chain two levels deep)"), "Baseline Parent Scope items", READ, ["Baseline Parent Scope"]);
   perm("Baseline Editors account read", "account", 756150000, READ_APPEND, ["Baseline Editors"], {}, "customer lookup read");
   perm("Baseline Editors contact read", "contact", 756150000, READ_APPEND, ["Baseline Editors"], {}, "customer lookup read");
   perm("Baseline Contact Scope self", "contact", 756150004, READ, ["Baseline Contact Scope"], {}, "self scope: the signed-in contact reads its own contact record");
@@ -785,7 +799,7 @@ export function buildSite(identity = readIdentity()) {
   // Own page and web templates (the site's templates stay untouched) ------------------------
   const webTemplates = [
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Page Template", adx_webtemplateid: id("webtemplate:page") }, source: `<div class="baseline-template">{{ page.adx_copy }}</div>\n` },
-    { values: { adx_mimetype: "application/json", adx_name: "Baseline Json Template", adx_webtemplateid: id("webtemplate:json") }, source: `{"page":{{ page.adx_name | escape | json }}}\n` },
+    { values: { adx_mimetype: "application/json", adx_name: "Baseline Json Template", adx_webtemplateid: id("webtemplate:json") }, source: `{"page":"{{ page.adx_name | escape }}"}\n` }, // live has no json filter (run 6 rendered the value unquoted): the template quotes it
     // Template inheritance and inclusion: Extends overrides one block of Layout and includes Part with a parameter.
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Layout", adx_webtemplateid: id("webtemplate:layout") }, source: `<div class="baseline-layout"><header class="baseline-layout-title">{% block title %}Baseline layout title{% endblock %}</header><main class="baseline-layout-main">{% block main %}Baseline layout main{% endblock %}</main></div>\n` },
     { values: { adx_mimetype: "text/html", adx_name: "Baseline Include Part", adx_webtemplateid: id("webtemplate:include-part") }, source: `<p class="baseline-include-part">{{ part_label | default: 'Baseline part' | escape }}</p>\n` },
@@ -808,7 +822,7 @@ export function buildSite(identity = readIdentity()) {
   // Liquid tags by id and key (forms and lists above use the tags by name).
   const activeView = VIEWS.find((v) => v.file === "item-active");
   const liquidPages = [
-    [page("liquid-entityform-id", "liquid-entityform-id", "Baseline Liquid Entityform By Id"), `{% entityform id: '${read.id}' %}`],
+    [Object.assign(page("liquid-entityform-id", "liquid-entityform-id", "Baseline Liquid Entityform By Id"), { query: "?id=<id>" }), `{% entityform id: '${read.id}' %}`],
     [page("liquid-webform-id", "liquid-webform-id", "Baseline Liquid Webform By Id"), `{% webform id: '${mainMultistep.values.adx_webformid}' %}`],
     [page("liquid-entitylist", "liquid-entitylist", "Baseline Liquid Entitylist"), [
       `{% entitylist name: 'Baseline Item List' %}<p class="baseline-list-name">{{ entitylist.adx_name }}</p>{% entityview id: '${activeView.id}', page_size: 2, page: 1, order: 'pqvd_code ASC', search: 'Baseline', language_code: 1033 %}<p class="baseline-total">{{ entityview.total_records }}</p>{% endentityview %}{% endentitylist %}`,
@@ -821,7 +835,7 @@ export function buildSite(identity = readIdentity()) {
   // Forms and lists bound through the page record's own lookups, rendered by the rewrite template (FullPage.aspx).
   const rewrite = pageTemplates[2].adx_pagetemplateid;
   const boundPages = [
-    [page("bound-entityform", "bound-entityform", "Baseline Bound Basic Form", rewrite, { adx_entityform: read.id }), "basic form Baseline Item Read bound through adx_entityform", ["pp.basicform.rendering.full-page"]],
+    [Object.assign(page("bound-entityform", "bound-entityform", "Baseline Bound Basic Form", rewrite, { adx_entityform: read.id }), { query: "?id=<id>" }), "basic form Baseline Item Read bound through adx_entityform", ["pp.basicform.rendering.full-page"]],
     [page("bound-entitylist", "bound-entitylist", "Baseline Bound List", rewrite, { adx_entitylist: itemList.values.adx_entitylistid }), "list Baseline Item List bound through adx_entitylist", ["pp.list.webpage"]],
     [page("bound-webform", "bound-webform", "Baseline Bound Multistep Form", rewrite, { adx_webform: mainMultistep.values.adx_webformid }), "multistep form Baseline Multistep bound through adx_webform", ["pp.msform.webpage"]],
   ];

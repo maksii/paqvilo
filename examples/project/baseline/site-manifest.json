@@ -2006,7 +2006,7 @@
       "name": "Baseline Child Insert Reference Code",
       "path": "/baseline/child-create-reference-code/",
       "table": "pqvd_baselinechild",
-      "variation": "insert child, reference the item whose pqvd_code matches ?code= and populate the lookup (the child form's item lookup is required: left empty, the client validator blocks the insert), no read-only form",
+      "variation": "insert child, reference the item whose pqvd_code matches ?code= and populate the required item lookup, no read-only form",
       "catalog": [
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
@@ -5298,7 +5298,24 @@
       "kind": "tablepermission",
       "name": "Baseline parent global read",
       "table": "Baseline parent global read",
-      "variation": "parent lookup read for every baseline role",
+      "variation": "parent lookup read for the baseline roles outside the parent-scope chain",
+      "catalog": [
+        "pp.tableperm.table",
+        "pp.tableperm.name",
+        "pp.tableperm.webroles",
+        "pp.tableperm.scope",
+        "pp.tableperm.scope.global",
+        "pp.tableperm.privilege.read",
+        "pp.tableperm.privilege.append",
+        "pp.tableperm.privilege.appendto"
+      ]
+    },
+    {
+      "id": "dd796195-3da4-440e-898f-974abf5fee37",
+      "kind": "tablepermission",
+      "name": "Baseline Parent Scope parents",
+      "table": "Baseline Parent Scope parents",
+      "variation": "root of the parent-scope chain; its child permissions inherit this role",
       "catalog": [
         "pp.tableperm.table",
         "pp.tableperm.name",
@@ -7242,7 +7259,7 @@
       "name": "Baseline Liquid Entityform By Id",
       "path": "/baseline/liquid-entityform-id/",
       "contentPageId": "23f656fe-8ec9-4ea5-8174-530764cae293",
-      "variation": "page for liquid-entityform-id",
+      "variation": "page for liquid-entityform-id, opened with ?id=<id> (the read form takes its record from the query string)",
       "catalog": [
         "pp.template.liquid.entityform"
       ]
@@ -7289,7 +7306,7 @@
       "name": "Baseline Bound Basic Form",
       "path": "/baseline/bound-entityform/",
       "contentPageId": "fe7f1703-bcc6-44fa-8417-9e54fd94f2c0",
-      "variation": "page for bound-entityform",
+      "variation": "page for bound-entityform, opened with ?id=<id> (the read form takes its record from the query string)",
       "catalog": [
         "pp.basicform.rendering.full-page"
       ]

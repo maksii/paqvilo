@@ -129,7 +129,7 @@ export function compareRequests(live = [], mirage = []) {
     const location = `#${A.seq}/${B.seq} ${keysA[a]}`;
     if (A.url !== B.url) out.push(delta("request", location, "query", A.url, B.url));
     if (A.resourceType !== B.resourceType) out.push(delta("request", location, "resourceType", A.resourceType, B.resourceType));
-    diffValue("request", location, "headers", A.headers, B.headers, out);
+    diffValue("request", location, "headers", withoutDiagnostics(A.headers), withoutDiagnostics(B.headers), out);
     const bodyA = canonicalBody(A.body, A.headers?.["content-type"]);
     const bodyB = canonicalBody(B.body, B.headers?.["content-type"]);
     if ((bodyA?.kind ?? null) !== (bodyB?.kind ?? null)) out.push(delta("request", location, "body.kind", bodyA?.kind ?? null, bodyB?.kind ?? null));
@@ -166,6 +166,18 @@ const isPanel = (node) => adapter.isElementNode(node) && node.attrs?.some((a) =>
 const textOf = (node) => (adapter.isTextNode(node) ? node.value.replace(/\s+/g, " ").trim() : adapter.getChildNodes(node)?.map(textOf).join("") ?? "");
 
 /** Structural DOM comparison: tag, attributes (class as ordered list), text of leaf nodes, child order. */
+// The hosted React/Fluent bundles inject <style data-merge-styles|data-load-themed-styles|data-fela-type> elements into the
+// live head at run time; they are client-side platform artefacts and would shift every positional head delta.
+const INJECTED_STYLE = /^data-(?:merge-styles|load-themed-styles|fela-type)$/;
+export function withoutInjectedStyles(node) {
+  const children = adapter.getChildNodes(node) ?? [];
+  for (const child of [...children]) {
+    if (adapter.isElementNode(child) && adapter.getTagName(child) === "style" && adapter.getAttrList(child).some((attr) => INJECTED_STYLE.test(attr.name))) adapter.detachNode(child);
+    else if (adapter.getChildNodes(child)?.length) withoutInjectedStyles(child);
+  }
+  return node;
+}
+
 export function diffDom(a, b, out, root = "dom") {
   const walk = (x, y, parents, index) => {
     const location = `${root} ${nodePath(parents)}`;
@@ -251,9 +263,15 @@ async function loadCapture(dir) {
   };
 }
 
+// Platform-generated element ids whose value is a per-render GUID or a hosted-bundle instance counter: both sides keep
+// the element, only the token is normalised, so a missing element still shows up as a delta (decision D11).
+const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"]];
+export const normalizeGeneratedIds = (text) => GENERATED_IDS.reduce((acc, [pattern, token]) => acc.replace(pattern, token), text);
+const normalizedCapture = (capture) => capture && { ...capture, dom: normalizeGeneratedIds(capture.dom ?? ""), elements: JSON.parse(normalizeGeneratedIds(JSON.stringify(capture.elements ?? []))) };
+
 export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist }) {
-  const live = await loadCapture(liveDir);
-  const mirage = await loadCapture(mirageDir);
+  const live = normalizedCapture(await loadCapture(liveDir));
+  const mirage = normalizedCapture(await loadCapture(mirageDir));
   const result = { id: scenario.id, verdict: "error", counts: { total: 0, allowed: 0, unexplained: 0 }, deltas: [], variance: null, signatures: [] };
   if (!live || !mirage) {
     result.reason = !live ? "live capture missing" : "mirage capture missing";
@@ -268,13 +286,13 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
   deltas.push(...compareRequests(live.requests, mirage.requests));
   if (live.meta.finalUrl !== mirage.meta.finalUrl) deltas.push(delta("dom", "finalUrl", "url", live.meta.finalUrl, mirage.meta.finalUrl));
   if (live.meta.title !== mirage.meta.title) deltas.push(delta("dom", "title", "text", live.meta.title, mirage.meta.title));
-  diffDom(parse(live.dom), parse(mirage.dom), deltas);
+  diffDom(withoutInjectedStyles(parse(live.dom)), withoutInjectedStyles(parse(mirage.dom)), deltas);
   compareElements(live.elements, mirage.elements, deltas);
   compareConsole(live.console, mirage.console, deltas);
   // Live-run variance: deltas that also appear between two independent live captures are reported with that proof.
   let variance = null;
   if (secondDir) {
-    const second = await loadCapture(secondDir);
+    const second = normalizedCapture(await loadCapture(secondDir));
     if (second?.meta.status === "captured") {
       const between = [];
       between.push(...compareRequests(live.requests, second.requests));

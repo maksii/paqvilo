@@ -87,8 +87,18 @@ adx_settings: >-
       },
       {
         "Type": "CreateRelatedRecordAction",
+        "TargetType": 0,
         "EntityFormId": "e3e16411-3741-477d-83a1-891c50788e72",
+        "ShowModal": 1,
+        "SuccessMessage": [
+          {
+            "LCID": 1033,
+            "Value": ""
+          }
+        ],
+        "EntityName": "pqvd_baselinechild",
         "Relationship": "pqvd_baselineitem_baselinechild",
+        "ParentRecord": "",
         "ButtonLabel": [
           {
             "LCID": 1033,

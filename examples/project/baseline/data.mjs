@@ -71,14 +71,16 @@ export function records(tester = TESTER_CONTACT) {
     // active views stay unchanged.
     item("item9", "Baseline Item Iota", "I-009", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 90 } }),
     item("item10", "Baseline Item Kappa", "I-010", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 100 } }),
-    item("item11", "Baseline Item Lambda", "I-011", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 110 } }),
+    // item11 has no parent: the parent-scope role (items through their parent) is denied it while the reader reads it (persona probe).
+    item("item11", "Baseline Item Lambda", "I-011", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 110 }, refs: { [p("parentid")]: null } }),
     { key: "child1", id: ids.child1, table: CHILD, fields: { [p("name")]: "Child One", [p("sortorder")]: 1, [p("note")]: "First child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child2", id: ids.child2, table: CHILD, fields: { [p("name")]: "Child Two", [p("sortorder")]: 2, [p("note")]: "Second child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child3", id: ids.child3, table: CHILD, fields: { [p("name")]: "Child Three", [p("sortorder")]: 3 }, refs: { [p("itemid")]: "item1" } },
     { key: "child4", id: ids.child4, table: CHILD, fields: { [p("name")]: "Child Four", [p("sortorder")]: 1 }, refs: { [p("itemid")]: "item2" } },
     { key: "child5", id: ids.child5, table: CHILD, fields: { [p("name")]: "Child Five", [p("sortorder")]: 5, [p("note")]: "Deactivated child.", statecode: 1, statuscode: 2 }, refs: { [p("itemid")]: "item1" } },
-    { key: "note1", id: ids.note1, table: "annotation", fields: { subject: "Baseline note", notetext: "A plain note on the alpha item." }, refs: { objectid: "item1" } },
-    { key: "note2", id: ids.note2, table: "annotation", fields: { subject: "Baseline attachment", notetext: "A note with a text attachment.", filename: "baseline-brief.txt", mimetype: "text/plain", documentbody: BRIEF.toString("base64"), isdocument: true }, refs: { objectid: "item1" } },
+    // The portal shows only notes whose text starts with the site setting KnowledgeManagement/NotesFilter (`*WEB*` on the shared site, D8); portal-created notes carry it.
+    { key: "note1", id: ids.note1, table: "annotation", fields: { subject: "Baseline note", notetext: "*WEB*A plain note on the alpha item." }, refs: { objectid: "item1" } },
+    { key: "note2", id: ids.note2, table: "annotation", fields: { subject: "Baseline attachment", notetext: "*WEB*A note with a text attachment.", filename: "baseline-brief.txt", mimetype: "text/plain", documentbody: BRIEF.toString("base64"), isdocument: true }, refs: { objectid: "item1" } },
   ];
   const resolved = { tester: { id: tester, table: "contact" } };
   for (const row of rows) resolved[row.key] = { id: row.id, table: row.table };
