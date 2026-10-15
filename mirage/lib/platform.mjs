@@ -1181,16 +1181,22 @@ async function renderForm(kind, name, context, options) {
         indicator = `<div class="progress-numeric">Step <span class="number">${stepIndex + 1}</span> of <span class="number total">${counted.length}</span></div>`;
       else if (type === 756150002) {
         const percent = counted.length ? Math.round((Math.max(stepIndex, 0) / counted.length) * 100) : 0;
-        indicator = `<div class="progress"><div class="bar progress-bar${percent ? "" : " zero"}" style="width: ${percent}%;" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">${percent}%</div></div>`;
+        // Bootstrap 5: the indicator column itself is the .progress box (live evidence, left position).
+        if (bs.v5) indicator = `<span>${percent}%</span><div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? "" : " zero"}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
+        else indicator = `<div class="progress"><div class="bar progress-bar${percent ? "" : " zero"}" style="width: ${percent}%;" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">${percent}%</div></div>`;
       } else
         indicator = `<ol class="progress list-group ${position}">${counted
           .map((step, index) =>
             index < stepIndex
-              ? `<li class="list-group-item text-muted list-group-item-success complete">${prepend ? `<span class="number">${index + 1}</span>` : ""}${title(step)}<span class="glyphicon glyphicon-ok"></span></li>`
+              ? bs.v5
+              ? `<li class="list-group-item text-muted list-group-item-success">${prepend ? `<span class="number">${index + 1}</span>` : ""}${title(step)}<span class="fa-solid fa-check" role="img" aria-label="Completed"></span></li>`
+              : `<li class="list-group-item text-muted list-group-item-success complete">${prepend ? `<span class="number">${index + 1}</span>` : ""}${title(step)}<span class="glyphicon glyphicon-ok"></span></li>`
               : `<li class="list-group-item ${index === stepIndex ? "active" : "incomplete"}">${prepend ? `<span class="number">${index + 1}</span>` : ""}${title(step)}</li>`,
           )
           .join("")}</ol>`;
-      const column = position === "left" ? ' class=" col-sm-3 col-md-2"' : position === "right" ? ' class=" col-sm-3 col-sm-push-9 col-md-2 col-md-push-10"' : "";
+      // Bootstrap 5 side columns repeat their class list (live evidence); top/bottom Bootstrap 5 columns are unobserved.
+      const v5Side = bs.v5 && (position === "left" || position === "right") ? ` col-md-3 col-lg-2${type === 756150002 ? ` progress ${position}` : ""}${position === "right" ? " div-right order-lg-1" : ""}` : null;
+      const column = v5Side ? ` class="${v5Side}${v5Side}"` : position === "left" ? ' class=" col-sm-3 col-md-2"' : position === "right" ? ' class=" col-sm-3 col-sm-push-9 col-md-2 col-md-push-10"' : "";
       progress = { html: `<div id="${pageControl ? "WebFormControl" : `WebFormControl_${compactId(definition?.id ?? name)}`}_ProgressIndicator"${column}>${indicator}</div>`, position };
     }
     advancedSteps = schema.steps;
@@ -1257,8 +1263,28 @@ async function renderForm(kind, name, context, options) {
         : "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
     return `<div id="${attr(ids.wrapper)}">${await startupScript()}${message}</div>`;
   }
+  // The control still renders inside the page's WebForms form (native marker); the Bootstrap 5
+  // panel carries a close button without a postback handler (live evidence).
+  if (notFound && kind === "webform") {
+    // A multistep step without its source record sends the visitor to ?msg=source-invalid&stepid=<step>
+    // (a 302), which renders the step's
+    // not-found message alone: no close button, no step script (live evidence).
+    if (!id && params.msg !== "source-invalid") {
+      const target = new URL(context.request?.url ?? "http://localhost/");
+      for (const key of ["msg", "stepid"]) target.searchParams.delete(key);
+      target.searchParams.set("msg", "source-invalid");
+      target.searchParams.set("stepid", canonicalId(schema.stepId));
+      const location = target.pathname + target.search;
+      // The page answers with this redirect (server.mjs componentRedirect); the script covers fragment renders.
+      context.__diagnostics?.push({ code: "ADVANCEDFORM_SOURCE_INVALID", severity: "info", form: definition?.name ?? name, redirect: location, message: `Advanced form step '${schema.stepId}' has no source record; the platform redirects with msg=source-invalid.` });
+      return `<script>location.replace(${json(location)});</script>`;
+    }
+    return `<div id="${attr(ids.wrapper)}" data-pp-native-form><div id="MessagePanel" class="message error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+  }
   if (notFound)
-    return `<div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+    return bs.v5
+      ? `<div id="${attr(ids.wrapper)}" data-pp-native-form>${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="${attr(ids.buttons)}btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">${escape(notFound)}</span></div></div>`
+      : `<div id="${attr(ids.wrapper)}" data-pp-native-form>${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
   if (kind === "entityform" && mode === FORM_MODE.insert && !formCreateAllowed(store, schema.entity, identity))
     // Still a basic form control: the page keeps its WebForms server form (live permission-denied captures).
     return ENTITY_FORM_CLIENT_VALIDATE + createAccessDeniedForm({ ids, formName: schema.formName ?? schema.title ?? name, snippet: portal.snippets?.["EntitySecurity/Record/CreateAccessDeniedMessage"] }).replace(/^<div id="[^"]*"/, "$& data-pp-native-form");
@@ -1502,7 +1528,7 @@ async function renderForm(kind, name, context, options) {
         const options = optionsFor(field);
         const selected = scalar == null || scalar === "" ? null : Number(scalar);
         if (field.controlStyle === 100000000 || field.controlStyle === 100000001)
-          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? "vertical" : "horizontal"}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true"' : ""}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>`).join(field.controlStyle === 100000000 ? "<br>" : "")}</span>`;
+          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? "vertical" : "horizontal"}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true" aria-invalid="false" title="Please select an item in this list"' : ""}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>`).join(field.controlStyle === 100000000 ? "<br>" : "")}</span>`;
         // PicklistControlTemplate: every option follows an empty "Select" option; a required
         // dropdown carries required="" (the platform app bundle removes it on load).
         const picklistOptions = `${emptyOption(selected == null)}${options.map((option) => `<option${Number(option.value) === selected ? ' selected="selected"' : ""} value="${attr(option.value)}">${escape(option.label ?? option.value)}</option>`).join("")}`;
@@ -1592,7 +1618,7 @@ async function renderForm(kind, name, context, options) {
           const change = `setIsDirty(this.id);${url ? `validateUrlInput(this,${Number(field.maxLength) || 0});` : ticker ? "uppercaseTickerSymbol(this);" : ""}`;
           // Bootstrap 5 keeps the required-field attributes of a box a read-only form disables.
           const requiredText = field.required && !(bs.v5 ? fieldLevel : disabled) ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"` : "";
-          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
+          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${field.description?.text ? ` aria-roledescription="${attr(field.description.text)}"` : ""}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
         }
     }
   };
@@ -1885,11 +1911,11 @@ async function renderForm(kind, name, context, options) {
     const nextLabel = terminal ? formLabel(fieldOf(step, "submitbuttontext"), "Submit") : formLabel(fieldOf(step, "nextbuttontext"), "Next");
     const previousAllowed = stepIndex > 0 && fieldOf(step, "movepreviouspermitted") !== false;
     defaultButton = "NextButton";
-    const previous = previousAllowed ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, "previousbuttontext"), "Previous"))}" onclick="javascript:__doPostBack('${attr(ids.buttons)}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, "previousbuttoncssclass") || "btn btn-default button previous previous-btn")}"></div>` : "";
-    const next = readOnly && terminal ? "" : `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}NextButton" value="${attr(nextLabel)}" onclick="${attr(onclick(ids.buttons + "NextButton"))}" id="NextButton" class="${attr(terminal ? fieldOf(step, "submitbuttoncssclass") || "btn btn-primary button next submit-btn" : fieldOf(step, "nextbuttoncssclass") || "btn btn-primary button next submit-btn")}"></div>`;
+    const previous = previousAllowed ? `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}PreviousButton" value="${attr(formLabel(fieldOf(step, "previousbuttontext"), "Previous"))}" onclick="javascript:__doPostBack('${attr(ids.buttons)}PreviousButton','')" id="PreviousButton" class="${attr(fieldOf(step, "previousbuttoncssclass") || "btn btn-default button previous previous-btn")}" nonactionlinkbutton="true"></div>` : "";
+    const next = readOnly && terminal ? "" : `<div role="group" class="btn-group entity-action-button"><input type="button" name="${attr(ids.buttons)}NextButton" value="${attr(nextLabel)}" onclick="${attr(onclick(ids.buttons + "NextButton"))}" id="NextButton" class="${attr(terminal ? fieldOf(step, "submitbuttoncssclass") || "btn btn-primary button next submit-btn" : fieldOf(step, "nextbuttoncssclass") || "btn btn-primary button next submit-btn")}" nonactionlinkbutton="true"></div>`;
     if (previous) renderedActions.push({ button: "PreviousButton", action: "previous" });
     if (next) renderedActions.push({ button: "NextButton", action: "submit" });
-    actionsHtml = previous || next ? `<div class="actions"><div class="col-sm-6 clearfix">${previous}${next}</div></div>` : "";
+    actionsHtml = previous || next ? `<div class="actions"><div class="${bs.v5 ? "col-md-6" : "col-sm-6"} clearfix">${previous}${next}</div></div>` : "";
   } else if (!readOnly && submitEnabled) {
     const button = mode === FORM_MODE.insert ? "InsertButton" : "UpdateButton";
     renderedActions.push({ button, action: "submit" });
@@ -1957,7 +1983,8 @@ async function renderForm(kind, name, context, options) {
     PreviousActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     NextActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     CreateRelatedRecordActionLink: { Modal: {}, Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
-    EnableEntityPermissions: fieldOf(componentMetadata, "entitypermissionsenabled") !== false,
+    // The multistep control reports false whatever the step's setting (live evidence).
+    EnableEntityPermissions: kind !== "webform" && fieldOf(componentMetadata, "entitypermissionsenabled") !== false,
     LanguageCode: 0,
     EnableActions: false,
     ShowActionButtonContainer: 0,
@@ -1967,13 +1994,16 @@ async function renderForm(kind, name, context, options) {
   const hidden = (suffix, valueText) =>
     `<input type="hidden" name="${attr(ids.names.replace(/\$$/, ""))}$${attr(ids.view)}_${suffix}" id="${attr(ids.view)}_${suffix}"${String(valueText ?? "") !== "" ? ` value="${attr(valueText)}"` : ""}>`;
   const instructions = formLabel(fieldOf(componentMetadata, "instructions"), "");
-  const panelClass = kind === "webform" && progress?.position === "left" ? "crmEntityFormView left" : kind === "webform" && progress?.position === "right" ? "crmEntityFormView right" : "crmEntityFormView";
+  // Bootstrap 5 names the panel after the side it takes: right of a left indicator (live evidence).
+  const panelClass = kind !== "webform" ? "crmEntityFormView"
+    : bs.v5 ? { left: "crmEntityFormView right col-lg-10 order-1", right: "crmEntityFormView left col-lg-10" }[progress?.position] ?? "crmEntityFormView"
+    : progress?.position === "left" ? "crmEntityFormView left" : progress?.position === "right" ? "crmEntityFormView right" : "crmEntityFormView";
   const entityFormClass = readOnly ? "form-readonly entity-form" : postback && mode === FORM_MODE.insert ? "entity-form entity-form" : "entity-form";
-  // An editable basic form carries the platform's off-screen honeypot box. The platform names it with a
+  // An editable basic or multistep form carries the platform's off-screen honeypot box. The platform names it with a
   // per-render token; the local token is derived from the form and record so renders stay repeatable.
   const trap = createHash("sha256").update(`${definition?.id ?? name}:${id ?? ""}`).digest("hex").slice(0, 8);
-  const honeypot = kind === "entityform" && !readOnly ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
-  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""} role="form" aria-label="${kind === "webform" ? "Multistep Form" : "Basic Form"}"><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}${honeypot}</div>${actionsHtml}</div>`;
+  const honeypot = !readOnly ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}${honeypot}</div>${actionsHtml}</div>`;
   if (postback?.outcome?.type === 'message') {
     const message = bs.v5
       ? `<div id="MessagePanel" class="${SUCCESS_PANEL_V5}" role="alert">${messageCloseButton(ids.buttons, bs)}<span id="MessageLabel">${postback.outcome.message}</span></div>`
@@ -2001,7 +2031,7 @@ async function renderForm(kind, name, context, options) {
     // and only the service-resolved context accompanies the successful-control names.
     await options.onNativePostbackDescriptor(Object.freeze({ descriptor, context: resolved }));
   }
-  return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${progressBottom}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}</div>`;
+  return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${progressBottom}${kind === "webform" ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}</div>`;
 }
 
 function controlForSubmit(field) {

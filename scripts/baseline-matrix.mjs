@@ -15,7 +15,7 @@ import { fileURLToPath } from "node:url";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 // `verify` is the probe the live side repeats until the portal's permission cache reflects the role change.
 const SIGNED_IN = "a[href*='/Account/Login/LogOff'], a[href*='SignOut'], a[href*='LogOff']";
-const verify = (goto, expect) => ({ steps: [{ goto }, { wait: 1000 }], expect, attempts: 12, delay: 15000 });
+const verify = (goto, expect) => ({ steps: [{ goto }, { wait: 1000 }], expect, attempts: 40, delay: 15000 }); // the portal's permission cache took over 5 min after a site upload (run 5)
 const PERSONAS = {
   editor: { roles: ["Baseline Editors"], verify: verify("/baseline/item-create/", { present: ["#pqvd_name", SIGNED_IN] }) },
   reader: { roles: ["Baseline Readers"], verify: verify("/baseline/item-create/", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
@@ -44,12 +44,21 @@ const recordQuery = (record) => {
 const TABLES = {
   pqvd_baselineitem: { record: "item1", minimal: "item2", inactive: "item3", foreign: "item4", insert: (name, code) => [{ fill: "#pqvd_name", value: name }, { fill: "#pqvd_code", value: code }, { fill: "#pqvd_required", value: "required value" }], required: "#pqvd_required", text: "#pqvd_text", validation: true, plugins: true, rules: true, lookup: "Contact", notes: true },
   pqvd_baselinechild: { record: "child1", minimal: "child2", inactive: "child3", foreign: "child4", insert: (name) => [{ fill: "#pqvd_name", value: name }, { fill: "#pqvd_sortorder", value: "10" }], required: "#pqvd_name", text: "#pqvd_note", validation: false, plugins: false, rules: false, lookup: null, notes: false },
-  contact: { record: "tester", minimal: "tester", inactive: "tester", foreign: "other", insert: (name) => [{ fill: "#firstname", value: name }], required: "#lastname", text: "#telephone1", validation: false, plugins: false, rules: false, lookup: null, notes: false },
+  contact: { record: "tester", minimal: "tester", inactive: "tester", foreign: "other", insert: (name) => [{ fill: "#jobtitle", value: name }], required: "#jobtitle", text: "#telephone1", validation: false, plugins: false, rules: false, lookup: null, notes: false },
   pqvd_baselineparent: { record: "parent1", minimal: "parent2", inactive: "parent2", foreign: "parent2", insert: (name, code) => [{ fill: "#pqvd_name", value: name }, { fill: "#pqvd_code", value: code }], required: "#pqvd_name", text: "#pqvd_description", validation: false, plugins: false, rules: false, lookup: null, notes: false },
 };
 
+// The non-editor personas (reader, none, anonymous, the scope personas) render the same denial or read-only page
+// on every record of a kind, so they run only on the representative pages the project names (`personaPages`).
+const personaPage = (record, project) => !project.personaPages || project.personaPages.includes(record.path);
+// Validation, plugin, lookup and note behaviours do not depend on a form's presentation options, so they run only on the
+// canonical form of each table (`behaviourPages`); a variant form captures the states its own configuration changes.
+const behaviourPage = (record, project) => !project.behaviourPages || project.behaviourPages.includes(record.path);
+
 function basicFormScenarios(record, project = {}) {
   const out = [];
+  const personas = personaPage(record, project);
+  const full = behaviourPage(record, project);
   const T = TABLES[record.table] ?? TABLES.pqvd_baselineitem;
   // A form with auto-generated steps shows one tab per step: Next moves on, the submit button is on the last tab.
   const stepped = (record.catalog ?? []).includes("pp.basicform.auto-generate-steps");
@@ -64,47 +73,54 @@ function basicFormScenarios(record, project = {}) {
   if (mode === "insert") {
     out.push(scenario(`basic-form/${idSuffix("empty")}`, { ...parts, state: "empty" }, [{ goto: page }], { present: [FORM] }));
     out.push(scenario(`basic-form/${idSuffix("insert")}`, { ...parts, state: "insert" }, [{ goto: page }, ...T.insert("Baseline inserted item", "I-NEW-{id:run}"), ...submit, { wait: { navigation: true } }], {}));
-    out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: page }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
-    if (T.validation) out.push(scenario(`basic-form/${idSuffix("regex-error")}`, { ...parts, state: "regex-error" }, [{ goto: page }, ...T.insert("Baseline regex", "I-RX-{id:run}"), { fill: "#pqvd_text", value: "regex should fail 1" }, ...submit, { wait: 1500 }], { present: [FORM] }));
-    if (T.validation) out.push(scenario(`basic-form/${idSuffix("range-error")}`, { ...parts, state: "range-error" }, [{ goto: page }, ...T.insert("Baseline range", "I-RG-{id:run}"), { fill: "#pqvd_wholenumber", value: "5000" }, ...submit, { wait: 1500 }], { present: [FORM] }));
-    if (T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-create-${stage}`)}`, { ...parts, state: `plugin-error-create-${stage}` }, [{ goto: page }, ...T.insert(`Baseline plugin ${stage}`, `I-PL-${stage.slice(0, 3)}-{id:run}`), { fill: "#pqvd_text", value: `plugin-fail-create-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
-    if (T.rules) out.push(scenario(`basic-form/${idSuffix("rule-error")}`, { ...parts, state: "rule-error" }, [{ goto: page }, ...T.insert("Baseline rule error", "I-RE-{id:run}"), { fill: "#pqvd_ruleerror", value: "600" }, ...submit, { wait: { navigation: true } }], {}));
-    for (const persona of ["reader", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("permission-denied", persona)}`, { ...parts, persona, state: "permission-denied" }, [{ goto: page }], { absent: persona === "anonymous" ? [] : SIGN_IN }));
+    if (full || stepped) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: page }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
+    if (full && T.validation) out.push(scenario(`basic-form/${idSuffix("regex-error")}`, { ...parts, state: "regex-error" }, [{ goto: page }, ...T.insert("Baseline regex", "I-RX-{id:run}"), { fill: "#pqvd_text", value: "regex should fail 1" }, ...submit, { wait: 1500 }], { present: [FORM] }));
+    if (full && T.validation) out.push(scenario(`basic-form/${idSuffix("range-error")}`, { ...parts, state: "range-error" }, [{ goto: page }, ...T.insert("Baseline range", "I-RG-{id:run}"), { fill: "#pqvd_wholenumber", value: "5000" }, ...submit, { wait: 1500 }], { present: [FORM] }));
+    if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-create-${stage}`)}`, { ...parts, state: `plugin-error-create-${stage}` }, [{ goto: page }, ...T.insert(`Baseline plugin ${stage}`, `I-PL-${stage.slice(0, 3)}-{id:run}`), { fill: "#pqvd_text", value: `plugin-fail-create-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
+    if (full && T.rules) out.push(scenario(`basic-form/${idSuffix("rule-error")}`, { ...parts, state: "rule-error" }, [{ goto: page }, ...T.insert("Baseline rule error", "I-RE-{id:run}"), { fill: "#pqvd_ruleerror", value: "600" }, ...submit, { wait: { navigation: true } }], {}));
+    if (personas) for (const persona of ["reader", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("permission-denied", persona)}`, { ...parts, persona, state: "permission-denied" }, [{ goto: page }], { absent: persona === "anonymous" ? [] : SIGN_IN }));
   } else if (mode === "edit") {
     out.push(scenario(`basic-form/${idSuffix("populated")}`, { ...parts, state: "populated" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { present: [FORM, "#pqvd_name"] }));
-    out.push(scenario(`basic-form/${idSuffix("minimal")}`, { ...parts, state: "minimal" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.minimal}}` }], { present: [FORM] }));
-    out.push(scenario(`basic-form/${idSuffix("inactive-record")}`, { ...parts, state: "inactive-record" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.inactive}}` }], {}));
-    if (T.rules) out.push(scenario(`basic-form/${idSuffix("hidden-by-rule")}`, { ...parts, state: "hidden-by-rule" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.minimal}}` }], { present: [FORM] }));
+    if (full) out.push(scenario(`basic-form/${idSuffix("minimal")}`, { ...parts, state: "minimal" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.minimal}}` }], { present: [FORM] }));
+    if (full) out.push(scenario(`basic-form/${idSuffix("inactive-record")}`, { ...parts, state: "inactive-record" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.inactive}}` }], {}));
+    if (full && T.rules) out.push(scenario(`basic-form/${idSuffix("hidden-by-rule")}`, { ...parts, state: "hidden-by-rule" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.minimal}}` }], { present: [FORM] }));
     out.push(scenario(`basic-form/${idSuffix("save-text")}`, { ...parts, state: "save-text" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { fill: T.text, value: "edited by baseline" }, ...submit, { wait: { navigation: true } }], {}));
-    out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { clear: T.required }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
-    if (T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-update-${stage}`)}`, { ...parts, state: `plugin-error-update-${stage}` }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { fill: "#pqvd_text", value: `plugin-fail-update-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
-    if (T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }, { wait: 6000 }, { goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { present: [FORM] }));
-    if (T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-dialog-open")}`, { ...parts, state: "lookup-dialog-open" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: "button.launchentitylookup[aria-label*='${T.lookup}']" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 1500 }], { present: [".modal"] }));
-    if (T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-search")}`, { ...parts, state: "lookup-search" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: "button.launchentitylookup[aria-label*='${T.lookup}']" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { fill: ".modal.in input.query, .modal.show input.query", value: "*Other" }, { press: ".modal.in input.query, .modal.show input.query", key: "Enter" }, { wait: 1500 }], { present: [".modal"] }));
-    if (T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-select")}`, { ...parts, state: "lookup-select" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: "button.launchentitylookup[aria-label*='${T.lookup}']" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 1500 }, { click: ".modal.in table tbody tr:nth-child(2), .modal.show table tbody tr:nth-child(2)" }, { click: ".modal.in button.primary, .modal.show button.primary" }, { wait: 1000 }], { present: [FORM] }));
-    if (T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-clear")}`, { ...parts, state: "lookup-clear" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: "button.clearlookupfield[aria-label*='${T.lookup}']" }, { wait: 800 }], { present: [FORM] }));
-    if (T.notes) out.push(scenario(`basic-form/${idSuffix("note-add")}`, { ...parts, state: "note-add" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { wait: { selector: "a.addnote:visible, .entity-notes .add-note:visible", state: "visible" } }, { click: "a.addnote:visible, .entity-notes .add-note:visible" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { fill: ".modal.in textarea, .modal.show textarea", value: "note added by baseline" }, { click: ".modal.in button.primary, .modal.show button.primary, .modal.in .btn-primary, .modal.show .btn-primary" }, { wait: 2500 }], { present: [FORM] }));
-    for (const persona of ["reader", "contact-scope", "account-scope", "parent-scope", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("permission", persona)}`, { ...parts, persona, state: "permission" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { absent: persona === "anonymous" ? [] : SIGN_IN }));
-    out.push(scenario(`basic-form/${idSuffix("contact-scope-foreign", "contact-scope")}`, { ...parts, persona: "contact-scope", state: "contact-scope-foreign" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.foreign}}` }], {}));
+    if (full) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { clear: T.required }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
+    if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-update-${stage}`)}`, { ...parts, state: `plugin-error-update-${stage}` }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { fill: "#pqvd_text", value: `plugin-fail-update-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
+    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }, { wait: 6000 }, { goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { present: [FORM] }));
+    if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-dialog-open")}`, { ...parts, state: "lookup-dialog-open" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 1500 }], { present: [".modal"] }));
+    if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-search")}`, { ...parts, state: "lookup-search" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { fill: ".modal.in input.query, .modal.show input.query", value: "*Other" }, { press: ".modal.in input.query, .modal.show input.query", key: "Enter" }, { wait: 1500 }], { present: [".modal"] }));
+    if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-select")}`, { ...parts, state: "lookup-select" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 1500 }, { click: ".modal.in table tbody tr:nth-child(2), .modal.show table tbody tr:nth-child(2)" }, { click: ".modal.in button.primary, .modal.show button.primary" }, { wait: 1000 }], { present: [FORM] }));
+    if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-clear")}`, { ...parts, state: "lookup-clear" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { click: `button.clearlookupfield[aria-label*='${T.lookup}']` }, { wait: 800 }], { present: [FORM] }));
+    if (full && T.notes) out.push(scenario(`basic-form/${idSuffix("note-add")}`, { ...parts, state: "note-add" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }, { wait: { selector: "a.addnote:visible, .entity-notes .add-note:visible", state: "visible" } }, { click: "a.addnote:visible, .entity-notes .add-note:visible" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { fill: ".modal.in textarea, .modal.show textarea", value: "note added by baseline" }, { click: ".modal.in button.primary, .modal.show button.primary, .modal.in .btn-primary, .modal.show .btn-primary" }, { wait: 2500 }], { present: [FORM] }));
+    if (personas) for (const persona of ["reader", "contact-scope", "account-scope", "parent-scope", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("permission", persona)}`, { ...parts, persona, state: "permission" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { absent: persona === "anonymous" ? [] : SIGN_IN }));
+    if (personas) out.push(scenario(`basic-form/${idSuffix("contact-scope-foreign", "contact-scope")}`, { ...parts, persona: "contact-scope", state: "contact-scope-foreign" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.foreign}}` }], {}));
   } else {
     out.push(scenario(`basic-form/${idSuffix("read-only")}`, { ...parts, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { present: [FORM] }));
-    for (const persona of ["reader", "none"]) out.push(scenario(`basic-form/${idSuffix("read-only", persona)}`, { ...parts, persona, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], {}));
+    if (personas) for (const persona of ["reader", "none"]) out.push(scenario(`basic-form/${idSuffix("read-only", persona)}`, { ...parts, persona, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], {}));
   }
   return out;
 }
 
-function listScenarios(record) {
+function listScenarios(record, project = {}) {
   const out = [];
   const parts = { component: "list", variation: record.variation ?? record.name, persona: "editor" };
   const page = record.path;
   const s = (state, steps, expect = {}, persona = "editor") => out.push(scenario(`list/${record.slug}/${state}/${persona}`, { ...parts, persona, state }, steps, expect));
   const grid = ".entitylist, .entity-grid, [data-view-layouts]";
+  // A deactivated list record renders no grid (the live page shows the Liquid error): only its default state applies.
+  if (record.catalog?.includes("pp.list.statecode")) {
+    s("default", [{ goto: page }, { wait: 1500 }], {});
+    return out;
+  }
   s("default", [{ goto: page }, { wait: { selector: `${grid} table, ${grid} .table`, state: "visible" } }, { wait: 1500 }], { present: [grid] });
   // The view selector and the search box exist only when the list record configures them.
   if (record.catalog?.includes("pp.list.views.selector")) s("view-selector", [{ goto: page }, { wait: 1500 }, { click: ".view-toolbar .dropdown-toggle, .entitylist .view-selector .dropdown-toggle, .btn-group .dropdown-toggle" }, { wait: 600 }, { click: ".dropdown-menu a:has-text('All'), .dropdown-menu li:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
   if (record.catalog?.includes("pp.list.searchenabled")) s("search", [{ goto: page }, { wait: 1500 }, { fill: ".entitylist-search input, input.query, input[placeholder*='Search']", value: "*Alpha" }, { press: ".entitylist-search input, input.query, input[placeholder*='Search']", key: "Enter" }, { wait: 2000 }], { present: [grid] });
-  if (record.catalog?.includes("pp.list.pagesize")) s("paging", [{ goto: page }, { wait: 1500 }, { click: ".pagination li:nth-child(3) a, .pagination a[data-page='2'], .pagination li.next a" }, { wait: 2000 }], { present: [grid] });
-  s("sort", [{ goto: page }, { wait: 1500 }, { click: "th a[data-logicalname='pqvd_code'], th a:has-text('Code'), th:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
+  // Calendar and map lists render no grid table: paging and sorting apply to grid lists only.
+  const gridList = !record.catalog?.some((id) => /^pp\.list\.(?:calendar|map)\./.test(id));
+  if (gridList && record.catalog?.includes("pp.list.pagesize")) s("paging", [{ goto: page }, { wait: 1500 }, { click: ".pagination li:nth-child(3) a, .pagination a[data-page='2'], .pagination li.next a" }, { wait: 2000 }], { present: [grid] });
+  if (gridList) s("sort", [{ goto: page }, { wait: 1500 }, { click: "th a[data-logicalname='pqvd_code'], th a:has-text('Code'), th:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
   if (/modal/i.test(record.variation ?? "")) {
     s("modal-details", [{ goto: page }, { wait: 1500 }, { click: "tr .details-link, tr a.details-link, tr .launch-modal" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 2500 }], { present: [".modal"] });
     s("modal-create", [{ goto: page }, { wait: 1500 }, { click: ".toolbar a.create-action, a.create-action, .btn.create-action" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 2500 }], { present: [".modal"] });
@@ -117,19 +133,26 @@ function listScenarios(record) {
     s("filter-checkbox", [{ goto: page }, { wait: 1500 }, { check: ".entitylist-filter input[type='checkbox']" }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
     s("filter-reset", [{ goto: page }, { wait: 1500 }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
   }
-  for (const persona of ["reader", "contact-scope", "none", "anonymous"]) s("permission", [{ goto: page }, { wait: 1500 }], { absent: persona === "anonymous" ? [] : SIGN_IN }, persona);
+  if (personaPage(record, project)) for (const persona of ["reader", "contact-scope", "none", "anonymous"]) s("permission", [{ goto: page }, { wait: 1500 }], { absent: persona === "anonymous" ? [] : SIGN_IN }, persona);
   return out;
 }
 
-function multistepScenarios(record) {
+function multistepScenarios(record, steps = []) {
   const out = [];
   const parts = { component: "multistep-form", variation: record.variation ?? record.name, persona: "editor" };
-  const page = record.path + recordQuery(record);
+  // The record-identifying query parameter a multistep page needs (`?id=`, `?parentid=`, `?code=`) is named by one of
+  // its own step records (the manifest names each step's parent form).
+  const own = steps.filter((step) => step.form === record.name);
+  const loadStep = own.find((step) => /\?(?:id|parentid|code)=/.test(step.variation ?? ""));
+  const page = record.path + (recordQuery(record) || (loadStep ? recordQuery(loadStep) : ""));
+  // Fields filled on the first step come from that step's target table.
+  const first = own[0];
+  const T = TABLES[first?.table] ?? TABLES.pqvd_baselineitem;
   const s = (state, steps, expect = {}) => out.push(scenario(`multistep-form/${record.slug}/${state}/editor`, { ...parts, state }, steps, expect));
   s("step1", [{ goto: page }], { present: [FORM] });
-  s("step1-submit", [{ goto: page }, { fill: "#pqvd_name", value: "Baseline multistep {id:run}" }, { fill: "#pqvd_code", value: "MS-{id:run}" }, { fill: "#pqvd_text", value: "step one" }, { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }], {});
-  s("step2-back", [{ goto: page }, { fill: "#pqvd_name", value: "Baseline multistep back {id:run}" }, { fill: "#pqvd_code", value: "MB-{id:run}" }, { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { click: "input[name$='PreviousButton']" }, { wait: { navigation: true } }], {});
-  s("resume", [{ goto: page }, { fill: "#pqvd_name", value: "Baseline resume {id:run}" }, { fill: "#pqvd_code", value: "MR-{id:run}" }, { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { goto: page }], {});
+  s("step1-submit", [{ goto: page }, ...T.insert("Baseline multistep {id:run}", "MS-{id:run}"), { fill: T.text, value: "step one" }, { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }], {});
+  s("step2-back", [{ goto: page }, ...T.insert("Baseline multistep back {id:run}", "MB-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { click: "input[name$='PreviousButton']" }, { wait: { navigation: true } }], {});
+  s("resume", [{ goto: page }, ...T.insert("Baseline resume {id:run}", "MR-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { goto: page }], {});
   return out;
 }
 
@@ -140,8 +163,8 @@ export function buildMatrix(manifest, project = {}) {
     const r = { ...record, slug: slugOf(record) };
     if (!record.path) continue;
     if (record.kind === "basicform") scenarios.push(...basicFormScenarios(r, project));
-    else if (record.kind === "list") scenarios.push(...listScenarios(r));
-    else if (record.kind === "advancedform") scenarios.push(...multistepScenarios(r));
+    else if (record.kind === "list") scenarios.push(...listScenarios(r, project));
+    else if (record.kind === "advancedform") scenarios.push(...multistepScenarios(r, manifest.records.filter((item) => item.kind === "advancedformstep")));
   }
   const seen = new Set();
   const unique = scenarios.filter((item) => (seen.has(item.id) ? false : seen.add(item.id)));

@@ -261,3 +261,8 @@ test("a success message that hides the form renders the message only", async () 
   assert.match(html, /<span id="MessageLabel">Thanks\.<\/span><\/div>/);
   assert.doesNotMatch(html, /id="EntityFormPanel"/);
 });
+
+test("Bootstrap 5 basic form without its record keeps the WebForms marker and the closable danger panel", async () => {
+  const html = await render({ params: {} });
+  assert.match(html, /<div id="EntityFormControl_[0-9a-f]+" data-pp-native-form><div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="[^"]*btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">/);
+});

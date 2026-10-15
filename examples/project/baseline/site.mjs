@@ -193,7 +193,7 @@ export function buildSite(identity = readIdentity()) {
   const files = new Map();
   const records = [];
   const put = (relative, content) => files.set(relative.split(path.sep).join("/"), content);
-  const record = (kind, recordId, name, variation, catalog, extra = {}, values = {}) => records.push({ id: recordId, kind, name, ...extra, ...(values.adx_entityname ? { table: values.adx_entityname } : {}), variation, catalog: unique([...catalog, ...derivedIds(kind, values)]) });
+  const record = (kind, recordId, name, variation, catalog, extra = {}, values = {}) => records.push({ id: recordId, kind, name, ...extra, ...((values.adx_entityname ?? values.adx_targetentitylogicalname) ? { table: values.adx_entityname ?? values.adx_targetentitylogicalname } : {}), variation, catalog: unique([...catalog, ...derivedIds(kind, values)]) });
 
   // Pages ------------------------------------------------------------------
   const pages = new Map();
@@ -240,6 +240,9 @@ export function buildSite(identity = readIdentity()) {
     adx_validationsummarylinksenabled: true,
   });
   const INSERT = 100000000, EDIT = 100000001, READONLY = 100000002;
+  // Redirect URL is an absolute "External URL" (Learn: basic forms, redirect step); a site-relative path
+  // returned HTTP 500 on save in the live capture. example.com is reserved for documentation (RFC 2606).
+  const EXTERNAL_URL = "https://example.com/";
   const QUERY = { adx_entitysourcetype: 756150001, adx_recordidquerystringparametername: "id" };
   const MESSAGE = { adx_onsuccess: 756150000, adx_hideformonsuccess: false };
   function basicForm(key, { name, table = ITEM, formName = "Baseline Item", mode, fields = {}, variation, catalog = [], page: pageInfo, js = false }) {
@@ -255,8 +258,8 @@ export function buildSite(identity = readIdentity()) {
   const edit = basicForm("item-edit", { name: "Baseline Item Edit", mode: EDIT, fields: { ...QUERY, ...MESSAGE }, variation: "edit, record from query string id; carries the metadata records", page: "item-edit" });
   const read = basicForm("item-read", { name: "Baseline Item Read", mode: READONLY, fields: { ...QUERY }, variation: "read-only", page: "item-read" });
   basicForm("item-create-success", { name: "Baseline Item Insert Success", mode: INSERT, fields: { adx_onsuccess: 756150000, adx_hideformonsuccess: true, adx_successmessage: json(label("Baseline item saved; the form is hidden.")) }, variation: "insert, success message and hide form", page: "item-create-success" });
-  basicForm("item-create-redirect", { name: "Baseline Item Insert Redirect", mode: INSERT, fields: { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirectwebpage: edit.page.id, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_appendquerystring: false }, variation: "insert, redirect to the edit page appending the record id; a redirect URL can come from ?returnurl=", page: "item-create-redirect" });
-  basicForm("item-create-redirect-url", { name: "Baseline Item Insert Redirect URL", mode: INSERT, fields: { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirecturl: "/baseline/item-read/", adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_appendquerystring: true, adx_redirecturlcustomquerystring: "source=baseline", adx_redirecturlquerystringattributeparamname: "code", adx_redirecturlquerystringattribute: "pqvd_code" }, variation: "insert, redirect to a URL (or the URL in ?returnurl=) appending the existing query string, the record id, a custom query string and code=<pqvd_code>", page: "item-create-redirect-url" });
+  basicForm("item-create-redirect", { name: "Baseline Item Insert Redirect", catalog: ["pp.basicform.redirect-record-id-parameter-name"], mode: INSERT, fields: { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirectwebpage: edit.page.id, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_appendquerystring: false }, variation: "insert, redirect to the edit page appending the record id; a redirect URL can come from ?returnurl=", page: "item-create-redirect" });
+  basicForm("item-create-redirect-url", { name: "Baseline Item Insert Redirect URL", catalog: ["pp.basicform.redirect-record-id-parameter-name"], mode: INSERT, fields: { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirecturl: EXTERNAL_URL, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_appendquerystring: true, adx_redirecturlcustomquerystring: "source=baseline", adx_redirecturlquerystringattributeparamname: "code", adx_redirecturlquerystringattribute: "pqvd_code" }, variation: "insert, redirect to an external absolute URL (or the URL in ?returnurl=) appending the existing query string, the record id, a custom query string and code=<pqvd_code>", page: "item-create-redirect-url" });
   basicForm("item-edit-nolinks", { name: "Baseline Item Edit No Summary Links", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_validationsummarylinksenabled: false }, variation: "edit, validation summary links disabled", page: "item-edit-nolinks" });
   basicForm("item-create-captcha", { name: "Baseline Item Insert Captcha", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: false }, variation: "insert, captcha for anonymous users only", page: "item-create-captcha" });
   basicForm("item-create-captcha-all", { name: "Baseline Item Insert Captcha All Users", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true }, variation: "insert, captcha for anonymous and authenticated users", page: "item-create-captcha-all" });
@@ -530,41 +533,42 @@ export function buildSite(identity = readIdentity()) {
     "pp.list.action.edit.buttonlabel", "pp.list.action.edit.buttontooltip", "pp.list.action.edit.target.url",
     "pp.list.action.delete.buttonlabel", "pp.list.action.delete.buttontooltip", ...family("pp.list.action.delete.dialog.", "large"),
   ], true);
-  // Filter definition: JSON-serialized FetchXML with adx.* designer keys (shape read by Mirage's list filter).
-  const opt = (index, attribute, value, uiname) => ({ "adx.id": String(index), attribute, operator: "eq", value: String(value), uiname });
-  const filterDefinition = {
-    entity: {
-      name: ITEM,
-      filters: [
-        { "adx.id": "0", "adx.uiorder": "0", "adx.uiname": "Name", "adx.filtertype": "textfilter", "adx.attribute": "pqvd_name", "adx.uiselectionmode": "Text", type: "and", conditions: [{ attribute: "pqvd_name", operator: "like", value: "" }] },
-        { "adx.id": "1", "adx.uiorder": "1", "adx.uiname": "Local choice", "adx.filtertype": "attributefilterset", "adx.attribute": "pqvd_localchoice", "adx.uiselectionmode": "Dropdown", type: "or", conditions: [opt(0, "pqvd_localchoice", 1, "Alpha"), opt(1, "pqvd_localchoice", 2, "Beta"), opt(2, "pqvd_localchoice", 3, "Gamma")] },
-        { "adx.id": "2", "adx.uiorder": "2", "adx.uiname": "Global choice", "adx.filtertype": "attributefilterset", "adx.attribute": "pqvd_globalchoice", "adx.uiselectionmode": "Multiple", type: "or", conditions: [opt(0, "pqvd_globalchoice", 18327000, "Red"), opt(1, "pqvd_globalchoice", 18327001, "Green"), opt(2, "pqvd_globalchoice", 18327002, "Blue")] },
-        { "adx.id": "3", "adx.uiorder": "3", "adx.uiname": "Flag", "adx.filtertype": "attributefilterset", "adx.attribute": "pqvd_flag", "adx.uiselectionmode": "Single", type: "or", conditions: [opt(0, "pqvd_flag", 1, "Yes"), opt(1, "pqvd_flag", 0, "No")] },
-        { "adx.id": "4", "adx.uiorder": "4", "adx.uiname": "Whole number", "adx.filtertype": "rangefilterset", "adx.attribute": "pqvd_wholenumber", "adx.uiselectionmode": "Multiple", type: "or", conditions: [
-          { "adx.id": "0", uiname: "Below 100", type: "and", conditions: [{ attribute: "pqvd_wholenumber", operator: "lt", value: "100" }] },
-          { "adx.id": "1", uiname: "100 to 499", type: "and", conditions: [{ attribute: "pqvd_wholenumber", operator: "ge", value: "100" }, { attribute: "pqvd_wholenumber", operator: "lt", value: "500" }] },
-          { "adx.id": "2", uiname: "500 and above", type: "and", conditions: [{ attribute: "pqvd_wholenumber", operator: "ge", value: "500" }] },
-        ] },
-        { "adx.id": "5", "adx.uiorder": "5", "adx.uiname": "Global choice (dynamic)", "adx.filtertype": "dynamicpicklistset", "adx.attribute": "pqvd_globalchoice", "adx.uiselectionmode": "Multiple", type: "or", conditions: [{ attribute: "pqvd_globalchoice", operator: "eq", value: "" }] },
-        { "adx.id": "6", "adx.uiorder": "6", "adx.uiname": "Flagged (FetchXML)", "adx.filtertype": "fetchxmlfilter", "adx.uiselectionmode": "Multiple", type: "or", conditions: [{ "adx.id": "0", uiname: "Flagged only", type: "and", conditions: [{ attribute: "pqvd_flag", operator: "eq", value: "1" }] }] },
-      ],
-      links: [
-        { "adx.id": "7", "adx.uiorder": "7", "adx.uiname": "Parent", "adx.filtertype": "lookupset", "adx.uiselectionmode": "Multiple", name: PARENT, from: `${PARENT}id`, to: "pqvd_parentid", filters: [{ type: "or", conditions: [{ attribute: `${PARENT}id`, operator: "eq", value: DATA.parent1, uiname: "Baseline Parent One" }, { attribute: `${PARENT}id`, operator: "eq", value: DATA.parent2, uiname: "Baseline Parent Two" }] }] },
-        { "adx.id": "8", "adx.uiorder": "8", "adx.uiname": "Parent (dynamic)", "adx.filtertype": "dynamiclookupset", "adx.uiselectionmode": "Dropdown", name: PARENT, from: `${PARENT}id`, to: "pqvd_parentid", filters: [{ type: "or", conditions: [{ attribute: `${PARENT}id`, operator: "eq", value: "", "adx.view": VIEWS.find((v) => v.file === "parent-active").id, "adx.labelcolumn": "pqvd_name", "adx.filterlookuponrelationship": "pqvd_baselineparent_baselineitem" }] }] },
-      ],
-    },
-  };
+  // Filter definition: the JSON the Portal Management app's filter designer writes (toFetchJSON in the
+  // mspp_jsoneditor/mspp.jsoneditor.filter.js web resource; matches the building-permit and
+  // program-registration exports): an "xmlns.adx" root, numeric adx.id/adx.uiorder (one sequence over
+  // filters and links), filter types textfilter, filterset, rangeset, dynamicpicklistset, lookupset,
+  // dynamiclookupset and fetchfilter.
+  const fetchJson = (filters, links = []) => ({ "xmlns.adx": "http://schemas.adxstudio.com/fetch/", distinct: true, entity: { name: ITEM, "all-attributes": true, filters, links } });
+  const head = (index, type) => ({ "adx.filtertype": type, "adx.id": index, "adx.uiorder": index });
+  const opt = (index, attribute, value, uiname) => ({ "adx.id": index, uiname, attribute, operator: "eq", value: String(value) });
+  const set = (index, attribute, uiname, mode, options) => ({ ...head(index, "filterset"), "adx.attribute": attribute, "adx.uiname": uiname, "adx.uiselectionmode": mode, type: "or", conditions: options.map(([value, name], j) => opt(j, attribute, value, name)) });
+  const range = (j, uiname, ...conditions) => ({ "adx.id": j, "adx.attribute": "pqvd_wholenumber", "adx.uiname": uiname, type: "and", conditions: conditions.map(([operator, value], k) => ({ "adx.id": j * 2 + k, attribute: "pqvd_wholenumber", operator, value })) });
+  const parentLink = { "adx.relationship": "pqvd_baselineparent_baselineitem", name: PARENT };
+  const textFilter = { ...head(0, "textfilter"), "adx.attribute": "pqvd_name", "adx.uiname": "Name", type: "or", conditions: [{ "adx.id": 0, "adx.uiinputtype": "text", attribute: "pqvd_name", operator: "like", value: "%" }] };
+  const filterDefinition = fetchJson([
+    textFilter,
+    set(1, "pqvd_localchoice", "Local choice", "Dropdown", [[1, "Alpha"], [2, "Beta"], [3, "Gamma"]]),
+    set(2, "pqvd_globalchoice", "Global choice", "Multiple", [[18327000, "Red"], [18327001, "Green"], [18327002, "Blue"]]),
+    set(3, "pqvd_flag", "Flag", "Single", [[1, "Yes"], [0, "No"]]),
+    { ...head(4, "rangeset"), "adx.attribute": "pqvd_wholenumber", "adx.uiname": "Whole number", "adx.uiselectionmode": "Multiple", type: "or", filters: [range(0, "Below 100", ["lt", "100"]), range(1, "100 to 499", ["ge", "100"], ["lt", "500"]), range(2, "500 and above", ["ge", "500"])] },
+    { ...head(5, "dynamicpicklistset"), "adx.attribute": "pqvd_globalchoice", "adx.uiname": "Global choice (dynamic)", "adx.uiselectionmode": "Multiple", type: "or", conditions: [{ "adx.id": 0, "adx.uiinputtype": "dynamic", uiname: "", attribute: "pqvd_globalchoice", operator: "eq", value: "" }] },
+    // fetchfilter: the raw FetchXML plus its parse (element attributes with ":" read as ".", conditions numbered).
+    { ...head(6, "fetchfilter"), "adx.rawfetch": '<filter type="or" adx:uiname="Flagged (FetchXML)"><condition attribute="pqvd_flag" operator="eq" value="1" uiname="Flagged only" /></filter>', type: "or", "adx.uiname": "Flagged (FetchXML)", filters: [], conditions: [{ attribute: "pqvd_flag", operator: "eq", value: "1", uiname: "Flagged only", "adx.id": "0" }] },
+  ], [
+    { ...head(7, "lookupset"), "adx.uiselectionmode": "Multiple", ...parentLink, "adx.uiname": "Parent", from: `${PARENT}id`, to: "pqvd_parentid", filters: [{ type: "or", conditions: [[DATA.parent1, "Baseline Parent One"], [DATA.parent2, "Baseline Parent Two"]].map(([value, name], j) => ({ "adx.id": j, attribute: `${PARENT}id`, operator: "eq", uiname: name, uitype: PARENT, value: `{${value}}`, "adx.localname": name })) }] },
+    { ...head(8, "dynamiclookupset"), "adx.uiselectionmode": "Dropdown", ...parentLink, "adx.uiname": "Parent (dynamic)", from: `${PARENT}id`, to: "pqvd_parentid", filters: [{ type: "or", conditions: [{ "adx.uiinputtype": "dynamic", "adx.view": VIEWS.find((v) => v.file === "parent-active").id, "adx.labelcolumn": "pqvd_name", "adx.filterrelationship": "", "adx.filterentity": "", "adx.id": 0, attribute: `${PARENT}id`, operator: "eq", uiname: "", uitype: PARENT, value: "", "adx.localname": "" }] }] },
+  ]);
   // The definition sets every filter item: display names (adx.uiname), attributes, operators, values, relationships (link name/from/to), views and FetchXML.
   list("item-list-filters", "Baseline Item List Filters", {
     adx_filter_enabled: true,
     adx_filter_orientation: 756150001,
     adx_filter_applybuttonlabel: "Apply baseline filters",
     adx_filter_definition: json(filterDefinition),
-  }, "metadata filters: text, dropdown, checkbox set, radio, range, dynamic picklist, lookup set, dynamic lookup, FetchXML", family("pp.listfilter.").filter((itemId) => !/^pp\.listfilter\.(enabled|orientation|applybuttonlabel)/.test(itemId)));
+  }, "metadata filters: text, dropdown, checkbox set, radio, range, dynamic picklist, lookup set, dynamic lookup, FetchXML", family("pp.listfilter.").filter((itemId) => !/^pp\.listfilter\.(enabled|orientation|applybuttonlabel|dynamiclookup\.filterlookuponrelationship)/.test(itemId)));
   list("item-list-filters-horizontal", "Baseline Item List Filters Horizontal", {
     adx_filter_enabled: true,
     adx_filter_orientation: 756150000,
-    adx_filter_definition: json({ entity: { name: ITEM, filters: [filterDefinition.entity.filters[0]] } }),
+    adx_filter_definition: json(fetchJson([textFilter])),
   }, "metadata filter, horizontal orientation, text filter, default apply label", ["pp.listfilter.definition", "pp.listfilter.text", "pp.listfilter.text.attribute", "pp.listfilter.text.displayname"]);
   list("item-list-odata", "Baseline Item List OData", {
     adx_odata_enabled: true,
@@ -695,7 +699,7 @@ export function buildSite(identity = readIdentity()) {
     { values: loadItem("survey3", "Baseline Multistep Survey Rank Allow Ties", { ...fromPrevious("survey1"), adx_nextstep: stepId("survey4") }), variation: "rank order (ties allowed) group", catalog: [] },
     { values: loadItem("survey4", "Baseline Multistep Survey Stack Rank", { ...fromPrevious("survey1"), adx_nextstep: stepId(S5) }), variation: "stack rank group", catalog: [] },
     { values: loadItem(S5, "Baseline Multistep Survey Attributes", { ...fromPrevious("survey1"), adx_nextstep: stepId("survey6") }), variation: "every attribute option, section/tab labels, subgrid and notes metadata", catalog: [] },
-    { values: stepBase(surveyId, "survey6", "Baseline Multistep Survey Redirect", { ...fromPrevious("survey1"), adx_type: 100000003, adx_mode: READONLY, adx_redirecturl: "/baseline/item-read/", adx_appendquerystring: true, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_redirecturlcustomquerystring: "source=multistep", adx_redirecturlquerystringattributeparamname: "code", adx_redirecturlquerystringattribute: "pqvd_code" }), variation: "redirect to a URL (or the URL in ?returnurl=) with the existing query string, record id, custom query string and code=<pqvd_code>", catalog: ["pp.msstep.onsuccess"] },
+    { values: stepBase(surveyId, "survey6", "Baseline Multistep Survey Redirect", { ...fromPrevious("survey1"), adx_type: 100000003, adx_mode: READONLY, adx_redirecturl: EXTERNAL_URL, adx_appendquerystring: true, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "returnurl", adx_redirecturlcustomquerystring: "source=multistep", adx_redirecturlquerystringattributeparamname: "code", adx_redirecturlquerystringattribute: "pqvd_code" }), variation: "redirect to an external absolute URL (or the URL in ?returnurl=) with the existing query string, record id, custom query string and code=<pqvd_code>", catalog: ["pp.msstep.onsuccess"] },
   ], surveyMeta);
 
   // C: insert with attachments, geolocation, portal user association and table references (query string, previous step, query attribute).
@@ -852,7 +856,7 @@ export function buildSite(identity = readIdentity()) {
       if (step.js) put(`${base}.custom_javascript.js`, script(step.values.adx_name));
       const metadata = ms.metadata.filter((m) => m.values.adx_webformstep === step.values.adx_webformstepid);
       if (metadata.length) put(`${base}.advancedformmetadata.yml`, yamlList(metadata.map((m) => m.values)));
-      record("advancedformstep", step.values.adx_webformstepid, step.values.adx_name, step.variation, step.catalog, { path: ms.page.path }, step.values);
+      record("advancedformstep", step.values.adx_webformstepid, step.values.adx_name, step.variation, step.catalog, { path: ms.page.path, form: ms.values.adx_name }, step.values);
       for (const m of metadata) record("advancedformmetadata", m.values.adx_webformmetadataid, metaKey(m.values), `metadata (server-named): ${m.variation}`, m.catalog, { step: step.values.adx_name, path: ms.page.path }, m.values);
     }
     writePage(ms.page, `{% webform name: '${ms.values.adx_name}' %}`);
@@ -927,6 +931,7 @@ const NOT_EXPRESSED = [
   { catalog: ["pp.basicform.attach-file-storage-location.azure-blob-storage", "pp.msstep.containername", "pp.msstep.storageaccountname"], reason: "Azure Blob Storage needs a storage account and container configured for the site; the fixture has none (note attachments are used)." },
   { catalog: ["pp.list.map.credentials"], reason: "Holds the Bing Maps key; Learn (List map view): the map view is powered by Bing maps. A key is a secret, so a site folder fixture carries none. The map columns and the geolocation forms are configured without it and render the map only where a key is set." },
   { catalog: ["pp.list.map.latitude", "pp.list.map.longitude"], reason: "The enhanced data model stores no map_latitude/map_longitude in list content (upload sent them; read-only Web API read of the stored content on 2026-10-15 shows neither key; export carries neither). The fixture therefore no longer sends them." },
+  { catalog: ["pp.listfilter.dynamiclookup.filterlookuponrelationship"], reason: "Filter Lookup On Relationship (adx.filterrelationship/adx.filterentity in the designer's JSON) needs a relationship between the related table and contact; pqvd_baselineparent has none, so the dynamic lookup sets it empty as the designer does." },
   { catalog: ["pp.list.filterwebsite"], reason: "Needs a lookup to adx_website on the listed table; pqvd_baselineitem has none (and no second website exists)." },
   { catalog: ["pp.list.enhancedviewfilter"], reason: "Learn (Enhanced view filter for lists): the filter is configured on the underlying model-driven view definition used by the list (condition elements with uitype=\"contact\"/\"account\"/\"adx_website\"). A view is a Dataverse solution component, not a site record, so a site folder cannot carry it; the fixture's views have no uitype condition." },
   { catalog: ["pp.tableperm.website", "pp.webrole.website", "pp.sitesetting.table.websiteid"], reason: "Observed: the PAC export's table permission, web role and site setting records carry no adx_websiteid (baseline export table-permissions/*.yml, webrole.yml, sitesetting.yml); the website is implied by the site folder." },
@@ -938,7 +943,6 @@ const NOT_EXPRESSED = [
   { catalog: ["pp.webrole.contacts", "pp.webrole.accounts"], reason: "Not expressible in the site folder: contact and account membership are data associations (N:N powerpagecomponent_mspp_webrole_contact / powerpagecomponent_mspp_webrole_account in the powerpagecomponent and account references), not site records; personas are assigned by the project data.", sources: ["learn-ref-powerpagecomponent", "learn-ref-account"] },
   { catalog: ["pp.msstep.type.loadusercontrol", "pp.msstep.usercontrolpath", "pp.msstep.usercontroltitle"], reason: "Needs an ASP.NET user control (.ascx) deployed with the portal host; a Power Pages site cannot add one." },
   { catalog: ["pp.msstep.loadeventkeyname", "pp.msstep.savingeventkeyname", "pp.msstep.savedeventkeyname", "pp.msstep.submiteventkeyname", "pp.msstep.movepreviouseventkeyname", "pp.msstep.postbackurl", "pp.msstep.settings"], reason: "Learn lists the column only (no behaviour or value format); there is no event handler, postback target or documented JSON to point it at." },
-  { catalog: ["pp.basicform.redirect-record-id-parameter-name"], reason: "Learn names no column for the redirect Record ID Parameter Name; adx_redirecturlquerystringname is the parameter that carries the redirect URL (mspp_entityform reference), set to returnurl on the redirect forms, so no column holds the record id parameter name." },
   { catalog: ["pp.webrole.authenticatedusersrole", "pp.webrole.anonymoususersrole"], reason: "State true is not set: it belongs to the site's existing Authenticated Users / Anonymous Users roles, and a second default role is not safe on the shared site (baseline roles set false)." },
   { catalog: ["pp.sitesetting.datetime.dateformat", "pp.sitesetting.datetime.timeformat", "pp.sitesetting.datetime.datetimeformat", "pp.sitesetting.site.bootstrapv5enabled", "pp.template.bootstrap.version"], reason: `${SHARED} Date/time formats and the Bootstrap version change every page.` },
   { catalog: ["pp.sitesetting.site.enablecustompluginerror", "pp.sitesetting.enhancedfileupload", "pp.sitesetting.site.enabledefaulthtmlencoding", "pp.sitesetting.disablevalidationwebtemplate", "pp.sitesetting.site.disableformdatasafehtmlvalidation", "pp.sitesetting.knowledgemanagement.displaynotes", "pp.sitesetting.knowledgemanagement.notesfilter", "pp.sitesetting.timeline.rteenabled", "pp.sitesetting.customersupport.displayalluseractivitiesontimeline", "pp.sitesetting.site.enablecontentsnippettranslationforforms", "pp.sitesetting.usertrace.debug", "pp.sitesetting.sharepoint.maxuploadsize", "pp.sitesetting.sharepoint.maxtotaluploadsize", "pp.sitesetting.header.outputcache.enabled", "pp.sitesetting.footer.outputcache.enabled", "pp.list.showrecordlevelactions", "pp.list.sorting.linkedentities", "pp.webapi.error.innererror", "pp.webapi.disableodatafilter"], reason: SHARED },
@@ -947,7 +951,9 @@ const NOT_EXPRESSED = [
 ];
 // Exercised items whose stored shape is not fully confirmed by Learn or the export.
 const CAVEATS = [
-  { catalog: ["pp.listfilter.definition"], reason: "Learn does not name the filter definition JSON keys; the definition follows the adx.* shape Mirage reads and may differ from the designer's output." },
+  { catalog: ["pp.listfilter.definition"], reason: "Learn does not name the filter definition JSON keys. The definition now follows the Portal Management app's filter designer (toFetchJSON in web resource mspp_jsoneditor/mspp.jsoneditor.filter.js, read-only from Dataverse 2026-10-15) and the building-permit/program-registration exports; the earlier adx.* shape without the xmlns.adx root rendered 'Liquid error: Value cannot be null. Parameter name: key' live. Rendering of the corrected definition is not yet observed live." },
+  { catalog: ["pp.basicform.record-source-type.record-associated-to-current-portal-user", "pp.basicform.relationship-name", "pp.basicform.allow-create-if-null"], reason: "Baseline Item Edit Associated returned HTTP 500 for the editor persona. The record matches the only real export with this source (building-permit Acknowledgement: 756150003 over bp_defaultApplication_Contact, also a 1:N from contact). The test contact has two items through pqvd_contactid (item1, item8; read-only count 2026-10-15) while Learn describes a single related record; the 500 is attributed to that ambiguity, unverified. Fix is in the fixture data (one item per contact), outside this generator." },
+  { catalog: ["pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator"], reason: "Baseline Item Edit Geolocation (Bing map type, no address columns, geolocation lookup validator on pqvd_wide) returned HTTP 500 while the Google/Esri geolocation forms without the validator render. Learn: the validator and the Bing map type require Bing Maps settings (Bingmaps/credentials, 'Required'); the site has no key and a fixture carries none, so the platform cannot render this configuration. Not separable without a key; kept as configured." },
   { catalog: ["pp.basicform.settings"], reason: "Learn does not name the basic form settings JSON keys; actions use the {Actions:[{Type}]} shape Mirage reads, placement and dialog keys are unverified." },
   { catalog: ["pp.sitesetting.table.source"], reason: "Only Source = Table (0) is set; Environment Variable (1) needs an environment variable definition the fixture lacks." },
   { catalog: ["pp.bfmeta.type.timeline", ...under(/^pp\.bfmeta\.timeline\./), "pp.msmeta.type.timeline", "pp.msmeta.timeline_settings"], reason: "Learn names the timeline settings by display name only; the JSON keys follow the notes settings shape. Shape verified: the export stores adx_type 756150000 and adx_timeline_settings unchanged, and names the record '<form name> ' (empty target), as for notes. Rendering of these keys is not verified." },

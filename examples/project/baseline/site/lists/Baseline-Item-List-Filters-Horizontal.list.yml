@@ -3,26 +3,31 @@ adx_entityname: pqvd_baselineitem
 adx_entitypermissionsenabled: true
 adx_filter_definition: >-
   {
+    "xmlns.adx": "http://schemas.adxstudio.com/fetch/",
+    "distinct": true,
     "entity": {
       "name": "pqvd_baselineitem",
+      "all-attributes": true,
       "filters": [
         {
-          "adx.id": "0",
-          "adx.uiorder": "0",
-          "adx.uiname": "Name",
           "adx.filtertype": "textfilter",
+          "adx.id": 0,
+          "adx.uiorder": 0,
           "adx.attribute": "pqvd_name",
-          "adx.uiselectionmode": "Text",
-          "type": "and",
+          "adx.uiname": "Name",
+          "type": "or",
           "conditions": [
             {
+              "adx.id": 0,
+              "adx.uiinputtype": "text",
               "attribute": "pqvd_name",
               "operator": "like",
-              "value": ""
+              "value": "%"
             }
           ]
         }
-      ]
+      ],
+      "links": []
     }
   }
 adx_filter_enabled: true

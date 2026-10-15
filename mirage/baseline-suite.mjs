@@ -9,11 +9,12 @@
  * toolkit code. Live writes are refused unless `--allow-writes` names the run as authorised and
  * the request falls inside the matrix `writeScope`; every other non-GET is aborted and recorded.
  *
- * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] [--only IDS]
- * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS] [--headed]
- * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--only IDS]
+ * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] [--only IDS|@FILE]
+ * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS|@FILE] [--headed]
+ * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--only IDS|@FILE]
  */
 import fs from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
 import http from "node:http";
 import { parseArgs } from "node:util";
@@ -25,7 +26,12 @@ import { compareScenario, loadAllowlist, summarize, summaryMarkdown } from "./ba
 import { startMcpServer } from "./mcp-stdio.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-const list = (value) => (value ? String(value).split(",").map((item) => item.trim()).filter(Boolean) : null);
+// `--only a,b,c` or `--only @file` (one scenario id per line; `#` comments) selects scenarios.
+const list = (value) => {
+  if (!value) return null;
+  const text = String(value).startsWith("@") ? readFileSync(String(value).slice(1), "utf8").replace(/#[^\n]*/g, "\n") : String(value);
+  return text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+};
 
 export function validateMatrix(matrix) {
   if (!matrix || matrix.version !== 1 || !Array.isArray(matrix.scenarios) || !matrix.scenarios.length) throw new Error("A version 1 matrix with scenarios is required.");

@@ -4,129 +4,135 @@ adx_entitypermissionsenabled: true
 adx_filter_applybuttonlabel: Apply baseline filters
 adx_filter_definition: >-
   {
+    "xmlns.adx": "http://schemas.adxstudio.com/fetch/",
+    "distinct": true,
     "entity": {
       "name": "pqvd_baselineitem",
+      "all-attributes": true,
       "filters": [
         {
-          "adx.id": "0",
-          "adx.uiorder": "0",
-          "adx.uiname": "Name",
           "adx.filtertype": "textfilter",
+          "adx.id": 0,
+          "adx.uiorder": 0,
           "adx.attribute": "pqvd_name",
-          "adx.uiselectionmode": "Text",
-          "type": "and",
+          "adx.uiname": "Name",
+          "type": "or",
           "conditions": [
             {
+              "adx.id": 0,
+              "adx.uiinputtype": "text",
               "attribute": "pqvd_name",
               "operator": "like",
-              "value": ""
+              "value": "%"
             }
           ]
         },
         {
-          "adx.id": "1",
-          "adx.uiorder": "1",
-          "adx.uiname": "Local choice",
-          "adx.filtertype": "attributefilterset",
+          "adx.filtertype": "filterset",
+          "adx.id": 1,
+          "adx.uiorder": 1,
           "adx.attribute": "pqvd_localchoice",
+          "adx.uiname": "Local choice",
           "adx.uiselectionmode": "Dropdown",
           "type": "or",
           "conditions": [
             {
-              "adx.id": "0",
+              "adx.id": 0,
+              "uiname": "Alpha",
               "attribute": "pqvd_localchoice",
               "operator": "eq",
-              "value": "1",
-              "uiname": "Alpha"
+              "value": "1"
             },
             {
-              "adx.id": "1",
+              "adx.id": 1,
+              "uiname": "Beta",
               "attribute": "pqvd_localchoice",
               "operator": "eq",
-              "value": "2",
-              "uiname": "Beta"
+              "value": "2"
             },
             {
-              "adx.id": "2",
+              "adx.id": 2,
+              "uiname": "Gamma",
               "attribute": "pqvd_localchoice",
               "operator": "eq",
-              "value": "3",
-              "uiname": "Gamma"
+              "value": "3"
             }
           ]
         },
         {
-          "adx.id": "2",
-          "adx.uiorder": "2",
-          "adx.uiname": "Global choice",
-          "adx.filtertype": "attributefilterset",
+          "adx.filtertype": "filterset",
+          "adx.id": 2,
+          "adx.uiorder": 2,
           "adx.attribute": "pqvd_globalchoice",
+          "adx.uiname": "Global choice",
           "adx.uiselectionmode": "Multiple",
           "type": "or",
           "conditions": [
             {
-              "adx.id": "0",
+              "adx.id": 0,
+              "uiname": "Red",
               "attribute": "pqvd_globalchoice",
               "operator": "eq",
-              "value": "18327000",
-              "uiname": "Red"
+              "value": "18327000"
             },
             {
-              "adx.id": "1",
+              "adx.id": 1,
+              "uiname": "Green",
               "attribute": "pqvd_globalchoice",
               "operator": "eq",
-              "value": "18327001",
-              "uiname": "Green"
+              "value": "18327001"
             },
             {
-              "adx.id": "2",
+              "adx.id": 2,
+              "uiname": "Blue",
               "attribute": "pqvd_globalchoice",
               "operator": "eq",
-              "value": "18327002",
-              "uiname": "Blue"
+              "value": "18327002"
             }
           ]
         },
         {
-          "adx.id": "3",
-          "adx.uiorder": "3",
-          "adx.uiname": "Flag",
-          "adx.filtertype": "attributefilterset",
+          "adx.filtertype": "filterset",
+          "adx.id": 3,
+          "adx.uiorder": 3,
           "adx.attribute": "pqvd_flag",
+          "adx.uiname": "Flag",
           "adx.uiselectionmode": "Single",
           "type": "or",
           "conditions": [
             {
-              "adx.id": "0",
+              "adx.id": 0,
+              "uiname": "Yes",
               "attribute": "pqvd_flag",
               "operator": "eq",
-              "value": "1",
-              "uiname": "Yes"
+              "value": "1"
             },
             {
-              "adx.id": "1",
+              "adx.id": 1,
+              "uiname": "No",
               "attribute": "pqvd_flag",
               "operator": "eq",
-              "value": "0",
-              "uiname": "No"
+              "value": "0"
             }
           ]
         },
         {
-          "adx.id": "4",
-          "adx.uiorder": "4",
-          "adx.uiname": "Whole number",
-          "adx.filtertype": "rangefilterset",
+          "adx.filtertype": "rangeset",
+          "adx.id": 4,
+          "adx.uiorder": 4,
           "adx.attribute": "pqvd_wholenumber",
+          "adx.uiname": "Whole number",
           "adx.uiselectionmode": "Multiple",
           "type": "or",
-          "conditions": [
+          "filters": [
             {
-              "adx.id": "0",
-              "uiname": "Below 100",
+              "adx.id": 0,
+              "adx.attribute": "pqvd_wholenumber",
+              "adx.uiname": "Below 100",
               "type": "and",
               "conditions": [
                 {
+                  "adx.id": 0,
                   "attribute": "pqvd_wholenumber",
                   "operator": "lt",
                   "value": "100"
@@ -134,16 +140,19 @@ adx_filter_definition: >-
               ]
             },
             {
-              "adx.id": "1",
-              "uiname": "100 to 499",
+              "adx.id": 1,
+              "adx.attribute": "pqvd_wholenumber",
+              "adx.uiname": "100 to 499",
               "type": "and",
               "conditions": [
                 {
+                  "adx.id": 2,
                   "attribute": "pqvd_wholenumber",
                   "operator": "ge",
                   "value": "100"
                 },
                 {
+                  "adx.id": 3,
                   "attribute": "pqvd_wholenumber",
                   "operator": "lt",
                   "value": "500"
@@ -151,11 +160,13 @@ adx_filter_definition: >-
               ]
             },
             {
-              "adx.id": "2",
-              "uiname": "500 and above",
+              "adx.id": 2,
+              "adx.attribute": "pqvd_wholenumber",
+              "adx.uiname": "500 and above",
               "type": "and",
               "conditions": [
                 {
+                  "adx.id": 4,
                   "attribute": "pqvd_wholenumber",
                   "operator": "ge",
                   "value": "500"
@@ -165,15 +176,18 @@ adx_filter_definition: >-
           ]
         },
         {
-          "adx.id": "5",
-          "adx.uiorder": "5",
-          "adx.uiname": "Global choice (dynamic)",
           "adx.filtertype": "dynamicpicklistset",
+          "adx.id": 5,
+          "adx.uiorder": 5,
           "adx.attribute": "pqvd_globalchoice",
+          "adx.uiname": "Global choice (dynamic)",
           "adx.uiselectionmode": "Multiple",
           "type": "or",
           "conditions": [
             {
+              "adx.id": 0,
+              "adx.uiinputtype": "dynamic",
+              "uiname": "",
               "attribute": "pqvd_globalchoice",
               "operator": "eq",
               "value": ""
@@ -181,36 +195,33 @@ adx_filter_definition: >-
           ]
         },
         {
-          "adx.id": "6",
-          "adx.uiorder": "6",
-          "adx.uiname": "Flagged (FetchXML)",
-          "adx.filtertype": "fetchxmlfilter",
-          "adx.uiselectionmode": "Multiple",
+          "adx.filtertype": "fetchfilter",
+          "adx.id": 6,
+          "adx.uiorder": 6,
+          "adx.rawfetch": "<filter type=\"or\" adx:uiname=\"Flagged (FetchXML)\"><condition attribute=\"pqvd_flag\" operator=\"eq\" value=\"1\" uiname=\"Flagged only\" /></filter>",
           "type": "or",
+          "adx.uiname": "Flagged (FetchXML)",
+          "filters": [],
           "conditions": [
             {
-              "adx.id": "0",
+              "attribute": "pqvd_flag",
+              "operator": "eq",
+              "value": "1",
               "uiname": "Flagged only",
-              "type": "and",
-              "conditions": [
-                {
-                  "attribute": "pqvd_flag",
-                  "operator": "eq",
-                  "value": "1"
-                }
-              ]
+              "adx.id": "0"
             }
           ]
         }
       ],
       "links": [
         {
-          "adx.id": "7",
-          "adx.uiorder": "7",
-          "adx.uiname": "Parent",
           "adx.filtertype": "lookupset",
+          "adx.id": 7,
+          "adx.uiorder": 7,
           "adx.uiselectionmode": "Multiple",
+          "adx.relationship": "pqvd_baselineparent_baselineitem",
           "name": "pqvd_baselineparent",
+          "adx.uiname": "Parent",
           "from": "pqvd_baselineparentid",
           "to": "pqvd_parentid",
           "filters": [
@@ -218,28 +229,35 @@ adx_filter_definition: >-
               "type": "or",
               "conditions": [
                 {
+                  "adx.id": 0,
                   "attribute": "pqvd_baselineparentid",
                   "operator": "eq",
-                  "value": "e42440d3-b57b-4900-87e3-a60aec9d1639",
-                  "uiname": "Baseline Parent One"
+                  "uiname": "Baseline Parent One",
+                  "uitype": "pqvd_baselineparent",
+                  "value": "{e42440d3-b57b-4900-87e3-a60aec9d1639}",
+                  "adx.localname": "Baseline Parent One"
                 },
                 {
+                  "adx.id": 1,
                   "attribute": "pqvd_baselineparentid",
                   "operator": "eq",
-                  "value": "215035b3-5028-4100-82a6-0fac42941979",
-                  "uiname": "Baseline Parent Two"
+                  "uiname": "Baseline Parent Two",
+                  "uitype": "pqvd_baselineparent",
+                  "value": "{215035b3-5028-4100-82a6-0fac42941979}",
+                  "adx.localname": "Baseline Parent Two"
                 }
               ]
             }
           ]
         },
         {
-          "adx.id": "8",
-          "adx.uiorder": "8",
-          "adx.uiname": "Parent (dynamic)",
           "adx.filtertype": "dynamiclookupset",
+          "adx.id": 8,
+          "adx.uiorder": 8,
           "adx.uiselectionmode": "Dropdown",
+          "adx.relationship": "pqvd_baselineparent_baselineitem",
           "name": "pqvd_baselineparent",
+          "adx.uiname": "Parent (dynamic)",
           "from": "pqvd_baselineparentid",
           "to": "pqvd_parentid",
           "filters": [
@@ -247,12 +265,18 @@ adx_filter_definition: >-
               "type": "or",
               "conditions": [
                 {
-                  "attribute": "pqvd_baselineparentid",
-                  "operator": "eq",
-                  "value": "",
+                  "adx.uiinputtype": "dynamic",
                   "adx.view": "44824ee4-4326-47ab-80f2-1445f50a5078",
                   "adx.labelcolumn": "pqvd_name",
-                  "adx.filterlookuponrelationship": "pqvd_baselineparent_baselineitem"
+                  "adx.filterrelationship": "",
+                  "adx.filterentity": "",
+                  "adx.id": 0,
+                  "attribute": "pqvd_baselineparentid",
+                  "operator": "eq",
+                  "uiname": "",
+                  "uitype": "pqvd_baselineparent",
+                  "value": "",
+                  "adx.localname": ""
                 }
               ]
             }

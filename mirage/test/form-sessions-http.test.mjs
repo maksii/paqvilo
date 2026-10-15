@@ -83,6 +83,10 @@ test("an anonymous visitor's advanced form session belongs to its browser sessio
   const other = await (await fetch(app.url + result.outcome.url)).text();
   assert.doesNotMatch(other, /id="jobtitle"/);
   assert.match(other, /id="MessageLabel"/);
+  // The platform answers a step without its source record with a redirect to msg=source-invalid.
+  const redirected = await fetch(app.url + result.outcome.url, { redirect: "manual" });
+  assert.equal(redirected.status, 302);
+  assert.equal(redirected.headers.get("location"), "/?msg=source-invalid&stepid=edit");
   const start = await (await fetch(app.url + "/")).text();
   assert.match(start, /id="fullname"/);
   // Another browser cannot submit the visitor's step; the visitor can.

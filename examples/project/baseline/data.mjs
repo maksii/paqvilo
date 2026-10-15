@@ -61,7 +61,7 @@ export function records(tester = TESTER_CONTACT) {
     item("item5", "Baseline Item Epsilon", "I-005", { fields: { [p("wholenumber")]: 50, [p("decimal")]: 5.5, [p("datetime")]: "2026-05-05T05:05:00Z" } }),
     item("item6", "Baseline Item Zeta", "I-006", { fields: { [p("wholenumber")]: 60, [p("decimal")]: 6.5 }, refs: { [p("parentid")]: "parent2" } }),
     item("item7", "Baseline Item Eta", "I-007", { fields: { [p("wholenumber")]: 70, [p("multichoice")]: "18327011" } }),
-    item("item8", "Baseline Item Theta", "I-008", { fields: { [p("wholenumber")]: 80, [p("flag")]: false, [p("dateonly")]: "2026-08-08" }, refs: { [p("parentid")]: "parent2", [p("contactid")]: "tester" } }),
+    item("item8", "Baseline Item Theta", "I-008", { fields: { [p("wholenumber")]: 80, [p("flag")]: false, [p("dateonly")]: "2026-08-08" }, refs: { [p("parentid")]: "parent2", [p("contactid")]: "other" } }),
     { key: "child1", id: ids.child1, table: CHILD, fields: { [p("name")]: "Child One", [p("sortorder")]: 1, [p("note")]: "First child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child2", id: ids.child2, table: CHILD, fields: { [p("name")]: "Child Two", [p("sortorder")]: 2, [p("note")]: "Second child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child3", id: ids.child3, table: CHILD, fields: { [p("name")]: "Child Three", [p("sortorder")]: 3 }, refs: { [p("itemid")]: "item1" } },

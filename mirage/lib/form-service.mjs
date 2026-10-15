@@ -79,6 +79,8 @@ export function createWebFormSessions({ limit = 1000 } = {}) {
       if (sessions.size > limit) sessions.delete(sessions.keys().next().value);
       return session;
     },
+    /** Forget every session (a data reset removes the adx_webformsession equivalents with the records). */
+    clear: () => sessions.clear(),
   };
 }
 // Direct library callers that pass no runtime sessions share these.

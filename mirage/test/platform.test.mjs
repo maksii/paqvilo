@@ -435,7 +435,7 @@ test("mapped form and list query identity, render escaping and original custom s
   // Legacy EntityForm adds the startup script before reading the record: a missing record
   // or a read denial still runs it, ahead of the message.
   const notFound = await renderComponent("entityform", "form", { ...context, request: { params: {} } }, { portal, store, schemas });
-  assert.match(notFound, /^<div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div id="MessagePanel"[^>]*><span id="MessageLabel">The record you are looking for couldn&#39;t be found\.<\/span>/);
+  assert.match(notFound, /^<div id="EntityFormControl_form" data-pp-native-form><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div id="MessagePanel"[^>]*><span id="MessageLabel">The record you are looking for couldn&#39;t be found\.<\/span>/);
   const deniedStore = { ...store, get: async () => { throw Object.assign(new Error("denied"), { status: 403 }); } };
   const denied = await renderComponent("entityform", "form", context, { portal, store: deniedStore, schemas });
   assert.match(denied, /^<div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div class='alert alert-block alert-danger'><span class='fa fa-lock'/);

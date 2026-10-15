@@ -8,7 +8,7 @@ adx_hideformonsuccess: false
 adx_mode: 100000000
 adx_name: Baseline Item Insert Redirect URL
 adx_onsuccess: 756150001
-adx_redirecturl: /baseline/item-read/
+adx_redirecturl: https://example.com/
 adx_redirecturlappendentityidquerystring: true
 adx_redirecturlcustomquerystring: 'source=baseline'
 adx_redirecturlquerystringattribute: pqvd_code

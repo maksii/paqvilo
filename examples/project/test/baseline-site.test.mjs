@@ -103,3 +103,22 @@ test('map pushpin is a deterministic web file under /baseline/',()=>{
   assert.doesNotMatch(list,/adx_map_(latitude|longitude):/);
  }
 });
+
+test('list filter definitions use the filter designer shape and redirect URLs are absolute',async()=>{
+ const {files}=buildSite();
+ const {parse}=await import('yaml');
+ const designer=new Set(['textfilter','filterset','rangeset','dynamicpicklistset','lookupset','dynamiclookupset','fetchfilter']);
+ for(const name of ['lists/Baseline-Item-List-Filters.list.yml','lists/Baseline-Item-List-Filters-Horizontal.list.yml']){
+  const fetch=JSON.parse(parse(files.get(name)).adx_filter_definition);
+  // The designer's root; without xmlns.adx the portal renders "Value cannot be null. Parameter name: key".
+  assert.equal(fetch['xmlns.adx'],'http://schemas.adxstudio.com/fetch/',name);
+  assert.ok(Array.isArray(fetch.entity.links),name);
+  const groups=[...fetch.entity.filters,...fetch.entity.links];
+  for(const group of groups) assert.ok(designer.has(group['adx.filtertype'])&&Number.isInteger(group['adx.id']),`${name} ${group['adx.uiname']}`);
+  assert.deepEqual(groups.map(g=>g['adx.id']),groups.map((_,i)=>i));
+ }
+ for(const [name,content] of files) if(/\.(basicform|advancedformstep)\.yml$/.test(name)){
+  const url=/^adx_redirecturl: (.*)$/m.exec(String(content))?.[1];
+  if(url) assert.match(url,/^https:\/\//,name);
+ }
+});

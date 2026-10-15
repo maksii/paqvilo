@@ -143,6 +143,15 @@
     },
     {
       "catalog": [
+        "pp.listfilter.dynamiclookup.filterlookuponrelationship"
+      ],
+      "reason": "Filter Lookup On Relationship (adx.filterrelationship/adx.filterentity in the designer's JSON) needs a relationship between the related table and contact; pqvd_baselineparent has none, so the dynamic lookup sets it empty as the designer does.",
+      "sources": [
+        "learn-list-filter-configuration"
+      ]
+    },
+    {
+      "catalog": [
         "pp.list.filterwebsite"
       ],
       "reason": "Needs a lookup to adx_website on the listed table; pqvd_baselineitem has none (and no second website exists).",
@@ -268,16 +277,6 @@
       "reason": "Learn lists the column only (no behaviour or value format); there is no event handler, postback target or documented JSON to point it at.",
       "sources": [
         "learn-ref-webformstep"
-      ]
-    },
-    {
-      "catalog": [
-        "pp.basicform.redirect-record-id-parameter-name"
-      ],
-      "reason": "Learn names no column for the redirect Record ID Parameter Name; adx_redirecturlquerystringname is the parameter that carries the redirect URL (mspp_entityform reference), set to returnurl on the redirect forms, so no column holds the record id parameter name.",
-      "sources": [
-        "learn-basic-forms",
-        "learn-ref-mspp-entityform"
       ]
     },
     {
@@ -491,10 +490,32 @@
       "catalog": [
         "pp.listfilter.definition"
       ],
-      "reason": "Learn does not name the filter definition JSON keys; the definition follows the adx.* shape Mirage reads and may differ from the designer's output.",
+      "reason": "Learn does not name the filter definition JSON keys. The definition now follows the Portal Management app's filter designer (toFetchJSON in web resource mspp_jsoneditor/mspp.jsoneditor.filter.js, read-only from Dataverse 2026-10-15) and the building-permit/program-registration exports; the earlier adx.* shape without the xmlns.adx root rendered 'Liquid error: Value cannot be null. Parameter name: key' live. Rendering of the corrected definition is not yet observed live.",
       "sources": [
         "learn-ref-mspp-entitylist",
         "learn-liquid-objects"
+      ]
+    },
+    {
+      "catalog": [
+        "pp.basicform.record-source-type.record-associated-to-current-portal-user",
+        "pp.basicform.relationship-name",
+        "pp.basicform.allow-create-if-null"
+      ],
+      "reason": "Baseline Item Edit Associated returned HTTP 500 for the editor persona. The record matches the only real export with this source (building-permit Acknowledgement: 756150003 over bp_defaultApplication_Contact, also a 1:N from contact). The test contact has two items through pqvd_contactid (item1, item8; read-only count 2026-10-15) while Learn describes a single related record; the 500 is attributed to that ambiguity, unverified. Fix is in the fixture data (one item per contact), outside this generator.",
+      "sources": [
+        "learn-basic-forms",
+        "learn-ref-mspp-entityform"
+      ]
+    },
+    {
+      "catalog": [
+        "pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator"
+      ],
+      "reason": "Baseline Item Edit Geolocation (Bing map type, no address columns, geolocation lookup validator on pqvd_wide) returned HTTP 500 while the Google/Esri geolocation forms without the validator render. Learn: the validator and the Bing map type require Bing Maps settings (Bingmaps/credentials, 'Required'); the site has no key and a fixture carries none, so the platform cannot render this configuration. Not separable without a key; kept as configured.",
+      "sources": [
+        "learn-bfmeta",
+        "learn-tblref-efmeta"
       ]
     },
     {
@@ -1290,6 +1311,7 @@
       "table": "pqvd_baselineitem",
       "variation": "insert, redirect to the edit page appending the record id; a redirect URL can come from ?returnurl=",
       "catalog": [
+        "pp.basicform.redirect-record-id-parameter-name",
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
         "pp.basicform.form-name",
@@ -1322,8 +1344,9 @@
       "name": "Baseline Item Insert Redirect URL",
       "path": "/baseline/item-create-redirect-url/",
       "table": "pqvd_baselineitem",
-      "variation": "insert, redirect to a URL (or the URL in ?returnurl=) appending the existing query string, the record id, a custom query string and code=<pqvd_code>",
+      "variation": "insert, redirect to an external absolute URL (or the URL in ?returnurl=) appending the existing query string, the record id, a custom query string and code=<pqvd_code>",
       "catalog": [
+        "pp.basicform.redirect-record-id-parameter-name",
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
         "pp.basicform.form-name",
@@ -3377,7 +3400,6 @@
         "pp.listfilter.dynamiclookup.relationship",
         "pp.listfilter.dynamiclookup.view",
         "pp.listfilter.dynamiclookup.labelcolumn",
-        "pp.listfilter.dynamiclookup.filterlookuponrelationship",
         "pp.listfilter.dynamiclookup.displayname",
         "pp.listfilter.fetchxml",
         "pp.listfilter.fetchxml.fetchxml",
@@ -3850,6 +3872,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Step One",
       "path": "/baseline/multistep/",
+      "form": "Baseline Multistep",
+      "table": "pqvd_baselineitem",
       "variation": "load tab step1, insert",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -3915,6 +3939,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Step Two",
       "path": "/baseline/multistep/",
+      "form": "Baseline Multistep",
+      "table": "pqvd_baselineitem",
       "variation": "load tab step2, edit result from previous step, move previous permitted",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -3947,6 +3973,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Flag Condition",
       "path": "/baseline/multistep/",
+      "form": "Baseline Multistep",
+      "table": "pqvd_baselineitem",
       "variation": "condition pqvd_flag == true, else redirect step",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -3978,6 +4006,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Step Lookup Create",
       "path": "/baseline/multistep/",
+      "form": "Baseline Multistep",
+      "table": "pqvd_baselineitem",
       "variation": "load form Baseline Item Lookup Create, edit",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -4007,6 +4037,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Redirect",
       "path": "/baseline/multistep/",
+      "form": "Baseline Multistep",
+      "table": "pqvd_baselineitem",
       "variation": "redirect to the read page appending the record id; a redirect URL can come from ?returnurl=",
       "catalog": [
         "pp.msstep.onsuccess",
@@ -4074,6 +4106,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Groups",
       "path": "/baseline/multistep-survey/",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
       "variation": "load form, edit the item from ?id=, constant sum/multiple choice/matrix groups, captcha for everyone, every validation/button text option, log user host and identity, edit-expired settings, custom JavaScript",
       "catalog": [
         "pp.msstep.registerstartupscript",
@@ -4252,6 +4286,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Rank No Ties",
       "path": "/baseline/multistep-survey/",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
       "variation": "rank order (no ties) group, all fields required",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -4337,6 +4373,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Rank Allow Ties",
       "path": "/baseline/multistep-survey/",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
       "variation": "rank order (ties allowed) group",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -4418,6 +4456,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Stack Rank",
       "path": "/baseline/multistep-survey/",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
       "variation": "stack rank group",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -4499,6 +4539,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Attributes",
       "path": "/baseline/multistep-survey/",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
       "variation": "every attribute option, section/tab labels, subgrid and notes metadata",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -4917,7 +4959,9 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Survey Redirect",
       "path": "/baseline/multistep-survey/",
-      "variation": "redirect to a URL (or the URL in ?returnurl=) with the existing query string, record id, custom query string and code=<pqvd_code>",
+      "form": "Baseline Multistep Survey",
+      "table": "pqvd_baselineitem",
+      "variation": "redirect to an external absolute URL (or the URL in ?returnurl=) with the existing query string, record id, custom query string and code=<pqvd_code>",
       "catalog": [
         "pp.msstep.onsuccess",
         "pp.msstep.appendquerystring",
@@ -4984,6 +5028,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Insert Item",
       "path": "/baseline/multistep-insert/",
+      "form": "Baseline Multistep Insert",
+      "table": "pqvd_baselineitem",
       "variation": "insert, associate current portal user, multiple required images (max 3), geolocation (Google) with address columns, parent reference from ?parentid=",
       "catalog": [
         "pp.msstep.geolocation_fieldmappings",
@@ -5036,6 +5082,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Insert Child",
       "path": "/baseline/multistep-insert/",
+      "form": "Baseline Multistep Insert",
+      "table": "pqvd_baselinechild",
       "variation": "insert child referencing the item created by the previous step",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -5069,6 +5117,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Insert Child By Code",
       "path": "/baseline/multistep-insert/",
+      "form": "Baseline Multistep Insert",
+      "table": "pqvd_baselinechild",
       "variation": "insert child referencing the item whose pqvd_code matches ?code=, success message without hiding the form",
       "catalog": [
         "pp.msstep.onsuccess",
@@ -5134,6 +5184,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Current Contact",
       "path": "/baseline/multistep-user/",
+      "form": "Baseline Multistep Portal User",
+      "table": "contact",
       "variation": "current portal user's contact, read-only (no write)",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",
@@ -5163,6 +5215,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Associated Item",
       "path": "/baseline/multistep-user/",
+      "form": "Baseline Multistep Portal User",
+      "table": "pqvd_baselineitem",
       "variation": "edit the item associated to the current portal user, the compact form's tabs as auto-generated steps",
       "catalog": [
         "pp.msstep.autogeneratesteps",
@@ -5195,6 +5249,8 @@
       "kind": "advancedformstep",
       "name": "Baseline Multistep Associated Reference",
       "path": "/baseline/multistep-user/",
+      "form": "Baseline Multistep Portal User",
+      "table": "pqvd_baselinechild",
       "variation": "insert child referencing the item associated to the current portal user",
       "catalog": [
         "pp.msstep.entitypermissionsenabled",

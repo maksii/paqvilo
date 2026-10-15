@@ -24,7 +24,7 @@ adx_name: Baseline Multistep Survey Redirect
 adx_populatereferenceentitylookupfield: false
 adx_portaluserlookupattributeisactivityparty: false
 adx_recommendedfieldsrequired: false
-adx_redirecturl: /baseline/item-read/
+adx_redirecturl: https://example.com/
 adx_redirecturlappendentityidquerystring: true
 adx_redirecturlcustomquerystring: 'source=multistep'
 adx_redirecturlquerystringattribute: pqvd_code

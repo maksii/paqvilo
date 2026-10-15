@@ -292,7 +292,7 @@
       },
       "refs": {
         "pqvd_parentid": "parent2",
-        "pqvd_contactid": null
+        "pqvd_contactid": "other"
       },
       "deferredRefs": []
     },
