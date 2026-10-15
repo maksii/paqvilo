@@ -26,6 +26,10 @@
 .crmEntityFormView .input-group .form-control{flex:1 1 auto;min-width:0;width:1%}
 .crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
 .crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
-@media(max-width:600px){.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell{display:block;width:100%}}
+/* Narrow forms (frames) stack the cells; the empty zero cell stays hidden (live quick view frame). */
+@media(max-width:600px){.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell:not(.zero-cell){display:block;width:100%}}
 /* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
 .modal-error.message{display:none}
+
+/* Map lists: the error box shows only when the map script reports an error (live). */
+#entity-list-map-error{display:none}

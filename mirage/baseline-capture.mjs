@@ -19,6 +19,8 @@ export function redactTokens(text) {
   return String(text ?? "")
     .replace(TOKEN_FIELDS, "$1={token}")
     .replace(TOKEN_ATTRIBUTES, "$1{token}$2")
+    // The same fields in a multipart postback (forms with a file control): name="…" header line, blank line, value.
+    .replace(/(name="(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken)"\r?\n\r?\n)[^\r\n]*/g, "$1{token}")
     .replace(/("__RequestVerificationToken"\s*:\s*")[^"]*(")/g, "$1{token}$2")
     // Upload continuation tokens (file upload API responses and the bodies that echo them).
     .replace(/((?:File)?ContinuationToken\\{0,2}"\s*:\s*\\{0,2}")[^"\\]{8,}/g, "$1{token}")
@@ -362,7 +364,9 @@ export async function pageRunner(page, options) {
 export const pageRunnerSource = () => pageRunner.toString();
 
 /** Redact raw evidence and write the scenario folder. Returns the capture meta. */
-export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {} }) {
+export async function writeCapture({ summary, raw }, { outDir, origin, side, meta = {}, scenarioId = null }) {
+  // Evidence of another scenario never lands in this folder (a late post of an abandoned bridge run once did).
+  if (scenarioId && summary?.id !== scenarioId) throw new Error(`Capture of ${summary?.id ?? "(unknown)"} refused for scenario ${scenarioId}`);
   await fs.mkdir(outDir, { recursive: true });
   const origins = [origin];
   // Mirage's own instrumentation (/__sim/ event stream, readiness probes) is not portal traffic and is not evidence.
@@ -445,5 +449,5 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
 /** In-process capture (local Mirage): run the runner on `page`'s context and write the folder. */
 export async function captureScenario(page, scenario, { origin, outDir, ids = {}, side, meta = {}, matrix = {}, allowWrites = true }) {
   const result = await pageRunner(page, runnerOptions({ scenario, origin, ids, matrix, allowWrites }));
-  return writeCapture(result, { outDir, origin, side, meta });
+  return writeCapture(result, { outDir, origin, side, meta, scenarioId: scenario.id });
 }

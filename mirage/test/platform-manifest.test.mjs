@@ -620,3 +620,63 @@ test("FullPage.aspx lays out div#mainContent with the page copy and the entity c
   assert.match(layout.source, new RegExp(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>\{% entitylist id: '${list}', pp_page_control: true %\}\{% endentitylist %\}</div><div class="page-metadata clearfix">`));
   assert.equal(rewritePageLayout({}, { rewriteUrl: "~/Pages/WebForm.aspx" }).contentRegion, undefined);
 });
+
+test("a map list with credentials renders the legacy map control and loads the map scripts; application-relative paths redirect", async (t) => {
+  const { renderComponent } = await import("../lib/platform.mjs");
+  const list = { id: "11111111-1111-4111-8111-111111111111", name: "Places", entityName: "place", metadata: { adx_map_enabled: true, adx_map_credentials: "invented-key", adx_map_type: 756150000, adx_map_distanceunits: 756150001, adx_map_distancevalues: "5,10", adx_map_zoom: 12, adx_map_pushpinheight: 39, adx_map_pushpinwidth: 32, adx_map_resturl: "https://maps.example.test/Locations", adx_view: "view" } };
+  const portal = { website: { id: "site" }, lists: [list], forms: [], pages: [], records: [], settings: { "Site/BootstrapV5Enabled": "true" }, websiteLanguages: [{ lcid: 1033, isDefault: true }] };
+  const metadata = { entities: { place: { fields: { name: { label: "Name" } } } }, views: [{ id: "view", entity: "place", name: "Places", fields: [{ name: "name" }], fetchXml: '<fetch><entity name="place"><attribute name="name"/></entity></fetch>' }] };
+  const { html } = await renderComponent("entitylist", "Places", { user: { id: "u" }, request: { url: "http://localhost/places/" }, key: "Places" }, { portal, metadata, store: { resolveMapping: () => ({ entitySet: "places", idColumn: "placeid", nameColumn: "name" }) }, schemas: {}, args: { key: "Places" } });
+  assert.match(html, /<!--pp-server-list--><!--pp-map-list:bing--><div id="EntityListControl_11111111111141118111111111111111"><div class="entitylist"><div class="row clearfix"><div id="entity-list-map-options"/);
+  assert.match(html, /<option value="5">5 miles<\/option><option value="10">10 miles<\/option>/);
+  assert.match(html, /data-distance-units="miles"[^>]* data-credentials="invented-key"/);
+  const form = webFormsForm({ content: html });
+  assert.match(form, /jquery\.blockUI\.js" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/json2\.min\.js" type="text\/javascript"><\/script>\n<script src="https:\/\/www\.bing\.com\/api\/maps\/mapcontrol" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/entitylist-map\.js"/);
+  assert.match(form, /name="__EVENTVALIDATION"/);
+  const { get } = await shellFixture(t);
+  const moved = await get("/form/~/xrm-adx/samples/images/loader.gif");
+  assert.equal(moved.status, 200);
+  assert.equal(moved.headers.get("content-type"), "image/gif");
+  assert.ok(moved.headers.get("etag"));
+});
+
+test("the captcha challenge image and audio answer as the platform's resource handler does", async (t) => {
+  const { get } = await shellFixture(t);
+  const image = await get("/Telerik.Web.UI.WebResource.axd?type=rca&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000");
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/jpeg");
+  assert.equal(image.headers.get("cache-control"), "private");
+  const audio = await get("/Telerik.Web.UI.WebResource.axd?type=cah&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000", { range: "bytes=0-" });
+  assert.equal(audio.status, 206);
+  assert.equal(audio.headers.get("content-type"), "audio/wav");
+  assert.equal(audio.headers.get("content-disposition"), "attachment; filename=RadCaptcha_Audio_0f0f0f0f.wav");
+  assert.match(audio.headers.get("content-range"), /^bytes 0-\d+\/\d+$/);
+  assert.equal((await audio.arrayBuffer()).byteLength, Number(audio.headers.get("content-length")));
+});
+
+test("an HTML web resource is served as a page; other web resources keep their private caching", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-webresource-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
+  await fs.mkdir(portal, { recursive: true });
+  await fs.writeFile(path.join(portal, "website.yml"), "adx_websiteid: site\nadx_name: Resources");
+  await fs.mkdir(path.join(solution, "WebResources"), { recursive: true });
+  await fs.writeFile(path.join(solution, "WebResources", "banner.html"), "<!DOCTYPE html><html><body><p>Banner</p></body></html>");
+  await fs.writeFile(path.join(solution, "WebResources", "icon.svg"), "<svg/>");
+  const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state.json"), watch: false, solutionRoots: [solution] });
+  t.after(() => app.close());
+  const html = await fetch(`${app.url}/_webresource/banner.html`);
+  assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.equal(html.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  assert.equal(html.headers.get("pragma"), "no-cache");
+  const svg = await fetch(`${app.url}/_webresource/icon.svg`);
+  assert.equal(svg.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(svg.headers.get("cache-control"), "private");
+});
+
+test("the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)", async () => {
+  const css = await fs.readFile(new URL("../lib/platform-chrome.css", import.meta.url), "utf8");
+  assert.match(css, /\.crmEntityFormView \.cell\.zero-cell\{display:none\}/);
+  const narrow = /@media\(max-width:600px\)\{([^}]*)\{display:block/.exec(css)?.[1] ?? "";
+  for (const selector of narrow.split(",")) if (/td\.cell/.test(selector)) assert.match(selector, /:not\(\.zero-cell\)/);
+});

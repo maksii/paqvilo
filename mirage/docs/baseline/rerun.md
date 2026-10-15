@@ -15,7 +15,7 @@ Commands below use `<toolkit>` for the toolkit checkout and `<project>` for the 
 | Signed-in browser profile | The browser profile of the single test identity, already signed in to the tenant. Personas are web-role sets applied by script to this contact. They are not separate users, because each user would need its own credential or MFA step. |
 | Browser bridge | The Playwright MCP extension installed in that profile, and `@playwright/mcp` installed in the project. `matrix/project.json` `live.command`/`live.args` start it (`--extension --browser msedge --profile-dir-name <profile>`). The toolkit never launches its own browser on the live site for these captures. |
 | Bridge token | Keep it in the project's ignored `.env` as `PLAYWRIGHT_MCP_EXTENSION_TOKEN`. Every live-side command runs with `node --env-file=<project>/../.env` (the project scripts below already do this). Without it, the MCP call hangs. |
-| Project catalogue | `<project>/paqvilo.config.yml`, site `baseline`. Its `source` is the downloaded export. Its `solutionRoots` include `examples/project/baseline/solution` and the project's `platform-solution/`. Its `dataPacks` include the environment-rows pack, and `preset` is `baseline`. Its `observed` settings each carry evidence (site visibility, sign-in path, identity provider authority). |
+| Project catalogue | `<project>/paqvilo.config.yml`, site `baseline`. Its `source` is the downloaded export. Its `solutionRoots` include `examples/project/baseline/solution` and the project's `platform-solution/`. Its `dataPacks` include the environment-rows pack, and `preset` is `baseline`. Its `observed` settings each carry evidence: `siteVisibility`, `loginPath`, `azureAdAuthority`, `portalApplicationUser`, `portalApplicationUserId` and `listODataFeeds` ([configuration](../../../docs/configuration.md)). |
 
 ### Never printed or stored
 
@@ -74,18 +74,22 @@ node --env-file=../.env scripts/platform-components.mjs   # platform-solution/: 
 npm run environment-rows                                  # node --env-file=../.env scripts/environment-rows.mjs → data/environment-rows.json
 ```
 
-- **`platform-components.mjs`** writes platform components that the fixture solution cannot carry. Dataverse does not export an unmodified managed form, and the fixture does not customise managed forms. The output is the managed Contact main form, the columns that an installed app owns, and their global choices. Mirage merges attribute definitions across solution roots.
-- **`environment-rows.mjs`** reads the rows that the live lookups show from shared tables, such as the default contact and account lookup views. It reads them with the view's filter and sort, so Mirage holds the same records. The pack module wraps the fixture pack, because two packs cannot both define the `baseline` preset. When ids collide, the fixture row wins. The pack leaves the live tester out, because the suite rekeys the fixture tester to that id.
+- **`platform-components.mjs`** writes platform components that the fixture solution cannot carry. Dataverse does not export an unmodified managed form, and the fixture does not customise managed forms. The output is the managed Contact main form, the columns that an installed app owns, and their global choices, plus the ActionCards view and the `actioncard` and `cardtype` table definitions that form's subgrid renders. Mirage merges attribute definitions across solution roots.
+- **`environment-rows.mjs`** writes three kinds of data:
+  - `views` and `tables`: the rows that the live lookups show from shared tables, such as the default contact and account lookup views. It reads them with the view's filter and sort, so Mirage holds the same records. The live tester is left out of these rows, because the suite rekeys the fixture tester to that id.
+  - `records`: the fixture rows' live `createdon`/`modifiedon` stamps and file columns, so Mirage renders the same values as live.
+  - `identity`: the tester contact's form columns, and its parent account both at rest and under the account-scope persona.
+- The pack module wraps the fixture pack, because two packs cannot both define the `baseline` preset. When ids collide, the fixture row wins.
 - `mirage inspect --json` shows forms only as a count and does not list data packs. To check that a root or pack is loaded, recapture an affected scenario and compare.
 
 ### 4. Matrix generation
 
 ```sh
 npm run matrix   # node <toolkit>/scripts/baseline-matrix.mjs --out matrix/full.json --project matrix/project.json
-npm test         # offline project checks (matrix shape, ids, reasons)
+npm test         # offline project checks (matrices, aliases, hooks, catalogue)
 ```
 
-The generator reads the fixture site manifest and merges in the project file: `origin`, the `live` bridge with its `signIn`, `signOut` and `refresh` steps, the `hooks`, `mirageContact`, `mirageIdentity`, `formTabs`, `personaPages` and `behaviourPages`. `matrix/ids.json` is the project's private alias map. It holds the fixture aliases (`item1`, `parent1` and so on), the live `tester` contact and `missing` (the zero GUID).
+The generator reads the fixture site manifest and merges in the project file: `origin`, the `live` bridge with its `signIn` and `signOut` steps (and optional `refresh` steps), the `hooks`, `mirageContact`, `mirageIdentity`, `formTabs`, `personaPages` and `behaviourPages`. `matrix/ids.json` is the project's private alias map. It holds the fixture aliases (`item1`, `parent1` and so on), the live `tester` contact and `missing` (the zero GUID).
 
 ### 5. Live capture
 
@@ -100,7 +104,7 @@ The project script `npm run capture:live -- --matrix … --out …` wraps the sa
 
 For each scenario, the suite runs the steps below:
 
-1. **Personas.** The suite groups scenarios by persona. On each switch it runs the persona hook (`node baseline/scripts/persona.mjs --persona {persona} --apply`), confirms sign-in, and runs `live.refresh`. The refresh opens the portal's `/_services/about` page and clicks its clear-cache control. The suite then runs the persona's `verify` probes. Every probe must pass in the same attempt (8 attempts, 10 s apart, then a 3 s settle). Anonymous personas sign the portal session out first. When a persona fails, its whole group fails at once and the bridge stays open.
+1. **Personas.** The suite groups scenarios by persona. On each switch it runs the persona hook (`node baseline/scripts/persona.mjs --persona {persona} --apply`), and confirms sign-in. It then runs the persona's `verify` probes, which include a check that the session holds no administrator rights (`/_services/about` offers no clear-cache control). Every probe must pass in the same attempt (8 attempts, 10 s apart, then a 3 s settle). No cache clear runs, so the probes are the only gate: role removals reach the portal in about 20 s, but role additions (table-permission roles in particular) can lag past the probe window. A project whose test identity may clear the cache can still add optional `live.refresh` steps, which the suite runs after the switch and before the probes. When a persona group fails its probes and the project configures `hooks.liveAdminAdd`, `hooks.liveAdminRemove` and `live.clearCache`, the suite runs one cache-clear cycle and probes again (see [Live gotchas](#live-gotchas)). Anonymous personas sign the portal session out first. When a persona fails, its whole group fails at once and the bridge stays open.
 2. **Settle-aware reset.** The reset hook (`node baseline/scripts/reset-live.mjs --apply`) writes only fields whose live value differs, and skips an unchanged file. It then waits until the written rows are quiet: `modifiedon` unchanged for 10 s and no workflow job open, polled every 3 s, bounded at 120 s. If Dataverse returns a transient error, the suite retries the reset once.
 3. **Write guard.** Without `--allow-writes`, every non-GET is aborted and listed in `meta.blockedWrites`. With it, writes are still limited to the matrix `writeScope` (fixture page paths, `/_services/`, `/_portal/`, `/_api/` and the fixture entity sets). The portal's read-only POSTs (grid data, subgrid data, notes listing) always pass.
 
@@ -110,13 +114,15 @@ For each scenario, the suite runs the steps below:
 node <toolkit>/mirage/baseline-suite.mjs capture --matrix matrix/full.json --out .paqvilo/parity/full --side mirage --label mirage --config paqvilo.config.yml --site baseline --ids matrix/ids.json [--only <ids>|@<file>]
 ```
 
-The Mirage side starts an isolated runtime from the catalogue: export, solution roots, data packs, preset and observed settings. Before every scenario it resets the whole simulated state. It then mirrors the live tester's observed name, parent account and base roles onto the preset contact, and rekeys that contact to the live contact id (`mirageIdentity`). The capture browser keeps its scrollbars, because the live browser has one and dialogs measure it.
+The Mirage side starts an isolated runtime from the catalogue: export, solution roots, data packs, preset and observed settings. Before every scenario it resets the whole simulated state. It then mirrors the live tester's observed name, parent account and base roles onto the preset contact, and rekeys that contact to the live contact id (`mirageIdentity`). The mirror is persona-aware: the suite re-applies it on every persona switch, with the fields that persona changes on live (for example the account-scope parent account). The capture browser keeps its scrollbars, because the live browser has one and dialogs measure it.
 
 ### 7. Compare with the allowlist
 
 ```sh
-node <toolkit>/mirage/baseline-suite.mjs compare --matrix matrix/full.json --out .paqvilo/parity/full --allowlist allowlist.json [--second-live live-2] [--only <ids>|@<file>]
+node <toolkit>/mirage/baseline-suite.mjs compare --matrix matrix/full.json --out .paqvilo/parity/full --allowlist allowlist.json [--second-live live-2] [--evidence-changes evidence-changes.json] [--only <ids>|@<file>]
 ```
+
+`--evidence-changes` names the project file of recorded live changes (D15: a change is captured once, on representative scenarios, not on every page it touches). Deltas in older live captures that match a recorded change count as stale once its proof scenarios pass ([parity](parity.md#evidence-age-third-kind)). Record a change there, with its proof ids, whenever a fixture upload, a role change or new rows alter what live renders, instead of recapturing every affected scenario.
 
 The compare writes `diff.json` per scenario, plus `report.json` and `summary.md` at the evidence root. [Parity](parity.md) explains how to read them.
 
@@ -131,21 +137,21 @@ This regenerates [reference.md](reference.md) from the live evidence only. For e
 
 ### 9. Variance run
 
-Capture a second, independent live run of the scenarios you compare. Then compare with `--second-live`:
+Capture a second live run of a reviewed subset only (no blanket recaptures, D13). Derive the subset from the current `diff.json` files: the fewest scenarios such that each `live-run-variance` allowlist entry is matched in two paired scenarios. Record the entry-to-scenario map in the project (for example `matrix/live-2-subset.json`) and write its ids to the `--only` list. Then compare with `--second-live`:
 
 ```sh
 node --env-file=../.env <toolkit>/mirage/baseline-suite.mjs capture --matrix matrix/full.json --out .paqvilo/parity/full --side live --label live-2 --ids matrix/ids.json --allow-writes --only @matrix/live-2-only.txt
 node <toolkit>/mirage/baseline-suite.mjs compare --matrix matrix/full.json --out .paqvilo/parity/full --allowlist allowlist.json --second-live live-2
 ```
 
-When the second live run is present, an allowlist entry with `live-run-variance` proof explains only the deltas on which the two live captures actually differ. Without it, those entries stay unconfirmed. Run the variance run on final evidence, because it takes about as long as a full live run.
+In a paired scenario, an allowlist entry with `live-run-variance` proof explains a Mirage delta only when the two live captures also differ under that entry. In unpaired scenarios it applies on the strength of the paired evidence, which the report's `variance` table shows ([parity](parity.md#allowlist-model)). Run the subset on final evidence.
 
 ## Evidence layout
 
 ```text
 <project>/.paqvilo/parity/full/
   <component>/<variation>/<state>/<persona>/
-    live/      meta.json  dom.html  elements.json  requests.json  console.json  screenshot.png
+    live/      meta.json  dom.html  elements.json  requests.json  console.json  frames.json  screenshot.png
     live-2/    (same files, second live run)
     mirage/    (same files, Mirage run)
     diff.json  (written by compare)
@@ -155,16 +161,27 @@ When the second live run is present, an allowlist entry with `live-run-variance`
   _sign-in/                           pages saved by a failed sign-in, sign-out, refresh or persona probe
 ```
 
+`frames.json` holds the DOM of each same-origin frame by URL path, and the frame's elements appear in `elements.json` with the selector prefix `frame(<path>) `. Captures taken before frames were inventoried have no `frames.json`.
+
 `meta.json` records the status (`captured`, `failed`, `error`), problems, `blockedWrites`, the phase `timeline`, the redacted final URL and the title. A capture whose status is not `captured` is never evidence. This covers a sign-in page where the site page was expected, a missing expected element and a step error. Keep superseded folders out of the evidence root, for example in an archive folder. Compare ignores folders of ids that are no longer in the matrix.
 
 ## Live gotchas
 
-- **Permission cache.** The portal caches permissions. After a web-role change or a site upload, it kept serving the previous persona's permissions for minutes, and in one run for 59 min of polling. Record pages opened by an earlier persona kept their old permissions for more than 10 min. The clear-cache control on `/_services/about` makes a role change visible on the next request. It needs a role with access to that page. Keep `live.refresh` in the project file, and make each persona's probes tell it apart from the editor and from the persona captured before it. Use a probe record that no other persona opens.
-- **Record cache.** After a reset, the portal served a stale record for minutes (an activated row still looked deactivated). Each actions variant therefore acts on its own reserved deactivated row (`T.actionRecords`, `item9` to `item11`). A deactivate scenario activates its row first and then deactivates it. A save followed by a reload runs the `live.refresh` steps between them.
+- **Permission cache.** The portal caches permissions. After a web-role change or a site upload, it kept serving the previous persona's permissions for minutes, and in one run for 59 min of polling. Record pages opened by an earlier persona kept their old permissions for more than 10 min. Those runs used personas that kept an administrator role, whose `/_services/about` clear-cache control made a role change visible on the next request. The personas are now admin-less, so that control is gone:
+  - **Removals** land in about 20 s.
+  - **The administrator role** itself reached the portal in about 20–27 s, both when added and when removed (four measurements).
+  - **Additions** can lag. Table-permission roles written for the editor and account-scope personas were not applied within the 8 × 10 s probe window, nor five minutes after the write.
+  - **Per-page lag.** Markup tied to a role, such as the content-editing attributes administrators get, leaves the portal page by page. One page kept it about 32 min after the role write while other pages had switched. A passing probe therefore does not prove every page has switched. Record such a change with a `staleBefore` instant (see the compare step).
+
+  Persona-switch procedure:
+  1. Write the persona's web roles (the persona hook).
+  2. Probe until every probe passes in the same attempt. Make each persona's probes tell it apart from the editor and from the persona captured before it, and use a probe record that no other persona opens.
+  3. If the group still fails, the suite runs one cycle: the `liveAdminAdd` hook re-adds the site's administrator role (by id) to the test contact, the `live.clearCache` steps are retried until `/_services/about` offers the control and clear the cache, and the `liveAdminRemove` hook removes the role. It then probes again; the admin-less probe keeps any capture from starting before the removal has landed. A second failure fails the group. Each cycle settled the persona within about 3 min (run 8b).
+- **Record cache.** After a reset, the portal served a stale record for minutes (an activated row still looked deactivated). Each actions variant therefore acts on its own reserved deactivated row (`T.actionRecords`, `item9` to `item11`). A deactivate scenario activates its row first and then deactivates it. When the project defines `live.refresh`, the action scenarios and a save followed by a reload run those steps as harness-only steps (`harness: true`, no evidence recorded); without it they run without a cache clear.
 - **Business-rule chain.** The fixture provisions its rules as background workflows. A rule's write sends the whole record image back. Before the rules had guard conditions, one reset started a chain that rewrote fixture rows every ~5 s for ~90 s. Any portal save inside that window was silently overwritten. Two things prevent it: the guard conditions on the set-value and clear-value rules, and the diff-only, settle-aware reset. Treat a capture of a save made inside a chain window as suspect, and recapture it.
 - **Captcha.** Captchas are never bypassed. A form or step that requires one is captured in its captcha-validation state. Every state behind it is recorded as not observable.
 - **Scope personas.** A parent-scoped (child) table permission inherits the web roles of its parent permission. Give the parent-scope chain its own root permission, or every role that reads the parent reads every child through it. The account-scope persona also sets the tester's parent account, and the next persona switch restores it.
-- **Site-wide page rules.** A site-wide rule that grants change to a role the tester always keeps (for example, administrators) overrides restrict-read for every signed-in persona. Page-rule effects are then observable for the anonymous visitor only.
+- **Site-wide page rules.** A site-wide rule that grants change to a role the tester keeps (for example, administrators) overrides restrict-read for every signed-in persona, so page-rule effects are then observable for the anonymous visitor only. Keep that role off every persona: the matrix then derives each page-rule scenario's expectation from the rule configuration (for example a 403 for a signed-in persona the rule does not admit).
 - **Search.** List search is begins-with. Scenarios search with a leading wildcard (`*Alpha`).
 - **Hit targets.** When site CSS collapses a submit control to a few pixels, the step uses `{ click, dispatch: true }`.
 
@@ -174,7 +191,7 @@ When the second live run is present, an allowlist entry with `live-run-variance`
 
 1. Add the record to the fixture site generator (`examples/project/baseline/site.mjs`) or add the state to `scripts/baseline-matrix.mjs`. Scenarios derive from the manifest's records, their table facts (`TABLES`) and their metadata records.
 2. Regenerate the matrix.
-3. Capture only the new or changed ids with `--only @<file>` (one id per line, `#` comments), on both sides.
+3. Capture only the new or changed ids with `--only @<file>`, on both sides. A list file has one scenario per line, and the first whitespace-delimited token is the id. That means `id<tab>reason` and `id  # reason` lines both work. `#` comment lines and blank lines are skipped. A list that yields no id stops the suite with an error.
 4. Compare those ids with `--only`.
 
 Non-editor personas run only on the pages listed in `personaPages`. Behaviour states (validation, plugins, lookups, notes) run only on the forms listed in `behaviourPages`. Variant forms capture only the states their own configuration changes.

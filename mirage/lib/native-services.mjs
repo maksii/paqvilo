@@ -1521,6 +1521,7 @@ const JAVASCRIPT = "application/javascript; charset=utf-8";
 const staticType = (path) => (path.endsWith(".css") ? "text/css; charset=utf-8" : JAVASCRIPT);
 
 // A transparent 1x1 PNG for the offline notification bar icons (platform CDN images).
+const GIF_PIXEL = Buffer.from("R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 const PNG_PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
 /**
  * Native platform paths (lib/platform-manifest.mjs) served from local equivalents when
@@ -1533,6 +1534,10 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/xrm-adx/js/radcaptcha.js", { file: new URL("./radcaptcha-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview.js", { file: new URL("./crmentityformview-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/fileuploadcontrol.js", { file: new URL("./fileuploadcontrol-compat.js", import.meta.url), type: JAVASCRIPT }],
+  // Map lists with credentials (platform.mjs mapListControl).
+  ["/xrm-adx/js/entitylist-map.js", { file: new URL("./entitylist-map-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/json2.min.js", { body: Buffer.from("/* Mirage: JSON is native. */"), type: JAVASCRIPT }],
+  ["/xrm-adx/samples/images/loader.gif", { body: GIF_PIXEL, type: "image/gif" }],
   ["/xrm-adx/js/jquery.stackranking.js", { file: new URL("./stackranking-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/bootstrapv5/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
@@ -1589,7 +1594,10 @@ async function serveSolutionWebResource(req, res, url, context) {
     if (!body) continue;
     const type = /\.js$/i.test(match[1]) ? JAVASCRIPT : /\.css$/i.test(match[1]) ? "text/css; charset=utf-8" : "text/plain; charset=utf-8";
     const now = Date.now();
-    res.writeHead(200, { "content-type": type, "cache-control": "private", expires: new Date(now + 30 * 86400 * 1000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "Accept-Encoding", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
+    // An HTML web resource is served as a page: text/html with the page cache headers (live
+    // pqvd_baseline_banner.html, 60 captures); other types keep the private 30-day caching.
+    if (/\.html?$/i.test(match[1])) res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...PAGE_HEADERS, "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
+    else res.writeHead(200, { "content-type": type, "cache-control": "private", expires: new Date(now + 30 * 86400 * 1000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "Accept-Encoding", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
     res.end(req.method === "HEAD" ? undefined : body);
     return true;
   }
@@ -1624,7 +1632,8 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
-  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/js|areas\/entitylist)\//.test(key) ? "static" : null;
+  // The platform's /xrm-adx/samples/ images are static files too (live map list loader image).
+  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key) ? "static" : null;
   // A local equivalent file dates its response by its own modification time, so a browser reuses
   // it within its heuristic freshness as it does the platform's (live: no second request from
   // the quick view document) and a conditional request is answered 304.

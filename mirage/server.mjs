@@ -77,6 +77,41 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
+// The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
+// half a second of silent 8 kHz audio. ponytail: no readable challenge; Mirage accepts no answer.
+const CAPTCHA_IMAGE = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z", "base64");
+const CAPTCHA_AUDIO = (() => {
+  const samples = 4000;
+  const wav = Buffer.alloc(44 + samples, 0x80);
+  wav.write("RIFF", 0); wav.writeUInt32LE(36 + samples, 4); wav.write("WAVEfmt ", 8); wav.writeUInt32LE(16, 16);
+  wav.writeUInt16LE(1, 20); wav.writeUInt16LE(1, 22); wav.writeUInt32LE(8000, 24); wav.writeUInt32LE(8000, 28);
+  wav.writeUInt16LE(1, 32); wav.writeUInt16LE(8, 34); wav.write("data", 36); wav.writeUInt32LE(samples, 40);
+  return wav;
+})();
+/** Telerik.Web.UI.WebResource.axd captcha image (type=rca) and audio (type=cah, ranges honoured) as live answers them. */
+function captchaResource(req, res, url, portal) {
+  const type = url.searchParams.get("type");
+  if (type !== "rca" && type !== "cah") return false;
+  const headers = { "cache-control": "private", "x-frame-options": siteHeaders(portal)["x-frame-options"] };
+  if (type === "rca") {
+    res.writeHead(200, { ...headers, "content-type": "image/jpeg", "content-length": CAPTCHA_IMAGE.length });
+    res.end(req.method === "HEAD" ? undefined : CAPTCHA_IMAGE);
+    return true;
+  }
+  const range = /^bytes=(\d+)-(\d*)$/.exec(req.headers.range ?? "");
+  const size = CAPTCHA_AUDIO.length;
+  const start = range ? Number(range[1]) : 0;
+  const end = range && range[2] ? Math.min(Number(range[2]), size - 1) : size - 1;
+  if (start > end) {
+    res.writeHead(416, { ...headers, "content-range": `bytes */${size}`, "content-length": 0 });
+    res.end();
+    return true;
+  }
+  const body = CAPTCHA_AUDIO.subarray(start, end + 1);
+  res.writeHead(range ? 206 : 200, { ...headers, "accept-ranges": "bytes", "content-type": "audio/wav", "content-disposition": `attachment; filename=RadCaptcha_Audio_${String(url.searchParams.get("guid") ?? "").slice(0, 8)}.wav`, "content-length": body.length, ...(range ? { "content-range": `bytes ${start}-${end}/${size}` } : {}) });
+  res.end(req.method === "HEAD" ? undefined : body);
+  return true;
+}
 /**
  * A native postback's redirect as ASP.NET Response.Redirect writes it (live 302 answers): the
  * page cache headers without Vary, the site's frame option and the "Object moved" body.
@@ -97,7 +132,7 @@ import { formWriteError } from "./lib/form-error-presentation.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
 import { discoverPacks } from "./lib/preset-registry.mjs";
 import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
-import { injectRuntime, renderComponent, renderQuickForm } from "./lib/platform.mjs";
+import { injectRuntime, renderComponent, renderQuickForm, captchaRefreshDelta } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
 import { multipartControls, nativeFormTransport, decodeNativeViewState, nativeViewStateKey } from './lib/native-postback.mjs';
@@ -510,6 +545,26 @@ export async function createSimulator({
     : null;
   let evidence = null;
   const csrf = randomBytes(32).toString("hex");
+  // Attach-file uploads (/_api/file/*/note): the platform's file API stages each file under an
+  // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
+  // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
+  // the postback takes them.
+  // ponytail: in-memory, bounded to 50 files and one hour; a persistent store when uploads must survive restarts.
+  const stagedUploads = new Map();
+  // The complete staged files a postback's AttachFile_HiddenField_AnnotationIds names (a JSON
+  // array); each is taken once.
+  const stagedAttachments = (controls) => {
+    const field = [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
+    let ids = [];
+    try { ids = JSON.parse(controls.get(field) || "[]"); } catch { ids = []; }
+    if (!Array.isArray(ids)) return [];
+    return ids.flatMap((id) => {
+      const entry = stagedUploads.get(String(id).toLowerCase());
+      if (!entry || entry.received !== entry.size) return [];
+      stagedUploads.delete(String(id).toLowerCase());
+      return [{ field: field.replace(/_HiddenField_AnnotationIds$/, ""), name: entry.name, type: entry.type, content: Buffer.concat(entry.chunks).toString("base64") }];
+    });
+  };
   const verificationRuntimeId = randomUUID();
   let revision = 1,
     renderer,
@@ -3158,6 +3213,39 @@ export async function createSimulator({
       }
     }
     if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    const fileApi = /^\/_api\/file\/(InitializeFileUpload|UploadFileBlock)\/note$/i.exec(url.pathname);
+    if (fileApi) {
+      const answer = (status, body) => {
+        // Live: page cache headers and the site frame option; a JSON answer also varies by encoding, the 204 does not.
+        const { vary, ...page } = PAGE_HEADERS;
+        res.writeHead(status, { ...page, "x-frame-options": siteHeaders(portal)["x-frame-options"], ...(body === undefined ? {} : { "content-type": "application/json; charset=utf-8", vary }) });
+        return res.end(body === undefined ? undefined : JSON.stringify(body));
+      };
+      if (req.headers.__requestverificationtoken !== csrf) throw error("Missing portal verification token.", 403);
+      const now = Date.now();
+      for (const [id, entry] of stagedUploads) if (now - entry.created > 3600000) stagedUploads.delete(id);
+      if (/^InitializeFileUpload$/i.test(fileApi[1])) {
+        if (req.method !== "POST") throw error("File upload initialisation requires POST.", 405);
+        await rawBody(req);
+        const name = String(req.headers["x-ms-file-name"] ?? "").trim();
+        const size = Number(req.headers["x-ms-file-size"]);
+        if (!name || !Number.isFinite(size) || size < 0 || size > 8 * 1024 * 1024) throw error("The file name and size are required (at most 8 MiB).", 400);
+        if (stagedUploads.size >= 50) stagedUploads.delete(stagedUploads.keys().next().value);
+        const id = randomUUID();
+        const token = randomBytes(24).toString("base64");
+        stagedUploads.set(id, { name, size, type: String(req.headers["x-ms-file-type"] ?? req.headers["content-type"] ?? "application/octet-stream"), token, chunks: [], received: 0, created: now });
+        return answer(200, { AnnotationId: id, FileContinuationToken: token });
+      }
+      if (req.method !== "PUT") throw error("File block upload requires PUT.", 405);
+      const entry = stagedUploads.get(String(url.searchParams.get("noteId") ?? "").toLowerCase());
+      if (!entry || req.headers["x-ms-file-continuation-token"] !== entry.token) throw error("Unknown file upload.", 404);
+      if (Number(url.searchParams.get("offset")) !== entry.received) throw error("The file block offset does not continue the upload.", 400);
+      const block = await rawBody(req);
+      if (entry.received + block.length > entry.size) throw error("The file block exceeds the declared file size.", 400);
+      entry.chunks.push(block);
+      entry.received += block.length;
+      return answer(204);
+    }
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
     // Routing and sign-in : repeated slashes collapse before resolution (portal
@@ -3220,8 +3308,15 @@ export async function createSimulator({
           const tokens = controls.getAll('__RequestVerificationToken');
           const verified = tokens.length ? tokens.length === 1 && tokens[0] === csrf : nativeViewStateKey(controls.get('__VIEWSTATE')) === csrf;
           if (!verified) throw error('Missing portal verification token.', 403);
+          // The captcha refresh is an ASP.NET AJAX partial postback answered with the update panel delta.
+          const captchaTarget = /^(.+\$captcha)\$CaptchaLinkButton$/.exec(controls.get('__EVENTTARGET') ?? '');
+          if (captchaTarget && /^delta=true$/i.test(String(req.headers['x-microsoftajax'] ?? ''))) {
+            const delta = captchaRefreshDelta(captchaTarget[1], url.pathname, controls);
+            res.writeHead(200, { 'cache-control': 'private', 'content-type': 'text/plain; charset=utf-8', vary: 'Accept-Encoding', 'x-frame-options': siteHeaders(portal)['x-frame-options'], 'content-length': Buffer.byteLength(delta) });
+            return res.end(delta);
+          }
           nativeEntries = [...controls];
-          nativeFiles = controls.files ?? [];
+          nativeFiles = [...(controls.files ?? []), ...stagedAttachments(controls)];
           const context = trace.getStore();
           // An auto-generated step form's posted __VIEWSTATE names the tab the page showed and the
           // earlier tabs' values: the page renders that tab first so the postback decodes against it.
@@ -3532,6 +3627,8 @@ export async function createSimulator({
         });
       return sendFile(await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER }), asset.mimeType || mime(file));
     }
+    // The captcha challenge resources answer locally (the asset cache admits no Telerik resource URL).
+    if (["GET", "HEAD"].includes(req.method) && url.pathname.toLowerCase() === "/telerik.web.ui.webresource.axd" && captchaResource(req, res, url, portal)) return;
     if (cache && !deniedRoute) {
       const cached = await cache.get(url.pathname + url.search, {
         origin: live.origin,
@@ -3550,6 +3647,10 @@ export async function createSimulator({
     // settings.urlHistoryRedirects = true) before the Page Not Found page (404);
     // denied pages redirect anonymous visitors to sign-in with the Access Denied page
     // as the body and render the Access Denied page (403) for signed-in visitors.
+    // An application-relative path a script wrote unresolved (".../~/xrm-adx/...") redirects to the
+    // application root, as ASP.NET does (live map list loader image).
+    const appRelative = /\/~(\/.*)$/.exec(url.pathname);
+    if (["GET", "HEAD"].includes(req.method) && appRelative) return postbackRedirect(res, { status: 302, location: appRelative[1] }, portal);
     // A missing file under the platform's static areas (calendar loading image, live) is a plain
     // 404 without Vary, not the portal's Page Not Found page.
     if (["GET", "HEAD"].includes(req.method) && /^\/areas\/.+\.[a-z0-9]+$/i.test(url.pathname)) {

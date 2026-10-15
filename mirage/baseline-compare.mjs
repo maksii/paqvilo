@@ -36,9 +36,13 @@ export async function loadAllowlist(file) {
   return data;
 }
 
+// A same-origin frame's elements are keyed "frame(<path>) <selector>": an entry about an element applies inside a frame
+// document as on the page, so element entries also match the selector without its frame prefix.
+const FRAME_PREFIX = /^frame\([^)]*\) /;
 function allowed(delta, allowlist) {
+  const inFrame = delta.scope === "element" && FRAME_PREFIX.test(delta.location) ? delta.location.replace(FRAME_PREFIX, "") : null;
   for (const entry of allowlist.entries ?? []) {
-    if (entry.scope !== delta.scope || !entry.regex.test(delta.location) || !entry.fieldRegex.test(delta.field)) continue;
+    if (entry.scope !== delta.scope || !(entry.regex.test(delta.location) || (inFrame !== null && entry.regex.test(inFrame))) || !entry.fieldRegex.test(delta.field)) continue;
     if (entry.valueRegex && !entry.valueRegex.test(String(delta.live ?? "")) && !entry.valueRegex.test(String(delta.mirage ?? ""))) continue;
     return entry.id;
   }
@@ -70,6 +74,26 @@ function canonicalBody(body, contentType = "") {
       /* not JSON */
     }
   }
+  // Multipart postbacks (forms with a file control): the boundary is random per browser, so the parts are compared as
+  // fields like an urlencoded form; a file part compares as its name, type and byte length.
+  const boundary = /multipart\/form-data;\s*boundary=("?)([^";]+)\1/i.exec(contentType)?.[2];
+  if (boundary) {
+    const fields = {};
+    for (const part of text.split(`--${boundary}`)) {
+      const split = part.indexOf("\r\n\r\n") >= 0 ? part.indexOf("\r\n\r\n") : part.indexOf("\n\n");
+      if (split < 0) continue;
+      const head = part.slice(0, split);
+      const content = part.slice(split).replace(/^\r?\n\r?\n/, "").replace(/\r?\n$/, "");
+      const name = /name="([^"]*)"/i.exec(head)?.[1];
+      if (name === undefined) continue;
+      const file = /filename="([^"]*)"/i.exec(head);
+      // Server state and anti-forgery fields are tokens, as the capture redacts them in urlencoded bodies.
+      const token = /^(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken)$/.test(name);
+      const value = file ? `file:${file[1]}:${/content-type:\s*([^\r\n]+)/i.exec(head)?.[1] ?? ""}:${content.length}` : token ? "{token}" : content;
+      (fields[name] ??= []).push(value);
+    }
+    return { kind: "form", value: Object.fromEntries(Object.keys(fields).sort().map((key) => [key, fields[key]])) };
+  }
   if (/x-www-form-urlencoded/i.test(contentType) || (!text.includes("<") && /^[^=&\s]+=[^&]*(?:&[^=&\s]+=[^&]*)*$/.test(text))) {
     const params = new URLSearchParams(text);
     return { kind: "form", value: Object.fromEntries([...params.keys()].sort().map((key) => [key, params.getAll(key)])) };
@@ -96,7 +120,8 @@ function requestKey(request) {
 }
 
 /** Align two request sequences in order, then compare each aligned pair field by field. */
-const withoutDiagnostics = (headers) => Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !/^x-sim-/i.test(name)));
+// The multipart boundary is random per browser: it is compared as a token (the parts are compared by canonicalBody).
+const withoutDiagnostics = (headers) => Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !/^x-sim-/i.test(name)).map(([name, value]) => [name, /^content-type$/i.test(name) ? String(value).replace(/(multipart\/form-data;\s*boundary=)("?)[^";]+\2/i, "$1$2{boundary}$2") : value]));
 
 export function compareRequests(live = [], mirage = []) {
   const out = [];
@@ -303,7 +328,7 @@ const normalizedCapture = (capture, origins = []) => {
   return { ...capture, frames, dom: withoutAddressIds(normalizeGeneratedIds(capture.dom ?? "", origins), ids), elements: normalizeJson(capture.elements), requests: normalizeJson(capture.requests) };
 };
 
-export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist, origins = [] }) {
+export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist, origins = [], changes = [] }) {
   const live = normalizedCapture(await loadCapture(liveDir), origins);
   const mirage = normalizedCapture(await loadCapture(mirageDir), origins);
   const result = { id: scenario.id, verdict: "error", counts: { total: 0, allowed: 0, unexplained: 0 }, deltas: [], variance: null, signatures: [] };
@@ -312,10 +337,12 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
     return result;
   }
   if (live.meta.status !== "captured" || mirage.meta.status !== "captured") {
+    result.liveCapturedAt = Date.parse(live.meta.capturedAt ?? "");
     result.reason = `capture not usable as evidence (live: ${live.meta.status}, mirage: ${mirage.meta.status})`;
     result.problems = { live: live.meta.problems, mirage: mirage.meta.problems };
     return result;
   }
+  result.liveCapturedAt = Date.parse(live.meta.capturedAt ?? "");
   const deltas = [];
   deltas.push(...compareRequests(live.requests, mirage.requests));
   if (live.meta.finalUrl !== mirage.meta.finalUrl) deltas.push(delta("dom", "finalUrl", "url", live.meta.finalUrl, mirage.meta.finalUrl));
@@ -356,20 +383,101 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
   }
   // Paired scenario: the live-run-variance entries that explain a Mirage delta here, witnessed or not.
   if (witnessed) result.variance.matched = [...new Set(deltas.map((d) => d.allowlist ?? d.unprovenVariance).filter(isVariance))].sort();
+  // Evidence age: a live capture older than a recorded live change shows that change's known effect. Its matching,
+  // otherwise unexplained deltas are marked stale (provisionally: finalizeEvidenceChanges checks the change's proof).
+  const liveTime = Date.parse(live.meta.capturedAt ?? "");
+  for (const change of changes)
+    if (Number.isFinite(liveTime) && liveTime < change.staleBeforeTime && change.affectsRegex.test(scenario.id))
+      for (const item of deltas) if (!item.allowlist && !item.staleEvidence && matchesChange(item, change)) item.staleEvidence = change.id;
   result.deltas = deltas;
-  result.counts = { total: deltas.length, allowed: deltas.filter((d) => d.allowlist).length, unexplained: deltas.filter((d) => !d.allowlist).length };
+  tally(result);
+  return result;
+}
+
+/** Counts, verdict and signature groups of a compared scenario (stale deltas are neither allowed nor unexplained). */
+function tally(result) {
+  const deltas = result.deltas;
+  result.counts = { ...result.counts, total: deltas.length, allowed: deltas.filter((d) => d.allowlist).length, stale: deltas.filter((d) => !d.allowlist && d.staleEvidence).length, unexplained: deltas.filter((d) => !d.allowlist && !d.staleEvidence).length };
   // The suite's report keeps counts per scenario, so the variance proof travels with them.
   if (result.variance) result.counts.variance = { entries: result.variance.entries, matched: result.variance.matched ?? [], unproven: result.variance.unproven };
+  const stale = {};
+  for (const item of deltas) if (item.staleEvidence) stale[item.staleEvidence] = (stale[item.staleEvidence] ?? 0) + 1;
+  if (Object.keys(stale).length) result.counts.staleEvidence = stale;
+  else delete result.counts.staleEvidence;
   result.verdict = deltas.length === 0 ? "PASS" : result.counts.unexplained === 0 ? "ALLOWED" : "FAIL";
   const groups = new Map();
   for (const item of deltas) {
     const key = `${item.scope}:${item.field.replace(/\[\d+\]/g, "[n]").replace(/\.\d+/g, ".n")}:${item.signature}`;
-    const group = groups.get(key) ?? { signature: key, scope: item.scope, field: item.field, count: 0, allowed: Boolean(item.allowlist), example: { location: item.location, live: String(item.live).slice(0, 120), mirage: String(item.mirage).slice(0, 120) } };
+    const group = groups.get(key) ?? { signature: key, scope: item.scope, field: item.field, count: 0, allowed: Boolean(item.allowlist), ...(item.staleEvidence ? { stale: item.staleEvidence } : {}), example: { location: item.location, live: String(item.live).slice(0, 120), mirage: String(item.mirage).slice(0, 120) } };
     group.count++;
     groups.set(key, group);
   }
   result.signatures = [...groups.values()].sort((a, b) => b.count - a.count);
   return result;
+}
+
+const matchesChange = (item, change) =>
+  change.signatures.some((s) => s.scope === item.scope && s.fieldRegex.test(item.field) && s.locationRegex.test(item.location) && (!s.liveRegex || s.liveRegex.test(String(item.live ?? ""))) && (!s.mirageRegex || s.mirageRegex.test(String(item.mirage ?? ""))));
+
+/** Evidence changes: { version: 1, changes: [{ id, since, staleBefore?, affects, signatures: [{ scope, field, location, live?, mirage? }], proof: [scenario ids], reason }] }.
+ * A change records a live change made after some live captures were taken: older captures show its known effect. */
+export async function loadEvidenceChanges(file) {
+  const data = JSON.parse(await fs.readFile(file, "utf8"));
+  if (data.version !== 1 || !Array.isArray(data.changes)) throw new Error("Evidence changes version 1 with changes is required.");
+  for (const change of data.changes) {
+    for (const key of ["id", "since", "affects", "reason"]) if (typeof change[key] !== "string" || !change[key]) throw new Error(`Evidence change ${change.id ?? "?"} lacks ${key}.`);
+    change.sinceTime = Date.parse(change.since);
+    if (!Number.isFinite(change.sinceTime)) throw new Error(`Evidence change ${change.id} has an invalid since instant.`);
+    // staleBefore (optional, default since): a change that reaches pages through a per-page output cache lands on
+    // each page later than its write; captures older than staleBefore may still show the previous state.
+    change.staleBeforeTime = change.staleBefore === undefined ? change.sinceTime : Date.parse(change.staleBefore);
+    if (!Number.isFinite(change.staleBeforeTime) || change.staleBeforeTime < change.sinceTime) throw new Error(`Evidence change ${change.id} has an invalid staleBefore instant (must not precede since).`);
+    if (!Array.isArray(change.proof) || !change.proof.length) throw new Error(`Evidence change ${change.id} needs proof scenario ids.`);
+    if (!Array.isArray(change.signatures) || !change.signatures.length) throw new Error(`Evidence change ${change.id} needs signatures.`);
+    change.affectsRegex = new RegExp(change.affects);
+    for (const s of change.signatures) {
+      if (!["request", "response", "dom", "element", "console"].includes(s.scope)) throw new Error(`Evidence change ${change.id} has a signature with an unknown scope.`);
+      s.fieldRegex = new RegExp(s.field ?? ".*");
+      s.locationRegex = new RegExp(s.location ?? ".*");
+      if (s.live !== undefined) s.liveRegex = new RegExp(s.live);
+      if (s.mirage !== undefined) s.mirageRegex = new RegExp(s.mirage);
+    }
+  }
+  return data;
+}
+
+/** After every scenario is compared: a change is accepted only when each proof scenario's live capture postdates
+ * `since` and shows no unexplained delta of its signatures. A rejected change's stale deltas fall back to unexplained.
+ * Returns the per-change summary for the report. */
+export function finalizeEvidenceChanges(results, changes = []) {
+  const byId = new Map(results.map((result) => [result.id, result]));
+  const summary = {};
+  for (const change of changes) {
+    const proof = change.proof.map((id) => {
+      const result = byId.get(id);
+      if (!result) return { id, state: "missing" };
+      if (!Number.isFinite(result.liveCapturedAt) || result.liveCapturedAt < change.sinceTime) return { id, state: "older than since" };
+      if (result.verdict === "error") return { id, state: "not comparable" };
+      return result.deltas.some((d) => !d.allowlist && matchesChange(d, change)) ? { id, state: "still shows the signature" } : { id, state: "ok" };
+    });
+    const accepted = proof.every((p) => p.state === "ok");
+    let deltas = 0;
+    const scenarios = new Set();
+    for (const result of results)
+      for (const item of result.deltas ?? []) {
+        if (item.staleEvidence !== change.id) continue;
+        if (accepted) {
+          deltas++;
+          scenarios.add(result.id);
+        } else {
+          delete item.staleEvidence;
+          item.rejectedStaleEvidence = change.id;
+        }
+      }
+    if (!accepted) for (const result of results) if (result.deltas?.some((d) => d.rejectedStaleEvidence === change.id)) tally(result);
+    summary[change.id] = { status: accepted ? "accepted" : "rejected", since: change.since, scenarios: scenarios.size, deltas, proof, reason: change.reason };
+  }
+  return summary;
 }
 
 export function summarize(report) {
@@ -403,6 +511,11 @@ export function summarize(report) {
 export function summaryMarkdown(report) {
   const lines = [`# Baseline comparison ${report.generatedAt}`, "", `PASS ${report.totals.pass} · ALLOWED ${report.totals.allowed} · FAIL ${report.totals.fail} · ERROR ${report.totals.error}`, "", "| Scenario | Verdict | Deltas | Allowed | Unexplained |", "| --- | --- | ---: | ---: | ---: |"];
   for (const scenario of report.scenarios) lines.push(`| ${scenario.id} | ${scenario.verdict} | ${scenario.counts.total} | ${scenario.counts.allowed} | ${scenario.counts.unexplained} |`);
+  const changes = Object.entries(report.evidenceChanges ?? {});
+  if (changes.length) {
+    lines.push("", "## Evidence age (live captures older than a recorded live change)", "", "| Change | Status | Since | Scenarios | Stale deltas | Proof |", "| --- | --- | --- | ---: | ---: | --- |");
+    for (const [id, c] of changes) lines.push(`| ${id} | ${c.status} | ${c.since} | ${c.scenarios} | ${c.deltas} | ${c.proof.map((p) => `${p.id}: ${p.state}`).join("; ")} |`);
+  }
   const variance = Object.entries(report.variance ?? {});
   if (variance.length) {
     lines.push("", "## Live-run variance proof (paired scenarios)", "", "| Entry | Paired | Witnessed | Unproven scenarios | Unproven deltas |", "| --- | ---: | ---: | ---: | ---: |");

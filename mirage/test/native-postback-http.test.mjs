@@ -138,3 +138,20 @@ test('default JSON route and JSON profile remain unchanged', async t => {
   assert.equal(response.status, 200);
   assert.equal((await response.json()).outcome.message, 'Saved source message');
 });
+
+test('the attach-file API stages a file under an annotation id only with the token and in order', async t => {
+  const { app } = await fixture(t);
+  const headers = { __RequestVerificationToken: app.state().csrf, 'x-ms-file-name': 'a.txt', 'x-ms-file-size': '3', 'x-ms-file-type': 'text/plain', 'content-type': 'text/plain' };
+  assert.equal((await fetch(app.url + '/_api/file/InitializeFileUpload/note?formId=f&formType=basic&regardingId=', { method: 'POST', headers: { ...headers, __RequestVerificationToken: 'wrong' } })).status, 403);
+  const started = await fetch(app.url + '/_api/file/InitializeFileUpload/note?formId=f&formType=basic&regardingId=', { method: 'POST', headers });
+  assert.equal(started.status, 200);
+  assert.equal(started.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(started.headers.get('vary'), 'Accept-Encoding');
+  assert.ok(started.headers.get('x-frame-options'));
+  const { AnnotationId, FileContinuationToken } = await started.json();
+  assert.match(AnnotationId, /^[0-9a-f-]{36}$/);
+  const block = (offset, token = FileContinuationToken) => fetch(app.url + `/_api/file/UploadFileBlock/note?chunkSize=3&fileSize=3&formId=f&formType=basic&noteId=${AnnotationId}&offset=${offset}`, { method: 'PUT', headers: { ...headers, 'x-ms-file-continuation-token': token }, body: 'abc' });
+  assert.equal((await block(0, 'forged')).status, 404);
+  assert.equal((await block(1)).status, 400);
+  assert.equal((await block(0)).status, 204);
+});

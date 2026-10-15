@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { renderComponent } from "../lib/platform.mjs";
+import { renderComponent, captchaRefreshDelta } from "../lib/platform.mjs";
 
 // Invented "ticket" insert form on a Bootstrap 5 site where every column is required.
 test("required boxes: validator order and the required markers per box type", async () => {
@@ -94,9 +94,35 @@ test("a captcha shown to the visitor marks the form; signed-in visitors see it o
     const store = { resolveMapping: () => ({ entitySet: "tickets", idColumn: "ticketid" }), get: async () => null, query: async () => ({ value: [] }) };
     const portal = { forms: [{ id: "form", name: "Ticket", mode: 100000000, metadata }], records: [], website: { id: "site" }, pages: [], settings: { "Site/BootstrapV5Enabled": "true" } };
     const schemas = { form: { entity: "ticket", title: "Ticket", fields, layout: [{ name: "t", columns: [{ sections: [{ name: "s", rows: [[{ name: "title" }]] }] }] }] } };
-    return renderComponent("entityform", "form", { user, request: { params: {} } }, { portal, store, schemas });
+    return renderComponent("entityform", "form", { user, request: { params: {}, url: "http://localhost/support/tickets/" } }, { portal, store, schemas });
   };
-  assert.match(await render({ adx_captcharequired: true }, null), /<!--pp-native-form--><!--pp-captcha-->/);
+  const shown = await render({ adx_captcharequired: true }, null);
+  assert.match(shown, /<!--pp-native-form--><!--pp-captcha-->/);
+  // The RadCaptcha control follows the honeypot box; its resources are relative to the application root.
+  const unique = "ctl00$ContentContainer$EntityFormControl_form$EntityFormControl_form_EntityFormView$captcha";
+  const client = unique.replace(/\$/g, "_");
+  const literal = (text) => text.replace(/[$()]/g, "\\$&");
+  assert.ok(shown.includes(`autocomplete="off"></div><div class="tr"><div class="captcha-cell"><div id="${client}" class="RadCaptcha&#32;RadCaptcha_Default">`));
+  assert.match(shown, /<img id="[^"]+_captcha_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,[^"]+" src="\.\.\/\.\.\/Telerik\.Web\.UI\.WebResource\.axd\?type=rca&amp;isc=cust&amp;guid=[0-9a-f-]{36}"/);
+  assert.ok(shown.includes(`href="javascript:__doPostBack(&#39;${unique}$CaptchaLinkButton&#39;,&#39;&#39;)"`));
+  assert.ok(shown.includes(`<input name="${unique}$CaptchaTextBox" type="text" maxlength="7" id="${client}_CaptchaTextBox">`));
+  // Its validator joins the page validators and names the captcha in the summary.
+  assert.match(shown, new RegExp(`document\\.getElementById\\("${literal(client)}_ctl00"\\)\\]`));
+  assert.match(shown, /v\.errormessage="\\u003ca href='#captcha'[^"]*Captcha is incorrect, please re-enter captcha\.\\u003c\/a>";\nv\.display="None";/);
+  // The refresh postback answers the update panel delta with a new challenge and the announcement.
+  const delta = captchaRefreshDelta(unique, "/support/tickets/");
+  const segments = [];
+  for (let at = 0; at < delta.length;) {
+    const [length, type, id] = delta.slice(at).split("|", 3);
+    const contentAt = at + length.length + type.length + id.length + 3;
+    segments.push([type, id, delta.substr(contentAt, Number(length))]);
+    at = contentAt + Number(length) + 1;
+  }
+  assert.deepEqual(segments.map(([type]) => type), ["#", "updatePanel", "hiddenField", "hiddenField", "asyncPostBackControlIDs", "postBackControlIDs", "updatePanelIDs", "childUpdatePanelIDs", "panelsToRefreshIDs", "asyncPostBackTimeout", "formAction", "scriptStartupBlock"]);
+  assert.equal(segments[1][1], `${client}_ctl01`);
+  assert.match(segments[1][2], /src="\.\.\/\.\.\/Telerik\.Web\.UI\.WebResource\.axd\?type=rca&amp;isc=cust&amp;guid=[0-9a-f-]{36}" style="height:50px;width:180px;display:block;" \/>/);
+  assert.equal(segments[8][2], `${unique}$ctl01,`);
+  assert.match(segments[11][2], /The new image is ready/);
   assert.doesNotMatch(await render({ adx_captcharequired: true }, { id: "current" }), /pp-captcha/);
   assert.match(await render({ adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true }, { id: "current" }), /<!--pp-captcha-->/);
   assert.doesNotMatch(await render({}, null), /pp-captcha/);

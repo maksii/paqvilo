@@ -69,6 +69,16 @@ An `observed` mapping records only behavior not available from exports. Supporte
 
 Core knows the platform-wide ids of the Create, Update, Delete, Retrieve and RetrieveMultiple SDK messages; for other exported message ids, `observed.sdkMessages` maps exact message GUIDs to `{ name, evidence }`. `observed.pluginSources` maps an exported full C# type name to `{ path, evidence }`. Paths resolve inside the catalogue source root or Mirage project folder; use a relative regular `.cs` file. These mappings provide source navigation and documented message identity, not .NET execution. See the [plugin reference](../mirage/docs/dataverse-plugins.md#configure-source-facts).
 
+`observed.siteVisibility: private` renders the platform's private-site banner first in the layout body; site visibility is set in the admin center and is not exported. The default `public` renders none.
+
+`observed.loginPath` is the site-relative sign-in path the platform redirects to when the export sets no `Authentication/ApplicationCookie/LoginPath`, such as `/SignIn`.
+
+`observed.azureAdAuthority` is the authority the built-in Microsoft Entra provider posts when the export carries no `Authentication/OpenIdConnect/AzureAD/Authority`. It must name one tenant (`https://login.windows.net/<tenant>/`); placeholders, `common` and `organizations` are rejected.
+
+`observed.portalApplicationUser` and `observed.portalApplicationUserId` are the display name and systemuser GUID of the site's application user. The platform records that user as the creator of notes and records the portal creates, and no export holds it.
+
+`observed.listODataFeeds` is `removed` (the platform default since list OData feeds were retired: the feed URL answers the Page Not Found page) or `served`, for a site observed still serving them.
+
 `PAQVILO_REPO`, `PAQVILO_SITE`, `PAQVILO_ENV`, `PAQVILO_BROWSER`, `PAQVILO_PROFILE`, `PAQVILO_SCOPE` and `PAQVILO_BASELINE` cover common personal choices. A named browser profile is a separate toolkit identity. Existing profiles require explicit user-data root and child directory; attached CDP browsers remain user-owned. Toolkit-managed state is under `.paqvilo/`, with `--state`, `--output` and profile settings for explicit locations.
 
 The default catalogue is the working directory's `paqvilo.config.yml` when present. State, runtime discovery, logs and generated Mirage project files live in `.paqvilo/` beside that catalogue. A standalone `--project` uses its own directory. `mirage status` and `mirage stop` use the same project scope; supply `--config` or `--project` when running from another directory. The installed toolkit contains reusable code only. Direct Mirage commands also support `--state-dir` to select the state/discovery directory explicitly.

@@ -666,6 +666,12 @@ test("a submission's record and notes are one unit: a refused note or a rejected
   assert.equal(tables.annotation.length, 1);
   assert.equal(tables.annotation[0].filename, "a.txt");
   assert.equal(String(tables.annotation[0].objectid?.id ?? tables.annotation[0].objectid), saved.recordId);
+  // An advanced form step names multiple files with adx_allowmultiplefiles; without either column one file only.
+  options.portal.forms.push({ id: "step-notes", mode: 100000000, metadata: { adx_attachfile: true, adx_allowmultiplefiles: true } }, { id: "single-notes", mode: 100000000, metadata: { adx_attachfile: true } });
+  options.schemas["step-notes"] = options.schemas["single-notes"] = options.schemas.notes;
+  await submitPortalForm("entityform", "step-notes", { values: { fullname: "Two notes" }, attachments: [file("a.txt", 10), file("b.txt", 10)] }, options);
+  assert.equal(options.store.snapshot().tables.annotation.length, 3);
+  await assert.rejects(submitPortalForm("entityform", "single-notes", { values: { fullname: "One note" }, attachments: [file("a.txt", 10), file("b.txt", 10)] }, options), (e) => e.code === "FormAttachmentInvalid");
 });
 
 test("a failing association rolls back the record a provider transaction created", async () => {

@@ -28,6 +28,7 @@ import { webFormSession, sessionRecord, previousSessionRecord, formText, webForm
 import { formErrorPanel, createAccessDeniedForm } from "./form-error-presentation.mjs";
 import { deniedPageRoute } from "./redirects.mjs";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
+import { systemFormSchemaFor } from "./solution-metadata.mjs";
 import { hasPlatformBundles, bootstrapVariant } from "./platform-manifest.mjs";
 import { portalLanguage } from "./portal-languages.mjs";
 import { clientPortalObjectRuntime } from "./portal-client-object.mjs";
@@ -270,6 +271,42 @@ export const NATIVE_FORMS_SCRIPT = "/__sim-static/native/webforms-compat.js";
 export const RENDER_ABORT_MARKER = "<!--paqvilo-mirage-render-aborted-->";
 /** A form showing a captcha to the visitor (lib/platform-manifest.mjs registers its script resources). */
 export const CAPTCHA_MARKER = "<!--pp-captcha-->";
+const RADCAPTCHA_VERSION = "2026.2.708.462";
+const CAPTCHA_ERROR = "<a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>Captcha is incorrect, please re-enter captcha.</a>";
+/** The application root relative to a page path, as ASP.NET writes control URLs ("/a/b/" → "../../"). */
+const applicationRoot = (pathname) => "../".repeat(Math.max(0, String(pathname).split("/").length - 2));
+/**
+ * The refreshable part of the Telerik RadCaptcha control (its update panel ctl01): the image, the
+ * refresh link and the audio link of one challenge, named after the control's unique id
+ * ("…$captcha"); the challenge guid is per render. ponytail: Mirage serves a placeholder image and
+ * silent audio and accepts no answer (native-form-submission.mjs rejects a captcha step).
+ */
+export function captchaChallenge(unique, pathname, guid = randomUUID(), selfClose = false) {
+  const client = unique.replace(/\$/g, "_");
+  const resource = (type) => `${applicationRoot(pathname)}Telerik.Web.UI.WebResource.axd?type=${type}&amp;isc=cust&amp;guid=${guid}`;
+  return `<img id="${client}_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,&#32;use&#32;shortcut&#32;Ctrl&#32;+&#32;Alt&#32;+&#32;P&#32;to&#32;play&#32;the&#32;alphabet&#32;audio&#32;for&#32;this&#32;image" src="${resource("rca")}" style="height:50px;width:180px;display:block;"${selfClose ? " /" : ""}><a id="${client}_CaptchaLinkButton" class="rcRefreshImage" title="Generate&#32;a&#32;new&#32;image" href="javascript:__doPostBack(&#39;${unique}$CaptchaLinkButton&#39;,&#39;&#39;)" style="display:block;">Generate a new image</a><a href="${resource("cah")}" id="${client}_CaptchaAudioCodeUP" title="Play&#32;the&#32;audio&#32;code" class="rcCaptchaAudioLink" style="display:block;">Play the audio code</a>`;
+}
+/** The RadCaptcha control after a form's honeypot box (live captcha forms); rcInvalid after a rejected answer. */
+function captchaControl(unique, pathname, invalid = false) {
+  const client = unique.replace(/\$/g, "_");
+  return `<div class="tr"><div class="captcha-cell"><div id="${client}" class="RadCaptcha&#32;RadCaptcha_Default${invalid ? "&#32;rcInvalid" : ""}">\n\t\t\t\t<!-- ${RADCAPTCHA_VERSION} --><span id="${client}_ctl00" style="display:none;"></span><div id="${client}_SpamProtectorPanel">\n\t\t\t\t\t<div id="${client}_ctl01">\n\t\t\t\t\t\t${captchaChallenge(unique, pathname)}\n\t\t\t\t\t</div><p><input name="${unique}$CaptchaTextBox" type="text" maxlength="7" id="${client}_CaptchaTextBox"><label for="${client}_CaptchaTextBox" id="${client}_CaptchaTextBoxLabel">Enter the code from the image</label></p>\n\t\t\t\t</div><input id="${client}_ClientState" name="${client}_ClientState" type="hidden">\n\t\t\t</div></div></div>`;
+}
+/**
+ * The ASP.NET AJAX delta answer of the captcha refresh postback (live: the platform's
+ * radcaptcha.onClientLoad refreshes the challenge once the control loads). The page's hidden
+ * fields travel back as posted (__VIEWSTATE keeps the anti-forgery key).
+ */
+export function captchaRefreshDelta(unique, pathname, posted = new URLSearchParams()) {
+  const segment = (type, id, content) => `${content.length}|${type}|${id}|${content}|`;
+  const panel = `${unique}$ctl01`;
+  const announce = "$('a.rcRefreshImage').parent().append('<div class=\"alert sr-only\" role=\"alert\"  aria-label=\"The new image is ready\"><span aria-hidden=\"true\">The new image is ready</span></div>');$(document).keydown(function(event){if(event.altKey && event.ctrlKey &&event.key == 'p'){$('.RadCaptcha').find('audio').first()[0].play();}});";
+  return segment("#", "", "4") + segment("updatePanel", panel.replace(/\$/g, "_"), captchaChallenge(unique, pathname, randomUUID(), true)) +
+    segment("hiddenField", "__EVENTTARGET", "") + segment("hiddenField", "__EVENTARGUMENT", "") +
+    ["__VIEWSTATE", "__VIEWSTATEGENERATOR", "__VIEWSTATEENCRYPTED", "__EVENTVALIDATION"].filter((name) => posted.has(name)).map((name) => segment("hiddenField", name, posted.get(name))).join("") +
+    segment("asyncPostBackControlIDs", "", `${unique}$CaptchaLinkButton,`) + segment("postBackControlIDs", "", "") +
+    segment("updatePanelIDs", "", `t${panel},`) + segment("childUpdatePanelIDs", "", "") + segment("panelsToRefreshIDs", "", `${panel},`) +
+    segment("asyncPostBackTimeout", "", "90") + segment("formAction", "", pathname) + segment("scriptStartupBlock", "ScriptContentNoTags", announce);
+}
 // The basic form control registers its custom client-validation hook, also ahead of a create denial.
 const ENTITY_FORM_CLIENT_VALIDATE = `<script type="text/javascript">function entityFormClientValidate() { // Custom client side validation. Method is called by the submit button's onclick event.\n// Must return true or false. Returning false will prevent the form from submitting.\nreturn true; }</script>`;
 
@@ -865,6 +902,38 @@ function requestLanguage(context, portal) {
   };
 }
 
+/** The legacy list control of a map list with credentials (EntityListControl map template). */
+function mapListControl(list, metadata, viewId) {
+  const id = compactId(list.id);
+  const prefix = `ctl00$ContentContainer$EntityListControl_${id}$ctl00$`;
+  const text = (value) => `<span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value">${escape(value)}</span></span>`;
+  const units = Number(fieldOf(metadata, "map_distanceunits")) === 756150000 ? "km" : "miles";
+  const distances = String(fieldOf(metadata, "map_distancevalues") ?? "5,10,25,50,100").split(",").map((value) => value.trim()).filter(Boolean);
+  const coordinate = (name) => (Number(fieldOf(metadata, name)) || 0).toFixed(5);
+  const host = [
+    ["data-distance-units", units],
+    ["data-longitude", coordinate("map_longitude")],
+    ["data-latitude", coordinate("map_latitude")],
+    ["data-pushpin-height", fieldOf(metadata, "map_pushpinheight") ?? ""],
+    ["data-pushpin-width", fieldOf(metadata, "map_pushpinwidth") ?? ""],
+    ["data-rest-url", fieldOf(metadata, "map_resturl") ?? ""],
+    ["id", "entity-list-map"],
+    ["data-zoom", fieldOf(metadata, "map_zoom") ?? ""],
+    ["data-pushpin-url", fieldOf(metadata, "map_pushpinurl") ?? ""],
+    ["data-infobox-offset-x", fieldOf(metadata, "map_infoboxoffsetx") ?? ""],
+    ["data-entity-list-id", canonicalId(list.id)],
+    ["data-search-url", "/EntityList/Map/Search/"],
+    ["data-view-id", canonicalId(viewId ?? "")],
+    ["data-infobox-offset-y", fieldOf(metadata, "map_infoboxoffsety") ?? ""],
+    ["data-credentials", fieldOf(metadata, "map_credentials") ?? ""],
+  ].map(([name, value]) => ` ${name}="${attr(String(value))}"`).join("");
+  const options = distances.map((value) => `<option value="${attr(value)}">${escape(value)} ${units}</option>`).join("");
+  const field = (label, target, name, extra = "") => `<div class="control-group row mb-3"><label class="col-form-label fw-bold col-md-2" for="${target}"><span>${text(label)}</span></label><div class="controls col-md-8"><input name="${prefix}${name}" type="text" id="${target}" class="form-control"></div>${extra}</div>`;
+  const dialog = `<section id="entity-list-map-directions-dialog" class="modal" tabindex="-1" role="dialog" aria-labelledby="entity-list-map-directions-dialog-label" aria-hidden="true"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h1 id="entity-list-map-directions-dialog-label" class="modal-title h4"><span>${text("Get Directions")}</span></h1><button class="close" data-bs-dismiss="modal" aria-hidden="true" type="button">&times;</button></div><div class="modal-body  ">${field("From", "entity-list-map-directions-from", "ctl24", '<div class="col-md-2"><a id="entity-list-map-directions-reverse" class="btn btn-default" href="../../Pages/#"><span class="fa fa-refresh" aria-hidden="true"></span></a></div>')}${field("To", "entity-list-map-directions-to", "ctl30")}</div><div class="modal-footer"><input name="${prefix}ctl32" type="hidden" id="entity-list-map-directions-latitude"><input name="${prefix}ctl33" type="hidden" id="entity-list-map-directions-longitude"><button id="entity-list-map-directions-get" class="btn btn-primary"><span>${text("Get Directions")}</span></button></div></div></div></section>`;
+  const provider = Number(fieldOf(metadata, "map_type") ?? 756150000) === 756150000 ? "bing" : "other";
+  return `<!--pp-server-list--><!--pp-map-list:${provider}--><div id="EntityListControl_${id}"><div class="entitylist"><div class="row clearfix"><div id="entity-list-map-options" class="span12 col-lg-12 form-inline"><span id="entity-list-map-location_label"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value">Search for location near</span></span></span><input name="${prefix}ctl02" type="text" id="entity-list-map-location" class="form-control" placeholder="address" aria-labelledby="entity-list-map-location_label"><span id="entity-list-map-distance_label"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value">within </span></span></span><select name="${prefix}entity-list-map-distance" id="entity-list-map-distance" class="form-control form-select" title="Distance" aria-labelledby="entity-list-map-distance_label">${options}</select>&nbsp;<button id="entity-list-map-search" class="btn btn-primary"><span>${text("Search")}</span></button></div><div id="entity-list-map-container" class="span8 col-lg-8"><div${host}></div></div><div id="entity-list-map-locations" class="span4 col-lg-4"><div id="entity-list-map-error" class="alert alert-block alert-danger"><p></p></div><table class="table table-hover unstyled"><tbody></tbody></table></div><div id="entity-list-map-directions"></div></div>${dialog}</div></div>`;
+}
+
 /** Server markup of a native list grid (entity_list built-in template). */
 async function renderListGrid(model, context, options) {
   const websiteId = canonicalId(options.portal.website?.id);
@@ -873,6 +942,10 @@ async function renderListGrid(model, context, options) {
   const listMetadata = model.list?.metadata ?? {};
   if (truthy(fieldOf(listMetadata, "map_enabled")) && !fieldOf(listMetadata, "map_credentials"))
     return `<!--pp-server-list--><div id="EntityListControl_${compactId(model.list.id)}"><div class="entitylist"></div></div>`;
+  // With map credentials the legacy list control renders the map: the location search, the map
+  // host carrying the list's map settings, the locations table and the directions dialog (live
+  // Bing map list; the Esri and Google variants are unobserved with credentials).
+  if (truthy(fieldOf(listMetadata, "map_enabled"))) return mapListControl(model.list, listMetadata, model.views[0]?.id);
   if (model.calendar)
     return renderCalendarList({ list: model.list, calendar: model.calendar, websiteId, viewId: model.views[0].id, variant: bootstrapVariant(options.portal.settings), culture: options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ?? "en-US" });
   const language = requestLanguage(context, options.portal);
@@ -1268,19 +1341,16 @@ async function renderForm(kind, name, context, options) {
     (item) => item.name === name || canonicalId(item.id) === canonicalId(name),
   );
   let schema = schemas[name] ?? schemas[definition?.id];
-  // A step's reference read-only form uses the systemform the solution metadata resolved for the
-  // same table and form name (the main form, not a same-named card form; live multistep insert).
-  // The basic form whose resolved systemform a reference form reuses (its subgrids resolve through it).
+  // A step's reference read-only form uses the systemform its table and form name select, as
+  // an exported basic form would (the Main form, not a same-named card form; live multistep insert).
+  // Its subgrids resolve through the basic form that uses the same systemform, when one exists.
   let schemaSourceId = null;
   if (!schema && options.referenceForm && definition) {
     const formName = definition.metadata?.adx_formname;
-    const source = formName ? (portal.forms ?? []).find((form) => {
-      const candidate = schemas[form.id];
-      return candidate && !candidate.stepId && Array.isArray(candidate.layout) && canonicalId(candidate.entity) === canonicalId(definition.entityName) && candidate.formName === formName;
-    }) : null;
-    if (source) {
-      schema = { ...schemas[source.id], metadata: undefined, mode: undefined };
-      schemaSourceId = source.id;
+    const resolved = formName ? systemFormSchemaFor({ ...definition, formName }, metadata) : null;
+    if (resolved) {
+      schema = { ...resolved, metadata: undefined, mode: undefined };
+      schemaSourceId = (portal.forms ?? []).find((form) => schemas[form.id]?.formId && schemas[form.id].formId === resolved.formId)?.id ?? null;
     }
   }
   if (!schema && kind === "entityform" && definition) schema = approximateFormSchema({ definition, portal, metadata, diagnostic: options.diagnostic });
@@ -1386,7 +1456,9 @@ async function renderForm(kind, name, context, options) {
       else if (type === 756150002) {
         const percent = counted.length ? Math.round((Math.max(stepIndex, 0) / counted.length) * 100) : 0;
         // Bootstrap 5: the indicator column itself is the .progress box (live evidence, left position).
-        if (bs.v5) indicator = `<span>${percent}%</span><div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? "" : " zero"}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
+        // The visible percentage label precedes the bar only while it is empty (live: 0% on the start
+        // step carries it, 33% on a later or resumed step does not).
+        if (bs.v5) indicator = `${percent ? "" : `<span>${percent}%</span>`}<div aria-valuenow="${percent}" aria-valuemax="100" aria-label="progressbar" class="bar progress-bar${percent ? "" : " zero"}" aria-valuetext="${percent}%" tabindex="0" style="width: ${percent}%;" aria-valuemin="0" role="progressbar"><span aria-hidden="true">${percent}%</span></div>`;
         else indicator = `<div class="progress"><div class="bar progress-bar${percent ? "" : " zero"}" style="width: ${percent}%;" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${percent}">${percent}%</div></div>`;
       } else
         indicator = `<ol class="progress list-group ${position}">${counted
@@ -1596,8 +1668,10 @@ async function renderForm(kind, name, context, options) {
   // Native "reference entity" query parameters prefill the referencing lookup.
   const reference = mode === FORM_MODE.insert && params.refentity && params.refid && params.refrel ? { entity: params.refentity, id: params.refid, rel: params.refrel } : null;
   // Set Entity Reference metadata: the referenced record named by the query parameter fills the
-  // target lookup of an insert form (lib/form-service.mjs relates it again on save).
-  const entityReference = await resolveEntityReference({ componentMetadata, mode, params, store, readProvider, identity });
+  // target lookup of an insert form (lib/form-service.mjs relates it again on save). A multistep
+  // step keeps its configured mode for this: an insert start step revisited after the session saved
+  // its record (Previous) still shows the reference read-only form (live multistep-insert-fixed step2-back).
+  const entityReference = await resolveEntityReference({ componentMetadata, mode: kind === "webform" ? Number(schema.mode ?? definition?.mode ?? FORM_MODE.insert) : mode, params, store, readProvider, identity });
   const value = (field) => {
     if (record && Object.hasOwn(record, field.name) && record[field.name] !== undefined && record[field.name] !== null && mode !== FORM_MODE.insert) return record[field.name];
     // An empty field of an existing record also shows its prepopulated value (live: item-edit
@@ -1987,8 +2061,8 @@ async function renderForm(kind, name, context, options) {
   const cells = formCells(schema);
   for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes", "webresource"].includes(candidate.type))) {
     if (cell.type === "webresource" && HTML_WEB_RESOURCE.test(String(cell.url ?? "")) && truthy(fieldOf(componentMetadata, "renderwebresourcesinline"))) {
-      // UNVERIFIED (Wave Q, awaiting the post-fix live capture): inline rendering embeds an HTML
-      // web resource's body content in the cell instead of the frame ("eliminates the IFrame").
+      // Inline rendering embeds an HTML web resource's body content in the cell instead of the frame,
+      // inside a literal element named by the cell that its label points at (live survey step1).
       const name = String(cell.url ?? "").replace(/^\/+/, "");
       let source = null;
       if (!name.includes("..")) for (const root of metadata?.roots ?? []) {
@@ -1996,8 +2070,8 @@ async function renderForm(kind, name, context, options) {
         if (source != null) break;
       }
       const body = source == null ? "" : (/<body\b[^>]*>([\s\S]*)<\/body>/i.exec(source)?.[1] ?? source);
-      const label = cell.showLabel === false ? "" : `<label class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
-      extraControls.set(cell.id, `<div class="${bs.info}">${label}</div><div class="control">${body}</div>`);
+      const label = cell.showLabel === false ? "" : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
+      extraControls.set(cell.id, `<div class="${bs.info}">${label}</div><div class="control"><literal id="${attr(cell.id)}">${body}</literal></div>`);
       continue;
     }
     if (cell.type === "webresource") {
@@ -2047,6 +2121,12 @@ async function renderForm(kind, name, context, options) {
     const label = cell.label ?? cell.id;
     if (!id) {
       // Native subgrids bind to an existing record: Insert mode renders an empty plain cell (live).
+      extraControls.set(cell.id, "");
+      continue;
+    }
+    // A reference form whose systemform no basic form uses has no exported grid binding: its subgrid
+    // cell stays empty rather than failing the page (unobserved; the fixture forms bind none).
+    if (options.referenceForm && !schemaSourceId) {
       extraControls.set(cell.id, "");
       continue;
     }
@@ -2322,14 +2402,24 @@ async function renderForm(kind, name, context, options) {
   // annotations by the form service (JSON transport: data files; postback: multipart parts).
   let attachHtml = "";
   if (!readOnly && truthy(fieldOf(componentMetadata, "attachfile"))) {
-    const mime = String(fieldOf(componentMetadata, "attachfileaccept") ?? "").trim();
+    // Advanced form steps name the accepted types, multiple files and file count with their own
+    // columns (adx_accept, adx_allowmultiplefiles, adx_maximumnooffiles; live multistep step).
+    const mime = String(fieldOf(componentMetadata, "attachfileaccept") ?? fieldOf(componentMetadata, "accept") ?? "").trim();
     const extensions = String(fieldOf(componentMetadata, "attachfileacceptextensions") ?? "").trim();
     const requiredFile = truthy(fieldOf(componentMetadata, "attachfilerequired"));
-    const multiple = truthy(fieldOf(componentMetadata, "attachfileallowmultiple"));
+    const multiple = truthy(fieldOf(componentMetadata, "attachfileallowmultiple") ?? fieldOf(componentMetadata, "allowmultiplefiles"));
     const label = formLabel(fieldOf(componentMetadata, "attachfilelabel"), "Attach a File");
     const maxKb = Number(fieldOf(componentMetadata, "attachfilemaxsize")) || 0;
-    // The control counts five files when several are allowed (platform default).
-    const maxFiles = multiple ? 5 : 1;
+    // The control counts five files when several are allowed (platform default) unless the step sets its count.
+    // The record's existing note attachments use up the count (live: a revisited start step whose
+    // record already carries one attachment offers 2 of 3).
+    let attached = 0;
+    if (id && readProvider?.fetchXml) {
+      const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${attr(canonicalId(id))}"/></filter></entity></fetch>`;
+      const rows = await readProvider.fetchXml(xml, identity).then((result) => result.entities ?? result.value ?? [], () => []);
+      attached = rows.filter((row) => row.filename || truthy(row.isdocument)).length;
+    }
+    const maxFiles = Math.max(0, (Number(fieldOf(componentMetadata, "maximumnooffiles")) || (multiple ? 5 : 1)) - attached);
     const sizeMb = maxKb ? Math.round((maxKb / 1024) * 10) / 10 : 0;
     const kinds = [mime ? mime.replace(/\/\*$/, "").replace(/^[^/]+\//, "") : "", extensions].filter(Boolean).join(", ");
     const hint = `You can upload a maximum of ${maxFiles} file${maxFiles === 1 ? "" : "s"}, ${maxFiles === 1 ? "" : "each "}up to ${sizeMb}MB.${kinds ? ` Supported files include ${kinds}.` : ""}`;
@@ -2342,7 +2432,7 @@ async function renderForm(kind, name, context, options) {
     const errorModal = (id, title, body, close) => `<div class="modal fade in errors" id="${id}"><div class="modal-dialog error-modal-dialog"><div class="modal-content" id="modal-content-new"><div class="error-modal-header modal-header" id="error-modal-header" style="display:block;"><h1 class="error-modal-title modal-title" id="error-modal-title">${title}<button aria-hidden="true" class="close" data-dismiss="modal" type="button" style="border:none; background:none;float:right" onclick="${close}();"><span aria-hidden="true">×</span><span class="sr-only">Close</span></button></h1></div><div class="modal-body ${body} modal-content-new" id="${body}"></div><div class="error-modal-footer modal-footer"><button type="button" class="btn btn-primary" data-dismiss="modal" onclick="${close}();">OK</button></div></div></div></div>`;
     // The upload instance id is an opaque platform token; a stable local value stands in.
     const instanceId = createHash("sha256").update(`attach\u0000${definition?.id ?? name}`).digest("base64");
-    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ""}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? " required" : ""}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ""} name="${name("")}" id="AttachFile" accept="${attr(`${mime},${extensions}`)}" onchange="chooseAttachment();"${sizeMessage ? ` data-file-size-error-message="${attr(sizeMessage)}"` : ""}${typeMessage ? ` data-file-type-error-message="${attr(typeMessage)}"` : ""}${requiredAttr}></div>${hiddenField("_HiddenField_Location", "CrmDocument")}${hiddenField("_HiddenField_FormID", canonicalId(definition?.id ?? ""))}${hiddenField("_HiddenField_FormType", kind === "webform" ? "multistep" : "basic")}${hiddenField("_HiddenField_InstanceId", instanceId)}${hiddenField("_HiddenField_RegardingId", id ? canonicalId(id) : "")}${hiddenField("_HiddenField_MaxFile", String(maxFiles))}${hiddenField("_HiddenField_MaxFileSizeInKB", String(maxKb * 1024))}${hiddenField("_HiddenField_SupportedFileType", extensions)}${hiddenField("_HiddenField_SupportedMimeType", mime)}${hiddenField("_HiddenField_SupportedType", `${mime},${extensions}`)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning("retrySpanforgeneric", "genericcloseAlert")}${warning("retrySpanfordelete", "deletecloseAlert")}</div>${hiddenField("_HiddenField_AnnotationIds", "")}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0"></div></div></div>${errorModal("ModalToShowErrorForFileSize", "You’re over the file size limit", "file-size", "closeModalForFileSize")}${errorModal("ModalToShowErrorForFileLimit", "File upload limit reached", "file-limit", "closeModalForFileLimit")}${errorModal("ModalToShowErrorForFileType", "Unsupported file formats", "file-type", "closeModalForFileType")}`;
+    attachHtml = `${requiredFile ? '<span id="RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds" style="display:none;"></span>' : ""}<div class="tr"><div class="file-cell cell"><div class="${bs.info}${requiredFile ? " required" : ""}"><label for="AttachFile" id="NewAttachFileLabel">${escape(label)}</label>${escape(hint)}</div><div class="ContainerForFile"><div style="display:none;"><input type="file"${multiple ? ' multiple="multiple"' : ""} name="${name("")}" id="AttachFile" accept="${attr(`${mime},${extensions}`)}" onchange="chooseAttachment();"${sizeMessage ? ` data-file-size-error-message="${attr(sizeMessage)}"` : ""}${typeMessage ? ` data-file-type-error-message="${attr(typeMessage)}"` : ""}${requiredAttr}></div>${hiddenField("_HiddenField_Location", "CrmDocument")}${hiddenField("_HiddenField_FormID", canonicalId((kind === "webform" ? schema.stepId : null) ?? definition?.id ?? ""))}${hiddenField("_HiddenField_FormType", kind === "webform" ? "multistep" : "basic")}${hiddenField("_HiddenField_InstanceId", instanceId)}${hiddenField("_HiddenField_RegardingId", id ? canonicalId(id) : "")}${hiddenField("_HiddenField_MaxFile", String(maxFiles))}${hiddenField("_HiddenField_MaxFileSizeInKB", String(maxKb * 1024))}${hiddenField("_HiddenField_SupportedFileType", extensions)}${hiddenField("_HiddenField_SupportedMimeType", mime)}${hiddenField("_HiddenField_SupportedType", `${mime},${extensions}`)}<div class="buttonForFileUpload" aria-label="${attr(label)}"${requiredAttr}><button id="UploadButton" style="width: fit-content; gap: 6px; display:flex" type="button" class="btn btn-default btn-secondary"${requiredAttr} onclick="selectAttachment();"><div class="fa fa-arrow-up"></div> Upload</button><div class="errordiv alert-danger" style="display:none;"><span style="margin-left:27px;">One or More files could not be uploaded. Retry uploading the files.</span></div>${warning("retrySpanforgeneric", "genericcloseAlert")}${warning("retrySpanfordelete", "deletecloseAlert")}</div>${hiddenField("_HiddenField_AnnotationIds", "")}<input type="hidden" name="${attr(ids.names)}CdnUrl" id="CdnUrl" value="/resource/powerappsportal"></div><div class="file-info" id="newdivforfileinfo" tabindex="0"></div></div></div>${errorModal("ModalToShowErrorForFileSize", "You’re over the file size limit", "file-size", "closeModalForFileSize")}${errorModal("ModalToShowErrorForFileLimit", "File upload limit reached", "file-limit", "closeModalForFileLimit")}${errorModal("ModalToShowErrorForFileType", "Unsupported file formats", "file-type", "closeModalForFileType")}`;
     if (requiredFile)
       validators.push({ id: "RequiredFieldValidatorAttachFile_HiddenField_AnnotationIds", controltovalidate: "AttachFile_HiddenField_AnnotationIds", errormessage: summaryLink("AttachFile", formLabel(fieldOf(componentMetadata, "attachfilerequirederrormessage"), `${label} is a required field.`), linksEnabled), display: "None", evaluationfunction: "RequiredFieldValidatorEvaluateIsValid", initialvalue: "" });
   }
@@ -2532,7 +2622,16 @@ async function renderForm(kind, name, context, options) {
   // An editable basic or multistep form carries the platform's off-screen honeypot box. The platform names it with a
   // per-render token; the local token is derived from the form and record so renders stay repeatable.
   const trap = createHash("sha256").update(`${definition?.id ?? name}:${id ?? ""}`).digest("hex").slice(0, 8);
-  const honeypot = !readOnly && !autoSteps ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
+  // A captcha shown to this visitor (adx_captcharequired, and adx_showcaptchaforauthenticatedusers
+  // for a signed-in one) registers the RadCaptcha script resources with the page's ScriptManager,
+  // even when the form stops before the captcha renders (live multistep Groups step and the
+  // captcha-for-everyone basic form); the control follows the honeypot box with its validator.
+  const signedIn = Boolean(identity?.contactId ?? identity?.id);
+  const captchaShown = truthy(fieldOf(componentMetadata, "captcharequired")) && (!signedIn || truthy(fieldOf(componentMetadata, "showcaptchaforauthenticatedusers")));
+  const captchaInvalid = Boolean(postback?.validationErrors?.some((item) => item.field === "captcha"));
+  const captchaHtml = captchaShown && !readOnly && !autoSteps ? captchaControl(`${ids.names}captcha`, new URL(context.request?.url ?? "http://localhost/").pathname, captchaInvalid) : "";
+  if (captchaHtml) validators.push({ id: `${ids.names.replace(/\$/g, "_")}captcha_ctl00`, errormessage: CAPTCHA_ERROR, display: "None", ...(captchaInvalid ? { isvalid: "False" } : {}), evaluationfunction: "CustomValidatorEvaluateIsValid" });
+  const honeypot = !readOnly && !autoSteps ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>${captchaHtml}` : "";
   // The entity form view; a reference entity read-only view (options.referenceForm) renders the
   // live "read-only" class and an empty layout configuration, and is returned on its own.
   const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? options.referenceForm.className ?? " read-only" : ""}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? "" : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert"${postback?.validationErrors ? "" : ' style="display:none;"'}${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li>${item.field === "captcha" ? `<a href='#captcha' onclick='javascript:scrollToAndFocusCapatch();return false;'>${escape(item.message)}</a>` : summaryLink(attr(item.field), item.message, linksEnabled)}</li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${truncated ? "" : attachHtml + stepButtons + honeypot + "</div>"}`;
@@ -2573,12 +2672,6 @@ async function renderForm(kind, name, context, options) {
   // The auto-generated step state travels in __VIEWSTATE (lib/platform-manifest.mjs webFormsForm
   // moves the attribute into the hidden field): the tab index and the earlier tabs' posted values.
   const viewState = autoSteps ? ` data-pp-viewstate="${attr(encodeNativeViewState({ form: definition?.id ?? name, autoStep: autoSteps.index, values: Object.fromEntries(Object.entries(postback?.values ?? {}).filter(([, value]) => typeof value === "string")) }))}"` : "";
-  // A captcha shown to this visitor (adx_captcharequired, and adx_showcaptchaforauthenticatedusers
-  // for a signed-in one) registers the RadCaptcha script resources with the page's ScriptManager,
-  // even when the form stops before the captcha renders (live multistep Groups step and the
-  // captcha-for-everyone basic form). Mirage marks the form; the captcha itself is not simulated.
-  const signedIn = Boolean(identity?.contactId ?? identity?.id);
-  const captchaShown = truthy(fieldOf(componentMetadata, "captcharequired")) && (!signedIn || truthy(fieldOf(componentMetadata, "showcaptchaforauthenticatedusers")));
   // adx_savechangeswarningonclose: the multistep control's confirm-on-exit fields after the
   // instructions (live response body); webform.js prompts with the message on unload.
   const confirmOnExit = kind === "webform" && truthy(fieldOf(definition?.metadata ?? {}, "savechangeswarningonclose"))

@@ -118,7 +118,7 @@ test("an inline HTML web resource embeds its body content and does not fail the 
   fs.mkdirSync(path.join(root, "WebResources"));
   fs.writeFileSync(path.join(root, "WebResources", "banner.html"), "<!DOCTYPE html><html><head><title>B</title></head><body><h2 class=\"banner\">Banner</h2></body></html>");
   const html = await gadget({ mode: 100000001, params: { id: "g1" }, metadata: { adx_renderwebresourcesinline: true }, solution: { roots: [root], entities: {} }, cells: [section("main", [[{ name: "name" }], [{ type: "webresource", id: "WebResource_banner", url: "banner.html", label: "Banner" }], [{ name: "code" }]])] });
-  assert.match(html, /<div class="control"><h2 class="banner">Banner<\/h2><\/div>/);
+  assert.match(html, /<label for="WebResource_banner" class="field-label">Banner<\/label><\/div><div class="control"><literal id="WebResource_banner"><h2 class="banner">Banner<\/h2><\/literal><\/div>/);
   assert.match(html, /id="code"/);
   assert.equal(html.endsWith(RENDER_ABORT_MARKER), false);
 });

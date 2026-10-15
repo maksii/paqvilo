@@ -12,7 +12,7 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 const layout = (search, configuration = {}) => [{ Id: "view-1", ViewName: "Items", Configuration: { Search: { Enabled: search }, ...configuration }, Columns: [{ LogicalName: "name", Name: "Name", Width: 100, WidthAsPercent: 50 }, { LogicalName: "priority", Name: "Priority", Width: 20, WidthAsPercent: 50 }], ColumnsTotalWidth: 120, Base64SecureConfiguration: "secure", SortExpression: "name ASC, priority DESC" }];
 // The subgrid: pixel column widths and a download action (Wave M evidence: note-add live DOM).
 // The subgrid view filters by the user's account column, the dialog grid's by the user's column.
-const DOWNLOAD = { ViewActionLinks: [{ Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }], FilterAccountAttributeName: "accountid" };
+const DOWNLOAD = { ViewActionLinks: [{ Type: 3, Enabled: true, Target: 0, Label: "New item", Tooltip: "Create an item" }, { Type: 5, Enabled: true, Label: "Add existing items", Tooltip: "Associate" }, { Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }], FilterAccountAttributeName: "accountid" };
 const BY_USER = { FilterPortalUserAttributeName: "contactid" };
 const grid = (attributes, search, configuration, inner = "") => `<div class="entity-grid ${attributes}" data-get-url="/grid-data" data-select-mode="None" data-view-layouts='${JSON.stringify(layout(search, configuration))}'><div class="view-grid"></div><div class="view-empty message"></div><div class="view-loading message"></div><div class="view-pagination"></div>${inner}</div>`;
 // The subgrid's associate dialog (inside the subgrid, as the platform renders it).
@@ -21,7 +21,7 @@ const PAGE = `<!doctype html><html lang="en"><head><title>Grids</title><link rel
 <div id="antiforgerytoken"><input type="hidden" name="__RequestVerificationToken" value="token"></div>
 <div class="entity-notes" data-url-get="/notes-data" data-url-add="/notes-add" data-bs-target='{"Id":"n1","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div><a class="addnote" href="#">Add note</a><section class="modal modal-addnote" data-bs-backdrop="static"><div class="modal-body"><textarea name="text"></textarea><input type="file" name="file" accept="*" aria-label="Choose File" tabindex="0"></div><div class="modal-footer"><button class="primary" type="button">Add note</button></div></section></div>
 <div class="entity-notes empty-notes" data-url-get="/notes-empty" data-bs-target='{"Id":"n2","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div></div>
-<div class="entitylist"><div id="Filters"><input type="text" name="0" value=""><select name="1"><option value=""></option><option value="1" selected>One</option></select><input type="checkbox" name="2" value="0"></div><button type="button" class="apply-filter" data-serialized-query="mf" data-target="#Filters">Apply</button><div class="subgrid">${grid('subgrid" data-defer-loading="false" data-enable-actions="true" data-column-width-style="Pixels', false, DOWNLOAD, ASSOCIATE)}</div></div>
+<div class="entitylist"><div id="Filters"><input type="text" name="0" value=""><select name="1"><option value=""></option><option value="1" selected>One</option></select><input type="checkbox" name="2" value="0"></div><button type="button" class="apply-filter" data-serialized-query="mf" data-target="#Filters">Apply</button><div class="entity-form"><input type="hidden" id="Form_EntityState" value="1"><div class="subgrid">${grid('subgrid" data-defer-loading="false" data-enable-actions="true" data-column-width-style="Pixels', false, DOWNLOAD, ASSOCIATE)}</div></div></div>
 <script src="/grid.js"></script>
 </body></html>`;
 
@@ -102,6 +102,9 @@ test("Bootstrap 5 grids share one record-count announcer per id and post a null 
   assert.equal(await page.evaluate(() => document.querySelector("#SearchCountTextundefined").previousElementSibling.className), "view-toolbar grid-actions clearfix");
   // Columns the view sorts name their own direction in the hint (live ActionCards priority: ". sort descending").
   assert.deepEqual(await page.locator(".subgrid > .entity-grid > .view-grid thead .sort-hint").allTextContents(), [". sort ascending", ". sort descending"]);
+  // The subgrid of an inactive record (EntityState 1) renders no create action at all (live inactive-record).
+  assert.equal(await page.locator(".subgrid > .entity-grid > .view-toolbar .create-action").count(), 0);
+  assert.equal(await page.locator(".subgrid > .entity-grid > .view-toolbar a.btn-info").count(), 0);
   // The Bootstrap 5 subgrid: a download button with a left margin, a table fixed to the pixel widths.
   assert.equal(await page.locator(".subgrid > .entity-grid > .view-toolbar button.entitylist-download").evaluate((b) => [b.type, b.title, b.getAttribute("style")].join("|")), "button|Download the items|margin-left: 8px;");
   assert.equal(await page.locator(".subgrid > .entity-grid > .view-grid > table").getAttribute("style"), "width:120px !important; max-width:120px !important;");

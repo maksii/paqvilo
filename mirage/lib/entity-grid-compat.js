@@ -542,6 +542,9 @@
       if (this.enableActions)
         for (const action of config.ViewActionLinks ?? []) {
           if (!action.Enabled) continue;
+          // A subgrid of an inactive record renders no create or associate action at all (live
+          // item-edit/inactive-record, parent-edit/inactive-record); search and download stay.
+          if ((action.Type === ACTION.Insert || action.Type === ACTION.Associate) && this.parentInactive()) continue;
           if (action.Type === ACTION.Insert) actions.append(this.createActionElement(action));
           else if (action.Type === ACTION.Associate) {
             const link = document.createElement("a");
@@ -613,7 +616,6 @@
       group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
       if (this.bs5 && !this.dialog) group.setAttribute("style", "display: table; width: auto;");
       const link = document.createElement("a");
-      const inactive = this.parentInactive();
       let href = "#";
       if ((action.Target === 1 || action.Target === 2) && action.URL?.PathWithQueryString)
         href = this.withReference(action.URL.PathWithQueryString);
@@ -642,7 +644,6 @@
           this.openFormModal(modal, this.withReference(withQuery(page, { entityformid: action.EntityForm.Id, languagecode: this.config.LanguageCode || 1033 })));
         });
       }
-      if (inactive) group.hidden = true;
       group.append(link);
       return group;
     }

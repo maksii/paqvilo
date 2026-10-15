@@ -140,6 +140,8 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
+      - name: Baseline fixture offline regressions
+        run: npm run test:example
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
       - name: Company Operations offline regressions

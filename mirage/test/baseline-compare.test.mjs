@@ -181,6 +181,16 @@ test("compareScenario verdicts, allowlist classification, second-live variance a
   const framed = await compareScenario({ scenario, liveDir: dir("frame-live"), mirageDir: dir("frame-mirage"), allowlist: none });
   assert.deepEqual(framed.deltas.map((d) => [d.location, d.field, d.live, d.mirage]), [["frame /inner html:nth(0)>body:nth(1)>input#n", "attr.value", "a", "b"]]);
   const frameless = await compareScenario({ scenario, liveDir: dir("frame-live"), mirageDir: dir("frame-none"), allowlist: none });
+  // An element entry applies inside a frame document too (its selector without the frame(<path>) prefix).
+  const elementFile = dir("allow-element.json");
+  await fs.writeFile(elementFile, JSON.stringify({ version: 1, entries: [{ id: "cdn-link", scope: "element", pattern: "^body>link$", field: "^attributes\.href$", reason: "invented", proof: "platform-generated", evidence: "fixture" }] }));
+  const elementAllow = await loadAllowlist(elementFile);
+  const el = (selector, href) => ({ selector, tag: "link", classes: [], attributes: { href }, visible: false, disabled: false, readonly: false, required: false, value: "" });
+  await writeFolder(dir("frame-el-live"));
+  await writeFolder(dir("frame-el-mirage"));
+  await fs.writeFile(path.join(dir("frame-el-live"), "elements.json"), JSON.stringify([el("frame(/inner) body>link", "https://cdn.invalid/a.css")]));
+  await fs.writeFile(path.join(dir("frame-el-mirage"), "elements.json"), JSON.stringify([el("frame(/inner) body>link", "/a.css")]));
+  assert.equal((await compareScenario({ scenario, liveDir: dir("frame-el-live"), mirageDir: dir("frame-el-mirage"), allowlist: elementAllow })).verdict, "ALLOWED");
   assert.deepEqual(frameless.deltas.map((d) => [d.location, d.field, d.live, d.mirage]), [["frame /inner", "presence", "present", "(absent)"]]);
   const missing = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("nope"), allowlist: none });
   assert.equal(missing.verdict, "error");
@@ -256,4 +266,110 @@ test("request-side x-sim-* headers are instrumentation and generated ids are nor
   assert.equal(out.length, 0);
   assert.equal(normalizeGeneratedIds('<div id="PcfControl_4eb7269f8c084cd683f6361ce8864541"><div id="UpdMSPicklistControl7_outer">'), '<div id="PcfControl_{hex32}"><div id="UpdMSPicklistControl{n}_outer">');
   assert.equal(normalizeGeneratedIds('<input name="x$ctl371" data-content-id="1e93654f-3bc1-4a1a-9b1e-0123456789ab"><a href="https://site.example/File/download.aspx?Id=1"><a href="http://127.0.0.1:5311/x">', ["https://site.example"]), '<input name="x$ctl{n}" data-content-id="{guid}"><a href="{origin}/File/download.aspx?Id=1"><a href="{origin}/x">');
+});
+
+test("--only lists take the first token per line and refuse an empty selection", async (t) => {
+  const { list } = await import("../baseline-suite.mjs");
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-only-list-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const file = path.join(dir, "ids.txt");
+  await fs.writeFile(file, "# reviewed list: reason per id\r\n\r\nlist/a/default/editor\tthe reason\nbasic-form/b/x/editor  # another reason\n  page/c/render/editor\n");
+  assert.deepEqual(list(`@${file}`), ["list/a/default/editor", "basic-form/b/x/editor", "page/c/render/editor"]);
+  assert.deepEqual(list("a, b"), ["a", "b"]);
+  assert.equal(list(undefined), null);
+  await fs.writeFile(file, "# only a comment\n\n");
+  assert.throws(() => list(`@${file}`), /selects no scenario ids/);
+});
+
+test("evidence age: deltas a recorded live change explains are stale until its proof scenario fails", async (t) => {
+  const { loadEvidenceChanges, finalizeEvidenceChanges } = await import("../baseline-compare.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-evidence-age-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const folder = async (name, capturedAt, title) => {
+    const dir = path.join(root, name);
+    await writeFolder(dir, { dom: `<html><head></head><body><h1 data-editable-title="${title}">Hello</h1></body></html>` });
+    const meta = JSON.parse(await fs.readFile(path.join(dir, "meta.json"), "utf8"));
+    await fs.writeFile(path.join(dir, "meta.json"), JSON.stringify({ ...meta, capturedAt }));
+    return dir;
+  };
+  const file = path.join(root, "changes.json");
+  const change = { id: "admin-removed", since: "2026-10-15T18:48:00Z", affects: "^page/", signatures: [{ scope: "dom", field: "^attr\.data-editable-title$", location: "h1" }], proof: ["page/proof"], reason: "invented" };
+  await fs.writeFile(file, JSON.stringify({ version: 1, changes: [change] }));
+  const { changes } = await loadEvidenceChanges(file);
+  const none = { entries: [] };
+  const compare = async (id, live, mirage) => compareScenario({ scenario: { id }, liveDir: live, mirageDir: mirage, allowlist: none, changes });
+  const mirage = await folder("mirage", "2026-10-15T20:00:00Z", "(none)");
+  const old = await compare("page/old", await folder("old", "2026-10-15T12:00:00Z", "Title"), mirage);
+  assert.equal(old.verdict, "ALLOWED");
+  assert.deepEqual([old.counts.stale, old.counts.unexplained, old.deltas[0].staleEvidence], [1, 0, "admin-removed"]);
+  // Outside `affects`, or captured after `since`, the same delta stays unexplained.
+  assert.equal((await compare("list/old", await folder("old2", "2026-10-15T12:00:00Z", "Title"), mirage)).counts.unexplained, 1);
+  const proofOk = await compare("page/proof", await folder("proof-ok", "2026-10-15T19:00:00Z", "(none)"), mirage);
+  const accepted = finalizeEvidenceChanges([old, proofOk], changes);
+  assert.equal(accepted["admin-removed"].status, "accepted");
+  assert.deepEqual([accepted["admin-removed"].scenarios, accepted["admin-removed"].deltas], [1, 1]);
+  // The proof scenario still shows the signature: the change is rejected and its deltas are unexplained again.
+  const old2 = await compare("page/old", await folder("old3", "2026-10-15T12:00:00Z", "Title"), mirage);
+  const proofBad = await compare("page/proof", await folder("proof-bad", "2026-10-15T19:00:00Z", "Title"), mirage);
+  const rejected = finalizeEvidenceChanges([old2, proofBad], changes);
+  assert.equal(rejected["admin-removed"].status, "rejected");
+  assert.deepEqual(rejected["admin-removed"].proof, [{ id: "page/proof", state: "still shows the signature" }]);
+  assert.deepEqual([old2.verdict, old2.counts.stale, old2.counts.unexplained], ["FAIL", 0, 1]);
+  // A missing proof scenario or one captured before `since` rejects it too.
+  assert.equal(finalizeEvidenceChanges([await compare("page/old", await folder("old4", "2026-10-15T12:00:00Z", "Title"), mirage)], changes)["admin-removed"].proof[0].state, "missing");
+  const early = await compare("page/proof", await folder("proof-early", "2026-10-15T12:30:00Z", "Title"), mirage);
+  assert.equal(finalizeEvidenceChanges([early], changes)["admin-removed"].proof[0].state, "older than since");
+  // staleBefore: a capture after since but before staleBefore (a page still served from its cache) is stale too;
+  // a proof captured in that window still has to be clean.
+  await fs.writeFile(file, JSON.stringify({ version: 1, changes: [{ ...change, staleBefore: "2026-10-15T19:30:00Z" }] }));
+  const lagged = (await loadEvidenceChanges(file)).changes;
+  const cached = await compareScenario({ scenario: { id: "page/cached" }, liveDir: await folder("cached", "2026-10-15T19:10:00Z", "Title"), mirageDir: mirage, allowlist: none, changes: lagged });
+  assert.equal(cached.counts.stale, 1);
+  const cleanProof = await compareScenario({ scenario: { id: "page/proof" }, liveDir: await folder("proof-window", "2026-10-15T19:00:00Z", "(none)"), mirageDir: mirage, allowlist: none, changes: lagged });
+  assert.equal(finalizeEvidenceChanges([cached, cleanProof], lagged)["admin-removed"].status, "accepted");
+  await fs.writeFile(file, JSON.stringify({ version: 1, changes: [{ ...change, staleBefore: "2026-10-15T18:00:00Z" }] }));
+  await assert.rejects(loadEvidenceChanges(file), /staleBefore/);
+  await fs.writeFile(file, JSON.stringify({ version: 1, changes: [{ ...change, proof: [] }] }));
+  await assert.rejects(loadEvidenceChanges(file), /needs proof/);
+});
+
+test("the evidence receiver ties each post to its run; a late post of an abandoned run is refused", async (t) => {
+  const { startSaver } = await import("../baseline-suite.mjs");
+  const { writeCapture } = await import("../baseline-capture.mjs");
+  const saver = await startSaver();
+  t.after(() => saver.close());
+  const post = (run, body) => fetch(saver.url, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": saver.token, ...(run ? { "x-baseline-run": run } : {}) }, body: JSON.stringify(body) });
+  const first = saver.expect();
+  const second = saver.expect(); // the first run timed out on the client; the next scenario armed its own wait
+  assert.equal((await post(first.run, { summary: { id: "step2-back" } })).status, 409);
+  assert.equal((await post(null, { summary: { id: "step2-back" } })).status, 409);
+  assert.equal((await post(second.run, { summary: { id: "resume" } })).status, 204);
+  assert.deepEqual((await second.received).summary, { id: "resume" });
+  assert.deepEqual(saver.late.map((late) => late.run), [first.run, null]);
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-write-capture-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  await assert.rejects(writeCapture({ summary: { id: "step2-back" }, raw: {} }, { outDir: dir, origin: "https://p.invalid", side: "live", scenarioId: "resume" }), /refused for scenario resume/);
+});
+
+test("multipart postbacks compare their parts, not the random boundary", () => {
+  const multipart = (boundary, name, file) => ({
+    seq: 1, method: "POST", url: "https://p.invalid/form", resourceType: "document",
+    headers: { "content-type": `multipart/form-data; boundary=${boundary}` },
+    body: [`--${boundary}`, 'Content-Disposition: form-data; name="title"', "", name, `--${boundary}`, `Content-Disposition: form-data; name="upload"; filename="${file}"`, "Content-Type: text/plain", "", "abc", `--${boundary}--`, ""].join("\r\n"),
+    response: { status: 200, headers: {}, body: null },
+  });
+  assert.deepEqual(compareRequests([multipart("----A1", "x", "a.txt")], [multipart("----B2", "x", "a.txt")]), []);
+  // Server state fields are tokens in a multipart body too (the capture redacts them; older captures are compared as tokens).
+  const withState = (boundary, state) => ({ ...multipart(boundary, "x", "a.txt"), body: [`--${boundary}`, 'Content-Disposition: form-data; name="__VIEWSTATE"', "", state, `--${boundary}--`, ""].join("\r\n") });
+  assert.deepEqual(compareRequests([withState("----A1", "abc")], [withState("----B2", "xyz")]), []);
+  assert.deepEqual(compareRequests([multipart("----A1", "x", "a.txt")], [multipart("----B2", "y", "b.txt")]).map((d) => d.field).sort(), ["body.title[0]", "body.upload[0]"]);
+});
+
+test("the capture redacts server state fields in multipart bodies as in urlencoded ones", async () => {
+  const { redactTokens } = await import("../baseline-capture.mjs");
+  const body = ['------B', 'Content-Disposition: form-data; name="__VIEWSTATE"', "", "secretstate", '------B', 'Content-Disposition: form-data; name="title"', "", "kept", "------B--"].join("\r\n");
+  const out = redactTokens(body);
+  assert.match(out, /name="__VIEWSTATE"\r\n\r\n\{token\}/);
+  assert.match(out, /name="title"\r\n\r\nkept/);
+  assert.doesNotMatch(out, /secretstate/);
 });

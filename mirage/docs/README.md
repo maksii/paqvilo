@@ -22,7 +22,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Registered Dataverse plugins and local write models | [Dataverse plugins](dataverse-plugins.md) |
 | Scripts, assets and platform adapters | [Platform resources](platform-resources.md) |
 | Reference comparison and its limits | [Parity evidence](parity-evidence.md), [runtime evidence](runtime-evidence.md) |
-| Native component baseline: inventories, reference and comparison | [Dataverse inventory](baseline/dataverse-inventory.md), [Power Pages inventory](baseline/power-pages-inventory.md), [runbook](baseline/rerun.md) |
+| Native component baseline: inventories, reference and comparison | [Dataverse inventory](baseline/dataverse-inventory.md), [Power Pages inventory](baseline/power-pages-inventory.md), [coverage](baseline/coverage.md), [parity](baseline/parity.md), [reference](baseline/reference.md), [runbook](baseline/rerun.md) |
 | Configuration families, children and observations | [Configuration object parity](object-parity.md) |
 | Atomic simulation state writes | [State integrity](state-write-integrity.md) |
 

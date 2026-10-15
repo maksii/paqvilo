@@ -547,6 +547,18 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   };
 }
 
+/**
+ * The schema of the systemform a form definition selects (entity and form name, or form id), by
+ * the same selection resolve() applies: matching systemforms of an eligible type (Main), the
+ * first one. Null when none matches. Used for definitions that are not exported basic forms, such
+ * as a multistep step's reference read-only form.
+ */
+export function systemFormSchemaFor(definition, metadata) {
+  if (!definition || !Array.isArray(metadata?.forms)) return null;
+  const choices = matchingSystemForms(definition, metadata.forms).filter(portalFormEligible);
+  return choices.length ? formSchema(choices[0], definition, metadata) : null;
+}
+
 export function applySolutionMetadata(portal, metadata) {
   const componentSchemas = {};
   const diagnostics = [...metadata.diagnostics];

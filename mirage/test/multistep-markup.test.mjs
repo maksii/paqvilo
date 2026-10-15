@@ -107,3 +107,59 @@ test("Bootstrap 5 numeric indicator: repeated class on the indicator and a total
   });
   assert.match(html, /<div id="WebFormControl_survey_ProgressIndicator" class=" progress-numeric bottom progress-numeric bottom"> Step <span class='number'>1<\/span>Of <span class='number total'>2<\/span> <\/div>/);
 });
+
+test("an advanced form step's attach-file control reads the step's own columns and names the step", async () => {
+  const attach = { adx_entitypermissionsenabled: true, adx_attachfile: true, adx_accept: "image/*", adx_allowmultiplefiles: true, adx_maximumnooffiles: 3, adx_attachfilemaxsize: 1024, adx_attachfilelabel: '[{"LCID":1033,"Value":"Images"}]' };
+  const stepped = { survey: { initialStepId: "one", steps: [step("one", { title: "One", metadata: attach })] } };
+  const html = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, { portal, store, schemas: stepped, renderLiquid: async (s) => s, webFormSessions: createWebFormSessions(), webFormOwner: () => "visitor:f" });
+  assert.match(html, /<input type="file" multiple="multiple" name="[^"]*" id="AttachFile" accept="image\/\*,"/);
+  assert.match(html, /id="AttachFile_HiddenField_FormID" value="one"/);
+  assert.match(html, /id="AttachFile_HiddenField_MaxFile" value="3"/);
+  assert.match(html, /You can upload a maximum of 3 files, each up to 1MB\. Supported files include image\./);
+});
+
+test("an insert start step revisited after the session saved it (Previous) still shows the reference read-only form", async () => {
+  const HOLDER = "a0000000-0000-4000-8000-000000000001", GADGET = "b0000000-0000-4000-8000-000000000002";
+  const store = {
+    resolveMapping: (entity) => (entity === "holder" ? { entitySet: "holders", idColumn: "holderid", nameColumn: "name" } : { entitySet: "gadgets", idColumn: "gadgetid" }),
+    get: async (entity, id) => (entity === "holder" && id === HOLDER ? { holderid: HOLDER, name: "Holder One", statecode: 0, statuscode: 1 } : entity === "gadget" && id === GADGET ? { gadgetid: GADGET, notes: "Saved", holderid: HOLDER } : null),
+    query: async () => ({ value: [] }),
+    // Step 1 saved one image note on the record.
+    fetchXml: async (xml) => ({ entities: /entity name="annotation"/.test(xml) && xml.includes(GADGET) ? [{ annotationid: "n1", filename: "one.png", isdocument: true }] : [] }),
+  };
+  const section = (name, rows) => ({ name, label: name, showLabel: true, columns: [{ width: "100%", sections: [{ name, label: name, showLabel: true, rows }] }] });
+  const portal = { website: { id: "site" }, forms: [], lists: [], pages: [], records: [], settings: {}, websiteLanguages: [{ lcid: 1033, isDefault: true }], advancedForms: [{ id: "wiz", name: "Wizard", metadata: {} }] };
+  const metadata = { adx_setentityreference: true, adx_referenceentitysourcetype: 100000000, adx_referenceentitylogicalname: "holder", adx_referencequerystringname: "holderid", adx_referencequerystringisprimarykey: true, adx_referencetargetlookupattributelogicalname: "holderid", adx_referenceentityshowreadonlyform: true, adx_referenceentityreadonlyformname: "Holder main", adx_attachfile: true, adx_accept: "image/*", adx_allowmultiplefiles: true, adx_maximumnooffiles: 3, adx_attachfilemaxsize: 1024 };
+  const schemas = {
+    wiz: { initialStepId: "one", steps: [
+      { stepId: "one", entity: "gadget", mode: 100000000, formName: "Gadget create", metadata, fields: [{ name: "notes", label: "Notes", dataverseType: "memo" }], layout: [section("create", [[{ name: "notes" }]])] },
+      { stepId: "two", entity: "gadget", mode: 100000001, formName: "Gadget edit", metadata: {}, fields: [{ name: "notes", label: "Notes", dataverseType: "memo" }], layout: [section("edit", [[{ name: "notes" }]])] },
+    ] },
+    ReadOnlyFormView_holder: { entity: "holder", title: "Holder main", fields: [{ name: "name", label: "Name", dataverseType: "nvarchar" }], layout: [section("general", [[{ name: "name" }]])] },
+  };
+  const sessions = createWebFormSessions();
+  const session = sessions.create("wiz", "visitor:a");
+  session.history.push({ stepId: "one", recordId: GADGET, entity: "gadget" });
+  session.current = "one";
+  const html = await renderComponent("webform", "Wizard", { request: { params: { holderid: HOLDER, stepid: "one", sessionid: session.id } } }, { portal, store, schemas, webFormSessions: sessions, webFormOwner: () => "visitor:a" });
+  const reference = html.indexOf('<div id="ReadOnlyFormView_holder"'), view = html.indexOf('<div id="EntityFormView"');
+  assert.ok(reference > 0 && view > reference, "the reference read-only form precedes the step's form view");
+  assert.match(html, /<textarea[^>]*\$EntityFormView\$notes"[^>]*>\s*Saved<\/textarea>|>Saved<\/textarea>/);
+  // The record's existing attachment uses up one of the three files (live step2-back).
+  assert.match(html, /id="AttachFile_HiddenField_MaxFile" value="2"/);
+  assert.match(html, /You can upload a maximum of 2 files, each up to 1MB\./);
+});
+
+test("Bootstrap 5 percentage indicator: the percentage label precedes the bar only while it is empty", async () => {
+  const metadata = { adx_progressindicatorenabled: true, adx_progressindicatortype: 756150002, adx_progressindicatorposition: 756150002 };
+  const options = (sessions) => ({ portal: { ...portal, advancedForms: [{ id: "survey", name: "Survey Wizard", metadata }] }, store, schemas, renderLiquid: async (s) => s, webFormSessions: sessions, webFormOwner: () => "visitor:p" });
+  const first = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, options(createWebFormSessions()));
+  assert.match(first, /_ProgressIndicator"[^>]*><span>0%<\/span><div aria-valuenow="0"[^>]*class="bar progress-bar zero"/);
+  const sessions = createWebFormSessions();
+  const session = sessions.create("survey", "visitor:p");
+  session.history.push({ stepId: "one", recordId: "a1", entity: "answer" });
+  session.current = "two";
+  const later = await renderComponent("webform", "Survey Wizard", { request: { params: { sessionid: session.id } } }, options(sessions));
+  assert.match(later, /_ProgressIndicator"[^>]*><div aria-valuenow="50"/);
+  assert.doesNotMatch(later, /<span>50%<\/span><div/);
+});

@@ -71,14 +71,14 @@ export async function submitNativePostback(entries, rendered, options) {
   if (submission.kind === 'entityform' && !schema) schema = approximateFormSchema({ definition, portal: options.portal, metadata: options.metadata });
   if (submission.kind === 'webform') schema = approximateAdvancedFormSchema({ definition, portal: options.portal, metadata: options.metadata, schema });
   if (schema?.steps) schema = schema.steps.find(step => step.stepId === submission.context.stepId);
-  // A step that requires the captcha (for a signed-in visitor only with "show captcha for
-  // authenticated users") rejects its save postback with the captcha message and re-renders the
-  // step with the posted values (live multistep-survey step1-submit: 200, not the next step).
-  // The local runtime renders no captcha answer, so such a step cannot be completed, as observed.
-  // ponytail: no local captcha challenge; add one with the captcha control markup (platform.mjs).
-  if (submission.kind === 'webform' && submission.body.action === 'submit' && truthy(portalField(schema?.metadata ?? {}, 'captcharequired', false))) {
+  // A basic form or step that requires the captcha (for a signed-in visitor only with "show
+  // captcha for authenticated users") rejects its save postback with the captcha message and
+  // re-renders with the posted values (live multistep-survey step1-submit and captcha-all insert: 200).
+  // ponytail: the local challenge (platform.mjs captchaChallenge) has no answer, so such a save never passes.
+  const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
+  if (submission.body.action === 'submit' && truthy(portalField(captchaSettings, 'captcharequired', false))) {
     const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
-    if (!signedIn || truthy(portalField(schema.metadata, 'showcaptchaforauthenticatedusers', false)))
+    if (!signedIn || truthy(portalField(captchaSettings, 'showcaptchaforauthenticatedusers', false)))
       throw Object.assign(new Error(CAPTCHA_MESSAGE), { status: 400, code: 'CaptchaInvalid', details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] } });
   }
   if (schema?.formXml) schema = { ...schema, ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }) };

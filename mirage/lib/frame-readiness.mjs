@@ -27,8 +27,9 @@ export function createFrameReadiness({ diagnostic = () => {}, timeoutMs = 5000, 
       pending.set(id, entry);
       // The image is parsed before DOMContentLoaded. jQuery 3 ready handlers are
       // asynchronous; queue behind them and allow one further macrotask. A
-      // throwing ready handler does not prevent the global ready promise settling.
-      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="${route}"><script data-paqvilo-frame-ready>(function(){document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){return response.arrayBuffer();}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});})();</script>`;
+      // throwing ready handler does not prevent the global ready promise settling. Once the
+      // frame has loaded, the marker leaves the document (the platform frame has no such image).
+      const markup = `<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="${route}"><script data-paqvilo-frame-ready>(function(){document.addEventListener('DOMContentLoaded',function(){var jq=window.jQuery;function release(reason){window.__portalSimulation=window.__portalSimulation||{};window.__portalSimulation.frameLoadOrdering=reason;fetch('${route}?reason='+reason,{method:'POST',credentials:'same-origin'}).then(function(response){return response.arrayBuffer();}).catch(function(){});}if(jq&&jq.ready&&typeof jq.ready.then==='function'){jq.ready.then(function(){setTimeout(function(){release('jquery-ready');},0);});}else release('dom-ready');},{once:true});window.addEventListener('load',function(){document.querySelectorAll('[data-paqvilo-frame-ready]').forEach(function(node){node.remove();});},{once:true});})();</script>`;
       return html.slice(0, bodyEnd) + markup + html.slice(bodyEnd);
     },
     handle(req, res, url) {

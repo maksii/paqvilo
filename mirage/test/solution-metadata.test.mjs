@@ -6,6 +6,7 @@ import os from "node:os";
 import {
   importSolutionMetadata,
   parseSolutionXml,
+  systemFormSchemaFor,
 } from "../lib/solution-metadata.mjs";
 import { formCells } from "../lib/native-services.mjs";
 import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
@@ -609,4 +610,16 @@ test("a control naming a target table and a view is a dataset subgrid without th
   assert.deepEqual(cell.fields.map(field => [field.name, field.widthless === true, field.sortDisabled === true]), [['fullname', true, false], ['firstname', true, true]]);
   assert.deepEqual({type: cell.type, entity: cell.entity, relationship: cell.relationship, showLabel: cell.showLabel, rowspan: cell.rowspan, recordsPerPage: cell.recordsPerPage}, {type: 'subgrid', entity: 'contact', relationship: '', showLabel: false, rowspan: 6, recordsPerPage: 4});
   assert.ok(cell.fetchXml);
+});
+
+test("systemFormSchemaFor selects the Main systemform of a table and form name, not a same-named card form", async t => {
+  const systemform = form('Name').replace(/^<forms[^>]*>/, '').replace(/<\/forms>$/, '');
+  const typed = (id, type, column) => systemform.replace('{form-id}', `{${id}}`).replace('<formid>', `<type>${type}</type><formid>`).replace('datafieldname="fullname"', `datafieldname="${column}"`);
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/standalone.xml': `<FormXml>${typed('card-id', 11, 'createdon')}${typed('main-id', 2, 'fullname')}</FormXml>` });
+  const metadata = await importSolutionMetadata(root, { portal: { ...portal(), forms: [] } });
+  // A multistep step's reference read-only form: a synthetic definition with the table and form name only.
+  const schema = systemFormSchemaFor({ id: 'ReadOnlyFormView_contact', name: 'ReadOnlyFormView_contact', entityName: 'contact', formName: 'Portal edit', metadata: {} }, metadata);
+  assert.equal(schema.formId, 'main-id');
+  assert.deepEqual(formCells(schema).map((cell) => cell.name).filter(Boolean), ['fullname']);
+  assert.equal(systemFormSchemaFor({ entityName: 'contact', formName: 'Other form', metadata: {} }, metadata), null);
 });

@@ -121,8 +121,10 @@ test('auto-generated steps move with Next and Previous and the last tab saves ev
   assert.deepEqual(errors, []);
 });
 
-test('the attach-file control posts its files with the page as multipart form data', async t => {
+test('the attach-file control uploads through the file API and posts the annotation ids with the page', async t => {
   const { app, page, errors, posts, postback } = await fixture(t);
+  const fileApi = [];
+  page.on('request', request => { if (request.url().includes('/_api/file/')) fileApi.push(`${request.method()} ${new URL(request.url()).pathname} ${[...new URL(request.url()).searchParams.keys()].join(',')}`); });
   await page.goto(`${app.url}/attach/`);
   await page.locator('#title').fill('With a file');
   await page.locator('#AttachFile').setInputFiles({ name: 'note.txt', mimeType: 'text/plain', buffer: Buffer.from('attached text') });
@@ -130,7 +132,12 @@ test('the attach-file control posts its files with the page as multipart form da
   await page.locator('#InsertButton').click();
   assert.equal((await response).status(), 200);
   await page.locator('#MessageLabel').filter({ hasText: 'Attached' }).waitFor();
+  // Live order: initialise, then the block, then the postback with the ids and an empty file input.
+  assert.deepEqual(fileApi, ['POST /_api/file/InitializeFileUpload/note formId,formType,regardingId', 'PUT /_api/file/UploadFileBlock/note chunkSize,fileSize,formId,formType,noteId,offset']);
   assert.match(posts[0].headers()['content-type'], /^multipart\/form-data/);
+  const body = posts[0].postData() ?? '';
+  assert.match(body, /name="[^"]*AttachFile"; filename=""/);
+  assert.match(body, /AttachFile_HiddenField_AnnotationIds"\r\n\r\n\["[0-9a-f-]{36}"\]/);
   const note = app.store.snapshot().tables.annotation[0];
   assert.equal(note.filename, 'note.txt');
   assert.equal(Buffer.from(note.documentbody, 'base64').toString(), 'attached text');

@@ -38,3 +38,16 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   assert.equal(diagnostics[0].code, 'FRAME_READY_TIMEOUT');
   assert.equal(diagnostics[0].path, '/synthetic');
 });
+
+test('the marker image and script leave the document once the frame has loaded', () => {
+  const html = createFrameReadiness().decorate('<html><body><p>Frame</p></body></html>');
+  const script = /<script data-paqvilo-frame-ready>([\s\S]*?)<\/script>/.exec(html)[1];
+  const listeners = {}, removed = [];
+  const nodes = [{ remove: () => removed.push('img') }, { remove: () => removed.push('script') }];
+  const document = { addEventListener() {}, querySelectorAll: (selector) => (selector === '[data-paqvilo-frame-ready]' ? nodes : []) };
+  const window = { addEventListener: (type, listener) => { listeners[type] = listener; } };
+  new Function('window', 'document', script)(window, document);
+  assert.deepEqual(removed, []);
+  listeners.load();
+  assert.deepEqual(removed, ['img', 'script']);
+});

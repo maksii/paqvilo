@@ -2,6 +2,13 @@
 
 ## 0.9.4
 
+Native component baseline: a scripted fixture (Dataverse solution, site records and data
+under `examples/project/baseline/`), a capture, suite and compare harness
+(`mirage/baseline-*.mjs`) that records a live portal and Mirage scenario by scenario, a
+scenario matrix generator, inventories and a reference generator, and a reviewed allowlist
+model with platform-generated and live-run-variance proofs. See the
+[baseline guide](baseline.md) and the [runbook](../mirage/docs/baseline/rerun.md).
+
 Security review: step announcements and JSON-transport success panels build DOM nodes
 without reinterpreting text as markup. Baseline generators escape JavaScript literals
 for HTML embedding and Markdown reports preserve literal backslashes. Changed-row

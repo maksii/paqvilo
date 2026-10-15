@@ -14,7 +14,7 @@ const origin = 'https://portal.example.com';
 test('Edge normal storage fails early with actionable attachment options without reading profile data', () => {
   assert.ok(defaultEdgeDataDirs().length >= 3);
   for (const userDataDir of defaultEdgeDataDirs()) {
-    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 5' }), /--profile work.*--cdp-url/);
+    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 2' }), /--profile work.*--cdp-url/);
   }
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'attached', channel: 'msedge' }));
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'named', channel: 'msedge' }));

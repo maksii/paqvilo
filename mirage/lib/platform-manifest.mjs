@@ -148,7 +148,7 @@ export const LOCAL_ASPNET_SCRIPTS = Object.freeze(
     { id: "paqvilo-microsoftajaxwebforms", path: "/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0", local: [], reason: "The ASP.NET AJAX page request manager (Sys.WebForms) is not simulated; local postbacks reload the page." },
     // Registered by a form that shows a captcha (CAPTCHA_MARKER), after the form scripts (live).
     { id: "paqvilo-telerik-support", path: "/ScriptResource.axd?d=paqvilo-telerik-support&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik client feature detection the RadCaptcha control registers is not simulated; the captcha hooks are radcaptcha-compat.js." },
-    { id: "paqvilo-radcaptcha", path: "/ScriptResource.axd?d=paqvilo-radcaptcha&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik RadCaptcha client control is not simulated; Mirage renders no captcha (radcaptcha-compat.js holds the hooks)." },
+    { id: "paqvilo-radcaptcha", path: "/ScriptResource.axd?d=paqvilo-radcaptcha&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik RadCaptcha client control: radcaptcha-compat.js stands in for it (audio player, load event, partial refresh postback)." },
   ].map((entry) => Object.freeze({ ...entry, kind: "script" })),
 );
 
@@ -194,7 +194,9 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
   // A service document (the quick view) names its own form scripts (formScriptPaths).
-  const formScripts = formScriptPaths ? formScriptPaths.map(script).join("\n") :["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && STACK_RANK_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/jquery.stackranking.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
+  const mapList = /<!--pp-map-list:(\w+)-->/.exec(String(content ?? ""));
+  const mapScripts = mapList ? ["/xrm-adx/js/json2.min.js", ...(mapList[1] === "bing" ? ["https://www.bing.com/api/maps/mapcontrol"] : []), "/xrm-adx/js/entitylist-map.js"] : [];
+  const formScripts = formScriptPaths ? formScriptPaths.map(script).join("\n") :["/js/jquery.blockUI.js", ...mapScripts, ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && STACK_RANK_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/jquery.stackranking.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : "";
@@ -224,7 +226,7 @@ export function nativePageRegions({ content = "", action = "/", bodyScripts = []
   const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component" || calendar;
   return {
     kind,
-    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant, extraScripts: formScripts, eventValidation: !calendar && !serverFormId }) : content,
+    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant, extraScripts: formScripts, eventValidation: !serverFormId }) : content,
     bodyScripts: other.length ? renderScripts(other) : "",
   };
 }

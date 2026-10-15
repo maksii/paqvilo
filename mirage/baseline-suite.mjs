@@ -11,7 +11,7 @@
  *
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side live [--allow-writes] [--label live|live-2] [--ids FILE] [--only IDS|@FILE]
  * node mirage/baseline-suite.mjs capture --matrix FILE --out DIR --side mirage --config FILE --site ID [--source DIR] [--state FILE] [--label mirage] [--ids FILE] [--only IDS|@FILE] [--headed]
- * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--only IDS|@FILE]
+ * node mirage/baseline-suite.mjs compare --matrix FILE --out DIR [--live live] [--mirage mirage] [--second-live live-2] [--allowlist FILE] [--evidence-changes FILE] [--only IDS|@FILE]
  */
 import fs from "node:fs/promises";
 import { readFileSync } from "node:fs";
@@ -22,15 +22,20 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { captureScenario, pageRunnerSource, runnerOptions, siteOriginPlaceholder, writeCapture } from "./baseline-capture.mjs";
-import { compareScenario, loadAllowlist, summarize, summaryMarkdown } from "./baseline-compare.mjs";
+import { compareScenario, loadAllowlist, loadEvidenceChanges, finalizeEvidenceChanges, summarize, summaryMarkdown } from "./baseline-compare.mjs";
 import { startMcpServer } from "./mcp-stdio.mjs";
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-// `--only a,b,c` or `--only @file` (one scenario id per line; `#` comments) selects scenarios.
-const list = (value) => {
+// `--only a,b,c` or `--only @file` selects scenarios. A list file holds one scenario per line: the first
+// whitespace-delimited token is the id, so "id<tab>reason" and "id  # reason" lines work; `#` comments and blank
+// lines are skipped. A list that yields no id is an error (a silently empty selection captures or compares nothing).
+export const list = (value) => {
   if (!value) return null;
-  const text = String(value).startsWith("@") ? readFileSync(String(value).slice(1), "utf8").replace(/#[^\n]*/g, "\n") : String(value);
-  return text.split(/[,\n]/).map((item) => item.trim()).filter(Boolean);
+  const ids = String(value).startsWith("@")
+    ? readFileSync(String(value).slice(1), "utf8").split(/\r?\n/).map((line) => line.replace(/#.*/, "").trim().split(/\s+/)[0]).filter(Boolean)
+    : String(value).split(",").map((item) => item.trim()).filter(Boolean);
+  if (!ids.length) throw new Error(`--only ${value} selects no scenario ids`);
+  return ids;
 };
 
 export function validateMatrix(matrix) {
@@ -65,13 +70,25 @@ async function runHook(command, { persona, cwd } = {}) {
   });
 }
 
-/** Loopback receiver for raw evidence posted by the runner inside the bridge process. */
-async function startSaver() {
+/** Loopback receiver for raw evidence posted by the runner inside the bridge process. Each run has its own nonce:
+ * a bridge call that timed out keeps running in the bridge, and its late post must not resolve the next run's wait
+ * (it once wrote a step2-back capture into the resume folder). Late posts answer 409 and are recorded in `late`. */
+export async function startSaver() {
   const token = randomBytes(16).toString("hex");
   let waiting = null;
+  const late = [];
   const server = http.createServer((request, response) => {
-    if (request.method !== "POST" || request.url !== "/capture" || request.headers["x-baseline-token"] !== token || !waiting) {
+    if (request.method !== "POST" || request.url !== "/capture" || request.headers["x-baseline-token"] !== token) {
       response.writeHead(403).end();
+      return;
+    }
+    const run = request.headers["x-baseline-run"];
+    if (!waiting || run !== waiting.run) {
+      late.push({ run: run ?? null, at: new Date().toISOString() });
+      process.stderr.write(`baseline-suite: refused a late evidence post of an abandoned bridge run (${run ?? "no run id"})
+`);
+      request.resume();
+      response.writeHead(409).end();
       return;
     }
     const chunks = [];
@@ -91,10 +108,14 @@ async function startSaver() {
   return {
     url,
     token,
+    late,
+    /** Arms the wait for one run; returns its nonce and the promise of its evidence. */
     expect() {
-      return new Promise((resolve, reject) => {
-        waiting = { resolve, reject };
+      const run = randomBytes(8).toString("hex");
+      const received = new Promise((resolve, reject) => {
+        waiting = { run, resolve, reject };
       });
+      return { run, received };
     },
     close: () => new Promise((resolve) => server.close(resolve)),
   };
@@ -115,8 +136,8 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     const options = runnerOptions({ scenario, origin: matrix.origin, ids, matrix, allowWrites: writes });
     // A scenario expecting the sign-in page (`expect.signIn`, anonymous access to a restrict-read page) checks its markers itself.
     if (scenario.expect?.signIn) options.signInMarkers = [];
-    const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
-    const received = saver.expect();
+    const { run, received } = saver.expect();
+    const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)}, "x-baseline-run": ${JSON.stringify(run)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
     const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
     return Promise.race([received, sleep(30000).then(() => { throw new Error(`Bridge returned without posting evidence: ${text.slice(0, 300)}`); })]);
   };
@@ -176,6 +197,23 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     const result = await runInBridge({ id: "refresh", steps: bridge.refresh.steps, expect: bridge.refresh.expect ?? {} }, { allowWrites: true });
     if (result.summary.status !== "captured") await fail(`Portal cache refresh did not complete (${result.summary.problems.join("; ")}).`, result, "refresh");
   };
+  // One cache-clear cycle for a persona whose probes failed (`hooks.liveAdminAdd`/`liveAdminRemove` + `live.clearCache`):
+  // the portal offers its Clear cache control only to an admin role the personas do not hold, and role changes behind table
+  // permissions can lag for many minutes without a clear. The add hook grants the role, the clear steps are retried until
+  // the control appears (attempts × delay), the remove hook takes the role away again.
+  const adminCycle = async () => {
+    const options = { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd };
+    const clear = bridge.clearCache;
+    await runHook(matrix.hooks.liveAdminAdd, options);
+    let result;
+    for (let attempt = 1; attempt <= (clear.attempts ?? 12); attempt++) {
+      result = await runInBridge({ id: "clear-cache", steps: clear.steps, expect: clear.expect ?? {} }, { allowWrites: true });
+      if (result.summary.status === "captured") break;
+      await sleep(clear.delay ?? 10000);
+    }
+    await runHook(matrix.hooks.liveAdminRemove, options);
+    if (result.summary.status !== "captured") await fail(`Portal cache clear did not complete (${result.summary.problems.join("; ")}).`, result, "clear-cache");
+  };
   await ensureSignedIn();
   return {
     name: "live",
@@ -185,7 +223,14 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
       await ensureSignedIn();
       await refresh();
       if (persona.anonymous) await signOut();
-      if (persona.verify) await verifyPersona(name, persona.verify, ids);
+      if (!persona.verify) return;
+      try {
+        await verifyPersona(name, persona.verify, ids);
+      } catch (error) {
+        if (!(matrix.hooks?.liveAdminAdd && matrix.hooks?.liveAdminRemove && bridge.clearCache)) throw error;
+        await adminCycle();
+        await verifyPersona(name, persona.verify, ids);
+      }
     },
     async reset() {
       const options = { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd };
@@ -194,9 +239,9 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     },
     async capture(scenario, { outDir, ids, label, meta }) {
       const result = await runInBridge(scenario, { ids });
-      return writeCapture(result, { outDir, origin: matrix.origin, side: label, meta: { ...meta, origin: new URL(matrix.origin).hostname.replace(/^[^.]+/, "{site}"), runtime: "reference", bridge: bridge.name ?? "browser-bridge" } });
+      return writeCapture(result, { outDir, origin: matrix.origin, side: label, scenarioId: scenario.id, meta: { ...meta, origin: new URL(matrix.origin).hostname.replace(/^[^.]+/, "{site}"), runtime: "reference", bridge: bridge.name ?? "browser-bridge" } });
     },
-    diagnostics: () => stderr.slice(-20),
+    diagnostics: () => [...stderr.slice(-20), ...saver.late.map((post) => `late evidence post of an abandoned run ${post.run} at ${post.at} refused`)],
     async close() {
       await saver.close();
       await client.close();
@@ -374,7 +419,7 @@ async function main() {
     options: {
       matrix: { type: "string" }, out: { type: "string" }, side: { type: "string" }, label: { type: "string" }, "allow-writes": { type: "boolean" }, ids: { type: "string" }, only: { type: "string" },
       config: { type: "string" }, site: { type: "string" }, env: { type: "string" }, source: { type: "string" }, state: { type: "string" }, headed: { type: "boolean" }, "work-dir": { type: "string" },
-      live: { type: "string" }, mirage: { type: "string" }, allowlist: { type: "string" }, "second-live": { type: "string" },
+      live: { type: "string" }, mirage: { type: "string" }, allowlist: { type: "string" }, "second-live": { type: "string" }, "evidence-changes": { type: "string" },
     },
   });
   const action = positionals[0];
@@ -411,16 +456,22 @@ async function main() {
     return;
   }
   const allowlist = values.allowlist ? await loadAllowlist(values.allowlist) : { entries: [] };
-  const report = { version: 1, action, generatedAt: new Date().toISOString(), live: values.live ?? "live", mirage: values.mirage ?? "mirage", allowlist: values.allowlist ? path.resolve(values.allowlist) : null, scenarios: [] };
+  const changes = values["evidence-changes"] ? (await loadEvidenceChanges(values["evidence-changes"])).changes : [];
+  const report = { version: 1, action, generatedAt: new Date().toISOString(), live: values.live ?? "live", mirage: values.mirage ?? "mirage", allowlist: values.allowlist ? path.resolve(values.allowlist) : null, evidenceChangesFile: values["evidence-changes"] ? path.resolve(values["evidence-changes"]) : null, scenarios: [] };
+  const results = [];
   for (const scenario of matrix.scenarios.filter((item) => !only || only.includes(item.id))) {
     const liveDir = scenarioDir(outDir, scenario, report.live);
     const mirageDir = scenarioDir(outDir, scenario, report.mirage);
     const secondDir = values["second-live"] ? scenarioDir(outDir, scenario, values["second-live"]) : null;
-    const result = await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist, origins: [matrix.origin, siteOriginPlaceholder(matrix.origin)].filter(Boolean) });
-    await fs.mkdir(path.join(outDir, ...scenario.id.split("/")), { recursive: true });
-    await fs.writeFile(path.join(outDir, ...scenario.id.split("/"), "diff.json"), JSON.stringify(result, null, 2));
-    report.scenarios.push({ id: scenario.id, verdict: result.verdict, counts: result.counts, signatures: result.signatures, reason: result.reason });
-    console.log(JSON.stringify({ scenario: scenario.id, verdict: result.verdict, counts: result.counts, reason: result.reason }));
+    results.push(await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist, changes, origins: [matrix.origin, siteOriginPlaceholder(matrix.origin)].filter(Boolean) }));
+  }
+  // Evidence age is decided once every scenario is compared: the proof scenarios of each change are checked here.
+  if (changes.length) report.evidenceChanges = finalizeEvidenceChanges(results, changes);
+  for (const result of results) {
+    await fs.mkdir(path.join(outDir, ...result.id.split("/")), { recursive: true });
+    await fs.writeFile(path.join(outDir, ...result.id.split("/"), "diff.json"), JSON.stringify(result, null, 2));
+    report.scenarios.push({ id: result.id, verdict: result.verdict, counts: result.counts, signatures: result.signatures, reason: result.reason });
+    console.log(JSON.stringify({ scenario: result.id, verdict: result.verdict, counts: result.counts, reason: result.reason }));
   }
   Object.assign(report, summarize(report));
   await fs.writeFile(path.join(outDir, "report.json"), JSON.stringify(report, null, 2));

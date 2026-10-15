@@ -14,6 +14,8 @@ node_modules/
 paqvilo.config.local.yml
 coverage/
 *.log
+# Playwright MCP console logs and snapshots
+.playwright-mcp/
 dist/
 examples/project/components/**/bin/
 examples/project/components/**/obj/

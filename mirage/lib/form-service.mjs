@@ -844,7 +844,9 @@ export async function submitPortalForm(
   const notes = [];
   if (attachments.length) {
     if (!truthy(portalField(componentMetadata, "attachfile"))) fail("This native form does not accept attachments", 403, "FormAttachmentNotEnabled");
-    if (!truthy(portalField(componentMetadata, "attachfileallowmultiple")) && attachments.length > 1) fail("This native form accepts one attachment", 400, "FormAttachmentInvalid");
+    // Advanced form steps name multiple files with their own column (adx_allowmultiplefiles), as the markup reads it.
+    const multiple = portalField(componentMetadata, "attachfileallowmultiple") ?? portalField(componentMetadata, "allowmultiplefiles");
+    if (!truthy(multiple) && attachments.length > 1) fail("This native form accepts one attachment", 400, "FormAttachmentInvalid");
     const maxKb = Number(portalField(componentMetadata, "attachfilemaxsize")) || 0;
     const accept = [portalField(componentMetadata, "attachfileaccept"), portalField(componentMetadata, "attachfileacceptextensions")].filter(Boolean).join(",");
     const restrict = truthy(portalField(componentMetadata, "attachfilerestrictaccept"));

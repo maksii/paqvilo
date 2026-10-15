@@ -26,13 +26,13 @@ Each inventory row cites the catalog items its configuration exercises. The cita
 
 ## What the matrix covers
 
-`scripts/baseline-matrix.mjs` generates one scenario per component, variation, state and persona from the fixture site manifest. The final matrix has 252 scenarios over 72 component variations:
+`scripts/baseline-matrix.mjs` generates one scenario per component, variation, state and persona from the fixture site manifest. The matrix has 257 scenarios over 73 component variations:
 
 | Component | Scenarios | States |
 | --- | ---: | --- |
 | Basic form | 149 | `empty`, `insert`, `required-missing`, `populated`, `minimal`, `inactive-record`, `save-text`, `read-only`, validation (`regex-error`, `range-error`, `required-message`), plugin errors per message and stage, `plugin-mutation`, rule states, lookup dialog/search/select/clear/create, `note-add`, actions (delete, activate, deactivate, create-related), associate/disassociate, `permission`, `permission-denied`, `record-not-found`, `record-missing-id`, `insert-captcha` |
-| List | 67 | `default`, `search`, `sort`, `paging`, `view-selector`, filters (text, dropdown, checkbox, reset), modal details/create/edit/delete, `feed` |
-| Multistep form | 16 | `step1`, `step1-submit`, `step2-back`, `resume` |
+| List | 68 | `default`, `search`, `sort`, `paging`, `view-selector`, filters (text, dropdown, checkbox, reset), modal details/create/edit/delete, `feed` |
+| Multistep form | 20 | `step1`, `step1-submit`, `step2-back`, `resume` |
 | Page | 20 | `render`, page-rule `access` |
 
 There are seven personas: `editor`, `reader`, `none`, `contact-scope`, `account-scope`, `parent-scope` and `anonymous`. On the live portal, each signed-in persona is a set of web roles applied to the single test contact. Mirage applies the same role names to its synthetic contact.
@@ -65,21 +65,21 @@ These states stay in the matrix. The reference prints each one with a reviewed r
 
 | State | Why it cannot be observed |
 | --- | --- |
-| Geolocation edit form (`populated`, `save-text`) | Live renders the platform's 500 error page. The recorded reason is that the geolocation form needs a Bing Maps key the site does not configure. The error page is still a valid reference state. |
-| Multistep insert step (`step1-submit`, `step2-back`, `resume`) | The step shows the reference entity's read-only form above the create form. Both forms contain the same name control, so the create form renders "An entry with the same key already exists." instead of the input. The step cannot be submitted. `step1` holds the evidence. |
-| Stepped insert form (`insert`) | The last tab hosts a quick view on an insert form (no record yet). It renders the platform error "Unable to find control with id … that is associated with the Label" and no submit button. `required-missing` on the first tab is captured. |
+| Multistep insert step (`step1-submit`, `step2-back`, `resume`) | The step shows the reference entity's read-only form above the create form. Both forms contain the same name control, so the create form renders "An entry with the same key already exists." instead of the input. The step cannot be submitted. `step1` holds the evidence. This failure is kept as observed platform behaviour. The fixed variant (`multistep-insert-fixed`, next section) covers submit, back and resume. |
 | Captcha forms and steps | Captchas are never bypassed. `insert-captcha` and the survey's `step1-submit` hold the captcha validation state. The survey's `step2-back` and `resume` have no step 2. |
 | Survey step 5 subgrid | The only step subgrid with a column override sits on survey step 5. No scenario can reach that step past the captcha on step 1, so the override is configured but unobserved. |
 | Auto-generated step tabs (`multistep-user/step2-back`) | The step renders its first auto-generated tab with a Next button only, with no Previous button. |
-| Page-rule restrict-read for signed-in personas | The site has a site-wide rule that grants change to a role the tester always keeps. Change rights override restrict-read for every signed-in persona. The rule's effect, a redirect to sign-in, is observed for the anonymous visitor only. |
 | List OData feed | Power Pages removed list OData feeds. The request and its 404 page are recorded. |
 
 Rows that are captured but carry a note:
 
-- **Modal list and create dialogs.** The dialog form loads in an iframe the capture does not inventory, so control counts cover the host page only. The screenshot shows the form.
-- **Map lists.** Without a Bing Maps key, these render only the heading and the list shell.
-- **Sort.** On lists with two rows or fewer for the persona, the sort request is sent but the visible order cannot change.
-- **Inline web resource.** On a form that carries one, the cell renders a platform error and the rest of the form renders.
+- **Geolocation edit form.** The fixture configures a fake Bing Maps key (list map credentials and the geolocation site settings); no real key is used. With it, the form still answers the platform's 500 error page. That page is the observed broken-key state and the reference row.
+- **Map lists.** With the fake key, the map list page renders without a Bing or credentials error and with no rows in the DOM.
+- **Fixed multistep insert variant (`multistep-insert-fixed`).** Its reference read-only form shows only parent columns, so no control id collides with the create form, and the step submits. `step1` and `step1-submit` are observed.
+- **Stepped insert form.** The form's last tab used to host a quick view, which fails on an insert form (no record yet) with "Unable to find control with id … that is associated with the Label" and no submit button. The stepped form now uses a main form without the quick view. Its `insert` state renders with no error panel and stays on the form page.
+- **Page rules for signed-in personas.** A site-wide rule that grants change to the site's administrator role overrides restrict-read, so the personas hold no administrator role. Observed per the rule configuration: the restricted page answers Access Denied (403) for the editor, whom the rule does not name, and renders for the reader, whom it names. The change-only editors page renders for both, with content-editing markup only for the editor, whose role the rule grants change.
+- **Modal list and create dialogs.** The dialog form loads in a same-origin iframe, which the capture inventories (`frames.json`). This is observed for all three dialog kinds: modal details (3 frames), modal create (2) and the lookup create dialog (1). Older captures of other dialog scenarios count the host page only; the evidence-age record explains those deltas ([parity](parity.md#evidence-age-third-kind)).
+- **Inline web resource.** An HTML web resource renders framed or inline. Only a non-HTML web resource on a form that renders web resources inline fails, with a platform error in its cell, while the rest of the form renders.
 - **Business rules on basic forms.** These show no client effect. The show-error rule does not stop a save, and the hide rule leaves the column visible. Learn states that basic forms do not support business rules, and the live evidence agrees.
   - Caveat: the fixture provisions its rules as background workflows. The designer-made rules in the same environment are real-time. The recorded result holds for that provisioning, and the fixture keeps it so the captured save behaviour stays stable.
 

@@ -138,6 +138,17 @@ test('an advanced step requiring the captcha rejects the save postback with the 
   assert.notEqual(result, undefined);
 });
 
+test('a basic form showing the captcha rejects the save postback with the captcha message and writes nothing', async () => {
+  const options = await fixture(), item = rendered('first', 'first-row');
+  options.portal.forms[0].metadata = { adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true };
+  await assert.rejects(submitNativePostback(post(item, 'Changed'), [item], options), (error) => error.status === 400 && error.details.validationErrors[0].field === 'captcha');
+  assert.equal((await options.store.get('sample', 'first-row', options.identity)).title, 'First');
+  // A signed-in visitor is asked only with "show captcha for authenticated users".
+  options.portal.forms[0].metadata = { adx_captcharequired: true };
+  const { result } = await submitNativePostback(post(item, 'Changed'), [item], { ...options, identity: { contactId: 'c1', roles: ['Editor'] } });
+  assert.notEqual(result, undefined);
+});
+
 test('a __VIEWSTATE carrying the anti-forgery key exposes it; other values carry none', () => {
   assert.equal(nativeViewStateKey(encodeNativeViewState({ k: 'csrf-1' })), 'csrf-1');
   assert.equal(nativeViewStateKey(encodeNativeViewState({ form: 'f', autoStep: 0, values: {} })), null);
