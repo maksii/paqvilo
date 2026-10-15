@@ -65,7 +65,11 @@ export function validateManifest(input) {
         if (column.type === 'integer') ensure(Number.isInteger(column.min) && Number.isInteger(column.max) && column.min >= -2147483648 && column.max <= 2147483647, 'integer range invalid');
         if (column.type !== 'integer') ensure(Number.isInteger(column.precision) && column.precision >= 0 && column.precision <= (column.type === 'money' ? 4 : column.type === 'decimal' ? 10 : 5), 'precision invalid');
       }
-      if (column.type === 'datetime') ensure(['UserLocal', 'DateOnly', 'TimeZoneIndependent'].includes(column.behavior), 'datetime behavior required');
+      if (column.type === 'datetime') {
+        ensure(['UserLocal', 'DateOnly', 'TimeZoneIndependent'].includes(column.behavior), 'datetime behavior required');
+        ensure(column.format == null || ['DateOnly','DateAndTime'].includes(column.format), 'datetime format must be DateOnly or DateAndTime');
+        ensure(column.behavior !== 'DateOnly' || column.format == null || column.format === 'DateOnly', 'DateOnly behavior requires DateOnly format');
+      }
     }
     ensure(!table.columns.some(c => c.name === table.primaryName?.name), 'primary name must not be repeated in columns');
     unique(table.keys, k => k.name, `key on ${table.name}`);
@@ -127,7 +131,7 @@ export function attributePayload(column, language) {
   if (column.description) result.Description=label(column.description,language);
   if (['string','memo'].includes(type)) { result.MaxLength=column.maxLength; if(type==='string') result.FormatName={Value:column.format??'Text'}; else result.Format='Text'; }
   if (['integer','decimal','double','money'].includes(type)) { result.MinValue=column.min; result.MaxValue=column.max; if(type!=='integer') result.Precision=column.precision; else result.Format='None'; if(type==='money') result.PrecisionSource=column.precisionSource??0; }
-  if (type==='datetime') { result.DateTimeBehavior={Value:column.behavior}; result.Format=column.behavior==='DateOnly'?'DateOnly':'DateAndTime'; }
+  if (type==='datetime') { result.DateTimeBehavior={Value:column.behavior}; result.Format=column.format??(column.behavior==='DateOnly'?'DateOnly':'DateAndTime'); }
   if (type==='boolean') { result.DefaultValue=column.default??false; result.OptionSet={ '@odata.type':'Microsoft.Dynamics.CRM.BooleanOptionSetMetadata', TrueOption:{Value:1,Label:label(column.trueLabel??'Yes',language)}, FalseOption:{Value:0,Label:label(column.falseLabel??'No',language)} }; }
   if (['choice','multichoice'].includes(type)) { result['GlobalOptionSet@odata.bind']=`/GlobalOptionSetDefinitions(Name='${column.choice}')`; if(type==='choice'&&column.default!==undefined) result.DefaultFormValue=column.default; }
   return result;

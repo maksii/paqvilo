@@ -3,6 +3,7 @@
 // (power-pages/configure/read-operations; data-platform/webapi/query/select-columns
 // and fetchxml/select-columns).
 import {isExactNumeric} from './exact-numeric.mjs';
+import {compileFormattedTimeZone} from './formatted-time-zone.mjs';
 import {
   fieldKind,
   formattedValue,
@@ -35,6 +36,7 @@ const rowKey = (value) => {
  * options: { store, identity, metadata(logical) -> fields, formatting }
  */
 export function createWebApiFormatter({ store, identity = {}, metadata, formatting = {} }) {
+  formatting = {...formatting, timeZoneOffsetAt: compileFormattedTimeZone(formatting.formattedValueTimeZone)};
   const definition = (logical, attribute) => store.fieldDefinition(logical, attribute, metadata);
   const storedRows = new Map();
   const storedRow = (mapping, id) => {

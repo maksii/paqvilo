@@ -71,17 +71,39 @@ Mirage's native form service uses local JSON submission. Native Power Pages uses
 
 ### Observed portal culture-parsed dates
 
-`observed.webApiDateParsing: month-first` (with `evidence`) accepts `M/D/YYYY`
-and `MM/DD/YYYY`, optionally followed by a 24-hour time or AM/PM, at the portal Web API
-write boundary. Calendar/clock components and the existing supported date range remain
-validated. ISO input, direct datastore/SDK writes, query literals and native form parsing
-retain their contracts. `14/10/2026` and impossible dates remain errors. DateOnly columns
-store canonical dates; datetime columns retain canonical UTC instants. This option does not
-infer arbitrary cultures from a browser locale.
+`observed.webApiDateParsing: month-first` (with `evidence`) accepts `M/D/YYYY`,
+`MM/DD/YYYY`, English full/abbreviated month names and two-digit years, optionally
+followed by a 24-hour time or AM/PM, at the portal Web API write boundary for instant
+columns. Two-digit years use a 2049 cutoff; an evidenced `webApiTwoDigitYearMax` can
+override it when the site's culture/calendar differs. Calendar/clock components and
+the supported date range remain validated. Day-first and impossible dates remain errors.
+Direct datastore/SDK writes, query literals and native form parsing keep their contracts.
+The observation selects a bounded English month-first parser; it does not implement every
+.NET culture or infer one from the browser locale.
 
-An authorized development reference check on 2026-10-15 confirmed that month-first inputs
-and ISO values reach the backend plugin for both date column types, whereas day-first and
-impossible dates fail culture conversion before the plugin. A pre-existing business-write
-guard prevented persisted-value readback in that check. This establishes the parser boundary,
-not end-to-end stored-value parity on every portal. Validate accepted writes/readbacks in the
-consumer's own sandbox before enabling the observation there.
+Behavior and display format are independent. UserLocal and TimeZoneIndependent columns
+return UTC instants even with `Format: DateOnly`; the latter changes their formatted
+annotation only. True DateOnly columns use the Edm.Date reader: ISO calendar dates
+(including unpadded month/day) are accepted, whereas slash dates, timestamps, surrounding
+whitespace and impossible dates are rejected before persistence. Fractions truncate to
+the platform's stored second precision without rounding into the next second.
+
+An earlier parser-only development check was insufficient to close stored-value parity.
+It was superseded on 2026-10-15 by an isolated native fixture covering all five supported
+behavior/format combinations: 170 cases with POST, PATCH, portal readbacks and 340
+independent backend comparisons. The bounded comparison checks write/read statuses,
+stored values, formatted annotations, inner error codes and rejected-write atomicity.
+One transient native GET 500 remains recorded separately from its successful reread.
+Full error text/stacks, native form controls, Liquid/query timezone semantics and other
+cultures are outside that comparison. No universal date/time parity is inferred.
+
+UserLocal formatted annotations can use project-owned
+`settings.formattedValueTimeZone: { evidence, rules }`, where `rules` contains the
+Dataverse `timezonerule` bias, transition and effective-date fields. This explicitly
+configured profile supports daylight saving and historical rule changes; the request
+formatter compiles it once and caches transition boundaries by year. Without it,
+`timeZoneOffsetMinutes` remains the fixed-offset setting. TimeZoneIndependent annotations
+and true DateOnly values never apply the UserLocal offset. The profile applies to formatted
+Web API annotations only; it does not infer or change browser controls or query calendars.
+Rule fields follow Microsoft's [timezonerule reference](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/webapi/reference/timezonerule?view=dataverse-latest)
+and [Windows transition/bias definition](https://learn.microsoft.com/en-us/windows/win32/api/timezoneapi/ns-timezoneapi-dynamic_time_zone_information).

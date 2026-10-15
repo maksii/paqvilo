@@ -211,7 +211,7 @@ test("invalid calendar, clock, offset and GUID inputs reject atomically", async 
       const before = app.store.snapshot().tables;
       const result = await call(BASE_RECORD, { method: "PATCH", body: { [field]: value } });
       assert.equal(result.status, 400, `${field}: ${value}`);
-      assert.equal(result.json.error.innererror.code, value.includes('T') && !value.endsWith('+24:00') ? '0x80048d19' : '0x80040239', 'clock/calendar literal errors fail the OData conversion phase');
+      assert.equal(result.json.error.innererror.code, field === 'reviewdate' || value.includes('T') && !value.endsWith('+24:00') ? '0x80048d19' : '0x80040239', 'Edm.Date and timestamp clock/calendar errors fail the reader; other instant text reaches CRM validation');
       assert.deepEqual(app.store.snapshot().tables, before);
     }
   }
@@ -230,7 +230,7 @@ test("low-year date inputs cannot bypass the CRM minimum through the JavaScript 
       const before = app.store.snapshot().tables;
       const result = await call(BASE_RECORD, { method: "PATCH", body: { [field]: value } });
       assert.equal(result.status, 400, `${field}: ${value}`);
-      assert.equal(result.json.error.innererror.code, "0x80040239");
+      assert.equal(result.json.error.innererror.code, field === 'reviewdate' && (value.startsWith('0000-') || value.includes('T')) ? '0x80048d19' : '0x80040239');
       assert.deepEqual(app.store.snapshot().tables, before);
     }
   }

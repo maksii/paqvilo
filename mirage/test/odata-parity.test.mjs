@@ -451,7 +451,7 @@ test("write validation follows Dataverse types inside the CDSError envelope", as
     [{ name: 5 }, "0x80048d19", "Cannot convert the literal '5' to the expected type 'Edm.String'."],
     [{ employees: "not-integer" }, "0x80048d19", "Cannot convert the literal 'not-integer' to the expected type 'Edm.Int32'."],
     [{ name: "x".repeat(41) }, "0x80044331", "A validation error occurred.  The length of the 'name' attribute of the 'account' entity exceeded the maximum allowed length of '40'."],
-    [{ openedon: "2026-02-30" }, "0x80040239", null],
+    [{ openedon: "2026-02-30" }, "0x80048d19", null],
   ];
   for (const [body, innerCode, message] of cases) {
     const response = await json(`/_api/accounts(${G(1)})`, { method: "PATCH", body });
@@ -462,7 +462,10 @@ test("write validation follows Dataverse types inside the CDSError envelope", as
     if (message) assert.equal(response.body.error.innererror.message, message);
   }
   const dateOnly = await json(`/_api/accounts(${G(1)})?$select=openedon`, { method: "PATCH", body: { openedon: "2026-02-03T22:00:00Z" }, headers: { Prefer: "return=representation" } });
-  assert.equal(dateOnly.body.openedon, "2026-02-03");
+  assert.equal(dateOnly.status,400,'true DateOnly uses the Edm.Date reader, not timestamp truncation');
+  assert.equal(dateOnly.body.error.innererror.code,'0x80048d19');
+  const calendar = await json(`/_api/accounts(${G(1)})?$select=openedon`, { method: 'PATCH', body: {openedon:'2026-02-03'}, headers:{Prefer:'return=representation'} });
+  assert.equal(calendar.body.openedon,'2026-02-03');
   const bad = await json(`/_api/accounts(${G(1)})`, { method: "PATCH", body: { name: "" } });
   assert.equal(bad.status, 204, "empty text is stored as null");
 });

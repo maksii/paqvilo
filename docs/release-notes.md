@@ -8,6 +8,14 @@ Windows state ownership ignores NTFS access-only ChangeTime updates; the publish
 `paqvilo mirage verify-storage` command checks streaming, journals and volume performance.
 An evidenced `observed.webApiDateParsing: month-first` option converts portal Web API
 date strings while retaining ISO-only direct datastore/query behavior.
+An isolated native CRUD comparison corrected the initial date closure: true DateOnly
+uses the Edm.Date calendar reader, while DateOnly display on UserLocal/TimeZoneIndependent
+retains instant storage. Fractional seconds truncate; independent values avoid timezone
+shifts. Month-first parsing includes English month names and a configurable two-digit
+year cutoff. Explicit evidenced timezone rules support seasonal formatted Web API values.
+The native corpus checks 170 cases and backend persistence; it does not establish universal
+date/time or native-form parity. Dataverse provisioning also retains explicit datetime
+display formats and reconciles transient metadata-read 404s after acknowledged creates.
 
 Packs can contribute validated, read-only `configurationPresets`; a data preset's
 `configurationPreset` applies only with `applyConfiguration: true`. Status, acceptance

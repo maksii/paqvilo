@@ -1,7 +1,7 @@
 import { parseFetchXml, DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
 import { planFetch } from "./fetchxml-engine.mjs";
-import { fieldKind, GUID_PATTERN, portalMonthFirstDate } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, isDateOnlyField, portalDateOnly, portalMonthFirstDate } from "./dataverse-values.mjs";
 import {isExactNumeric} from './exact-numeric.mjs';
 import {attachODataReaderDetails, odataConversionDetails} from './webapi-error-details.mjs';
 import {
@@ -444,6 +444,10 @@ export function webApiPolicy(portal, store, entity) {
       if (value != null && (column === mapping.idColumn || fieldKind(definitionOf(column)) === "guid") &&
           (typeof value !== "string" || !GUID_PATTERN.test(value)))
         throw attachODataReaderDetails(new DataError(`Cannot convert the literal '${typeof value === "object" ? JSON.stringify(value) : String(value)}' to the expected type 'Edm.Guid'.`, 400, "InvalidValue", { innerCode: "0x80048d19" }), portal.observed?.webApiErrorDetails === "odata-wrapper" ? odataConversionDetails(value, "Edm.Guid", column) : null);
+      const dateDefinition = definitionOf(column) ?? store.fieldDefinition(mapping.logicalName, column);
+      if (value != null && fieldKind(dateDefinition) === 'datetime' && isDateOnlyField(dateDefinition) &&
+          portalDateOnly(value) === null)
+        throw attachODataReaderDetails(new DataError(`Cannot convert the literal to the expected type 'Edm.Date'.`, 400, 'InvalidValue', {innerCode:'0x80048d19'}), portal.observed?.webApiErrorDetails === 'odata-wrapper' ? odataConversionDetails(value, 'Edm.Date', column) : null);
       if (
         rel &&
         !name.endsWith("@odata.bind") &&
@@ -503,8 +507,10 @@ export function webApiPolicy(portal, store, entity) {
                 value,
                 operation,
               )
+          : value != null && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime' && isDateOnlyField(definition ?? store.fieldDefinition(mapping.logicalName, physical))
+            ? portalDateOnly(value)
           : portal.observed?.webApiDateParsing === 'month-first' && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
-            ? portalMonthFirstDate(value) ?? value
+            ? portalMonthFirstDate(value, {twoDigitYearMax: portal.observed.webApiTwoDigitYearMax ?? 2049}) ?? value
             : value;
     }
     return result;

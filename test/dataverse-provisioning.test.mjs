@@ -169,6 +169,29 @@ test('mutations are not blindly retried and server responses do not leak through
   await assert.rejects(failing.request('EntityDefinitions',{method:'POST',body:{}}),e=>e.code==='UNKNOWN_COMMIT'&&!e.message.includes('invented-secret'));
 });
 
+test('acknowledged table and lookup creates reconcile transient metadata read absence without repeating writes',async t=>{
+  const {state,client}=await serverFixture(t),get=client.get.bind(client),missed=new Set();
+  client.get=async route=>{
+    const newlyCreatedPrimary=route.includes("Attributes(LogicalName='tst_name')")&&state.tables.has(route.match(/LogicalName='([^']+)'/)?.[1]);
+    const newlyCreatedLookup=route.includes("Attributes(LogicalName='tst_nodeid')")&&state.relationships.length;
+    if((newlyCreatedPrimary||newlyCreatedLookup)&&!missed.has(route)){missed.add(route);const error=new Error('Invented metadata propagation delay');error.status=404;throw error;}
+    return get(route);
+  };
+  const journal=await applyManifest(fixtureManifest(),{client,expectedOrganisationId:state.organisationId});
+  assert.equal(journal.state,'Created');assert.ok(missed.size>=3);
+  assert.equal(state.requests.filter(r=>r.method==='POST'&&r.route==='EntityDefinitions').length,2);
+  assert.equal(state.requests.filter(r=>r.method==='POST'&&r.route==='RelationshipDefinitions').length,2);
+});
+
+test('datetime manifest format is independent of behavior and participates in drift checks',()=>{
+  for(const behavior of ['UserLocal','TimeZoneIndependent'])for(const format of ['DateOnly','DateAndTime']){
+    const manifest=fixtureManifest(),column=manifest.tables[0].columns.find(c=>c.type==='datetime');Object.assign(column,{behavior,format});
+    const action=compileManifest(manifest).actions.find(a=>a.key==='column:tst_node.tst_date');assert.equal(action.body.Format,format);assert.equal(action.body.DateTimeBehavior.Value,behavior);
+    assert.equal(compatible({...action.body,Format:format==='DateOnly'?'DateAndTime':'DateOnly'},action.body),false);
+  }
+  for(const [behavior,format] of [['DateOnly','DateAndTime'],['UserLocal','invalid']]){const manifest=fixtureManifest();Object.assign(manifest.tables[0].columns.find(c=>c.type==='datetime'),{behavior,format});assert.throws(()=>validateManifest(manifest),/format/);}
+});
+
 test('schema mutations have a longer deadline while timeout outcomes still require reconciliation',async()=>{
   let requests=0;
   const client=new DataverseClient({environmentUrl:'https://fictional.crm.example',token:async()=>'invented-token',timeoutMs:10,mutationTimeoutMs:30,fetchImpl:async(_url,{signal})=>{

@@ -3,6 +3,7 @@
 import { DataError } from "./data-error.mjs";
 import {isExactNumeric,numericPair,compareNumeric,formatExactNumeric,decimalParts,parseNumericLiteral} from './exact-numeric.mjs';
 import { FISCAL_OPERATORS, fiscalCalendar, fiscalOperatorPredicate, fiscalPeriodOf } from "./fiscal-calendar.mjs";
+import { compileFormattedTimeZone } from './formatted-time-zone.mjs';
 
 export const own = (obj, key) =>
   obj != null && Object.prototype.hasOwnProperty.call(obj, key);
@@ -97,29 +98,48 @@ export function fieldKind(definition) {
   if (kind === "number" && Array.isArray(definition.options)) return "choice";
   return kind;
 }
+export function dateTimeBehavior(definition) {
+  const value = definition?.dateTimeBehavior ?? definition?.behavior;
+  const behavior = String(value?.Value ?? value ?? '').toLowerCase();
+  return ({1:'userlocal',2:'dateonly',3:'timezoneindependent'})[behavior] ?? behavior;
+}
 export function isDateOnlyField(definition) {
-  if (!definition) return false;
-  const behavior = String(
-    definition.dateTimeBehavior ?? definition.behavior ?? "",
-  ).toLowerCase();
-  const format = String(definition.format ?? "").toLowerCase();
-  return (
-    behavior === "dateonly" ||
-    behavior === "2" ||
-    (format === "dateonly" && behavior !== "userlocal")
-  );
+  const behavior = dateTimeBehavior(definition);
+  // Format controls presentation, not storage. Keep the legacy format-only
+  // schema usable when no behavior metadata was supplied.
+  return behavior === 'dateonly' || (!behavior && String(definition?.format ?? '').toLowerCase() === 'dateonly');
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
-/** Opt-in portal conversion; direct data/query date parsing remains ISO-only. */
-export function portalMonthFirstDate(value) {
+/** Edm.Date's ISO calendar reader accepts unpadded month/day, not surrounding whitespace. */
+export function portalDateOnly(value) {
   if (typeof value !== 'string') return null;
-  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i.exec(value.trim());
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(value);
+  if (!match || +match[1] === 0) return null;
+  const canonical = `${match[1]}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`;
+  return parseDateValue(canonical) ? canonical : null;
+}
+/** Opt-in portal conversion; direct data/query date parsing remains ISO-only. */
+const MONTH_FIRST_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i;
+const ENGLISH_MONTHS = new Map(['january','february','march','april','may','june','july','august','september','october','november','december'].flatMap((name,index) => [[name,index+1],[name.slice(0,3),index+1]]));
+export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
+  if (typeof value !== 'string') return null;
+  let text = value.trim();
+  const named = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})(.*)$/i.exec(text);
+  if (named) {
+    const month = ENGLISH_MONTHS.get(named[1].toLowerCase());
+    if (!month) return null;
+    text = `${month}/${named[2]}/${named[3]}${named[4]}`;
+  }
+  const match = MONTH_FIRST_DATE.exec(text);
   if (!match) return null;
+  if (!Number.isInteger(twoDigitYearMax) || twoDigitYearMax < 99 || twoDigitYearMax > 9999) return null;
+  let year = +match[3];
+  if (match[3].length === 2) { year += Math.floor(twoDigitYearMax / 100) * 100; if (year > twoDigitYearMax) year -= 100; }
   let hour = +(match[4] ?? 0);
   if (match[8]) { if (hour < 1 || hour > 12) return null; hour = hour % 12 + (match[8].toUpperCase() === 'PM' ? 12 : 0); }
   const pad = text => String(text).padStart(2, '0');
-  const date = `${match[3]}-${pad(match[1])}-${pad(match[2])}`;
+  const date = `${String(year).padStart(4,'0')}-${pad(match[1])}-${pad(match[2])}`;
   const result = match[4] === undefined ? date : `${date}T${pad(hour)}:${match[5]}:${match[6] ?? '00'}${match[7] ?? ''}Z`;
   return parseDateValue(result) ? result : null;
 }
@@ -179,7 +199,7 @@ export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
     +match[4],
     +match[5],
     +(match[6] ?? 0),
-    Math.round(fraction),
+    Math.trunc(fraction),
   );
   if (!matchesCalendar(ms, match)) return null;
   if (zone && zone.toUpperCase() !== "Z") {
@@ -714,7 +734,6 @@ export function formattedValue(value, definition, settings = {}) {
     value = scalar(value);
   }
   const kind = fieldKind(definition);
-  const offset = Number(settings.timeZoneOffsetMinutes ?? 0);
   switch (kind) {
     case "choice":
       return optionLabel(definition, value);
@@ -741,9 +760,13 @@ export function formattedValue(value, definition, settings = {}) {
         ? `${settings.currencySymbol ?? definition?.currencySymbol ?? ""}${formatNumber(value, Number.isInteger(definition?.precision) ? definition.precision : 2)}`
         : undefined;
     case "datetime": {
-      const parsed = parseDateValue(value, { timeZoneOffsetMinutes: offset });
+      const parsed = parseDateValue(value);
       if (!parsed) return undefined;
-      const dateOnly = parsed.dateOnly || isDateOnlyField(definition);
+      const behavior = dateTimeBehavior(definition);
+      const dateOnly = isDateOnlyField(definition) || String(definition?.format ?? '').toLowerCase() === 'dateonly';
+      const offsetAt = settings.timeZoneOffsetAt ?? compileFormattedTimeZone(settings.formattedValueTimeZone);
+      const offset = isDateOnlyField(definition) || behavior === 'timezoneindependent' ? 0 :
+        offsetAt ? offsetAt(parsed.ms) : Number(settings.timeZoneOffsetMinutes ?? 0);
       return formatDotNetDate(
         parsed.ms,
         dateOnly
