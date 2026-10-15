@@ -223,6 +223,7 @@ function json(res, status, value, headers = {}) {
 export async function createSimulator({
   sourceDir,
   stateFile,
+  persistence,
   preset,
   presetMode = 'always',
   port = 0,
@@ -272,7 +273,7 @@ export async function createSimulator({
   if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw error('Use deploymentProfiles or the legacy deploymentProfile option, not both.');
   let persistedPin = initial?.simulator?.deploymentProfilePin ?? null;
   if (stateFile) {
-    try { persistedPin = JSON.parse(await fs.readFile(stateFile, 'utf8')).simulator?.deploymentProfilePin ?? null; }
+    try { const { readStateFile } = await import('./lib/state-storage.mjs'); persistedPin = (await readStateFile(stateFile, { sections: ['simulator'] })).simulator?.deploymentProfilePin ?? null; }
     catch (cause) { if (cause.code !== 'ENOENT') throw cause; }
   }
   let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin);
@@ -413,6 +414,7 @@ export async function createSimulator({
   const startupPreset = { name: preset ?? null, mode: presetMode, applied: Boolean(preset && (presetMode === 'always' || !stateExisted)) };
   const store = await new DataStore({
     file: stateFile,
+    persistence,
     presetLibrary: generatedPresets,
     platform: platformOption,
     state: applySolutions(initial ?? initialState(portal, bootstrapOptions())),
@@ -528,6 +530,10 @@ export async function createSimulator({
     requests = [];
   const audit = new AuditLog(),
     trace = new AsyncLocalStorage();
+  store.onSave = ({ durationMs, mode }) => {
+    const context = trace.getStore();
+    if (context) { context.saveMs = (context.saveMs ?? 0) + durationMs; context.saveMode = mode; }
+  };
   // Enforce the visitor's local-only contract at the outbound boundary too:
   // configuration may change while an asynchronous render is in progress.
   for (const method of ['request', 'fetchXml']) if (typeof live[method] === 'function') {
@@ -1911,7 +1917,10 @@ export async function createSimulator({
         const runtimeStore = {
           resolveMapping: (entity) => store.resolveMapping(entity),
           snapshot: (projection) => store.snapshot(projection),
-          replaceState: async (state, { expectedSnapshot } = {}) => {
+          snapshotDigest: () => store.snapshotDigest(),
+          replaceState: async (state, { expectedSnapshot, expectedDigest } = {}) => {
+            if (expectedDigest !== undefined && store.snapshotDigest() !== expectedDigest)
+              throw error("Local state changed during reference reads; enrichment was not applied.", 409, "StateConflict");
             if (expectedSnapshot !== undefined && JSON.stringify(store.snapshot()) !== expectedSnapshot)
               throw error("Local state changed during reference reads; enrichment was not applied.", 409, "StateConflict");
             await saveState(state);
@@ -3522,6 +3531,8 @@ export async function createSimulator({
         ...res[auditResponse],
         provider: context.provider,
         entity: context.entity,
+        saveMs: context.saveMs,
+        saveMode: context.saveMode,
         error: context.error ?? res[auditResponse]?.error,
         // Portal-shaped error bodies and the simulator's own code are both kept.
         portalError: res[auditResponse]?.error,

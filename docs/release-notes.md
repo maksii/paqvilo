@@ -2,6 +2,16 @@
 
 ## 0.9.4
 
+Consumer feedback 65-66: state loading and checkpoints use bounded JSON chunks. States
+of 16 MiB or more use a self-contained, checksummed checkpoint/row journal; small states
+remain JSON. Ordinary CRUD and declarative secondary effects use changed-row undo entries
+and durable journal appends instead of copying, hashing and rewriting every row. External
+state edits and stale runtimes remain conflicts. Trusted external plugin handlers retain
+their existing full rollback boundaries. `readStateFile` is public on the runtime and
+fixtures entry points; consumers must use it instead of parsing state files as JSON.
+The audit ledger reports `saveMs`/`saveMode`. `DataStore.compact()` rewrites an atomic
+checkpoint during an idle period. See [state storage](../mirage/docs/state-storage.md).
+
 Consumer feedback 57-63: Solution-resolved permission paths now classify the referenced
 side of one-to-many joins as multiplicative, including when recompiling saved states.
 Capture no longer inherits the runtime client's 30-second deadline; optional `--timeout`

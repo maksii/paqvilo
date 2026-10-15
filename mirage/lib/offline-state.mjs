@@ -1,6 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
+import { hashStateFile } from './state-stream.mjs';
 
 function discoveryDirectories(stateFile) {
   const directories = new Set([path.join(process.cwd(), '.paqvilo/simulator')]);
@@ -41,5 +41,5 @@ export async function assertOfflineState(stateFile, { directory, isRunning = run
 }
 
 export async function stateFileFingerprint(stateFile) {
-  return createHash('sha256').update(await fs.readFile(stateFile)).digest('hex');
+  return hashStateFile(stateFile);
 }

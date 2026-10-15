@@ -825,7 +825,8 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
   try {
     const { platformStylesStatus } = await import('../../mirage/lib/platform-styles.mjs');
     const file = projectPortal && loaded ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(loaded, projectPortal.id, path.join(miragePaths(cfg).discoveryRoot, 'projects')) : path.join(miragePaths(cfg).discoveryRoot, cfg.siteName, 'state.json');
-    platformStyles = platformStylesStatus(JSON.parse(await fs.readFile(file, 'utf8')).simulator?.shellProfile);
+    const { readStateFile } = await import('../../mirage/lib/state-storage.mjs');
+    platformStyles = platformStylesStatus((await readStateFile(file, { sections: ['simulator'] })).simulator?.shellProfile);
   } catch { /* Missing state uses the structural fallback. */ }
   const {deploymentProfilesStatus,resolveDeploymentProfiles}=await import('../../mirage/lib/deployment-profiles.mjs');
   const deploymentProfiles=await deploymentProfilesStatus(configured.deploymentProfiles ?? projectPortal?.deploymentProfiles ?? resolveDeploymentProfiles());

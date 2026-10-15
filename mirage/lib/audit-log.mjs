@@ -156,11 +156,15 @@ export class AuditLog {
         simulatorCode,
         provider: actualProvider,
         entity: actualEntity,
+        saveMs,
+        saveMode,
       } = {}) => {
         if (completed) return;
         completed = true;
         entry.durationMs =
           Math.round((performance.now() - started) * 100) / 100;
+        if (Number.isFinite(saveMs) && saveMs >= 0) entry.saveMs = Math.round(saveMs * 100) / 100;
+        if (['checkpoint', 'journal'].includes(saveMode)) entry.saveMode = saveMode;
         entry.status = Number.isInteger(status) ? status : 500;
         if (Number.isInteger(rowCount) && rowCount >= 0)
           entry.rowCount = rowCount;

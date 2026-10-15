@@ -1,11 +1,9 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { stateDigest } from './state-stream.mjs';
 
-export const stateFingerprint = (state) =>
-  createHash("sha256")
-    .update(JSON.stringify({ config: state.config, data: state.data }))
-    .digest("hex");
+export const stateFingerprint = state => stateDigest({ config: state.config, data: state.data });
 
 /** Loaded modules and files served on demand must both remain stable for evidence. */
 export const implementationEvidence = (loaded, current) => ({

@@ -13,6 +13,7 @@
     "paqvilo/mirage": [
       "DataError",
       "DataStore",
+      "readStateFile",
       "applySolutionData",
       "createMirageContext",
       "createSimulator",
@@ -94,6 +95,7 @@
       "formatViolations",
       "assertOfflineState",
       "stateFileFingerprint",
+      "readStateFile",
       "importPortal",
       "createPortalRenderer"
     ]

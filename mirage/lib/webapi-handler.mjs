@@ -1010,7 +1010,7 @@ function writeAndRepresent(t, mapping, params, write) {
       const row = outcome.row ?? outcome;
       const id = row[mapping.idColumn];
       return { outcome, id, body: params ? representationBody(t, mapping, id, params) : null };
-    }),
+    }, { incremental: true }),
   );
 }
 

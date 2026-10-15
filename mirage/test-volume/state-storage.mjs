@@ -1,0 +1,78 @@
+// Deliberately separate from the seconds-long unit suite. This exercises a
+// real >512 MiB self-contained state file and requires about 2 GiB free RAM.
+// node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { constants } from 'node:buffer';
+import { DataStore } from '../lib/data.mjs';
+import { hashStateFile } from '../lib/state-stream.mjs';
+
+const root = await fs.mkdtemp(join(tmpdir(), 'mirage-volume-'));
+try {
+  const rows = 600000, payload = 'x'.repeat(1024), file = join(root, 'state.json');
+  let store = new DataStore({ file, state: {
+    settings: { permissionMode: 'permissive' },
+    mappings: { item: { idColumn: 'itemid', entitySet: 'items' } },
+    tables: { item: Array.from({ length: rows }, (_, i) => ({ itemid: `row-${i}`, parentid: `row-${Math.floor(i / 40)}`, payload })) },
+  } });
+  const started = performance.now();
+  await store.init();
+  const bytes = (await fs.stat(file)).size;
+  assert.ok(bytes > constants.MAX_STRING_LENGTH, `${bytes} must exceed the engine string limit`);
+  assert.equal(await hashStateFile(file), store.persistedDigest);
+  const savedDigest = store.persistedDigest, savedMs = performance.now() - started;
+  store = null; global.gc?.();
+  const loading = performance.now();
+  store = await new DataStore({ file }).init();
+  assert.equal(store.persistedDigest, savedDigest);
+  assert.equal(store.state.tables.item.length, rows);
+  for (let i = 0; i < rows; i++) {
+    const row = store.state.tables.item[i];
+    assert.equal(row.itemid, `row-${i}`); assert.equal(row.payload, payload);
+    assert.equal(row.parentid, `row-${Math.floor(i / 40)}`);
+  }
+  const loadMs = performance.now() - loading;
+  const patching = performance.now();
+  for (let i = 0; i < 20; i++) await store.update('items', `row-${rows - 1 - i}`, { name: `patch-${i}` });
+  const patchMs = performance.now() - patching;
+  assert.ok(patchMs < 5000, `20 PATCHes took ${patchMs.toFixed(0)}ms`);
+  const digest = store.persistedDigest;
+  store = null; global.gc?.();
+  store = await new DataStore({ file }).init();
+  assert.equal(store.persistedDigest, digest);
+  for (let i = 0; i < 20; i++) assert.equal(store.state.tables.item[rows - 1 - i].name, `patch-${i}`);
+  await fs.appendFile(file, ' ');
+  await assert.rejects(store.update('items', 'row-0', { name: 'conflict' }), { code: 'StateConflict' });
+  assert.equal(store.state.tables.item[0].name, undefined);
+  store = null; global.gc?.();
+  const { createSimulator } = await import('../server.mjs');
+  const sourceDir = join(root, 'portal'); await fs.mkdir(sourceDir);
+  await fs.writeFile(join(sourceDir, 'website.yml'), 'adx_websiteid: site\nadx_name: Synthetic volume\n');
+  await fs.writeFile(join(sourceDir, 'sitesetting.yml'), '- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: name\n');
+  const guid = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
+  let app = await createSimulator({ sourceDir, stateFile: join(root, 'http-state.json'), watch: false, initial: {
+    settings: { permissionMode: 'permissive' }, mappings: { item: { idColumn: 'itemid', entitySet: 'items', fields: { name: { type: 'string' } } } },
+    tables: { item: Array.from({ length: 300000 }, (_, i) => ({ itemid: guid(i), payload: 'v'.repeat(128) })) },
+  } });
+  let httpPatchMs;
+  try {
+    const csrf = (await (await fetch(app.url + '/__sim/api/state?summary=1')).json()).csrf;
+    const patch = async n => {
+      const response = await fetch(`${app.url}/_api/items(${guid(n)})`, { method: 'PATCH', headers: { __RequestVerificationToken: csrf, 'content-type': 'application/json' }, body: JSON.stringify({ name: `http-${n}` }) });
+      assert.equal(response.status, 204, await response.text());
+    };
+    const httpStarted = performance.now();
+    for (let n = 0; n < 20; n++) await patch(299999 - n);
+    httpPatchMs = performance.now() - httpStarted;
+    assert.ok(httpPatchMs < 5000, `20 HTTP PATCHes took ${httpPatchMs.toFixed(0)}ms`);
+    await Promise.all([patch(21), patch(22)]);
+    const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
+    assert.ok(audit.items.every(entry => entry.saveMode === 'journal' && entry.saveMs >= 0));
+  } finally { await app.close(); app = null; global.gc?.(); }
+  const persisted = await new DataStore({ file: join(root, 'http-state.json') }).init();
+  for (let n = 0; n < 20; n++) assert.equal(persisted.state.tables.item[299999 - n].name, `http-${299999 - n}`);
+  assert.equal(persisted.state.tables.item[21].name, 'http-21'); assert.equal(persisted.state.tables.item[22].name, 'http-22');
+  console.log(JSON.stringify({ rows, bytes, saveMs: Math.round(savedMs), loadMs: Math.round(loadMs), twentyPatchMs: Math.round(patchMs), httpRows: 300000, twentyHttpPatchMs: Math.round(httpPatchMs), digestVerified: true, externalConflictVerified: true, concurrentClientsVerified: true }));
+} finally { await fs.rm(root, { recursive: true, force: true }); }

@@ -26,7 +26,7 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
   });
   if (new Set(entries.map(entry => entry.mapping.logicalName)).size !== entries.length) throw new Error('Each enrichment plan table may appear once.');
   const bridge = suppliedBridge ?? new LiveBridge({ origin, allowWrites: false });
-  const baseline = JSON.stringify(store.snapshot());
+  const baseline = store.snapshotDigest();
   const observations = [];
   try {
     if (!suppliedBridge) await bridge.connect(cdpUrl);
@@ -40,7 +40,7 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
       } });
       observations.push({ entry, mapping, ...collected });
     }
-    if (JSON.stringify(store.snapshot()) !== baseline) throw new Error('Local state changed during reference reads; enrichment was not applied.');
+    if (store.snapshotDigest() !== baseline) throw new Error('Local state changed during reference reads; enrichment was not applied.');
     const state = store.snapshot();
     const provenance = [];
     for (const observation of observations) {
@@ -53,7 +53,7 @@ export async function enrichReference({ store, origin, cdpUrl, plan, bridge: sup
     state.simulator ??= {};
     state.simulator.referenceImports = [...(state.simulator.referenceImports ?? []), { time: new Date().toISOString(), tables: provenance }].slice(-100);
     if (beforeCommit) await beforeCommit();
-    await store.replaceState(state, { expectedSnapshot: baseline });
+    await store.replaceState(state, { expectedDigest: baseline });
     return { applied: true, complete: true, tables: provenance };
   } finally { if (!suppliedBridge) await bridge.close(); }
 }
@@ -64,8 +64,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     // Require an existing workspace; the command never fabricates source configuration.
     await assertOfflineState(values.state);
     const fingerprint = await stateFileFingerprint(values.state);
-    const initial = JSON.parse(await fs.readFile(values.state, 'utf8'));
-    const store = await new DataStore({ file: path.resolve(values.state), state: initial }).init();
+    const store = await new DataStore({ file: path.resolve(values.state) }).init();
     const report = await enrichReference({ store, origin: values.origin, cdpUrl: values.cdp, plan: JSON.parse(await fs.readFile(values.plan, 'utf8')), beforeCommit: async () => {
       await assertOfflineState(values.state);
       if (await stateFileFingerprint(values.state) !== fingerprint) throw new Error('State file changed during reference reads; enrichment was not applied.');

@@ -1,6 +1,5 @@
 import {
   readFile,
-  writeFile,
   mkdir,
   rename,
   open,
@@ -22,6 +21,9 @@ import { expressionOperator } from "./extensions.mjs";
 import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
+import { StateStorage } from './state-storage.mjs';
+import { RowTransaction } from './row-transaction.mjs';
+import { stateDigest } from './state-stream.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
 import { validateExperimentPresets } from './experiment-presets.mjs';
@@ -476,10 +478,10 @@ export function reconcilePermissionDiagnostics(state) {
   state.simulator.importDiagnostics = existing;
   return state;
 }
-function normalizeState(state, presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults) {
+function normalizeState(state, presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, owned = false) {
   const result = {
     ...emptyState(),
-    ...clone(
+    ...(owned ? value => value : clone)(
       state
         ? { ...state, presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary) }
         : state,
@@ -675,12 +677,14 @@ function normalizeState(state, presetLibrary = builtinPresets, platform = state?
 }
 
 export class DataStore {
-  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults } = {}) {
+  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence } = {}) {
     this.file = file;
     this.presetLibrary = presetLibrary;
     this.platformConfig = platformConfig(platform);
     this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
     this.persistedDigest = null;
+    this.persistenceOptions = persistence;
+    this.storage = file ? new StateStorage(file, persistence) : null;
     this.queue = Promise.resolve();
     // Advances with every committed change (transact), so consumers such as OData
     // paging can bind to the data without digesting the whole state per request.
@@ -700,10 +704,10 @@ export class DataStore {
   }
   async init() {
     if (this.file) {
+      this.ensureStorage();
       try {
-        const raw = await readFile(this.file, "utf8");
-        this.state = normalizeState(JSON.parse(raw), this.presetLibrary, this.platformConfig);
-        this.persistedDigest = this.digest(raw);
+        this.state = normalizeState(await this.storage.load(), this.presetLibrary, this.platformConfig, true);
+        this.persistedDigest = this.storage.digest;
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
         this.persistedDigest = null;
@@ -742,6 +746,7 @@ export class DataStore {
     }
     return clone(selected);
   }
+  snapshotDigest() { return stateDigest(this.state); }
   summary() {
     const selected = this.snapshot({
       sections: [
@@ -774,6 +779,8 @@ export class DataStore {
   }
   async save() {
     if (!this.file) return;
+    this.ensureStorage();
+    const saveStarted = performance.now();
     await mkdir(dirname(this.file), { recursive: true });
     const lockPath = `${this.file}.lock`,
       lockToken = `${process.pid}:${randomUUID()}`,
@@ -795,26 +802,21 @@ export class DataStore {
       await lockHandle.close();
       lockHandle = null;
 
-      const current = await this.readPersistedDigest();
-      if (current !== this.persistedDigest)
-        throw new DataError(
-          "Local state changed outside this runtime; restart the simulator from the updated state file before writing",
-          409,
-          "StateConflict",
-        );
-
-      const serialized = JSON.stringify(this.state, null, 2) + "\n";
-      await writeFile(temp, serialized, { flag: "wx" });
+      await this.storage.assertUnchanged();
+      if (this.storage.journal && this.rowTransaction) {
+        await this.storage.appendChanges(this.rowTransaction.changes());
+        this.persistedDigest = this.storage.digest;
+        this.recordSave(performance.now() - saveStarted, 'journal');
+        return;
+      }
+      const prepared = await this.storage.prepareCheckpoint(temp, this.state);
       // Recheck immediately before replacement to catch non-cooperating edits
       // made while the temporary snapshot was being prepared.
-      if ((await this.readPersistedDigest()) !== this.persistedDigest)
-        throw new DataError(
-          "Local state changed outside this runtime; restart the simulator from the updated state file before writing",
-          409,
-          "StateConflict",
-        );
+      await this.storage.assertUnchanged();
       await rename(temp, this.file);
-      this.persistedDigest = this.digest(serialized);
+      await this.storage.checkpointCommitted(prepared);
+      this.persistedDigest = this.storage.digest;
+      this.recordSave(performance.now() - saveStarted, 'checkpoint');
     } finally {
       if (lockHandle) await lockHandle.close().catch(() => {});
       await rm(temp, { force: true }).catch(() => {});
@@ -828,16 +830,25 @@ export class DataStore {
       }
     }
   }
+  recordSave(durationMs, mode) {
+    this.lastSave = { durationMs: Math.round(durationMs * 100) / 100, mode };
+    // Observers cannot turn a durable commit into a rolled-back request.
+    try { this.onSave?.({ ...this.lastSave }); } catch { /* observer only */ }
+  }
+  ensureStorage() {
+    // Embedded stores historically bind a file after creating an in-memory
+    // fixture. Preserve that workflow without retaining another file's CAS.
+    if (!this.storage || this.storage.file !== this.file) {
+      this.storage = new StateStorage(this.file, this.persistenceOptions);
+      this.persistedDigest = null;
+    }
+  }
   digest(raw) {
     return createHash("sha256").update(raw).digest("hex");
   }
   async readPersistedDigest() {
-    try {
-      return this.digest(await readFile(this.file, "utf8"));
-    } catch (error) {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    }
+    this.ensureStorage();
+    return this.storage.persistedDigest();
   }
   /** Serialize reads that may invoke backend plugin writes. Pure reads do not
    * change the persisted state or its revision. Invoke this only at a request
@@ -846,23 +857,32 @@ export class DataStore {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
   ensureReadSnapshot() {
+    this.promoteRowTransaction();
     this.pluginRollbackBoundary?.ensureSnapshot?.();
   }
-  transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false } = {}) {
+  promoteRowTransaction() {
+    if (!this.rowTransaction) return;
+    const transaction = this.rowTransaction;
+    this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
+    transaction.promoted = true; this.rowTransaction = null;
+  }
+  transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false, incremental = false } = {}) {
     const run = this.queue.then(async () => {
-      const boundary = { backup: lazyReadSnapshot ? null : clone(this.state), independentCommit: false,eventCount:0 };
-      let initialState = skipSaveIfUnchanged && !lazyReadSnapshot ? JSON.stringify(this.state) : null;
+      // Arbitrary extension callbacks retain the established full rollback
+      // boundary. Core CRUD/declarative handlers use the bounded undo journal.
+      const rowTransaction = incremental ? new RowTransaction(this) : null;
+      const previousRows = this.rowTransaction; this.rowTransaction = rowTransaction;
+      const boundary = { backup: lazyReadSnapshot || rowTransaction ? null : clone(this.state), independentCommit: false,eventCount:0 };
       if (lazyReadSnapshot) boundary.ensureSnapshot = () => {
         if (boundary.backup !== null) return;
         boundary.backup = clone(this.state);
-        initialState = JSON.stringify(this.state);
       };
       const previousBoundary=this.pluginRollbackBoundary,previousTransaction=this.pluginInTransaction;
       const previousEvents=this.committedEventCandidates;this.committedEventCandidates=[];
       this.pluginRollbackBoundary=boundary;this.pluginInTransaction=false;
       try {
         const result = await fn();
-        if (!skipSaveIfUnchanged || initialState !== null && JSON.stringify(this.state) !== initialState) {
+        if (!skipSaveIfUnchanged || boundary.independentCommit || boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup)) {
           await this.save();
           this.revision++;
         }
@@ -871,16 +891,69 @@ export class DataStore {
         // SDK/paging/column metadata required by the transport adapter.
         return cloneResult ? clone(result) : result;
       } catch (error) {
+        if (!rowTransaction?.promoted) rowTransaction?.rollback();
+        this.rowIndexes = null;
         if (boundary.backup !== null) this.state = boundary.backup;
         if(boundary.independentCommit){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
         throw error;
       } finally {
+        if (rowTransaction?.promoted || !rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)) this.rowIndexes = null;
+        this.rowTransaction = previousRows;
         this.pluginRollbackBoundary=previousBoundary;this.pluginInTransaction=previousTransaction;
         this.committedEventCandidates=previousEvents;
       }
     });
     this.queue = run.catch(() => {});
     return run;
+  }
+  /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
+   * with writes; call during an idle period to bound append-journal disk usage. */
+  compact() {
+    const run = this.queue.then(() => this.save());
+    this.queue = run.catch(() => {}); return run;
+  }
+  writeRow(table, rows, index, row) {
+    const cached = this.rowIndexes?.get(rows);
+    if (cached && !equal(rows[index]?.[cached.column], row[cached.column])) this.rowIndexes.delete(rows);
+    if (this.rowTransaction) this.rowTransaction.set(table, rows, index, row);
+    else rows[index] = row;
+  }
+  mutateRow(table, rows, index, values) {
+    const cached = this.rowIndexes?.get(rows);
+    if (cached && own(values, cached.column) && !equal(rows[index][cached.column], values[cached.column])) this.rowIndexes.delete(rows);
+    if (this.rowTransaction) this.rowTransaction.mutate(table, rows, index, values);
+    else Object.assign(rows[index], values);
+  }
+  insertRow(table, rows, row) {
+    if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
+    else rows.push(row);
+    const cached = this.rowIndexes?.get(rows);
+    if (cached) {
+      const id = row[cached.column];
+      if (typeof id !== 'string') this.rowIndexes.delete(rows);
+      else { const key = comparable(id); if (!cached.indexes.has(key)) cached.indexes.set(key, rows.length - 1); cached.length = rows.length; }
+    }
+  }
+  removeRow(table, rows, index) {
+    if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
+    else rows.splice(index, 1);
+    this.rowIndexes?.delete(rows);
+  }
+  rowIndex(mapping, rows, id) {
+    // Preserve the existing coercive comparison for non-string identifiers.
+    if (typeof id !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
+    this.rowIndexes ??= new WeakMap();
+    let cached = this.rowIndexes.get(rows);
+    if (!cached || cached.column !== mapping.idColumn || cached.length !== rows.length) {
+      const indexes = new Map();
+      for (let index = 0; index < rows.length; index++) {
+        const value = rows[index][mapping.idColumn];
+        if (typeof value !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
+        const key = comparable(value); if (!indexes.has(key)) indexes.set(key, index);
+      }
+      cached = { column: mapping.idColumn, length: rows.length, indexes }; this.rowIndexes.set(rows, cached);
+    }
+    return cached.indexes.get(comparable(id)) ?? -1;
   }
   /** A synchronous SDK request has its own atomic write, unless its caller
    * already participates in the plugin transaction. Independent PreValidation
@@ -911,8 +984,10 @@ export class DataStore {
     delivery=new Promise(resolve=>queueMicrotask(()=>{for(const provider of providers)try{provider(clone(captured),{sequence});}catch(error){this.committedEventErrors??=[];this.committedEventErrors.push({code:error.code??'CommittedEventConsumerError',message:error.message,sequence});if(this.committedEventErrors.length>50)this.committedEventErrors.shift();}resolve();})).finally(()=>this.committedEventDispatches.delete(delivery));this.committedEventDispatches.add(delivery);
   }
   async flushCommittedEvents(){while(this.committedEventDispatches?.size)await Promise.all([...this.committedEventDispatches]);}
-  async replaceState(state, { expectedSnapshot } = {}) {
+  async replaceState(state, { expectedSnapshot, expectedDigest } = {}) {
     return this.transact(() => {
+      if (expectedDigest !== undefined && this.snapshotDigest() !== expectedDigest)
+        throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
@@ -943,6 +1018,12 @@ export class DataStore {
   exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
     if(stage!==10)this.pluginInTransaction=true;
     if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+    if (this.rowTransaction) {
+      // Trusted external handlers may mutate arbitrary state, including nested
+      // SDK transactions. Promote only when one actually executes, preserving
+      // their independent PreValidation commit/rollback semantics.
+      this.promoteRowTransaction();
+    }
     const id = row[mapping.idColumn];
     const frame=this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes, portalRequest:options.portalRequest===true });
     if(frame){this.pluginFrames??=new WeakMap();this.pluginFrames.set(row,frame);}
@@ -1877,7 +1958,7 @@ export class DataStore {
   findByKey(mapping, key) {
     const rows = this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
-    if (!parts) return rows.find((r) => equal(r[mapping.idColumn], key));
+    if (!parts) return rows[this.rowIndex(mapping, rows, key)];
     const names = Object.keys(parts).sort();
     const declared = (mapping.alternateKeys ?? []).some((alternate) => {
       const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
@@ -2247,7 +2328,7 @@ export class DataStore {
           )
             continue;
         }
-        targets.push({ [m.idColumn]: randomUUID(), ...values });
+        this.insertRow(m.logicalName, targets, { [m.idColumn]: randomUUID(), ...values });
       } else if (
         action.operation === "update" ||
         action.operation === "delete"
@@ -2279,8 +2360,8 @@ export class DataStore {
               equal(field(targets[i], k), v),
             )
           ) {
-            if (action.operation === "delete") targets.splice(i, 1);
-            else Object.assign(targets[i], values);
+            if (action.operation === "delete") this.removeRow(m.logicalName, targets, i);
+            else this.mutateRow(m.logicalName, targets, i, values);
           }
       } else
         throw new DataError(
@@ -2595,7 +2676,7 @@ export class DataStore {
     );
     assertAttachmentPolicy(this.state, m.logicalName, row);
     this.assertAlternateKeys(m, row, rows, -1);
-    rows.push(row);
+    this.insertRow(m.logicalName, rows, row);
     this.applySecondary(effects);
     this.assertAllowed(m.logicalName, "create", row, identity);
     // Normalization drops raw navigation names; retain them for relationship validation.
@@ -2642,7 +2723,7 @@ export class DataStore {
     return row;
   }
   async create(entity, data, identity = {}, options = {}) {
-    return this.transact(() => this.createRecord(entity, data, identity, options));
+    return this.transact(() => this.createRecord(entity, data, identity, options), { incremental: true });
   }
   updateRecord(entity, id, data, identity = {}, options = {}) {
     const inherited=this.pluginInTransaction;try{return this.updateRecordCore(entity, id, data, identity, options);}finally{this.pluginInTransaction=inherited;}
@@ -2651,7 +2732,7 @@ export class DataStore {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
-    const index = rows.findIndex((r) => equal(r[m.idColumn], id));
+    const index = this.rowIndex(m, rows, id);
     if (index < 0) throw new DataError("Record not found", 404, "NotFound");
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, "update", rows[index], identity);
@@ -2706,7 +2787,7 @@ export class DataStore {
     const effectiveChanges = Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
     assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
-    rows[index] = row;
+    this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
     this.exportedPluginPhase(mapping, 'update', 40, target, row, previous, identity, changedAttributes, options);
     this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
@@ -2733,20 +2814,19 @@ export class DataStore {
       );
   }
   async update(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.updateRecord(entity, id, data, identity, options));
+    return this.transact(() => this.updateRecord(entity, id, data, identity, options), { incremental: true });
   }
   /**
    * PATCH semantics: update an existing record, or create it with the
    * supplied key. If-Match prevents creation; If-None-Match: * prevents update.
    */
   async upsert(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.upsertRecord(entity, id, data, identity, options));
+    return this.transact(() => this.upsertRecord(entity, id, data, identity, options), { incremental: true });
   }
   upsertRecord(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
-    const existing = (this.state.tables[m.logicalName] ?? []).find((r) =>
-      equal(r[m.idColumn], id),
-    );
+    const rows = this.state.tables[m.logicalName] ?? [];
+    const existing = rows[this.rowIndex(m, rows, id)];
     this.assertPrecondition(m, existing ?? null, options);
     if (existing || options.ifMatch != null)
       return {
@@ -2759,7 +2839,7 @@ export class DataStore {
     };
   }
   async remove(entity, id, identity = {}, options = {}) {
-    return this.transact(() => this.removeRecord(entity, id, identity, options));
+    return this.transact(() => this.removeRecord(entity, id, identity, options), { incremental: true });
   }
   /** Synchronous only inside a caller-owned transaction, including backend SDK RPC. */
   removeRecord(entity, id, identity = {}, options = {}) {
@@ -2834,14 +2914,15 @@ export class DataStore {
         if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
         if (rel.entity === mapping.logicalName) sides.push([rel.intersect.to, scalar(field(row, rel.to))]);
         for (const [column, value] of sides)
-          if (value != null)
-            this.state.tables[rel.intersect.entity] = this.state.tables[rel.intersect.entity].filter(
-              (edge) => !equal(scalar(field(edge, column)), value),
-            );
+          if (value != null) {
+            const edges = this.state.tables[rel.intersect.entity];
+            for (let index = edges.length - 1; index >= 0; index--)
+              if (equal(scalar(field(edges[index], column)), value)) this.removeRow(rel.intersect.entity, edges, index);
+          }
       }
     const rows = this.state.tables[mapping.logicalName] ?? [];
     const index = rows.findIndex((item) => equal(item[mapping.idColumn], row[mapping.idColumn]));
-    if (index >= 0) rows.splice(index, 1);
+    if (index >= 0) this.removeRow(mapping.logicalName, rows, index);
     this.applySecondary(effects);
     this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes,options);
     this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
@@ -2916,6 +2997,7 @@ export class DataStore {
   ) {
     return this.transact(() =>
       this.changeAssociationRecord(entity, id, navigation, targetId, identity, associate),
+      { incremental: true },
     );
   }
   changeAssociationRecord(entity, id, navigation, targetId, identity, associate) {
@@ -2971,7 +3053,7 @@ export class DataStore {
       if (associate) {
         const edge = { [edgeMapping.idColumn]: randomUUID(), ...values };
         this.assertAllowed(edgeMapping.logicalName, "create", edge, identity);
-        if (!existing.length) edges.push(edge);
+        if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
       } else {
         if (!existing.length)
           this.assertAllowed(
@@ -2987,9 +3069,9 @@ export class DataStore {
             edge,
             identity,
           );
-        this.state.tables[edgeMapping.logicalName] = edges.filter(
-          (edge) => !existing.includes(edge),
-        );
+        const removed = new Set(existing);
+        for (let index = edges.length - 1; index >= 0; index--)
+          if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
       }
     } else {
       if (relationship.to === targetMapping.idColumn)
