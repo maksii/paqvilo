@@ -117,3 +117,22 @@ test("grid money values carry the record currency's symbol and precision", async
   const formatted = Object.fromEntries(record.Attributes.map((a) => [a.Name, a.FormattedValue]));
   assert.deepEqual([formatted.sample_amount, formatted.sample_rate], ["€1,999.50", "€1.2346"]);
 });
+
+test("records created through the store get the same column defaults as seeded rows", async (t) => {
+  const { importSolutionData, applySolutionData } = await import("../lib/solution-data.mjs");
+  const { DataStore } = await import("../lib/data.mjs");
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "pp-record-defaults-"));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  for (const [file, body] of Object.entries({ "Entities/sample_thing/Entity.xml": entity, "OptionSets/sample_color.xml": colorSet })) {
+    await fs.mkdir(path.dirname(path.join(root, file)), { recursive: true });
+    await fs.writeFile(path.join(root, file), body);
+  }
+  const metadata = await importSolutionData([root]);
+  const store = new DataStore({ state: applySolutionData({ settings: { permissionMode: "permissive" } }, metadata, { webApiTables: ["sample_thing"] }) });
+  const created = await store.create("sample_thing", { sample_name: "Created" }, { admin: true });
+  const seeded = seedPresetBody({ tables: { sample_thing: [{ sample_thingid: "s", sample_name: "Seeded" }] } }, metadata.schema).tables.sample_thing[0];
+  const pick = (row) => ({ flag: row.sample_flag, color: row.sample_color, state: row.statecode, status: row.statuscode, code: row.sample_code });
+  assert.deepEqual(pick(created), { flag: true, color: 100000001, state: 0, status: 1, code: "T-1000" });
+  assert.deepEqual(pick(seeded), pick(created));
+  assert.ok(created.createdon && created.modifiedon === created.createdon);
+});

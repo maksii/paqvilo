@@ -11,6 +11,10 @@
 .crmEntityFormView table.section>tbody>tr>td.cell{vertical-align:top;padding:8px 12px;box-sizing:border-box}
 .crmEntityFormView .cell .info,.crmEntityFormView .cell .control{display:block;width:100%;box-sizing:border-box}
 .crmEntityFormView .cell .info{padding-bottom:4px}
+/* preform bundle: the empty width-less cell and a required cell's validator box are not laid out. */
+.crmEntityFormView .cell.zero-cell{display:none}
+.crmEntityFormView .cell div.table-info.required div.validators{display:none}
+.crmEntityFormView .cell.checkbox-cell div.table-info div.validators{display:none;clear:none}
 .crmEntityFormView .cell label{display:inline-block;margin-bottom:4px}
 .crmEntityFormView .form-control{display:block;width:100%;min-height:34px;box-sizing:border-box;padding:6px 12px;border:1px solid #ccc;border-radius:4px;background:#fff;color:#333}
 .crmEntityFormView textarea.form-control{min-height:80px}

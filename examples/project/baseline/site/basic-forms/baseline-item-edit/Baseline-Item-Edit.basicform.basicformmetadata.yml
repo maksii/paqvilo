@@ -162,12 +162,12 @@
   adx_setvalueonsave: false
   adx_type: 100000000
   adx_useattributedescriptionproperty: false
-  adx_validationregularexpression: '^[A-Za-z ]*$'
+  adx_validationregularexpression: '^[A-Za-z -]*$'
   adx_validationregularexpressionerrormessage: >-
     [
       {
         "LCID": 1033,
-        "Value": "Baseline text accepts letters and spaces only."
+        "Value": "Baseline text accepts letters, spaces and hyphens only."
       }
     ]
 - adx_adddescription: false

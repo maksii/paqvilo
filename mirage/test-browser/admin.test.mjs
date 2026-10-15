@@ -66,7 +66,7 @@ test(
           const url = new URL(req.url, "http://127.0.0.1");
           if (
             url.pathname === "/__sim/" ||
-            ["/__sim/app.mjs", "/__sim/style.css"].includes(url.pathname)
+            ["/__sim/app.mjs", "/__sim/style.css", "/__sim/persona-manager.mjs", "/__sim/persona-picker.mjs", "/__sim/persona-picker.css", "/__sim/persona-search.mjs", "/__sim/persona-picker-view.mjs"].includes(url.pathname)
           ) {
             const file =
               url.pathname === "/__sim/"
@@ -81,7 +81,7 @@ test(
                   : "text/html",
             );
             res.end(
-              fs.readFileSync(new URL(`../admin/${file}`, import.meta.url)),
+              fs.readFileSync(new URL(`../${["persona-search.mjs","persona-picker-view.mjs"].includes(file)?"lib":"admin"}/${file}`, import.meta.url)),
             );
             return;
           }
@@ -106,6 +106,7 @@ test(
             body = JSON.parse(Buffer.concat(chunks).toString() || "{}");
             mutations.push({ method: req.method, route, body });
           }
+          if (route[0] === "personas") {res.end(JSON.stringify({}));return;}
           if (route[0] === "state") {
             res.end(JSON.stringify(workspace));
             return;

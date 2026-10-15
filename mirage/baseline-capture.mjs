@@ -179,9 +179,10 @@ export async function pageRunner(page, options) {
   const runStep = async (step) => {
     const timeout = step.timeout ?? 20000;
     const q = (selector, scope = owned) => scope.locator(resolve(selector)).first();
-    // An `optional` step is skipped when its element is absent (forms of one table differ in the fields they show).
+    // An `optional` step is skipped when its element is absent or hidden (forms of one table differ in the fields they
+    // show; a state action button is hidden when the record is already in that state).
     const target = step.fill ?? step.type ?? step.select ?? step.check ?? step.click ?? step.press ?? step.clear;
-    if (step.optional && target !== undefined && !(await q(target).count().catch(() => 0))) return;
+    if (step.optional && target !== undefined && !(await q(target).isVisible().catch(() => false))) return;
     if (step.goto !== undefined) {
       const target = new URL(resolve(step.goto), origin);
       if (target.origin !== origin) throw new Error("Step navigates outside the portal origin");

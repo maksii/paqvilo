@@ -169,3 +169,16 @@ test('automatic plugin placeholders and editable mocks are inventoried, CSRF pro
   assert.equal(app.store.snapshot().tables.fx_widget[0].fx_title, 'Configured title');
   assert.equal((await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status, 200);
 });
+
+test('well-known SDK message ids resolve without a project observation', () => {
+  const createId = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
+  const xml = `<ImportExportXml><PluginAssembly FullName="Invented.WidgetRules, Version=2.0.0.0, Culture=neutral" PluginAssemblyId="${pluginId(1)}"><PluginTypes><PluginType Name="Invented.WidgetRules.Validate" AssemblyQualifiedName="Invented.WidgetRules.Validate, Invented.WidgetRules" PluginTypeId="${pluginId(2)}"/></PluginTypes><FileName>/PluginAssemblies/Rules.dll</FileName></PluginAssembly><SdkMessageProcessingStep Name="Step" SdkMessageProcessingStepId="${pluginId(3)}"><SdkMessageId>${createId}</SdkMessageId><PluginTypeId>${pluginId(2)}</PluginTypeId><PluginTypeName>Invented.WidgetRules.Validate, Invented.WidgetRules</PluginTypeName><PrimaryEntity>fx_widget</PrimaryEntity><Stage>10</Stage><Rank>3</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep></ImportExportXml>`;
+  const layers = [{ documents: [{ file: '/invented/Rules.dll.data.xml', facts: parseSchemaDocument(xml, { kind: 'customizations' }) }] }];
+  const step = importSolutionPlugins(layers).steps[0];
+  assert.equal(step.message, 'Create');
+  assert.equal(step.messageEvidence, 'platform-sdk-message');
+  assert.equal(step.unsupported, null);
+  // A project observation still overrides the platform table.
+  const observed = observedConfig({ evidence: 'Invented', sdkMessages: { [createId]: { name: 'Update', evidence: 'Invented row' } } });
+  assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
+});

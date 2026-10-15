@@ -1,4 +1,4 @@
-import { NativePostbackError, parseNativePostback } from './native-postback.mjs';
+import { NativePostbackError, parseNativePostback, decodeNativeViewState } from './native-postback.mjs';
 import { nativeFormSubmissionContext, submitPortalForm } from './form-service.mjs';
 import { approximateFormSchema, approximateAdvancedFormSchema } from './form-schema-fallback.mjs';
 import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
@@ -17,7 +17,10 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
   const decoded = parseNativePostback(entries, rendered.map(item => item.descriptor));
   const selected = contexts.filter(context => context.kind === decoded.kind && context.formId === decoded.formId);
   if (selected.length !== 1) throw new NativePostbackError('Rendered native form context is ambiguous');
-  const context = selected[0];
+  // An auto-generated step form: the earlier tabs' values and the current tab come from __VIEWSTATE.
+  const viewState = decodeNativeViewState([...entries].find(([name]) => name === '__VIEWSTATE')?.[1]);
+  const carried = viewState?.form === decoded.formId ? viewState : null;
+  const context = decoded.body.action === 'tab' ? { ...selected[0], autoStep: decoded.body.actionIndex } : carried ? { ...selected[0], autoStep: carried.autoStep } : selected[0];
   let page;
   try { page = new URL(requestUrl); }
   catch { throw new NativePostbackError('Native submission page URL required'); }
@@ -38,7 +41,7 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
       ...decoded.body,
       // WebForms posts the whole page, but navigation/state handlers do not save
       // the editable successful controls included in that request.
-      ...(decoded.body.action !== 'submit' ? { values: {} } : {}),
+      ...(decoded.body.action === 'submit' || decoded.body.action === 'tab' ? { values: { ...carried?.values, ...decoded.body.values } } : { values: {} }),
       recordId: context.recordId,
       ...(context.stepId ? { stepId: context.stepId } : {}),
       query,
@@ -54,6 +57,8 @@ export async function submitNativePostback(entries, rendered, options) {
   const submission = resolveNativeFormSubmission(posted, rendered, options?.requestUrl);
   // Files posted with the page (the attach-file control) are the submission's attachments.
   if (Array.isArray(options?.attachments) && options.attachments.length) submission.body.attachments = options.attachments.map(({ name, type, content }) => ({ name, type, content }));
+  // Next/Previous of an auto-generated step form re-render the page on another tab without a save.
+  if (submission.body.action === 'tab') return { result: { outcome: { type: 'tab' } }, context: submission.context };
   const definition = (submission.kind === 'webform' ? options.portal.advancedForms : options.portal.forms)?.find(row => row.id === submission.formId);
   if (!definition) return { result: await submitPortalForm(submission.kind, submission.formId, submission.body, options), context: submission.context };
   let schema = options.schemas?.[definition?.id] ?? options.schemas?.[definition?.name];
@@ -78,6 +83,8 @@ export async function submitNativePostback(entries, rendered, options) {
         }
       } else if (control === 'boolean' && /^(?:0|1|true|false)$/i.test(value)) value = /^(?:1|true)$/i.test(value);
       else if (control === 'textarea') value = value.replace(/\r\n|\r/g, '\n');
+      // The rich text control's hidden value is the editor's HTML as a JSON string (lib/platform.mjs).
+      else if (control === 'richtext' && value[0] === '"') { try { value = JSON.parse(value); } catch { /* posted text stays as typed */ } }
     }
     if (control === 'lookup') {
       const relationships = Object.entries(mapping?.relationships ?? {}).filter(([, relation]) => relation.many === false && relation.from === field.name);
@@ -120,6 +127,7 @@ export function nativePostbackResponse({ result, error, context, values, observe
   const outcome = result?.outcome;
   if (['redirect', 'step'].includes(outcome?.type) && typeof outcome.url === 'string' && outcome.url)
     return { status: 302, location: outcome.url };
+  if (outcome?.type === 'tab') return { status: 200, state: { ...context, values, outcome: { type: 'none' } } };
   // A form that stays visible after its save re-renders the posted values (live insert captures).
-  return { status: 200, state: { ...context, ...(outcome?.type === 'message' && outcome.hideForm === false && values ? { values } : {}), outcome: outcome ?? { type: 'none' } } };
+  return { status: 200, state: { ...context, ...(outcome?.type === 'message' && outcome.hideForm === false && values ? { values } : {}), outcome: outcome ?? { type: 'none' }, savedId: result?.recordId ?? null, savedName: result?.name ?? null } };
 }

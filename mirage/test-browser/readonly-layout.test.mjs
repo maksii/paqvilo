@@ -4,6 +4,7 @@ import http from "node:http";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 import { renderComponent } from "../lib/platform.mjs";
+import { clientDateControlsRuntime } from "../lib/date-controls.mjs";
 
 test("source-filled spacer and readonly controls preserve native two-column form layout", async t => {
   const html = await renderComponent("entityform", "Readonly", { request: { params: { id: "record" } } }, {
@@ -19,7 +20,8 @@ test("source-filled spacer and readonly controls preserve native two-column form
     } },
     store: { resolveMapping: () => ({ idColumn: "itemid", relationships: {} }), get: async () => ({ owner: { id: "account", name: "Example account", logical_name: "account" } }) },
   });
-  const server = http.createServer((_req, res) => res.end(`<!doctype html><style>.zero-cell{display:none}table{width:800px}td{vertical-align:top}input{width:90%}</style>${html}`));
+  // The response markup carries the bound date box only; the date-controls runtime builds the picker group as crmentityformview-datetime.js does.
+  const server = http.createServer((_req, res) => res.end(`<!doctype html><style>.zero-cell{display:none}table{width:800px}td{vertical-align:top}input{width:90%}</style><script>window.setIsDirty=()=>{};</script>${html}<script>${clientDateControlsRuntime()}</script>`));
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => {
     // A preconnected socket that never sent a request would hold server.close open.

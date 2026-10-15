@@ -1197,6 +1197,21 @@ export function tableFields(schema, tableName, options = {}) {
 }
 
 /**
+ * The column values Dataverse fills on create when a row omits them: the two-option and choice
+ * AppDefaultValue of the table's columns. The create pipeline (DataStore.createRecord through the
+ * solution mapping's recordDefaults) and seeded rows (seedRecordDefaults) share this table.
+ */
+export function tableColumnDefaults(attributes) {
+  const defaults = {};
+  for (const a of Object.values(attributes ?? {})) {
+    const raw = a.appDefaultValue;
+    if (a.type === "bit" && /^[01]$/.test(raw ?? "")) defaults[a.name] = raw === "1";
+    else if (a.type === "picklist" && /^-?\d+$/.test(raw ?? "") && raw !== "-1") defaults[a.name] = Number(raw);
+  }
+  return defaults;
+}
+
+/**
  * Rows a data pack or preset seeds bypass the create pipeline; give them what Dataverse sets on
  * create: `createdon`/`modifiedon` (the seeding time) on tables that export them, the column
  * default of omitted Yes/No and choice columns (AppDefaultValue), a state with its default status
@@ -1214,12 +1229,7 @@ export function seedRecordDefaults(tables, schema, { now = Date.now(), sequences
       out[name] = rows;
       continue;
     }
-    const defaults = [];
-    for (const a of Object.values(attributes)) {
-      const raw = a.appDefaultValue;
-      if (a.type === "bit" && /^[01]$/.test(raw ?? "")) defaults.push([a.name, raw === "1"]);
-      else if (a.type === "picklist" && /^-?\d+$/.test(raw ?? "") && raw !== "-1") defaults.push([a.name, Number(raw)]);
-    }
+    const defaults = Object.entries(tableColumnDefaults(attributes));
     // ponytail: {SEQNUM:n} formats only; RANDSTRING/DATETIMEUTC columns stay empty until a create fills them.
     const autonumbers = Object.values(attributes).filter((a) => /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? "") && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat));
     const states = attributes.statecode?.optionSet?.states ?? [];

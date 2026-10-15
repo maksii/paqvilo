@@ -2,6 +2,16 @@
 
 ## 0.9.4
 
+Consumer feedback 67: version 1 persona catalogues are supported in registered
+packs, preset bodies and dataset fragments. Sign-in and administration gain grouped
+search/facets, default/pinned/recent choices, metadata editors and catalogue scenarios.
+Roles/accounts remain contact-derived. Reusable contexts isolate deployment profiles,
+typed variables and snippet/settings overrides in bounded local runtime copies.
+Public additions: pack `validatePersonaCatalog`/`mergePersonaCatalogs`, testing
+`createPersonaSession`/`createPersonaBrowserContext`, and runtime-client catalogue
+and context lifecycle methods. Existing uncatalogued pickers and sessions remain
+compatible. See [persona catalogues](../mirage/docs/persona-catalog.md).
+
 Consumer feedback 65-66: state loading and checkpoints use bounded JSON chunks. States
 of 16 MiB or more use a self-contained, checksummed checkpoint/row journal; small states
 remain JSON. Ordinary CRUD and declarative secondary effects use changed-row undo entries

@@ -14,7 +14,7 @@ test('native grid form dialogs save, retain parent edits and refresh authored ha
   const page=await context.newPage(),errors=[],failures=[],requests=[];
   page.on('pageerror',e=>errors.push(e.message));
   page.on('response',r=>{if(r.status()>=400)failures.push({url:r.url(),status:r.status()});});
-  page.on('request',r=>{if(r.method()==='POST'&&(r.url().includes('/__sim/forms/')||r.url().includes('/_services/')))requests.push({path:new URL(r.url()).pathname,body:r.postDataJSON()});});
+  page.on('request',r=>{if(r.method()==='POST'&&(r.url().includes('/_portal/modal-form-template-path')||r.url().includes('/_services/')))requests.push({path:new URL(r.url()).pathname,body:r.url().includes('/_portal/')?Object.fromEntries(new URLSearchParams(r.postData())):r.postDataJSON()});});
   await page.goto(app.url+'/?id='+parentId);
   await page.getByLabel('Parent name',{exact:true}).fill('Unsaved parent edit');
   // Native subgrid: rows load from the subgrid data service after the shell renders.
@@ -54,9 +54,11 @@ test('native grid form dialogs save, retain parent edits and refresh authored ha
   assert.equal(await row(pendingId).count(),0);
   assert.equal(app.store.snapshot().tables.child.length,2);
   assert.equal(await page.getByLabel('Parent name',{exact:true}).inputValue(),'Unsaved parent edit');
-  const saves=requests.filter(entry=>entry.path.startsWith('/__sim/forms/'));
+  // The dialog's form posts the modal document back (WebForms postback) with its EntityID control.
+  const saves=requests.filter(entry=>entry.path.startsWith('/_portal/modal-form-template-path'));
   assert.equal(saves.length,1);
-  assert.equal(saves[0].body.recordId,pendingId);
+  assert.equal(Object.entries(saves[0].body).find(([name])=>name.endsWith('_EntityID'))[1],pendingId);
+  assert.equal(saves[0].body.__EVENTTARGET,'ctl00$ContentContainer$MainContent$EntityFormControl$UpdateButton');
   const deletes=requests.filter(entry=>entry.path==='/_services/entity-grid-delete/site');
   assert.equal(deletes.length,1);
   assert.deepEqual([deletes[0].body.LogicalName,deletes[0].body.Id],['child',pendingId]);

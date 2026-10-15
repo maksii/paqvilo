@@ -120,12 +120,13 @@ test("read-only form: MakeControlsReadonly marks labels, validators, summary and
   assert.match(html, /<div class="control" data-logical-name="parentcustomerid"><div><input [^>]*class="text form-control lookup form-control  readonly" readonly="readonly"/);
   assert.match(html, /<div class="control" data-logical-name="preferred"><div|<div class="control" data-logical-name="preferred"><select/);
   assert.doesNotMatch(html, /data-logical-name="[^"]*" tabindex/);
-  // Read-only date pickers (crmentityformview-datetime.js): no input group, no placeholder,
-  // a readonly="readonly" box and a hidden calendar button.
+  // Read-only date: the server renders the bound readonly="readonly" box alone (live response
+  // body); crmentityformview-datetime.js builds the picker group in the browser.
   assert.match(
     html,
-    /<div class="datetimepicker" role="none" data-sim-date-target="birthdate" data-sim-date-only="true"><input type="text" data-date-format="[^"]+"[^>]*class="form-control input-text-box readonly" readonly="readonly"><span class="input-group-addon" tabindex="0" role="button" title="Choose a date" aria-label="Choose a date" style="display: none;">/,
+    /<input name="[^"]*\$birthdate" type="text" id="birthdate" class="datetime form-control " data-ui="datetimepicker" data-type="date" data-attribute="birthdate" data-behavior="TimeZoneIndependent" value="[^"]*" readonly="readonly"><\/div>/,
   );
+  assert.doesNotMatch(html, /data-sim-date|_datepicker_description|class="datetimepicker"/);
   // No default button: no keypress handler, and an empty actions container.
   assert.doesNotMatch(html, /WebForm_FireDefaultButton/);
   assert.match(html, /<\/div><div class="actions"><\/div><\/div>/);

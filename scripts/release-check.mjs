@@ -110,6 +110,10 @@ export const REQUIRED_RELEASE_FILES = [
   'mirage/lib/bootstrap-fonts/glyphicons-halflings-regular.woff2',
   'mirage/lib/bootstrap-fonts/LICENSE-bootstrap.txt',
   'mirage/admin/app.mjs', 'mirage/admin/style.css',
+  'mirage/admin/persona-manager.mjs', 'mirage/admin/persona-picker.mjs', 'mirage/admin/persona-picker.css',
+  'mirage/lib/persona-catalog.mjs', 'mirage/lib/persona-search.mjs', 'mirage/lib/persona-picker-view.mjs',
+  'mirage/lib/persona-contexts.mjs', 'mirage/lib/persona-context-settings.mjs', 'mirage/testing/personas.mjs',
+  'mirage/docs/persona-catalog.md',
   'mirage/package.json',
   'mirage/package-lock.json', 'mirage/README.md',
   'mirage/docs/runtime-evidence.md',
@@ -138,7 +142,7 @@ export function validateReleaseFiles(files) {
   const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);
   const demoPluginSources = /^examples\/project\/components\/DataversePlugins\/[A-Za-z0-9._-]+\.(?:cs|csproj|json|md|snk)$/;
   const demoPluginAssembly = /^examples\/project\/solution\/PluginAssemblies\/[A-Za-z0-9_.{} /-]*PaqviloDemoPlugins\.dll$/;
-  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|docs\/baseline\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)|baseline\/(?:[a-z0-9-]+\.(?:mjs|json)|dataverse\/[a-zA-Z0-9/_.-]+\.(?:json|xml)|data\/catalogue\.json|site\/[a-zA-Z0-9./_ ,-]+\.(?:yml|html|css|js|png)|solution\/[a-zA-Z0-9/_.{}, +()*-]+\.(?:xml|json|yaml|xaml|dll|snk|js|css|html|resx|svg)))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md|docs\/baseline\/[a-z0-9-]+\.md|docs\/baseline\/catalog\/[a-z0-9-]+\.json))$/;
+  const allowed = /^(?:package\.json|npm-shrinkwrap\.json|README\.md|CONTRIBUTING\.md|AGENTS\.md|LICENSE|NOTICE|\.env\.example|paqvilo\.config\.yml|bin\/paqvilo\.mjs|scripts\/ensure-dependencies\.mjs|lense\/[a-z0-9/-]+\.mjs|docs\/[a-z0-9-]+\.md|docs\/baseline\/[a-z0-9-]+\.md|examples\/project\/(?:README\.md|package\.json|paqvilo\.config\.yml|gitignore\.template|(?:pack|test)\/[a-z0-9.-]+\.mjs|portal\/[a-zA-Z0-9./_-]+\.(?:yml|html|css|js)|baseline\/(?:[a-z0-9-]+\.(?:mjs|json)|dataverse\/[a-zA-Z0-9/_.-]+\.(?:json|xml)|data\/catalogue\.json|site\/[a-zA-Z0-9./_ ,-]+\.(?:yml|html|css|js|png)|solution\/[a-zA-Z0-9/_.{}, +()*-]+\.(?:xml|json|yaml|xaml|dll|snk|js|css|html|resx|svg)))|mirage\/(?:[a-z0-9-]+\.mjs|package(?:-lock)?\.json|README\.md|lib\/[a-z0-9-]+\.(?:mjs|js|css|json)|lib\/bootstrap-fonts\/(?:glyphicons-halflings-regular\.(?:eot|svg|ttf|woff2?)|LICENSE-bootstrap\.txt)|admin\/(?:index\.html|app\.mjs|style\.css|persona-(?:manager|picker)\.mjs|persona-picker\.css)|testing\/[a-z0-9-]+\.mjs|docs\/(?:README|[a-z0-9-]+)\.md|docs\/baseline\/[a-z0-9-]+\.md|docs\/baseline\/catalog\/[a-z0-9-]+\.json))$/;
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.

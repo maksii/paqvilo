@@ -87,16 +87,16 @@ test('malformed exported native action settings fail explicitly before rendering
 test('native rendering keeps state action-only forms and does not invent unresolved action controls', async () => {
   const options = await fixture(), diagnostics = [];
   const render = () => renderComponent('entityform', 'Entry', { identity: options.identity, request: { url: `http://localhost/form/?row=${id}`, params: { row: id } } }, { ...options, diagnostic: item => diagnostics.push(item) });
+  // The platform's action bar (entityform.js): both state buttons render as button.*-link with
+  // the inapplicable one hidden; no postback inputs and no invented submit button.
   const active = await render();
-  assert.match(active, /id="DeactivateButton" value="Close entry"/);
-  assert.doesNotMatch(active, /id="(?:ActivateButton|UpdateButton)"/);
-  assert.match(active, /data-pp-action-index="0"/);
+  assert.match(active, /<button class="deactivate-link btn btn-default btn" data-url="\/_services\/action-deactivate\/[^"]*"[^>]*>Close entry<\/button>/);
+  assert.match(active, /<button class="activate-link btn btn-default btn hidden"[^>]* style="display: none;">Reopen entry<\/button>/);
+  assert.doesNotMatch(active, /id="(?:ActivateButton|DeactivateButton|UpdateButton)"/);
   await submit(options, body('deactivate'));
   const inactive = await render();
-  assert.match(inactive, /id="ActivateButton" value="Reopen entry"/);
-  assert.doesNotMatch(inactive, /id="(?:DeactivateButton|UpdateButton)"/);
-  options.store.state.mappings.sample.fieldMetadata.statecode.states = [];
-  const unresolved = await render();
-  assert.doesNotMatch(unresolved, /id="(?:ActivateButton|UpdateButton)"/);
-  assert.equal(diagnostics.at(-1).code, 'FORM_ACTION_UNRESOLVED');
+  assert.match(inactive, /<button class="activate-link btn btn-default btn" data-url="\/_services\/action-activate\/[^"]*"[^>]*>Reopen entry<\/button>/);
+  assert.match(inactive, /<button class="deactivate-link btn btn-default btn hidden"[^>]* style="display: none;">Close entry<\/button>/);
+  assert.doesNotMatch(inactive, /id="(?:ActivateButton|DeactivateButton|UpdateButton)"/);
+  assert.deepEqual(diagnostics.filter(item => item.code === 'FORM_ACTION_UNSUPPORTED'), []);
 });

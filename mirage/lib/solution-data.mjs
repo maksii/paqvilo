@@ -7,6 +7,7 @@ import {
   scanSolutionSources,
   buildSolutionSchema,
   tableFields,
+  tableColumnDefaults,
   readSolutionZip,
 } from "./solution-schema.mjs";
 import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
@@ -56,13 +57,17 @@ function mappingFor(schema, name) {
       attributes: [...key.attributes],
       source: key.source,
     }));
+  // A created row receives the same column defaults as a seeded row (tableColumnDefaults):
+  // two-option/choice AppDefaultValue, then the active state with its default status reason.
+  const columnDefaults = tableColumnDefaults(table.attributes);
+  if (Object.keys(columnDefaults).length) mapping.recordDefaults = columnDefaults;
   const state = table.attributes.statecode;
   const states = state?.type === "state" ? (state.optionSet?.states ?? []) : [];
   const valid = states.filter((s) => Number.isInteger(s.value) && Number.isInteger(s.defaultStatus));
   if (valid.length) {
     mapping.stateStatusDefaults = Object.fromEntries(valid.map((s) => [s.value, s.defaultStatus]));
     const active = valid.find((s) => s.value === 0);
-    if (active) mapping.recordDefaults = { statecode: 0, statuscode: active.defaultStatus };
+    if (active) mapping.recordDefaults = { ...mapping.recordDefaults, statecode: 0, statuscode: active.defaultStatus };
   }
   return mapping;
 }

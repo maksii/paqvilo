@@ -114,6 +114,8 @@ test(
           pageMode: "local",
           identity: { id: "tester", roles: [] },
           live: { allowWrites: false },
+          // This suite asserts the JSON form endpoint; the core default is the WebForms postback.
+          observed: { nativeFormTransport: "json", evidence: "Invented loopback JSON transport fixture" },
           endpoints: [
             {
               id: "save-followup",

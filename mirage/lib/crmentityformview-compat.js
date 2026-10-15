@@ -273,7 +273,9 @@
         const previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
         const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
         const primary = frame.dataset.entityprimarykeyname || previous.get('entityprimarykeyname') || '';
-        url.search = new URLSearchParams({ entityid: id, entityname, ...(primary ? { entityprimarykeyname: primary } : {}), formname: frame.dataset.formname, controlid: frame.dataset.controlid, ...(previous.has('lang') ? { isprofilepage: previous.get('isprofilepage') ?? 'false', lang: previous.get('lang') } : {}) });
+        // The platform client rebuilds the frame URL without the response's isprofilepage/lang
+        // parameters and with the primary key name parameter always present (live requests).
+        url.search = new URLSearchParams({ entityid: id, entityname, entityprimarykeyname: primary, formname: frame.dataset.formname, controlid: frame.dataset.controlid });
         if (frame.src !== url.href) frame.src = url.href;
         frame.setAttribute('tabindex', '0');
       }
@@ -282,6 +284,10 @@
     const quickJquery = jq();
     if (quickJquery) quickJquery(document).on('change.mirageQuickView', 'input', function () { refreshQuickViews(this); });
     else document.addEventListener('change', event => { if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target); });
+    // After the page's ready handlers (the anti-forgery token request comes first on live) the
+    // platform client replaces each bound frame's response URL; the first navigation is abandoned.
+    const refreshBoundQuickViews = () => setTimeout(() => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } }, 0);
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refreshBoundQuickViews, { once: true }); else refreshBoundQuickViews();
     const active = document.querySelector(".progress .list-group-item.active");
     if (active) {
       const label = active.textContent;

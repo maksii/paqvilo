@@ -85,6 +85,8 @@ export const NATIVE_CONTROLS_ROOT = `<div id="pp-native-controls-react-root"></d
 export const CKEDITOR_BASEPATH = "/js/BaseHtmlContentDesigner/Libs/msdyncrm_/libs/ckeditor/";
 
 const NATIVE_FORM_MARKER = /\bdata-pp-native-form\b/;
+/** The marker a failed native form control leaves (lib/platform.mjs RENDER_ABORT_MARKER). */
+const RENDER_ABORT_MARKER = "<!--paqvilo-mirage-render-aborted-->";
 const MULTISTEP_MARKER = /\bid="WebFormControl_[0-9a-f]{32}"/i;
 const LIST_MARKER = /\bclass="[^"]*\bentity-grid\b[^"]*\bentitylist\b|\bclass="[^"]*\bentitylist\b[^"]*\bentity-grid\b/;
 const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
@@ -92,7 +94,8 @@ const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
 // WebForms form, without form controls or event validation.
 const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
-const DATE_CONTROL_MARKER = /\bclass="[^"]*\binput-group datetimepicker\b|\bdata-date-format="/;
+// The response markup of a date control is the bound box (data-ui="datetimepicker"); the picker group is built in the browser.
+const DATE_CONTROL_MARKER = /\bdata-ui="datetimepicker"/;
 // The attach-file control posts its files with the page, so its form is multipart.
 const ATTACH_FILE_MARKER = /\bid="AttachFile"/;
 
@@ -145,12 +148,21 @@ export function localAspNetScript(url) {
  * WebForms equivalents load at the native AXD paths (LOCAL_ASPNET_SCRIPTS).
  */
 export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3", extraScripts = "", eventValidation = true } = {}) {
-  const viewState = `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
+  // A form component that keeps state across postbacks (auto-generated steps) supplies it as
+  // data-pp-viewstate on its wrapper; the page's __VIEWSTATE carries it, as ASP.NET would.
+  // A failed native form control aborts the server form's content (lib/platform.mjs
+  // RENDER_ABORT_MARKER): only the closing tags directly after the control survive, then the
+  // form ends; the layout outside the form (the footer) is unaffected.
+  const aborted = String(content ?? "").indexOf(RENDER_ABORT_MARKER);
+  if (aborted >= 0) content = content.slice(0, aborted) + (/^(?:\s*<\/[a-z][a-z0-9]*>)*/i.exec(content.slice(aborted + RENDER_ABORT_MARKER.length))?.[0] ?? "");
+  const componentState = /\sdata-pp-viewstate="([^"]*)"/.exec(String(content ?? ""));
+  if (componentState) content = String(content).replace(componentState[0], "");
+  const viewState = componentState ? componentState[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&") : `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.map((entry) => script(entry.path)).join("\n");
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
-  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
+  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && (dateControls || variant === "BootstrapV5") ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : "";

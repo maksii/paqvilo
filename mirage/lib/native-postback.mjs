@@ -1,3 +1,10 @@
+/**
+ * The native form transport of a site: a Power Pages export is always a WebForms portal, so
+ * native forms post the page back (__doPostBack) unless the project selects the JSON endpoint
+ * with observed.nativeFormTransport: json.
+ */
+export const nativeFormTransport = (observed) => observed?.nativeFormTransport === 'json' ? 'json' : 'postback';
+
 /** Source-derived WebForms names shared by rendering and postback decoding. */
 export const compactNativeControlId = (value) => String(value ?? "")
   .replace(/[{}]/g, "")
@@ -28,7 +35,25 @@ export class NativePostbackError extends Error {
 
 const invalid = (message) => { throw new NativePostbackError(message); };
 const dangerous = new Set(["__proto__", "prototype", "constructor"]);
-const actions = new Set(["submit", "previous", "delete", "deactivate", "activate"]);
+// "tab": an auto-generated step's Next/Previous (no save; actionIndex names the tab to show).
+const actions = new Set(["submit", "previous", "delete", "deactivate", "activate", "tab"]);
+
+/**
+ * Mirage's own __VIEWSTATE payload: an auto-generated step form keeps the tab index and the
+ * earlier tabs' posted values in the page's hidden field, as the platform keeps them in its
+ * ViewState. The value is client-supplied and bounded; only string values of safe names survive.
+ */
+export const encodeNativeViewState = (state) => "/wE" + Buffer.from(JSON.stringify({ v: 1, ...state })).toString("base64");
+export function decodeNativeViewState(text) {
+  if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;
+  let parsed;
+  try { parsed = JSON.parse(Buffer.from(text.slice(3), "base64").toString("utf8")); } catch { return null; }
+  if (!parsed || typeof parsed !== "object" || parsed.v !== 1 || typeof parsed.form !== "string") return null;
+  const values = {};
+  for (const [key, value] of Object.entries(parsed.values && typeof parsed.values === "object" ? parsed.values : {}))
+    if (typeof value === "string" && /^[a-z][\w]*$/i.test(key) && !dangerous.has(key)) values[key] = value;
+  return { form: parsed.form, autoStep: Number.isInteger(parsed.autoStep) && parsed.autoStep >= 0 ? parsed.autoStep : 0, values };
+}
 
 /**
  * The caller supplies only fields and actions resolved for a rendered component.
@@ -53,7 +78,8 @@ export function nativeFormPostbackDescriptor({ kind, formId, fields = [], action
   const boundActions = declaredActions.map((action) => {
     if (!action || typeof action.button !== "string" || !action.button || action.button.includes("$") || !actions.has(action.action)) invalid("Invalid declared native form action");
     if (action.actionIndex != null && (!Number.isInteger(action.actionIndex) || action.actionIndex < 0)) invalid("Invalid declared native action index");
-    const target = ids.buttons + action.button;
+    // Auto-generated step buttons are named inside the view (ids.names), the others after the control.
+    const target = (action.view ? ids.names : ids.buttons) + action.button;
     if (targets.has(target)) invalid("Ambiguous declared native form action");
     targets.add(target);
     return { target, action: action.action, ...(action.actionIndex != null ? { actionIndex: action.actionIndex } : {}) };
@@ -79,7 +105,14 @@ export function parseNativePostback(entries, descriptors) {
     entryCount++;
   }
   const targets = posted.get("__EVENTTARGET") ?? [];
-  if (targets.length !== 1 || !targets[0]) invalid("One native postback target required");
+  if (targets.length !== 1) invalid("One native postback target required");
+  // A WebForms submit button (an auto-generated step's Next) posts an empty __EVENTTARGET and
+  // its own name=value pair; the posted button name is the target then.
+  if (!targets[0]) {
+    const buttons = descriptors.flatMap((descriptor) => (descriptor?.actions ?? []).map((action) => action?.target)).filter((target) => posted.has(target));
+    if (buttons.length !== 1) invalid("One native postback target required");
+    targets[0] = buttons[0];
+  }
   const matches = descriptors.flatMap((descriptor) => {
     if (!descriptor || !Array.isArray(descriptor.actions) || !Array.isArray(descriptor.fields)) invalid("Invalid native postback descriptor");
     if (!["entityform", "webform"].includes(descriptor.kind) || typeof descriptor.formId !== "string" || !descriptor.formId) invalid("Invalid native postback identity");
@@ -100,7 +133,7 @@ export function parseNativePostback(entries, descriptors) {
   const argumentsPosted = posted.get("__EVENTARGUMENT") ?? [];
   if (argumentsPosted.length > 1) invalid("Ambiguous native postback argument");
   const values = {};
-  let consumed = targets.length + argumentsPosted.length;
+  let consumed = targets.length + argumentsPosted.length + (posted.has(targets[0]) ? posted.get(targets[0]).length : 0);
   for (const field of descriptor.fields) {
     const found = posted.get(field.wireName);
     if (!found) continue;

@@ -129,7 +129,7 @@
         const date = new Date(raw.getTime()), pad = (item, size = 2) => String(item).padStart(size, '0');
         if (field.dataset.type === 'date' || field.type === 'date') date.setHours(0, 0, 0, 0);
         const local = `${pad(date.getFullYear(), 4)}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}`;
-        if (field.hasAttribute('data-sim-date-value')) value = field.dataset.behavior === 'UserLocal'
+        if (field.dataset.ui === 'datetimepicker') value = field.dataset.behavior === 'UserLocal'
           ? date.toISOString().replace(/\.(\d{3})Z$/, '.$10000Z')
           : local + '.' + pad(date.getMilliseconds(), 3) + '0000';
         else if (field.type === 'date') value = local.slice(0, 10);

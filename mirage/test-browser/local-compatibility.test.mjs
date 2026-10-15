@@ -164,7 +164,7 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   ]);
   await page.locator("#effective_datepicker_description").waitFor();
   await page.locator("#effective_datepicker_description").evaluate((display) => {
-    const chooser = display.closest("[data-sim-date-target]").querySelector(".paqvilo-mirage-date-chooser");
+    const chooser = display.closest(".datetimepicker").querySelector(".paqvilo-mirage-date-chooser");
     chooser.value = "2025-02-03";
     chooser.dispatchEvent(new Event("change", { bubbles: true }));
   });

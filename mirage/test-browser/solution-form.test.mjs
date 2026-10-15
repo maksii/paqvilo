@@ -108,6 +108,8 @@ test("solution form layout creates typed data, saved view filters rows, and sour
       pageMode: "local",
       identity: { id: "editor", roles: ["Editor"] },
       live: { origin: null, allowWrites: false },
+      // This suite asserts the JSON form endpoint; the core default is the WebForms postback.
+      observed: { nativeFormTransport: "json", evidence: "Invented loopback JSON transport fixture" },
       endpoints: [],
       componentSchemas: {},
       externalAssets: false,

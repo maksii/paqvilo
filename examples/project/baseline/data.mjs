@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Baseline fixture data: one invented dataset with stable GUIDs, usable three ways —
+// Baseline fixture data: one invented dataset with stable GUIDs (2 parents + 1 deactivated, 8 items, 4 children + 1 deactivated), usable three ways —
 //   1. `reset` against the live environment (upsert every fixture row, delete every other row of
 //      the fixture tables, restore mutable values) so captures start from a known state;
 //   2. `mirageTables(testerContactId)` for the Mirage data pack (same rows, Mirage record shape);
@@ -25,9 +25,9 @@ export const OTHER_CONTACT = guid("contact:other");
 export const ACCOUNT = guid("account:baseline");
 export const CURRENCY = "a4300000-0000-4000-8000-000000000001"; // the demo's EUR currency record
 export const ids = {
-  parent1: guid("parent:1"), parent2: guid("parent:2"),
-  item1: guid("item:1"), item2: guid("item:2"), item3: guid("item:3"), item4: guid("item:4"), item5: guid("item:5"), item6: guid("item:6"), item7: guid("item:7"), item8: guid("item:8"),
-  child1: guid("child:1"), child2: guid("child:2"), child3: guid("child:3"), child4: guid("child:4"),
+  parent1: guid("parent:1"), parent2: guid("parent:2"), parent3: guid("parent:3"),
+  item1: guid("item:1"), item2: guid("item:2"), item3: guid("item:3"), item4: guid("item:4"), item5: guid("item:5"), item6: guid("item:6"), item7: guid("item:7"), item8: guid("item:8"), item9: guid("item:9"), item10: guid("item:10"), item11: guid("item:11"),
+  child1: guid("child:1"), child2: guid("child:2"), child3: guid("child:3"), child4: guid("child:4"), child5: guid("child:5"),
   note1: guid("note:1"), note2: guid("note:2"),
   account: ACCOUNT, tester: TESTER_CONTACT, other: OTHER_CONTACT,
 };
@@ -42,6 +42,8 @@ export function records(tester = TESTER_CONTACT) {
     { key: "other", id: ids.other, table: "contact", fields: { firstname: "Baseline", lastname: "Other Contact", emailaddress1: "baseline.other@example.invalid" }, refs: {} },
     { key: "parent1", id: ids.parent1, table: PARENT, fields: { [p("name")]: "Baseline Parent One", [p("code")]: "P-001", [p("rank")]: 1, [p("description")]: "First invented parent." }, refs: {} },
     { key: "parent2", id: ids.parent2, table: PARENT, fields: { [p("name")]: "Baseline Parent Two", [p("code")]: "P-002", [p("rank")]: 2, [p("description")]: "Second invented parent." }, refs: {} },
+    // Deactivated parent and child: the inactive-record states of the parent and child edit forms.
+    { key: "parent3", id: ids.parent3, table: PARENT, fields: { [p("name")]: "Baseline Parent Three", [p("code")]: "P-003", [p("rank")]: 3, [p("description")]: "Deactivated invented parent.", statecode: 1, statuscode: 2 }, refs: {} },
     item("item1", "Baseline Item Alpha", "I-001", {
       fields: {
         [p("text")]: "alpha text", [p("textarea")]: "line one\nline two", [p("email")]: "alpha@example.invalid", [p("url")]: "https://example.invalid/alpha", [p("phone")]: "+1 555 0100", [p("ticker")]: "ALP",
@@ -58,14 +60,23 @@ export function records(tester = TESTER_CONTACT) {
     item("item2", "Baseline Item Beta", "I-002", { fields: { [p("flag")]: false, [p("wholenumber")]: 7, [p("globalchoice")]: 18327000, [p("datetime")]: "2026-01-15T09:00:00Z" } }),
     item("item3", "Baseline Item Gamma", "I-003", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 3 }, refs: { [p("parentid")]: "parent2" } }),
     item("item4", "Baseline Item Delta", "I-004", { fields: { [p("ruleerror")]: 0, [p("wholenumber")]: 400, [p("globalchoice")]: 18327001 }, refs: { [p("parentid")]: "parent2", [p("contactid")]: "other" } }),
-    item("item5", "Baseline Item Epsilon", "I-005", { fields: { [p("wholenumber")]: 50, [p("decimal")]: 5.5, [p("datetime")]: "2026-05-05T05:05:00Z" } }),
+    // item5 belongs to the fixture account but not to the tester contact: it tells the account-scope persona from the contact-scope one.
+    item("item5", "Baseline Item Epsilon", "I-005", { fields: { [p("wholenumber")]: 50, [p("decimal")]: 5.5, [p("datetime")]: "2026-05-05T05:05:00Z" }, refs: { [p("accountid")]: "account" } }),
     item("item6", "Baseline Item Zeta", "I-006", { fields: { [p("wholenumber")]: 60, [p("decimal")]: 6.5 }, refs: { [p("parentid")]: "parent2" } }),
     item("item7", "Baseline Item Eta", "I-007", { fields: { [p("wholenumber")]: 70, [p("multichoice")]: "18327011" } }),
-    item("item8", "Baseline Item Theta", "I-008", { fields: { [p("wholenumber")]: 80, [p("flag")]: false, [p("dateonly")]: "2026-08-08" }, refs: { [p("parentid")]: "parent2", [p("contactid")]: "other" } }),
+    // item8: flag false satisfies the hide-by-flag rule's condition, so its hidden-by-rule value shows what the live form does with the rule.
+    item("item8", "Baseline Item Theta", "I-008", { fields: { [p("wholenumber")]: 80, [p("flag")]: false, [p("dateonly")]: "2026-08-08", [p("hiddenbyrule")]: "hidden when flag is false" }, refs: { [p("parentid")]: "parent2", [p("contactid")]: "other" } }),
+    // item9–item11: deactivated rows reserved for the form action scenarios (one per actions variant); a scenario activates
+    // and deactivates its own row, so the portal's record cache never leaks a state change into another capture and the
+    // active views stay unchanged.
+    item("item9", "Baseline Item Iota", "I-009", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 90 } }),
+    item("item10", "Baseline Item Kappa", "I-010", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 100 } }),
+    item("item11", "Baseline Item Lambda", "I-011", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 110 } }),
     { key: "child1", id: ids.child1, table: CHILD, fields: { [p("name")]: "Child One", [p("sortorder")]: 1, [p("note")]: "First child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child2", id: ids.child2, table: CHILD, fields: { [p("name")]: "Child Two", [p("sortorder")]: 2, [p("note")]: "Second child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child3", id: ids.child3, table: CHILD, fields: { [p("name")]: "Child Three", [p("sortorder")]: 3 }, refs: { [p("itemid")]: "item1" } },
     { key: "child4", id: ids.child4, table: CHILD, fields: { [p("name")]: "Child Four", [p("sortorder")]: 1 }, refs: { [p("itemid")]: "item2" } },
+    { key: "child5", id: ids.child5, table: CHILD, fields: { [p("name")]: "Child Five", [p("sortorder")]: 5, [p("note")]: "Deactivated child.", statecode: 1, statuscode: 2 }, refs: { [p("itemid")]: "item1" } },
     { key: "note1", id: ids.note1, table: "annotation", fields: { subject: "Baseline note", notetext: "A plain note on the alpha item." }, refs: { objectid: "item1" } },
     { key: "note2", id: ids.note2, table: "annotation", fields: { subject: "Baseline attachment", notetext: "A note with a text attachment.", filename: "baseline-brief.txt", mimetype: "text/plain", documentbody: BRIEF.toString("base64"), isdocument: true }, refs: { objectid: "item1" } },
   ];

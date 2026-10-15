@@ -27,7 +27,7 @@ Additional site observations require `observed.evidence` and retain existing beh
 | `liquidObjectCompatibility: "observed"` | Captured object member visibility and drop types. Identity data and dynamic backend metadata errors are not synthesized. |
 | `liquidServiceTags: "observed"` | Captured errors/empty output for absent form/list/view/search/server-logic records and source-derived chart placeholder markup. This does not implement successful service execution or chart data. |
 | `liquidMissingData: "empty"` | Captured empty FetchXML/nil entity behavior for an unmapped root table. Local preflight leaves known-table query, permission, linked-table and infrastructure failures intact and does not override live providers. |
-| `liquidEditableMetadata: "observed"` | Source-derived current-page CMS metadata URLs with distinct root/content identities and the captured working flag. This does not install authoring endpoints. |
+| `liquidEditableMetadata: "observed"` | Source-derived current-page CMS metadata URLs with distinct root/content identities and the captured working flag. This does not install authoring endpoints. The metadata also renders without the setting for a signed-in user whose web role is listed on an exported website access permission (`adx_websiteaccess`), as the live portal does for content editors. |
 
 Liquid `page.id` uses an exported language-content identity when available; host navigation retains the root page identity. Exact comparisons must use equivalent authentication contexts. A synthetic signed-in persona establishes the local authentication class, but does not establish equality of contact IDs or business data.
 

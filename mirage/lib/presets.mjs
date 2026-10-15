@@ -1,5 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
 import { seedPresetBody } from "./solution-schema.mjs";
+import { validatePersonaCatalog } from './persona-catalog.mjs';
 import {
   LAZY_PRESET,
   defineLazyPreset,
@@ -48,6 +49,7 @@ const bodyKeys = [
   "endpoints",
   "personaRoles",
   "contactRoles",
+  "personaCatalog",
 ];
 const isCompactDescriptor = (preset) =>
   preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
@@ -133,6 +135,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
 
 /** Apply a resolved preset's state sections in place (DataStore transaction body). */
 export function applyPresetSections(state, preset) {
+  if (preset.personaCatalog !== undefined) state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, `Preset ${preset.id ?? preset.name ?? 'unnamed'}`);
   if (preset.tables)
     for (const [entity, rows] of Object.entries(preset.tables))
       state.tables[entity] = clone(rows);

@@ -80,7 +80,7 @@ test('a save whose form stays visible re-renders the posted values; a hidden for
   const { nativePostbackResponse } = await import('../lib/native-form-submission.mjs');
   const context = { kind: 'entityform', formId: 'f1' }, values = { title: 'posted' };
   assert.deepEqual(nativePostbackResponse({ result: { outcome: { type: 'message', message: 'Saved', hideForm: false } }, context, values }).state,
-    { ...context, values, outcome: { type: 'message', message: 'Saved', hideForm: false } });
+    { ...context, values, outcome: { type: 'message', message: 'Saved', hideForm: false }, savedId: null, savedName: null });
   assert.equal(nativePostbackResponse({ result: { outcome: { type: 'message', message: 'Saved', hideForm: true } }, context, values }).state.values, undefined);
   assert.deepEqual(nativePostbackResponse({ result: { outcome: { type: 'redirect', url: '/next/?id=1' } }, context, values }), { status: 302, location: '/next/?id=1' });
 });

@@ -56,6 +56,7 @@
       "assertRichText"
     ],
     "paqvilo/mirage/testing": [
+      "createPersonaSession", "createPersonaBrowserContext",
       "connectRuntime",
       "createPortalSession",
       "runSessionMatrix",
@@ -70,6 +71,7 @@
       "resolveMirageConfig"
     ],
     "paqvilo/mirage/packs": [
+      "validatePersonaCatalog", "mergePersonaCatalogs",
       "validatePack",
       "discoverPacks",
       "loadPack",

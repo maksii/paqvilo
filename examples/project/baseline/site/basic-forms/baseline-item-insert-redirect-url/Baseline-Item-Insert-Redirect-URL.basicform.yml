@@ -13,6 +13,6 @@ adx_redirecturlappendentityidquerystring: true
 adx_redirecturlcustomquerystring: 'source=baseline'
 adx_redirecturlquerystringattribute: pqvd_code
 adx_redirecturlquerystringattributeparamname: code
-adx_redirecturlquerystringname: returnurl
+adx_redirecturlquerystringname: id
 adx_showunsupportedfields: false
 adx_validationsummarylinksenabled: true

@@ -1309,7 +1309,7 @@
       "name": "Baseline Item Insert Redirect",
       "path": "/baseline/item-create-redirect/",
       "table": "pqvd_baselineitem",
-      "variation": "insert, redirect to the edit page appending the record id; a redirect URL can come from ?returnurl=",
+      "variation": "insert, redirect to the edit page appending the record id under the parameter name the edit page reads (id); a redirect URL can come from ?returnurl=",
       "catalog": [
         "pp.basicform.redirect-record-id-parameter-name",
         "pp.basicform.table-name",
@@ -2006,7 +2006,7 @@
       "name": "Baseline Child Insert Reference Code",
       "path": "/baseline/child-create-reference-code/",
       "table": "pqvd_baselinechild",
-      "variation": "insert child, reference the item whose pqvd_code matches ?code=",
+      "variation": "insert child, reference the item whose pqvd_code matches ?code= and populate the lookup (the child form's item lookup is required: left empty, the client validator blocks the insert), no read-only form",
       "catalog": [
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
@@ -2022,6 +2022,7 @@
         "pp.basicform.reference-table-logical-name",
         "pp.basicform.reference-relationship-name",
         "pp.basicform.reference-target-lookup",
+        "pp.basicform.reference-populate-lookup",
         "pp.basicform.reference-source-type",
         "pp.basicform.reference-query-string-name",
         "pp.basicform.reference-query-string-is-primary-key",
@@ -3465,6 +3466,7 @@
       "kind": "list",
       "name": "Baseline Item List OData",
       "path": "/baseline/item-list-odata/",
+      "odataEntitySet": "BaselineItems",
       "table": "pqvd_baselineitem",
       "variation": "OData feed",
       "catalog": [
@@ -6866,6 +6868,9 @@
       "kind": "webpagerule",
       "name": "Baseline Restricted Page Read",
       "path": "/baseline/restricted/",
+      "roles": [
+        "Baseline Readers"
+      ],
       "variation": "restrict read, all content, Baseline Readers",
       "catalog": [
         "pp.pagerule.description",
@@ -6881,6 +6886,9 @@
       "kind": "webpagerule",
       "name": "Baseline Editors Page Grant Change",
       "path": "/baseline/editors/",
+      "roles": [
+        "Baseline Editors"
+      ],
       "variation": "grant change, exclude direct child web files, Baseline Editors",
       "catalog": [
         "pp.pagerule.description",

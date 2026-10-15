@@ -19,6 +19,7 @@ import { resolveSnippetComposition } from "./observed-snippet-composition.mjs";
 import { resolveObservedPageCopy } from "./observed-pagecopy-layout.mjs";
 import { applyObservedLiquidObjects } from "./liquid-observed-objects.mjs";
 import { editableMetadataAttributes } from "./liquid-editable-metadata.mjs";
+import { portalWebRoles } from "./permissions.mjs";
 import { injectRuntimeCompatibility, isHtmlDocument } from "./source-dependencies.mjs";
 import { OFFLINE_NOTIFICATION_BAR, PRIVATE_MODE_BANNER, antiForgeryHolder, nativePageRegions, rewritePageLayout, CKEDITOR_BASEPATH, platformShell, bootstrapVariant, PLATFORM_BOOTSTRAP_STYLESHEET } from "./platform-manifest.mjs";
 import { calendarResources, CALENDAR_MARKER } from "./list-views.mjs";
@@ -975,8 +976,14 @@ export function createPortalRenderer(portal, options = {}) {
         // Dataverse stores empty text as null: an empty attribute renders the no-value wrapper.
         const hasValue = value != null && value !== "";
         const request = context.environments[0].get("request");
+        // Content-editing metadata renders for a signed-in user whose web role carries website
+        // access permissions (adx_websiteaccess), derived from the export; never from a role name.
+        const user = context.environments[0].get("user");
+        const roleNames = new Set((user?.roles ?? []).map((role) => (typeof role === "object" && role ? role.name : role)));
+        const roleIds = new Set(portalWebRoles(portal).filter((role) => roleNames.has(role.name)).map((role) => role.id));
+        const contentEditor = user && (portal.websiteAccess ?? []).some((access) => (access.roleIds ?? []).some((roleId) => roleIds.has(roleId)));
         const metadata = target.__isCurrentPage ? editableMetadataAttributes({
-          observed: options.observed ?? portal.observed,
+          observed: contentEditor ? { liquidEditableMetadata: "observed" } : options.observed ?? portal.observed,
           websiteId: portal.website?.id ?? portalField(portal.website ?? {}, "websiteid"),
           rootId: target.id,
           contentId: target.metadata?.adx_webpageid ?? target.metadata?.mspp_webpageid ?? target.metadata?.webpageid ?? target.id,

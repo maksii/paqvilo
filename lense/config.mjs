@@ -9,6 +9,7 @@
 //
 // Later ones win. Nothing in lense/ needs to change to add a portal or an environment.
 import fs from 'node:fs';
+import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
@@ -249,6 +250,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
     preset: value.preset ?? null,
     ...(value.presetMode ? { presetMode: value.presetMode } : {}),
     ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
+    ...(value.personaContexts !== undefined ? { personaContexts: personaContextSettings(value.personaContexts) } : {}),
     ...(value.platform !== undefined ? { platform: platformConfig(value.platform) } : {}),
     // Passed through as configured; the Mirage validates it (observedConfig).
     observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,

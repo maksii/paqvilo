@@ -17,7 +17,7 @@
   const instances = new WeakMap();
   const trigger = (root, name, detail) => {
     // Native bindings survive later source includes replacing window.jQuery.
-    if (name === 'change' && root.hasAttribute('data-sim-date-target')) root.dispatchEvent(new CustomEvent('sim:datechange', { detail }));
+    if (name === 'change' && root.__simDateTarget) root.dispatchEvent(new CustomEvent('sim:datechange', { detail }));
     jq()(root).trigger(jq().Event(`dp.${name}`, detail));
   };
   const parse = (value, format) => {
@@ -34,7 +34,7 @@
       logicalId = display?.id?.replace(/_datepicker_description$/, ""),
       linked = logicalId && document.getElementById(logicalId),
       canonical = linked && linked !== display ? linked : display,
-      nativeBinding = root.hasAttribute('data-sim-date-target'),
+      nativeBinding = Boolean(root.__simDateTarget),
       format = options.format || display?.dataset.dateFormat || "DD/MM/YYYY",
       hasTime = /[Hhms]/.test(format),
       chooser = document.createElement("input");
@@ -78,7 +78,9 @@
           oldDate: oldDate?.isValid?.() ? oldDate : null,
         });
       },
-      setDate = (value, announce = false) => {
+      // userInput: only the user's own choice dispatches the visible box's DOM change (the
+      // plugin's date()/clear() fire dp.* events without touching the box's change handlers).
+      setDate = (value, announce = false, userInput = announce) => {
         const oldDate = parseCurrent(),
           next = value == null ? null : parse(value, format);
         if (next && !next.isValid()) return;
@@ -88,7 +90,7 @@
         chooser.value = next ? isoValue(next) : "";
         if (announce) {
           if (!nativeBinding) canonical.dispatchEvent(new Event("change", { bubbles: true }));
-          if (canonical !== display)
+          if (userInput && canonical !== display)
             display.dispatchEvent(new Event("change", { bubbles: true }));
           notify(oldDate, next);
         }
@@ -136,7 +138,7 @@
           const current = parseCurrent();
           return current?.isValid() ? current : null;
         }
-        setDate(value, true);
+        setDate(value, true, false);
         return api;
       },
       getMoment() { return api.date() || moment(); },
@@ -158,7 +160,7 @@
       },
       show,
       hide() { chooser.blur(); return api; },
-      clear() { setDate(null, true); return api; },
+      clear() { setDate(null, true, false); return api; },
       enable() { display.disabled = false; chooser.disabled = false; return api; },
       disable() { display.disabled = true; chooser.disabled = true; return api; },
       destroy() { chooser.remove(); buttons.remove(); instances.delete(root); return api; },

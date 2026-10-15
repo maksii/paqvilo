@@ -34,7 +34,7 @@ test('exported native state-action buttons send configured actions without submi
     tables: { sample: [{ sampleid: id, title: 'Original', statecode: 0, statuscode: 100 }, { sampleid: secondId, title: 'Second', statecode: 0, statuscode: 100 }] },
     permissions: [{ entity: 'sample', scope: 'global', roles: ['Editor'], operations: ['read', 'update'] }],
     settings: { permissionMode: 'enforce', 'Webapi/sample/enabled': false },
-    simulator: { componentSchemas: { 'entry-form': { entity: 'sample', fields: formFields }, 'second-form': { entity: 'sample', recordId: secondId, fields: formFields } } },
+    simulator: { observed: { nativeFormTransport: 'json', evidence: 'Invented loopback JSON transport fixture' }, componentSchemas: { 'entry-form': { entity: 'sample', fields: formFields }, 'second-form': { entity: 'sample', recordId: secondId, fields: formFields } } },
   } });
   t.after(() => app.close());
   const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
@@ -48,31 +48,37 @@ test('exported native state-action buttons send configured actions without submi
   assert.equal(await page.locator('#UpdateButton').count(), 0, 'an action-only export must not get an invented Submit button');
   await first.locator('#title').fill('');
   await first.locator('#title').press('Tab');
-  const closeResponse = page.waitForResponse(response => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
-  await first.getByRole('button', { name: 'Close entry', exact: true }).click();
+  // entityform.js action bar (live markup): button.deactivate-link / button.activate-link post the
+  // record reference as JSON to /_services/action-*/{website} and reload; the inapplicable state
+  // button is hidden. Editable values are never part of the post.
+  const action = (name) => page.waitForResponse((response) => response.url().includes('/_services/action-' + name + '/') && response.request().method() === 'POST');
+  assert.equal(await first.locator('button.activate-link.hidden').count(), 1, 'the inapplicable state action is hidden');
+  const closeResponse = action('deactivate');
+  await first.locator('button.deactivate-link').click();
   assert.deepEqual(errors, [], 'native action handler must execute');
   const closed = await closeResponse;
-  assert.equal(closed.status(), 200);
-  assert.deepEqual(closed.request().postDataJSON().values, {});
-  assert.equal(closed.request().postDataJSON().action, 'deactivate');
-  assert.equal(closed.request().postDataJSON().actionIndex, 0);
-  await first.getByRole('button', { name: 'Reopen entry', exact: true }).waitFor();
+  assert.equal(closed.status(), 204);
+  assert.deepEqual(closed.request().postDataJSON(), { entityReference: { LogicalName: 'sample', Id: id } });
+  await page.waitForLoadState('load');
+  await first.locator('button.activate-link:not(.hidden)').waitFor();
   let record = await app.store.get('sample', id, { roles: ['Editor'] });
   assert.deepEqual([record.title, record.statecode, record.statuscode], ['Original', 1, 300]);
   assert.equal(await first.locator('#DeactivateButton').count(), 0);
-  const reopenResponse = page.waitForResponse(response => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
-  await first.getByRole('button', { name: 'Reopen entry', exact: true }).click();
-  assert.equal((await reopenResponse).status(), 200);
-  await first.getByRole('button', { name: 'Close entry', exact: true }).waitFor();
+  assert.equal(await first.locator('button.deactivate-link.hidden').count(), 1);
+  const reopenResponse = action('activate');
+  await first.locator('button.activate-link').click();
+  assert.equal((await reopenResponse).status(), 204);
+  await page.waitForLoadState('load');
+  await first.locator('button.deactivate-link:not(.hidden)').waitFor();
   record = await app.store.get('sample', id, { roles: ['Editor'] });
   assert.deepEqual([record.title, record.statecode, record.statuscode], ['Original', 0, 100]);
-  const secondResponse = page.waitForResponse(response => response.url().includes('/__sim/forms/') && response.request().method() === 'POST');
-  await second.getByRole('button', { name: 'Close entry', exact: true }).click();
+  const secondResponse = action('deactivate');
+  await second.locator('button.deactivate-link').click();
   const secondSaved = await secondResponse;
-  assert.equal(secondSaved.status(), 200);
-  assert.match(new URL(secondSaved.url()).pathname, /\/second-form\/submit$/);
-  assert.equal(secondSaved.request().postDataJSON().recordId, secondId, 'duplicate button IDs retain their owning native form');
-  await second.getByRole('button', { name: 'Reopen entry', exact: true }).waitFor();
+  assert.equal(secondSaved.status(), 204);
+  assert.equal(secondSaved.request().postDataJSON().entityReference.Id, secondId, 'duplicate button classes retain their owning native form');
+  await page.waitForLoadState('load');
+  await second.locator('button.activate-link:not(.hidden)').waitFor();
   assert.equal((await app.store.get('sample', id, { roles: ['Editor'] })).statecode, 0);
   assert.equal((await app.store.get('sample', secondId, { roles: ['Editor'] })).statecode, 1);
   assert.deepEqual(errors, []);

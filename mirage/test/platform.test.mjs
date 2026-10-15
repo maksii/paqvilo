@@ -343,10 +343,8 @@ test("page trace propagation correlates same-origin fetch/XHR and preserves expl
   assert.equal(requests[3].headers["x-sim-parent-trace"], "trace-parent");
   assert.equal(requests[4].headers["x-sim-parent-trace"], "xhr-caller");
   assert.deepEqual(requests[5].headers, {});
-  assert.match(
-    injectRuntime("<head></head>", "token", "rev", {}, "trace<id"),
-    /<meta name="sim-trace-id" content="trace&lt;id">/,
-  );
+  // The trace id never reaches the DOM: the platform head has no such meta element.
+  assert.doesNotMatch(injectRuntime("<head></head>", "token", "rev", {}, "trace<id"), /sim-trace-id/);
 });
 
 test("enhanced component views replace contextual conditions at every link depth", () => {

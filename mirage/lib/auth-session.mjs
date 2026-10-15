@@ -131,6 +131,8 @@ export function authRoute(pathname, method, { loginPath = "/signin" } = {}) {
   return { kind: "sign-in-page" };
 }
 
+import { renderPersonaPicker } from './persona-picker-view.mjs';
+
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
@@ -146,11 +148,13 @@ const escapeHtml = (value) =>
  */
 export function signInContent({
   personas = [],
+  personaCatalog = null,
   providers = [],
   showPersonas = true,
   csrf = "",
   defaultContactId = null,
   returnUrl = "/",
+  personaReturnUrl = returnUrl,
   anonymousUrl = "/",
   invitationCode = null,
   redeemInvitation = false,
@@ -187,14 +191,15 @@ export function signInContent({
         providers.length
           ? `<p>Local accounts: choose a local persona (a contact in the simulator's data) instead of a username and password.</p>`
           : `<p>This site configures no external identity provider. Choose a local persona (a contact in the simulator's data) to continue as that user, or continue anonymously.</p>`,
-        `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
-        ordered.length ? `<ul class="list-group">${rows}</ul>` : `<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>`,
+        `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(personaCatalog?.enabled ? personaReturnUrl ?? '' : returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
+        personaCatalog?.enabled ? renderPersonaPicker(personaCatalog, { mode: 'signin' }) : ordered.length ? `<ul class="list-group">${rows}</ul>` : `<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>`,
         `</form>`,
         `<p><a class="paqvilo-mirage-continue-anonymously" href="${escapeHtml(anonymousUrl)}">Continue anonymously</a></p>`,
         `</div>`,
       ].join("")
     : "";
   return [
+    personaCatalog?.enabled ? '<link rel="stylesheet" href="/__sim/persona-picker.css"><script type="module" src="/__sim/persona-picker.mjs"></script>' : '',
     `<section class="container paqvilo-mirage-sign-in" aria-labelledby="paqvilo-mirage-sign-in-title" style="margin:24px auto;max-width:760px">`,
     `<h1 id="paqvilo-mirage-sign-in-title">${escapeHtml(title)}</h1>`,
     error ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : "",

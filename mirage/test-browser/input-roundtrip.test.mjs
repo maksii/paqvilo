@@ -53,6 +53,8 @@ async function fixture(t, extraFields = [], contextOptions = {}) {
     settings: { permissionMode: 'permissive', 'Webapi/sample/enabled': true, 'Webapi/sample/fields': fields.map((field) => field.name).join(',') },
     simulator: {
       identity: { id: 'fixture-editor', roles: ['Editor'] },
+      // This suite asserts the JSON form endpoint's responses; the core default is the postback.
+      observed: { nativeFormTransport: 'json', evidence: 'Invented loopback JSON transport fixture' },
       componentSchemas: {
         'input-create': { entity: 'sample', fields },
         'input-edit': { entity: 'sample', fields },

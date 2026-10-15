@@ -1,6 +1,6 @@
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { renderFormLabel } from './form-labels.mjs';
 import {
   clientManagedControlsRuntime,
@@ -32,9 +32,10 @@ import { hasPlatformBundles, bootstrapVariant } from "./platform-manifest.mjs";
 import { portalLanguage } from "./portal-languages.mjs";
 import { clientPortalObjectRuntime } from "./portal-client-object.mjs";
 import { parseDateValue } from "./dataverse-values.mjs";
-import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
+import { nativeFormActions } from './native-form-actions.mjs';
+import { timeZoneChoices } from "./platform-time-zones.mjs";
 import { missingLiquidComponent, observedChartMarkup, observedSearchUnavailable } from './liquid-service-observations.mjs';
-import { compactNativeControlId as compactId, nativeFormControlIds, nativeFormPostbackDescriptor } from './native-postback.mjs';
+import { compactNativeControlId as compactId, nativeFormControlIds, nativeFormPostbackDescriptor, nativeFormTransport, encodeNativeViewState } from './native-postback.mjs';
 import { renderCalendarList } from "./list-views.mjs";
 import { LiquidError } from "./liquid-engine.mjs";
 const escape = (value) =>
@@ -255,6 +256,15 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
 /** Static native platform compatibility scripts served by lib/native-services.mjs. */
 export const NATIVE_GRID_SCRIPT = "/__sim-static/native/entity-grid-compat.js";
 export const NATIVE_FORMS_SCRIPT = "/__sim-static/native/webforms-compat.js";
+/**
+ * A native form control the platform cannot render aborts the server form's content: the
+ * control's output stops at the failed cell (closing the section wrapper, column and tab; a
+ * bottom progress indicator lands after the wrapper), the Liquid closing tags directly after the
+ * control still appear, then the server form ends (live evidence: an inline web resource, a quick
+ * view on a postback-rendered step, a control id clashing with a reference entity's read-only
+ * form). lib/platform-manifest.mjs webFormsForm cuts the content after this marker.
+ */
+export const RENDER_ABORT_MARKER = "<!--paqvilo-mirage-render-aborted-->";
 // The basic form control registers its custom client-validation hook, also ahead of a create denial.
 const ENTITY_FORM_CLIENT_VALIDATE = `<script type="text/javascript">function entityFormClientValidate() { // Custom client side validation. Method is called by the submit button's onclick event.\n// Must return true or false. Returning false will prevent the form from submitting.\nreturn true; }</script>`;
 
@@ -272,7 +282,9 @@ export function injectRuntime(
   identity = {},
   traceId = null,
 ) {
-  const script = `${traceId && !/<meta\b[^>]*\bname=["']sim-trace-id["']/i.test(html) ? `<meta name="sim-trace-id" content="${escape(traceId)}">` : ""}<script data-paqvilo-mirage-runtime>${clientRuntime(token, revision, identity, traceId, pageSite(html))}</script>`;
+  // The trace id travels in the x-sim-trace-id header and the runtime script only: a meta
+  // element would shift every head child the platform renders (charset, viewport, links).
+  const script = `<script data-paqvilo-mirage-runtime>${clientRuntime(token, revision, identity, traceId, pageSite(html))}</script>`;
   // Native pages always carry the empty anti-forgery holder and its token URL.
   if (!/\bid=["']antiforgerytoken["']/i.test(html))
     html = html.replace(
@@ -602,9 +614,10 @@ function messageCloseButton(buttonPrefix, bs) {
 const DURATION_MINUTES = [1, 5, 15, 30, 45, ...Array.from({ length: 15 }, (_, index) => 60 + index * 30), 1440, 2880, 4320];
 const plural = (count, unit) => `${count} ${unit}${count === 1 ? "" : "s"}`;
 const durationLabel = (minutes) => (minutes < 60 ? plural(minutes, "minute") : minutes < 1440 ? plural(minutes / 60, "hour") : plural(minutes / 1440, "day"));
-/** Option lists of whole-number formats: duration (fixed minutes) and language (the site's languages). */
+/** Option lists of whole-number formats: duration (fixed minutes), time zone (platform definitions) and language (the site's languages). */
 function integerFormatChoices(field, portal) {
   const format = String(field.format ?? "").toLowerCase();
+  if (format === "timezone") return timeZoneChoices();
   if (format === "duration") return DURATION_MINUTES.map((minutes) => ({ value: minutes, label: durationLabel(minutes) }));
   if (format !== "language") return null;
   const names = new Intl.DisplayNames(["en"], { type: "language", languageDisplay: "standard" });
@@ -1088,7 +1101,8 @@ export async function renderComponent(kind, name, context, options) {
 /** The lookup field and value a form's Set Entity Reference query parameter supplies, or null. */
 async function resolveEntityReference({ componentMetadata, mode, params, store, readProvider, identity }) {
   if (mode !== FORM_MODE.insert || !truthy(fieldOf(componentMetadata, "setentityreference"))) return null;
-  if (Number(fieldOf(componentMetadata, "referenceentitysourcetype") ?? 756150000) !== 756150000) return null;
+  // Basic forms name the query-string source 756150000, advanced form steps 100000000.
+  if (![756150000, 100000000].includes(Number(fieldOf(componentMetadata, "referenceentitysourcetype") ?? 756150000))) return null;
   const parameter = fieldOf(componentMetadata, "referencequerystringname");
   const entity = canonicalId(fieldOf(componentMetadata, "referenceentitylogicalname"));
   const field = canonicalId(fieldOf(componentMetadata, "referencetargetlookupattributelogicalname"));
@@ -1141,7 +1155,9 @@ async function renderForm(kind, name, context, options) {
   const decimalSeparator = new Intl.NumberFormat(languageCode).formatToParts(1.1).find((part) => part.type === "decimal")?.value ?? ".";
   const formLabel = (value, fallback = "") => formText(value, fallback, formLanguage);
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
-  const definition = (kind === "webform" ? portal.advancedForms : portal.forms)?.find(
+  // A multistep step's reference entity read-only form (options.referenceForm) is rendered as a
+  // synthetic read-only basic form with the step's control names.
+  const definition = options.referenceForm?.definition ?? (kind === "webform" ? portal.advancedForms : portal.forms)?.find(
     (item) => item.name === name || canonicalId(item.id) === canonicalId(name),
   );
   let schema = schemas[name] ?? schemas[definition?.id];
@@ -1276,10 +1292,10 @@ async function renderForm(kind, name, context, options) {
   const metadataRows = formMetadataRows(portal, kind === "webform" ? null : definition, schema.stepId);
   const websiteId = canonicalId(portal.website?.id);
   const N = compactId(definition?.id ?? name);
-  const ids = nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
+  const ids = options.referenceForm?.ids ?? nativeFormControlIds(kind, definition?.id ?? name, { modal, pageControl });
 
   // Record source.
-  const source = await resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session });
+  const source = options.referenceForm ? { mode: FORM_MODE.readOnly, id: options.referenceForm.id } : await resolveFormRecord({ kind, definition, schema, metadata, context, readProvider, store, identity, modal, session });
   let mode = source.mode;
   const id = mode === FORM_MODE.insert ? null : source.id;
   let record = {};
@@ -1552,7 +1568,7 @@ async function renderForm(kind, name, context, options) {
         const createForm = field.createFormId && portal.forms?.some((form) => canonicalId(form.id) === field.createFormId) ? field.createFormId : "";
         // Bootstrap 5 drops the input-group-btn wrapper, the search-count announcer and the
         // hidden message styles, and nests the grid's error dialog; Bootstrap 3 keeps its markup.
-        const buttons = `<button type="button" class="btn btn-default clearlookupfield" title="${attr(field.label)} Clear lookup field" aria-label="${attr(field.label)} Clear lookup field"${idValue ? "" : ' style="display: none;"'}><span class="${bs.srOnly}">Clear lookup field</span><span class="fa fa-times" aria-hidden="true"></span></button><button type="button" class="btn btn-default launchentitylookup" ${bs.toggle}="tooltip" title="${attr(field.label)} Launch lookup modal" aria-label="${attr(field.label)} Launch lookup modal"><span class="${bs.srOnly}">Launch lookup modal</span><span class="fa fa-search" aria-hidden="true"></span></button>`;
+        const buttons = `<button type="button" class="btn btn-default clearlookupfield" title="${attr(field.label)} Clear lookup field" aria-label="${attr(field.label)} Clear lookup field"><span class="${bs.srOnly}">Clear lookup field</span><span class="fa fa-times" aria-hidden="true"></span></button><button type="button" class="btn btn-default launchentitylookup" ${bs.toggle}="tooltip" title="${attr(field.label)} Launch lookup modal" aria-label="${attr(field.label)} Launch lookup modal"><span class="${bs.srOnly}">Launch lookup modal</span><span class="fa fa-search" aria-hidden="true"></span></button>`;
         const authenticated = Boolean(identity?.contactId ?? identity?.id);
         const gridAttributes = bs.v5
           ? `data-mobile-view-enabled="false" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Configuration?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"`
@@ -1623,14 +1639,16 @@ async function renderForm(kind, name, context, options) {
         // Solution columns use Format=DateAndTime while their generic input
         // type is still "date". The exported format determines the picker.
         const dateOnly = nativeDateOnly(field);
-        const format = datePickerFormat(portal.settings?.[dateOnly ? "DateTime/DateFormat" : "DateTime/DateTimeFormat"], dateOnly);
         const behavior = field.dateTimeBehavior ?? field.behavior ?? (dateOnly ? "DateOnly" : "UserLocal");
         const parsed = scalar ? parseDateValue(scalar) : null;
         const iso = parsed ? new Date(parsed.ms).toISOString().replace(/\.\d{3}Z$/, '.0000000' + (behavior === 'UserLocal' ? 'Z' : '')) : scalar ? String(scalar) : "";
         // crmentityformview-datetime.js: a read-only picker keeps its visible box without the
         // input group, the placeholder or the (hidden) calendar button, whose title and label
         // are the Datetimepicker_Datepicker_Label resource.
-        return `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="datetime form-control${css}" data-ui="datetimepicker" data-type="${dateOnly ? "date" : "datetime"}" data-attribute="${attr(field.id)}" data-behavior="${attr(behavior)}"${valueAttr(iso)} style="display: none;"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""} data-sim-date-value><div class="${disabled ? "datetimepicker" : "input-append input-group datetimepicker"}" role="none" data-sim-date-target="${attr(field.id)}" data-sim-date-only="${dateOnly}"><input type="text" data-date-format="${attr(format)}" aria-describedby="${attr(field.id)}_description" id="${attr(field.id)}_datepicker_description" aria-labelledby="${attr(field.id)}_label" onchange="setIsDirty(this.id);" class="form-control input-text-box${disabled ? " readonly" : ""}"${disabled ? ' readonly="readonly"' : ` placeholder="${attr(format)}"`}${field.required && !disabled ? " required" : ""}><span class="input-group-addon${bs.v5 ? " btn" : ""}" tabindex="0" role="button" title="Choose a date"${bs.v5 ? "" : ' aria-label="Choose a date"'}${disabled ? ' style="display: none;"' : ""}><span data-date-icon="icon-calendar fa fa-calendar" data-time-icon="icon-time fa fa-clock${bs.v5 ? "" : "-o"}" class="icon-calendar fa fa-calendar iconBorder"></span></span></div>`;
+        // The server renders the bound text box alone (live response body); the platform's
+        // crmentityformview-datetime.js builds the picker group, which the local date
+        // controls runtime (date-controls.mjs) reproduces from the same attributes.
+        return `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="datetime form-control${css}" data-ui="datetimepicker" data-type="${dateOnly ? "date" : "datetime"}" data-attribute="${attr(field.id)}" data-behavior="${attr(behavior)}"${valueAttr(iso)}${disabled ? ' readonly="readonly"' : ""}>`;
       }
       case "richtext":
         return richTextInput(field, current, { portal, managedControls, nameAttr });
@@ -1758,8 +1776,13 @@ async function renderForm(kind, name, context, options) {
       const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}${bs.v5 ? `&isprofilepage=false&lang=${encodeURIComponent(languageCode)}` : ""}` : "about:blank";
       // The Bootstrap 5 quick view cell is labelled and its frame carries only the platform's data attributes.
       extraControls.set(cell.id, bs.v5
-        ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label)}</label>` : ""}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
+        ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label)}</label>` : ""}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="${relatedId ? 0 : -1}" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
         : `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
+      continue;
+    }
+    if (cell.type === "notes" && !id) {
+      // Live: an Insert-mode notes cell is an empty plain cell (no record to annotate).
+      extraControls.set(cell.id, "");
       continue;
     }
     if (cell.type === "notes") {
@@ -1774,8 +1797,8 @@ async function renderForm(kind, name, context, options) {
     }
     const label = cell.label ?? cell.id;
     if (!id) {
-      // Native subgrids bind to an existing record and render nothing in Insert mode.
-      extraControls.set(cell.id, `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control"></div>`);
+      // Native subgrids bind to an existing record: Insert mode renders an empty plain cell (live).
+      extraControls.set(cell.id, "");
       continue;
     }
     const model = subgridModel({ portal, schemas, metadata, store, kind, formId: definition?.id ?? name, stepId: schema.stepId, gridId: cell.id });
@@ -1849,7 +1872,7 @@ async function renderForm(kind, name, context, options) {
     validators.push(...fieldValidatorsList);
     const labelFor = (resolved.control === "lookup" && resolved.lookupStyle !== "dropdown") || ["file", "image"].includes(resolved.control) || resolved.control === "boolean" && canonicalId(resolved.controlClassId) === RADIO_CLASS || resolved.control === "picklist" && [100000000, 100000001].includes(resolved.controlStyle) || /^(state|status)$/.test(resolved.control)
       ? ""
-      : ` for="${attr(resolved.control === "datetime" ? `${resolved.id}_datepicker_description` : resolved.id)}"`;
+      : ` for="${attr(resolved.id)}"`;
     const description = resolved.description?.text ? resolved.description : null;
     const descriptionHtml = (position) => (description && description.position === position ? `<div class="description${position === 100000000 ? " above" : position === 100000001 ? " below" : ""}${resolved.cssClass ? " " + attr(resolved.cssClass) : ""}">${description.text}</div>` : "");
     const labelHtml = resolved.showLabel === false ? "" : `<label${labelFor} id="${attr(resolved.id)}_label" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(resolved.label)}</label>`;
@@ -1862,8 +1885,8 @@ async function renderForm(kind, name, context, options) {
   };
   const cellClass = (cell) => {
     if (cell.type === "quickform") return "crmquickform-cell";
-    if (cell.type === "subgrid") return "subgrid-cell";
-    if (cell.type === "notes") return "notes-cell";
+    if (cell.type === "subgrid") return id ? "subgrid-cell" : "";
+    if (cell.type === "notes") return id ? "notes-cell" : "";
     if (cell.type === "webresource") return "web-resource-cell";
     const field = byName.get(cell.name);
     if (!field) return "";
@@ -1901,6 +1924,40 @@ async function renderForm(kind, name, context, options) {
   };
   const sectionMetadata = (sectionName) => metadataFor(metadataRows, 100000001, (row) => fieldOf(row, "sectionname") === sectionName);
   const tabMetadata = (tabName) => metadataFor(metadataRows, 100000002, (row) => fieldOf(row, "tabname") === tabName);
+  // adx_referenceentityshowreadonlyform: the step renders the referenced record's read-only
+  // form (its own view, ReadOnlyFormView_<table>) ahead of its form. A control of the step's form
+  // whose id the read-only form already rendered fails the platform's control registry ("An entry
+  // with the same key already exists."): live renders that control's label and validators block
+  // with the error and stops the form there (evidence; the docs describe no such clash).
+  let referenceHtml = "";
+  let referenceControls = null;
+  if (kind === "webform" && !options.referenceForm && truthy(fieldOf(componentMetadata, "referenceentityshowreadonlyform")) && entityReference?.value?.id) {
+    const refEntity = entityReference.value.logical_name;
+    const view = `ReadOnlyFormView_${refEntity}`;
+    const formName = fieldOf(componentMetadata, "referenceentityreadonlyformname");
+    const reference = await renderForm("entityform", view, context, {
+      ...options, onNativePostbackDescriptor: undefined, nativePostbackState: undefined,
+      referenceForm: { definition: { id: view, name: view, entityName: refEntity, mode: FORM_MODE.readOnly, metadata: { adx_entityname: refEntity, adx_formname: formName, adx_mode: FORM_MODE.readOnly } }, id: entityReference.value.id, ids: { wrapper: view, panel: view, view, names: `${ids.buttons}${view}$`, buttons: ids.buttons } },
+    });
+    referenceHtml = reference.html;
+    referenceControls = reference.controls;
+  }
+  // Auto-generated steps (adx_autogeneratesteps): the platform renders one tab per page; Next and
+  // Previous post the page back (the tab index and the earlier tabs' values travel in __VIEWSTATE).
+  const autoSteps = kind === "entityform" && !readOnly && truthy(fieldOf(componentMetadata, "autogeneratesteps")) && schema.layout?.length > 1
+    ? { tabs: schema.layout, index: Math.min(Math.max(Number(postback?.autoStep) || 0, 0), schema.layout.length - 1) }
+    : null;
+  // A control the platform cannot render stops the form at its cell: the cell's markup up to the
+  // failure, the error alert, one closing tag, then the form's actions and the closers (live
+  // evidence: a quick view on a postback-rendered step, an inline web resource, a clashing id).
+  const TRUNCATED_ACTIONS = "\u0000actions\u0000";
+  let truncated = false;
+  const renderFailure = (cell, field) => {
+    if (referenceControls?.has(cell.name) && field) return { message: "An entry with the same key already exists.", partial: "validators" };
+    if (cell.type === "webresource" && truthy(fieldOf(componentMetadata, "renderwebresourcesinline"))) return { message: `Unable to find control with id '${cell.id}' that is associated with the Label ''.` };
+    if (cell.type === "quickform" && autoSteps && postback && mode === FORM_MODE.insert) return { message: `Unable to find control with id '${cell.id}' that is associated with the Label ''.` };
+    return null;
+  };
   let layoutHtml = "";
   const placed = new Set();
   if (schema.layout) {
@@ -1918,7 +1975,7 @@ async function renderForm(kind, name, context, options) {
     // Listed in the order the columns first appear.
     repeated.sort((a, b) => [...seen].indexOf(a) - [...seen].indexOf(b));
     if (repeated.length) layoutHtml += `<div class="alert alert-danger alert-block">${escape(repeated.join(", "))} field is present multiple times on this form. Only first field will be rendered in the UI</div>`;
-    for (const tab of schema.layout) {
+    for (const tab of autoSteps ? [autoSteps.tabs[autoSteps.index]] : schema.layout) {
       const tabRow = tabMetadata(tab.name);
       const tabLabel = formLabel(fieldOf(tabRow, "label"), tab.label ?? "");
       let tabHtml = tab.showLabel ? `<h2 class="tab-title">${escape(tabLabel)}</h2>` : "";
@@ -1952,16 +2009,29 @@ async function renderForm(kind, name, context, options) {
               }
               const hidden = cell.hidden || field?.ownerHidden || (field?.hidden && field?.control !== "lookup") || field?.hidden;
               const suffix = cellClass(cell);
+              const failure = renderFailure(cell, field);
+              if (failure) {
+                const full = failure.partial === "validators" ? await cellControl(cell) : "";
+                const cut = full.indexOf('<div class="validators">');
+                const partial = cut >= 0 ? full.slice(0, cut + '<div class="validators">'.length) : `<div class="${bs.info}">`;
+                tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? " " + suffix : ""}">${partial}<div class="alert alert-block alert-danger"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${escape(failure.message)}</p></div> </div>${TRUNCATED_ACTIONS} </td></tr></tbody></table></fieldset></div>${progress?.position === "bottom" ? progress.html + "</div>" : ""}</div></div>`;
+                truncated = true;
+                break;
+              }
               tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? " " + suffix : ""}"${hidden ? ' style="display: none;"' : ""}>${await cellControl(cell)}</td>`;
             }
+            if (truncated) break;
             tabHtml += '<td class="cell zero-cell"></td></tr>';
           }
+          if (truncated) break;
           tabHtml += "</tbody></table></fieldset>";
         }
+        if (truncated) break;
         tabHtml += "</div></div>";
       }
-      tabHtml += "</div>";
+      if (!truncated) tabHtml += "</div>";
       layoutHtml += tabHtml;
+      if (truncated) break;
     }
   } else
     for (const field of fields)
@@ -2027,43 +2097,67 @@ async function renderForm(kind, name, context, options) {
     if (previous) renderedActions.push({ button: "PreviousButton", action: "previous" });
     if (next) renderedActions.push({ button: "NextButton", action: "submit" });
     actionsHtml = previous || next ? `<div class="actions"><div class="${bs.v5 ? "col-md-6" : "col-sm-6"} clearfix">${previous}${next}</div></div>` : "";
-  } else if (!readOnly && submitEnabled) {
-    const button = mode === FORM_MODE.insert ? "InsertButton" : "UpdateButton";
-    renderedActions.push({ button, action: "submit" });
-    defaultButton = button;
-    const label = formLabel(fieldOf(componentMetadata, "submitbuttontext"), "") || formLabel(submitAction?.ButtonLabel, "") || "Submit";
-    if (submitAction) {
-      const css = fieldOf(componentMetadata, "submitbuttoncssclass") || submitAction.ButtonCssClass || "btn btn-primary button submit-btn";
-      actionsHtml = `<div class="row form-custom-actions"><div class="col-sm-6 clearfix"><div class="form-action-container-left"><input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}" title="${attr(formLabel(submitAction.ButtonTooltip, label))}" class="${attr(css)}"></div></div><div class="col-sm-6 clearfix"><div class="form-action-container-right"></div></div></div>`;
-    } else {
-      const css = fieldOf(componentMetadata, "submitbuttoncssclass") || "submit-btn btn btn-primary form-action-container-left";
-      actionsHtml = `<div class="actions"><input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}" class="${attr(css)}"></div>`;
-    }
-  } else {
-    // A read-only basic form keeps its (empty) actions container and has no default button.
+  } else if (autoSteps && autoSteps.index < autoSteps.tabs.length - 1) {
+    // Live evidence: the Next step button renders inside the view (stepButtons); no default button.
     actionsHtml = '<div class="actions"></div>';
-  }
-  if (kind === 'entityform' && id) {
-    const buttons = [];
-    for (const [index, action] of configuredActions.entries()) {
-      const entry = Object.entries(NATIVE_STATE_ACTIONS).find(([, value]) => value.type === action.Type);
-      if (!entry) {
-        if (action.Type !== 'SubmitAction') options.diagnostic?.({ code: 'FORM_ACTION_UNSUPPORTED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' is unsupported.` });
-        continue;
+  } else {
+    // Record action bar (entityform.js): configured Delete, Activate, Deactivate and Create
+    // related record actions render as button.*-link elements beside the submit button, the
+    // state pair always present with the inapplicable one hidden; their dialogs follow the
+    // containers. Insert mode has no record and no record actions.
+    const recordButtons = [];
+    const recordDialogs = [];
+    if (kind === "entityform" && id) {
+      const inactive = Number(scalarValue(record?.statecode)) === 1;
+      const formSettings = settingsJson(portalField(componentMetadata ?? {}, "settings") ?? "", "form settings") ?? {};
+      const canUpdate = !store.allowed || store.allowed(mapping.logicalName, "update", record, identity);
+      const canDelete = !store.allowed || store.allowed(mapping.logicalName, "delete", record, identity);
+      const linkCss = (action) => attr(`${action.ButtonCssClass || "btn btn-default"} btn`);
+      const stateButton = (action, type, hidden) => `<button class="${type}-link ${linkCss(action)}${hidden ? " hidden" : ""}" data-url="/_services/action-${type}/${websiteId}" href="/_services/action-${type}/${websiteId}" type="button"${hidden ? ' style="display: none;"' : ""}>${escape(formLabel(action.ButtonLabel, type === "activate" ? "Activate" : "Deactivate"))}</button>`;
+      for (const action of configuredActions) {
+        if (action.Type === "DeleteAction" && canDelete) {
+          const dialog = formSettings.DeleteDialog ?? {};
+          const text = (value, fallback) => formText(value, fallback, formLanguage);
+          const title = escape(text(dialog.Title, "Delete"));
+          const primary = escape(text(dialog.PrimaryButtonText, "Delete"));
+          const close = escape(text(dialog.CloseButtonText, "Cancel"));
+          recordButtons.push(`<button class="delete-link ${linkCss(action)}" data-url="/_services/entity-grid-delete/${websiteId}" href="/_services/entity-grid-delete/${websiteId}" type="button">${escape(formLabel(action.ButtonLabel, "Delete"))}</button>`);
+          recordDialogs.push(nativeModal({
+            bs,
+            className: `modal-delete${dialog.CssClass ? " " + attr(text(dialog.CssClass, "")) : ""}`,
+            size: MODAL_SIZES[Number(dialog.Size)] ?? "",
+            title,
+            dismissText: text(dialog.DismissButtonSrText, "Close"),
+            body: escape(formLabel(action.Confirmation, "") || "Are you sure you want to delete this record?"),
+            footer: `<button aria-label="${primary}" class="primary btn btn-primary${dialog.PrimaryButtonCssClass ? " " + attr(text(dialog.PrimaryButtonCssClass, "")) : ""}" tabindex="0" title="${primary}" type="button">${primary}</button><button aria-label="${close}" class="cancel btn btn-default${dialog.CloseButtonCssClass ? " " + attr(text(dialog.CloseButtonCssClass, "")) : ""}" ${bs.dismiss}="modal" tabindex="0" title="${close}" type="button">${close}</button>`,
+          }));
+        } else if (action.Type === "ActivateAction" && canUpdate) recordButtons.push(stateButton(action, "activate", !inactive));
+        else if (action.Type === "DeactivateAction" && canUpdate) recordButtons.push(stateButton(action, "deactivate", inactive));
+        else if (action.Type === "CreateRelatedRecordAction") {
+          // The platform stamps a fresh filter criteria id on the button and its dialog; the
+          // dialog is the generic confirmation (live), posted to the button's (empty) URL.
+          const criteria = randomUUID();
+          recordButtons.push(`<button class="create-related-record-link ${linkCss(action)}" data-filtercriteriaid="${criteria}" data-url="" href="" type="button">${escape(formLabel(action.ButtonLabel, "Create related record"))}</button>`);
+          const title = "<span class='fa fa-plus-circle' aria-hidden='true'></span> Create related record";
+          recordDialogs.push(nativeModal({ bs, className: "modal-form-createrecord", title, rawTitle: true, body: "Create related record", footer: `<button aria-label="Ok" class="primary btn btn-primary btn-danger" tabindex="0" title="Ok" type="button">Ok</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button>` }).replace(' role="dialog"', ` data-filtercriteriaid="${criteria}" role="dialog"`));
+        } else if (!["SubmitAction", "DeleteAction", "ActivateAction", "DeactivateAction"].includes(action.Type))
+          options.diagnostic?.({ code: 'FORM_ACTION_UNSUPPORTED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' is unsupported.` });
       }
-      const [operation, descriptor] = entry;
-      if (Number(scalarValue(record?.statecode)) === descriptor.state) continue;
-      if (store.allowed && !store.allowed(mapping.logicalName, 'update', record, identity)) continue;
-      if (action.FilterCriteria || !nativeActionStateValues(schema.entity, operation, { metadata, store, schema })) {
-        options.diagnostic?.({ code: 'FORM_ACTION_UNRESOLVED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' requires resolved state/status metadata and supported filter criteria.` });
-        continue;
-      }
-      const label = formLabel(action.ButtonLabel, descriptor.label), confirmation = formLabel(action.Confirmation, '');
-      const handler = `${confirmation ? `if(!window.confirm(${json(confirmation)}))return false;` : ''}__doPostBack(${json(ids.buttons + descriptor.button)},'')`;
-      renderedActions.push({ button: descriptor.button, action: operation, actionIndex: index });
-      buttons.push(`<input type="button" name="${attr(ids.buttons + descriptor.button)}" id="${descriptor.button}" value="${attr(label)}" title="${attr(formLabel(action.ButtonTooltip, label))}" class="${attr(action.ButtonCssClass || 'btn btn-primary button')}" data-pp-action-index="${index}" onclick="${attr(handler)}">`);
     }
-    if (buttons.length) actionsHtml += `<div class="actions native-record-actions">${buttons.join('')}</div>`;
+    let submitButton = "";
+    if (!readOnly && submitEnabled) {
+      const button = mode === FORM_MODE.insert ? "InsertButton" : "UpdateButton";
+      renderedActions.push({ button, action: "submit" });
+      defaultButton = button;
+      const label = formLabel(fieldOf(componentMetadata, "submitbuttontext"), "") || formLabel(submitAction?.ButtonLabel, "") || "Submit";
+      const css = fieldOf(componentMetadata, "submitbuttoncssclass") || (submitAction ? (submitAction.ButtonCssClass ? `${submitAction.ButtonCssClass} submit-btn` : "btn btn-primary button submit-btn") : "submit-btn btn btn-primary form-action-container-left");
+      submitButton = `<input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}"${submitAction ? ` title="${attr(formLabel(submitAction.ButtonTooltip, label))}"` : ""} class="${attr(css)}">`;
+    }
+    const column = bs.v5 ? "col-md-6" : "col-sm-6";
+    if (submitAction || recordButtons.length)
+      actionsHtml = `<div class="row form-custom-actions"><div class="${column} clearfix"><div class="form-action-container-left">${submitButton}${recordButtons.join("")}</div></div><div class="${column} clearfix"><div class="form-action-container-right"></div></div>${recordDialogs.join("")}</div>`;
+    // A read-only basic form keeps its (empty) actions container and has no default button.
+    else actionsHtml = `<div class="actions">${submitButton}</div>`;
   }
 
   // Hidden configuration consumed by the local postback runtime (scripts are
@@ -2079,7 +2173,9 @@ async function renderForm(kind, name, context, options) {
     summaryHeader: "The form could not be submitted for the following reasons:",
     // Bootstrap 5 success panels carry the platform's close button (named like the form buttons).
     ...(bs.v5 ? { messagePanel: { className: SUCCESS_PANEL_V5, closeButton: messageCloseButton(ids.buttons, bs) } } : {}),
-    ...((options.observed ?? portal.observed)?.nativeFormTransport === 'postback' ? { transport: 'postback' } : {}),
+    // A Power Pages export is a WebForms portal: native forms post the page back unless the
+    // project selects the JSON transport (observed.nativeFormTransport: json).
+    ...(nativeFormTransport(options.observed ?? portal.observed) === 'postback' ? { transport: 'postback' } : {}),
     fields: fields
       .filter((field) => !field.ownerHidden && !field.readOnly && !["state", "status", "file", "image"].includes(field.control))
       .map((field) => ({ name: field.name, id: field.id, control: controlForSubmit(field), readOnly: false, bindings: field.bindings })),
@@ -2110,11 +2206,30 @@ async function renderForm(kind, name, context, options) {
     : bs.v5 ? { left: "crmEntityFormView right col-lg-10 order-1", right: "crmEntityFormView left col-lg-10" }[progress?.position] ?? "crmEntityFormView"
     : progress?.position === "left" ? "crmEntityFormView left" : progress?.position === "right" ? "crmEntityFormView right" : "crmEntityFormView";
   const entityFormClass = readOnly ? "form-readonly entity-form" : postback && mode === FORM_MODE.insert ? "entity-form entity-form" : "entity-form";
+  // Auto-generated steps: WebForms submit buttons after the tab (live: an empty __EVENTTARGET and
+  // the button's own name=value pair); Previous skips validation. Previous markup is unobserved.
+  let stepButtons = "";
+  if (autoSteps) {
+    const stepButton = (button, text, css, validate) => `<input type="submit" name="${attr(ids.names)}${button}" value="${attr(text)}" onclick="javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(&quot;${attr(ids.names)}${button}&quot;, &quot;&quot;, ${validate}, &quot;&quot;, &quot;&quot;, false, false))" id="${button}" class="${attr(css)} form-action-container-left">`;
+    if (autoSteps.index > 0) {
+      renderedActions.push({ button: "PreviousButton", action: "tab", actionIndex: autoSteps.index - 1, view: true });
+      stepButtons += stepButton("PreviousButton", formLabel(fieldOf(componentMetadata, "previousbuttontext"), "Previous"), fieldOf(componentMetadata, "previousbuttoncssclass") || "btn btn-default", false);
+    }
+    if (autoSteps.index < autoSteps.tabs.length - 1) {
+      renderedActions.push({ button: "NextButton", action: "tab", actionIndex: autoSteps.index + 1, view: true });
+      stepButtons += stepButton("NextButton", formLabel(fieldOf(componentMetadata, "nextbuttontext"), "Next"), fieldOf(componentMetadata, "nextbuttoncssclass") || "btn btn-primary", true);
+    }
+  }
   // An editable basic or multistep form carries the platform's off-screen honeypot box. The platform names it with a
   // per-render token; the local token is derived from the form and record so renders stay repeatable.
   const trap = createHash("sha256").update(`${definition?.id ?? name}:${id ?? ""}`).digest("hex").slice(0, 8);
-  const honeypot = !readOnly ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
-  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}${honeypot}</div>${actionsHtml}</div>`;
+  const honeypot = !readOnly && !autoSteps ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
+  // The entity form view; a reference entity read-only view (options.referenceForm) renders the
+  // live "read-only" class and an empty layout configuration, and is returned on its own.
+  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? " read-only" : ""}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? "" : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${truncated ? "" : attachHtml + stepButtons + honeypot + "</div>"}`;
+  if (options.referenceForm) return { html: viewHtml, controls: placed };
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}>${referenceHtml}${viewHtml}${truncated ? "" : actionsHtml + "</div>"}`;
+  if (truncated) formHtml = formHtml.replace(TRUNCATED_ACTIONS, () => actionsHtml);
   if (postback?.outcome?.type === 'message') {
     const message = bs.v5
       ? `<div id="MessagePanel" class="${SUCCESS_PANEL_V5}" role="alert">${messageCloseButton(ids.buttons, bs)}<span id="MessageLabel">${postback.outcome.message}</span></div>`
@@ -2142,7 +2257,10 @@ async function renderForm(kind, name, context, options) {
     // and only the service-resolved context accompanies the successful-control names.
     await options.onNativePostbackDescriptor(Object.freeze({ descriptor, context: resolved }));
   }
-  return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${progressBottom}${kind === "webform" ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}</div>`;
+  // The auto-generated step state travels in __VIEWSTATE (lib/platform-manifest.mjs webFormsForm
+  // moves the attribute into the hidden field): the tab index and the earlier tabs' posted values.
+  const viewState = autoSteps ? ` data-pp-viewstate="${attr(encodeNativeViewState({ form: definition?.id ?? name, autoStep: autoSteps.index, values: Object.fromEntries(Object.entries(postback?.values ?? {}).filter(([, value]) => typeof value === "string")) }))}"` : "";
+  return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${truncated ? "" : progressBottom}${kind === "webform" && !truncated ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : "</div>"}`;
 }
 
 function controlForSubmit(field) {

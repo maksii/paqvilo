@@ -1,5 +1,10 @@
 # External data packs
 
+Packs, preset bodies and dataset fragments may provide a version 1 `personaCatalog`
+for grouped identities, tags, descriptions, reusable local setups and scenarios.
+Roles and accounts stay contact-derived. See the [catalogue contract and examples](persona-catalog.md).
+`validatePersonaCatalog` and `mergePersonaCatalogs` are public exports from `paqvilo/mirage/packs`.
+
 All project data, personas, generators, backend rules, acceptance fixtures and tests belong to a separate portal project. Mirage contains only generic presets: `empty-local`, `open-sandbox`, `strict-permissions`, and `contact-demo`. No project pack is automatically discovered inside or beside the toolkit.
 
 Register trusted modules explicitly in `sites.<id>.mirage.dataPacks`, `defaults.mirage.dataPacks`, Mirage project `dataPacks`, or direct CLI `--pack-module`. Catalogue modules resolve from the catalogue directory; project modules resolve from the project file. Embedded `createSimulator({ dataPacks })` and `discoverPacks({ explicit })` accept explicit modules as well. Loading a module executes JavaScript.

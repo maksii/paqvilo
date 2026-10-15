@@ -56,7 +56,7 @@ Bulk execution also requires `serviceProfile.bulkTables` entries with an exact l
 
 ## Configure source facts
 
-PAC can export an SDK message ID without its name. Supply `observed.sdkMessages` entries with the exact ID, name and evidence from your environment. Mirage does not guess the operation from a step label.
+PAC can export an SDK message ID without its name. The Create, Update, Delete, Retrieve and RetrieveMultiple ids are platform constants Mirage knows; for other messages supply `observed.sdkMessages` entries with the exact ID, name and evidence from your environment. Mirage does not guess the operation from a step label.
 
 To connect a supplied C# project, map an exact exported type name through `observed.pluginSources`:
 

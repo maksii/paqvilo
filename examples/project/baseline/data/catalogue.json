@@ -105,6 +105,21 @@
       "deferredRefs": []
     },
     {
+      "key": "parent3",
+      "id": "02fa15ba-7224-4194-88c1-31a91a9d5336",
+      "table": "pqvd_baselineparent",
+      "fields": {
+        "pqvd_name": "Baseline Parent Three",
+        "pqvd_code": "P-003",
+        "pqvd_rank": 3,
+        "pqvd_description": "Deactivated invented parent.",
+        "statecode": 1,
+        "statuscode": 2
+      },
+      "refs": {},
+      "deferredRefs": []
+    },
+    {
       "key": "item1",
       "id": "ba05e707-4ddb-4f85-8054-213c2ea86866",
       "table": "pqvd_baselineitem",
@@ -236,7 +251,8 @@
         "pqvd_datetime": "2026-05-05T05:05:00Z"
       },
       "refs": {
-        "pqvd_parentid": "parent1"
+        "pqvd_parentid": "parent1",
+        "pqvd_accountid": "account"
       },
       "deferredRefs": []
     },
@@ -288,7 +304,8 @@
         "statuscode": 1,
         "pqvd_wholenumber": 80,
         "pqvd_flag": false,
-        "pqvd_dateonly": "2026-08-08"
+        "pqvd_dateonly": "2026-08-08",
+        "pqvd_hiddenbyrule": "hidden when flag is false"
       },
       "refs": {
         "pqvd_parentid": "parent2",
@@ -347,6 +364,22 @@
       },
       "refs": {
         "pqvd_itemid": "item2"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "child5",
+      "id": "59356f8e-a4b0-40c1-8314-6ac33c3eccc9",
+      "table": "pqvd_baselinechild",
+      "fields": {
+        "pqvd_name": "Child Five",
+        "pqvd_sortorder": 5,
+        "pqvd_note": "Deactivated child.",
+        "statecode": 1,
+        "statuscode": 2
+      },
+      "refs": {
+        "pqvd_itemid": "item1"
       },
       "deferredRefs": []
     },

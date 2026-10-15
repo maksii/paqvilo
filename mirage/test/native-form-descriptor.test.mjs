@@ -79,10 +79,13 @@ test('state-action descriptors retain source declaration indices and omit unavai
   o.portal.forms[0].metadata.adx_settings = JSON.stringify({ Actions: [{ Type: 'ActivateAction' }, { Type: 'DeactivateAction' }] });
   o.store = { ...store, resolveMapping: () => ({ logicalName: 'sample', entitySet: 'samples', relationships: {}, fieldMetadata: { statecode: { states: [{ value: 0, defaultStatus: 10 }, { value: 1, defaultStatus: 20 }] }, statuscode: { statuses: [{ value: 10, state: 0 }, { value: 20, state: 1 }] } } }) };
   o.metadata = { entities: { sample: { fields: o.store.resolveMapping().fieldMetadata } } };
-  await renderComponent('entityform', 'First', { request: { params: { row: 'owned' } } }, { ...o, onNativePostbackDescriptor: item => captured.push(item) });
-  assert.deepEqual(captured[0].descriptor.actions.map(({ action, actionIndex }) => ({ action, actionIndex })), [{ action: 'deactivate', actionIndex: 1 }]);
+  // State actions are the platform's button.*-link action bar posting to /_services/action-*, not postback controls: the descriptor lists no state actions and the bar renders the pair with the inapplicable one hidden.
+  const html = await renderComponent('entityform', 'First', { request: { params: { row: 'owned' } } }, { ...o, onNativePostbackDescriptor: item => captured.push(item) });
+  assert.deepEqual(captured[0].descriptor.actions.map(({ action }) => action), []);
+  assert.match(html, /<button class="activate-link btn btn-default btn hidden" data-url="\/_services\/action-activate\/[^"]*" href="[^"]*" type="button" style="display: none;">Activate<\/button><button class="deactivate-link btn btn-default btn" data-url="\/_services\/action-deactivate\/[^"]*" href="[^"]*" type="button">Deactivate<\/button>/);
   o.store.allowed = () => false;
-  await renderComponent('entityform', 'First', { request: { params: { row: 'owned' } } }, { ...o, onNativePostbackDescriptor: item => captured.push(item) });
+  const denied = await renderComponent('entityform', 'First', { request: { params: { row: 'owned' } } }, { ...o, onNativePostbackDescriptor: item => captured.push(item) });
   assert.deepEqual(captured[1].descriptor.actions, []);
+  assert.doesNotMatch(denied, /activate-link/);
   assert.deepEqual(captured[1].descriptor.fields, []);
 });

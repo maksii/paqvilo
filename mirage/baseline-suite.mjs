@@ -141,15 +141,31 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
     if (result.summary.status !== "captured") await fail(`Portal sign-out did not complete (${result.summary.problems.join("; ")}).`, result, "sign-out");
   };
   // Role changes reach the portal through its cache: a persona is in effect only once its verification probe passes.
+  // `verify` is one probe ({ steps, expect }) or several ({ probes: [...] }); every probe must pass within one attempt,
+  // because the portal's permission cache refreshes per page and the previous persona can linger on some of them.
+  // `settleMs` is waited after the attempt that passes.
   const verifyPersona = async (name, verify, ids) => {
     const attempts = verify.attempts ?? 12;
+    const probes = verify.probes ?? [{ steps: verify.steps, expect: verify.expect }];
     let result;
+    let failedProbe = 0;
     for (let attempt = 1; attempt <= attempts; attempt++) {
-      result = await runInBridge({ id: `persona-${name}`, steps: verify.steps, expect: verify.expect ?? {} }, { ids, allowWrites: false });
-      if (result.summary.status === "captured") return attempt;
+      let passed = true;
+      for (const [index, probe] of probes.entries()) {
+        result = await runInBridge({ id: `persona-${name}-${index + 1}`, steps: probe.steps, expect: probe.expect ?? {} }, { ids, allowWrites: false });
+        if (result.summary.status !== "captured") {
+          passed = false;
+          failedProbe = index + 1;
+          break;
+        }
+      }
+      if (passed) {
+        if (verify.settleMs) await sleep(verify.settleMs);
+        return attempt;
+      }
       await sleep(verify.delay ?? 15000);
     }
-    await fail(`Persona ${name} did not take effect on the portal after ${attempts} probes (${result.summary.problems.join("; ")}).`, result, `persona-${name}`);
+    await fail(`Persona ${name} did not take effect on the portal after ${attempts} attempts (probe ${failedProbe}: ${result.summary.problems.join("; ")}).`, result, `persona-${name}`);
   };
   await ensureSignedIn();
   return {
@@ -210,6 +226,19 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const status = await (await fetch(owned.url + "/__sim/api/state?summary=1")).json();
   const csrf = () => owned.app.state().csrf;
+  // The live portal shows the signed-in tester's own name, parent account and base roles; the project declares those
+  // observed values (`matrix.mirage.identity.contact`) and they are written onto the mirrored contact after every reset.
+  const mirrorIdentityFields = async () => {
+    const fields = matrix.mirage?.identity?.contact;
+    if (!fields) return;
+    const contactId = matrix.mirage.identity.contactId ?? status.config?.identity?.contactId;
+    const state = await (await fetch(owned.url + "/__sim/api/state/export")).json();
+    const row = (state.tables?.contact ?? []).find((record) => record.contactid === contactId);
+    if (!row) throw new Error(`Mirage identity contact ${contactId} is not in the preset data; cannot mirror the live tester's fields.`);
+    for (const [field, value] of Object.entries(fields)) row[field] = value && typeof value === "object" && row[field] && typeof row[field] === "object" ? { ...row[field], ...value } : value;
+    const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify(state) });
+    if (!response.ok) throw new Error(`Mirage identity mirror failed (${response.status})`);
+  };
   return {
     name: "mirage",
     url: owned.url,
@@ -228,6 +257,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       const response = await fetch(owned.url + "/__sim/api/reset", { method: "POST", headers: { "x-sim-csrf": csrf() } });
       if (!response.ok) throw new Error(`Mirage reset failed (${response.status})`);
       if (preset) await owned.app.applyPreset(preset);
+      await mirrorIdentityFields();
       const config = await fetch(owned.url + "/__sim/api/config", { method: "PATCH", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify({ mode: "local", pageMode: "local", live: { allowWrites: false } }) });
       if (!config.ok) throw new Error(`Mirage configuration failed (${config.status})`);
     },
@@ -349,6 +379,7 @@ async function main() {
     const mirageDir = scenarioDir(outDir, scenario, report.mirage);
     const secondDir = values["second-live"] ? scenarioDir(outDir, scenario, values["second-live"]) : null;
     const result = await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist });
+    await fs.mkdir(path.join(outDir, ...scenario.id.split("/")), { recursive: true });
     await fs.writeFile(path.join(outDir, ...scenario.id.split("/"), "diff.json"), JSON.stringify(result, null, 2));
     report.scenarios.push({ id: scenario.id, verdict: result.verdict, counts: result.counts, signatures: result.signatures, reason: result.reason });
     console.log(JSON.stringify({ scenario: scenario.id, verdict: result.verdict, counts: result.counts, reason: result.reason }));

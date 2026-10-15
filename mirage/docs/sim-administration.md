@@ -1,5 +1,12 @@
 # Local simulation administration
 
+[Persona catalogues](persona-catalog.md) add grouped, searchable pickers to sign-in
+and Identity, browser-local pins/recent choices, catalogue editors and isolated
+setups for deployment profiles, variables and snippet/settings overrides. Open
+`/_sim/#identity` to select a browser persona or manage metadata. Role membership
+editing remains separate and explicit. Testing helpers resolve the actual origin
+and browser options for a persona or catalogue scenario.
+
 `/_sim/` is the loopback administration workspace. It exposes local tables/records, identity, roles, permissions, presets/scenarios, settings/snippets, runtime environment, source inspection, providers, platform resources, diagnostics and evidence. Changes here affect local state and rendering. Provider controls distinguish local configuration, optional reference reads and cached platform assets.
 
 **Platform rules** (`#platform`) configures simulated organization/platform controls, including the support-managed link-entity budget and attachment restrictions. **Settings & snippet overrides** (`#overrides`) compares source/effective values without editing exports. Both support portable configuration presets and independent state for concurrent runtimes. Coverage and real administration classifications are explicit; see [configuration experiments](configuration-experiments.md).

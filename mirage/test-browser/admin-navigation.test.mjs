@@ -76,6 +76,7 @@ test(
         calls.push(url.pathname + url.search);
         if (url.pathname.startsWith("/__sim/api")) {
           res.setHeader("content-type", "application/json");
+          if (url.pathname.endsWith("/personas")) return res.end(JSON.stringify({}));
           if (url.pathname.endsWith("/state"))
             return res.end(JSON.stringify(workspace));
           if (url.pathname.endsWith("/records/contact"))
@@ -134,7 +135,7 @@ test(
               : "text/html",
         );
         res.end(
-          await fs.readFile(new URL(`../admin/${file}`, import.meta.url)),
+          await fs.readFile(new URL(`../${['persona-search.mjs','persona-picker-view.mjs'].includes(file)?'lib':'admin'}/${file}`, import.meta.url)),
         );
       } catch (error) {
         res.writeHead(500).end(JSON.stringify({ error: error.message }));

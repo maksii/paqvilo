@@ -67,6 +67,20 @@ export function parsePluginDocument(xml) {
   return { assemblies, types, steps, messages };
 }
 
+/**
+ * Well-known SDK message ids: the platform ships the sdkmessage rows, so these ids are the same
+ * in every Dataverse organisation (confirmed by the baseline read-back of PAC-exported steps,
+ * examples/project/baseline/plugins-readback.json). A project's observed.sdkMessages adds or
+ * overrides entries for messages not listed here.
+ */
+export const SDK_MESSAGES = Object.freeze({
+  '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8': 'Create',
+  '20bebb1b-ea3e-db11-86a7-000a3a5473e8': 'Update',
+  'a1bdbb1b-ea3e-db11-86a7-000a3a5473e8': 'Delete',
+  'f2bdbb1b-ea3e-db11-86a7-000a3a5473e8': 'Retrieve',
+  '03bebb1b-ea3e-db11-86a7-000a3a5473e8': 'RetrieveMultiple',
+});
+
 /** Selected solution layer order wins, with explicit provenance and no inferred deployed state. */
 export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
   const maps = { assemblies: new Map(), types: new Map(), steps: new Map(), messages: new Map() };
@@ -85,9 +99,9 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
     const type = maps.types.get(step.typeId) ?? (namedTypes.length === 1 ? namedTypes[0] : null);
     const assembly = type && maps.assemblies.get(type.assemblyId);
     const sourceMessage = maps.messages.get(step.messageId);
-    const observedMessage = sdkMessages[step.messageId];
+    const observedMessage = sdkMessages[step.messageId] ?? (SDK_MESSAGES[step.messageId] ? { name: SDK_MESSAGES[step.messageId], evidence: 'platform SDK message id' } : undefined);
     const message = step.message || sourceMessage?.name || observedMessage?.name || null;
-    const resolved = { ...step, message, messageEvidence: step.message ? 'exported-step' : sourceMessage ? 'exported-sdk-message' : observedMessage ? 'project-observation' : 'unresolved', messageSourceFile: sourceMessage?.sourceFile ?? null, messageObservation: observedMessage?.evidence ?? null, typeName: type?.name ?? step.typeName, typeId: type?.id ?? step.typeId, assemblyId: assembly?.id ?? type?.assemblyId ?? null, assemblyName: assembly?.name ?? null, typeSourceFile: type?.sourceFile ?? null, assemblySourceFile: assembly?.sourceFile ?? null, stageName: stages[step.stage] ?? `Stage ${step.stage ?? 'unknown'}` };
+    const resolved = { ...step, message, messageEvidence: step.message ? 'exported-step' : sourceMessage ? 'exported-sdk-message' : observedMessage ? (sdkMessages[step.messageId] ? 'project-observation' : 'platform-sdk-message') : 'unresolved', messageSourceFile: sourceMessage?.sourceFile ?? null, messageObservation: observedMessage?.evidence ?? null, typeName: type?.name ?? step.typeName, typeId: type?.id ?? step.typeId, assemblyId: assembly?.id ?? type?.assemblyId ?? null, assemblyName: assembly?.name ?? null, typeSourceFile: type?.sourceFile ?? null, assemblySourceFile: assembly?.sourceFile ?? null, stageName: stages[step.stage] ?? `Stage ${step.stage ?? 'unknown'}` };
     return { ...resolved, unsupported: pluginUnsupported(resolved) };
   });
   for (const step of steps) if (step.unsupported) diagnostics.push({ code: 'PLUGIN_STEP_UNSUPPORTED', stepId: step.id, sourceFile: step.sourceFile, message: step.unsupported });

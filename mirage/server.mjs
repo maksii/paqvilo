@@ -1,4 +1,9 @@
 import http from "node:http";
+import { validatePersonaCatalog, mergePersonaCatalogs, resolvePersonaCatalog, personaContactId, personaStartPath } from './lib/persona-catalog.mjs';
+import { closestPersonaKeys } from './lib/persona-search.mjs';
+import { createPersonaContexts } from './lib/persona-contexts.mjs';
+import { personaContextSettings } from './lib/persona-context-settings.mjs';
+import { StateStorage } from './lib/state-storage.mjs';
 import { nativeRichTextReady } from './lib/richtext-readiness.mjs';
 import { renderSettings } from './lib/render-settings.mjs';
 import { createSetupHandler } from '../lense/setup/server.mjs';
@@ -84,7 +89,7 @@ import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
 import { injectRuntime, renderComponent } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
-import { multipartControls } from './lib/native-postback.mjs';
+import { multipartControls, nativeFormTransport, decodeNativeViewState } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from "./lib/visitor-session.mjs";
 import { handleNativeService, antiForgeryCookie } from "./lib/native-services.mjs";
 import { antiForgeryHolder, isAspNetScript, webFormsForm, platformShell, bootstrapVariant } from "./lib/platform-manifest.mjs";
@@ -224,6 +229,8 @@ export async function createSimulator({
   sourceDir,
   stateFile,
   persistence,
+  personaContexts: personaContextsOption = {},
+  personaInstance = null,
   preset,
   presetMode = 'always',
   port = 0,
@@ -261,6 +268,7 @@ export async function createSimulator({
   // .powerpages-site export does not record it and defaults to enhanced.
   dataModel,
 } = {}) {
+  personaContextsOption = personaContextSettings(personaContextsOption);
   port = runtimePort(port, 0);
   const render = renderSettings(renderOption);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
@@ -276,6 +284,7 @@ export async function createSimulator({
     try { const { readStateFile } = await import('./lib/state-storage.mjs'); persistedPin = (await readStateFile(stateFile, { sections: ['simulator'] })).simulator?.deploymentProfilePin ?? null; }
     catch (cause) { if (cause.code !== 'ENOENT') throw cause; }
   }
+  if (personaInstance?.deploymentProfile !== undefined) persistedPin = personaInstance.deploymentProfile;
   let activeProfiles = await loadDeploymentProfiles(profileConfig, persistedPin);
   // Bootstrap : portal export + ordered solution layers -> mappings, schemas,
   // permission model. Parsed solution files are cached beside the state file and
@@ -419,6 +428,7 @@ export async function createSimulator({
     platform: platformOption,
     state: applySolutions(initial ?? initialState(portal, bootstrapOptions())),
   }).init();
+  if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
   portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
@@ -494,6 +504,7 @@ export async function createSimulator({
     renderer,
     watcher,
     watcherTimer = null,
+    watcherReadyRelease = null,
     mutation = Promise.resolve(),
     closing = false,
     closePromise = null,
@@ -507,8 +518,11 @@ export async function createSimulator({
     closing = true;
     clearTimeout(watcherTimer);
     watcherTimer = null;
+    watcherReadyRelease?.();
+    watcherReadyRelease = null;
     frameReadiness.close();
     closePromise = (async () => {
+      await personaRuntimes.close();
       await watcher?.close();
       await reloadPromise?.catch(() => {});
       while(activeRequests.size)await Promise.all([...activeRequests]);
@@ -1024,7 +1038,7 @@ export async function createSimulator({
             renderLiquid: (source, ctx) => renderer.renderString(source, ctx),
             webFormSessions,
             webFormOwner: () => webFormSessionOwner(currentIdentity(), trace.getStore()?.visitor),
-            onNativePostbackDescriptor: (config().observed ?? portal.observed)?.nativeFormTransport === 'postback'
+            onNativePostbackDescriptor: nativeFormTransport(config().observed ?? portal.observed) === 'postback'
               ? item => trace.getStore()?.nativePostbacks?.push(item) : undefined,
             nativePostbackState: trace.getStore()?.nativePostbackState,
             // Component diagnostics name the page that rendered the component.
@@ -1203,6 +1217,7 @@ export async function createSimulator({
       "settings",
     ])
       if (preset[key] !== undefined) state[key] = structuredClone(preset[key]);
+    if (preset.personaCatalog !== undefined) state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, 'Preset ' + name);
     if (preset.identity)
       state.simulator.identity = structuredClone(preset.identity);
     if (preset.endpoints)
@@ -1292,25 +1307,78 @@ export async function createSimulator({
     roleIds: identity.roleIds ?? [],
     roleSource: identity.roleSource ?? "override",
   });
-  const personasPayload = () => {
-    const state = store.snapshot({
-      sections: ["simulator", "settings"],
-      tables: ["contact"],
-      mappings: ["contact"],
-    });
-    const model = buildPermissionModel(portal, state, {
-      relationships: solutionData.relationships,
-    });
-    return {
-      identity: identitySummary(),
-      roleSource: state.simulator?.identity?.roleSource ?? "override",
-      permissionMode: state.settings?.permissionMode ?? "enforce",
-      permissionSource: state.simulator?.permissionSource ?? "configured",
-      contactMapped: Boolean(state.mappings?.contact),
-      personas: model.personas,
-      webRoles: model.webRoles,
-      memberships: model.memberships,
-    };
+  let personaCache;
+  const personaReport = () => {
+    const key = revision + ':' + store.dataRevision();
+    if (personaCache?.key === key && personaCache.portal === portal) return personaCache.value;
+    const state = store.snapshot({ sections: ['simulator', 'settings', 'personaCatalog'], tables: ['contact', 'account'], mappings: ['contact', 'account'] });
+    const model = buildPermissionModel(portal, state, { relationships: solutionData.relationships });
+    const accountMapping = state.mappings?.account ?? {};
+    const accounts = new Map((state.tables?.account ?? []).map(row => [personaContactId(row[accountMapping.idColumn ?? 'accountid']), row[accountMapping.nameColumn ?? 'name']]));
+    const contactMapping = state.mappings?.contact ?? {};
+    const rows = new Map((state.tables?.contact ?? []).map(row => [personaContactId(row[contactMapping.idColumn ?? 'contactid']), row]));
+    const contacts = model.personas.map(contact => ({ ...contact, accountName: accounts.get(personaContactId(contact.accountId)) ?? null, email: rows.get(personaContactId(contact.contactId))?.emailaddress1 ?? '' }));
+    const catalogs = (projectPacks ?? []).filter(pack => pack.personaCatalog).map(pack => ({ source: 'pack:' + pack.id, catalog: pack.personaCatalog }));
+    if (state.personaCatalog) catalogs.push({ source: 'state', state: true, catalog: state.personaCatalog });
+    const catalog = resolvePersonaCatalog({ contacts, catalogs, defaultContactId: state.simulator?.identity?.contactId ?? state.simulator?.identity?.id });
+    let effective;
+    for (const entry of [...catalogs].reverse()) effective = mergePersonaCatalogs(effective, entry.catalog);
+    const value = { ...catalog, scope: createHash('sha256').update(sourceDir).digest('hex').slice(0, 20),
+      identity: identitySummary(), roleSource: state.simulator?.identity?.roleSource ?? 'override',
+      permissionMode: state.settings?.permissionMode ?? 'enforce', permissionSource: state.simulator?.permissionSource ?? 'configured',
+      contactMapped: Boolean(state.mappings?.contact), personas: catalog.enabled ? catalog.personas : model.personas,
+      webRoles: model.webRoles, memberships: model.memberships, contacts, catalog: effective ?? {version:1,groups:[],personas:[]},
+      stateCatalog: state.personaCatalog ?? null,
+      catalogDigest: createHash('sha256').update(JSON.stringify(state.personaCatalog ?? null)).digest('hex'),
+      presets: listPresets({state:store.snapshot({sections:['presets','mappings']}),library:generatedPresets}).map(entry=>({id:entry.id,name:entry.name,unavailable:entry.unavailable})),
+      deploymentProfiles: Object.keys(profileConfig.profiles), contextRuntime: personaInstance ? {id:personaInstance.id ?? null,label: personaInstance.label, ownerOrigin:personaInstance.ownerOrigin, isolated:true} : null };
+    personaCache = {key, portal, value}; return value;
+  };
+  const personasPayload = () => ({ ...personaReport(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
+  const findPersona = key => {
+    const report = personaReport(), persona = report.personas.find(entry => entry.key === key);
+    if (!report.enabled || !persona) throw error('Unknown persona "' + key + '". Closest keys: ' + closestPersonaKeys(key, report.personas).join(', '), 404, 'PersonaNotFound');
+    return persona;
+  };
+  const personaRuntimes = createPersonaContexts({ directory:path.join(projectRoot,'.paqvilo','persona-runtimes'), maxInstances: personaInstance ? 0 : (personaContextsOption.maxInstances ?? 4),
+    snapshot: file => store.readOperation(async () => {
+      if (store.file) { await store.storage.assertUnchanged(); await fs.copyFile(store.file, file); await store.storage.assertUnchanged(); }
+      else await new StateStorage(file).prepareCheckpoint(file, store.state);
+      if (stateFile) for (const name of ['cache']) {
+        const from = path.join(path.dirname(path.resolve(stateFile)), name);
+        if (await fs.stat(from).then(() => true, e => {if(e.code === 'ENOENT')return false;throw e;})) await fs.cp(from, path.join(path.dirname(file), name), {recursive:true});
+      }
+    }),
+    start: ({file, definition}) => createSimulator({ sourceDir, stateFile:file, port:0, host, watch, project, dataPacks, packs,
+      solutionRoots, solutionOrder, deploymentProfiles, deploymentProfile, projectRoot, localOverrides,
+      environmentVariables, observed: observedOption, render: renderOption, platform: platformOption, dataModel,
+      personaInstance: {...definition,ownerOrigin:localOrigin}, preset:definition.preset, presetMode:'always' }),
+  });
+  const launchPersona = async body => {
+    if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key=>!['personaKey','scenario','instanceKey','returnUrl'].includes(key)) || Boolean(body.personaKey) === Boolean(body.scenario)) throw error('Choose exactly one personaKey or scenario.',400,'PersonaLaunchInvalid');
+    if (body.instanceKey !== undefined && (typeof body.instanceKey !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(body.instanceKey))) throw error('instanceKey must be 1-80 letters, digits, dots, underscores or hyphens.',400,'PersonaLaunchInvalid');
+    const report = personaReport();
+    const scenario = body.scenario ? report.scenarios.find(entry => entry.id === body.scenario) : null;
+    if (body.scenario && !scenario) throw error('Unknown persona scenario',404,'PersonaScenarioNotFound');
+    const persona = findPersona(scenario?.persona ?? body.personaKey);
+    const contextId = scenario?.context ?? persona.context;
+    const definition = contextId ? report.contexts.find(entry => entry.id === contextId) : null;
+    const preset = scenario?.preset ?? definition?.preset;
+    if (preset && !resolvePreset(store.snapshot({sections:['presets','mappings']}),preset,generatedPresets)) throw error('Preset not found: '+preset,404,'PersonaPresetNotFound');
+    if (definition?.deploymentProfile) { try { profileSelection(profileConfig,definition.deploymentProfile); } catch(cause) { throw error(cause.message,400,'PersonaContextProfile'); } }
+    const targetPath = personaStartPath(body.returnUrl ?? scenario?.startPath ?? persona.startPath ?? definition?.startPath ?? '/');
+    if (personaInstance && (definition && (definition.id !== personaInstance.id || ['deploymentProfile','environmentVariables','portalOverrides'].some(key=>JSON.stringify(definition[key])!==JSON.stringify(personaInstance[key]))) || preset && preset !== personaInstance.preset)) throw error('Open this setup from the parent runtime: '+personaInstance.ownerOrigin,409,'PersonaContextOwnerRequired');
+    if ((definition || preset) && !personaInstance) {
+      const opened = await personaRuntimes.open(definition ?? {label:scenario?.label ?? persona.label}, {scenario:scenario?.id, instanceKey:body.instanceKey, preset});
+      try {
+        const signed = opened.runtime.signIn(persona.contactId);
+        const {runtime, ...description} = opened;
+        return {...description, personaKey:persona.key, contactId:persona.contactId, path:targetPath, url:opened.origin + targetPath, cookieHeader:signed.cookieHeader, identity:signed.identity};
+      } catch(cause) { if(opened.created)await personaRuntimes.stop(opened.id);throw cause; }
+    }
+    const session = signInSession(persona.contactId);
+    return {origin:localOrigin, url:localOrigin + targetPath, path:targetPath, personaKey:persona.key, contactId:persona.contactId,
+      isolated:Boolean(personaInstance), browser:definition?.browser ?? {}, cookieHeader:authSessions.name+'='+authSessions.value(session), identity:describeSession(session)};
   };
   const PERMISSION_OPERATIONS = ["read", "create", "update", "delete", "append", "appendTo"];
   /** Why the current persona may or may not use a table, from the applied grant ledger. */
@@ -1608,6 +1676,7 @@ export async function createSimulator({
       return json(res, 200, witness);
     }
     if (method === "GET" && relative === "/operations") return json(res, 200, { items: operations() });
+    if (method === 'GET' && relative === '/persona-runtimes') return json(res,200,personaRuntimes.list());
     if (method === "GET" && relative === "/personas") return json(res, 200, personasPayload());
     if (method === "GET" && relative === "/scenarios")
       return json(res, 200, { scenarios: Array.isArray(config().scenarios) ? config().scenarios : [], activeScenario: config().activeScenario ?? null });
@@ -1731,6 +1800,22 @@ export async function createSimulator({
     }
     if (method === "POST" && relative === "/audit/clear")
       return json(res, 200, audit.clear());
+    if (method === 'PUT' && relative === '/persona-catalog' || method === 'DELETE' && relative === '/persona-catalog') {
+      const body = await jsonBody(req);
+      await change(() => store.transact(() => {
+        const state = store.state;
+        const digest = createHash('sha256').update(JSON.stringify(state.personaCatalog ?? null)).digest('hex');
+        if (body?.expectedDigest !== digest) throw error('Persona catalogue changed. Reload before saving.',409,'PersonaCatalogConflict');
+        if (method === 'DELETE') delete state.personaCatalog;
+        else state.personaCatalog = validatePersonaCatalog(body.catalog, 'State');
+      }));
+      return json(res,200,personasPayload());
+    }
+    if (method === 'POST' && relative === '/personas/launch') {
+      const result = await launchPersona(await jsonBody(req));
+      return json(res,200,result,{'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax'});
+    }
+    if (method === 'DELETE' && relative.startsWith('/persona-runtimes/')) return json(res,200,await personaRuntimes.stop(decodeURIComponent(relative.slice('/persona-runtimes/'.length))));
     if (method === "POST" && relative === "/personas/select")
       return change(async () => {
         const body = await jsonBody(req);
@@ -2514,15 +2599,7 @@ export async function createSimulator({
   }
   // Local sign-in, sign-out and the session API (lib/auth-session.mjs; docs:
   // sim-administration.md "Sign-in, sign-out and sessions").
-  const signInPersonas = () => {
-    const state = store.snapshot({ sections: ["simulator", "settings"], tables: ["contact", "account"], mappings: ["contact", "account"] });
-    const model = buildPermissionModel(portal, state, { relationships: solutionData.relationships });
-    const accountMapping = state.mappings?.account ?? {};
-    const accounts = new Map((state.tables?.account ?? []).map((row) => [personaKey(row[accountMapping.idColumn ?? "accountid"]), row[accountMapping.nameColumn ?? "name"] ?? null]));
-    return model.personas
-      .filter((persona) => persona.active)
-      .map((persona) => ({ ...persona, accountName: persona.accountId ? (accounts.get(personaKey(persona.accountId)) ?? null) : null }));
-  };
+  const signInPersonas = () => personaReport().contacts.filter(contact => contact.active);
   const identityFor = (session) => trace.run({ auth: { identity: sessionIdentity(session) } }, currentIdentity);
   const describeSession = (session, extra = {}) => {
     const identity = identityFor(session);
@@ -2653,6 +2730,8 @@ export async function createSimulator({
     const showPersonas = flags.localLogin || !providers.length;
     const content = signInContent({
       personas: showPersonas ? signInPersonas() : [],
+      personaCatalog: showPersonas ? personaReport() : null,
+      personaReturnUrl: returnUrlParameter(url.searchParams) || status >= 400 ? returnUrl : null,
       providers,
       showPersonas,
       csrf,
@@ -2692,6 +2771,12 @@ export async function createSimulator({
           returnUrl,
           error: "Local sign-in is turned off for this site (Authentication/Registration/LocalLoginEnabled is false): sign in with an external provider.",
         });
+      if (form.personaKey) {
+        if (form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.',403);
+        const result = await launchPersona({personaKey:form.personaKey,returnUrl:form.ReturnUrl ? personaStartPath(form.ReturnUrl) : undefined});
+        res.writeHead(302,{location:result.url,'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax','cache-control':'no-store'}); return res.end();
+      }
+      if (personaReport().enabled && form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.',403);
       const contactId = typeof form.contactId === "string" ? form.contactId.trim() : "";
       const persona = personaKey(contactId) ? signInPersonas().find((item) => personaKey(item.contactId) === personaKey(contactId)) : null;
       if (!persona) return renderSignIn(req, res, url, { status: 400, returnUrl, error: "Choose an active local persona to sign in." });
@@ -2837,6 +2922,21 @@ export async function createSimulator({
       });
       return;
     }
+    if (url.pathname === '/__sim/sign-in') {
+      if (req.method === 'POST') {
+        const body = await signInForm(req);
+        if (body.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.',403);
+        const result = await launchPersona({personaKey:body.personaKey,returnUrl:body.ReturnUrl});
+        res.writeHead(302,{location:result.url,'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax','cache-control':'no-store'});return res.end();
+      }
+      if (req.method !== 'GET') throw error('Method not allowed',405);
+      const persona = findPersona(url.searchParams.get('persona'));
+      const report = personaReport();
+      const returnUrl = personaStartPath(url.searchParams.get('returnUrl') ?? persona.startPath ?? report.contexts.find(context=>context.id===persona.context)?.startPath ?? '/');
+      const { renderPersonaPicker } = await import('./lib/persona-picker-view.mjs');
+      const content = '<link rel="stylesheet" href="/__sim/persona-picker.css"><h1>Local persona sign-in</h1><p>Review the persona and sign in. This changes this browser’s local session only.</p><form method="post" action="/_sim/sign-in"><input type="hidden" name="__RequestVerificationToken" value="'+csrf+'"><input type="hidden" name="ReturnUrl" value="'+escaped(returnUrl)+'">'+renderPersonaPicker({...report,personas:[persona],other:[],total:1,groups:report.groups.filter(group=>group.id===persona.group).map(group=>({...group,count:1}))},{mode:'signin'})+'</form>';
+      return renderAccountPage(req,res,url,{status:200,content,route:'persona-shortcut'});
+    }
     if (url.pathname === "/__sim" || url.pathname === "/__sim/") {
       res.writeHead(200, {
         "content-type": "text/html; charset=utf-8",
@@ -2846,7 +2946,10 @@ export async function createSimulator({
       });
       return res.end(await fs.readFile(path.join(ROOT, "admin/index.html")));
     }
-    if (["/__sim/app.mjs", "/__sim/style.css"].includes(url.pathname)) {
+    if (['/__sim/persona-search.mjs','/__sim/persona-picker-view.mjs'].includes(url.pathname)) {
+      res.writeHead(200, {'content-type':mime(url.pathname)}); return res.end(await fs.readFile(path.join(ROOT,'lib',path.basename(url.pathname))));
+    }
+    if (["/__sim/app.mjs", "/__sim/style.css", '/__sim/persona-picker.mjs', '/__sim/persona-picker.css', '/__sim/persona-manager.mjs'].includes(url.pathname)) {
       res.writeHead(200, { "content-type": mime(url.pathname) });
       return res.end(
         await fs.readFile(
@@ -2985,7 +3088,7 @@ export async function createSimulator({
     let formParams = {};
     let nativeEntries = null;
     let nativeFiles = [];
-    const nativePostbackEnabled = (config().observed ?? portal.observed)?.nativeFormTransport === 'postback';
+    const nativePostbackEnabled = nativeFormTransport(config().observed ?? portal.observed) === 'postback';
     const postedPage =
       req.method === "POST" &&
       portal.pages.find(
@@ -3018,6 +3121,10 @@ export async function createSimulator({
           nativeEntries = [...controls];
           nativeFiles = controls.files ?? [];
           const context = trace.getStore();
+          // An auto-generated step form's posted __VIEWSTATE names the tab the page showed and the
+          // earlier tabs' values: the page renders that tab first so the postback decodes against it.
+          const carried = decodeNativeViewState(controls.get('__VIEWSTATE'));
+          if (context && carried) context.nativePostbackState = { kind: 'entityform', formId: carried.form, autoStep: carried.autoStep, values: carried.values, outcome: { type: 'none' } };
           if (context && !context.visitor && !webFormSessionOwner(currentIdentity())) {
             const started = newVisitor(visitorName());
             context.visitor = started.id;
@@ -3164,6 +3271,12 @@ export async function createSimulator({
         }
         trace.getStore().nativePostbackState = response.state;
         html = await renderModalForm();
+        // Form.aspx registers a startup script after ItemSaved: the grid that opened the dialog
+        // closes it on "Success"; a lookup's create dialog (?lookup=) receives the saved record.
+        if (response.state?.outcome && response.state.outcome.type !== 'error' && !response.state.validationErrors) {
+          const message = url.searchParams.get('lookup') ? JSON.stringify({ type: 'Success', name: response.state.savedName ?? '', id: response.state.savedId ?? null }) : 'Success';
+          html += `<script type="text/javascript">window.parent.postMessage(${JSON.stringify(message)}, "*");</script>`;
+        }
       }
       const resource = (entry, type) =>
         renderShellResource(entry, type, { localOnly: true });
@@ -3597,6 +3710,21 @@ export async function createSimulator({
     activeRequests.add(invocation);
   });
   if (startupPreset.applied) await applySelectedPreset(preset);
+  if (personaInstance) {
+    const state = store.snapshot(); state.simulator ??= {};
+    if (personaInstance.deploymentProfile !== undefined) state.simulator.deploymentProfilePin = personaInstance.deploymentProfile;
+    const variables = {...state.simulator.environmentVariables};
+    for (const [name,value] of Object.entries(personaInstance.environmentVariables ?? {})) {
+      for (const existing of Object.keys(variables)) if (existing.toLowerCase() === name.toLowerCase()) delete variables[existing];
+      Object.defineProperty(variables,name,{value,enumerable:true,configurable:true,writable:true});
+    }
+    state.simulator.environmentVariables = variables;
+    state.simulator.portalOverrides = {...state.simulator.portalOverrides,
+      settings:{...state.simulator.portalOverrides?.settings,...personaInstance.portalOverrides?.settings},
+      snippets:{...state.simulator.portalOverrides?.snippets,...personaInstance.portalOverrides?.snippets}};
+    state.simulator.mode='local'; state.simulator.pageMode='local'; state.simulator.live={enabled:false};
+    await saveState(state);
+  }
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ host, port }, resolve);
@@ -3709,6 +3837,12 @@ export async function createSimulator({
       ignored: (file, stats) => pluginSourceKeys.has(path.resolve(file).toLowerCase()) ? false : ignoreSource(file, stats),
       awaitWriteFinish: { stabilityThreshold: 200, pollInterval: 100 },
     });
+    const watched = watcher;
+    const watchReady = new Promise(resolve => {
+      const settled = () => { watched.off('ready',settled); watched.off('error',settled); if(watcherReadyRelease === settled)watcherReadyRelease=null; resolve(); };
+      watcherReadyRelease = settled;
+      watched.once('ready',settled); watched.once('error',settled);
+    });
     watcher.on("all", (_event, file) => {
       if (closing) return;
       if (file) changedPaths.add(file);
@@ -3720,6 +3854,7 @@ export async function createSimulator({
     watcher.on("error", (err) =>
       recordDiagnostic({ code: "WATCH_ERROR", message: err.message }),
     );
+    await watchReady;
     await previousWatcher?.close();
   }
   if (watch) await restartWatcher();

@@ -414,6 +414,7 @@ try {
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
         localOverrides: siteMirage?.localOverrides,
         render: siteMirage?.render,
+        personaContexts: siteMirage?.personaContexts,
         platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
         stateFile,

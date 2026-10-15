@@ -196,6 +196,32 @@
     error.status = xhr?.status;
     return error;
   }
+  /**
+   * entityform.js record actions (button.*-link in .form-custom-actions): Delete opens the
+   * form's delete dialog whose primary button posts the record reference to the button URL;
+   * Activate/Deactivate post it directly; Create related record posts to the button's (empty)
+   * URL. Every success reloads the page (live request evidence).
+   */
+  function formActionClick(event) {
+    const button = event.target.closest("button");
+    event.preventDefault();
+    const row = button.closest(".form-custom-actions");
+    const control = row.closest('[id^="EntityFormControl_"]') || document;
+    const reference = {
+      LogicalName: control.querySelector('input[id$="_EntityFormView_EntityName"]')?.value ?? "",
+      Id: (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value ?? "").replace(/[{}]/g, ""),
+    };
+    const submit = () => post(button.getAttribute("data-url") || location.href, { entityReference: reference }, { json: false }).then(() => location.reload(), () => location.reload());
+    if (!button.classList.contains("delete-link")) return submit();
+    const modal = row.querySelector("section.modal-delete, div.modal-delete");
+    if (!modal) return submit();
+    const primary = modal.querySelector(".modal-footer button.primary");
+    if (primary) primary.onclick = () => { primary.disabled = true; submit(); };
+    showModal(modal);
+  }
+  document.addEventListener("click", (event) => {
+    if (event.target.closest(".form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link")) formActionClick(event);
+  });
   /** POST JSON with the native headers; json=true parses the reply. */
   function post(url, body, { json = true, form = false } = {}) {
     // form: the body is a URLSearchParams (urlencoded) or FormData (multipart) payload.
@@ -1245,6 +1271,8 @@
       const clear = clearButton();
       if (clear) clear.style.display = hasValue ? "" : "none";
     };
+    // The response markup renders the clear button visible; the client hides it for an empty value.
+    sync();
     const setValue = (value, name, entity) => {
       const input = id();
       if (!input) return;

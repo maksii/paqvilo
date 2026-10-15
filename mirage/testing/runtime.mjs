@@ -2,6 +2,7 @@ import { loadConfig } from '../../lense/config.mjs';
 import { DEFAULT_PORT, discoveries, miragePaths, samePath } from '../../lense/commands/mirage.mjs';
 import { loadProjectConfig } from '../lib/project-config.mjs';
 import {createPortalSession} from './sessions.mjs';
+import {createPersonaSession} from './personas.mjs';
 
 function requestError(status, value, label = 'Local runtime request') {
   const detail = value?.error?.message ?? value?.message ?? (typeof value?.error === 'string' ? value.error : '');
@@ -68,7 +69,13 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
   };
   return Object.freeze({
     origin,
-    createSession: options => createPortalSession({...options,origin,fetchImpl}),
+    createSession: (options = {}) => options.personaKey || options.scenario ? createPersonaSession({...options,origin,fetchImpl}) : createPortalSession({...options,origin,fetchImpl}),
+    personas: () => request('/personas'),
+    savePersonaCatalog: (catalog, {expectedDigest} = {}) => request('/persona-catalog', {method:'PUT',body:{catalog,expectedDigest}}),
+    resetPersonaCatalog: ({expectedDigest} = {}) => request('/persona-catalog', {method:'DELETE',body:{expectedDigest}}),
+    personaRuntimes: () => request('/persona-runtimes'),
+    stopPersonaRuntime: id => request('/persona-runtimes/'+encodeURIComponent(id), {method:'DELETE'}),
+    launchPersona: options => request('/personas/launch', {method:'POST',body:options}),
     status: () => request('/status'),
     state: ({ summary = false } = {}) => request(`/state${summary ? '?summary=1' : ''}`),
     witness: ({ tables } = {}) => request(`/verification-witness?tables=${encodeURIComponent(Array.isArray(tables) ? tables.join(',') : '')}`),

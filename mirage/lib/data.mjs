@@ -24,6 +24,7 @@ import { DataError } from "./data-error.mjs";
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction } from './row-transaction.mjs';
 import { stateDigest } from './state-stream.mjs';
+import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
 import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
 import { validateExperimentPresets } from './experiment-presets.mjs';
@@ -490,6 +491,7 @@ function normalizeState(state, presetLibrary = builtinPresets, platform = state?
   };
   validatePlatformOverrides(result.simulator?.platformOverrides);
   validateExperimentPresets(result.simulator?.experimentPresets);
+  if (result.personaCatalog !== undefined) result.personaCatalog = validatePersonaCatalog(result.personaCatalog, 'State');
   for (const key of ["mappings", "tables", "presets"])
     if (
       !result[key] ||
@@ -3111,6 +3113,7 @@ export class DataStore {
   async applyPreset(name, { generatedPresets = this.presetLibrary } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets);
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
+    if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
     return this.transact(() => {
       applyPresetSections(this.state, preset);
       this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig);

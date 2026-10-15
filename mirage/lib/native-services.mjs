@@ -8,6 +8,7 @@ import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
 import { platformResourceHeaders, siteHeaders, PAGE_HEADERS } from "./response-headers.mjs";
 import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
+import { nativeActionStateValues } from "./native-form-actions.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
 import { platformBundleFor, localAspNetScript, platformShell, bootstrapVariant } from "./platform-manifest.mjs";
@@ -344,12 +345,14 @@ export function buildLayout({
   for (const cell of view.fields ?? []) {
     if (!cell?.name) continue;
     const override = overrideFor(settings, cell.name);
-    const { table, attribute, field } = columnMetadata(
+    const { table, attribute, field: known } = columnMetadata(
       metadata,
       entity,
       fetch,
       cell.name,
     );
+    // A platform lookup view names system columns the export does not describe.
+    const field = known ?? (cell.dataverseType ? { dataverseType: cell.dataverseType, label: cell.label } : undefined);
     const width = Number(override?.Width) || Number(cell.width) || 100;
     columns.push({
       LogicalName: cell.name,
@@ -751,6 +754,54 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
   };
 }
 
+/**
+ * The platform's own default lookup views (savedquery type 64) of the system tables a portal
+ * ships without exporting them, as Dataverse defines them: columns, labels, widths and order
+ * (Learn: Contact, Account and Currency default views; live lookup dialogs render exactly
+ * these). Ids are the platform's fixed savedquery ids, identical in every environment. The
+ * Account Lookup View carries no order (live evidence).
+ */
+const PLATFORM_LOOKUP_VIEWS = Object.freeze({
+  contact: { id: "a2d479c5-53e3-4c69-addd-802327e67a0d", name: "Contacts Lookup View", idColumn: "contactid", order: "fullname", fields: [
+    { name: "fullname", label: "Full Name", width: 300 },
+    { name: "emailaddress1", label: "Email", width: 200 },
+    { name: "telephone1", label: "Business Phone", width: 125 },
+    { name: "parentcustomerid", label: "Company Name", width: 150, dataverseType: "customer" },
+    { name: "address1_city", label: "Address 1: City", width: 100 },
+    { name: "address1_telephone1", label: "Address 1: Phone", width: 125 },
+  ] },
+  account: { id: "a9af0ab8-861d-4cfa-92a5-c6281fed7fab", name: "Account Lookup View", idColumn: "accountid", fields: [
+    { name: "name", label: "Account Name", width: 300 },
+    { name: "emailaddress1", label: "Email", width: 200 },
+    { name: "telephone1", label: "Main Phone", width: 100 },
+    { name: "accountnumber", label: "Account Number", width: 100 },
+    { name: "primarycontactid", label: "Primary Contact", width: 150, dataverseType: "lookup" },
+    { name: "address1_city", label: "Address 1: City", width: 100 },
+  ] },
+  transactioncurrency: { id: "cd5625b0-dda8-4ee2-b13f-b9331e027c8a", name: "Currency Lookup View", idColumn: "transactioncurrencyid", order: "currencyname", fields: [
+    { name: "currencyname", label: "Currency Name", width: 200 },
+    { name: "isocurrencycode", label: "Currency Code", width: 125 },
+    { name: "currencysymbol", label: "Currency Symbol", width: 100 },
+    { name: "exchangerate", label: "Exchange Rate", width: 100, dataverseType: "decimal" },
+    { name: "currencyprecision", label: "Currency Precision", width: 125, dataverseType: "int" },
+  ] },
+});
+
+/** The platform default lookup view of a system table, or null for other tables. */
+export function platformLookupView(entity) {
+  const view = PLATFORM_LOOKUP_VIEWS[canonical(entity)];
+  if (!view) return null;
+  const attributes = [view.idColumn, ...view.fields.map((field) => field.name)].map((name) => `<attribute name="${name}"/>`).join("");
+  return {
+    id: view.id,
+    entity: canonical(entity),
+    name: view.name,
+    fetchXml: `<fetch><entity name="${canonical(entity)}">${attributes}${view.order ? `<order attribute="${view.order}"/>` : ""}</entity></fetch>`,
+    fields: view.fields.map((field) => ({ ...field })),
+    platform: true,
+  };
+}
+
 /** Resolve the lookup views for one form field (one layout per target table). */
 export function lookupModel({ portal, schemas, metadata, store, kind, formId, stepId, field: fieldName }) {
   const definition = formDefinition(portal, kind, formId);
@@ -777,6 +828,8 @@ export function lookupModel({ portal, schemas, metadata, store, kind, formId, st
     // Without a form-selected view, the target's exported default lookup view (query type 64).
     const lookupView = (metadata?.views ?? []).find((view) => view.entity === canonical(target) && view.queryType === 64 && view.isDefault);
     if (lookupView) return { id: lookupView.id, entity: lookupView.entity, name: lookupView.name, fetchXml: lookupView.fetchXml, fields: lookupView.fields, sourceFile: lookupView.file };
+    const platformView = platformLookupView(target);
+    if (platformView) return platformView;
     // A lookup without an imported default view still exposes the target's
     // primary name, sorted ascending, as the minimum native lookup projection.
     return {
@@ -2016,10 +2069,11 @@ export async function handleNativeService(req, res, url, context) {
       const bootstrap = (context.portal.webFiles ?? []).find(file => /\/bootstrap\.min\.css$/i.test(file.url ?? ''));
       const sourceStyles = await context.formStyles?.(url.pathname + url.search) ?? {};
       const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: sourceStyles.bootstrap || resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
-      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd + platform.bodyOpen;
+      // The quick view document's head carries the page metas; the body-open (PCF) stylesheet opens its body (live document).
+      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd;
       for (const diagnostic of formStyleDiagnostics(body, context.config?.shellProfile)) context.recordDiagnostic?.({ ...diagnostic, path: url.pathname });
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      const document = `<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><div id="content-container" class="container quickform"><div id="content"><form id="content_form">${body}</form></div></div></body></html>`;
+      const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Quick view</title>${styles}</head><body>${platform.bodyOpen}<div id="content-container" class="container quickform"><div id="content"><form id="content_form">${body}</form></div></div></body></html>`;
       res.end(context.decorateDocument?.(document) ?? document);
     } catch (error) {
       res.writeHead(error.status ?? 500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
@@ -2100,8 +2154,10 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (normalized === "entity-grid-delete") {
-      const entity = body.LogicalName ?? body.logicalName;
-      const id = body.Id ?? body.id;
+      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
       if (!safeName(entity) || !GUID.test(String(id ?? ""))) fail("Invalid_Request", 400, "Invalid_Request");
       // A form subgrid delete must name its declared grid; plain list and form
       // deletes rely on the table permission of the current persona.
@@ -2129,12 +2185,16 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (normalized === "action-deactivate" || normalized === "action-activate") {
-      const entity = body.LogicalName ?? body.logicalName;
-      const id = body.Id ?? body.id;
+      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
       if (!safeName(entity) || !GUID.test(String(id ?? ""))) fail("Invalid_Request", 400, "Invalid_Request");
       const state = normalized === "action-deactivate" ? 1 : 0;
+      // The table's own state/status pair (solution metadata or the store's field definitions), then the standard 1/2 defaults.
+      const resolved = nativeActionStateValues(entity, state ? "deactivate" : "activate", { metadata: context.metadata, store: context.store });
       await context.change(() =>
-        writeOperation(context, "update", entity, id, { statecode: state, statuscode: defaultStatus(context.metadata, entity, state) }),
+        writeOperation(context, "update", entity, id, { statecode: state, statuscode: resolved?.statuscode ?? defaultStatus(context.metadata, entity, state) }),
       );
       res.writeHead(204);
       res.end();

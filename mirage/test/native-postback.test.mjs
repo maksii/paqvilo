@@ -102,3 +102,15 @@ test("malformed descriptors and nontextual entries fail without prototype mutati
   assert.throws(() => parseNativePostback(post(form), [{ ...form, actions: [null] }]), { code: "InvalidNativePostback" });
   assert.equal({}.polluted, undefined);
 });
+
+test("a WebForms submit button posts its own name with an empty __EVENTTARGET", () => {
+  const first = descriptor(firstId), second = descriptor(secondId);
+  const entries = new URLSearchParams([["__EVENTTARGET", ""], ["__EVENTARGUMENT", ""], [second.fields[0].wireName, "typed"], [second.actions[0].target, "Next"]]);
+  const result = parseNativePostback(entries, [first, second]);
+  assert.equal(result.formId, secondId);
+  assert.deepEqual(result.body, { action: "submit", values: { description: "typed" } });
+  assert.equal(result.ignoredEntryCount, 0);
+  // No posted button, or two, is no target.
+  assert.throws(() => parseNativePostback(new URLSearchParams([["__EVENTTARGET", ""], [second.fields[0].wireName, "typed"]]), [first, second]), /target required/);
+  assert.throws(() => parseNativePostback(new URLSearchParams([["__EVENTTARGET", ""], [first.actions[0].target, "A"], [second.actions[0].target, "B"]]), [first, second]), /target required/);
+});

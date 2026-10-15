@@ -88,7 +88,7 @@ test("the WebForms server form carries the native hidden fields, postback stub a
   assert.doesNotMatch(html, /crmentityformview-datetime\.js/);
   // Read-only forms register no validators, so the form has no onsubmit handler; date
   // controls add the date-time form script; captured AXD paths replace the local runtime.
-  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<div id="EntityFormControl" data-pp-native-form><div class="input-group datetimepicker" data-date-format="DD/MM/YYYY"></div></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
+  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<div id="EntityFormControl" data-pp-native-form><input id="effective" data-ui="datetimepicker" data-type="date"></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
   assert.match(readOnly, /^<form method="post" action="\/_portal\/modal" id="content_form">/);
   assert.match(readOnly, /var theForm = document\.forms\['content_form'\];/);
   assert.match(readOnly, /<script src="\/WebResource\.axd\?d=a&amp;t=1"><\/script>/);

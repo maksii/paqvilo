@@ -4,6 +4,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerExpressionOperators, registerShellConventions, validateEndpoints } from "./extensions.mjs";
 import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
 import { seedPresetBody } from "./solution-schema.mjs";
+import { validatePersonaCatalog } from './persona-catalog.mjs';
 
 /**
  * Project-agnostic preset registry.
@@ -145,6 +146,9 @@ export function validatePack(pack, source = "data pack") {
     if (property && property.value !== undefined && !Array.isArray(property.value))
       fail(`${key} must be an array`);
   }
+  const catalogProperty = Object.getOwnPropertyDescriptor(pack, 'personaCatalog');
+  if (catalogProperty && !('value' in catalogProperty)) fail('personaCatalog must be a data property');
+  if (catalogProperty?.value !== undefined) validatePersonaCatalog(catalogProperty.value, `Data pack ${pack.id}`);
   // Extension points (lib/extensions.mjs): plugin expression operators and
   // HTTP endpoints under /__sim/ served while the pack matches the portal.
   const operators = dataProperty(pack, "expressionOperators")?.value;
@@ -322,6 +326,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
       const value = load();
       if (!value || typeof value !== "object" || Array.isArray(value))
         throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ""} did not load an object`);
+      if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
       body = finish ? finish(value) : value;
       loaded = true;
     }

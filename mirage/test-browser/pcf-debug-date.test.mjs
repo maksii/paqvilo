@@ -25,7 +25,7 @@ test('PCF debugger updates typed instances, native timestamp wires and contains 
     const result = [];
     for (const [fieldId, kind, behavior] of declarations) {
       const wrapper = document.createElement('div'); wrapper.setAttribute('data-pcf-native-field', fieldId);
-      const field = document.createElement('input'); field.id = fieldId; field.setAttribute('data-sim-date-value', ''); field.dataset.type = kind; field.dataset.behavior = behavior;
+      const field = document.createElement('input'); field.id = fieldId; field.setAttribute('data-ui', 'datetimepicker'); field.dataset.type = kind; field.dataset.behavior = behavior;
       const target = document.createElement('div'); wrapper.append(field, target); document.body.append(wrapper);
       await __paqviloPcf.mount({ id: 'date-editor', constructor: 'Synthetic.DateEditor', resources: [], properties: [{ name: 'value', 'of-type': kind === 'date' ? 'DateAndTime.DateOnly' : 'DateAndTime.DateAndTime', usage: 'bound' }, { name: 'fault', 'of-type': 'SingleLine.Text', usage: 'input' }], args: {}, strings: {}, mappings: {}, identity: { id: null, roles: [] }, language: { code: 'en-US', lcid: 1033 }, nativeBinding: { id: fieldId, properties: ['value'] } }, target);
       const date = new Date(2026, 9, 10, kind === 'date' ? 0 : 12, 0, 0, 125);

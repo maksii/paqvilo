@@ -104,7 +104,12 @@ function membershipModel(portal, state) {
       seen.add(key);
     }
   }
-  return { webRoles, roles, contacts, memberships, diagnostics };
+  const membershipsByContact = new Map();
+  for (const assignment of memberships) {
+    if (!membershipsByContact.has(assignment.contactId)) membershipsByContact.set(assignment.contactId, []);
+    membershipsByContact.get(assignment.contactId).push(assignment.roleId);
+  }
+  return { webRoles, roles, contacts, memberships, membershipsByContact, diagnostics };
 }
 
 /** Local contact membership resolution; browser live permissions are independent. */
@@ -112,9 +117,10 @@ export function resolvePortalIdentity(
   portal,
   state,
   selected = state.simulator?.identity ?? {},
+  suppliedModel,
 ) {
   selected ??= {};
-  const model = membershipModel(portal, state),
+  const model = suppliedModel ?? membershipModel(portal, state),
     contactId = id(selected.contactId ?? selected.id),
     contact = model.contacts.get(contactId);
   if (selected.roleSource !== "memberships") {
@@ -149,8 +155,7 @@ export function resolvePortalIdentity(
       .map((role) => role.id),
   );
   if (authenticated)
-    for (const assignment of model.memberships)
-      if (assignment.contactId === contactId) roleIds.add(assignment.roleId);
+    for (const roleId of model.membershipsByContact.get(contactId) ?? []) roleIds.add(roleId);
   const parent = contact?.parentcustomerid ?? contact?._parentcustomerid_value;
   const parentType =
     parent?.logical_name ??
@@ -674,7 +679,7 @@ export function buildPermissionModel(
     const effective = resolvePortalIdentity(portal, state, {
       contactId: contact.contactid,
       roleSource: "memberships",
-    });
+    }, identityModel);
     return {
       contactId: id(contact.contactid),
       name: effective.name,

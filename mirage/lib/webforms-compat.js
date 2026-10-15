@@ -581,7 +581,8 @@
         if (!outer) throw new Error('Native postback requires its page form.');
         const target = postbackTarget(form);
         if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
-        if ([...form.querySelectorAll('input[type="file"]')].some(input => input.files?.length)) throw new Error('Native URLencoded file submission is not supported.');
+        // Files post with the page only through a multipart form (the attach-file control's form).
+        if (outer.enctype !== 'multipart/form-data' && [...form.querySelectorAll('input[type="file"]')].some(input => input.files?.length)) throw new Error('Native URLencoded file submission is not supported.');
         const tokenValue = await new Promise(resolve => {
           const deferred = w.shell?.getTokenDeferred?.();
           if (deferred?.done) deferred.done(resolve);
@@ -595,7 +596,11 @@
           input.type = 'hidden'; input.name = name; input.value = value ?? '';
           if (!existing.length) outer.append(input);
         };
-        hidden('__EVENTTARGET', eventTarget || button?.name);
+        // A WebForms submit button (an auto-generated step's Next) is the submitter: it posts its
+        // own name=value pair with an empty __EVENTTARGET, as the browser would.
+        const submitter = button?.type === 'submit' && button.name && (!eventTarget || eventTarget === button.name) ? button : null;
+        hidden('__EVENTTARGET', submitter ? '' : eventTarget || button?.name);
+        if (submitter) { const control = document.createElement('input'); control.type = 'hidden'; control.name = submitter.name; control.value = submitter.value; outer.append(control); }
         hidden('__EVENTARGUMENT', eventArgument);
         hidden('__RequestVerificationToken', tokenValue);
         outer.method = 'POST';

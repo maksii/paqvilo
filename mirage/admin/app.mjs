@@ -1,3 +1,5 @@
+import { personaSessionPanel, personaManagementPanel, mountPersonaAdministration } from './persona-manager.mjs';
+let personaCatalogue, selectedPersonaKey;
 const API = "/__sim/api";
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value) =>
@@ -35,7 +37,7 @@ let state;
 // portal items (kind, name), access (contact) and logs (type).
 const parseHash = () => {
   const [view = "", query = ""] = location.hash.slice(1).split("?");
-  return { view, params: new URLSearchParams(query) };
+  return { view: view === "identity" ? "access" : view, params: new URLSearchParams(query) };
 };
 let activeView = views.some(([id]) => id === parseHash().view)
   ? parseHash().view
@@ -223,7 +225,11 @@ async function loadView() {
   if (activeView !== "logs") disconnectLogs();
   if (activeView === "audit") await loadAudit();
   if (activeView === "records") await loadRecords();
-  if (["access", "scenarios"].includes(activeView)) await loadContacts();
+  if (["access", "scenarios"].includes(activeView)) {
+    personaCatalogue = await request('/personas');
+    if (personaCatalogue.version !== 1) personaCatalogue = undefined;
+    await loadContacts(); render();
+  }
   if (activeView === "access") {
     await loadExternalIdentities();
     if (activeView === "access") render();
@@ -573,6 +579,7 @@ const contactLabel = (record) =>
       record.contactid
     : "";
 function sessionPanel() {
+  if (personaCatalogue?.enabled) return personaSessionPanel(personaCatalogue, browserSession, selectedPersonaKey);
   const session = browserSession || { signedIn: false, roles: [] };
   const contacts = state.data?.contact || [];
   const wanted = personaId(
@@ -601,6 +608,7 @@ async function refresh({ announce = false } = {}) {
     state = await request("/state?summary=1");
     state.summaryMode = !state.data;
     await loadSession();
+    personaCatalogue = undefined;
     recordResult = undefined;
     $("#connection-dot").className = "status-dot ready";
     $("#connection-label").textContent = "Simulator connected";
@@ -1041,7 +1049,7 @@ function personaPanel() {
   const roles = model.webRoles || state.status?.webRoles || [];
   return `<section class="panel section-gap"><div class="panel-heading"><h2>Contact personas</h2>${badge(identity.roleSource === "memberships" ? "Contact memberships" : "Role override", identity.roleSource === "memberships" ? "green" : "amber")}</div><p class="muted">Select a local contact and its exported web-role memberships. The account comes from that contact's parent customer. The default persona is the one the local sign-in page offers first; browsers sign in through that page or with "Sign in as" above. The live browser identity remains independent.</p>${
     contacts.length
-      ? `<form id="persona-form" class="form-grid"><div><label for="persona-contact">Local contact</label><select id="persona-contact">${contacts.map((record) => `<option value="${escape(record.contactid)}" ${personaId(record.contactid) === chosen ? "selected" : ""}>${escape(record.fullname || [record.firstname, record.lastname].filter(Boolean).join(" ") || record.contactid)}</option>`).join("")}</select><p class="field-help">Selected contact account: ${escape(contact?.parentcustomerid?.name || contact?.parentcustomerid?.id || contact?.parentcustomerid || "None")}</p></div><fieldset class="role-picker"><legend>Contact web-role memberships</legend><p class="field-help">Assignments use the imported role IDs. Authenticated and anonymous roles marked in the export apply automatically.</p>${roles
+      ? `<form id="persona-form" class="form-grid"><div>${personaCatalogue?.enabled ? `<label>Local contact</label><input type="hidden" id="persona-contact" value="${escape(chosen)}"><strong>${escape(contactLabel(contact))}</strong> <button type="button" class="button" data-persona-contact-chooser data-contact-id="${escape(chosen)}">Choose persona</button>` : `<label for="persona-contact">Local contact</label><select id="persona-contact">${contacts.map((record) => `<option value="${escape(record.contactid)}" ${personaId(record.contactid) === chosen ? "selected" : ""}>${escape(record.fullname || [record.firstname, record.lastname].filter(Boolean).join(" ") || record.contactid)}</option>`).join("")}</select>`}<p class="field-help">Selected contact account: ${escape(contact?.parentcustomerid?.name || contact?.parentcustomerid?.id || contact?.parentcustomerid || "None")}</p></div><fieldset class="role-picker"><legend>Contact web-role memberships</legend><p class="field-help">Assignments use the imported role IDs. Authenticated and anonymous roles marked in the export apply automatically.</p>${roles
           .filter((role) => role.id)
           .map(
             (role, index) =>
@@ -1128,6 +1136,7 @@ function access() {
     ) +
     sessionPanel() +
     personaPanel() +
+    (personaCatalogue ? personaManagementPanel(personaCatalogue) : "") +
     externalIdentitiesPanel() +
     disclosure("create-persona", "Create a persona", createPersonaForm) +
     disclosure(
@@ -1388,6 +1397,7 @@ function scenarios() {
   const contacts = state.data?.contact || [];
   const option = (value, label) => `<option value="${escape(value)}">${escape(label)}</option>`;
   return (
+    (personaCatalogue ? personaManagementPanel(personaCatalogue) : "") +
     heading(
       "Scenarios",
       "Name a combination of preset, persona and permission enforcement, then switch between them in one step.",
@@ -1598,6 +1608,8 @@ function render() {
         observedStylesheetBaselines() +
         snippetCompositionControls(),
     );
+  if (personaCatalogue && ['access','scenarios'].includes(activeView)) mountPersonaAdministration($('#content'), personaCatalogue, {request, refresh, notify, session:browserSession, selectedKey:selectedPersonaKey,
+    onSelected:key=>{selectedPersonaKey=key;}, onContact:persona=>{selectedPersona=persona.contactId;render();}});
   restoreDrafts();
   syncConfinement();
   if (focusKey) {

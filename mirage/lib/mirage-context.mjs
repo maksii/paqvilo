@@ -56,6 +56,7 @@ export async function createMirageContext({ packs = [], config, site, portal, me
     createSimulator: settings => createSimulator({
       platform: cfg?.mirageConfig.platform ?? selected?.platform,
       render: cfg?.mirageConfig.render,
+      personaContexts: cfg?.mirageConfig.personaContexts,
       ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
       ...(project ? { project: projectSummary(project, selected.id), environmentVariables: project.environmentVariables } : {}),
       ...settings, packs: loaded,
