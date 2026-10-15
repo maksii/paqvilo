@@ -96,6 +96,31 @@ test("Bootstrap 5 forms: the runtime adopts its form marker, dashes empty read-o
   assert.equal(await grid.locator(".view-toolbar .input-group-btn.align-top > button.btn.btn-default > .visually-hidden").innerText(), "Search Results");
   assert.equal(await grid.locator(".view-grid.table-responsive > span[aria-label='Choose one record and click Select to continue']").count(), 1);
   assert.equal(await grid.locator(".view-grid > table").getAttribute("class"), "table table-hover");
+  // Closed, the dialog announces nothing; its hidden section carries no Bootstrap 3 state.
+  assert.equal(await grid.locator("[id^='SearchCountText']").count(), 0);
+  const dialog = page.locator("#parentcustomerid_lookupmodal section.modal-lookup");
+  await page.locator("button.launchentitylookup[aria-label*='Company']").click();
+  await page.waitForSelector("#parentcustomerid_lookupmodal section.modal-lookup.show tbody tr");
+  // Open: "show" only, no aria-hidden, both footer actions disabled, the platform's checkbox label and
+  // the field-named announcer once the grid has loaded; rows carry no ARIA of their own.
+  assert.deepEqual(await dialog.evaluate((el) => [el.className, el.getAttribute("aria-hidden"), el.getAttribute("role"), el.hasAttribute("hidden")]), ["modal fade modal-lookup show", null, "dialog", false]);
+  assert.deepEqual(await dialog.locator(".modal-footer button.primary, .modal-footer .remove-value").evaluateAll((els) => els.map((el) => el.disabled)), [true, true]);
+  assert.equal(await grid.locator(":scope > #SearchCountTextparentcustomerid.visually-hidden").innerText(), "1 records found");
+  assert.deepEqual(await grid.locator("tbody tr").first().evaluate((tr) => [tr.getAttribute("role"), tr.getAttribute("aria-checked"), tr.querySelector("td[data-th='Select'] span").getAttribute("aria-label"), tr.querySelector("td[data-th='Select'] span").getAttribute("title")]), [null, null, "Select or deselect the row Acme", "Checkbox"]);
+  await grid.locator("tbody tr").first().click();
+  assert.equal(await dialog.locator(".modal-footer button.primary").isDisabled(), false);
+  await dialog.locator(".modal-footer button.primary").click();
+  await page.waitForSelector("#parentcustomerid_lookupmodal section.modal-lookup", { state: "hidden" });
+  // Select writes the id and entity name (the name input's value property only), marks the id dirty
+  // the platform's way and leaves the chosen row cleared; the closed dialog hides by style alone.
+  assert.deepEqual(
+    await page.evaluate(() => [document.getElementById("parentcustomerid").value, document.getElementById("parentcustomerid").getAttribute("class"), document.getElementById("parentcustomerid_entityname").value, document.getElementById("parentcustomerid_name").value, document.getElementById("parentcustomerid_name").getAttribute("value")]),
+    [ACCOUNT, " dirty", "account", "Acme", null],
+  );
+  assert.deepEqual(await dialog.evaluate((el) => [el.className, el.getAttribute("aria-hidden"), el.hasAttribute("hidden"), el.style.display]), ["modal fade modal-lookup", "true", false, "none"]);
+  assert.deepEqual(await grid.locator("tbody tr").first().evaluate((tr) => [tr.getAttribute("class"), tr.querySelector("td[data-th='Select']").innerHTML]), ["", ""]);
+  await page.locator("button.clearlookupfield[aria-label*='Company']").click();
+  assert.deepEqual(await page.evaluate(() => [document.getElementById("parentcustomerid").value, document.getElementById("parentcustomerid_entityname").value, document.querySelector("button.clearlookupfield[aria-label*='Company']").style.display]), ["", "", "none"]);
 
   // A success that keeps the form shows the Bootstrap 5 panel with its close button, and the
   // insert form re-renders with the posted value.

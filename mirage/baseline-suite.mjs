@@ -120,10 +120,9 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   };
   // Optional scripted portal sign-in through the profile's identity provider. No credentials are
   // involved: the profile's SSO either completes or the run stops and names the human step.
+  // A failed sign-in or persona check saves its page and throws; the bridge stays open for the next persona group.
   const fail = async (message, result, folder) => {
     if (signInOut && result) await writeCapture(result, { outDir: path.join(signInOut, folder), origin: matrix.origin, side: folder, meta: { runtime: "reference" } }).catch(() => {});
-    await saver.close();
-    await client.close();
     throw new Error(message);
   };
   const ensureSignedIn = async () => {
@@ -256,6 +255,7 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
 export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
   const results = [];
   let currentPersona = Symbol("none");
+  const failedPersonas = new Map();
   // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
   // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
   const personaOrder = [];
@@ -278,8 +278,15 @@ export async function captureMatrix({ matrix, side, outDir, label, ids = {}, onl
       }
     };
     try {
+      // A persona that did not take effect fails every scenario of its group at once instead of re-probing per scenario.
+      if (failedPersonas.has(personaName)) throw new Error(failedPersonas.get(personaName));
       if (personaName !== currentPersona) {
-        await timed("persona", () => side.persona(personaName ?? "anonymous", { ids }));
+        try {
+          await timed("persona", () => side.persona(personaName ?? "anonymous", { ids }));
+        } catch (error) {
+          failedPersonas.set(personaName, String(error.message));
+          throw error;
+        }
         currentPersona = personaName;
       }
       if (scenario.reset !== false) await timed("reset", () => side.reset());

@@ -53,10 +53,13 @@
   };
   const dropdownMenu = (toggle) => [...(toggle.parentElement?.children ?? [])].find((element) => element.classList.contains("dropdown-menu"));
   const setShown = (element, shown) => {
-    element.hidden = !shown;
-    element.classList.toggle("in", shown);
+    // Bootstrap 5 markup (data-bs-*) carries "show" only, no hidden attribute and no aria-hidden while shown.
+    const bs5 = element.hasAttribute("data-bs-backdrop") || element.hasAttribute("data-bs-toggle");
+    if (!bs5) element.hidden = !shown;
+    element.classList.toggle("in", shown && !bs5);
     element.classList.toggle("show", shown);
-    element.setAttribute("aria-hidden", String(!shown));
+    if (shown && bs5) element.removeAttribute("aria-hidden");
+    else element.setAttribute("aria-hidden", String(!shown));
   };
   function hint(element, kind, options = {}) {
     const $ = window.jQuery;
@@ -148,7 +151,7 @@
       element.removeEventListener("keydown", state.keydown);
       state.backdrop?.remove();
       state.backdrop = null;
-      if (!document.querySelector(".modal.in")) document.body.classList.remove("modal-open");
+      if (!document.querySelector(".modal.in, .modal.show")) document.body.classList.remove("modal-open");
       event(element, "hidden.bs.modal");
     },
     toggle(element, relatedTarget) { if (instance(element, "modal")?.shown) modal.hide(element); else modal.show(element, relatedTarget); },

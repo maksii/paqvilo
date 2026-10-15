@@ -244,7 +244,7 @@
   // ---- crmentityformview.js helpers ----------------------------------------------------
   w.setIsDirty = function (id) {
     const control = document.getElementById(id);
-    if (control) control.classList.add("dirty");
+    if (control && !control.classList.contains("dirty")) control.className = `${control.className} dirty`;
     w.__ppFormDirty = true;
   };
   w.isDirty = function () {

@@ -128,7 +128,7 @@
   });
   define("setIsDirty", (id) => {
     const element = id ? document.getElementById(id) : null;
-    if (element && !element.classList.contains("dirty")) element.classList.add("dirty");
+    if (element && !element.classList.contains("dirty")) element.className = `${element.className} dirty`;
   });
   define("isDirty", () => document.getElementsByClassName("dirty").length > 0);
   define("clearIsDirty", () => {

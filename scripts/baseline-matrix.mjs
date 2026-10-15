@@ -3,7 +3,7 @@
 // fixture site manifest. Scenario steps use the native Power Pages control contracts (control ids
 // are column logical names; the submit control is named `…$InsertButton`/`…$UpdateButton`;
 // lookups use `.launchentitylookup`, `.clearlookupfield` (the Contact lookup: the item edit form renders the Parent lookup as a dropdown per its metadata); lists use the entity-list markup) and
-// the fixture record aliases ({id:${T.record}} …). Project-specific parts (origin, browser bridge, hooks,
+// the fixture record aliases ({id:item1} …). Project-specific parts (origin, browser bridge, hooks,
 // synthetic contact) come from a project file merged in with --project.
 //
 //   node scripts/baseline-matrix.mjs --out <matrix.json> [--manifest examples/project/baseline/site-manifest.json] [--project <project.json>]
@@ -19,11 +19,11 @@ const verify = (goto, expect) => ({ steps: [{ goto }, { wait: 1000 }], expect, a
 const PERSONAS = {
   editor: { roles: ["Baseline Editors"], verify: verify("/baseline/item-create/", { present: ["#pqvd_name", SIGNED_IN] }) },
   reader: { roles: ["Baseline Readers"], verify: verify("/baseline/item-create/", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
-  "contact-scope": { roles: ["Baseline Contact Scope"], verify: verify("/baseline/item-edit/?id={id:${T.record}}", { present: ["#pqvd_name", SIGNED_IN] }) },
-  "account-scope": { roles: ["Baseline Account Scope"], verify: verify("/baseline/item-edit/?id={id:${T.record}}", { present: ["#pqvd_name", SIGNED_IN] }) },
-  "parent-scope": { roles: ["Baseline Parent Scope"], verify: verify("/baseline/item-edit/?id={id:${T.record}}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  "contact-scope": { roles: ["Baseline Contact Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  "account-scope": { roles: ["Baseline Account Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
+  "parent-scope": { roles: ["Baseline Parent Scope"], verify: verify("/baseline/item-edit/?id={id:item1}", { present: ["#pqvd_name", SIGNED_IN] }) },
   // Lists render their table shell whatever the roles, so "none" is verified on the edit form of a readable record.
-  none: { roles: [], verify: verify("/baseline/item-edit/?id={id:${T.record}}", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
+  none: { roles: [], verify: verify("/baseline/item-edit/?id={id:item1}", { absent: ["#pqvd_name"], present: [SIGNED_IN] }) },
   anonymous: { anonymous: true, verify: verify("/baseline/item-create/", { absent: [SIGNED_IN] }) },
 };
 const SUBMIT = "input[name$='InsertButton'], input[name$='UpdateButton']";
@@ -73,7 +73,7 @@ function basicFormScenarios(record, project = {}) {
   const external = (record.catalog ?? []).includes("pp.basicform.redirect-external-url");
   const NEXT = "input[name$='NextButton']";
   const tabs = project.formTabs?.[record.formName ?? record.form ?? ""] ?? project.formTabs?.default ?? 1;
-  const submit = stepped ? [...Array(Math.max(0, tabs - 1)).fill([{ click: NEXT, dispatch: true }, { wait: 1500 }]).flat(), { click: SUBMIT }] : [{ click: SUBMIT }];
+  const submit = stepped ? [...Array(Math.max(0, tabs - 1)).fill([{ click: NEXT, dispatch: true, optional: true }, { wait: 1500 }]).flat(), { click: SUBMIT }] : [{ click: SUBMIT }];
   const firstStep = stepped ? [{ click: NEXT, dispatch: true }] : [...submit];
   const parts = { component: "basic-form", variation: record.variation ?? record.name, persona: "editor" };
   const page = record.path + recordQuery(record);

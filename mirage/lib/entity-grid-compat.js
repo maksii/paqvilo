@@ -266,7 +266,7 @@
       // their dialog exposed on show.bs.modal and hidden again once it is hidden.
       $(modal)
         .off(".simModalAria")
-        .on("show.bs.modal.simModalAria", () => modal.setAttribute("aria-hidden", "false"))
+        .on("show.bs.modal.simModalAria", () => (modal.hasAttribute("data-bs-backdrop") ? modal.removeAttribute("aria-hidden") : modal.setAttribute("aria-hidden", "false")))
         .on("hidden.bs.modal.simModalAria", () => modal.setAttribute("aria-hidden", "true"));
       return void $(modal).modal("show");
     }
@@ -288,7 +288,7 @@
     modal.classList.remove("in", "show");
     modal.setAttribute("aria-hidden", "true");
     modal.removeAttribute("aria-modal");
-    if (!document.querySelector(".modal.in")) document.body.classList.remove("modal-open");
+    if (!document.querySelector(".modal.in, .modal.show")) document.body.classList.remove("modal-open");
     trigger(modal, "hidden.bs.modal");
   }
   document.addEventListener("click", (event) => {
@@ -345,6 +345,10 @@
     constructor(element) {
       this.element = element;
       element.__ppEntityGrid = this;
+      // A lookup dialog grid announces its count under the lookup field's name.
+      const lookup = element.closest(".entity-lookup");
+      this.isLookup = Boolean(lookup);
+      this.lookupField = lookup?.getAttribute("data-lookup-datafieldname") ?? null;
       const $ = jq();
       const data = (name) => element.getAttribute(`data-${name}`);
       this.layouts = parseLayouts(data("view-layouts"));
@@ -530,11 +534,16 @@
       if (actions.children.length) toolbar.append(actions);
       if (toolbar.children.length) this.element.prepend(toolbar);
       // A Bootstrap 5 page grid with search announces the record count after its toolbar.
-      if (this.bs5 && !this.dialog && search?.Enabled && !this.child("[id^='SearchCountText']")) {
-        const announcer = document.createElement("div");
-        for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", this.element.classList.contains("subgrid") ? "SearchCountTextundefined" : "SearchCountTextnull"], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
-        (this.child(".view-toolbar") ?? this.element.firstChild)?.after(announcer);
-      }
+      if (this.bs5 && !this.dialog && search?.Enabled) this.ensureAnnouncer();
+    }
+
+    /** The Bootstrap 5 record-count announcer after the toolbar (page grids: ...null, subgrids: ...undefined, lookups: ...<field>). */
+    ensureAnnouncer() {
+      if (this.child("[id^='SearchCountText']")) return;
+      const announcer = document.createElement("div");
+      const suffix = this.isLookup ? this.lookupField ?? "" : this.element.classList.contains("subgrid") ? "undefined" : "null";
+      for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", `SearchCountText${suffix}`], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
+      (this.child(".view-toolbar") ?? this.element.firstChild)?.after(announcer);
     }
 
     createActionElement(action) {
@@ -819,7 +828,7 @@
         else if (!tbody.isConnected) table.append(tbody);
       }
       tbody.setAttribute("style", "");
-      if (this.selectMode === "Single") tbody.setAttribute("role", "radiogroup");
+      if (this.selectMode === "Single" && !this.bs5) tbody.setAttribute("role", "radiogroup");
       const config = this.config;
       const details = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Details && action.Enabled) ?? (config.DetailsActionLink?.Enabled ? config.DetailsActionLink : null) : null;
       const edit = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Edit && action.Enabled && action.Target !== 0) ?? null : null;
@@ -837,7 +846,9 @@
           if (column.Type === 1) {
             td.setAttribute("data-th", "Select");
             td.setAttribute("aria-label", "");
-            td.innerHTML = `<span class="fa fa-fw" role="checkbox" aria-label="${esc(name)}" title="${esc(name)}" tabindex="0" aria-checked="false"></span>`;
+            td.innerHTML = this.bs5
+              ? `<span class="fa fa-fw" role="checkbox" aria-label="Select or deselect the row ${esc(name)}" title="Checkbox" tabindex="0" aria-checked="false"></span>`
+              : `<span class="fa fa-fw" role="checkbox" aria-label="${esc(name)}" title="${esc(name)}" tabindex="0" aria-checked="false"></span>`;
           } else if (column.Type === 2) {
             td.setAttribute("aria-label", "action menu");
             const items = this.itemActions(record, disabled);
@@ -888,6 +899,7 @@
         const match = [...tbody.rows].find((tr) => tr.getAttribute("data-id") === selected);
         if (match) this.toggleRow(match, true);
       }
+      if (this.bs5 && this.isLookup && this.config.Search?.Enabled) this.ensureAnnouncer();
       const announcer = this.element.querySelector(":scope > .sr-only[id^='SearchCountText'], :scope > .visually-hidden[id^='SearchCountText']");
       if (announcer) announcer.textContent = `${data.ItemCount ?? (data.Records ?? []).length} ${resource("SearchCountText", "records found")}`;
     }
@@ -1074,9 +1086,11 @@
     }
 
     bindSelection(tr) {
-      tr.tabIndex = 0;
-      tr.setAttribute("role", this.selectMode === "Single" ? "radio" : "checkbox");
-      tr.setAttribute("aria-checked", "false");
+      if (!this.bs5) {
+        tr.tabIndex = 0;
+        tr.setAttribute("role", this.selectMode === "Single" ? "radio" : "checkbox");
+        tr.setAttribute("aria-checked", "false");
+      }
       const toggle = (event) => {
         if (event.target.closest("a, button, input")) return;
         this.toggleRow(tr);
@@ -1101,7 +1115,7 @@
     setRowSelected(tr, selected) {
       tr.classList.toggle("selected", selected);
       tr.classList.toggle("info", selected);
-      tr.setAttribute("aria-checked", selected ? "true" : "false");
+      if (!this.bs5) tr.setAttribute("aria-checked", selected ? "true" : "false");
       const box = tr.querySelector('td[data-th="Select"] span[role="checkbox"]');
       if (box) {
         box.classList.toggle("fa-check", selected);
@@ -1217,6 +1231,7 @@
     if (!field || !modal || !gridElement) return;
     const grid = gridElement.__ppEntityGrid ?? new EntityGrid(gridElement);
     grid.isLookup = true;
+    grid.lookupField = field;
     const id = () => document.getElementById(field);
     const nameInput = () => document.getElementById(`${field}_name`);
     const entityInput = () => document.getElementById(`${field}_entityname`);
@@ -1224,11 +1239,11 @@
     const clearButton = () => control.querySelector(".clearlookupfield");
     const primary = modal.querySelector(".modal-footer button.primary");
     const remove = modal.querySelector(".modal-footer .remove-value");
+    // The dialog's Remove value button is disabled from the first show (live evidence).
     const sync = () => {
       const hasValue = Boolean(id()?.value);
       const clear = clearButton();
       if (clear) clear.style.display = hasValue ? "" : "none";
-      if (remove) remove.disabled = !hasValue;
     };
     const setValue = (value, name, entity) => {
       const input = id();
@@ -1263,16 +1278,23 @@
     });
     on(modal, "show.bs.modal", (event) => {
       if (event.target !== modal) return;
-      grid.state.selected = id()?.value || null;
+      grid.state.selected = null;
       if (primary) primary.disabled = true;
-      sync();
+      if (remove) remove.disabled = true;
       trigger(gridElement, "refresh");
     });
     on(modal, "hidden.bs.modal", (event) => {
       if (event.target !== modal) return;
       const query = gridElement.querySelector(".view-search input.query");
       if (query) query.value = "";
-      for (const tr of grid.selectedRows()) grid.setRowSelected(tr, false);
+      for (const tr of grid.selectedRows()) {
+        grid.setRowSelected(tr, false);
+        if (grid.bs5) {
+          tr.className = "";
+          const cell = tr.querySelector('td[data-th="Select"]');
+          if (cell) cell.innerHTML = "";
+        }
+      }
     });
     on(gridElement, "selected", () => {
       if (primary) primary.disabled = !grid.selectedRows().length;
