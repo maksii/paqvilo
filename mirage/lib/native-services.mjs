@@ -335,7 +335,7 @@ export function buildLayout({
   if (selectColumn)
     columns.push({
       LogicalName: "col-select",
-      Name: "<span class='fa fa-check' aria-hidden='true'></span> <span class='sr-only'>Select</span>",
+      Name: `<span class='fa fa-check' aria-hidden='true'></span> <span class='${typeof selectColumn === "string" ? selectColumn : "sr-only"}'>Select</span>`,
       Metadata: null,
       Width: 20,
       SortDisabled: true,
@@ -356,9 +356,8 @@ export function buildLayout({
       Name: localizedText(override?.DisplayName, field?.label ?? cell.label ?? attribute),
       Metadata: compactAttributeMetadata(table, attribute, field, primaryName),
       Width: width,
-      SortDisabled: /^(multiselectpicklist|memo|ntext)$/i.test(
-        field?.dataverseType ?? "",
-      ),
+      // Multi-select choice columns cannot sort; memo columns can (live subgrid evidence).
+      SortDisabled: /^multiselectpicklist$/i.test(field?.dataverseType ?? ""),
       Type: 0,
     });
   }
@@ -747,7 +746,7 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
     search: {
       enabled: cell.searchEnabled === true,
       placeholder: 'Search',
-      tooltip: 'To search on partial text, use the asterisk (*) wildcard character.',
+      tooltip: 'To search on partial text, use the asterisk (*) wildcard character. ',
     },
   };
 }
@@ -802,7 +801,7 @@ export function lookupModel({ portal, schemas, metadata, store, kind, formId, st
     settings: {},
     pageSize:
       Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10,
-    search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character." },
+    search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character. " },
   };
 }
 
@@ -1469,6 +1468,7 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/xrm-adx/js/webform.js", { file: new URL("./xrm-webform-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/radcaptcha.js", { file: new URL("./radcaptcha-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview.js", { file: new URL("./crmentityformview-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/fileuploadcontrol.js", { file: new URL("./fileuploadcontrol-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/bootstrapv5/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
   // Calendar lists (list-views.mjs): one local client stands in for the platform calendar scripts.
@@ -1482,6 +1482,9 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/resource/powerappsportal/img/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/close.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/lock.png", { body: PNG_PIXEL, type: "image/png" }],
+  // The attach-file control's warning icon (CDN image with an /xrm-adx/icons/ fallback).
+  ["/resource/powerappsportal/icons/warning.png", { body: PNG_PIXEL, type: "image/png" }],
+  ["/xrm-adx/icons/warning.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/close.png", { body: PNG_PIXEL, type: "image/png" }],
 ]);
@@ -1595,6 +1598,44 @@ function reportPlaceholder(context, placeholder, pathname) {
     bundle: placeholder.id,
     message: `${placeholder.reason} No captured copy exists, so an empty local placeholder is served at the platform path.`,
   });
+}
+
+/** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
+async function readNoteBody(req) {
+  const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!type || type === "application/json") return { body: await readJson(req, 64 * 1024 * 1024), native: false };
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 64 * 1024 * 1024) fail("Request body is too large", 413, "RequestTooLarge");
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks);
+  const body = {};
+  if (type === "application/x-www-form-urlencoded") {
+    for (const [name, value] of new URLSearchParams(bytes.toString("utf8"))) body[name] = value;
+  } else if (type === "multipart/form-data") {
+    let data;
+    try { data = await new Response(bytes, { headers: { "content-type": req.headers["content-type"] } }).formData(); }
+    catch { fail("Malformed multipart note form"); }
+    for (const [name, value] of data) {
+      if (typeof value === "string") body[name] = value;
+      else if (value.size || value.name) body[name] = { name: value.name, type: value.type, content: Buffer.from(await value.arrayBuffer()).toString("base64") };
+    }
+  } else fail("Unsupported note form content type", 415, "UnsupportedMediaType");
+  if (typeof body.isPrivate === "string") body.isPrivate = /^true$/i.test(body.isPrivate);
+  return { body, native: true };
+}
+
+/** The note subject's creation stamp, as the platform writes it: M/d/yyyy h:mm:ss AM UTC. */
+export function noteStamp(date) {
+  return date.toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "") + " UTC";
+}
+
+function sendEmpty(res, status) {
+  res.writeHead(status, { ...PAGE_HEADERS, "x-frame-options": "SAMEORIGIN", "content-length": 0 });
+  res.end();
 }
 
 async function readJson(req, limit = 4 * 1024 * 1024) {
@@ -1759,12 +1800,13 @@ async function handleNotes(action, req, res, context) {
         AttachmentFileName: row.filename ?? null,
         AttachmentIsImage: /^image\/(jpeg|gif|png)$/i.test(row.mimetype ?? ""),
         AttachmentSize: size,
-        AttachmentSizeDisplay: fileSizeDisplay(size),
+        AttachmentSizeDisplay: row.filename ? fileSizeDisplay(size) : null,
         CreatedOn: row.createdon ?? null,
         CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, "Z") : null,
         HasAttachment: Boolean(row.filename),
         Subject: row.subject ?? "",
-        Text: text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]).replace(/\n/g, "<br />"),
+        // The platform wraps the note text in a paragraph.
+        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]).replace(/\n/g, "<br />")}</p>`,
         UnformattedText: text,
         IsPostedByCurrentUser: mine,
         PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? "")?.[1] ?? "",
@@ -1783,9 +1825,10 @@ async function handleNotes(action, req, res, context) {
       DisabledItemActionLinks: [],
     });
   }
-  // Add, update and delete use JSON locally; the native form posts multipart
-  // fields with the same names (text, isPrivate, file as base64 here).
-  const body = await readJson(req, 64 * 1024 * 1024);
+  // Add, update and delete take the native form transport (urlencoded fields, multipart with
+  // a chosen file) and, for local tooling, JSON with the same names (file as base64).
+  const { body, native } = await readNoteBody(req);
+  if (native && req.headers.__requestverificationtoken === undefined && body.__RequestVerificationToken !== context.csrf) fail("The anti-forgery token is missing or invalid.", 403, "MissingPortalRequestVerificationToken");
   const contact = canonical(context.identity?.contactId ?? context.identity?.id);
   if (!contact) fail("Notes require a signed-in contact", 401, "SignInRequired");
   if (action === "entity-form-addnote") {
@@ -1806,7 +1849,7 @@ async function handleNotes(action, req, res, context) {
     )?.[0];
     const values = {
       notetext: `*WEB*${text}`,
-      subject: `Note created on ${new Date().toUTCString()} by ${fullname} [contact:${contact}]${body.isPrivate ? " *PRIVATE*" : ""}`,
+      subject: `Note created on ${noteStamp(new Date())} by ${fullname} [contact:${contact}]${body.isPrivate ? " *PRIVATE*" : ""}`,
       objecttypecode: parentMapping.logicalName,
       ...(navigation
         ? { [`${navigation}@odata.bind`]: `/${parentMapping.entitySet}(${id})` }
@@ -1819,6 +1862,8 @@ async function handleNotes(action, req, res, context) {
       values.filesize = Buffer.from(values.documentbody, "base64").length;
     }
     const created = await context.change(() => context.store.create("annotation", values, context.identity));
+    // The platform answers the native form with an empty 201.
+    if (native) return sendEmpty(res, 201);
     return sendJson(res, 201, { Id: canonical(created.annotationid) });
   }
   const id = String(body.id ?? "");
@@ -2032,11 +2077,13 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (req.method !== "POST") fail("Native portal services require POST.", 405, "MethodNotAllowed");
-    verifyToken(req, context.csrf);
     if (/^entity-(notes|form-addnote|form-updatenote|form-deletenote)$/.test(normalized)) {
+      // The native notes form posts its token as a field; JSON callers send the header.
+      if (req.headers.__requestverificationtoken !== undefined || /^(?:application\/json)?$/.test(String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase())) verifyToken(req, context.csrf);
       await handleNotes(normalized, req, res, context);
       return true;
     }
+    verifyToken(req, context.csrf);
     const body = await readJson(req);
     if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
       const secure = unprotectConfiguration(body.base64SecureConfiguration);

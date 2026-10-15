@@ -120,17 +120,18 @@ export function parseNativePostback(entries, descriptors) {
 
 /**
  * Text controls of a multipart/form-data postback, in posted order. Empty file inputs are
- * skipped; a selected file is refused because native file controls save through their own
- * services, not the form postback.
+ * skipped; selected files (the attach-file control) are returned on `files` as
+ * {field, name, type, content (base64)} for the form service to save as annotations.
  */
 export async function multipartControls(bytes, contentType) {
   let data;
   try { data = await new Response(bytes, { headers: { "content-type": contentType } }).formData(); }
   catch { throw new NativePostbackError("Malformed multipart native postback"); }
   const controls = new URLSearchParams();
+  controls.files = [];
   for (const [name, value] of data) {
     if (typeof value === "string") controls.append(name, value);
-    else if (value.size || value.name) throw Object.assign(new NativePostbackError("Native postback file submission is not supported"), { status: 415 });
+    else if (value.size || value.name) controls.files.push({ field: name, name: value.name, type: value.type, content: Buffer.from(await value.arrayBuffer()).toString("base64") });
   }
   return controls;
 }

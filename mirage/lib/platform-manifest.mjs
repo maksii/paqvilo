@@ -88,14 +88,20 @@ const NATIVE_FORM_MARKER = /\bdata-pp-native-form\b/;
 const MULTISTEP_MARKER = /\bid="WebFormControl_[0-9a-f]{32}"/i;
 const LIST_MARKER = /\bclass="[^"]*\bentity-grid\b[^"]*\bentitylist\b|\bclass="[^"]*\bentitylist\b[^"]*\bentity-grid\b/;
 const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
+// A calendar list (lib/list-views.mjs renderCalendarList): a server control that runs inside the
+// WebForms form, without form controls or event validation.
+const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
 const DATE_CONTROL_MARKER = /\bclass="[^"]*\binput-group datetimepicker\b|\bdata-date-format="/;
+// The attach-file control posts its files with the page, so its form is multipart.
+const ATTACH_FILE_MARKER = /\bid="AttachFile"/;
 
 /** Page kind of rendered page content (the Liquid output inside the layout). */
 export function pageKind(content, { authenticated = false } = {}) {
   const html = String(content ?? "");
   if (NATIVE_FORM_MARKER.test(html)) return MULTISTEP_MARKER.test(html) ? "multistep-form" : "basic-form";
   if (CODE_COMPONENT_MARKER.test(html)) return "code-component";
+  if (CALENDAR_LIST_MARKER.test(html)) return "calendar-list";
   if (LIST_MARKER.test(html)) return "list";
   return authenticated ? "authenticated" : "anonymous";
 }
@@ -138,23 +144,23 @@ export function localAspNetScript(url) {
  * captured AXD paths when a live shell capture provides them; otherwise the local
  * WebForms equivalents load at the native AXD paths (LOCAL_ASPNET_SCRIPTS).
  */
-export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3" } = {}) {
+export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3", extraScripts = "", eventValidation = true } = {}) {
   const viewState = `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.map((entry) => script(entry.path)).join("\n");
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
-  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : [])].map(script).join("\n");
+  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : "";
   return (
-    `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}">\n` +
+    `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}"${ATTACH_FILE_MARKER.test(String(content ?? "")) ? ' enctype="multipart/form-data"' : ""}>\n` +
     `<div class="aspNetHidden">\n${hidden("__EVENTTARGET", "")}\n${hidden("__EVENTARGUMENT", "")}\n${hidden("__VIEWSTATE", viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
-    `${resources}\n${formScripts}\n${onSubmit}${content}` +
+    `${resources}\n${formScripts}\n${extraScripts ? extraScripts + "\n" : ""}${onSubmit}${content}` +
     // ASP.NET renders the generator and event validation fields at the end of the server form.
-    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`)}\n</div></form>`
+    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${eventValidation ? hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`) + "\n" : ""}</div></form>`
   );
 }
 
@@ -162,17 +168,18 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
  * Native body regions for a Liquid layout page. Form pages wrap the content in the
  * WebForms form and carry the AXD scripts; other pages load no AXD script.
  */
-export function nativePageRegions({ content = "", action = "/", bodyScripts = [], renderScripts = (paths) => paths.map((src) => `<script src="${escapeAttribute(src)}"></script>`).join("\n"), authenticated = false, serverFormId = null, variant = "BootstrapV3" } = {}) {
+export function nativePageRegions({ content = "", action = "/", bodyScripts = [], renderScripts = (paths) => paths.map((src) => `<script src="${escapeAttribute(src)}"></script>`).join("\n"), authenticated = false, serverFormId = null, variant = "BootstrapV3", formScripts = "" } = {}) {
   const kind = pageKind(content, { authenticated });
   const scripts = Array.isArray(bodyScripts) ? bodyScripts : [];
   const aspNet = scripts.filter(isAspNetScript);
   const other = scripts.filter((entry) => !isAspNetScript(entry));
-  // Liquid pages get the server form only for their form controls; legacy ASPX page
-  // templates (rewrite URLs) always run inside the WebForms master's content_form.
-  const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component";
+  // Liquid pages get the server form only for their form controls and calendar lists; legacy
+  // ASPX page templates (rewrite URLs) always run inside the WebForms master's content_form.
+  const calendar = kind === "calendar-list";
+  const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component" || calendar;
   return {
     kind,
-    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant }) : content,
+    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant, extraScripts: formScripts, eventValidation: !calendar }) : content,
     bodyScripts: other.length ? renderScripts(other) : "",
   };
 }

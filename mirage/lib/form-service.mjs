@@ -828,7 +828,7 @@ export async function submitPortalForm(
       }))
         fail(text(portalField(componentMetadata, "attachfiletypeerrormessage"), `${file.name} is not of the file type(s) "${accept}".`), 400, "FormAttachmentType");
       notes.push((savedId) => ({
-        subject: `Note created on ${now().toUTCString()} by ${fullname}${contactId ? ` [contact:${contactId}]` : ""}`,
+        subject: `Note created on ${now().toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "")} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ""}`,
         notetext: "*WEB*",
         objecttypecode: schema.entity,
         filename: file.name.slice(0, 255),

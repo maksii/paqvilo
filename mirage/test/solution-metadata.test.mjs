@@ -54,7 +54,7 @@ for (const [name, groupType] of [
   ["absent group type", undefined],
   ["standalone systemform", null],
 ]) {
-  test(`form metadata preserves ${name} without inferring a type from its directory`, async (t) => {
+  test(`form metadata takes the FormXml group directory as the type of ${name}`, async (t) => {
     const systemform = form("Name").replace(/^<forms[^>]*>/, "").replace(/<\/forms>$/, "");
     const xml = groupType === null
       ? systemform
@@ -65,8 +65,8 @@ for (const [name, groupType] of [
     });
     const metadata = await importSolutionMetadata([root], { portal: portal() });
     assert.equal(metadata.forms.length, 1);
-    assert.equal(metadata.forms[0].formType, groupType ?? undefined);
-    assert.equal(Object.hasOwn(metadata.forms[0], "formType"), typeof groupType === "string");
+    // A document without a declared group type takes its FormXml/<group>/ directory (main here).
+    assert.equal(metadata.forms[0].formType, groupType ?? "main");
     if (groupType === 'card') {
       assert.equal(metadata.componentSchemas['basic-form'], undefined);
       assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
@@ -95,7 +95,8 @@ for (const order of ['card-first', 'main-first']) test(`standalone numeric types
   if (order === 'main-first') rows.reverse();
   const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/standalone.xml': `<FormXml>${rows.join('')}</FormXml>` });
   const metadata = await importSolutionMetadata(root, { portal: portal() });
-  const expected = [{ id: 'card-id', systemFormType: 11, formType: undefined }, { id: 'main-id', systemFormType: 2, formType: undefined }];
+  // The FormXml/main/ directory types both documents; the numeric type still decides eligibility.
+  const expected = [{ id: 'card-id', systemFormType: 11, formType: 'main' }, { id: 'main-id', systemFormType: 2, formType: 'main' }];
   if (order === 'main-first') expected.reverse();
   assert.deepEqual(metadata.forms.map(({ id, systemFormType, formType }) => ({ id, systemFormType, formType })), expected);
   assert.equal(metadata.componentSchemas['basic-form'].formId, 'main-id');

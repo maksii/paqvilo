@@ -21,6 +21,7 @@ import { applyObservedLiquidObjects } from "./liquid-observed-objects.mjs";
 import { editableMetadataAttributes } from "./liquid-editable-metadata.mjs";
 import { injectRuntimeCompatibility, isHtmlDocument } from "./source-dependencies.mjs";
 import { OFFLINE_NOTIFICATION_BAR, PRIVATE_MODE_BANNER, antiForgeryHolder, nativePageRegions, rewritePageLayout, CKEDITOR_BASEPATH, platformShell, bootstrapVariant, PLATFORM_BOOTSTRAP_STYLESHEET } from "./platform-manifest.mjs";
+import { calendarResources, CALENDAR_MARKER } from "./list-views.mjs";
 import {
   LiquidEngine,
   LiquidContext,
@@ -1465,6 +1466,9 @@ export function createPortalRenderer(portal, options = {}) {
       const content = template ? body : `<main id="mainContent">${body}</main>`;
       // Native platform regions (lib/platform-manifest.mjs): WebForms form and AXD
       // scripts only on form pages; chrome markup around the header, content and footer.
+      // A calendar list adds its stylesheets at the end of the head and its scripts after the
+      // form scripts (lib/list-views.mjs).
+      const calendar = CALENDAR_MARKER.test(content) ? calendarResources({ websiteId: portal.website?.id, variant: platform.variant }) : null;
       const nativeRegions = nativePageRegions({
         content,
         action: url,
@@ -1473,6 +1477,7 @@ export function createPortalRenderer(portal, options = {}) {
         authenticated: Boolean(context.user),
         serverFormId: rewriteLayout?.serverFormId ?? null,
         variant: platform.variant,
+        formScripts: calendar?.body ?? "",
       });
       const languageCode = layoutLanguageCode(context);
       const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? "rtl" : "ltr";
@@ -1480,7 +1485,7 @@ export function createPortalRenderer(portal, options = {}) {
       const htmlAttributes = layoutHtmlAttributes(languageCode, context.__language?.lcid);
       // The footer-spacing adapter is a script element; authored footer markup is not modified.
       const html = injectRuntimeCompatibility(
-        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
+        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}${calendar?.head ?? ""}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
         { ...(options.sourceDependencies ?? {}), footerSpacing: Boolean(footer) || options.sourceDependencies?.footerSpacing },
         configuredHeadScripts,
       );

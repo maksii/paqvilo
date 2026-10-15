@@ -599,7 +599,8 @@
         hidden('__EVENTARGUMENT', eventArgument);
         hidden('__RequestVerificationToken', tokenValue);
         outer.method = 'POST';
-        outer.enctype = 'application/x-www-form-urlencoded';
+        // A form with the attach-file control keeps its multipart encoding (the files post with the page).
+        if (outer.enctype !== 'multipart/form-data') outer.enctype = 'application/x-www-form-urlencoded';
         outer.action = target.href;
         HTMLFormElement.prototype.submit.call(outer);
         return;
@@ -623,7 +624,7 @@
           values[field.name] = value;
         }
       const attachments = [];
-      if (action === 'submit') for (const input of form.querySelectorAll('input[type="file"][data-pp-attach-file]')) for (const file of input.files ?? []) attachments.push(await readFile(file));
+      if (action === 'submit') for (const input of form.querySelectorAll('input[type="file"][data-pp-attach-file], input[type="file"]#AttachFile')) for (const file of input.files ?? []) attachments.push(await readFile(file));
       const tokenValue = await new Promise((resolve) => {
         const deferred = w.shell?.getTokenDeferred?.();
         if (deferred?.done) deferred.done(resolve);

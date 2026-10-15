@@ -52,6 +52,8 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
 export async function submitNativePostback(entries, rendered, options) {
   const posted = [...entries];
   const submission = resolveNativeFormSubmission(posted, rendered, options?.requestUrl);
+  // Files posted with the page (the attach-file control) are the submission's attachments.
+  if (Array.isArray(options?.attachments) && options.attachments.length) submission.body.attachments = options.attachments.map(({ name, type, content }) => ({ name, type, content }));
   const definition = (submission.kind === 'webform' ? options.portal.advancedForms : options.portal.forms)?.find(row => row.id === submission.formId);
   if (!definition) return { result: await submitPortalForm(submission.kind, submission.formId, submission.body, options), context: submission.context };
   let schema = options.schemas?.[definition?.id] ?? options.schemas?.[definition?.name];

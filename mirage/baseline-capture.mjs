@@ -179,6 +179,9 @@ export async function pageRunner(page, options) {
   const runStep = async (step) => {
     const timeout = step.timeout ?? 20000;
     const q = (selector, scope = owned) => scope.locator(resolve(selector)).first();
+    // An `optional` step is skipped when its element is absent (forms of one table differ in the fields they show).
+    const target = step.fill ?? step.type ?? step.select ?? step.check ?? step.click ?? step.press ?? step.clear;
+    if (step.optional && target !== undefined && !(await q(target).count().catch(() => 0))) return;
     if (step.goto !== undefined) {
       const target = new URL(resolve(step.goto), origin);
       if (target.origin !== origin) throw new Error("Step navigates outside the portal origin");
@@ -190,9 +193,22 @@ export async function pageRunner(page, options) {
     else if (step.type !== undefined) await q(step.type).pressSequentially(resolve(step.value ?? ""), { timeout });
     else if (step.select !== undefined) await q(step.select).selectOption(step.label !== undefined ? { label: resolve(step.label) } : resolve(step.value ?? ""), { timeout });
     else if (step.check !== undefined) await q(step.check).setChecked(step.value !== false, { timeout });
-    else if (step.click !== undefined) await q(step.click).click({ timeout });
+    else if (step.click !== undefined) {
+      // `dispatch` fires the DOM click without the hit-target check (a submit input the site CSS collapses to a few pixels).
+      if (step.dispatch) await q(step.click).dispatchEvent("click", {}, { timeout });
+      else await q(step.click).click({ timeout });
+    }
     else if (step.press !== undefined) await q(step.press).press(step.key ?? "Enter", { timeout });
-    else if (step.upload !== undefined) await q(step.upload).setInputFiles(step.files, { timeout });
+    else if (step.upload !== undefined) {
+      // Files are inline payloads ({ name, mimeType, base64 }) or paths; with `accept` on the input only matching payloads
+      // are sent, one unless the input takes several.
+      const input = q(step.upload);
+      const accept = ((await input.getAttribute("accept").catch(() => "")) || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const multiple = await input.evaluate((el) => Boolean(el.multiple)).catch(() => false);
+      const matches = (file) => !accept.length || accept.some((rule) => (rule.startsWith(".") ? file.name.toLowerCase().endsWith(rule.toLowerCase()) : rule.endsWith("/*") ? file.mimeType.startsWith(rule.slice(0, -1)) : rule === file.mimeType));
+      const files = (step.files || []).map((file) => (typeof file === "string" ? file : { name: file.name, mimeType: file.mimeType, buffer: Buffer.from(file.base64, "base64") })).filter((file) => typeof file === "string" || matches(file));
+      await input.setInputFiles(multiple ? files : files.slice(0, 1), { timeout });
+    }
     else if (step.clear !== undefined) await q(step.clear).fill("", { timeout });
     else if (step.wait !== undefined) {
       if (typeof step.wait === "number") await sleep(Math.min(step.wait, 15000));
@@ -265,21 +281,26 @@ export async function pageRunner(page, options) {
     await settle();
     mark("settled");
     const url = new URL(owned.url());
-    if (url.origin !== origin) summary.problems.push("page left the portal origin (" + url.hostname + ")");
-    for (const marker of signInMarkers) if (await owned.locator(marker).count().catch(() => 0)) summary.problems.push("sign-in marker present: " + marker);
     const expect = scenario.expect || {};
+    // A form that redirects off the site ends the scenario on another origin: with `expect.leavesOrigin` the hostname is
+    // the evidence and the foreign page is not inventoried.
+    if (url.origin !== origin) {
+      if (expect.leavesOrigin) summary.leftOrigin = url.hostname;
+      else summary.problems.push("page left the portal origin (" + url.hostname + ")");
+    } else if (expect.leavesOrigin) summary.problems.push("page stayed on the portal origin");
+    for (const marker of signInMarkers) if (await owned.locator(marker).count().catch(() => 0)) summary.problems.push("sign-in marker present: " + marker);
     for (const selector of expect.present || []) if (!(await owned.locator(selector).count().catch(() => 0))) summary.problems.push("expected element missing: " + selector);
     for (const selector of expect.absent || []) if (await owned.locator(selector).count().catch(() => 0)) summary.problems.push("unexpected element present: " + selector);
     for (const text of expect.text || []) if (!(await owned.locator("body").innerText().catch(() => "")).includes(text)) summary.problems.push("expected text missing: " + JSON.stringify(text));
     if (expect.urlPattern && !new RegExp(expect.urlPattern).test(url.pathname + url.search)) summary.problems.push("url does not match expectation");
   } catch (error) {
     summary.status = "error";
-    summary.problems.push(String((error && error.message) || error).slice(0, 500));
+    summary.problems.push(String((error && error.message) || error).slice(0, 1200));
   }
   if (summary.problems.length && summary.status === "captured") summary.status = "failed";
   mark("checked");
-  raw.dom = await owned.evaluate(() => document.documentElement.outerHTML).catch(() => "");
-  raw.elements = await owned.evaluate(elementInventory).catch(() => []);
+  raw.dom = summary.leftOrigin ? "" : await owned.evaluate(() => document.documentElement.outerHTML).catch(() => "");
+  raw.elements = summary.leftOrigin ? [] : await owned.evaluate(elementInventory).catch(() => []);
   mark("inventoried");
   raw.title = await owned.title().catch(() => "");
   raw.finalUrl = owned.url();
@@ -349,6 +370,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
     problems: summary.problems,
     title: normalizeText(raw.title ?? ""),
     finalUrl: redactUrl(raw.finalUrl ?? "", { origins, keepPaging: true }),
+    ...(summary.leftOrigin ? { leftOrigin: summary.leftOrigin } : {}),
     requests: requests.length,
     elements: (raw.elements ?? []).length,
     blockedWrites: raw.blockedWrites ?? [],

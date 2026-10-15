@@ -286,14 +286,9 @@
     if (active) {
       const label = active.textContent;
       const host = active.parentElement?.parentElement;
-      if (host) {
-        const announcer = document.createElement("div");
-        announcer.id = label;
-        announcer.className = "sr-only";
-        announcer.setAttribute("aria-live", "assertive");
-        announcer.textContent = label;
-        host.appendChild(announcer);
-      }
+      // The platform client builds the announcer as a string with an unquoted id, so the
+      // browser splits the step title: the first word is the id, the rest become attributes.
+      if (host) host.insertAdjacentHTML("beforeend", '<div id=' + label + ' class="sr-only" aria-live="assertive">' + label + '</div>');
       document.querySelector("fieldset")?.setAttribute("aria-labelledby", label);
       setTimeout(() => document.querySelector("fieldset .control")?.firstChild?.focus?.());
     }

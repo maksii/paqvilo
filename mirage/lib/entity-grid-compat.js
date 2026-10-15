@@ -197,18 +197,23 @@
     return error;
   }
   /** POST JSON with the native headers; json=true parses the reply. */
-  function post(url, body, { json = true } = {}) {
+  function post(url, body, { json = true, form = false } = {}) {
+    // form: the body is a URLSearchParams (urlencoded) or FormData (multipart) payload.
+    const multipart = form && typeof FormData !== "undefined" && body instanceof FormData;
     return token().then(
       (value) =>
         new Promise((resolve, reject) => {
           const $ = jq();
-          const headers = { __RequestVerificationToken: value };
+          // A form post carries the token as a field (the platform's ajaxSafePost form path).
+          if (form) body.append("__RequestVerificationToken", value);
+          const headers = form ? {} : { __RequestVerificationToken: value };
           if ($ && $.ajax) {
             $.ajax({
               type: "POST",
               url,
-              data: JSON.stringify(body),
-              contentType: "application/json; charset=utf-8",
+              data: form ? (multipart ? body : body.toString()) : JSON.stringify(body),
+              contentType: multipart ? false : form ? "application/x-www-form-urlencoded; charset=UTF-8" : "application/json; charset=utf-8",
+              processData: !form,
               dataType: json ? "json" : undefined,
               headers,
               cache: false,
@@ -219,9 +224,9 @@
           }
           const xhr = new XMLHttpRequest();
           xhr.open("POST", url);
-          xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+          if (!form) xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
           xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
-          xhr.setRequestHeader("__RequestVerificationToken", value);
+          if (!form) xhr.setRequestHeader("__RequestVerificationToken", value);
           xhr.onload = () => {
             if (xhr.status >= 200 && xhr.status < 300) {
               if (!json || !xhr.responseText) return resolve(null);
@@ -233,9 +238,24 @@
             } else reject(errorOf(xhr, xhr.statusText));
           };
           xhr.onerror = () => reject(errorOf(xhr, "Network error"));
-          xhr.send(JSON.stringify(body));
+          xhr.send(form ? body : JSON.stringify(body));
         }),
     );
+  }
+  // The platform's timeago phrases (jquery.timeago defaults) for a past instant.
+  function timeAgo(date, now = Date.now()) {
+    const seconds = Math.max(0, (now - date.getTime()) / 1000), minutes = seconds / 60, hours = minutes / 60, days = hours / 24, years = days / 365;
+    if (seconds < 45) return "less than a minute ago";
+    if (seconds < 90) return "about a minute ago";
+    if (minutes < 45) return `${Math.round(minutes)} minutes ago`;
+    if (minutes < 90) return "about an hour ago";
+    if (hours < 24) return `about ${Math.round(hours)} hours ago`;
+    if (hours < 42) return "a day ago";
+    if (days < 30) return `${Math.round(days)} days ago`;
+    if (days < 45) return "about a month ago";
+    if (days < 365) return `${Math.round(days / 30)} months ago`;
+    if (years < 1.5) return "about a year ago";
+    return `${Math.round(years)} years ago`;
   }
 
   // ---- bootstrap modal (native Bootstrap when present) ----------------------
@@ -473,9 +493,11 @@
           else if (action.Type === ACTION.Associate) {
             const link = document.createElement("a");
             link.href = "#";
-            link.className = "btn btn-info pull-right action";
-            link.setAttribute("role", "button");
-            link.setAttribute("tabindex", "0");
+            link.className = `btn btn-info ${this.bs5 ? "float-end" : "pull-right"} action`;
+            if (!this.bs5) {
+              link.setAttribute("role", "button");
+              link.setAttribute("tabindex", "0");
+            }
             link.title = action.Tooltip || plain(action.Label);
             link.innerHTML = action.Label;
             onClick(link, (event) => {
@@ -484,15 +506,17 @@
               if (modal) showModal(modal);
             });
             const group = document.createElement("div");
-            group.className = "input-group pull-left";
+            group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
+            if (this.bs5) group.setAttribute("style", "display: table; width: auto;");
             group.append(link);
             actions.append(group);
           } else if (action.Type === ACTION.Download) {
             const group = document.createElement("div");
-            group.className = "input-group pull-left";
+            group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
+            if (this.bs5) group.setAttribute("style", "display: table; width: auto;");
             const link = document.createElement("a");
             link.href = "#";
-            link.className = "entitylist-download btn btn-info pull-right action";
+            link.className = `entitylist-download btn btn-info ${this.bs5 ? "float-end" : "pull-right"} action`;
             link.title = action.Tooltip || plain(action.Label);
             link.innerHTML = action.Label;
             onClick(link, (event) => {
@@ -508,7 +532,7 @@
       // A Bootstrap 5 page grid with search announces the record count after its toolbar.
       if (this.bs5 && !this.dialog && search?.Enabled && !this.child("[id^='SearchCountText']")) {
         const announcer = document.createElement("div");
-        for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", "SearchCountTextnull"], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
+        for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", this.element.classList.contains("subgrid") ? "SearchCountTextundefined" : "SearchCountTextnull"], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
         (this.child(".view-toolbar") ?? this.element.firstChild)?.after(announcer);
       }
     }
@@ -595,7 +619,8 @@
       const layout = this.layout;
       const table = document.createElement("table");
       table.setAttribute("aria-relevant", "additions");
-      table.className = `table${this.gridClass ? " " + this.gridClass : ""}${this.bs5 ? "" : " table-fluid"}${this.selectMode !== "None" ? " table-hover" : ""}`;
+      table.className = "table";
+      for (const token of `${this.gridClass}${this.bs5 ? "" : " table-fluid"}${this.selectMode !== "None" ? " table-hover" : ""}`.split(/\s+/)) if (token) table.classList.add(token);
       const head = document.createElement("thead");
       const row = document.createElement("tr");
       const sortParts = String(this.state.sort ?? layout.SortExpression ?? "").split(",").map((part) => part.trim().split(/\s+/));
@@ -678,7 +703,7 @@
         pagingCookie: "",
         filter: this.state.filter,
         metaFilter: this.state.metaFilter,
-        nlSearchFilter: "",
+        nlSearchFilter: null,
         timezoneOffset: new Date().getTimezoneOffset(),
         customParameters: [],
       };
@@ -1389,12 +1414,25 @@
     const load = (page = 1) => {
       state.page = page;
       show(".notes-loading");
-      return post(container.getAttribute("data-url-get"), { regarding: { LogicalName: regarding.LogicalName, Id: regarding.Id }, orders: JSON.parse(container.getAttribute("data-orders") || "[]"), page, pageSize: Number(container.getAttribute("data-pagesize")) || 10 })
+      return post(container.getAttribute("data-url-get"), { regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id }, orders: JSON.parse(container.getAttribute("data-orders") || "[]"), page, pageSize: Number(container.getAttribute("data-pagesize")) || 10 })
         .then((data) => {
           show(data.Records?.length ? null : ".notes-empty");
+          const pattern = document.body?.getAttribute("data-datetimeformat");
+          const bs5Card = (note) => {
+            const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
+            const stamp = created && !Number.isNaN(created.getTime()) ? created : null;
+            const url = `${note.AttachmentUrl}?t=${Date.now()}`;
+            const toolbar = note.DisplayToolbar
+              ? `<div class="toolbar dropdown float-end" style="z-index: 1; position: relative;"><button aria-expanded="false" aria-label="action menu" class="btn btn-default btn-sm" data-bs-toggle="dropdown" href="#"><span class="fa fa-caret-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu">${note.CanWrite ? '<li role="presentation"><a class="edit-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa fa-edit fa-fw" aria-hidden="true"></span> Edit</a></li>' : ""}${note.CanDelete ? '<li role="presentation"><a class="delete-link dropdown-item" href="#" role="menuitem" tabindex="-1"><span class="fa-solid fa-trash-can" aria-hidden="true"></span>Delete</a></li>' : ""}</ul></div>`
+              : "";
+            const attachment = note.HasAttachment
+              ? `<div class="attachment alert alert-block clearfix">${note.AttachmentIsImage ? `<div class="img float-start"><a class="thumbnail" href="${esc(url)}" target="_blank"><img alt="${esc(note.AttachmentFileName)}" class="img-thumbnail" src="${esc(url)}"></a></div>` : ""}<div class="link float-start"><span class="fa fa-file" aria-hidden="true"></span> <a href="${esc(url)}" target="_blank">${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>`
+              : "";
+            return `<div class="note" data-attachmentfilename="${esc(note.AttachmentFileName ?? "")}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? "")}" data-attachmentisimage="${note.AttachmentIsImage}" data-attachmenturl="${esc(url)}" data-candelete="${note.CanDelete}" data-canedit="${note.CanWrite}" data-hasattachment="${note.HasAttachment}" data-id="${esc(note.Id)}" data-isprivate="${note.IsPrivate}" data-subject="${esc(note.Subject ?? "")}" data-unformattedtext="${esc(note.UnformattedText)}"><div class="row"><div class="col-md-3 metadata"><div class="postedon" tabindex="0"><abbr class="timeago" data-datetime="${esc(note.CreatedOnDisplay ?? "")}" title="${esc(stamp && pattern ? formatLocal(stamp, pattern) : note.CreatedOnDisplay ?? "")}">${esc(stamp ? timeAgo(stamp) : note.CreatedOnDisplay ?? "")}</abbr></div>${note.PostedByName ? `<div class="createdby text-muted">${esc(note.PostedByName)}</div>` : ""}${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ""}</div><div class="col-md-9 content">${toolbar}<div class="text" tabindex="1">${note.UnformattedText ?? ""}</div>${attachment}</div></div></div>`;
+          };
           list.innerHTML = (data.Records ?? [])
             .map(
-              (note) =>
+              (note) => bs5 ? bs5Card(note) :
                 `<div class="note" data-id="${esc(note.Id)}" data-canedit="${note.CanWrite}" data-candelete="${note.CanDelete}" data-unformattedtext="${esc(note.UnformattedText)}" data-isprivate="${note.IsPrivate}" data-hasattachment="${note.HasAttachment}" data-attachmentfilename="${esc(note.AttachmentFileName ?? "")}" data-attachmentfilesize="${esc(note.AttachmentSizeDisplay ?? "")}" data-attachmenturl="${esc(note.AttachmentUrl ?? "")}"><div class="row"><div class="col-sm-3 metadata"><div class="postedon"><abbr class="timeago" title="${esc(note.CreatedOnDisplay ?? "")}">${esc(note.CreatedOnDisplay ?? "")}</abbr></div><div class="createdby text-muted">${esc(note.PostedByName ?? "")}</div>${note.IsPrivate ? '<div class="label label-warning">Private</div>' : ""}</div><div class="col-sm-9 content">${note.DisplayToolbar ? `<div class="toolbar dropdown pull-right"><a href="#" class="edit-link" title="Edit">Edit</a> <a href="#" class="delete-link" title="Delete">Delete</a></div>` : ""}<div class="text">${note.Text ?? ""}</div>${note.HasAttachment ? `<div class="attachment alert alert-block alert-info clearfix"><div class="link pull-left"><a href="${esc(note.AttachmentUrl)}?t=${Date.now()}"><span class="fa fa-file" aria-hidden="true"></span> ${esc(note.AttachmentFileName)} (${esc(note.AttachmentSizeDisplay)})</a></div></div>` : ""}</div></div></div>`,
             )
             .join("");
@@ -1416,9 +1454,19 @@
         reader.readAsDataURL(file);
       });
     const dialog = (selector) => container.querySelector(selector) || document.querySelector(selector);
+    // The Bootstrap 5 control posts the dialog form's fields (urlencoded, or multipart with a
+    // chosen file) with the control's attachment settings; the Bootstrap 3 runtime posts JSON.
+    const formBody = (modal, extra) => {
+      const input = modal.querySelector('input[type="file"]');
+      const fields = { ...extra, text: modal.querySelector('textarea[name="text"]')?.value ?? "", isRequired: "", isPrivate: String(modal.querySelector('input[name="isPrivate"]')?.checked ?? false), attachmentSettings: container.getAttribute("data-attachmentsettings") ?? "" };
+      const body = input?.files?.[0] ? new FormData() : new URLSearchParams();
+      for (const [name, value] of Object.entries(fields)) body.append(name, value);
+      body.append("file", input?.files?.[0] ?? "");
+      return body;
+    };
     const submit = (modal, url, extra) =>
-      readFile(modal.querySelector('input[type="file"]')).then((file) =>
-        post(url, { ...extra, text: modal.querySelector('textarea[name="text"]')?.value ?? "", isPrivate: modal.querySelector('input[name="isPrivate"]')?.checked ?? false, file }, { json: true })
+      (bs5 ? post(url, formBody(modal, extra), { json: false, form: true }) : readFile(modal.querySelector('input[type="file"]')).then((file) =>
+        post(url, { ...extra, text: modal.querySelector('textarea[name="text"]')?.value ?? "", isPrivate: modal.querySelector('input[name="isPrivate"]')?.checked ?? false, file }, { json: true })))
           .then(() => {
             hideModal(modal);
             load(state.page);
@@ -1426,8 +1474,7 @@
           .catch((error) => {
             modal.querySelector(".modal-body > .alert")?.remove();
             modal.querySelector(".modal-body").insertAdjacentHTML("afterbegin", `<div class="alert alert-block alert-danger error">${esc(error.message)}</div>`);
-          }),
-      );
+          });
     container.querySelector(".addnote")?.addEventListener("click", (event) => {
       event.preventDefault();
       const modal = dialog(".modal-addnote");

@@ -163,7 +163,9 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
       if (persona.verify) await verifyPersona(name, persona.verify, ids);
     },
     async reset() {
-      await runHook(matrix.hooks?.liveReset, { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd });
+      const options = { cwd: matrix.hooks?.cwd ? path.resolve(cwd, matrix.hooks.cwd) : cwd };
+      // Dataverse answers an occasional transient 500: one retry before the scenario is charged with the failure.
+      await runHook(matrix.hooks?.liveReset, options).catch(() => sleep(5000).then(() => runHook(matrix.hooks?.liveReset, options)));
     },
     async capture(scenario, { outDir, ids, label, meta }) {
       const result = await runInBridge(scenario, { ids });

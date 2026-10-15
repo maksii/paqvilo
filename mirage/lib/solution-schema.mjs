@@ -23,7 +23,7 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@11";
+export const SCHEMA_PARSER_ID = "schema@12";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
@@ -36,6 +36,8 @@ const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", 
 const norm = (value) => String(value ?? "").trim().toLowerCase();
 const valid = (name) => /^[a-z][\w]*$/i.test(String(name ?? ""));
 const bit = (value) => (value === "1" ? true : value === "0" ? false : undefined);
+// Entity flags written as 1/0 or True/False (HasRelatedNotes).
+const flag = (value) => bit(value) ?? (/^true$/i.test(value ?? "") ? true : /^false$/i.test(value ?? "") ? false : undefined);
 const num = (value) => {
   if (value == null || value === "") return undefined;
   const n = Number(value);
@@ -268,6 +270,8 @@ function entityFacts(node, info) {
     isActivity: bit(h("IsActivity")),
     // Document management (SharePoint document locations) enabled for the table.
     documentManagement: bit(h("IsDocumentManagementEnabled")),
+    // Notes (annotations) enabled for the table.
+    relatedNotes: flag(h("HasRelatedNotes")),
     isIntersect: bit(h("IsIntersect")),
     labels: labelsOf(child(header, "LocalizedNames")),
     collectionLabels: labelsOf(child(header, "LocalizedCollectionNames")),
@@ -797,6 +801,10 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           table.documentManagement = entity.documentManagement;
           table.documentManagementFile = doc.file;
         }
+        if (entity.relatedNotes !== undefined) {
+          table.relatedNotes = entity.relatedNotes;
+          table.relatedNotesFile = doc.file;
+        }
         if (entity.isIntersect) table.isIntersect = true;
         if (entity.isVirtual) table.isVirtual = true;
         Object.assign(table.labels, entity.labels);
@@ -855,6 +863,35 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         standardCount++;
       }
     }
+  // Notes: enabling them on a table (HasRelatedNotes) creates the one-to-many relationship
+  // <table>_Annotations from the table to annotation.objectid (navigation objectid_<table>),
+  // the relationship that notes table permissions name (adx_parentrelationship); exports omit it.
+  let annotationCount = 0;
+  for (const table of Object.values(tables)) {
+    if (table.relatedNotes !== true) continue;
+    const schemaName = `${table.logicalName}_Annotations`;
+    const existing = Object.values(relationships).some(
+      (relationship) =>
+        relationship.type === "one-to-many" &&
+        relationship.referencingEntity === "annotation" &&
+        relationship.referencingAttribute === "objectid" &&
+        relationship.referencedEntity === table.logicalName,
+    );
+    if (existing || relationships[schemaName.toLowerCase()]) continue;
+    relationships[schemaName.toLowerCase()] = {
+      schemaName,
+      type: "one-to-many",
+      referencingEntity: "annotation",
+      referencedEntity: table.logicalName,
+      referencingAttribute: "objectid",
+      referencingNavigation: `objectid_${table.logicalName}`,
+      referencedNavigation: schemaName,
+      source: table.relatedNotesFile,
+      sources: [table.relatedNotesFile],
+      relatedNotes: true,
+    };
+    annotationCount++;
+  }
   // Document management: enabling it on a table (IsDocumentManagementEnabled) creates the
   // one-to-many relationship <table>_SharePointDocumentLocations from the table to
   // sharepointdocumentlocation.regardingobjectid (navigation regardingobjectid_<table>), as
@@ -1037,6 +1074,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     diagnostics,
     standardRelationships: standardCount,
     documentLocationRelationships: documentLocationCount,
+    annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest("hex"),
   };
 }

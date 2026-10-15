@@ -142,6 +142,8 @@
       setShown(element, false);
       element.style.display = "none";
       element.removeAttribute("aria-modal");
+      // Bootstrap 5 drops the dialog role it set on show.
+      if (element.hasAttribute("data-bs-backdrop")) element.removeAttribute("role");
       element.removeEventListener("click", state.click);
       element.removeEventListener("keydown", state.keydown);
       state.backdrop?.remove();

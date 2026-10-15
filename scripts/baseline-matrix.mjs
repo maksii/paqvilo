@@ -37,6 +37,13 @@ const scenario = (id, parts, steps, expect, extra = {}) => ({ id, ...parts, step
 // which behaviours (validation columns, plugin steps, business rules, lookups, notes) the table carries.
 // Records whose variation names a query parameter (`?itemid=<id>`, `?code=`, `?returnurl=`) are opened with it.
 const QUERY_VALUES = { itemid: "{id:item1}", parentid: "{id:parent1}", id: "{id:item1}", code: "I-001", returnurl: "%2Fbaseline%2F" };
+// Inline upload payloads for forms that require an attachment: a 1×1 PNG and a one-page PDF; the capture runner keeps
+// the ones the input's `accept` admits.
+const UPLOADS = [
+  { name: "baseline.png", mimeType: "image/png", base64: "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=" },
+  { name: "baseline.pdf", mimeType: "application/pdf", base64: "JVBERi0xLjQKMSAwIG9iajw8L1R5cGUvQ2F0YWxvZy9QYWdlcyAyIDAgUj4+ZW5kb2JqCjIgMCBvYmo8PC9UeXBlL1BhZ2VzL0tpZHNbMyAwIFJdL0NvdW50IDE+PmVuZG9iagozIDAgb2JqPDwvVHlwZS9QYWdlL1BhcmVudCAyIDAgUi9NZWRpYUJveFswIDAgMjAwIDIwMF0+PmVuZG9iagp4cmVmCjAgNAowMDAwMDAwMDAwIDY1NTM1IGYgCjAwMDAwMDAwMDkgMDAwMDAgbiAKMDAwMDAwMDA1MiAwMDAwMCBuIAowMDAwMDAwMTAxIDAwMDAwIG4gCnRyYWlsZXI8PC9TaXplIDQvUm9vdCAxIDAgUj4+CnN0YXJ0eHJlZgoxNjAKJSVFT0YK" },
+];
+const attach = (selector = "input[type='file']") => ({ upload: selector, files: UPLOADS });
 const recordQuery = (record) => {
   const match = /\?(\w+)=/.exec(record.variation ?? "");
   return match ? `?${match[1]}=${QUERY_VALUES[match[1]] ?? ""}` : "";
@@ -62,17 +69,20 @@ function basicFormScenarios(record, project = {}) {
   const T = TABLES[record.table] ?? TABLES.pqvd_baselineitem;
   // A form with auto-generated steps shows one tab per step: Next moves on, the submit button is on the last tab.
   const stepped = (record.catalog ?? []).includes("pp.basicform.auto-generate-steps");
+  // A form redirecting to an external URL ends its insert scenario off the site: the hostname is the evidence.
+  const external = (record.catalog ?? []).includes("pp.basicform.redirect-external-url");
   const NEXT = "input[name$='NextButton']";
   const tabs = project.formTabs?.[record.formName ?? record.form ?? ""] ?? project.formTabs?.default ?? 1;
-  const submit = stepped ? [...Array(Math.max(0, tabs - 1)).fill([{ click: NEXT }, { wait: 1500 }]).flat(), { click: SUBMIT }] : [{ click: SUBMIT }];
-  const firstStep = stepped ? [{ click: NEXT }] : [...submit];
+  const submit = stepped ? [...Array(Math.max(0, tabs - 1)).fill([{ click: NEXT, dispatch: true }, { wait: 1500 }]).flat(), { click: SUBMIT }] : [{ click: SUBMIT }];
+  const firstStep = stepped ? [{ click: NEXT, dispatch: true }] : [...submit];
   const parts = { component: "basic-form", variation: record.variation ?? record.name, persona: "editor" };
   const page = record.path + recordQuery(record);
   const mode = /insert/i.test(record.variation ?? "") || /Insert/.test(record.name) ? "insert" : /read/i.test(record.variation ?? record.name) ? "read-only" : "edit";
   const idSuffix = (state, persona = "editor") => `${record.slug}/${state}/${persona}`;
   if (mode === "insert") {
     out.push(scenario(`basic-form/${idSuffix("empty")}`, { ...parts, state: "empty" }, [{ goto: page }], { present: [FORM] }));
-    out.push(scenario(`basic-form/${idSuffix("insert")}`, { ...parts, state: "insert" }, [{ goto: page }, ...T.insert("Baseline inserted item", "I-NEW-{id:run}"), ...submit, { wait: { navigation: true } }], {}));
+    const attachments = (record.catalog ?? []).includes("pp.basicform.attach-file") ? [attach()] : [];
+    out.push(scenario(`basic-form/${idSuffix("insert")}`, { ...parts, state: "insert" }, [{ goto: page }, ...T.insert("Baseline inserted item", "I-NEW-{id:run}"), ...attachments, ...submit, { wait: { navigation: true } }], external ? { leavesOrigin: true } : {}));
     if (full || stepped) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: page }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
     if (full && T.validation) out.push(scenario(`basic-form/${idSuffix("regex-error")}`, { ...parts, state: "regex-error" }, [{ goto: page }, ...T.insert("Baseline regex", "I-RX-{id:run}"), { fill: "#pqvd_text", value: "regex should fail 1" }, ...submit, { wait: 1500 }], { present: [FORM] }));
     if (full && T.validation) out.push(scenario(`basic-form/${idSuffix("range-error")}`, { ...parts, state: "range-error" }, [{ goto: page }, ...T.insert("Baseline range", "I-RG-{id:run}"), { fill: "#pqvd_wholenumber", value: "5000" }, ...submit, { wait: 1500 }], { present: [FORM] }));
@@ -96,7 +106,9 @@ function basicFormScenarios(record, project = {}) {
     if (personas) for (const persona of ["reader", "contact-scope", "account-scope", "parent-scope", "none", "anonymous"]) out.push(scenario(`basic-form/${idSuffix("permission", persona)}`, { ...parts, persona, state: "permission" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { absent: persona === "anonymous" ? [] : SIGN_IN }));
     if (personas) out.push(scenario(`basic-form/${idSuffix("contact-scope-foreign", "contact-scope")}`, { ...parts, persona: "contact-scope", state: "contact-scope-foreign" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.foreign}}` }], {}));
   } else {
-    out.push(scenario(`basic-form/${idSuffix("read-only")}`, { ...parts, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], { present: [FORM] }));
+    // A deactivated basic form record renders no form on live: whatever the page shows is the evidence.
+    const inactiveForm = (record.catalog ?? []).includes("pp.basicform.statecode");
+    out.push(scenario(`basic-form/${idSuffix("read-only")}`, { ...parts, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], inactiveForm ? {} : { present: [FORM] }));
     if (personas) for (const persona of ["reader", "none"]) out.push(scenario(`basic-form/${idSuffix("read-only", persona)}`, { ...parts, persona, state: "read-only" }, [{ goto: `${page}${page.includes("?") ? "&" : "?"}id={id:${T.record}}` }], {}));
   }
   return out;
@@ -119,7 +131,9 @@ function listScenarios(record, project = {}) {
   if (record.catalog?.includes("pp.list.searchenabled")) s("search", [{ goto: page }, { wait: 1500 }, { fill: ".entitylist-search input, input.query, input[placeholder*='Search']", value: "*Alpha" }, { press: ".entitylist-search input, input.query, input[placeholder*='Search']", key: "Enter" }, { wait: 2000 }], { present: [grid] });
   // Calendar and map lists render no grid table: paging and sorting apply to grid lists only.
   const gridList = !record.catalog?.some((id) => /^pp\.list\.(?:calendar|map)\./.test(id));
-  if (gridList && record.catalog?.includes("pp.list.pagesize")) s("paging", [{ goto: page }, { wait: 1500 }, { click: ".pagination li:nth-child(3) a, .pagination a[data-page='2'], .pagination li.next a" }, { wait: 2000 }], { present: [grid] });
+  // A list filtered to the portal user's records or account shows fewer rows than a page on the fixture data: no paging.
+  const scoped = record.catalog?.some((id) => /^pp\.list\.filter(?:account|portaluser)$/.test(id));
+  if (gridList && !scoped && record.catalog?.includes("pp.list.pagesize")) s("paging", [{ goto: page }, { wait: 1500 }, { click: ".pagination li:nth-child(3) a, .pagination a[data-page='2'], .pagination li.next a" }, { wait: 2000 }], { present: [grid] });
   if (gridList) s("sort", [{ goto: page }, { wait: 1500 }, { click: "th a[data-logicalname='pqvd_code'], th a:has-text('Code'), th:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
   if (/modal/i.test(record.variation ?? "")) {
     s("modal-details", [{ goto: page }, { wait: 1500 }, { click: "tr .details-link, tr a.details-link, tr .launch-modal" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 2500 }], { present: [".modal"] });
@@ -127,10 +141,12 @@ function listScenarios(record, project = {}) {
     s("modal-edit", [{ goto: page }, { wait: 1500 }, { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" }, { wait: 500 }, { click: "tr .dropdown-menu .edit-link, tr .dropdown-menu a.edit-link" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 2500 }], { present: [".modal"] });
     s("modal-delete", [{ goto: page }, { wait: 1500 }, { click: "tr button[aria-label='action menu'], tr .dropdown-toggle" }, { wait: 500 }, { click: "tr .dropdown-menu .delete-link, tr .dropdown-menu a.delete-link" }, { wait: { selector: ".modal.in, .modal.show", state: "visible" } }, { wait: 1000 }], { present: [".modal"] });
   }
-  if (record.catalog?.includes("pp.listfilter.definition")) {
-    s("filter-text", [{ goto: page }, { wait: 1500 }, { fill: ".entitylist-filter input[type='text'], .filter-text input", value: "*Alpha" }, { click: ".entitylist-filter button[type='submit'], .filter-submit, button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
-    s("filter-dropdown", [{ goto: page }, { wait: 1500 }, { select: ".entitylist-filter select", label: "Green" }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
-    s("filter-checkbox", [{ goto: page }, { wait: 1500 }, { check: ".entitylist-filter input[type='checkbox']" }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
+  // Each filter state needs the filter type the list's definition declares (the horizontal list carries only the text filter).
+  const filter = (id) => record.catalog?.includes(id);
+  if (filter("pp.listfilter.definition")) {
+    if (filter("pp.listfilter.text")) s("filter-text", [{ goto: page }, { wait: 1500 }, { fill: ".entitylist-filter input[type='text'], .filter-text input", value: "*Alpha" }, { click: ".entitylist-filter button[type='submit'], .filter-submit, button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
+    if (filter("pp.listfilter.visualization.dropdown")) s("filter-dropdown", [{ goto: page }, { wait: 1500 }, { select: ".entitylist-filter select", label: "Beta" }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
+    if (filter("pp.listfilter.visualization.checkbox")) s("filter-checkbox", [{ goto: page }, { wait: 1500 }, { check: ".entitylist-filter input[type='checkbox']" }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
     s("filter-reset", [{ goto: page }, { wait: 1500 }, { click: ".entitylist-filter button[type='submit'], button:has-text('Apply')" }, { wait: 2000 }], { present: [grid] });
   }
   if (personaPage(record, project)) for (const persona of ["reader", "contact-scope", "none", "anonymous"]) s("permission", [{ goto: page }, { wait: 1500 }], { absent: persona === "anonymous" ? [] : SIGN_IN }, persona);
@@ -149,10 +165,13 @@ function multistepScenarios(record, steps = []) {
   const first = own[0];
   const T = TABLES[first?.table] ?? TABLES.pqvd_baselineitem;
   const s = (state, steps, expect = {}) => out.push(scenario(`multistep-form/${record.slug}/${state}/editor`, { ...parts, state }, steps, expect));
+  // Step forms of one table differ in the fields they show: fills are optional, the required ones are on every form.
+  const readOnlyStep = (first?.catalog ?? []).includes("pp.msstep.mode.readonly");
+  const insert = (name, code) => readOnlyStep ? [] : [...T.insert(name, code), { fill: T.text, value: "step one" }, ...((first?.catalog ?? []).includes("pp.msstep.attachfile") ? [attach()] : [])].map((step) => ({ ...step, optional: true }));
   s("step1", [{ goto: page }], { present: [FORM] });
-  s("step1-submit", [{ goto: page }, ...T.insert("Baseline multistep {id:run}", "MS-{id:run}"), { fill: T.text, value: "step one" }, { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }], {});
-  s("step2-back", [{ goto: page }, ...T.insert("Baseline multistep back {id:run}", "MB-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { click: "input[name$='PreviousButton']" }, { wait: { navigation: true } }], {});
-  s("resume", [{ goto: page }, ...T.insert("Baseline resume {id:run}", "MR-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { goto: page }], {});
+  s("step1-submit", [{ goto: page }, ...insert("Baseline multistep {id:run}", "MS-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }], {});
+  s("step2-back", [{ goto: page }, ...insert("Baseline multistep back {id:run}", "MB-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { click: "input[name$='PreviousButton']" }, { wait: { navigation: true } }], {});
+  s("resume", [{ goto: page }, ...insert("Baseline resume {id:run}", "MR-{id:run}"), { click: "input[name$='NextButton'], " + SUBMIT }, { wait: { navigation: true } }, { goto: page }], {});
   return out;
 }
 

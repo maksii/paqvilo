@@ -48,17 +48,20 @@ test('a denied create form keeps its panel and shows the access-denied snippet',
   assert.equal(html, `<div id="EntityFormControl_x"><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="Widget" onkeypress="javascript:return WebForm_FireDefaultButton(event, 'InsertButton')" role="form" aria-label="Basic Form"><div id="EntityFormControl_x_EntityFormView" class="entity-form"><div><div class="xrm-editable-html xrm-attribute"><div class="xrm-attribute-value"><div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div></div></div></div></div><div class="actions"></div></div></div>`);
 });
 
-test('a multipart WebForms postback decodes its text controls and refuses selected files', async () => {
+test('a multipart WebForms postback decodes its text controls and carries selected files', async () => {
   const { multipartControls } = await import('../lib/native-postback.mjs');
   // An empty file input as a browser posts it.
   const part = (name, extra, value) => `------WebKitFormBoundaryX\r\nContent-Disposition: form-data; name="${name}"${extra}\r\n\r\n${value}\r\n`;
   const raw = part('__EVENTTARGET', '', 'ctl00$Update') + part('title', '', 'a & b') + part('upload', '; filename=""\r\nContent-Type: application/octet-stream', '') + '------WebKitFormBoundaryX--\r\n';
   const controls = await multipartControls(Buffer.from(raw), 'multipart/form-data; boundary=----WebKitFormBoundaryX');
   assert.deepEqual([...controls], [['__EVENTTARGET', 'ctl00$Update'], ['title', 'a & b']]);
+  assert.deepEqual(controls.files, []);
   const body = new FormData();
-  body.set('upload', new Blob(['x']), 'x.txt');
+  body.set('upload', new Blob(['x'], { type: 'text/plain' }), 'x.txt');
   const withFile = new Request('http://local/', { method: 'POST', body });
-  await assert.rejects(multipartControls(Buffer.from(await withFile.arrayBuffer()), withFile.headers.get('content-type')), { status: 415 });
+  // A chosen file (the attach-file control) travels as a base64 attachment.
+  const posted = await multipartControls(Buffer.from(await withFile.arrayBuffer()), withFile.headers.get('content-type'));
+  assert.deepEqual(posted.files, [{ field: 'upload', name: 'x.txt', type: 'text/plain', content: Buffer.from('x').toString('base64') }]);
   await assert.rejects(multipartControls(Buffer.from('nope'), 'multipart/form-data; boundary=zzz'), { code: 'InvalidNativePostback' });
 });
 

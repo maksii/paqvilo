@@ -616,6 +616,8 @@ test("case relationships come from Learn and document management creates <table>
     "Entities/Incident/Entity.xml": entityXml("Incident", { attributes: attribute("sample_Extra", "nvarchar"), extra: managed }),
     "Entities/sample_shortage/Entity.xml": entityXml("sample_shortage", { set: "sample_shortages", full: true, extra: managed }),
     "Entities/sample_plain/Entity.xml": entityXml("sample_plain", { set: "sample_plains", full: true, extra: "<IsDocumentManagementEnabled>0</IsDocumentManagementEnabled>" }),
+    // Notes enabled (HasRelatedNotes as the export writes it) creates <table>_Annotations.
+    "Entities/sample_noted/Entity.xml": entityXml("sample_noted", { set: "sample_noteds", full: true, extra: "<HasRelatedNotes>True</HasRelatedNotes>" }),
     // Catalogue relationships join when one of their tables is exported (annotation here).
     "Entities/Annotation/Entity.xml": entityXml("Annotation", { attributes: attribute("sample_Note", "nvarchar") }),
     // Account keeps its documented Account_SharepointDocumentLocation relationship.
@@ -642,6 +644,10 @@ test("case relationships come from Learn and document management creates <table>
   assert.equal(schema.relationships.account_sharepointdocumentlocations, undefined);
   assert.equal(schema.relationships.account_sharepointdocumentlocation.schemaName, "Account_SharepointDocumentLocation");
   assert.equal(schema.documentLocationRelationships, 2);
+  assert.deepEqual(shape("sample_noted_annotations"), ["sample_noted_Annotations", "annotation", "sample_noted", "objectid", "objectid_sample_noted", "sample_noted_Annotations"]);
+  assert.match(schema.relationships.sample_noted_annotations.source, /sample_noted.Entity\.xml$/);
+  assert.equal(schema.relationships.sample_plain_annotations, undefined);
+  assert.equal(schema.annotationRelationships, 1);
 });
 
 test("while a share is open several caches of one process parse a Solution root once", async (t) => {

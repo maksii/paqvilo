@@ -2234,6 +2234,8 @@ export async function createSimulator({
         const scenarios = config().scenarios;
         if (Array.isArray(scenarios)) next.simulator = { ...next.simulator, scenarios };
         await saveState(next);
+        // Advanced form sessions belong to the reset state: a reset ends them.
+        webFormSessions.clear();
         json(res, 200, exposedState());
       });
     if (relative === "/reload" && method === "POST") {
@@ -2973,6 +2975,7 @@ export async function createSimulator({
     if (signInRoute) return authenticate(req, res, url, signInRoute);
     let formParams = {};
     let nativeEntries = null;
+    let nativeFiles = [];
     const nativePostbackEnabled = (config().observed ?? portal.observed)?.nativeFormTransport === 'postback';
     const postedPage =
       req.method === "POST" &&
@@ -3004,6 +3007,7 @@ export async function createSimulator({
           const tokens = controls.getAll('__RequestVerificationToken');
           if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
           nativeEntries = [...controls];
+          nativeFiles = controls.files ?? [];
           const context = trace.getStore();
           if (context && !context.visitor && !webFormSessionOwner(currentIdentity())) {
             const started = newVisitor(visitorName());
@@ -3138,7 +3142,7 @@ export async function createSimulator({
         const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
         let response;
         try {
-          const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url)));
+          const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, { ...formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url), attachments: nativeFiles }));
           response = nativePostbackResponse({ result, context, values: submission.body.values });
         } catch (cause) {
           response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
@@ -3363,7 +3367,7 @@ export async function createSimulator({
       const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
       let response;
       try {
-        const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(pageIdentity, nativeContext?.visitor, url)));
+        const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, { ...formSubmissionOptions(pageIdentity, nativeContext?.visitor, url), attachments: nativeFiles }));
         response = nativePostbackResponse({ result, context, values: submission.body.values });
       } catch (cause) {
         response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });

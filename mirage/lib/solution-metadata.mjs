@@ -43,6 +43,9 @@ function parseFormDocument(xml, entity, file, lcid) {
     for (const nested of node.children ?? []) visit(nested, type);
   };
   visit(document, undefined);
+  // A solution export groups systemforms by type under FormXml/<group>/ (main, card, quick,
+  // quickcreate ...); a document without a declared type takes its group as the form type.
+  const groupType = /(?:^|[\\/])FormXml[\\/]([^\\/]+)[\\/][^\\/]+\.xml$/i.exec(String(file ?? ""))?.[1];
   for (const systemform of document.name === "systemform"
     ? [document]
     : descendants(document, "systemform")) {
@@ -53,7 +56,7 @@ function parseFormDocument(xml, entity, file, lcid) {
     forms.push({
       id: norm(text(systemform, "formid") ?? path.basename(file, ".xml")),
       entity,
-      ...(sourceTypes.has(systemform) ? { formType: sourceTypes.get(systemform) } : {}),
+      ...(sourceTypes.has(systemform) ? { formType: sourceTypes.get(systemform) } : groupType ? { formType: groupType } : {}),
       ...(systemFormType !== undefined ? { systemFormType } : {}),
       name: label(child(systemform, "LocalizedNames"), lcid) ?? "",
       xml: serialize(form),
