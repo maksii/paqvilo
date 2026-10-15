@@ -124,6 +124,8 @@ export const PARENT_COLUMNS = [
   col("pqvd_code", "Code", "text", { type: "string", maxLength: 20, required: "required" }, { catalog: "dv.column.string.text" }),
   col("pqvd_rank", "Rank", "integer", { type: "integer", min: 0, max: 100 }, { catalog: "dv.column.integer.none" }),
   col("pqvd_description", "Description", "memo", { type: "memo", maxLength: 2000 }, { catalog: "dv.column.memo" }),
+  // Only on "Baseline Parent Reference": a parent column whose control id no item form repeats (O11 fixed variant).
+  col("pqvd_summary", "Summary", "text", { type: "string", maxLength: 100 }, { catalog: "dv.column.string.text" }),
   // Rollup definitions are maker-portal only (Dataverse rejected a scripted FormulaDefinition as "not valid Xaml"; Learn: not supported by code): created by the documented manual procedure, verified by the provisioning script.
   col("pqvd_rollup", "Rollup", "integer", null, { catalog: "dv.column.rollup", extras: { kind: "rollup", manual: true, related: ITEM, lookup: `${PREFIX}_parentid` } }),
 ];
@@ -277,6 +279,12 @@ function parentMainForm() {
   const items = [`<cell id="${braced("cell:subgrid-items")}" showlabel="true" rowspan="8">${label("Items")}${subgridControl("subgrid_items", ITEM, `${PREFIX}_baselineparent_baselineitem`, "{PLATFORM_VIEW:pqvd_baselineitem:2}")}</cell>`];
   return form([tab("general", "General", [section("general", "General", rows), section("items", "Items", items)])]);
 }
+// Read-only reference form of the fixed insert multistep (O11): a multistep step renders it beside the item create form,
+// so it carries no column whose control id the create form repeats (pqvd_name, pqvd_code, ...).
+function parentReferenceForm() {
+  const c = (name) => byName(PARENT_COLUMNS, name)[0];
+  return form([tab("reference", "Reference", [section("reference", "Parent reference", [columnCell(c("summary"), PARENT)])])]);
+}
 function parentQuickViewForm() {
   const c = (name) => byName(PARENT_COLUMNS, name)[0];
   return form([tab("quick", "Quick view", [section("quick", "Quick view", [cell(NAME, "text", { label: "Name" }), columnCell(c("code"), PARENT), columnCell(c("rank"), PARENT)])])]);
@@ -301,6 +309,7 @@ export const FORMS = [
   { file: "item-card", id: guid("form:item-card"), table: ITEM, name: "Baseline Item Card", type: 11, build: () => cardForm(ITEM) },
   { file: "parent-main", id: guid("form:parent-main"), table: PARENT, name: "Baseline Parent", type: 2, build: parentMainForm },
   { file: "parent-card", id: guid("form:parent-card"), table: PARENT, name: "Baseline Parent", type: 11, build: () => cardForm(PARENT) },
+  { file: "parent-reference", id: guid("form:parent-reference"), table: PARENT, name: "Baseline Parent Reference", type: 2, build: parentReferenceForm },
   { file: "parent-quick-view", id: guid("form:parent-quick-view"), table: PARENT, name: "Baseline Parent Quick View", type: 6, build: parentQuickViewForm },
   { file: "child-main", id: guid("form:child-main"), table: CHILD, name: "Baseline Child", type: 2, build: childMainForm },
 ];

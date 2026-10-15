@@ -1,0 +1,44 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{4b1f8fbc-c172-4fbb-8a5b-da4055e5b953}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="reference" id="{6562B12A-B556-4148-83DB-50544D9EC6D2}" IsUserDefined="1" showlabel="true" expanded="true">
+          <labels>
+            <label description="Reference" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="reference" id="{EB881632-8EE4-4A90-8240-9D6BB6333651}" showlabel="true" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="Parent reference" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{5EE09DE6-0E18-4324-8302-864EB60D4ADF}" showlabel="true">
+                        <labels>
+                          <label description="Summary" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_summary" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_summary" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Parent Reference" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

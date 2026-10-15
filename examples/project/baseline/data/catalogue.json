@@ -86,7 +86,8 @@
         "pqvd_name": "Baseline Parent One",
         "pqvd_code": "P-001",
         "pqvd_rank": 1,
-        "pqvd_description": "First invented parent."
+        "pqvd_description": "First invented parent.",
+        "pqvd_summary": "Parent one summary"
       },
       "refs": {},
       "deferredRefs": []
@@ -99,7 +100,8 @@
         "pqvd_name": "Baseline Parent Two",
         "pqvd_code": "P-002",
         "pqvd_rank": 2,
-        "pqvd_description": "Second invented parent."
+        "pqvd_description": "Second invented parent.",
+        "pqvd_summary": "Parent two summary"
       },
       "refs": {},
       "deferredRefs": []
@@ -377,7 +379,7 @@
         "pqvd_wholenumber": 120
       },
       "refs": {
-        "pqvd_parentid": "parent1",
+        "pqvd_parentid": null,
         "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },
@@ -396,7 +398,7 @@
         "pqvd_wholenumber": 130
       },
       "refs": {
-        "pqvd_parentid": "parent1",
+        "pqvd_parentid": null,
         "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },
@@ -415,7 +417,7 @@
         "pqvd_wholenumber": 140
       },
       "refs": {
-        "pqvd_parentid": "parent1",
+        "pqvd_parentid": null,
         "pqvd_contactid": null,
         "pqvd_accountid": "account"
       },

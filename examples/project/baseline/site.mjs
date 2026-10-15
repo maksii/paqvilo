@@ -725,18 +725,25 @@ export function buildSite(identity = readIdentity()) {
   ], surveyMeta);
 
   // C: insert with attachments, geolocation, portal user association and table references (query string, previous step, query attribute).
-  const insertId = id("advancedform:multistep-insert");
-  multistep("multistep-insert", { ...MSFORM, adx_name: "Baseline Multistep Insert", adx_startstep: stepId("insert1"), adx_progressindicatortype: 756150002, adx_progressindicatorposition: 756150002 }, "multistep: progress bar on the left", [
-    { values: stepBase(insertId, "insert1", "Baseline Multistep Insert Item", {
-      adx_type: 100000001, adx_formname: "Baseline Item Lookup Create", adx_mode: INSERT, adx_nextstep: stepId("insert2"),
+  // Two variants (O11). "multistep-insert" shows the parent through "Baseline Parent", whose pqvd_name/pqvd_code control ids
+  // repeat in the item create form: live fails the step ("An entry with the same key already exists."), kept as the observed
+  // platform failure. "multistep-insert-fixed" shows "Baseline Parent Reference" (parent-only columns), so the step submits.
+  const insertMultistep = (key, s, name, readonlyForm, note) => {
+  const insertId = id(`advancedform:${key}`);
+  multistep(key, { ...MSFORM, adx_name: name, adx_startstep: stepId(`${s}1`), adx_progressindicatortype: 756150002, adx_progressindicatorposition: 756150002 }, `multistep: progress bar on the left; ${note}`, [
+    { values: stepBase(insertId, `${s}1`, `${name} Item`, {
+      adx_type: 100000001, adx_formname: "Baseline Item Lookup Create", adx_mode: INSERT, adx_nextstep: stepId(`${s}2`),
       adx_associatecurrentportaluser: true, adx_targetentityportaluserlookupattribute: "pqvd_contactid", adx_portaluserlookupattributeisactivityparty: false,
       adx_attachfile: true, adx_allowmultiplefiles: true, adx_accept: "image/*", adx_attachfilelabel: json(label("Baseline images")), adx_attachfilerequired: true, adx_attachfilerequirederrormessage: json(label("Attach a baseline image.")), adx_attachfilestoragelocation: 756150000, adx_attachfilerestrictaccept: true, adx_attachfiletypeerrormessage: json(label("Baseline attachments must be images.")), adx_attachfilemaxsize: 1024, adx_attachfilesizeerrormessage: json(label("Baseline images must be 1 MB or smaller.")), adx_maximumnooffiles: 3,
       adx_geolocation_enabled: true, adx_geolocation_displaymap: true, adx_geolocation_maptype: 756150001, ...GEO_FIELDS,
-      adx_setentityreference: true, adx_referenceentitylogicalname: PARENT, adx_referenceentityrelationshipname: "pqvd_baselineparent_baselineitem", adx_referencetargetlookupattributelogicalname: "pqvd_parentid", adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 100000000, adx_referencequerystringname: "parentid", adx_referencequerystringisprimarykey: true, adx_referenceentityshowreadonlyform: true, adx_referenceentityreadonlyformname: "Baseline Parent",
+      adx_setentityreference: true, adx_referenceentitylogicalname: PARENT, adx_referenceentityrelationshipname: "pqvd_baselineparent_baselineitem", adx_referencetargetlookupattributelogicalname: "pqvd_parentid", adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 100000000, adx_referencequerystringname: "parentid", adx_referencequerystringisprimarykey: true, adx_referenceentityshowreadonlyform: true, adx_referenceentityreadonlyformname: readonlyForm,
     }), variation: "insert, associate current portal user, multiple required images (max 3), geolocation (Google) with address columns, parent reference from ?parentid=", catalog: ["pp.msstep.geolocation_fieldmappings"] },
-    { values: stepBase(insertId, "insert2", "Baseline Multistep Insert Child", { adx_type: 100000001, adx_targetentitylogicalname: CHILD, adx_formname: "Baseline Child", adx_mode: INSERT, adx_nextstep: stepId("insert3"), ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 100000001, adx_referenceentitystep: stepId("insert1") }), variation: "insert child referencing the item created by the previous step", catalog: [] },
-    { values: stepBase(insertId, "insert3", "Baseline Multistep Insert Child By Code", { adx_type: 100000001, adx_targetentitylogicalname: CHILD, adx_formname: "Baseline Child", adx_mode: INSERT, ...REFERENCE_ITEM, adx_referenceentitysourcetype: 100000000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_successmessage: json(label("Baseline records created.")), adx_hideformonsuccess: false }), variation: "insert child referencing the item whose pqvd_code matches ?code=, success message without hiding the form", catalog: ["pp.msstep.onsuccess"] },
+    { values: stepBase(insertId, `${s}2`, `${name} Child`, { adx_type: 100000001, adx_targetentitylogicalname: CHILD, adx_formname: "Baseline Child", adx_mode: INSERT, adx_nextstep: stepId(`${s}3`), ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 100000001, adx_referenceentitystep: stepId(`${s}1`) }), variation: "insert child referencing the item created by the previous step", catalog: [] },
+    { values: stepBase(insertId, `${s}3`, `${name} Child By Code`, { adx_type: 100000001, adx_targetentitylogicalname: CHILD, adx_formname: "Baseline Child", adx_mode: INSERT, ...REFERENCE_ITEM, adx_referenceentitysourcetype: 100000000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_successmessage: json(label("Baseline records created.")), adx_hideformonsuccess: false }), variation: "insert child referencing the item whose pqvd_code matches ?code=, success message without hiding the form", catalog: ["pp.msstep.onsuccess"] },
   ]);
+  };
+  insertMultistep("multistep-insert", "insert", "Baseline Multistep Insert", "Baseline Parent", "reference read-only form Baseline Parent repeats the create form control ids pqvd_name/pqvd_code, the step fails on live (O11, observed)");
+  insertMultistep("multistep-insert-fixed", "insertfixed", "Baseline Multistep Insert Fixed", "Baseline Parent Reference", "reference read-only form Baseline Parent Reference (parent-only columns), the step submits (O11 fixed variant)");
 
   // D: current portal user (read-only contact) and the record associated to it.
   const userId = id("advancedform:multistep-user");

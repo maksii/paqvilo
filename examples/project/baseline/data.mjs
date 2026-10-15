@@ -40,8 +40,8 @@ export function records(tester = TESTER_CONTACT) {
   const rows = [
     { key: "account", id: ids.account, table: "account", fields: { name: "Baseline Account", accountnumber: "BL-ACC-1", telephone1: "+1 555 0199" }, refs: {} },
     { key: "other", id: ids.other, table: "contact", fields: { firstname: "Baseline", lastname: "Other Contact", emailaddress1: "baseline.other@example.invalid" }, refs: {} },
-    { key: "parent1", id: ids.parent1, table: PARENT, fields: { [p("name")]: "Baseline Parent One", [p("code")]: "P-001", [p("rank")]: 1, [p("description")]: "First invented parent." }, refs: {} },
-    { key: "parent2", id: ids.parent2, table: PARENT, fields: { [p("name")]: "Baseline Parent Two", [p("code")]: "P-002", [p("rank")]: 2, [p("description")]: "Second invented parent." }, refs: {} },
+    { key: "parent1", id: ids.parent1, table: PARENT, fields: { [p("name")]: "Baseline Parent One", [p("code")]: "P-001", [p("rank")]: 1, [p("description")]: "First invented parent.", [p("summary")]: "Parent one summary" }, refs: {} },
+    { key: "parent2", id: ids.parent2, table: PARENT, fields: { [p("name")]: "Baseline Parent Two", [p("code")]: "P-002", [p("rank")]: 2, [p("description")]: "Second invented parent.", [p("summary")]: "Parent two summary" }, refs: {} },
     // Deactivated parent and child: the inactive-record states of the parent and child edit forms.
     { key: "parent3", id: ids.parent3, table: PARENT, fields: { [p("name")]: "Baseline Parent Three", [p("code")]: "P-003", [p("rank")]: 3, [p("description")]: "Deactivated invented parent.", statecode: 1, statuscode: 2 }, refs: {} },
     item("item1", "Baseline Item Alpha", "I-001", {

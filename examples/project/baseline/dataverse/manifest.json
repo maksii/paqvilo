@@ -110,6 +110,12 @@
           "label": "Description",
           "type": "memo",
           "maxLength": 2000
+        },
+        {
+          "name": "pqvd_summary",
+          "label": "Summary",
+          "type": "string",
+          "maxLength": 100
         }
       ],
       "keys": []

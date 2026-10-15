@@ -192,6 +192,13 @@
       "file": "formxml/parent-card.xml"
     },
     {
+      "id": "4b1f8fbc-c172-4fbb-8a5b-da4055e5b953",
+      "table": "pqvd_baselineparent",
+      "name": "Baseline Parent Reference",
+      "type": 2,
+      "file": "formxml/parent-reference.xml"
+    },
+    {
       "id": "aa1000e2-2347-4bc2-893a-4550e96b9531",
       "table": "pqvd_baselineparent",
       "name": "Baseline Parent Quick View",

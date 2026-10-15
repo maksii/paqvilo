@@ -40,3 +40,11 @@ test('contact- and account-filtered item lists show at least four rows whose cod
  check(items.filter(row=>row.refs.pqvd_contactid==='tester')); // item-list-mine: all states (All Baseline Items view)
  check(items.filter(row=>row.refs.pqvd_accountid==='account'&&row.fields.statecode===0)); // item-list-options: active view, account filter
 });
+
+test('fixed insert multistep shows a parent reference form whose control ids the item create form does not repeat (O11)',()=>{
+ const ids=file=>[...FORMS.find(form=>form.file===file).build().matchAll(/<control id="([^"]+)"/g)].map(match=>match[1]);
+ const create=ids('item-lookup-create');
+ assert.ok(ids('parent-main').some(id=>create.includes(id))); // the observed failure stays in multistep-insert
+ assert.deepEqual(ids('parent-reference').filter(id=>create.includes(id)),[]);
+ assert.equal(FORMS.find(form=>form.file==='parent-reference').name,'Baseline Parent Reference');
+});
