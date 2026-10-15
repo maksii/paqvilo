@@ -3109,6 +3109,16 @@ export async function createSimulator({
     if (quickView && config().pageMode !== "live" && quickView[1].toLowerCase() === quickSite) {
       try {
         if (!["GET", "HEAD"].includes(req.method)) throw error("Quick view forms require GET.", 405, "MethodNotAllowed");
+        // The server-rendered URL of a bound frame (it alone carries isprofilepage/lang) is replaced
+        // by the platform client after its token request; on a remote portal that abandons this
+        // navigation before it commits (live: status 0, none of its resources load). Loopback would
+        // answer first, so the answer waits for that replacement.
+        // ponytail: fixed 3 s bound; a frame nobody replaces (no client script) loads that much later.
+        if (url.searchParams.has("isprofilepage") && url.searchParams.get("entityid")) {
+          let abandoned = false;
+          await new Promise((resolve) => { const timer = setTimeout(resolve, 3000); res.once("close", () => { abandoned = true; clearTimeout(timer); resolve(); }); });
+          if (abandoned) return;
+        }
         const quickIdentity = currentIdentity();
         const body = await renderQuickForm({ portal, store, readProvider, identity: quickIdentity, params: Object.fromEntries(url.searchParams), metadata: solutionMetadata, schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas } });
         const layout = await renderer.serviceLayout(url.pathname + url.search, { user: quickIdentity });

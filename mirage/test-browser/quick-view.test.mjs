@@ -56,6 +56,12 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
   assert.ok(geometry.height >= 34);
   const quick = new URL(await page.locator('#ParentDetails').getAttribute('src'), app.url);
   assert.equal(quick.searchParams.get('entityprimarykeyname'), 'parentid');
+  // The server-rendered URL of a bound frame is answered only after the client had the chance to
+  // replace it (live: that first navigation is abandoned); the client's own URL answers at once.
+  const held = new URL(quick);
+  held.searchParams.set('isprofilepage', 'false');
+  held.searchParams.set('lang', 'en-US');
+  await assert.rejects(fetch(held, { signal: AbortSignal.timeout(500) }), error => error.name === 'TimeoutError');
   const stylesheetPaths = html => [...html.matchAll(/<link[^>]+href="([^"]+)"/g)].map(match => match[1]);
   for (const captured of [false, true]) {
     if (captured) { const state = app.store.snapshot(); state.simulator.shellProfile = { stylesheets: ['/site.css', '/captured.css'], platformStyles: { mode: 'captured', origin: 'https://synthetic.example.test', capturedAt: '2026-10-12' } }; await app.store.replaceState(state); }

@@ -131,9 +131,9 @@ test("Set Entity Reference fills the target lookup from the query parameter with
   const metadata = { adx_setentityreference: true, adx_referenceentitylogicalname: "part", adx_referencequerystringname: "partid", adx_referencequerystringisprimarykey: true, adx_referencetargetlookupattributelogicalname: "partid" };
   const html = await render({ mode: 100000000, params: { partid: PART }, cells: [[{ name: "name" }, { name: "partid" }]], metadata });
   assert.match(html, /<input name="[^"]*\$partid_name" type="text" value="Cog" id="partid_name" class="text form-control lookup form-control " readonly="" aria-readonly="true" aria-labelledby="" aria-label="Part is a required field\."><input name="[^"]*\$partid" type="hidden" id="partid" value="d0000000-0000-4000-8000-000000000001" aria-required="true" aria-invalid="true"><input name="[^"]*\$partid_entityname" type="hidden" id="partid_entityname">/);
-  // Without the parameter the lookup stays empty with its usual labelling.
+  // Without the parameter the required lookup stays empty with the same required labelling (live required-field form).
   const empty = await render({ mode: 100000000, params: {}, cells: [[{ name: "name" }, { name: "partid" }]], metadata });
-  assert.match(empty, /id="partid_name" class="text form-control lookup form-control " readonly="" aria-readonly="true" aria-labelledby="partid_label" aria-label="Part"><input name="[^"]*\$partid" type="hidden" id="partid" aria-required="true">/);
+  assert.match(empty, /id="partid_name" class="text form-control lookup form-control " readonly="" aria-readonly="true" aria-labelledby="" aria-label="Part is a required field\."><input name="[^"]*\$partid" type="hidden" id="partid" aria-required="true" aria-invalid="true">/);
 });
 
 test("a calendar list runs inside the WebForms form with its resources and no event validation", () => {

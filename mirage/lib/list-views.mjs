@@ -12,9 +12,14 @@ const VIEWS = { 756150000: "year", 756150001: "month", 756150002: "week", 756150
 const STYLES = { 756150000: "full", 756150001: "list" };
 const GUID = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
 
-/** Calendar settings of an exported list, or null when the calendar view is off. */
-export function calendarSettings(list) {
+/**
+ * Calendar settings of an exported list, or null when the calendar view is off. With the solution
+ * metadata the start and end columns carry their date-time behaviour (the feed reports it).
+ */
+export function calendarSettings(list, metadata = null) {
   const m = list?.metadata ?? {};
+  const columns = metadata?.entities?.[canonical(list?.entityName)]?.fields ?? {};
+  const behavior = (name) => (name && columns[name]?.dateTimeBehavior) || "UserLocal";
   if (portalField(m, "calendar_enabled", false) !== true) return null;
   const field = (name) => canonical(portalField(m, `calendar_${name}fieldname`, "")) || null;
   const initialDate = String(portalField(m, "calendar_initialdate", "") ?? "");
@@ -33,7 +38,21 @@ export function calendarSettings(list) {
     // 756150000 user local, 756150001 the list's time zone (adx_calendar_timezone code).
     timeZoneMode: Number(portalField(m, "calendar_timezonemode", 756150000)) === 756150001 ? "specific" : "user",
     timeZoneCode: portalField(m, "calendar_timezone", null),
+    startBehavior: behavior(field("startdate")),
+    endBehavior: behavior(field("enddate")),
   };
+}
+
+/*
+ * Dataverse time zone codes (timezonedefinition.timezonecode) of the zones a list's fixed calendar
+ * time zone (adx_calendar_timezone) commonly names, as IANA zones. ponytail: a partial table; add
+ * codes as sites use them (an unknown code leaves the instants unshifted).
+ */
+const TIME_ZONES = { 4: "America/Los_Angeles", 10: "America/Denver", 20: "America/Chicago", 35: "America/New_York", 85: "Europe/London", 105: "Europe/Paris", 110: "Europe/Berlin", 235: "Asia/Tokyo", 255: "Australia/Sydney" };
+/** The wall-clock time of an instant in a zone, written as a UTC instant. */
+function wallClock(ms, zone) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone: zone, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" }).formatToParts(new Date(ms)).map((part) => [part.type, part.value]));
+  return Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)) + (ms % 1000);
 }
 
 const variantPath = (variant) => (variant === "BootstrapV5" ? "BootstrapV5/" : "");
@@ -96,7 +115,8 @@ export function calendarLanguageScript(culture = "en-US") {
     ...day.map((name, i) => `  d${i}: ${JSON.stringify(name)},`),
   ];
   // The client's first_day: 1 Monday, 2 Sunday.
-  return `\nif(!window.calendar_languages) {\n  window.calendar_languages = {};\n}\n\nwindow.calendar_languages[${JSON.stringify(culture)}] = {\n${lines.join("\n")}\n\n${names.join("\n\n")}\n\n  \n  first_day: ${firstDay === 7 ? 2 : 1}\n};\n`;
+  // The platform view renders CRLF lines with two blank lines before the month names (live language.js).
+  return `\nif(!window.calendar_languages) {\n  window.calendar_languages = {};\n}\n\nwindow.calendar_languages[${JSON.stringify(culture)}] = {\n${lines.join("\n")}\n\n\n${names.join("\n\n")}\n\n  \n  first_day: ${firstDay === 7 ? 2 : 1}\n};\n`.replace(/\n/g, "\r\n");
 }
 
 const scalar = (value) => (value && typeof value === "object" && !Array.isArray(value) ? (value.value ?? value.id ?? value.name ?? null) : value);
@@ -107,31 +127,41 @@ const text = (value) => {
 };
 
 /** Calendar events of rows inside [from, to): start/end in epoch milliseconds (strings). */
+/**
+ * The event feed (live list calendar feed): numeric start/end instants, the details URL only when
+ * the list has a details page, the organizer as {name, email}, and the conversion and date-time
+ * behaviour flags. A list with a fixed time zone sends user-local instants as that zone's wall
+ * clock (live: 05:05Z in May with time zone 85 is sent as 06:05) and no client conversion.
+ */
 export function calendarEvents(rows, { calendar, idColumn, detailsUrl, idParameter = "id", from, to }) {
   const events = [];
+  const zone = calendar.timeZoneMode === "specific" ? TIME_ZONES[Number(calendar.timeZoneCode)] : null;
+  const shift = (ms, behavior) => (zone && behavior === "UserLocal" ? wallClock(ms, zone) : ms);
   for (const row of rows) {
-    const start = Date.parse(scalar(row[calendar.start]) ?? "");
-    if (!Number.isFinite(start)) continue;
+    const startValue = Date.parse(scalar(row[calendar.start]) ?? "");
+    if (!Number.isFinite(startValue)) continue;
     const endValue = calendar.end ? Date.parse(scalar(row[calendar.end]) ?? "") : NaN;
-    const end = Number.isFinite(endValue) ? endValue : start;
-    if ((Number.isFinite(to) && start >= to) || (Number.isFinite(from) && end < from)) continue;
+    const startMs = shift(startValue, calendar.startBehavior ?? "UserLocal");
+    const endMs = Number.isFinite(endValue) ? shift(endValue, calendar.endBehavior ?? "UserLocal") : startMs;
+    if ((Number.isFinite(to) && startMs >= to) || (Number.isFinite(from) && endMs < from)) continue;
     const id = canonical(row[idColumn]);
-    const allDay = calendar.allDay ? [true, 1, "1", "true"].includes(scalar(row[calendar.allDay])) : false;
-    // ponytail: event keys follow the calendar client contract (id/title/url/class/start/end); the platform's extra keys are unverified until a populated capture exists.
+    const organizer = calendar.organizer ? text(row[calendar.organizer]) : null;
     events.push({
       id,
-      title: text(row[calendar.summary]) ?? "",
-      url: detailsUrl ? `${detailsUrl}${detailsUrl.includes("?") ? "&" : "?"}${encodeURIComponent(idParameter)}=${id}` : null,
       class: "event-info",
-      start: String(start),
-      end: String(end),
-      allDay,
+      title: text(row[calendar.summary]) ?? "",
+      ...(detailsUrl ? { url: `${detailsUrl}${detailsUrl.includes("?") ? "&" : "?"}${encodeURIComponent(idParameter)}=${id}` } : {}),
+      start: startMs,
+      end: endMs,
       description: calendar.description ? text(row[calendar.description]) : null,
       location: calendar.location ? text(row[calendar.location]) : null,
-      organizer: calendar.organizer ? text(row[calendar.organizer]) : null,
+      ...(organizer ? { organizer: { name: organizer, email: null } } : {}),
+      isconversionrequired: calendar.timeZoneMode === "specific" ? "false" : "true",
+      startdatebehavior: calendar.startBehavior ?? "UserLocal",
+      enddatebehavior: calendar.endBehavior ?? "UserLocal",
     });
   }
-  return events.sort((a, b) => Number(a.start) - Number(b.start));
+  return events.sort((a, b) => a.start - b.start);
 }
 
 const icsDate = (ms) => new Date(Number(ms)).toISOString().replace(/[-:]/g, "").replace(/\.\d{3}Z$/, "Z");

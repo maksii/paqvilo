@@ -549,3 +549,9 @@ test("platform resources on the portal origin carry the platform's headers; /dis
   assert.equal(fallback.status, 200);
   assert.equal(await fallback.text(), await cdn.text());
 });
+
+test("an aborted form control writes the closing tags that follow it after the form's closing fields", () => {
+  const html = webFormsForm({ content: '<div class="page"><div id="control">partial</div><!--paqvilo-mirage-render-aborted--></div>\n</div><p>dropped</p>' });
+  assert.doesNotMatch(html, /dropped|render-aborted/);
+  assert.match(html, /partial<\/div><div class="aspNetHidden">[\s\S]*?<\/div><\/div>\n<\/div><\/form>$/);
+});

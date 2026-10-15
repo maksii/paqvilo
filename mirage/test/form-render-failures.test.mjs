@@ -45,7 +45,7 @@ test("a multistep step shows the reference record's read-only form first and fai
   const view = html.slice(html.indexOf('<div id="EntityFormView"'));
   assert.match(view, /<span id="EntityFormView_EntityLayoutConfig" data-form-layout=/);
   assert.match(view, /<textarea name="[^"]*\$EntityFormView\$notes"/);
-  assert.match(view, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell text form-control-cell"><div class="table-info required"><label for="name" id="name_label" class="field-label">Name</label><div class="validators">${ALERT("An entry with the same key already exists.")}<div class="actions"><div class="col-md-6 clearfix"><div role="group" class="btn-group entity-action-button"><input type="button" name="[^"]*\\$NextButton"[^>]*id="NextButton"[^>]*></div></div></div> </td></tr></tbody></table></fieldset></div></div></div><script`));
+  assert.match(view, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell text form-control-cell"><div class="table-info required"><label for="name" id="name_label" class="field-label">Name</label><div class="validators">${ALERT("An entry with the same key already exists.")}<div class="actions"><div class="col-md-6 clearfix"><div role="group" class="btn-group entity-action-button"><input type="button" name="[^"]*\\$NextButton"[^>]*id="NextButton"[^>]*></div></div></div> </td></tr></tbody></table></fieldset></div></div></div></div></div></div></div><script`));
   // The view, panel, row and control stay open; the page is cut after the marker.
   assert.ok(html.endsWith(RENDER_ABORT_MARKER));
   assert.equal(view.includes('id="code"'), false);
@@ -63,12 +63,13 @@ async function gadget({ mode = 100000000, metadata = {}, cells, postback = null,
 test("an inline web resource fails the form at its cell with the actions inside the cell", async () => {
   const html = await gadget({ mode: 100000001, params: { id: "g1" }, metadata: { adx_renderwebresourcesinline: true }, cells: [section("main", [[{ name: "name" }], [{ type: "webresource", id: "WebResource_logo", url: "logo.svg", label: "Logo" }], [{ name: "code" }]])] });
   assert.match(html, /id="name" class="text form-control "/);
-  assert.match(html, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell web-resource-cell"><div class="table-info">${ALERT("Unable to find control with id &#39;WebResource_logo&#39; that is associated with the Label &#39;&#39;.")}<div class="actions"><input type="button" name="[^"]*\\$UpdateButton"[^>]*></div> </td></tr></tbody></table></fieldset></div></div></div><script`));
+  assert.match(html, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell web-resource-cell"><div class="table-info">${ALERT("Unable to find control with id &#39;WebResource_logo&#39; that is associated with the Label &#39;&#39;.")}<div class="actions"><input type="button" name="[^"]*\\$UpdateButton"[^>]*></div> </td></tr></tbody></table></fieldset></div></div></div></div></div></div></div><script`));
   assert.ok(html.endsWith(RENDER_ABORT_MARKER));
-  // The WebForms wrapper keeps only the closing tags that directly follow the control, then ends the form.
+  // The WebForms wrapper keeps only the closing tags that directly follow the control and writes
+  // them after the form's closing fields, then ends the form.
   const page = webFormsForm({ content: `<div class="copy">${html}</div>\n</div><p>Not rendered</p>` });
   assert.equal(page.includes("<p>Not rendered</p>"), false);
-  assert.match(page, /<\/div>\n<\/div><div class="aspNetHidden">/);
+  assert.match(page, /<div class="aspNetHidden">[^]*?<\/div><\/div>\n<\/div><\/form>$/);
   assert.equal(html.includes('id="code"'), false);
   assert.equal(html.includes("frm_pref_"), false);
 });
@@ -89,7 +90,7 @@ test("auto-generated steps render one tab per page with the Next submit button i
   // The second tab (a postback): its quick view has no record yet, so the platform fails the form there.
   const second = await gadget({ metadata, cells, postback: { kind: "entityform", formId: FORM, autoStep: 1, values: { name: "Typed on tab one" }, outcome: { type: "none" } } });
   assert.deepEqual([...second.matchAll(/tab-title">([^<]*)</g)].map((m) => m[1]), ["related"]);
-  assert.match(second, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell crmquickform-cell"><div class="table-info">${ALERT("Unable to find control with id &#39;quickview_holder&#39; that is associated with the Label &#39;&#39;.")}<div class="actions"></div> </td></tr></tbody></table></fieldset></div></div></div><script`));
+  assert.match(second, new RegExp(`<td colspan="1" rowspan="1" class="clearfix cell crmquickform-cell"><div class="table-info">${ALERT("Unable to find control with id &#39;quickview_holder&#39; that is associated with the Label &#39;&#39;.")}<div class="actions"></div> </td></tr></tbody></table></fieldset></div></div></div></div></div></div></div><script`));
   assert.equal(second.includes("NextButton"), false);
   assert.deepEqual(decodeNativeViewState(/data-pp-viewstate="([^"]*)"/.exec(second)[1]), { form: FORM, autoStep: 1, values: { name: "Typed on tab one" } });
   // The last tab: Previous inside the view, the Insert button in the actions, the carried values on the record.

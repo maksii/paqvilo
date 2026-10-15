@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { renderComponent } from "../lib/platform.mjs";
 import { gridRecord, buildLayout, actionLinks } from "../lib/native-services.mjs";
+import { nativePageRegions } from "../lib/platform-manifest.mjs";
 
 // Invented "widget" table and list on a Bootstrap 5 site (Site/BootstrapV5Enabled) and, for
 // contrast, a Bootstrap 3 site. Views, fields and records are local fixtures.
@@ -143,4 +144,17 @@ test("section grid dialogs follow their dialog settings: class, size, title, loa
   assert.match(html, /<section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert widget-dialog" data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h1 class="modal-title" title="Create">Create widget<\/h1><button aria-label="Close" class="form-close" data-dismiss="modal" style="position: absolute; top: 3%;" tabindex="0" title="Close dialog" type="button"><span aria-hidden="true">×<\/span><span class="sr-only">Close dialog<\/span><\/button><\/div><div class="modal-body"><div class="form-loading">Loading create widget\.\.\.<\/div><iframe /);
   assert.match(html, /aria-label="Widget" class="modal fade modal-form modal-form-details widget-dialog" [^>]*><div class="modal-sm modal-dialog">/);
   assert.match(html, /aria-label="Delete widget" class="modal fade modal-delete widget-dialog" [^>]*>[^]*?<div class="modal-body">Delete this widget\?<\/div><div class="modal-footer"><button aria-label="OK" class="primary btn btn-primary" tabindex="0" title="OK" type="button">OK<\/button><button aria-label="Close" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Close" type="button">Close<\/button>/);
+});
+
+test("a map list without map credentials renders the empty legacy list control inside the server form", async () => {
+  const base = portal(true);
+  Object.assign(base.lists[0].metadata, { adx_map_enabled: true, adx_map_latitudefieldname: "amount", adx_map_longitudefieldname: "amount" });
+  const { html } = await renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: base, metadata, store, schemas: {}, args: { key: "Widgets" } });
+  assert.equal(html, `<!--pp-server-list--><div id="EntityListControl_${LIST.replace(/-/g, "")}"><div class="entitylist"></div></div>`);
+  // The page wraps it in the WebForms form without event validation, as the platform's list control.
+  const form = nativePageRegions({ content: html, action: "/" }).content;
+  assert.match(form, /^<form method="post" action="\/" id="liquid_form">/);
+  assert.doesNotMatch(form, /__EVENTVALIDATION/);
+  // No validators or form controls: no WebUIValidation script (three AXD scripts, live map list).
+  assert.equal(form.match(/\.axd\?/g).length, 3);
 });

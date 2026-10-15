@@ -303,7 +303,8 @@
       if (state == null || state === "") continue;
       const button = row.querySelector(Number(state) === 1 ? "button.deactivate-link" : "button.activate-link");
       if (!button) continue;
-      button.classList.add("hidden");
+      // String append like jQuery addClass: the classList API would drop the repeated "btn" (live class).
+      if (!button.classList.contains("hidden")) button.className = `${button.className} hidden`;
       button.style.display = "none";
     }
   });

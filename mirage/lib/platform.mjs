@@ -515,15 +515,20 @@ function fieldValidators(field, { linksEnabled }) {
       errormessage: summaryLink(id, field.requiredMessage || `To continue, select the check box labeled "${label}".`, linksEnabled),
       evaluationfunction: "CustomValidatorEvaluateIsValid",
     });
-  else if (field.required)
-    validators.push({
+  // The required validator follows the e-mail format validator and the number format and range
+  // validators (live required-field form); for other boxes it comes first.
+  const requiredLate = ["email", "integer", "decimal", "double", "money"].includes(field.control);
+  const required = field.required && !checkbox
+    ? {
       id: `RequiredFieldValidator${id}`,
       controltovalidate: field.controlToValidate ?? id,
       errormessage: summaryLink(id, field.requiredMessage || `${label} is a required field.`, linksEnabled),
       display: "Dynamic",
       evaluationfunction: "RequiredFieldValidatorEvaluateIsValid",
       initialvalue: "",
-    });
+    }
+    : null;
+  if (required && !requiredLate) validators.push(required);
   if (field.pattern)
     validators.push({
       id: `RegularExpressionValidator${id}`,
@@ -548,6 +553,7 @@ function fieldValidators(field, { linksEnabled }) {
   };
   // The e-mail format validator precedes the maximum length validator.
   if (formatValidator && field.control === "email") validators.push(formatValidator);
+  if (required && field.control === "email") validators.push(required);
   if (field.maxLength && ["text", "email", "textarea"].includes(field.control))
     // Like the hosted control, these CustomValidators run on the server. They
     // deliberately have no clientvalidationfunction: a format error posts back.
@@ -568,19 +574,22 @@ function fieldValidators(field, { linksEnabled }) {
       maximumvalue: String(field.maximum ?? ""),
       type: field.control === "integer" ? "Integer" : "Double",
     });
+  if (required && requiredLate && field.control !== "email") validators.push(required);
   return validators;
 }
 
-function validatorStartupScript(validators, summaryId, summaryHeader) {
+function validatorStartupScript(validators, summaryId, summaryHeader, group = "") {
   const lines = [];
   lines.push(`var Page_ValidationSummaries = (window.Page_ValidationSummaries || []).concat([document.getElementById(${json(summaryId)})]);`);
   lines.push(`var Page_Validators = (window.Page_Validators || []).concat([${validators.map((validator) => `document.getElementById(${json(validator.id)})`).join(", ")}].filter(Boolean));`);
   for (const validator of validators) {
     lines.push(`(function(){var v=document.getElementById(${json(validator.id)});if(!v)return;`);
     for (const [key, value] of Object.entries(validator)) if (key !== "id" && value !== undefined) lines.push(`v.${key}=${json(String(value))};`);
+    // A form validation group scopes its validators and summary to its buttons (live ValidationGroup).
+    if (group) lines.push(`v.validationGroup=${json(String(group))};`);
     lines.push("})();");
   }
-  lines.push(`(function(){var s=document.getElementById(${json(summaryId)});if(s){s.headertext=${json(summaryHeader)};s.displaymode="BulletList";}})();`);
+  lines.push(`(function(){var s=document.getElementById(${json(summaryId)});if(s){s.headertext=${json(summaryHeader)};s.displaymode="BulletList";${group ? `s.validationGroup=${json(String(group))};` : ""}}})();`);
   lines.push('if (typeof(ValidatorOnLoad) == "function") ValidatorOnLoad();');
   return `<script type="text/javascript">//<![CDATA[\n${lines.join("\n")}\n//]]></script>`;
 }
@@ -629,6 +638,12 @@ function integerFormatChoices(field, portal) {
 }
 // Dataverse column types the portal form does not render (an empty cell).
 const UNSUPPORTED_FORM_TYPES = /^bigint$/i;
+// The platform's AttributeType names of those columns (the unsupported cell's message).
+const UNSUPPORTED_TYPE_NAMES = { bigint: "BigInt" };
+// After a failed control the platform closes the form view, panel and control wrappers and one
+// element past the control (live truncated basic and multistep forms: four closing divs more
+// than the section's own wrappers; the page's remaining closing tags follow the form's fields).
+const TRUNCATED_CLOSE = "</div></div></div></div>";
 // ASP.NET omits the value attribute of an input whose value is empty.
 const valueAttr = (value) => (String(value ?? "") === "" ? "" : ` value="${attr(value)}"`);
 function nativeModal({ className, title, body, footer = "", size = "", label, bs = BOOTSTRAP_MARKUP.BootstrapV3, headingLabel = false, dismissText = "Close", rawTitle = false, titleAttr = null }) {
@@ -810,6 +825,13 @@ function gridLayouts(model, { secureBase, websiteId, metadata, actions, selectCo
 }
 
 /** The request's website language (context.__language) and the website default, for [{LCID, Value}] labels. */
+/** A column's description (Dataverse attribute Description) in the request language, else the default or first. */
+function columnDescription(field, language) {
+  if (typeof field.description === "string") return field.description;
+  const labels = field.columnMetadata?.descriptionLabels ?? {};
+  return labels[String(language?.lcid)] ?? labels[String(language?.defaultLcid)] ?? labels["1033"] ?? Object.values(labels)[0] ?? "";
+}
+
 function requestLanguage(context, portal) {
   return {
     lcid: context?.__language?.lcid ?? null,
@@ -820,6 +842,11 @@ function requestLanguage(context, portal) {
 /** Server markup of a native list grid (entity_list built-in template). */
 async function renderListGrid(model, context, options) {
   const websiteId = canonicalId(options.portal.website?.id);
+  // A map view (adx_map_enabled) without map credentials renders the legacy list control empty: no
+  // grid and no data request (live map list captures; the export carries no map key).
+  const listMetadata = model.list?.metadata ?? {};
+  if (truthy(fieldOf(listMetadata, "map_enabled")) && !fieldOf(listMetadata, "map_credentials"))
+    return `<!--pp-server-list--><div id="EntityListControl_${compactId(model.list.id)}"><div class="entitylist"></div></div>`;
   if (model.calendar)
     return renderCalendarList({ list: model.list, calendar: model.calendar, websiteId, viewId: model.views[0].id, variant: bootstrapVariant(options.portal.settings), culture: options.portal.websiteLanguages?.find((candidate) => candidate.isDefault)?.code ?? "en-US" });
   const language = requestLanguage(context, options.portal);
@@ -1453,6 +1480,11 @@ async function renderForm(kind, name, context, options) {
       control,
       label,
       ownerHidden,
+      // With tooltips enabled the column description titles the label and a lookup's name box (live).
+      tooltip: truthy(fieldOf(componentMetadata, "tooltipenabled")) ? columnDescription(field, formLanguage) : "",
+      // The owner column is read-only by the platform rather than by its cell: it keeps the
+      // required markers and has no readonly class (live owner lookup).
+      ownerLocked: field.name === "ownerid" && !field.readOnly && !immutable && !readOnly,
       hidden: field.hidden || ownerHidden,
       // Field-level read-only (the EntityForm cell Metadata.ReadOnly). A read-only form also
       // marks every control (MakeControlsReadonly) without this field-level markup.
@@ -1611,8 +1643,10 @@ async function renderForm(kind, name, context, options) {
           const item = bs.v5 ? ' class="dropdown-item"' : "";
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ""}${disabled ? ' disabled="disabled" aria-disabled="true"' : ""}${formReadonly}>${emptyOption(false).replace("<option", `<option${item}`)}${choices.map((choice) => `<option value="${attr(choice.id)}"${item}${polymorphic ? ` data-entity="${attr(choice.entity)}"` : ''}${choice.id === idValue ? ' selected="selected"' : ""}>${escape(choice.label)}</option>`).join("")}</select><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical || (field.targets?.length === 1 ? field.targets[0] : ""))}>`;
         }
-        if (disabled)
-          return `<div><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${css}${bs.v5 && formLevel ? "" : " readonly"}" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+        if (disabled) {
+          const locked = field.ownerLocked && field.required;
+          return `<div><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ` title="${attr(field.tooltip)}"` : ""} class="text form-control lookup form-control${css}${(bs.v5 && formLevel) || field.ownerLocked ? "" : " readonly"}" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${locked ? "" : attr(field.id) + "_label"}" aria-label="${attr(locked ? field.requiredMessage || `${field.label} is a required field.` : field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${locked ? ' aria-required="true" aria-invalid="true"' : ""}${valueAttr(idValue)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+        }
         const lookupBase = { kind: "lookup", views: [], settings: {}, pageSize: Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10, search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character. " } };
         let layouts = [];
         try {
@@ -1649,13 +1683,12 @@ async function renderForm(kind, name, context, options) {
         const gridChildren = bs.v5
           ? `<div class="view-grid"></div>${gridMessages(bs)}${PAGINATION}${gridErrorModal(bs)}`
           : `<div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}`;
-        // A required lookup holding a value is labelled by its required-field message and its value
-        // field is marked invalid (live: referenced and edited required lookups, the shown owner;
-        // an empty required lookup keeps its label).
-        const referenced = Boolean(field.required && idValue);
+        // A required lookup is labelled by its required-field message and its value field is marked
+        // invalid, empty or not (live: required-field insert form, referenced and edited lookups).
+        const referenced = Boolean(field.required);
         // A referenced lookup posts no entity name (live evidence).
         if (entityReference?.field === field.name) logical = "";
-        return `<div class="input-group"${bs.v5 ? "" : ' role="none"'}><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${referenced ? "" : attr(field.id) + "_label"}" aria-label="${attr(referenced ? field.requiredMessage || `${field.label} is a required field.` : field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}${referenced ? ' aria-invalid="true"' : ""}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : `<div class="input-group-btn">${buttons}</div>`}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal({
+        return `<div class="input-group"${bs.v5 ? "" : ' role="none"'}><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name"${field.tooltip ? ` title="${attr(field.tooltip)}"` : ""} class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${referenced ? "" : attr(field.id) + "_label"}" aria-label="${attr(referenced ? field.requiredMessage || `${field.label} is a required field.` : field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}${referenced ? ' aria-invalid="true"' : ""}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : `<div class="input-group-btn">${buttons}</div>`}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal({
           bs,
           headingLabel: bs.v5,
           className: "modal-lookup",
@@ -1777,11 +1810,12 @@ async function renderForm(kind, name, context, options) {
           const last = surveyGroup(field).at(-1)?.name === field.name;
           return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${group}');" style="width:30px;"${readonlyAttr}>${last ? `<input name="${attr(ids.names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>` : ""}`;
         }
-        const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}"${field.control === "double" ? ` data-numberdecimalseparator="${attr(decimalSeparator)}"` : ""} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
+        const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}"${field.control === "double" ? ` data-numberdecimalseparator="${attr(decimalSeparator)}"` : ""} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ` required=""${field.control === "integer" ? ' aria-invalid="false"' : ""}` : ""}>`;
         if (field.control !== "money") return control;
         // A money box shows the record currency's symbol as an input-group addon; without a
         // currency it is a plain wrapper.
-        const symbol = await currencySymbol(record?.transactioncurrencyid);
+        // Only a money box holding a value shows the symbol (live: an empty amount keeps the plain wrapper).
+        const symbol = displayed !== "" && displayed != null ? await currencySymbol(record?.transactioncurrencyid) : "";
         return symbol ? `<div class="input-group"><span class="${bs.v5 ? "input-group-text" : "input-group-addon"}">${escape(symbol)}</span>${control}</div>` : `<div>${control}</div>`;
       }
       default:
@@ -1809,7 +1843,12 @@ async function renderForm(kind, name, context, options) {
           // A multistep step's text box whose description shows below it carries the description as its
           // role description (live step markup; basic forms render none).
           const roleDescription = kind === "webform" && field.description?.text && field.description.position === 100000001 ? ` aria-roledescription="${attr(plainText(field.description.text))}"` : "";
-          const requiredText = field.required && !(bs.v5 ? fieldLevel : disabled) ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"` : "";
+          // A required URL box (url and ticker formats) is marked by required="" alone and a required
+          // e-mail box by required="" with its title and label; other boxes by aria-required (live
+          // required-field form). Bootstrap 5 keeps them on read-only boxes too (auto number).
+          const requiredOn = field.required && (bs.v5 || !disabled);
+          const requiredTitle = ` title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"`;
+          const requiredText = !requiredOn ? "" : type === "url" ? ' required=""' : type === "email" ? ` required=""${requiredTitle}` : ` aria-required="true"${requiredTitle}`;
           return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${roleDescription}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
         }
     }
@@ -1985,7 +2024,7 @@ async function renderForm(kind, name, context, options) {
       : ` for="${attr(resolved.id)}"`;
     const description = resolved.description?.text ? resolved.description : null;
     const descriptionHtml = (position) => (description && description.position === position ? `<div class="description${position === 100000000 ? " above" : position === 100000001 ? " below" : ""}${resolved.cssClass ? " " + attr(resolved.cssClass) : ""}">${description.text}</div>` : "");
-    const labelHtml = resolved.showLabel === false ? "" : `<label${labelFor} id="${attr(resolved.id)}_label" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(resolved.label)}</label>`;
+    const labelHtml = resolved.showLabel === false ? "" : `<label${labelFor} id="${attr(resolved.id)}_label"${resolved.tooltip ? ` title="${attr(resolved.tooltip)}"` : ""} class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(resolved.label)}</label>`;
     // CellTemplate: a field-level read-only cell has no validator container; a read-only form
     // keeps its validators (marked read-only). The app bundle then makes the containers of
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
@@ -2117,6 +2156,13 @@ async function renderForm(kind, name, context, options) {
                 if (placed.has(cell.name)) continue;
                 placed.add(cell.name);
               }
+              if (field && !field.ownerHidden && !cell.spacer && UNSUPPORTED_FORM_TYPES.test(String(field.dataverseType ?? "")) && truthy(fieldOf(componentMetadata, "showunsupportedfields"))) {
+                // With ShowUnsupportedFields the cell names the column, its label, type and format (live).
+                const type = String(field.dataverseType ?? "");
+                const message = `Unsupported: DataFieldName="${field.name}" Label="${field.label}", AttributeType="${UNSUPPORTED_TYPE_NAMES[type.toLowerCase()] ?? type}", Format="${field.format ?? ""}"`;
+                tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell unsupported-cell"><div class="info"><label for="${attr(field.id)}" class="field-label">${escape(field.label)}</label><div class="validators"></div></div><div class="control" data-logical-name="${attr(field.name)}"><span id="${attr(field.id)}">${escape(message)}</span></div></td>`;
+                continue;
+              }
               if (cell.spacer || field?.ownerHidden || (field && UNSUPPORTED_FORM_TYPES.test(String(field.dataverseType ?? "")))) {
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell"></td>`;
                 continue;
@@ -2128,7 +2174,7 @@ async function renderForm(kind, name, context, options) {
                 const full = failure.partial === "validators" ? await cellControl(cell) : "";
                 const cut = full.indexOf('<div class="validators">');
                 const partial = cut >= 0 ? full.slice(0, cut + '<div class="validators">'.length) : `<div class="${bs.info}">`;
-                tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? " " + suffix : ""}">${partial}<div class="alert alert-block alert-danger"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${escape(failure.message)}</p></div> </div>${TRUNCATED_ACTIONS} </td></tr></tbody></table></fieldset></div>${progress?.position === "bottom" ? progress.html + "</div>" : ""}</div></div>`;
+                tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? " " + suffix : ""}">${partial}<div class="alert alert-block alert-danger"><p class="text-danger"><span class="fa fa-exclamation-triangle" aria-hidden="true"></span> ${escape(failure.message)}</p></div> </div>${TRUNCATED_ACTIONS} </td></tr></tbody></table></fieldset></div>${progress?.position === "bottom" ? progress.html + "</div>" : ""}</div></div>${TRUNCATED_CLOSE}`;
                 truncated = true;
                 break;
               }
@@ -2291,7 +2337,9 @@ async function renderForm(kind, name, context, options) {
       renderedActions.push({ button, action: "submit" });
       defaultButton = button;
       const label = formLabel(fieldOf(componentMetadata, "submitbuttontext"), "") || formLabel(submitAction?.ButtonLabel, "") || "Submit";
-      const css = fieldOf(componentMetadata, "submitbuttoncssclass") || (submitAction ? (submitAction.ButtonCssClass ? `${submitAction.ButtonCssClass} submit-btn` : "btn btn-primary button submit-btn") : "submit-btn btn btn-primary form-action-container-left");
+      // Without form actions a configured class sits between the platform's own classes (live).
+      const custom = fieldOf(componentMetadata, "submitbuttoncssclass");
+      const css = submitAction ? custom || (submitAction.ButtonCssClass ? `${submitAction.ButtonCssClass} submit-btn` : "btn btn-primary button submit-btn") : `submit-btn ${custom || "btn btn-primary"} form-action-container-left`;
       submitButton = `<input type="button" name="${attr(ids.buttons)}${button}" value="${attr(label)}" onclick="${attr(onclick(ids.buttons + button))}" id="${button}"${submitAction ? ` title="${attr(formLabel(submitAction.ButtonTooltip, label))}"` : ""} class="${attr(css)}">`;
     }
     const column = bs.v5 ? "col-md-6" : "col-sm-6";
@@ -2322,7 +2370,8 @@ async function renderForm(kind, name, context, options) {
       .map((field) => ({ name: field.name, id: field.id, control: controlForSubmit(field), readOnly: false, bindings: field.bindings })),
   };
   const summaryId = `ValidationSummary${ids.view}`;
-  const summaryHeader = "<h2 class='validation-header'><span role='presentation' class='fa fa-info-circle'></span> The form could not be submitted for the following reasons:</h2>";
+  // The form's summary header text (adx_validationsummaryheadertext) replaces the platform default (live).
+  const summaryHeader = `<h2 class='validation-header'><span role='presentation' class='fa fa-info-circle'></span> ${escape(formLabel(fieldOf(componentMetadata, "validationsummaryheadertext"), "") || "The form could not be submitted for the following reasons:")}</h2>`;
   const layoutConfig = {
     EntityName: schema.entity,
     // The Bootstrap 5 platform renders the empty GUID as the layout id.
@@ -2369,7 +2418,9 @@ async function renderForm(kind, name, context, options) {
   // live "read-only" class and an empty layout configuration, and is returned on its own.
   const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? options.referenceForm.className ?? " read-only" : ""}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? "" : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${truncated ? "" : attachHtml + stepButtons + honeypot + "</div>"}`;
   if (options.referenceForm) return { html: viewHtml, controls: placed };
-  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}>${referenceHtml}${viewHtml}${truncated ? "" : actionsHtml + "</div>"}`;
+  // ActionButtonPlacement 0 puts a basic form's action row above the form view (live actions-above form).
+  const actionsAbove = kind === "entityform" && !truncated && actionsHtml.startsWith('<div class="row form-custom-actions">') && Number(settingsJson(portalField(componentMetadata ?? {}, "settings") ?? "", "form settings")?.ActionButtonPlacement) === 0;
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}>${actionsAbove ? actionsHtml : ""}${referenceHtml}${viewHtml}${truncated ? "" : (actionsAbove ? "" : actionsHtml) + "</div>"}`;
   if (truncated) formHtml = formHtml.replace(TRUNCATED_ACTIONS, () => actionsHtml);
   if (postback?.outcome?.type === 'message') {
     const message = bs.v5
@@ -2406,7 +2457,7 @@ async function renderForm(kind, name, context, options) {
   const confirmOnExit = kind === "webform" && truthy(fieldOf(definition?.metadata ?? {}, "savechangeswarningonclose"))
     ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, "savechangeswarningmessage"), ""))}">`
     : "";
-  return `${runtime}<!--pp-native-form--><div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${confirmOnExit}${formHtml}${truncated ? "" : progressBottom}${kind === "webform" && !truncated ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : "</div>"}`;
+  return `${runtime}<!--pp-native-form--><div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${confirmOnExit}${formHtml}${truncated ? "" : progressBottom}${kind === "webform" && !truncated ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader, group)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : "</div>"}`;
 }
 
 function controlForSubmit(field) {

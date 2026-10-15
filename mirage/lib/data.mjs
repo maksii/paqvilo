@@ -2631,7 +2631,7 @@ export class DataStore {
     // The portal writes as the site's application user: rows it creates carry that user as createdby
     // (observed.portalApplicationUser; live notes and inserted records). Its id is not exported.
     const appUser = this.observed?.portalApplicationUser;
-    if (appUser && !own(row, "createdby")) row.createdby = { id: null, logical_name: "systemuser", name: appUser };
+    if (appUser && !own(row, "createdby")) row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: "systemuser", name: appUser };
     row[m.idColumn] ??= randomUUID();
     if (rows.some((r) => equal(r[m.idColumn], row[m.idColumn])))
       throw new DataError(

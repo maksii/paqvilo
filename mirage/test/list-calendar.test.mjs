@@ -29,7 +29,7 @@ test("calendar list settings, markup shell and resources follow the exported lis
   assert.match(language, /window\.calendar_languages\["en-US"\] = \{/);
   assert.match(language, /m9: "October",/);
   assert.match(language, /d0: "Sunday",/);
-  assert.match(language, /first_day: 2\n/);
+  assert.match(language, /first_day: 2\r\n/);
   assert.deepEqual(parseCalendarPath(`/EntityList/Calendar/${SITE}/${LIST}/${VIEW}/icalendar`), { kind: "icalendar", website: SITE, list: LIST, view: VIEW });
   assert.equal(parseCalendarPath("/EntityList/Calendar/x/language.js"), null);
 });
@@ -70,7 +70,7 @@ test("calendar event feed returns rows in the requested period with summary and 
   assert.equal(march.status, 200);
   const data = await march.json();
   assert.equal(data.success, 1);
-  assert.deepEqual(data.result.map((event) => [event.title, event.start, event.description]), [["Alpha", String(Date.parse("2026-03-04T10:30:00Z")), "London"]]);
+  assert.deepEqual(data.result.map((event) => [event.title, event.start, event.description]), [["Alpha", Date.parse("2026-03-04T10:30:00Z"), "London"]]);
   const all = await (await fetch(`${base}?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers })).json();
   assert.deepEqual(all.result.map((event) => event.title), ["Alpha", "Beta"]);
   const ics = await (await fetch(`${base}/icalendar?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers })).text();
@@ -89,4 +89,15 @@ test("calendar event feed returns rows in the requested period with summary and 
   const client = await fetch(`${app.url}/Areas/EntityList/js/entitylist-calendar.js`, { headers });
   assert.equal(client.status, 200);
   assert.match(await client.text(), /data-view="calendar"/);
+});
+
+test("a fixed-zone calendar feed sends user-local instants as the zone's wall clock with the behaviour flags", async () => {
+  const { calendarEvents } = await import("../lib/list-views.mjs");
+  const calendar = { start: "s", end: "e", summary: "n", organizer: "o", timeZoneMode: "specific", timeZoneCode: 85, startBehavior: "UserLocal", endBehavior: "TimeZoneIndependent" };
+  const [summer, winter] = calendarEvents([{ id: "a", s: "2026-05-05T05:05:00Z", n: "Summer" }, { id: "b", s: "2026-01-15T09:00:00Z", e: "2026-01-15T10:00:00Z", n: "Winter", o: "x@example.invalid" }], { calendar, idColumn: "id" }).sort((a, b) => a.title < b.title ? -1 : 1);
+  assert.deepEqual(summer, { id: "a", class: "event-info", title: "Summer", start: Date.parse("2026-05-05T06:05:00Z"), end: Date.parse("2026-05-05T06:05:00Z"), description: null, location: null, isconversionrequired: "false", startdatebehavior: "UserLocal", enddatebehavior: "TimeZoneIndependent" });
+  // A time-zone-independent end is not shifted; the organizer is {name, email}.
+  assert.equal(winter.end, Date.parse("2026-01-15T10:00:00Z"));
+  assert.deepEqual(winter.organizer, { name: "x@example.invalid", email: null });
+  assert.equal("url" in winter || "allDay" in winter, false);
 });

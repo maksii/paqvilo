@@ -223,7 +223,8 @@
     if (event.target.closest(".form-custom-actions button.delete-link, .form-custom-actions button.activate-link, .form-custom-actions button.deactivate-link, .form-custom-actions button.create-related-record-link")) formActionClick(event);
   });
   /** POST JSON with the native headers; json=true parses the reply. */
-  function post(url, body, { json = true, form = false } = {}) {
+  // jsonType: the JSON request's content type (the Bootstrap 5 notes control posts a bare application/json).
+  function post(url, body, { json = true, form = false, jsonType = "application/json; charset=utf-8" } = {}) {
     // form: the body is a URLSearchParams (urlencoded) or FormData (multipart) payload.
     const multipart = form && typeof FormData !== "undefined" && body instanceof FormData;
     return token().then(
@@ -238,7 +239,7 @@
               type: "POST",
               url,
               data: form ? (multipart ? body : body.toString()) : JSON.stringify(body),
-              contentType: multipart ? false : form ? "application/x-www-form-urlencoded; charset=UTF-8" : "application/json; charset=utf-8",
+              contentType: multipart ? false : form ? "application/x-www-form-urlencoded; charset=UTF-8" : jsonType,
               processData: !form,
               dataType: json ? "json" : undefined,
               headers,
@@ -250,7 +251,7 @@
           }
           const xhr = new XMLHttpRequest();
           xhr.open("POST", url);
-          if (!form) xhr.setRequestHeader("Content-Type", "application/json; charset=utf-8");
+          if (!form) xhr.setRequestHeader("Content-Type", jsonType);
           xhr.setRequestHeader("X-Requested-With", "XMLHttpRequest");
           if (!form) xhr.setRequestHeader("__RequestVerificationToken", value);
           xhr.onload = () => {
@@ -318,6 +319,11 @@
       document.body.append(announcer);
     }
     announcer.textContent = "Dialog opened";
+    // It leaves the page when the dialog closes (live DOM after the note dialog).
+    const drop = () => document.getElementById("modal-status-announcer")?.remove();
+    const $ = jq();
+    if ($) $(modal).one("hidden.bs.modal", drop);
+    else modal.addEventListener("hidden.bs.modal", drop, { once: true });
   }
   function hideModal(modal) {
     const $ = jq();
@@ -558,10 +564,13 @@
             const group = document.createElement("div");
             group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
             if (this.bs5) group.setAttribute("style", "display: table; width: auto;");
-            const link = document.createElement("a");
-            link.href = "#";
+            // Bootstrap 5 grids render a button with a left margin (live DOM), Bootstrap 3 a link.
+            const link = document.createElement(this.bs5 ? "button" : "a");
+            if (this.bs5) link.type = "button";
+            else link.href = "#";
             link.className = `entitylist-download btn btn-info ${this.bs5 ? "float-end" : "pull-right"} action`;
             link.title = action.Tooltip || plain(action.Label);
+            if (this.bs5) link.style.marginLeft = "8px";
             link.innerHTML = action.Label;
             onClick(link, (event) => {
               event.preventDefault();
@@ -687,6 +696,11 @@
       table.setAttribute("aria-relevant", "additions");
       table.className = "table";
       for (const token of `${this.gridClass}${this.bs5 ? "" : " table-fluid"}${this.selectMode !== "None" ? " table-hover" : ""}`.split(/\s+/)) if (token) table.classList.add(token);
+      // Bootstrap 5 grids with pixel column widths fix the table to the view's total width (live DOM).
+      if (this.bs5 && this.widthStyle === "Pixels") {
+        const total = layout.ColumnsTotalWidth ?? (layout.Columns ?? []).reduce((sum, column) => sum + (Number(column.Width) || 0), 0);
+        table.setAttribute("style", `width:${total}px !important; max-width:${total}px !important;`);
+      }
       const head = document.createElement("thead");
       const row = document.createElement("tr");
       const sortParts = String(this.state.sort ?? layout.SortExpression ?? "").split(",").map((part) => part.trim().split(/\s+/));
@@ -1531,7 +1545,8 @@
         if (node) node.style.display = name === selector ? "block" : "none";
       }
       if (bs5) {
-        if (list) list.style.display = selector ? "none" : "block";
+        // A shown list keeps an empty style attribute (live DOM: style="").
+        if (list) list.style.display = selector ? "none" : "";
         const more = container.querySelector(".notes-loading-more");
         if (more) more.style.display = "none";
       }
@@ -1539,9 +1554,12 @@
     const load = (page = 1) => {
       state.page = page;
       show(".notes-loading");
-      return post(container.getAttribute("data-url-get"), { regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id }, orders: JSON.parse(container.getAttribute("data-orders") || "[]"), page, pageSize: Number(container.getAttribute("data-pagesize")) || 10 })
+      return post(container.getAttribute("data-url-get"), { regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id }, orders: JSON.parse(container.getAttribute("data-orders") || "[]"), page, pageSize: Number(container.getAttribute("data-pagesize")) || 10 }, bs5 ? { jsonType: "application/json" } : {})
         .then((data) => {
           show(data.Records?.length ? null : ".notes-empty");
+          // The Bootstrap 5 control hides its pager for a single page (live DOM).
+          const pager = bs5 && container.querySelector(".notes-pagination");
+          if (pager && !((data.PageCount ?? 0) > 1)) pager.style.display = "none";
           const pattern = document.body?.getAttribute("data-datetimeformat");
           const bs5Card = (note) => {
             const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
@@ -1594,6 +1612,20 @@
         post(url, { ...extra, text: modal.querySelector('textarea[name="text"]')?.value ?? "", isPrivate: modal.querySelector('input[name="isPrivate"]')?.checked ?? false, file }, { json: true })))
           .then(() => {
             hideModal(modal);
+            // The Bootstrap 5 add dialog is reset: an empty note and a fresh file input without
+            // the label and tab stop the dialog markup gave the first one (live DOM).
+            if (bs5 && modal.matches(".modal-addnote")) {
+              const text = modal.querySelector('textarea[name="text"]');
+              if (text) text.value = "";
+              const input = modal.querySelector('input[type="file"]');
+              if (input) {
+                const fresh = document.createElement("input");
+                fresh.type = "file";
+                fresh.name = input.name;
+                if (input.hasAttribute("accept")) fresh.setAttribute("accept", input.getAttribute("accept"));
+                input.replaceWith(fresh);
+              }
+            }
             load(state.page);
           })
           .catch((error) => {

@@ -106,7 +106,7 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
   for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder']) if (value[field] != null) {
@@ -176,6 +176,19 @@ export function observedConfig(value, label = "observed") {
       if (Object.hasOwn(observed.codeComponents, id)) throw new Error(`${label}.codeComponents has a duplicate component GUID`);
       observed.codeComponents[id] = schema;
     }
+  }
+  // portalApplicationUser: the display name of the site's application user, which the platform
+  // records as the creator of the notes and records the portal creates (no export holds it).
+  if (value.portalApplicationUser != null) {
+    const name = String(value.portalApplicationUser).trim();
+    if (!name || name.length > 200) throw new Error(`${label}.portalApplicationUser must be the application user's display name`);
+    observed.portalApplicationUser = name;
+  }
+  // portalApplicationUserId: that application user's systemuser id (the createdby id live reports).
+  if (value.portalApplicationUserId != null) {
+    const id = String(value.portalApplicationUserId).trim().replace(/[{}]/g, "").toLowerCase();
+    if (!/^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/.test(id)) throw new Error(`${label}.portalApplicationUserId must be the application user's systemuser GUID`);
+    observed.portalApplicationUserId = id;
   }
   if (value.loginPath != null) {
     const loginPath = String(value.loginPath).trim();

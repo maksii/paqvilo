@@ -350,3 +350,10 @@ test("portals record observed site behaviour with its evidence; observations are
   await fs.writeFile(file, JSON.stringify({ version: 2, portals: [{ id: "catalog", path: "portals/catalog", observed: { loginPath: "SignIn", evidence: "x" } }] }));
   await assert.rejects(loadProjectConfig(file), /portals\[0\]\.observed\.loginPath must be a site-relative path/);
 });
+
+test("observed portalApplicationUser keeps the application user's display name and rejects an empty one", () => {
+  assert.equal(observedConfig({ portalApplicationUser: " # Portal app ", evidence: "invented notes response" }).portalApplicationUser, "# Portal app");
+  assert.throws(() => observedConfig({ portalApplicationUser: " ", evidence: "invented" }), /portalApplicationUser/);
+  assert.equal(observedConfig({ portalApplicationUserId: "{00000000-0000-4000-8000-0000000000AA}", evidence: "invented" }).portalApplicationUserId, "00000000-0000-4000-8000-0000000000aa");
+  assert.throws(() => observedConfig({ portalApplicationUserId: "app", evidence: "invented" }), /portalApplicationUserId/);
+});

@@ -94,7 +94,9 @@ const LIST_MARKER = /\bclass="[^"]*\bentity-grid\b[^"]*\bentitylist\b|\bclass="[
 const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
 // A calendar list (lib/list-views.mjs renderCalendarList): a server control that runs inside the
 // WebForms form, without form controls or event validation.
-const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="/;
+// A map list without map credentials (lib/platform.mjs renderListGrid) is the same kind of server
+// list control: an empty EntityListControl inside the WebForms form (live map list captures).
+const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="|<!--pp-server-list-->/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
 // The response markup of a date control is the bound box (data-ui="datetimepicker"); the picker group is built in the browser.
 // A form denied by table permissions renders no controls but keeps its date script when its
@@ -162,17 +164,24 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   // A form component that keeps state across postbacks (auto-generated steps) supplies it as
   // data-pp-viewstate on its wrapper; the page's __VIEWSTATE carries it, as ASP.NET would.
   // A failed native form control aborts the server form's content (lib/platform.mjs
-  // RENDER_ABORT_MARKER): only the closing tags directly after the control survive, then the
-  // form ends; the layout outside the form (the footer) is unaffected.
+  // RENDER_ABORT_MARKER): only the closing tags directly after the control survive, written after
+  // the form's closing fields (live truncated pages), then the form ends; the layout outside the
+  // form (the footer) is unaffected.
   const aborted = String(content ?? "").indexOf(RENDER_ABORT_MARKER);
-  if (aborted >= 0) content = content.slice(0, aborted) + (/^(?:\s*<\/[a-z][a-z0-9]*>)*/i.exec(content.slice(aborted + RENDER_ABORT_MARKER.length))?.[0] ?? "");
+  let trailing = "";
+  if (aborted >= 0) {
+    trailing = /^(?:\s*<\/[a-z][a-z0-9]*>)*/i.exec(content.slice(aborted + RENDER_ABORT_MARKER.length))?.[0] ?? "";
+    content = content.slice(0, aborted);
+  }
   const componentState = /\sdata-pp-viewstate="([^"]*)"/.exec(String(content ?? ""));
   if (componentState) content = String(content).replace(componentState[0], "");
   const viewState = componentState ? componentState[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&") : `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const denied = DENIED_FORM_MARKER.test(String(content ?? ""));
   if (denied) eventValidation = false;
-  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => !denied || entry.id !== "paqvilo-webuivalidation").map((entry) => script(entry.path)).join("\n");
+  // WebUIValidation.js is registered by validators and form controls only: server forms holding a
+  // list control or no control at all load three AXD scripts (live calendar, map, rewrite pages).
+  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => (!denied && (validators || formControls)) || entry.id !== "paqvilo-webuivalidation").map((entry) => script(entry.path)).join("\n");
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
   // A service document (the quick view) names its own form scripts (formScriptPaths).
@@ -186,7 +195,7 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
     `${resources}\n${formScripts}\n${extraScripts ? extraScripts + "\n" : ""}${onSubmit}${content}` +
     // ASP.NET renders the generator and event validation fields at the end of the server form.
-    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${eventValidation ? hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`) + "\n" : ""}</div></form>`
+    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${eventValidation ? hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`) + "\n" : ""}</div>${trailing}</form>`
   );
 }
 

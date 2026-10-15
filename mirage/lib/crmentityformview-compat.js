@@ -272,7 +272,9 @@
         // the current frame query supply them.
         const previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
         const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
-        const primary = frame.dataset.entityprimarykeyname || previous.get('entityprimarykeyname') || '';
+        // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
+        // none and the platform client then sends it empty (live DOM).
+        const primary = frame.dataset.entityprimarykeyname || '';
         // The platform client rebuilds the frame URL without the response's isprofilepage/lang
         // parameters and with the primary key name parameter always present (live requests).
         // The platform sets a path-relative src with the values concatenated as they are (live DOM:
@@ -286,10 +288,11 @@
     const quickJquery = jq();
     if (quickJquery) quickJquery(document).on('change.mirageQuickView', 'input', function () { refreshQuickViews(this); });
     else document.addEventListener('change', event => { if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target); });
-    // After the page's ready handlers (the anti-forgery token request comes first on live) the
-    // platform client replaces each bound frame's response URL; the first navigation is abandoned.
-    const refreshBoundQuickViews = () => setTimeout(() => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } }, 0);
-    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refreshBoundQuickViews, { once: true }); else refreshBoundQuickViews();
+    // Once the anti-forgery token is there the platform client replaces each bound frame's
+    // response URL; the first navigation is abandoned (see quickToken below).
+    const refreshBound = () => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } };
+    if (quickToken.waiting) quickToken.then = refreshBound;
+    else setTimeout(refreshBound, 0);
     // On ready the file controls' hidden size field and the image controls' hidden value and size
     // fields (an image without a link) carry an explicit empty value (platform crmentityformview.js
     // behaviour, live DOM); the file name field takes the shown file name.
@@ -397,6 +400,19 @@
         button.click();
       });
   };
+  // Bound quick view frames wait for the shell's anti-forgery token, asked for before the page's
+  // ready handlers (live order: the token request, the replaced frame, then the other
+  // token-bound requests); without the shell the replacement follows ready.
+  const quickToken = { waiting: false, then: null };
+  const askQuickToken = () => {
+    if (!document.querySelector('iframe.quickform[data-lookup-element]') || typeof w.shell?.getTokenDeferred !== 'function') return;
+    const deferred = w.shell.getTokenDeferred();
+    if (typeof deferred?.always !== 'function') return;
+    quickToken.waiting = true;
+    deferred.always(() => { quickToken.waiting = false; const then = quickToken.then; quickToken.then = null; then?.(); });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", askQuickToken, { once: true });
+  else askQuickToken();
   const $ = jq();
   if ($) $(ready);
   else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });
