@@ -8,7 +8,7 @@ import { csvCell } from './csv.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
 import { notesFilter } from "./form-service.mjs";
-import { platformResourceHeaders, siteHeaders, PAGE_HEADERS } from "./response-headers.mjs";
+import { platformResourceHeaders, siteHeaders, notModified, PAGE_HEADERS } from "./response-headers.mjs";
 import { contextualViewFetchXml } from "./platform.mjs";
 import { nativeActionStateValues } from "./native-form-actions.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
@@ -643,9 +643,9 @@ async function handleCalendarService(req, res, url, context, websiteId) {
   const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? "en-US";
   if (route.kind === "language") {
     const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : "en-US"));
-    // Live: a day of private caching from the render time.
+    // Live: a day of private caching from the render time; Vary: * on every answer (live).
     const now = Date.now();
-    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", expires: new Date(now + 86400000).toUTCString(), "last-modified": new Date(now).toUTCString(), "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] ?? "SAMEORIGIN", "content-length": body.length });
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", expires: new Date(now + 86400000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "*", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] ?? "SAMEORIGIN", "content-length": body.length });
     res.end(req.method === "HEAD" ? undefined : body);
     return true;
   }
@@ -1345,7 +1345,7 @@ export function gridRecord(row, model, layout, context) {
   push(model.idColumn, id);
   const state = scalar(row.statecode);
   const status = scalar(row.statuscode);
-  const unassessed = context.config?.mode !== "live" && !hasItemActions(model);
+  const unassessed = context.config?.mode !== "live" && (model.kind === "associate" || !hasItemActions(model));
   return {
     Id: id,
     EntityName: model.entity,
@@ -1360,7 +1360,9 @@ export function gridRecord(row, model, layout, context) {
 // attributes keep their values): grids without item actions (lookup dialogs, lists and subgrids
 // configured without ItemActions; evidence: list/item-list-filters, item-list-odata, item-list-mine,
 // basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid, the item-read and
-// item-edit-actions children subgrids). A subgrid with item actions is assessed whatever the grant's scope (live
+// item-edit-actions children subgrids). The associate dialog is a selection grid like a lookup dialog: its records are
+// unassessed although it shares the subgrid's ItemActions (live basic-form/parent-edit/associate-dialog #21 vs the
+// subgrid's own #20/#22). A subgrid with item actions is assessed whatever the grant's scope (live
 // basic-form/item-edit/populated and item-edit/permission/parent-scope: children reached through the parent chain
 // report CanRead/CanWrite/CanDelete true).
 const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
@@ -1617,14 +1619,21 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
   const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/js|areas\/entitylist)\//.test(key) ? "static" : null;
+  // A local equivalent file dates its response by its own modification time, so a browser reuses
+  // it within its heuristic freshness as it does the platform's (live: no second request from
+  // the quick view document) and a conditional request is answered 304.
+  const modified = equivalent.file && !equivalent.bundle ? (await fs.stat(fileURLToPath(equivalent.file)).catch(() => null))?.mtimeMs : null;
   const headers = kind
-    ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"] })
+    ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"], modified })
     : { "content-type": equivalent.type, "cache-control": "no-cache" };
+  // Script resources registered by a control carry their own type (live: the RadCaptcha resources are text/javascript).
+  if (kind === "axd" && localAspNetScript(url)?.contentType) headers["content-type"] = localAspNetScript(url).contentType;
   // Calendar assets (live): scripts and stylesheets cache for a week, templates are not cached.
   if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers["cache-control"] = "public,max-age=604800";
   if (/^\/areas\/entitylist\/tmpls\//.test(key)) Object.assign(headers, { "cache-control": "no-cache, no-store, must-revalidate", expires: "-1", pragma: "no-cache" });
-  res.writeHead(200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
-  res.end(req.method === "HEAD" ? undefined : body);
+  const unchanged = Boolean(kind && kind !== "resource-manager" && notModified(req.headers, headers));
+  res.writeHead(unchanged ? 304 : 200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
+  res.end(req.method === "HEAD" || unchanged ? undefined : body);
   return true;
 }
 
@@ -1716,8 +1725,10 @@ export function noteStamp(date) {
   return date.toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "") + " UTC";
 }
 
+// An empty answer is never compressed, so it carries no Vary: Accept-Encoding (live: the native add-note 201).
 function sendEmpty(res, status) {
-  res.writeHead(status, { ...PAGE_HEADERS, "x-frame-options": "SAMEORIGIN", "content-length": 0 });
+  const { vary, ...headers } = PAGE_HEADERS;
+  res.writeHead(status, { ...headers, "x-frame-options": "SAMEORIGIN", "content-length": 0 });
   res.end();
 }
 

@@ -312,10 +312,17 @@ async function feedEntries(feed, context) {
   });
 }
 
-/** Handle /_odata requests; returns true when handled. */
+/**
+ * Handle /_odata requests; returns true when handled. Power Pages removed list OData feeds by
+ * June 2026 (Learn, important changes and deprecations; diagnostic LIST_ODATA_FEED_REMOVED), so
+ * /_odata is left to the site's page-not-found handling as on the platform (live
+ * list/item-list-odata/feed: 404 "Page Not Found" for a feed-enabled list). A site whose platform
+ * still serves the feeds declares observed.listODataFeeds: "served" to get the local feed.
+ */
 export async function handleODataFeed(req, res, url, context) {
   const match = /^\/_odata(?:\/(.*))?$/i.exec(url.pathname);
   if (!match) return false;
+  if ((context.config?.observed ?? context.portal?.observed)?.listODataFeeds !== "served") return false;
   if (!["GET", "HEAD"].includes(req.method)) return false;
   const feeds = odataFeeds(context.portal);
   const base = `${context.origin}/_odata`;

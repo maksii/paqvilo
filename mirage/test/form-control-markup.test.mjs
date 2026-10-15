@@ -167,3 +167,42 @@ test("field-level read-only option set in an edit form keeps every option, aria-
     delete original.readOnly;
   }
 });
+
+test("the multi-select host stamps its launch point only on a first render with a selection; postbacks type the delete buttons", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const vm = await import("node:vm");
+  const source = await readFile(new URL("../lib/multiselect-compat.js", import.meta.url), "utf8");
+  const window = { document: { readyState: "complete", querySelectorAll: () => [] } };
+  window.window = window;
+  vm.runInNewContext(source, { window, document: window.document });
+  const { render } = window.__ppMultiSelectHost;
+  const context = { ControlId: "colours", ControlName: "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl", ControlProperties: { value_DisplayName: "Colours", value_Options: [{ Value: 1, Label: { UserLocalizedLabel: { Label: "Red" } } }, { Value: 2, Label: { UserLocalizedLabel: { Label: "Blue" } } }] } };
+  const first = render(context, ["1"]);
+  assert.match(first, /style="width: 100%;" data-lp-id="UpdMSPicklistControl\|UpdMSPicklistControl\|undefined">/);
+  assert.match(first, /aria-label="Remove Red">/);
+  assert.doesNotMatch(render(context, []), /data-lp-id/);
+  // The postback flag comes from the configuration script of the form wrapper holding the control,
+  // not from a nested element whose id shares the wrapper prefix.
+  const control = {};
+  const script = (holds, postback) => ({ parentElement: { contains: (element) => holds && element === control }, textContent: JSON.stringify(postback ? { postback: true } : {}) });
+  window.document.querySelectorAll = () => [script(false, true), script(true, true)];
+  assert.equal(window.__ppMultiSelectHost.postbackPage(control), true);
+  window.document.querySelectorAll = () => [script(true, false)];
+  assert.equal(window.__ppMultiSelectHost.postbackPage(control), false);
+  const postback = render(context, ["1"], true);
+  assert.doesNotMatch(postback, /data-lp-id/);
+  assert.match(postback, /aria-label="Remove Red" type="button">/);
+});
+
+test("a disabled multi-select without a selection is marked both disabled and empty", async () => {
+  const { readFile } = await import("node:fs/promises");
+  const vm = await import("node:vm");
+  const source = await readFile(new URL("../lib/multiselect-compat.js", import.meta.url), "utf8");
+  const window = { document: { readyState: "complete", querySelectorAll: () => [] } };
+  window.window = window;
+  vm.runInNewContext(source, { window, document: window.document });
+  const context = { ControlId: "colours", ControlName: "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl", IsDisabled: true, ControlProperties: { value_DisplayName: "Colour column", value_Options: [{ Value: 1, Label: { UserLocalizedLabel: { Label: "Red" } } }] } };
+  const html = window.__ppMultiSelectHost.render(context, []);
+  assert.match(html, /class="msos-container msos-disabled msos-none-selected"/);
+  assert.match(html, /aria-label="Selected values for Colour column"/);
+});

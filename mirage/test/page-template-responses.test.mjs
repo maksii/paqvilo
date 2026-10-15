@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { createPortalRenderer } from '../lib/liquid.mjs';
 import { pageTemplateKind } from '../lib/importer.mjs';
 import { resolvePageResources } from '../lib/page-resources.mjs';
-import { webFileHeaders } from '../lib/response-headers.mjs';
+import { webFileHeaders, platformResourceHeaders, notModified } from '../lib/response-headers.mjs';
 
 function portal(type, source='WEB_TEMPLATE_SELECTED', mime='text/html') {
   return { website:{}, settings:{}, snippets:{}, records:[], webFiles:[], weblinks:{}, sitemarkers:{},
@@ -63,4 +63,16 @@ test('source MIME observation preserves text and binary media types and existing
     assert.equal(source['content-disposition'],webFileHeaders(options)['content-disposition']);
   }
   assert.equal(webFileHeaders({body:Buffer.alloc(0),contentType:'image/png',fileName:'invented.png'})['content-type'],'image/png; charset=utf-8');
+});
+
+test('platform static files carry the local equivalent file time as Last-Modified and answer a matching conditional request', () => {
+  const modified = Date.UTC(2026, 9, 6, 17, 43, 10);
+  const headers = platformResourceHeaders('static', { pathname: '/xrm-adx/js/crmentityformview.js', body: 'x', contentType: 'application/javascript; charset=utf-8', modified });
+  assert.equal(headers['last-modified'], 'Tue, 06 Oct 2026 17:43:10 GMT');
+  assert.equal(platformResourceHeaders('axd', { modified })['last-modified'], 'Tue, 06 Oct 2026 17:43:10 GMT');
+  assert.equal(notModified({ 'if-none-match': headers.etag }, headers), true);
+  assert.equal(notModified({ 'if-modified-since': 'Tue, 06 Oct 2026 17:43:10 GMT' }, headers), true);
+  assert.equal(notModified({ 'if-modified-since': 'Mon, 05 Oct 2026 00:00:00 GMT' }, headers), false);
+  // Without a file time the runtime start stays the fallback.
+  assert.notEqual(platformResourceHeaders('static', { body: 'x' })['last-modified'], headers['last-modified']);
 });

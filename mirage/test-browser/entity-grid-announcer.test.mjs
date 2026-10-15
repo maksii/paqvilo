@@ -12,12 +12,14 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 const layout = (search, configuration = {}) => [{ Id: "view-1", ViewName: "Items", Configuration: { Search: { Enabled: search }, ...configuration }, Columns: [{ LogicalName: "name", Name: "Name", Width: 100, WidthAsPercent: 100 }], ColumnsTotalWidth: 120, Base64SecureConfiguration: "secure", SortExpression: "name ASC" }];
 // The subgrid: pixel column widths and a download action (Wave M evidence: note-add live DOM).
 const DOWNLOAD = { ViewActionLinks: [{ Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }] };
-const grid = (attributes, search, configuration) => `<div class="entity-grid ${attributes}" data-get-url="/grid-data" data-select-mode="None" data-view-layouts='${JSON.stringify(layout(search, configuration))}'><div class="view-grid"></div><div class="view-empty message"></div><div class="view-loading message"></div><div class="view-pagination"></div></div>`;
+const grid = (attributes, search, configuration, inner = "") => `<div class="entity-grid ${attributes}" data-get-url="/grid-data" data-select-mode="None" data-view-layouts='${JSON.stringify(layout(search, configuration))}'><div class="view-grid"></div><div class="view-empty message"></div><div class="view-loading message"></div><div class="view-pagination"></div>${inner}</div>`;
+// The subgrid's associate dialog (inside the subgrid, as the platform renders it).
+const ASSOCIATE = `<div class="entity-associate"><section class="modal modal-associate" data-bs-backdrop="static"><div class="modal-body">${grid('associate-lookup" data-defer-loading="true', true)}<div class="selected-records"></div></div><div class="modal-footer"><button class="primary btn btn-primary" type="button">OK</button></div></section></div>`;
 const PAGE = `<!doctype html><html lang="en"><head><title>Grids</title><link rel="stylesheet" href="/app.BootstrapV5.css"><script src="/app.BootstrapV5.bundle.js"></script></head><body>
 <div id="antiforgerytoken"><input type="hidden" name="__RequestVerificationToken" value="token"></div>
 <div class="entity-notes" data-url-get="/notes-data" data-url-add="/notes-add" data-bs-target='{"Id":"n1","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div><a class="addnote" href="#">Add note</a><section class="modal modal-addnote" data-bs-backdrop="static"><div class="modal-body"><textarea name="text"></textarea><input type="file" name="file" accept="*" aria-label="Choose File" tabindex="0"></div><div class="modal-footer"><button class="primary" type="button">Add note</button></div></section></div>
-<div class="subgrid">${grid('subgrid" data-defer-loading="false" data-enable-actions="true" data-column-width-style="Pixels', false, DOWNLOAD)}</div>
-<div class="entity-associate"><section class="modal modal-associate" data-bs-backdrop="static"><div class="modal-body">${grid('associate-lookup" data-defer-loading="true', true)}<div class="selected-records"></div></div><div class="modal-footer"><button class="primary btn btn-primary" type="button">OK</button></div></section></div>
+<div class="entity-notes empty-notes" data-url-get="/notes-empty" data-bs-target='{"Id":"n2","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div></div>
+<div class="entitylist"><div id="Filters"><input type="text" name="0" value=""><select name="1"><option value=""></option><option value="1" selected>One</option></select><input type="checkbox" name="2" value="0"></div><button type="button" class="apply-filter" data-serialized-query="mf" data-target="#Filters">Apply</button><div class="subgrid">${grid('subgrid" data-defer-loading="false" data-enable-actions="true" data-column-width-style="Pixels', false, DOWNLOAD, ASSOCIATE)}</div></div>
 <script src="/grid.js"></script>
 </body></html>`;
 
@@ -33,6 +35,10 @@ test("Bootstrap 5 grids share one record-count announcer per id and post a null 
       return res.end(req.url === "/grid.js" ? script : "");
     }
     if (req.url === "/notes-add" && req.method === "POST") return res.end("");
+    if (req.url === "/notes-empty" && req.method === "POST") {
+      res.setHeader("content-type", "application/json");
+      return res.end(JSON.stringify({ Records: [], PageCount: 0, ItemCount: 0 }));
+    }
     if (req.url === "/app.BootstrapV5.css") return res.end("");
     if (req.url === "/notes-data" && req.method === "POST") {
       order.push("notes");
@@ -76,16 +82,23 @@ test("Bootstrap 5 grids share one record-count announcer per id and post a null 
   // A shown notes list keeps style="" and a single page hides the pager (live DOM).
   await page.locator(".entity-notes .note").waitFor();
   assert.deepEqual(await page.evaluate(() => [document.querySelector(".entity-notes .notes").getAttribute("style"), document.querySelector(".notes-pagination").style.display]), ["", "none"]);
+  // Without notes the pager is left as rendered (live item-edit/minimal: no notes, pager visible).
+  await page.waitForFunction(() => document.querySelector(".empty-notes .notes-empty")?.style.display === "block");
+  assert.equal(await page.evaluate(() => document.querySelector(".empty-notes .notes-pagination").getAttribute("style")), null);
 
   await page.evaluate(() => document.querySelector(".modal-associate").dispatchEvent(new CustomEvent("show.bs.modal")));
   assert.equal(await page.locator(".modal-associate .modal-footer .btn-primary").getAttribute("disabled"), "disabled");
   await page.waitForFunction(() => document.querySelector("#SearchCountTextundefined")?.textContent === "5 records found");
   assert.deepEqual(await announcers(), [["SearchCountTextundefined", "associate-lookup", "5 records found"]]);
+  // Once the dialog's grid has loaded, the subgrid reloads (live: subgrid, associate grid, subgrid).
+  await page.waitForFunction(() => document.querySelectorAll(".subgrid > .entity-grid > .view-grid table").length > 0);
+  for (const deadline = Date.now() + 5000; posts.length < 3 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.deepEqual(posts.map((body) => body.search), [null, "", null]);
   // It follows the dialog grid's toolbar.
   assert.equal(await page.evaluate(() => document.querySelector("#SearchCountTextundefined").previousElementSibling.className), "view-toolbar grid-actions clearfix");
   // The Bootstrap 5 subgrid: a download button with a left margin, a table fixed to the pixel widths.
-  assert.equal(await page.locator(".subgrid .view-toolbar button.entitylist-download").evaluate((b) => [b.type, b.title, b.getAttribute("style")].join("|")), "button|Download the items|margin-left: 8px;");
-  assert.equal(await page.locator(".subgrid .view-grid > table").getAttribute("style"), "width:120px !important; max-width:120px !important;");
+  assert.equal(await page.locator(".subgrid > .entity-grid > .view-toolbar button.entitylist-download").evaluate((b) => [b.type, b.title, b.getAttribute("style")].join("|")), "button|Download the items|margin-left: 8px;");
+  assert.equal(await page.locator(".subgrid > .entity-grid > .view-grid > table").getAttribute("style"), "width:120px !important; max-width:120px !important;");
   // Adding a note: the dialog announcer leaves with the dialog, the dialog gets an empty note and a
   // fresh file input without aria-label or tabindex.
   await page.locator(".addnote").click();
@@ -94,5 +107,10 @@ test("Bootstrap 5 grids share one record-count announcer per id and post a null 
   await page.locator(".modal-addnote .primary").click();
   await page.locator("#modal-status-announcer").waitFor({ state: "detached" });
   assert.deepEqual(await page.locator(".modal-addnote").evaluate((m) => [m.querySelector("textarea").value, m.querySelector("input[type=file]").outerHTML]), ["", '<input type="file" name="file" accept="*">']);
+  // Applying the metadata filter posts every successful control, empty text included (live "0=&1=1&8=").
+  const before = posts.length;
+  await page.locator(".apply-filter").click();
+  for (const deadline = Date.now() + 5000; posts.length === before && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.equal(posts.at(-1).metaFilter, "0=&1=1");
   assert.deepEqual(errors, []);
 });

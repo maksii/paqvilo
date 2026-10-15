@@ -321,6 +321,28 @@ export async function pageRunner(page, options) {
   mark("checked");
   raw.dom = summary.leftOrigin ? "" : await owned.evaluate(() => document.documentElement.outerHTML).catch(() => "");
   raw.elements = summary.leftOrigin ? [] : await owned.evaluate(elementInventory).catch(() => []);
+  // Same-origin frames (modal forms, lookup create dialogs) are inventoried too: their DOM keyed by the frame path
+  // (a repeated path gets #2, #3 …) and their elements with the selector prefixed by "frame(<path>) ".
+  raw.frames = [];
+  if (!summary.leftOrigin) {
+    const seen = {};
+    for (const frame of owned.frames()) {
+      if (frame === owned.mainFrame()) continue;
+      let frameUrl;
+      try {
+        frameUrl = new URL(frame.url());
+      } catch {
+        continue;
+      }
+      if (frameUrl.origin !== origin) continue;
+      seen[frameUrl.pathname] = (seen[frameUrl.pathname] ?? 0) + 1;
+      const key = frameUrl.pathname + (seen[frameUrl.pathname] > 1 ? "#" + seen[frameUrl.pathname] : "");
+      const dom = await frame.evaluate(() => document.documentElement.outerHTML).catch(() => null);
+      if (dom === null) continue;
+      raw.frames.push({ path: key, dom });
+      for (const element of await frame.evaluate(elementInventory).catch(() => [])) raw.elements.push({ ...element, selector: "frame(" + key + ") " + element.selector });
+    }
+  }
   mark("inventoried");
   raw.title = await owned.title().catch(() => "");
   raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== "about:blank" ? urlBeforeHarness : owned.url();
@@ -377,6 +399,8 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
   await fs.writeFile(path.join(outDir, "requests.json"), JSON.stringify(requests, null, 2));
   await fs.writeFile(path.join(outDir, "dom.html"), redactTokens(raw.dom ?? ""));
   await fs.writeFile(path.join(outDir, "elements.json"), JSON.stringify(raw.elements ?? [], null, 2));
+  // Same-origin frame documents (pageRunner): path → DOM, written only when the page has any.
+  if (raw.frames?.length) await fs.writeFile(path.join(outDir, "frames.json"), JSON.stringify(Object.fromEntries(raw.frames.map((frame) => [frame.path, redactTokens(frame.dom)])), null, 2));
   await fs.writeFile(path.join(outDir, "console.json"), JSON.stringify({ console: consoleEntries, pageErrors, dialogs: raw.dialogs ?? [] }, null, 2));
   if (raw.screenshot) await fs.writeFile(path.join(outDir, "screenshot.png"), Buffer.from(raw.screenshot, "base64"));
   const capture = {
@@ -394,6 +418,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
     ...(summary.leftOrigin ? { leftOrigin: summary.leftOrigin } : {}),
     requests: requests.length,
     elements: (raw.elements ?? []).length,
+    ...(raw.frames?.length ? { frames: raw.frames.map((frame) => frame.path) } : {}),
     blockedWrites: raw.blockedWrites ?? [],
     identityTraffic: raw.identityTraffic ?? [],
   };

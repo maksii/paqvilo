@@ -103,6 +103,13 @@ test('advanced URLencoded submission follows its own visitor session and previou
   const response = await fetch(app.url + '/', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams([['__EVENTTARGET', ids.buttons + 'NextButton'], ['__RequestVerificationToken', app.state().csrf], [ids.names + 'title', 'Visitor created'], ['stepId', 'forged'], ['sessionid', 'forged']]) });
   assert.equal(response.status, 302);
   assert.match(response.headers.get('location'), /stepid=edit/);
+  // ASP.NET Response.Redirect: page cache headers without Vary and the "Object moved" body.
+  assert.equal(response.headers.get('cache-control'), 'no-cache, no-store, must-revalidate');
+  assert.equal(response.headers.get('pragma'), 'no-cache');
+  assert.equal(response.headers.get('expires'), '-1');
+  assert.equal(response.headers.get('vary'), null);
+  assert.ok(response.headers.get('x-frame-options'));
+  assert.match(await response.text(), /^<html><head><title>Object moved<\/title><\/head><body>\r\n<h2>Object moved to <a href="[^"]*stepid=edit[^"]*">here<\/a>\.<\/h2>\r\n<\/body><\/html>\r\n$/);
   const cookie = response.headers.get('set-cookie').split(';')[0];
   const next = await fetch(app.url + response.headers.get('location'), { headers: { cookie } });
   const html = await next.text();

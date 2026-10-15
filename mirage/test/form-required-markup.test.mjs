@@ -47,7 +47,9 @@ test("ActionButtonPlacement 0 renders the action row above the form view", async
     const schemas = { form: { entity: "ticket", title: "Ticket", fields: [{ name: "title", label: "Title", dataverseType: "nvarchar", maxLength: 50 }], layout: [{ name: "t", columns: [{ sections: [{ name: "s", rows: [[{ name: "title" }]] }] }] }] } };
     return renderComponent("entityform", "form", { user: { id: "current" }, request: { params: { id: "t1" } } }, { portal, store, schemas });
   };
-  assert.match(await render(0), /<div id="EntityFormPanel"[^>]*><div class="row form-custom-actions">/);
+  const above = await render(0);
+  assert.match(above, /<div id="EntityFormPanel"[^>]*><div class="row form-custom-actions">/);
+  assert.match(above, /<\/div><div class="actions"><\/div><\/div>/);
   assert.match(await render(1), /<div id="EntityFormPanel"[^>]*><div id="EntityFormControl_form_EntityFormView"[^]*<div class="row form-custom-actions">/);
 });
 
@@ -84,4 +86,122 @@ test("a form validation group scopes its validators and summary to its buttons; 
   assert.match(html, /getElementById\("RequiredFieldValidatortitle"\);if\(!v\)return;[^]*?v\.validationGroup="tickets";\n\}\)\(\);/);
   assert.match(html, /s\.displaymode="BulletList";s\.validationGroup="tickets";/);
   assert.match(html, /\\u003c\/span> Tickets have errors:\\u003c\/h2>";s\.displaymode/);
+});
+
+test("a captcha shown to the visitor marks the form; signed-in visitors see it only when the form says so", async () => {
+  const fields = [{ name: "title", label: "Title", dataverseType: "nvarchar", maxLength: 50 }];
+  const render = async (metadata, user) => {
+    const store = { resolveMapping: () => ({ entitySet: "tickets", idColumn: "ticketid" }), get: async () => null, query: async () => ({ value: [] }) };
+    const portal = { forms: [{ id: "form", name: "Ticket", mode: 100000000, metadata }], records: [], website: { id: "site" }, pages: [], settings: { "Site/BootstrapV5Enabled": "true" } };
+    const schemas = { form: { entity: "ticket", title: "Ticket", fields, layout: [{ name: "t", columns: [{ sections: [{ name: "s", rows: [[{ name: "title" }]] }] }] }] } };
+    return renderComponent("entityform", "form", { user, request: { params: {} } }, { portal, store, schemas });
+  };
+  assert.match(await render({ adx_captcharequired: true }, null), /<!--pp-native-form--><!--pp-captcha-->/);
+  assert.doesNotMatch(await render({ adx_captcharequired: true }, { id: "current" }), /pp-captcha/);
+  assert.match(await render({ adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true }, { id: "current" }), /<!--pp-captcha-->/);
+  assert.doesNotMatch(await render({}, null), /pp-captcha/);
+});
+
+// Invented read-only and postback renders of a ticket form (live reader, save and error pages).
+const ticketForm = async ({ mode = 100000001, metadata = {}, rows = [], fields, record, nativePostbackState, user = { id: "current" }, solution } ) => {
+  const store = {
+    resolveMapping: (entity) => (entity === "team" ? { entitySet: "teams", idColumn: "teamid", nameColumn: "name" } : { entitySet: "tickets", idColumn: "ticketid" }),
+    get: async (entity) => (entity === "team" ? { teamid: "t1", name: "Team One" } : record),
+    query: async () => ({ value: [{ teamid: "t1", name: "Team One" }, { teamid: "t2", name: "Team Two" }] }),
+  };
+  const portal = { forms: [{ id: "form", name: "Ticket", mode, metadata }], records: rows.map((row) => ({ kind: "basicformmetadata", adx_entityform: "form", adx_type: 100000000, ...row })), website: { id: "site" }, pages: [], settings: { "Site/BootstrapV5Enabled": "true" } };
+  const schemas = { form: { entity: "ticket", title: "Ticket", fields, layout: [{ name: "t", columns: [{ sections: [{ name: "s", rows: fields.map((field) => [{ name: field.name }]) }] }] }] } };
+  return renderComponent("entityform", "form", { user, request: { params: { id: "r1" } } }, { portal, store, schemas, nativePostbackState, ...(solution ? { metadata: solution } : {}) });
+};
+
+test("a read-only form disables its radio lists, keeps required markers on memo boxes and lists only the current dropdown record", async () => {
+  const fields = [
+    { name: "colour", label: "Colour", dataverseType: "picklist", options: [{ value: 1, label: "Red" }, { value: 2, label: "Blue" }] },
+    { name: "notes", label: "Notes", dataverseType: "memo", maxLength: 100, required: true },
+    { name: "teamid", label: "Team", dataverseType: "lookup", type: "lookup", targets: ["team"] },
+  ];
+  const html = await ticketForm({ mode: 100000002, fields, record: { ticketid: "r1", colour: 2, notes: "x", teamid: { id: "t1", logical_name: "team", name: "Team One" } }, rows: [{ adx_attributelogicalname: "colour", adx_controlstyle: 100000000 }, { adx_attributelogicalname: "teamid", adx_controlstyle: 756150000 }] });
+  assert.match(html, /<span id="colour" disabled="disabled" class="aspNetDisabled picklist vertical " role="presentation" onchange="setIsDirty\(this\.id\);" readonly="readonly"><span class="aspNetDisabled"><input id="colour_0" type="radio" name="[^"]*" value="1" disabled="disabled"><label for="colour_0">/);
+  assert.match(html, /<\/label><\/span><br><span class="aspNetDisabled"><input id="colour_1" type="radio" name="[^"]*" value="2" checked="checked" disabled="disabled">/);
+  assert.match(html, /id="notes" class="textarea form-control " onchange="setIsDirty\(this\.id\);" aria-required="true" title="Notes is a required field\." aria-label="Notes" readonly="readonly"/);
+  assert.match(html, /<select name="[^"]*" id="teamid" disabled="disabled" class="aspNetDisabled lookup form-control readonly" onchange="setIsDirty\(this\.id\);" aria-disabled="true" readonly="readonly"><option selected="selected" value="t1" class="dropdown-item">Team One<\/option><\/select>/);
+  assert.match(html, /id="teamid_Value" value="t1"><input type="hidden" name="[^"]*" id="teamid_SelectedIndex" value="0">/);
+});
+
+test("postback renders: posted check boxes, blank option labels, failed validators, the server summary and the doubled view class", async () => {
+  const fields = [
+    { name: "flag", label: "Flag", dataverseType: "bit" },
+    { name: "duration", label: "Duration", dataverseType: "int", format: "duration" },
+    { name: "count", label: "Count", dataverseType: "int", minValue: 0, maxValue: 10 },
+  ];
+  const state = (extra) => ({ kind: "entityform", formId: "form", outcome: { type: "none" }, ...extra });
+  const saved = await ticketForm({ fields, record: { ticketid: "r1", duration: 5, count: 1 }, nativePostbackState: state({ values: { flag: "on" } }) });
+  assert.match(saved, /id="flag" type="checkbox"[^>]*checked="checked"/);
+  assert.match(saved, /id="duration"[^>]*><option value="" label=" "><\/option>/);
+  assert.match(saved, /class="entity-form entity-form"/);
+  const blank = await ticketForm({ fields, record: { ticketid: "r1", count: 1 }, nativePostbackState: state({}) });
+  assert.match(blank, /id="duration"[^>]*><option selected="selected" value="" label=" "><\/option>/);
+  const invalid = await ticketForm({ fields, record: { ticketid: "r1", count: 99 }, metadata: { adx_validationsummarylinksenabled: true }, nativePostbackState: state({ validationErrors: [{ field: "count", code: "FormFieldOutOfRange", message: "Count is out of range." }, { field: "captcha", code: "CaptchaInvalid", message: "Captcha is incorrect." }] }) });
+  assert.match(invalid, /<span id="RangeValidatorcount">\*<\/span>/);
+  assert.match(invalid, /v\.isvalid="False";/);
+  assert.match(invalid, /role="alert"><h2 class='validation-header'>/);
+  assert.match(invalid, /<li><a href='#count_label' onclick='javascript:scrollToAndFocus\("count_label","count"\);return false;' referenceControlId=count>Count is out of range\. <\/a><\/li>/);
+  assert.match(invalid, /<li><a href='#captcha' onclick='javascript:scrollToAndFocusCapatch\(\);return false;'>Captcha is incorrect\.<\/a><\/li>/);
+  // A form that sets an entity reference rebuilds its controls: single class, blank choice unlabelled beside a value.
+  const reference = await ticketForm({ fields, record: { ticketid: "r1", duration: 5 }, metadata: { adx_setentityreference: true }, nativePostbackState: state({}) });
+  assert.doesNotMatch(reference, /entity-form entity-form/);
+  assert.match(reference, /id="duration"[^>]*><option value=""><\/option>/);
+});
+
+test("the success panel's close button validates only without a form validation group", async () => {
+  const fields = [{ name: "title", label: "Title", dataverseType: "nvarchar", maxLength: 50 }];
+  const outcome = { type: "message", message: "Saved.", hideForm: false };
+  const plain = await ticketForm({ fields, record: { ticketid: "r1" }, nativePostbackState: { kind: "entityform", formId: "form", outcome } });
+  assert.match(plain, /value="x" onclick="javascript:WebForm_DoPostBackWithOptions/);
+  const grouped = await ticketForm({ fields, record: { ticketid: "r1" }, metadata: { adx_validationgroup: "tickets" }, nativePostbackState: { kind: "entityform", formId: "form", outcome } });
+  assert.match(grouped, /value="x" id="btnCloseMessage"/);
+});
+
+test("the server form's __VIEWSTATE carries the visitor's anti-forgery key", async () => {
+  const { injectRuntime, viewStateWithKey } = await import("../lib/platform.mjs");
+  const { nativeViewStateKey, decodeNativeViewState, encodeNativeViewState } = await import("../lib/native-postback.mjs");
+  const html = injectRuntime('<html><body><form id="liquid_form"><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="/wEopaque" /></form></body></html>', "token-1", "r1");
+  const value = /id="__VIEWSTATE" value="([^"]*)"/.exec(html)[1];
+  assert.equal(nativeViewStateKey(value), "token-1");
+  const carried = viewStateWithKey(encodeNativeViewState({ form: "f", autoStep: 1, values: { name: "x" } }), "token-1");
+  assert.equal(nativeViewStateKey(carried), "token-1");
+  assert.deepEqual(decodeNativeViewState(carried), { form: "f", autoStep: 1, values: { name: "x" } });
+});
+
+test("required number, date, choice and yes/no controls carry the platform's markers; lookups focus their name box", async () => {
+  const fields = [
+    { name: "amount", label: "Amount", dataverseType: "decimal", required: true },
+    { name: "due", label: "Due", dataverseType: "datetime", format: "dateandtime", required: true },
+    { name: "minutes", label: "Minutes", dataverseType: "int", format: "duration", required: true },
+    { name: "colour", label: "Colour", dataverseType: "picklist", options: [{ value: 1, label: "Red" }], required: true },
+    { name: "agree", label: "Agree", dataverseType: "bit", required: true },
+    { name: "teamid", label: "Team", dataverseType: "lookup", type: "lookup", targets: ["team"], required: true },
+  ];
+  const html = await ticketForm({ mode: 100000000, fields, record: null, metadata: { adx_validationsummarylinksenabled: true } });
+  assert.match(html, /id="amount" class="text decimal form-control " onchange="setIsDirty\(this\.id\);" required="" aria-invalid="true">/);
+  assert.match(html, /data-attribute="due" data-behavior="[^"]*" required="" aria-invalid="true" onfocus="validateRequiredField\(this\.id\);">/);
+  assert.match(html, /<span id="DateFormatValidatordue"[^>]*>\*<\/span><span id="RequiredFieldValidatordue"/);
+  assert.match(html, /id="minutes" class="integer form-control " onchange="setIsDirty\(this\.id\);" required="">/);
+  assert.match(html, /id="colour" class="form-control form-select picklist " onchange="setIsDirty\(this\.id\);" required="" aria-required="true" aria-invalid="false" title="Please select an item in this list">/);
+  assert.match(html, /<span id="RequiredFieldValidatoragree" style="display:none;">/);
+  assert.match(html, /scrollToAndFocus\(\\"teamid_label\\",\\"teamid_name\\"\)/);
+});
+
+test("an existing record's empty field shows its prepopulated value; a stored value wins", async () => {
+  const fields = [{ name: "note", label: "Note", dataverseType: "nvarchar", maxLength: 50 }, { name: "code", label: "Code", dataverseType: "nvarchar", maxLength: 50 }];
+  const rows = [{ adx_attributelogicalname: "note", adx_prepopulatetype: 100000000, adx_prepopulatevalue: "prefilled" }, { adx_attributelogicalname: "code", adx_prepopulatetype: 100000000, adx_prepopulatevalue: "prefilled" }];
+  const html = await ticketForm({ fields, rows, record: { ticketid: "r1", code: "stored" } });
+  assert.match(html, /value="prefilled"[^>]*id="note"|id="note"[^>]*value="prefilled"/);
+  assert.match(html, /value="stored"[^>]*id="code"/);
+});
+
+test("a hosted multi-select names the column by its display name, not the form cell label", async () => {
+  const fields = [{ name: "tags", label: "Tags", dataverseType: "multiselectpicklist", options: [{ value: 1, label: "One" }] }];
+  const html = await ticketForm({ fields, record: { ticketid: "r1" }, solution: { entities: { ticket: { fields: { tags: { label: "Ticket tags column" } } } } } });
+  assert.match(html, /&quot;value_DisplayName&quot;:&quot;Ticket tags column&quot;/);
 });

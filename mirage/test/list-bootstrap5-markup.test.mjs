@@ -158,3 +158,15 @@ test("a map list without map credentials renders the empty legacy list control i
   // No validators or form controls: no WebUIValidation script (three AXD scripts, live map list).
   assert.equal(form.match(/\.axd\?/g).length, 3);
 });
+
+test("a list's own messages and its activate, deactivate and error dialogs come from its settings", async () => {
+  const text = (value) => [{ LCID: 1033, Value: value }];
+  const configured = portal(true);
+  configured.lists[0].metadata.adx_settings = JSON.stringify({ ...settings, EmptyMessage: text("No widgets."), AccessDeniedMessage: text("No access to widgets."), ErrorMessage: text("Widgets failed."), LoadingMessage: text("Loading widgets..."), DeactivateDialog: { CssClass: "widget-dialog", Title: text("Deactivate widget"), DismissButtonSrText: text("Close dialog") }, ActivateDialog: { CssClass: "widget-dialog", Title: text("Activate widget") }, ErrorDialog: { CssClass: "widget-dialog", Title: text("Widget error"), Body: text("Widget error."), CloseButtonText: text("Close") } });
+  const { html } = await renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: configured, metadata, store, schemas: {}, args: { key: "Widgets" } });
+  assert.match(html, /<div class="view-empty message">No widgets\.<\/div>/);
+  assert.match(html, /<div class="view-access-denied message">No access to widgets\.<\/div><div class="view-error message">Widgets failed\.<\/div><div class="view-loading message text-center">Loading widgets\.\.\.<\/div>/);
+  assert.match(html, /class="modal fade modal-deactivate widget-dialog"[^]*?Deactivate widget[^]*?Close dialog/);
+  assert.match(html, /class="modal fade modal-activate widget-dialog"[^]*?Activate widget/);
+  assert.match(html, /class="modal fade modal-error widget-dialog"[^]*?<div class="modal-body">Widget error\.<\/div><div class="modal-footer"><button class="cancel btn btn-default btn btn-default" data-bs-dismiss="modal" type="button">Close<\/button>/);
+});

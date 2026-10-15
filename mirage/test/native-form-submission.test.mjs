@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataStore } from '../lib/data.mjs';
-import { nativeFormPostbackDescriptor } from '../lib/native-postback.mjs';
+import { nativeFormPostbackDescriptor, nativeViewStateKey, encodeNativeViewState } from '../lib/native-postback.mjs';
 import { nativeFormSubmissionContext, createWebFormSessions } from '../lib/form-service.mjs';
 import { resolveNativeFormSubmission, submitNativePostback } from '../lib/native-form-submission.mjs';
 
@@ -120,4 +120,27 @@ test('state-action postbacks ignore page field controls and preserve the declare
   assert.deepEqual(decoded.body.values, {});
   assert.equal(decoded.body.action, 'deactivate');
   assert.equal(decoded.body.actionIndex, 2);
+});
+
+test('an advanced step requiring the captcha rejects the save postback with the captcha message and writes nothing', async () => {
+  const options = await fixture(), sessions = createWebFormSessions(), session = sessions.create('wizard', 'visitor:own');
+  session.current = 'first';
+  const item = rendered('wizard', 'first-row', { kind: 'webform', context: { stepId: 'first', sessionId: session.id } });
+  const step = (metadata) => ({ ...options, sessions, owner: 'visitor:own', identity: { contactId: 'c1', roles: ['Editor'] }, portal: { advancedForms: [{ id: 'wizard', metadata: {} }], records: [] }, schemas: { wizard: { initialStepId: 'first', steps: [{ stepId: 'first', entity: 'sample', mode: 100000001, fields: [{ name: 'title' }], metadata }] } } });
+  // Signed in with "show captcha for authenticated users": rejected (live multistep-survey step1-submit).
+  await assert.rejects(submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true })), (error) => error.status === 400 && error.details.validationErrors[0].message === 'Captcha is incorrect, please re-enter captcha.');
+  assert.equal((await options.store.get('sample', 'first-row', options.identity)).title, 'First');
+  const { nativePostbackResponse } = await import('../lib/native-form-submission.mjs');
+  const error = await submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true })).catch((e) => e);
+  assert.deepEqual(nativePostbackResponse({ error, context: { kind: 'webform' }, values: { title: 'Changed' } }).state.validationErrors.map((e) => e.code), ['CaptchaInvalid']);
+  // Signed in without that setting: the captcha is not asked and the step saves.
+  const { result } = await submitNativePostback(post(item, 'Changed'), [item], step({ adx_captcharequired: true }));
+  assert.notEqual(result, undefined);
+});
+
+test('a __VIEWSTATE carrying the anti-forgery key exposes it; other values carry none', () => {
+  assert.equal(nativeViewStateKey(encodeNativeViewState({ k: 'csrf-1' })), 'csrf-1');
+  assert.equal(nativeViewStateKey(encodeNativeViewState({ form: 'f', autoStep: 0, values: {} })), null);
+  assert.equal(nativeViewStateKey('/wEopaque'), null);
+  assert.equal(nativeViewStateKey(undefined), null);
 });

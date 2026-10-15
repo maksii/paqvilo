@@ -405,7 +405,9 @@
   // token-bound requests); without the shell the replacement follows ready.
   const quickToken = { waiting: false, then: null };
   const askQuickToken = () => {
-    if (!document.querySelector('iframe.quickform[data-lookup-element]') || typeof w.shell?.getTokenDeferred !== 'function') return;
+    // Only frames bound to a record are replaced (an insert form's frame stays blank: no token request).
+    const bound = [...document.querySelectorAll('iframe.quickform[data-lookup-element]')].some((frame) => document.getElementById(frame.dataset.lookupElement)?.value);
+    if (!bound || typeof w.shell?.getTokenDeferred !== 'function') return;
     const deferred = w.shell.getTokenDeferred();
     if (typeof deferred?.always !== 'function') return;
     quickToken.waiting = true;

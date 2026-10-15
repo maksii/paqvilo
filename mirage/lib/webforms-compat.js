@@ -266,6 +266,12 @@
     (label || control)?.scrollIntoView?.({ block: "center" });
     if (control && typeof control.focus === "function") control.focus();
   };
+  // The validation summary's captcha link (the platform's spelling) scrolls to the captcha control.
+  w.scrollToAndFocusCapatch = function () {
+    const captcha = document.getElementById("captcha") || document.querySelector(".RadCaptcha");
+    captcha?.scrollIntoView?.({ block: "center" });
+    captcha?.querySelector?.("input[type=text]")?.focus();
+  };
   w.setFocus = function (controlId) {
     document.getElementById(controlId)?.focus?.();
   };
@@ -603,6 +609,14 @@
       else resolve(document.querySelector('input[name="__RequestVerificationToken"]')?.value);
     });
   }
+  function viewStateKey(outer) {
+    const value = [...outer.elements].find(node => node.name === '__VIEWSTATE')?.value ?? '';
+    if (!value.startsWith('/wE')) return null;
+    try {
+      const state = JSON.parse(atob(value.slice(3)));
+      return state && state.v === 1 && typeof state.k === 'string' && state.k ? state.k : null;
+    } catch { return null; }
+  }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
@@ -628,7 +642,9 @@
         hidden('__EVENTTARGET', submitter ? '' : eventTarget || button?.name);
         if (submitter) { const control = document.createElement('input'); control.type = 'hidden'; control.name = submitter.name; control.value = submitter.value; outer.append(control); }
         hidden('__EVENTARGUMENT', eventArgument);
-        hidden('__RequestVerificationToken', tokenValue);
+        // A page whose __VIEWSTATE carries the anti-forgery key (lib/native-postback.mjs
+        // nativeViewStateKey) posts its own fields only, as live postbacks do.
+        if (!viewStateKey(outer)) hidden('__RequestVerificationToken', tokenValue);
         outer.method = 'POST';
         // A form with the attach-file control keeps its multipart encoding (the files post with the page).
         if (outer.enctype !== 'multipart/form-data') outer.enctype = 'application/x-www-form-urlencoded';

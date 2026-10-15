@@ -62,6 +62,9 @@ const OBSERVED_CHOICES = {
   webFileMimeCharset: ["utf8", "source"],
   siteMarkerRedirect: ["resolve", "null-reference"],
   nativeFormTransport: ["json", "postback"],
+  // List OData feeds: "removed" (the platform default since June 2026, LIST_ODATA_FEED_REMOVED:
+  // /_odata/<feed> answers the Page Not Found page) or "served" (a site observed still serving them).
+  listODataFeeds: ["removed", "served"],
   modalLoadOrdering: ["ready", "immediate"],
   subgridLabelMarkup: ["encoded", "sanitized"],
   webApiErrorStacks: ["diagnostic", "response-template"],

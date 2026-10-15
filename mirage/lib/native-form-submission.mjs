@@ -4,6 +4,10 @@ import { approximateFormSchema, approximateAdvancedFormSchema } from './form-sch
 import { nativeControlKind, schemaFromFormXml } from './platform.mjs';
 import { parseNumericLiteral } from './exact-numeric.mjs';
 import { formWriteError } from './form-error-presentation.mjs';
+import { portalField } from './importer.mjs';
+
+const truthy = (value) => value === true || value === 1 || /^(?:true|1)$/i.test(String(value ?? ''));
+const CAPTCHA_MESSAGE = 'Captcha is incorrect, please re-enter captcha.';
 
 /** Decode against descriptors collected while rendering this server-owned page. */
 export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
@@ -67,6 +71,16 @@ export async function submitNativePostback(entries, rendered, options) {
   if (submission.kind === 'entityform' && !schema) schema = approximateFormSchema({ definition, portal: options.portal, metadata: options.metadata });
   if (submission.kind === 'webform') schema = approximateAdvancedFormSchema({ definition, portal: options.portal, metadata: options.metadata, schema });
   if (schema?.steps) schema = schema.steps.find(step => step.stepId === submission.context.stepId);
+  // A step that requires the captcha (for a signed-in visitor only with "show captcha for
+  // authenticated users") rejects its save postback with the captcha message and re-renders the
+  // step with the posted values (live multistep-survey step1-submit: 200, not the next step).
+  // The local runtime renders no captcha answer, so such a step cannot be completed, as observed.
+  // ponytail: no local captcha challenge; add one with the captcha control markup (platform.mjs).
+  if (submission.kind === 'webform' && submission.body.action === 'submit' && truthy(portalField(schema?.metadata ?? {}, 'captcharequired', false))) {
+    const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);
+    if (!signedIn || truthy(portalField(schema.metadata, 'showcaptchaforauthenticatedusers', false)))
+      throw Object.assign(new Error(CAPTCHA_MESSAGE), { status: 400, code: 'CaptchaInvalid', details: { validationErrors: [{ field: 'captcha', code: 'CaptchaInvalid', message: CAPTCHA_MESSAGE }] } });
+  }
   if (schema?.formXml) schema = { ...schema, ...schemaFromFormXml(schema.formXml, { ...schema, entity: schema.entity ?? definition?.entityName }) };
   const mapping = schema?.entity ? options.store.resolveMapping(schema.entity) : null;
   const descriptor = rendered.find(item => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId).descriptor;
@@ -115,7 +129,7 @@ export async function submitNativePostback(entries, rendered, options) {
   return { result, context: submission.context };
 }
 
-const nativeValidationCodes = new Set(['FormFieldRequired', 'FormFieldInvalid', 'FormFieldOutOfRange', 'FormFieldTooLong']);
+const nativeValidationCodes = new Set(['FormFieldRequired', 'FormFieldInvalid', 'FormFieldOutOfRange', 'FormFieldTooLong', 'CaptchaInvalid']);
 
 /** Only native field validators have an observed successful HTML response status. */
 export function nativePostbackResponse({ result, error, context, values, observed }) {

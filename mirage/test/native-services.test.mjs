@@ -97,7 +97,7 @@ async function fixture(t, { roles = ["Editor"] } = {}) {
   const session = signInHeaders(app, CONTACT, { roles });
   const token = app.state().csrf;
   const post = (action, body, headers = { __RequestVerificationToken: token }) =>
-    fetch(`${app.url}/_services/${action}/${SITE}`, { method: "POST", headers: { "content-type": "application/json", ...session, ...headers }, body: JSON.stringify(body) });
+    fetch(`${app.url}/_services/${action}/${SITE}`, { method: "POST", headers: { "content-type": "application/json", ...session, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
   const get = (pathname) => fetch(app.url + pathname, { headers: session });
   return { app, post, get };
 }
@@ -266,6 +266,11 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   await app.store.replaceState(polymorphic);
   const bound = await post("entity-form-addnote", { regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Bound note" });
   assert.equal(bound.status, 201);
+  // The native form transport gets the platform's empty 201, without Vary (live note-add).
+  const native = await post("entity-form-addnote", new URLSearchParams({ regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Native note", __RequestVerificationToken: app.state().csrf }).toString(), { "content-type": "application/x-www-form-urlencoded" });
+  assert.equal(native.status, 201);
+  assert.equal(native.headers.get("vary"), null);
+  assert.equal(await native.text(), "");
   const boundId = (await bound.json()).Id;
   assert.deepEqual(app.store.snapshot().tables.annotation.find((row) => row.annotationid === boundId).objectid, { id: CONTACT, logical_name: "contact", name: "Ada" });
   assert.equal((await list()).find((record) => record.Id === boundId).UnformattedText, "Bound note");

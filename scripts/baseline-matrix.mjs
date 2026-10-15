@@ -312,7 +312,8 @@ export function buildMatrix(manifest, project = {}) {
     writeScope: { paths: ["^/baseline/", "^/_services/", "^/_portal/", "^/_api/"], entitySets: ["pqvd_baselineitems", "pqvd_baselinechilds", "pqvd_baselineparents", "annotations"] },
     // The project's `mirageIdentity` mirrors what the live portal shows for the signed-in tester (name, parent account,
     // the base roles it holds besides the baseline ones); Mirage personas carry those roles on top of their own.
-    personas: Object.fromEntries(Object.entries(PERSONAS).map(([name, { account, ...persona }]) => [name, { ...persona, ...(persona.roles && project.mirageIdentity?.roles ? { roles: [...persona.roles, ...project.mirageIdentity.roles] } : {}), ...(persona.anonymous ? {} : { mirageContact: project.mirageContact }) }])),
+    // mirageIdentity.personaContact[persona] holds the tester's fields a live persona switch changes (account-scope: parent account).
+    personas: Object.fromEntries(Object.entries(PERSONAS).map(([name, { account, ...persona }]) => [name, { ...persona, ...(persona.roles && project.mirageIdentity?.roles ? { roles: [...persona.roles, ...project.mirageIdentity.roles] } : {}), ...(persona.anonymous ? {} : { mirageContact: project.mirageContact }), ...(project.mirageIdentity?.personaContact?.[name] ? { mirageContactFields: project.mirageIdentity.personaContact[name] } : {}) }])),
     mirage: { preset: "baseline", ...(project.mirageIdentity ? { identity: { contactId: project.mirageContact, ...(project.mirageIdentity.contactId ? { liveContactId: project.mirageIdentity.contactId } : {}), contact: project.mirageIdentity.contact ?? {}, roles: project.mirageIdentity.roles ?? [] } } : {}) },
     settle: { quietMs: 1200, timeout: 30000 },
     generatedAt: new Date().toISOString().slice(0, 10),

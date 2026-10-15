@@ -46,6 +46,18 @@ const actions = new Set(["submit", "previous", "delete", "deactivate", "activate
  * ViewState. The value is client-supplied and bounded; only string values of safe names survive.
  */
 export const encodeNativeViewState = (state) => "/wE" + Buffer.from(JSON.stringify({ v: 1, ...state })).toString("base64");
+/**
+ * The anti-forgery key a page's __VIEWSTATE carries (k), as ASP.NET binds ViewState to the
+ * visitor (ViewStateUserKey): a WebForms postback then posts the page's own fields only, without
+ * a separate __RequestVerificationToken (live postback bodies). Null for any other value.
+ */
+export function nativeViewStateKey(text) {
+  if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;
+  try {
+    const parsed = JSON.parse(Buffer.from(text.slice(3), "base64").toString("utf8"));
+    return parsed && parsed.v === 1 && typeof parsed.k === "string" && parsed.k ? parsed.k : null;
+  } catch { return null; }
+}
 export function decodeNativeViewState(text) {
   if (typeof text !== "string" || text.length > 262144 || !text.startsWith("/wE")) return null;
   let parsed;

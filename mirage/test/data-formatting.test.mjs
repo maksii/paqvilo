@@ -110,6 +110,8 @@ test("grid records without item actions report no record privileges; a subgrid w
   assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "list", settings: { ItemActions: [] } }, layout, context("global"))), [false, false, false, 0, 0]);
   assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "lookup", settings: undefined }, layout, context("global"))), [false, false, false, 0, 0]);
   assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "list" }, layout, context("global"))), [true, true, true, 1, 2]);
+  // The associate dialog keeps the subgrid's ItemActions but, like a lookup dialog, is not assessed.
+  assert.deepEqual(flags(gridRecord(row, { ...model, kind: "associate" }, layout, context("global"))), [false, false, false, 0, 0]);
 });
 
 test("grid money values carry the record currency's symbol and precision", async () => {

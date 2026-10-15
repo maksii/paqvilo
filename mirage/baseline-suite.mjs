@@ -246,9 +246,12 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
   const liveContact = matrix.mirage?.identity?.liveContactId;
   const contactOf = (id) => (liveContact && id && presetContact && id.toLowerCase() === presetContact.toLowerCase() ? liveContact : id);
   let mirrored = false;
+  let currentPersona = null;
   const mirrorIdentityFields = async () => {
     mirrored = true;
-    const fields = matrix.mirage?.identity?.contact;
+    // Fields a live persona switch changes on the tester (persona.mirageContactFields) apply on top of the identity fields.
+    const personaFields = matrix.personas?.[currentPersona]?.mirageContactFields;
+    const fields = personaFields ? { ...matrix.mirage?.identity?.contact, ...personaFields } : matrix.mirage?.identity?.contact;
     const rekey = Boolean(liveContact && presetContact && liveContact.toLowerCase() !== presetContact.toLowerCase());
     if (!fields && !rekey) return;
     const exported = await (await fetch(owned.url + "/__sim/api/state/export")).json();
@@ -274,7 +277,9 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
         return;
       }
       // The first persona signs in before the first reset: the rekeyed contact must exist already.
-      if (!mirrored) await mirrorIdentityFields();
+      const switched = currentPersona !== name;
+      currentPersona = name;
+      if (!mirrored || switched) await mirrorIdentityFields();
       if (persona.roles) await identity.mirror({ contactId: contactOf(persona.mirageContact ?? status.config?.identity?.contactId), roles: persona.roles });
       else await identity.signInAs(contactOf(persona.mirageContact));
       await identity.use("signed-in");

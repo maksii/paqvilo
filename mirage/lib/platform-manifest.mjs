@@ -109,6 +109,8 @@ const DENIED_FORM_MARKER = /<!--pp-native-form-denied-->/;
 const ATTACH_FILE_MARKER = /\bid="AttachFile"/;
 // Stack rank cells (adx_controlstyle 100000008) load the platform's stack ranking plug-in.
 const STACK_RANK_MARKER = /\bclass="clearfix cell stack-rank-cell"/;
+/** A form showing a captcha to the visitor (lib/platform.mjs CAPTCHA_MARKER). */
+const CAPTCHA_MARKER = /<!--pp-captcha-->/;
 // The attach-file control and file/image columns make the server form multipart.
 const MULTIPART_MARKER = /\bid="AttachFile"|_input_file"/;
 
@@ -144,6 +146,9 @@ export const LOCAL_ASPNET_SCRIPTS = Object.freeze(
     { id: "paqvilo-webuivalidation", path: "/ScriptResource.axd?d=paqvilo-webuivalidation&t=0", local: ["provided:webforms-compat.js"] },
     { id: "paqvilo-microsoftajax", path: "/ScriptResource.axd?d=paqvilo-microsoftajax&t=0", local: ["date-format-compat.js#format"] },
     { id: "paqvilo-microsoftajaxwebforms", path: "/ScriptResource.axd?d=paqvilo-microsoftajaxwebforms&t=0", local: [], reason: "The ASP.NET AJAX page request manager (Sys.WebForms) is not simulated; local postbacks reload the page." },
+    // Registered by a form that shows a captcha (CAPTCHA_MARKER), after the form scripts (live).
+    { id: "paqvilo-telerik-support", path: "/ScriptResource.axd?d=paqvilo-telerik-support&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik client feature detection the RadCaptcha control registers is not simulated; the captcha hooks are radcaptcha-compat.js." },
+    { id: "paqvilo-radcaptcha", path: "/ScriptResource.axd?d=paqvilo-radcaptcha&t=0", local: ["provided:radcaptcha-compat.js"], captcha: true, contentType: "text/javascript", reason: "The Telerik RadCaptcha client control is not simulated; Mirage renders no captcha (radcaptcha-compat.js holds the hooks)." },
   ].map((entry) => Object.freeze({ ...entry, kind: "script" })),
 );
 
@@ -179,9 +184,13 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const denied = DENIED_FORM_MARKER.test(String(content ?? ""));
   if (denied) eventValidation = false;
+  // ASP.NET writes __EVENTVALIDATION only for registered input controls: a form control that
+  // renders only a message (an insert form the visitor may not use) has none (live).
+  if (!/<(?:select|textarea)\b|<input\b(?![^>]*\btype="hidden")/i.test(String(content ?? ""))) eventValidation = false;
   // WebUIValidation.js is registered by validators and form controls only: server forms holding a
   // list control or no control at all load three AXD scripts (live calendar, map, rewrite pages).
-  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => (!denied && (validators || formControls)) || entry.id !== "paqvilo-webuivalidation").map((entry) => script(entry.path)).join("\n");
+  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => !entry.captcha && ((!denied && (validators || formControls)) || entry.id !== "paqvilo-webuivalidation")).map((entry) => script(entry.path)).join("\n");
+  const captchaScripts = formControls && CAPTCHA_MARKER.test(String(content ?? "")) ? LOCAL_ASPNET_SCRIPTS.filter((entry) => entry.captcha).map((entry) => script(entry.path)).join("\n") + "\n" : "";
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
   // A service document (the quick view) names its own form scripts (formScriptPaths).
@@ -193,7 +202,7 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
     `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}"${MULTIPART_MARKER.test(String(content ?? "")) ? ' enctype="multipart/form-data"' : ""}>\n` +
     `<div class="aspNetHidden">\n${hidden("__EVENTTARGET", "")}\n${hidden("__EVENTARGUMENT", "")}\n${hidden("__VIEWSTATE", viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
-    `${resources}\n${formScripts}\n${extraScripts ? extraScripts + "\n" : ""}${onSubmit}${content}` +
+    `${resources}\n${formScripts}\n${captchaScripts}${extraScripts ? extraScripts + "\n" : ""}${onSubmit}${content}` +
     // ASP.NET renders the generator and event validation fields at the end of the server form.
     `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${eventValidation ? hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`) + "\n" : ""}</div>${trailing}</form>`
   );
@@ -211,10 +220,11 @@ export function nativePageRegions({ content = "", action = "/", bodyScripts = []
   // Liquid pages get the server form only for their form controls and calendar lists; legacy
   // ASPX page templates (rewrite URLs) always run inside the WebForms master's content_form.
   const calendar = kind === "calendar-list";
+  // A legacy ASPX page template's content_form (serverFormId) writes no __EVENTVALIDATION (live rewrite and bound pages).
   const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component" || calendar;
   return {
     kind,
-    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant, extraScripts: formScripts, eventValidation: !calendar }) : content,
+    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant, extraScripts: formScripts, eventValidation: !calendar && !serverFormId }) : content,
     bodyScripts: other.length ? renderScripts(other) : "",
   };
 }
@@ -261,9 +271,19 @@ export function rewritePageLayout(page, pageTemplate) {
     main =
       `<div class="row"><div class="col-md-8">${snippetDiv("Social Share Widget Code Page Top")}{% include 'Page Copy' %}${entityControls}${contentBottom}</div>` +
       `<div class="col-md-4"><div class="sidebar">${sidebarTop}{% include 'Weblink List Group' weblink_set_name: 'Secondary Navigation' %}${placements}</div></div></div>`;
+  } else if (layout === "fullpage") {
+    // FullPage.aspx: div#mainContent holds the page copy (one editable element with the
+    // page-copy class) and the three entity control holders, empty when the page binds none;
+    // the page metadata and child links follow it (live bound and rewrite pages).
+    const holders =
+      DEFAULT_VALIDATION_HOOKS +
+      (advancedForm ? `{% webform id: '${advancedForm}', pp_page_control: true %}` : '<div id="WebFormControl"></div>') +
+      (basicForm ? `{% entityform id: '${basicForm}', pp_page_control: true %}` : '<div id="EntityFormControl"></div>') +
+      (list ? `{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}` : "");
+    main = `<div id="mainContent">{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %}${holders}</div>${pageMetadata}{% include 'Child Link List Group' %}`;
+    return { source: `${heading}<div class="container">${main}</div>`, serverFormId: "content_form", contentRegion: true };
   } else {
-    const contentBottom = layout === "fullpage" ? `${pageMetadata}{% include 'Child Link List Group' %}` : "";
-    main = `{% include 'Page Copy' %}${entityControls}${contentBottom}`;
+    main = `{% include 'Page Copy' %}${entityControls}`;
   }
   return { source: `${heading}<div class="container">${main}</div>`, serverFormId: "content_form" };
 }

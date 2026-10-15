@@ -14,6 +14,7 @@ A scenario passes when every delta between its live capture and its Mirage captu
 | Responses | Status and headers are compared. HTML bodies are compared as DOM, and JSON, form and text bodies as values. When a body is not stored, its byte count and SHA-256 are compared instead. |
 | DOM (`dom.html`) | A structural parse5 walk from the first element compares the tag, every attribute and the class token list. It also compares `style` with whitespace normalised, the text of text nodes, child counts, and the contents of JSON `<script>` and `<style>` elements. The final URL and the title are compared too. |
 | Element inventory (`elements.json`) | Elements are matched by selector. The compare checks presence, tag, `visible`, `disabled`, `readonly`, `required`, `value`, classes and attributes. |
+| Same-origin frames (`frames.json`, frame elements in `elements.json`) | Each same-origin frame's DOM is stored under its URL path (a repeated path gets `#2`, `#3` …). It is walked like the page under the location `frame <path>`, after the same normalisations. A frame on one side only is a `presence` delta. Its elements are inventoried with the selector prefixed by `frame(<path>) ` and compared like the page's. Frames on another origin are not inventoried. |
 | Console (`console.json`) | Error and warning entries and page errors, compared as sets. |
 
 The verdict per scenario is one of the following:
@@ -30,7 +31,7 @@ The verdict per scenario is one of the following:
 - **Pixels.** Both sides save `screenshot.png` for review, but nothing compares them. Layout matters only as far as markup, classes, inline styles and element visibility show it.
 - **Non-JSON script elements.** Their elements and inline contents are left out of the DOM walk. Requests for script files and their response bodies are still compared.
 - **Cross-origin traffic the capture does not record.** On live, this includes the platform CDN bundles. An allowlist entry covers the resulting presence deltas.
-- **Iframe contents.** Modal list forms and the lookup create dialog load in an iframe that is not inventoried.
+- **Cross-origin iframe contents.** Same-origin frames, such as modal list forms and the lookup create dialog, are inventoried. Captures taken before that change have no `frames.json`.
 - **Console `log` and `info` entries.**
 
 ### Normalisations and why each is safe
@@ -43,6 +44,7 @@ The compare does not hide differences by default. Each normalisation below repla
 | `UpdMSPicklistControl<n>` → `{n}` | An instance counter of a hosted bundle. |
 | `$ctl<n>` → `$ctl{n}` | An ASP.NET control counter in generated control names. The name prefix stays significant. |
 | `data-content-id` GUIDs → `{guid}`, `popoverUpdateButton_<guid>` → `{guid}` | Per-render GUIDs. The attribute's presence is still compared. |
+| The id of each `div.addressCompositeControlContainer` → `{address-composite-id-<n>}` (also in CSS-escaped selectors) | The address composite control's hidden popover container gets a fresh GUID per render. Only ids of elements with that class are tokenised, in document order. Other GUID ids, such as record ids, stay significant. |
 | The matrix origin and loopback origins → `{origin}` | Each side links to its own origin. The path after the origin is still compared, in DOM, elements, requests and headers. |
 | `x-sim-*` request and response headers stripped | Mirage diagnostics, not portal behaviour. |
 | Grid data `Records[n].Attributes` matched by `Name` | The live portal lists each record's attributes in storage order, which differs between records of one response. The values are still compared per attribute. |
@@ -50,7 +52,7 @@ The compare does not hide differences by default. Each normalisation below repla
 | `nonce` attributes ignored, `/__sim/` requests not recorded | Per-response values and the local runtime's own instrumentation. |
 | `{token}` placeholders, cookie names only, redacted query values | These are written at capture time on both sides, so secrets never reach the evidence. The same placeholder compares equal. |
 
-The token normalisations (the first four rows) are the D11 decision. Before it, the elements' presence was allowlisted. Normalising the token instead keeps the element visible to the compare.
+The token normalisations (the first five rows) are the D11 decision. Before it, the elements' presence was allowlisted. Normalising the token instead keeps the element visible to the compare.
 
 ## Allowlist model
 
@@ -64,7 +66,7 @@ The allowlist (`allowlist.json` in the project) lists the differences that are e
 There are two kinds of proof:
 
 - **`platform-generated`.** The platform produces the value, and Mirage cannot derive it from the exported sources. Examples: hosting and transport headers, request and correlation ids, build hashes, platform runtime script bodies, and platform metadata ids. The entry cites the Learn page or the live evidence that shows it.
-- **`live-run-variance`.** The value differs between two independent live captures of the same scenario. Examples: anti-spam field names, per-run instance ids, and creation stamps. When compare runs with `--second-live`, such an entry explains only the deltas the second live capture actually varied on. Any other delta it would cover is reported as `unprovenVariance` and stays unexplained. Entries merged before a variance run are pending until that run confirms them.
+- **`live-run-variance`.** The value differs between two independent live captures of the same scenario. Examples: anti-spam field names, per-run instance ids, and creation stamps. When compare runs with `--second-live`, the deltas between the two live captures are classified against the same allowlist; the entries they match are *witnessed* in that scenario (`variance.entries` in its `diff.json`). The proof is per entry within the scenario, not per exact location, because the varying token often sits in an element id, a posted field name or a request index. A live-run-variance entry explains a Mirage delta only in a scenario where it is witnessed. Any other delta it would cover is reported as `unprovenVariance` and stays unexplained. A delta whose exact location and field also differ between the live captures carries `liveVariance`. The report's `variance` section lists, per entry, the paired scenarios it explains a delta in, the scenarios that witnessed it, and the unproven scenarios and deltas. Entries merged before a variance run are pending until that run confirms them.
 
 ### Review
 

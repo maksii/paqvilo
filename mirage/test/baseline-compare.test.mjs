@@ -122,6 +122,66 @@ test("compareScenario verdicts, allowlist classification, second-live variance a
   assert.equal(variance.deltas[0].liveVariance, true);
   assert.equal(variance.variance.folder, "live-2");
   assert.equal(fail.deltas[0].liveVariance, undefined);
+  // The varying token sits in the element id and in a posted field name, and live-2 makes one request more,
+  // so no delta key repeats between the captures: the proof is the entry witnessed in the same scenario.
+  const form = { "content-type": "application/x-www-form-urlencoded" };
+  const tokenFolder = async (name, token, extra = []) => {
+    await writeFolder(dir(name), { dom: `<html><head></head><body><input id="frm_pref_${token}" name="frm_pref_${token}"><h1>Hello</h1></body></html>` });
+    const post = { seq: extra.length + 1, method: "POST", url: "https://p.invalid/form", resourceType: "document", headers: form, body: `ctl00$frm_pref_${token}=&a=1`, response: { status: 200, headers: {}, body: null } };
+    await fs.writeFile(path.join(dir(name), "requests.json"), JSON.stringify([...extra, post]));
+  };
+  await tokenFolder("token-live", "6e6aa2f2");
+  await tokenFolder("token-live-2", "e63fac8b", [req(1, "https://p.invalid/extra")]);
+  await tokenFolder("token-mirage", "400fbd8d");
+  await tokenFolder("token-same", "6e6aa2f2");
+  const tokenFile = dir("allow-token.json");
+  const tokenEntry = { reason: "invented", proof: "live-run-variance", evidence: "fixture" };
+  await fs.writeFile(tokenFile, JSON.stringify({ version: 1, entries: [
+    { ...tokenEntry, id: "honeypot", scope: "dom", pattern: "input#frm_pref_[0-9a-f]{8}$", field: "^attr\\.(id|name)$" },
+    { ...tokenEntry, id: "honeypot-field", scope: "request", pattern: "POST .*/form$", field: "^body\\..*frm_pref_[0-9a-f]{8}" },
+    { ...tokenEntry, id: "unwitnessed", scope: "dom", pattern: "h9", field: "^text$" },
+  ] }));
+  const tokens = await loadAllowlist(tokenFile);
+  const witnessed = await compareScenario({ scenario, liveDir: dir("token-live"), mirageDir: dir("token-mirage"), secondDir: dir("token-live-2"), allowlist: tokens });
+  assert.equal(witnessed.verdict, "ALLOWED");
+  assert.deepEqual(witnessed.variance.entries, ["honeypot", "honeypot-field"]);
+  assert.deepEqual(witnessed.counts.variance, { entries: ["honeypot", "honeypot-field"], matched: ["honeypot", "honeypot-field"], unproven: {} });
+  assert.ok(witnessed.deltas.some((d) => d.scope === "request" && d.allowlist === "honeypot-field" && !d.liveVariance));
+  const notWitnessed = await compareScenario({ scenario, liveDir: dir("token-live"), mirageDir: dir("token-mirage"), secondDir: dir("token-same"), allowlist: tokens });
+  assert.equal(notWitnessed.verdict, "FAIL");
+  assert.deepEqual(notWitnessed.variance.entries, []);
+  assert.ok(notWitnessed.deltas.every((d) => d.unprovenVariance));
+  const tokenReport = { generatedAt: "2026-01-01", scenarios: [witnessed, notWitnessed] };
+  assert.deepEqual(summarize(tokenReport).variance, {
+    honeypot: { paired: 2, witnessed: 1, unprovenScenarios: 1, unprovenDeltas: notWitnessed.counts.variance.unproven.honeypot },
+    "honeypot-field": { paired: 2, witnessed: 1, unprovenScenarios: 1, unprovenDeltas: notWitnessed.counts.variance.unproven["honeypot-field"] },
+  });
+  assert.match(summaryMarkdown({ ...tokenReport, ...summarize(tokenReport) }), /\| honeypot \| 2 \| 1 \| 1 \| \d+ \|/);
+  // The address composite container's per-render GUID id is tokenised (by its class), also in CSS-escaped selectors.
+  const addressFolder = async (name, id, selectorId) => {
+    await writeFolder(dir(name), { dom: `<html><head></head><body><div id="${id}" class="content d-none addressCompositeControlContainer"><div>x</div></div><div id="a0000000-0000-4000-8000-000000000001">row</div></body></html>` });
+    const el = (selector) => ({ selector, tag: "div", classes: [], attributes: {}, visible: false, disabled: false, readonly: false, required: false, value: "" });
+    await fs.writeFile(path.join(dir(name), "elements.json"), JSON.stringify([el(`div#${selectorId}`), el(`div#${selectorId}>div`)]));
+  };
+  await addressFolder("address-live", "e457bd14-4c55-4c12-974a-8b4b03f0a92f", "e457bd14-4c55-4c12-974a-8b4b03f0a92f");
+  await addressFolder("address-mirage", "077f7854-970c-4296-893f-27841832ff24", "\\30 77f7854-970c-4296-893f-27841832ff24");
+  assert.equal((await compareScenario({ scenario, liveDir: dir("address-live"), mirageDir: dir("address-mirage"), allowlist: none })).verdict, "PASS");
+  // Other GUID ids (record ids) are not touched.
+  await writeFolder(dir("address-other"), { dom: (await fs.readFile(path.join(dir("address-mirage"), "dom.html"), "utf8")).replace("a0000000-0000-4000-8000-000000000001", "a0000000-0000-4000-8000-000000000002") });
+  await fs.copyFile(path.join(dir("address-mirage"), "elements.json"), path.join(dir("address-other"), "elements.json"));
+  assert.deepEqual((await compareScenario({ scenario, liveDir: dir("address-live"), mirageDir: dir("address-other"), allowlist: none })).deltas.map((d) => d.field), ["attr.id"]);
+  // Same-origin frame documents (frames.json) are diffed under "frame <path>"; a frame on one side only is a presence delta.
+  const frameFolder = async (name, frames) => {
+    await writeFolder(dir(name));
+    if (frames) await fs.writeFile(path.join(dir(name), "frames.json"), JSON.stringify(frames));
+  };
+  await frameFolder("frame-live", { "/inner": "<html><head></head><body><input id='n' value='a'></body></html>" });
+  await frameFolder("frame-mirage", { "/inner": "<html><head></head><body><input id='n' value='b'></body></html>" });
+  await frameFolder("frame-none");
+  const framed = await compareScenario({ scenario, liveDir: dir("frame-live"), mirageDir: dir("frame-mirage"), allowlist: none });
+  assert.deepEqual(framed.deltas.map((d) => [d.location, d.field, d.live, d.mirage]), [["frame /inner html:nth(0)>body:nth(1)>input#n", "attr.value", "a", "b"]]);
+  const frameless = await compareScenario({ scenario, liveDir: dir("frame-live"), mirageDir: dir("frame-none"), allowlist: none });
+  assert.deepEqual(frameless.deltas.map((d) => [d.location, d.field, d.live, d.mirage]), [["frame /inner", "presence", "present", "(absent)"]]);
   const missing = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("nope"), allowlist: none });
   assert.equal(missing.verdict, "error");
   assert.match(missing.reason, /mirage capture missing/);

@@ -7,6 +7,7 @@ import { createWebFormSessions } from "../lib/form-service.mjs";
 import { decodeNativeViewState, nativeFormControlIds } from "../lib/native-postback.mjs";
 import { RENDER_ABORT_MARKER } from "../lib/platform.mjs";
 import { webFormsForm } from "../lib/platform-manifest.mjs";
+import fs from "node:fs";
 
 const HOLDER = "a0000000-0000-4000-8000-000000000001";
 const FORM = "f0000000-0000-4000-8000-000000000002";
@@ -53,11 +54,11 @@ test("a multistep step shows the reference record's read-only form first and fai
   assert.equal((view.match(/class="actions"/g) ?? []).length, 1);
 });
 
-async function gadget({ mode = 100000000, metadata = {}, cells, postback = null, params = {} }) {
+async function gadget({ mode = 100000000, metadata = {}, cells, postback = null, params = {}, solution = undefined }) {
   const portal = { website: { id: "site" }, forms: [{ id: FORM, name: "Gadget", mode, metadata: { adx_entityformid: FORM, ...metadata } }], lists: [], pages: [], records: [], settings: v5, websiteLanguages: [{ lcid: 1033, isDefault: true }] };
   const schemas = { [FORM]: { entity: "gadget", title: "Gadget", fields: gadgetFields, layout: cells } };
   const gadgetStore = { ...store, get: async (entity, id) => (entity === "gadget" ? { gadgetid: id, name: "Existing", statecode: 0, statuscode: 1 } : store.get(entity, id)), allowed: () => true };
-  return renderComponent("entityform", "Gadget", { user: { id: "u", contactId: "u" }, request: { params } }, { portal, store: gadgetStore, schemas, nativePostbackState: postback });
+  return renderComponent("entityform", "Gadget", { user: { id: "u", contactId: "u" }, request: { params } }, { portal, store: gadgetStore, schemas, nativePostbackState: postback, ...(solution ? { metadata: solution } : {}) });
 }
 
 test("an inline web resource fails the form at its cell with the actions inside the cell", async () => {
@@ -105,4 +106,19 @@ test("the view state payload accepts only its own shape and string values", () =
   assert.equal(decodeNativeViewState(Buffer.from('{"v":1}').toString("base64")), null);
   const forged = "/wE" + Buffer.from(JSON.stringify({ v: 1, form: "f", autoStep: -2, values: { ok: "x", __proto__: "y", "bad name": "z", nested: { a: 1 } } })).toString("base64");
   assert.deepEqual(decodeNativeViewState(forged), { form: "f", autoStep: 0, values: { ok: "x" } });
+});
+
+// UNVERIFIED until the post-fix live capture (Wave Q): inline rendering embeds an HTML web
+// resource's body content in the cell; any other type fails the form (the SVG test above).
+test("an inline HTML web resource embeds its body content and does not fail the form", async (t) => {
+  const os = await import("node:os");
+  const path = await import("node:path");
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mirage-webresource-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(root, "WebResources"));
+  fs.writeFileSync(path.join(root, "WebResources", "banner.html"), "<!DOCTYPE html><html><head><title>B</title></head><body><h2 class=\"banner\">Banner</h2></body></html>");
+  const html = await gadget({ mode: 100000001, params: { id: "g1" }, metadata: { adx_renderwebresourcesinline: true }, solution: { roots: [root], entities: {} }, cells: [section("main", [[{ name: "name" }], [{ type: "webresource", id: "WebResource_banner", url: "banner.html", label: "Banner" }], [{ name: "code" }]])] });
+  assert.match(html, /<div class="control"><h2 class="banner">Banner<\/h2><\/div>/);
+  assert.match(html, /id="code"/);
+  assert.equal(html.endsWith(RENDER_ABORT_MARKER), false);
 });

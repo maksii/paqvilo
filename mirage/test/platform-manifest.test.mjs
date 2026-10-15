@@ -48,7 +48,7 @@ test("standalone code components require a server form without native basic form
 });
 
 test("the WebForms server form carries the native hidden fields, postback stub and form scripts in order", () => {
-  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div></div><script>${VALIDATED}</script>` });
+  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div><script>${VALIDATED}</script>` });
   // Without a form control only the ScriptManager's blockUI reference loads.
   const bare = webFormsForm({ id: "content_form", content: "<p>Copy</p>" });
   assert.match(bare, /<script src="\/js\/jquery\.blockUI\.js" type="text\/javascript"><\/script>/);
@@ -71,7 +71,7 @@ test("the WebForms server form carries the native hidden fields, postback stub a
     '<script src="/xrm-adx/js/radcaptcha.js"',
     '<script src="/xrm-adx/js/crmentityformview.js"',
     "function WebForm_OnSubmit()",
-    '<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div></div>',
+    '<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div>',
     // ASP.NET renders the generator and event validation fields last in the server form.
     'name="__VIEWSTATEGENERATOR"',
     'name="__VIEWSTATEENCRYPTED"',
@@ -234,6 +234,24 @@ test("native platform paths are served from local equivalents unless the export 
   }
   assert.equal((await get("/js/jquery.blockUI.js")).headers.get("x-sim-resource-provider"), "local-platform-equivalent");
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Resources/ResourceManager`)).status, 404);
+});
+
+test("local platform files are dated by their file and answer conditional requests with 304", async (t) => {
+  const { app, get } = await shellFixture(t);
+  const cases = [
+    ["/xrm-adx/js/crmentityformview.js", "lib/crmentityformview-compat.js"],
+    ["/xrm-adx/js/jquery.stackranking.js", "lib/stackranking-compat.js"],
+    ["/Areas/Account/css/account.css", "lib/account-compat.css"],
+  ];
+  for (const [pathname, file] of cases) {
+    const response = await get(pathname);
+    assert.equal(response.status, 200, pathname);
+    const { mtimeMs } = await fs.stat(new URL(`../${file}`, import.meta.url));
+    assert.equal(response.headers.get("last-modified"), new Date(Math.floor(mtimeMs / 1000) * 1000).toUTCString(), pathname);
+    const again = await fetch(app.url + pathname, { headers: { "if-none-match": response.headers.get("etag") } });
+    assert.equal(again.status, 304, pathname);
+    assert.equal(await again.text(), "", pathname);
+  }
 });
 
 test("an exported web file at a native platform path wins over the local equivalent", async (t) => {
@@ -554,4 +572,51 @@ test("an aborted form control writes the closing tags that follow it after the f
   const html = webFormsForm({ content: '<div class="page"><div id="control">partial</div><!--paqvilo-mirage-render-aborted--></div>\n</div><p>dropped</p>' });
   assert.doesNotMatch(html, /dropped|render-aborted/);
   assert.match(html, /partial<\/div><div class="aspNetHidden">[\s\S]*?<\/div><\/div>\n<\/div><\/form>$/);
+});
+
+test("a form showing a captcha registers the RadCaptcha script resources after the form scripts", () => {
+  const captcha = webFormsForm({ content: '<!--pp-native-form--><!--pp-captcha--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
+  assert.match(captcha, /crmentityformview\.js" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-telerik-support&amp;t=0" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-radcaptcha&amp;t=0" type="text\/javascript"><\/script>/);
+  const plain = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
+  assert.doesNotMatch(plain, /paqvilo-radcaptcha|paqvilo-telerik-support/);
+});
+
+test("the RadCaptcha script resources answer as text/javascript", async (t) => {
+  const { get } = await shellFixture(t);
+  for (const d of ["paqvilo-telerik-support", "paqvilo-radcaptcha"]) {
+    const response = await get(`/ScriptResource.axd?d=${d}&t=0`);
+    assert.equal(response.status, 200, d);
+    assert.equal(response.headers.get("content-type"), "text/javascript", d);
+    assert.match(await response.text(), /radcaptcha-compat\.js/, d);
+  }
+});
+
+test("event validation is written for input controls only, and never on a legacy page template's form", () => {
+  const message = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="alert">No access.</div></div>' });
+  assert.doesNotMatch(message, /__EVENTVALIDATION/);
+  const inputs = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>' });
+  assert.match(inputs, /name="__EVENTVALIDATION"/);
+  const legacy = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>', serverFormId: "content_form" });
+  assert.doesNotMatch(legacy.content, /__EVENTVALIDATION/);
+});
+
+test("a missing file under the platform's static areas is a plain 404 without Vary", async (t) => {
+  const { get } = await shellFixture(t);
+  const response = await get("/Areas/EntityList/css/img/loading-bar.gif");
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("vary"), null);
+  assert.equal(response.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  assert.equal(await response.text(), "");
+  assert.equal((await get("/Areas/EntityList/js/entitylist-calendar.js")).status, 200);
+});
+
+test("FullPage.aspx lays out div#mainContent with the page copy and the entity control holders, without a main landmark", async () => {
+  const { rewritePageLayout } = await import("../lib/platform-manifest.mjs");
+  const list = "11111111-1111-4111-8111-111111111111";
+  const layout = rewritePageLayout({ listId: list }, { rewriteUrl: "~/Pages/FullPage.aspx" });
+  assert.equal(layout.contentRegion, true);
+  assert.equal(layout.serverFormId, "content_form");
+  assert.match(layout.source, /<div class="container"><div id="mainContent">\{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %\}/);
+  assert.match(layout.source, new RegExp(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>\{% entitylist id: '${list}', pp_page_control: true %\}\{% endentitylist %\}</div><div class="page-metadata clearfix">`));
+  assert.equal(rewritePageLayout({}, { rewriteUrl: "~/Pages/WebForm.aspx" }).contentRegion, undefined);
 });

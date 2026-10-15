@@ -91,7 +91,10 @@ test("Bootstrap 5 notes with metadata: configured texts, template toolbar, six-n
   const settings = { CreateEnabled: true, EditEnabled: true, DeleteEnabled: true, PageSize: 10, ListTitle: "Gadget notes", AddNoteButtonLabel: "Add gadget note", NotePrivacyLabel: "Hidden", EmptyMessage: "No gadget notes.", ListOrders: [{ Attribute: "createdon", Direction: "Descending" }] };
   const html = await render({ cells: [[{ name: "name" }, { type: "notes", id: "notescontrol" }]], records: [notesRow(settings)] });
   const notes = html.slice(html.indexOf('<div id="notescontrol">'));
-  assert.match(notes, /^<div id="notescontrol"><div class="col-lg-8 entity-notes" data-add-accept-types="\*" data-add-enabled="True" data-bs-target="[^"]*" data-delete-enabled="True" data-edit-enabled="True"/);
+  assert.match(notes, /^<div id="notescontrol"><div class="col-lg-8 entity-notes" data-add-accept-types="\*" data-add-enabled="True" data-attachmentsettings="[^"]+" data-bs-target="[^"]*" data-delete-enabled="True" data-edit-enabled="True"/);
+  // The form's note attachment settings travel as a readable local token (live: a server-encrypted blob).
+  const token = JSON.parse(Buffer.from(/data-attachmentsettings="([^"]+)"/.exec(notes)[1], "base64").toString("utf8"));
+  assert.equal(token.paqvilo, "mirage-note-attachment-settings");
   assert.match(notes, /data-orders="\[\{&quot;Attribute&quot;:&quot;createdon&quot;,&quot;Alias&quot;:null,&quot;Direction&quot;:1\}\]" data-pagesize="6"/);
   assert.match(notes, /<div class="col-md-12 page-header mr-0"><h3>Gadget notes<\/h3><\/div><script id="notes-template"/);
   assert.match(notes, /<div class="label&#32;label-warning">Hidden<\/div>/);
@@ -100,8 +103,12 @@ test("Bootstrap 5 notes with metadata: configured texts, template toolbar, six-n
   assert.match(notes, /<div class="note-actions row"><div class="col-md-3"><a class="addnote btn btn-default" href="#" role="button">Add gadget note<\/a><\/div><div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="6">/);
   for (const dialog of ["modal-addnote", "modal-editnote", "modal-delete modal-deletenote"]) assert.match(notes, new RegExp(`class="modal fade ${dialog}"`));
   // The notes permission check gates the add/edit/delete flags.
+  // Adding needs AppendTo on the record too: a reader without it keeps edit and delete (live reader page).
+  const reader = await render({ cells: [[{ name: "name" }, { type: "notes", id: "notescontrol" }]], records: [notesRow(settings)], storeOverride: store({ allowed: (entity, operation) => !(entity === "gadget" && operation === "appendTo") }) });
+  assert.match(reader, /data-add-accept-types="\*" data-add-enabled="False"[^>]*data-delete-enabled="True" data-edit-enabled="True"/);
   const denied = await render({ cells: [[{ name: "name" }, { type: "notes", id: "notescontrol" }]], records: [notesRow(settings)], storeOverride: store({ allowed: (entity) => entity !== "annotation" }) });
-  assert.match(denied, /data-add-enabled="False" data-bs-target="[^"]*" data-delete-enabled="False" data-edit-enabled="False"/);
+  // A configured add keeps the attachment settings when the visitor may not add (live reader page).
+  assert.match(denied, /data-add-enabled="False" data-attachmentsettings="[^"]+" data-bs-target="[^"]*" data-delete-enabled="False" data-edit-enabled="False"/);
 });
 
 test("the attach-file control renders the platform upload control from the form's attach settings", async () => {
@@ -153,4 +160,13 @@ test("an entity_list include of an absent (deactivated) list renders the platfor
     renderComponent("entitylist", "missing", { key: "missing", request: { params: {} } }, { portal, store: store(), schemas: {}, args: { key: "missing" } }),
     { message: "Object reference not set to an instance of an object." },
   );
+});
+
+test("Bootstrap 5 notes page as many notes as the cell spans rows, whatever PageSize says", async () => {
+  const settings = { CreateEnabled: true, PageSize: 10 };
+  const html = await render({ cells: [[{ name: "name" }, { type: "notes", id: "notescontrol", rowspan: 23 }]], records: [notesRow(settings)] });
+  assert.match(html, /class="col-lg-8 entity-notes"[^>]*data-pagesize="23"/);
+  assert.match(html, /class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="23"/);
+  const plain = await render({ cells: [[{ name: "name" }, { type: "notes", id: "notescontrol" }]], records: [notesRow(settings)] });
+  assert.match(plain, /class="col-lg-8 entity-notes"[^>]*data-pagesize="6"/);
 });

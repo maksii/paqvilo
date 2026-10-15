@@ -222,6 +222,15 @@ export function diffDom(a, b, out, root = "dom") {
   return out;
 }
 
+/** Same-origin frame documents (frames.json, keyed by frame path): presence per path, then the DOM walk under "frame <path>". */
+export function diffFrames(live = {}, mirage = {}, out = []) {
+  for (const key of new Set([...Object.keys(live), ...Object.keys(mirage)])) {
+    if (!(key in mirage) || !(key in live)) out.push(delta("dom", "frame " + key, "presence", key in live ? "present" : "(absent)", key in mirage ? "present" : "(absent)"));
+    else diffDom(withoutInjectedStyles(parse(live[key])), withoutInjectedStyles(parse(mirage[key])), out, "frame " + key);
+  }
+  return out;
+}
+
 export function compareElements(live = [], mirage = [], out = []) {
   const byKey = (items) => new Map(items.map((item) => [item.selector, item]));
   const A = byKey(live);
@@ -260,6 +269,7 @@ async function loadCapture(dir) {
     elements: (await readJson(path.join(dir, "elements.json"), [])),
     console: (await readJson(path.join(dir, "console.json"), { console: [], pageErrors: [] })),
     dom: await fs.readFile(path.join(dir, "dom.html"), "utf8").catch(() => ""),
+    frames: (await readJson(path.join(dir, "frames.json"), {})) ?? {},
   };
 }
 
@@ -274,10 +284,23 @@ export const normalizeGeneratedIds = (text, origins = []) => {
   for (const origin of origins) if (origin) out = out.split(origin).join("{origin}");
   return out.replace(LOOPBACK_ORIGIN, "{origin}");
 };
+// The address composite control's hidden popover container carries a per-render GUID id (D11); only ids of elements
+// with that class are tokenised (in document order), plain text and CSS-escaped selector forms alike.
+const ADDRESS_CONTAINER = /<div\b[^>]*\baddressCompositeControlContainer\b[^>]*>/g;
+export const addressContainerIds = (dom = "") => [...dom.matchAll(ADDRESS_CONTAINER)].map((m) => /\bid="([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})"/i.exec(m[0])?.[1]).filter(Boolean);
+const withoutAddressIds = (text, ids) =>
+  ids.reduce((acc, id, n) => {
+    const token = `{address-composite-id-${n}}`;
+    const out = acc.split(id).join(token);
+    // CSS.escape writes a leading digit as \3<digit><space>; elements.json stores the selector JSON-escaped.
+    return /^\d/.test(id) ? out.split(`\\\\3${id[0]} ${id.slice(1)}`).join(token).split(`\\3${id[0]} ${id.slice(1)}`).join(token) : out;
+  }, text);
 const normalizedCapture = (capture, origins = []) => {
   if (!capture) return capture;
-  const normalizeJson = (value) => JSON.parse(normalizeGeneratedIds(JSON.stringify(value ?? []), origins));
-  return { ...capture, dom: normalizeGeneratedIds(capture.dom ?? "", origins), elements: normalizeJson(capture.elements), requests: normalizeJson(capture.requests) };
+  const ids = addressContainerIds(capture.dom ?? "");
+  const normalizeJson = (value) => JSON.parse(withoutAddressIds(normalizeGeneratedIds(JSON.stringify(value ?? []), origins), ids));
+  const frames = Object.fromEntries(Object.entries(capture.frames ?? {}).map(([key, dom]) => { const frameIds = addressContainerIds(dom); return [key, withoutAddressIds(normalizeGeneratedIds(dom ?? "", origins), frameIds)]; }));
+  return { ...capture, frames, dom: withoutAddressIds(normalizeGeneratedIds(capture.dom ?? "", origins), ids), elements: normalizeJson(capture.elements), requests: normalizeJson(capture.requests) };
 };
 
 export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist, origins = [] }) {
@@ -298,33 +321,45 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
   if (live.meta.finalUrl !== mirage.meta.finalUrl) deltas.push(delta("dom", "finalUrl", "url", live.meta.finalUrl, mirage.meta.finalUrl));
   if (live.meta.title !== mirage.meta.title) deltas.push(delta("dom", "title", "text", live.meta.title, mirage.meta.title));
   diffDom(withoutInjectedStyles(parse(live.dom)), withoutInjectedStyles(parse(mirage.dom)), deltas);
+  diffFrames(live.frames, mirage.frames, deltas);
   compareElements(live.elements, mirage.elements, deltas);
   compareConsole(live.console, mirage.console, deltas);
-  // Live-run variance: deltas that also appear between two independent live captures are reported with that proof.
+  // Live-run variance: the live-vs-live-2 deltas, classified like the Mirage ones, witness the
+  // live-run-variance entries they match. Tokens sit in element ids, field names and request
+  // indexes, so the proof is per entry within the scenario, not per exact location.
+  const entryById = new Map((allowlist.entries ?? []).map((entry) => [entry.id, entry]));
+  const isVariance = (id) => entryById.get(id)?.proof === "live-run-variance";
   let variance = null;
+  let witnessed = null;
   if (secondDir) {
     const second = normalizedCapture(await loadCapture(secondDir), origins);
     if (second?.meta.status === "captured") {
       const between = [];
       between.push(...compareRequests(live.requests, second.requests));
       diffDom(parse(live.dom), parse(second.dom), between);
+      diffFrames(live.frames, second.frames, between);
       compareElements(live.elements, second.elements, between);
       variance = new Set(between.map((d) => `${d.scope}|${d.location}|${d.field}`));
-      result.variance = { deltas: between.length, folder: path.basename(secondDir) };
+      witnessed = new Set(between.map((d) => allowed(d, allowlist)).filter(isVariance));
+      result.variance = { deltas: between.length, folder: path.basename(secondDir), entries: [...witnessed].sort(), unproven: {} };
     }
   }
-  const entryById = new Map((allowlist.entries ?? []).map((entry) => [entry.id, entry]));
   for (const item of deltas) {
     if (variance?.has(`${item.scope}|${item.location}|${item.field}`)) item.liveVariance = true;
     item.allowlist = allowed(item, allowlist);
-    // A live-run-variance entry only explains a delta the second live capture actually varied on.
-    if (item.allowlist && variance && entryById.get(item.allowlist)?.proof === "live-run-variance" && !item.liveVariance) {
+    // A live-run-variance entry explains a delta only when the second live capture witnessed it in this scenario.
+    if (item.allowlist && witnessed && isVariance(item.allowlist) && !witnessed.has(item.allowlist)) {
       item.unprovenVariance = item.allowlist;
       item.allowlist = null;
+      result.variance.unproven[item.unprovenVariance] = (result.variance.unproven[item.unprovenVariance] ?? 0) + 1;
     }
   }
+  // Paired scenario: the live-run-variance entries that explain a Mirage delta here, witnessed or not.
+  if (witnessed) result.variance.matched = [...new Set(deltas.map((d) => d.allowlist ?? d.unprovenVariance).filter(isVariance))].sort();
   result.deltas = deltas;
   result.counts = { total: deltas.length, allowed: deltas.filter((d) => d.allowlist).length, unexplained: deltas.filter((d) => !d.allowlist).length };
+  // The suite's report keeps counts per scenario, so the variance proof travels with them.
+  if (result.variance) result.counts.variance = { entries: result.variance.entries, matched: result.variance.matched ?? [], unproven: result.variance.unproven };
   result.verdict = deltas.length === 0 ? "PASS" : result.counts.unexplained === 0 ? "ALLOWED" : "FAIL";
   const groups = new Map();
   for (const item of deltas) {
@@ -340,7 +375,20 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
 export function summarize(report) {
   const totals = { pass: 0, allowed: 0, fail: 0, error: 0 };
   const bySignature = new Map();
+  // Per live-run-variance entry over the paired scenarios: where it explains a Mirage delta, where
+  // live-2 witnessed it, and the deltas (and scenarios) left unproven.
+  const variance = {};
+  const stat = (id) => (variance[id] ??= { paired: 0, witnessed: 0, unprovenScenarios: 0, unprovenDeltas: 0 });
   for (const scenario of report.scenarios) {
+    const proof = scenario.counts?.variance;
+    if (proof) {
+      for (const id of proof.matched) stat(id).paired++;
+      for (const id of proof.entries) stat(id).witnessed++;
+      for (const [id, n] of Object.entries(proof.unproven)) {
+        stat(id).unprovenScenarios++;
+        stat(id).unprovenDeltas += n;
+      }
+    }
     totals[scenario.verdict === "PASS" ? "pass" : scenario.verdict === "ALLOWED" ? "allowed" : scenario.verdict === "FAIL" ? "fail" : "error"]++;
     for (const group of scenario.signatures ?? []) {
       const entry = bySignature.get(group.signature) ?? { ...group, scenarios: 0, count: 0 };
@@ -349,12 +397,17 @@ export function summarize(report) {
       bySignature.set(group.signature, entry);
     }
   }
-  return { totals, bySignature: [...bySignature.values()].sort((a, b) => (a.allowed === b.allowed ? b.count - a.count : a.allowed ? 1 : -1)) };
+  return { totals, variance, bySignature: [...bySignature.values()].sort((a, b) => (a.allowed === b.allowed ? b.count - a.count : a.allowed ? 1 : -1)) };
 }
 
 export function summaryMarkdown(report) {
   const lines = [`# Baseline comparison ${report.generatedAt}`, "", `PASS ${report.totals.pass} · ALLOWED ${report.totals.allowed} · FAIL ${report.totals.fail} · ERROR ${report.totals.error}`, "", "| Scenario | Verdict | Deltas | Allowed | Unexplained |", "| --- | --- | ---: | ---: | ---: |"];
   for (const scenario of report.scenarios) lines.push(`| ${scenario.id} | ${scenario.verdict} | ${scenario.counts.total} | ${scenario.counts.allowed} | ${scenario.counts.unexplained} |`);
+  const variance = Object.entries(report.variance ?? {});
+  if (variance.length) {
+    lines.push("", "## Live-run variance proof (paired scenarios)", "", "| Entry | Paired | Witnessed | Unproven scenarios | Unproven deltas |", "| --- | ---: | ---: | ---: | ---: |");
+    for (const [id, v] of variance.sort(([a], [b]) => a.localeCompare(b))) lines.push(`| ${id} | ${v.paired} | ${v.witnessed} | ${v.unprovenScenarios} | ${v.unprovenDeltas} |`);
+  }
   lines.push("", "## Distinct differences (unexplained first)", "", "| Signature | Scope | Field | Scenarios | Count | Allowed | Example |", "| --- | --- | --- | ---: | ---: | --- | --- |");
   for (const group of report.bySignature.slice(0, 200)) lines.push(`| ${group.signature.slice(-12)} | ${group.scope} | ${group.field} | ${group.scenarios} | ${group.count} | ${group.allowed ? "yes" : "no"} | ${group.example.location.slice(0, 80)}: ${JSON.stringify(group.example.live).slice(0, 60)} vs ${JSON.stringify(group.example.mirage).slice(0, 60)} |`);
   return lines.join("\n") + "\n";

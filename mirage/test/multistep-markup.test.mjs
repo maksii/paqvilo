@@ -97,3 +97,13 @@ test("a multistep form with the save-changes warning renders the confirm-on-exit
   const plain = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, { portal, store, schemas, renderLiquid: async (s) => s, webFormSessions: createWebFormSessions(), webFormOwner: () => "visitor:d" });
   assert.doesNotMatch(plain, /confirmOnExit/);
 });
+
+test("Bootstrap 5 numeric indicator: repeated class on the indicator and a total of every chained step less the last", async () => {
+  const chained = { survey: { initialStepId: "one", steps: [step("one", { nextStepId: "two", title: "One" }), step("two", { nextStepId: "done", title: "Two" }), { stepId: "done", type: "redirect", title: "Done" }] } };
+  const metadata = { adx_progressindicatorenabled: true, adx_progressindicatortype: 756150001, adx_progressindicatorposition: 756150001, adx_progressindicatorignorelaststep: true };
+  const html = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, {
+    portal: { ...portal, advancedForms: [{ id: "survey", name: "Survey Wizard", metadata }] },
+    store, schemas: chained, renderLiquid: async (s) => s, webFormSessions: createWebFormSessions(), webFormOwner: () => "visitor:n",
+  });
+  assert.match(html, /<div id="WebFormControl_survey_ProgressIndicator" class=" progress-numeric bottom progress-numeric bottom"> Step <span class='number'>1<\/span>Of <span class='number total'>2<\/span> <\/div>/);
+});

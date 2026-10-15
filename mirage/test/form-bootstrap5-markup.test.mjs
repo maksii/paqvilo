@@ -206,6 +206,9 @@ test("edit mode keeps column validity read-only and the edit file control", asyn
 test("Bootstrap 5 success panel carries the platform close button", async () => {
   const html = await render({ nativePostbackState: { kind: "entityform", formId: "f0000000-0000-4000-8000-000000000001", outcome: { type: "message", message: "Saved.", hideForm: false } } });
   assert.match(html, /<div id="MessagePanel" class="message alert success alert alert-success" role="alert"><input type="submit" name="ctl00\$ContentContainer\$EntityFormControl_f0000000000040008000000000000001\$btnCloseMessage" value="x" onclick="javascript:WebForm_DoPostBackWithOptions\(new WebForm_PostBackOptions\(&quot;ctl00\$ContentContainer\$EntityFormControl_f0000000000040008000000000000001\$btnCloseMessage&quot;, &quot;&quot;, true, &quot;&quot;, &quot;&quot;, false, false\)\)" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" style="border-style: none"><span id="MessageLabel">Saved\.<\/span><\/div>/);
+  // The form configuration marks the postback render for the hosted controls (multiselect-compat.js).
+  assert.match(html, /<script type="application\/json" data-paqvilo-mirage-form-config>[^<]*"postback":true/);
+  assert.doesNotMatch(await render(), /"postback":true/);
 });
 
 test("a lookup without a form-selected view uses the target's exported default lookup view", async () => {

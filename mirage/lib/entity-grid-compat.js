@@ -165,8 +165,11 @@
   window.addEventListener("resize", closeActionMenus, { passive: true });
 
   // ---- token and transport ------------------------------------------------
+  // The token reaches the grid one task after the shell resolves it, so a quick view frame that an
+  // earlier token callback replaces navigates before the notes and grid loads (live request order).
   function token() {
-    return new Promise((resolve, reject) => {
+    return new Promise((ready, reject) => {
+      const resolve = (value) => setTimeout(() => ready(value), 0);
       const shell = window.shell;
       if (shell && typeof shell.getTokenDeferred === "function") {
         const deferred = shell.getTokenDeferred();
@@ -1494,6 +1497,19 @@
       selected.replaceChildren();
       syncOk();
       modal.querySelector(".modal-body > .alert")?.remove();
+      // Once the dialog's grid has loaded, the subgrid it belongs to reloads too (live requests:
+      // subgrid, associate grid, subgrid again).
+      if (parent) {
+        const reload = (loaded) => {
+          if (loaded.target !== gridElement) return;
+          off();
+          trigger(parent, "refresh");
+        };
+        const $ = jq();
+        const off = () => ($ ? $(gridElement).off("loaded", reload) : gridElement.removeEventListener("loaded", reload));
+        if ($) $(gridElement).on("loaded", reload);
+        else gridElement.addEventListener("loaded", reload);
+      }
       trigger(gridElement, "refresh");
     });
     on(modal, "hidden.bs.modal", (event) => {
@@ -1557,9 +1573,10 @@
       return post(container.getAttribute("data-url-get"), { regarding: bs5 ? regarding : { LogicalName: regarding.LogicalName, Id: regarding.Id }, orders: JSON.parse(container.getAttribute("data-orders") || "[]"), page, pageSize: Number(container.getAttribute("data-pagesize")) || 10 }, bs5 ? { jsonType: "application/json" } : {})
         .then((data) => {
           show(data.Records?.length ? null : ".notes-empty");
-          // The Bootstrap 5 control hides its pager for a single page (live DOM).
+          // The Bootstrap 5 control hides its pager for a single page of notes; without notes the
+          // pager is left as rendered (live DOM: item-edit/populated vs item-edit/minimal).
           const pager = bs5 && container.querySelector(".notes-pagination");
-          if (pager && !((data.PageCount ?? 0) > 1)) pager.style.display = "none";
+          if (pager && data.Records?.length && !((data.PageCount ?? 0) > 1)) pager.style.display = "none";
           const pattern = document.body?.getAttribute("data-datetimeformat");
           const bs5Card = (note) => {
             const created = note.CreatedOnDisplay ? new Date(note.CreatedOnDisplay) : null;
@@ -1688,7 +1705,8 @@
     for (const input of target.querySelectorAll("input, select")) {
       if (!input.name || input.disabled) continue;
       if ((input.type === "checkbox" || input.type === "radio") && !input.checked) continue;
-      if (input.value !== "") parameters.append(input.name, input.value);
+      // Every successful control posts, empty text boxes and selects included (live metaFilter "0=&1=1&8=").
+      parameters.append(input.name, input.value);
     }
     const serialized = parameters.toString();
     const grid = list?.querySelector(".entity-grid");

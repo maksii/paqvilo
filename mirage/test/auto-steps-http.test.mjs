@@ -65,4 +65,12 @@ test('auto-generated steps post back tab by tab and save every tab on Insert', a
   const insert = await post([['__EVENTTARGET', ids.buttons + 'InsertButton'], ['__VIEWSTATE', viewStateOf(fresh)], [ids.names + 'description', 'D']]);
   assert.equal(insert.status, 200);
   assert.equal(app.store.snapshot().tables.sample.at(-1).title, 'Own');
+  // The page's __VIEWSTATE carries the anti-forgery key: a postback without a body token is
+  // accepted with it (live postbacks post no __RequestVerificationToken) and refused without.
+  const bare = (entries) => fetch(app.url + '/', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: new URLSearchParams(entries) });
+  const keyed = await bare([['__EVENTTARGET', ''], ['__VIEWSTATE', viewStateOf(first)], [ids.names + 'title', 'Keyed'], [ids.names + 'NextButton', 'Next tab']]);
+  assert.equal(keyed.status, 200);
+  assert.match(await keyed.text(), /<h2 class="tab-title">second<\/h2>/);
+  const unkeyed = await bare([['__EVENTTARGET', ''], ['__VIEWSTATE', forged], [ids.names + 'title', 'Unkeyed'], [ids.names + 'NextButton', 'Next tab']]);
+  assert.equal(unkeyed.status, 403);
 });

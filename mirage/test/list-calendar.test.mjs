@@ -77,6 +77,7 @@ test("calendar event feed returns rows in the requested period with summary and 
   assert.match(ics, /BEGIN:VEVENT\r\nUID:a0000000-0000-4000-8000-000000000001\r\nDTSTART:20260304T103000Z/);
   const language = await fetch(`${app.url}/EntityList/Calendar/${SITE}/language.js`, { headers });
   assert.equal(language.status, 200);
+  assert.equal(language.headers.get("vary"), "*");
   assert.match(await language.text(), /calendar_languages/);
   // A list without an end date column: the platform feed's error (live).
   const open = await (await fetch(`${app.url}/EntityList/Calendar/${SITE}/${OPEN}/${VIEW}?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers })).json();

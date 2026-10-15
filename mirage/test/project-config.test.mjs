@@ -357,3 +357,9 @@ test("observed portalApplicationUser keeps the application user's display name a
   assert.equal(observedConfig({ portalApplicationUserId: "{00000000-0000-4000-8000-0000000000AA}", evidence: "invented" }).portalApplicationUserId, "00000000-0000-4000-8000-0000000000aa");
   assert.throws(() => observedConfig({ portalApplicationUserId: "app", evidence: "invented" }), /portalApplicationUserId/);
 });
+
+test("observed listODataFeeds names whether the site still serves list OData feeds", () => {
+  assert.equal(observedConfig({ listODataFeeds: "served", evidence: "Invented feed capture" }).listODataFeeds, "served");
+  assert.equal(observedConfig({ listODataFeeds: "removed", evidence: "Invented feed capture" }).listODataFeeds, "removed");
+  assert.throws(() => observedConfig({ listODataFeeds: "maybe", evidence: "Invented feed capture" }), /listODataFeeds/);
+});

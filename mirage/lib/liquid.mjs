@@ -1470,7 +1470,8 @@ export function createPortalRenderer(portal, options = {}) {
       // Preserve authored text entities, while encoding literal markup delimiters.
       const encodedSuffix = htmlEscape(titleSuffix).replace(/&amp;(#x[\da-f]+|#\d+|[a-z][\w]+);/gi, "&$1;");
       // Web templates own their content structure, including main landmarks.
-      const content = template ? body : `<main id="mainContent">${body}</main>`;
+      // A legacy page layout that names its own content region (div#mainContent) has no main landmark.
+      const content = template || rewriteLayout?.contentRegion ? body : `<main id="mainContent">${body}</main>`;
       // Native platform regions (lib/platform-manifest.mjs): WebForms form and AXD
       // scripts only on form pages; chrome markup around the header, content and footer.
       // A calendar list adds its stylesheets at the end of the head and its scripts after the

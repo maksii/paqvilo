@@ -77,6 +77,17 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
+/**
+ * A native postback's redirect as ASP.NET Response.Redirect writes it (live 302 answers): the
+ * page cache headers without Vary, the site's frame option and the "Object moved" body.
+ */
+function postbackRedirect(res, response, portal) {
+  const href = String(response.location).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+  const body = `<html><head><title>Object moved</title></head><body>\r\n<h2>Object moved to <a href="${href}">here</a>.</h2>\r\n</body></html>\r\n`;
+  const { vary: _vary, ...page } = PAGE_HEADERS;
+  res.writeHead(response.status, { ...page, "content-type": "text/html; charset=utf-8", location: response.location, "x-frame-options": siteHeaders(portal)["x-frame-options"], "content-length": Buffer.byteLength(body) });
+  return res.end(body);
+}
 import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL, PAGE_HEADERS, platformResourceHeaders } from "./lib/response-headers.mjs";
 import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
@@ -89,7 +100,7 @@ import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
 import { injectRuntime, renderComponent, renderQuickForm } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
-import { multipartControls, nativeFormTransport, decodeNativeViewState } from './lib/native-postback.mjs';
+import { multipartControls, nativeFormTransport, decodeNativeViewState, nativeViewStateKey } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from "./lib/visitor-session.mjs";
 import { handleNativeService, antiForgeryCookie } from "./lib/native-services.mjs";
 import { antiForgeryHolder, isAspNetScript, webFormsForm, platformShell, bootstrapVariant } from "./lib/platform-manifest.mjs";
@@ -3090,15 +3101,22 @@ export async function createSimulator({
     }
     // The platform's account stylesheet (account pages): local equivalent.
     if (/^\/areas\/account\/css\/account\.css$/i.test(url.pathname) && ["GET", "HEAD"].includes(req.method)) {
-      const body = await fs.readFile(path.join(ROOT, "lib", "account-compat.css"));
-      res.writeHead(200, { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "text/css; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"] }), "cache-control": "public,max-age=604800", "x-sim-resource-provider": "local-platform-equivalent" });
-      return res.end(req.method === "HEAD" ? undefined : body);
+      const file = path.join(ROOT, "lib", "account-compat.css");
+      const body = await fs.readFile(file);
+      // Dated by the local file, as the platform's by its build; conditional requests get 304.
+      const headers = { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "text/css; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"], modified: (await fs.stat(file)).mtimeMs }), "cache-control": "public,max-age=604800", "x-sim-resource-provider": "local-platform-equivalent" };
+      const unchanged = notModified(req.headers, headers);
+      res.writeHead(unchanged ? 304 : 200, headers);
+      return res.end(req.method === "HEAD" || unchanged ? undefined : body);
     }
     // The platform's stack ranking plug-in (form pages with stack rank cells): local equivalent.
     if (url.pathname === "/xrm-adx/js/jquery.stackranking.js" && ["GET", "HEAD"].includes(req.method)) {
-      const body = await fs.readFile(path.join(ROOT, "lib", "stackranking-compat.js"));
-      res.writeHead(200, { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "application/javascript; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"] }), "x-sim-resource-provider": "local-platform-equivalent" });
-      return res.end(req.method === "HEAD" ? undefined : body);
+      const file = path.join(ROOT, "lib", "stackranking-compat.js");
+      const body = await fs.readFile(file);
+      const headers = { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "application/javascript; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"], modified: (await fs.stat(file)).mtimeMs }), "x-sim-resource-provider": "local-platform-equivalent" };
+      const unchanged = notModified(req.headers, headers);
+      res.writeHead(unchanged ? 304 : 200, headers);
+      return res.end(req.method === "HEAD" || unchanged ? undefined : body);
     }
     // Native quick view document (/_portal/quickform-template-path/{websiteId}): the platform
     // serves it through the layout master (live evidence): the layout frame of a document outside
@@ -3197,8 +3215,11 @@ export async function createSimulator({
       if (contentType === "application/x-www-form-urlencoded" || multipart) {
         const controls = multipart ?? new URLSearchParams(bytes.toString('utf8'));
         if (nativePostbackEnabled && controls.has('__EVENTTARGET')) {
+          // The page's own __VIEWSTATE carries the anti-forgery key (lib/platform.mjs viewStateWithKey);
+          // a body token, when sent, must match too.
           const tokens = controls.getAll('__RequestVerificationToken');
-          if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
+          const verified = tokens.length ? tokens.length === 1 && tokens[0] === csrf : nativeViewStateKey(controls.get('__VIEWSTATE')) === csrf;
+          if (!verified) throw error('Missing portal verification token.', 403);
           nativeEntries = [...controls];
           nativeFiles = controls.files ?? [];
           const context = trace.getStore();
@@ -3238,8 +3259,10 @@ export async function createSimulator({
     } else if (nativePostbackEnabled && req.method === 'POST' && /^\/_portal\/modal-form-template-path(?:\/[^/]+)?\/?$/i.test(url.pathname)) {
       if (!String(req.headers['content-type']).startsWith('application/x-www-form-urlencoded')) throw error('Native form postback requires URLencoded controls.', 415);
       const controls = new URLSearchParams((await rawBody(req)).toString('utf8'));
+      // The same rule as a page postback: a body token, or the document's own __VIEWSTATE key.
       const tokens = controls.getAll('__RequestVerificationToken');
-      if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
+      const verified = tokens.length ? tokens.length === 1 && tokens[0] === csrf : nativeViewStateKey(controls.get('__VIEWSTATE')) === csrf;
+      if (!verified) throw error('Missing portal verification token.', 403);
       nativeEntries = [...controls];
     } else if (!["GET", "HEAD"].includes(req.method))
       throw error("Use the local Web API for writes.", 405);
@@ -3346,10 +3369,7 @@ export async function createSimulator({
           trace.getStore().error = cause;
           recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
         }
-        if (response.location) {
-          res.writeHead(response.status, { location: response.location, 'cache-control': 'no-store' });
-          return res.end();
-        }
+        if (response.location) return postbackRedirect(res, response, portal);
         trace.getStore().nativePostbackState = response.state;
         html = await renderModalForm();
         // Form.aspx registers a startup script after ItemSaved: the grid that opened the dialog
@@ -3530,6 +3550,13 @@ export async function createSimulator({
     // settings.urlHistoryRedirects = true) before the Page Not Found page (404);
     // denied pages redirect anonymous visitors to sign-in with the Access Denied page
     // as the body and render the Access Denied page (403) for signed-in visitors.
+    // A missing file under the platform's static areas (calendar loading image, live) is a plain
+    // 404 without Vary, not the portal's Page Not Found page.
+    if (["GET", "HEAD"].includes(req.method) && /^\/areas\/.+\.[a-z0-9]+$/i.test(url.pathname)) {
+      const { vary: _vary, ...page } = PAGE_HEADERS;
+      res.writeHead(404, { ...page, "content-type": "text/html; charset=utf-8", "content-length": 0 });
+      return res.end();
+    }
     const pageIdentity = currentIdentity();
     const exportedPage = deniedRoute ? null : portal.pages.find((p) => normalizePortalPath(p.url) === key && (url.pathname.endsWith("/") || key === "/"));
     const markerRoute = exportedPage || deniedRoute ? null : siteMarkerRoute(portal, url);
@@ -3580,10 +3607,7 @@ export async function createSimulator({
         nativeContext.error = cause;
         recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
       }
-      if (response.location) {
-        res.writeHead(response.status, { location: response.location, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
-        return res.end();
-      }
+      if (response.location) return postbackRedirect(res, response, portal);
       nativeContext.nativePostbackState = response.state;
       rendered = await renderCurrentPage();
     }

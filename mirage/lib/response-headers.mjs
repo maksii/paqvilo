@@ -83,20 +83,23 @@ const STARTED = Date.now();
  * - "resource-manager": the ResourceManager script, public for one day.
  * - "static": platform static files (/js/, /xrm-adx/js/) as IIS serves them: byte ranges, an
  *   IIS-style quoted ETag and Last-Modified; /js/ adds public,max-age=604800.
- * Last-Modified is the runtime start (the platform's is its build or cache time); X-Frame-Options
- * comes from the site (siteHeaders).
+ * Last-Modified is the local equivalent file's modification time when the caller passes it
+ * (modified, ms), else the runtime start (the platform's is its build or cache time); a recent
+ * value makes browsers revalidate (a conditional request answered 304 by notModified).
+ * X-Frame-Options comes from the site (siteHeaders).
  */
-export function platformResourceHeaders(kind, { pathname = "", body = "", contentType = "", frameOptions = "SAMEORIGIN" } = {}) {
+export function platformResourceHeaders(kind, { pathname = "", body = "", contentType = "", frameOptions = "SAMEORIGIN", modified = null } = {}) {
+  const changed = Number.isFinite(modified) ? modified : STARTED;
   const now = Date.now();
   if (kind === "axd")
-    return { "content-type": "application/x-javascript", "cache-control": "public", expires: httpDate(now + 365 * 86400 * 1000), "last-modified": httpDate(STARTED), "x-frame-options": frameOptions };
+    return { "content-type": "application/x-javascript", "cache-control": "public", expires: httpDate(now + 365 * 86400 * 1000), "last-modified": httpDate(changed), "x-frame-options": frameOptions };
   if (kind === "resource-manager") return { "content-type": contentType, "cache-control": "public, max-age=86400", expires: httpDate(now + 86400 * 1000), "last-modified": httpDate(now), "x-frame-options": frameOptions };
   return {
     "accept-ranges": "bytes",
     ...(/^\/js\//i.test(pathname) ? { "cache-control": "public,max-age=604800" } : {}),
     "content-type": contentType,
     etag: `"${createHash("sha256").update(body).digest("hex").slice(0, 13)}:0"`,
-    "last-modified": httpDate(STARTED),
+    "last-modified": httpDate(changed),
     vary: "Accept-Encoding",
     "x-frame-options": frameOptions,
   };
