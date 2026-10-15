@@ -94,6 +94,10 @@ function parseViewDocument(xml, entity, file, lcid) {
       fields: descendants(layout, "cell").filter((c) => c.attrs.ishidden !== "1").map((c) => ({
         name: c.attrs.name,
         width: Number(c.attrs.width) || undefined,
+        // A cell without a width is a zero-width column; disableSorting="1" disables its sort
+        // (live Contact form ActionCards grid: widths 0, Card Type unsortable).
+        ...(c.attrs.width == null ? { widthless: true } : {}),
+        ...(c.attrs.disableSorting === "1" ? { sortDisabled: true } : {}),
       })),
       file,
     });
@@ -400,7 +404,10 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               });
               continue;
             }
-            if (control?.attrs.indicationOfSubgrid === "true" || norm(control?.attrs.classid) === SUBGRID_CLASS) {
+            // A control naming a target table and a view is a dataset subgrid even without the subgrid
+            // class or flag (the platform Contact form's ActionCards control, live: a subgrid cell).
+            const datasetControl = Boolean(text(parameters, "TargetEntityType") && text(parameters, "ViewId"));
+            if (control?.attrs.indicationOfSubgrid === "true" || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl) {
               const entity = norm(text(parameters, "TargetEntityType"));
               const viewId = norm(text(parameters, "ViewId"));
               const view = metadata.views.find(
@@ -421,6 +428,8 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 })),
                 fetchXml: view?.fetchXml,
                 label: label(child(cell, "labels")),
+                // A hidden label leaves the subgrid heading empty (live Contact form ActionCards).
+                ...(cell.attrs.showlabel === "false" ? { showLabel: false } : {}),
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
               });

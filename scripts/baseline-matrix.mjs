@@ -25,9 +25,13 @@ const SIGNED_IN = "a[href*='/Account/Login/LogOff'], a[href*='SignOut'], a[href*
 const UPDATE = "input[name$='UpdateButton']";
 const probe = (goto, expect) => ({ steps: [{ goto }, { wait: 1500 }], expect });
 const edit = (alias) => `/baseline/item-edit/?id={id:${alias}}`;
-// The live side clears the portal cache after each persona switch (`live.refresh`), so the probes only cover the
-// seconds the portal needs to reload; without a refresh the permission cache lagged minutes to over an hour (runs 5-6b).
-const verify = (...probes) => ({ probes, attempts: 8, delay: 10000, settleMs: 3000 });
+// The live side may clear the portal cache after each persona switch (`live.refresh`); without a refresh the permission
+// cache lagged minutes to over an hour in runs 5-6b. The personas hold no Administrators role (it carries a site-wide
+// grant-change page rule), so the clear control is not offered to them; role writes landed within 20-35 s without one
+// (project evidence, Phase G). Every persona also proves the Administrators role is gone: the about page offers its
+// Clear cache control to that role only.
+const ADMINLESS = probe("/_services/about", { absent: ["input[name=\"clearCache\"]"] });
+const verify = (...probes) => ({ probes: [...probes, ADMINLESS], attempts: 8, delay: 10000, settleMs: 3000 });
 const PERSONAS = {
   editor: { roles: ["Baseline Editors"], verify: verify(probe("/baseline/item-create/", { present: ["#pqvd_name", SIGNED_IN] }), probe(edit("item7"), { present: ["#pqvd_name", UPDATE] })) },
   reader: { roles: ["Baseline Readers"], verify: verify(probe("/baseline/item-create/", { absent: ["#pqvd_name"], present: [SIGNED_IN] }), probe(edit("item1"), { present: ["#pqvd_name[readonly]"], absent: [UPDATE] })) },
@@ -208,6 +212,9 @@ function listScenarios(record, project = {}) {
     return out;
   }
   s("default", [{ goto: page }, { wait: { selector: `${grid} table, ${grid} .table`, state: "visible" } }, { wait: 1500 }], { present: [grid] });
+  // An account-filtered list also renders its default state under the editor (no account rows): the list's item-action
+  // configuration (DisabledItemActionLinks) is persona-dependent (K wave Q).
+  if (editor !== "editor") s("default", [{ goto: page }, { wait: { selector: `${grid} table, ${grid} .table`, state: "visible" } }, { wait: 1500 }], { present: [grid] }, "editor");
   // The view selector and the search box exist only when the list record configures them.
   if (cites(record, "pp.list.views.selector")) s("view-selector", [{ goto: page }, { wait: 1500 }, { click: ".view-toolbar .dropdown-toggle, .entitylist .view-selector .dropdown-toggle, .btn-group .dropdown-toggle" }, { wait: 600 }, { click: ".dropdown-menu a:has-text('All'), .dropdown-menu li:nth-child(2) a" }, { wait: 2000 }], { present: [grid] });
   if (cites(record, "pp.list.searchenabled")) s("search", [{ goto: page }, { wait: 1500 }, { fill: ".entitylist-search input, input.query, input[placeholder*='Search']", value: "*Alpha" }, { press: ".entitylist-search input, input.query, input[placeholder*='Search']", key: "Enter" }, { wait: 2000 }], { present: [grid] });
@@ -262,9 +269,10 @@ function multistepScenarios(record, steps = []) {
 // Pages that host no form, list or multistep form (the root index, page-rule pages, template, Liquid and bound pages,
 // the pushpin web file) render once, opened with the query their variation names (`?id=<id>` for a page whose read form
 // takes its record from the query string); a page with a web page access control rule renders for each persona the rule
-// names, the first role persona it leaves out and the anonymous visitor (every signed-in persona holds Administrators,
-// whose site-wide grant-change rule overrides restrict-read, so only the visitor can show the rule's effect). Every page
-// copy carries the page name; the pushpin is an image.
+// names, the first role persona it leaves out and the anonymous visitor. Restrict read: a persona the rule names reads the
+// page; a signed-in persona it leaves out gets the site's Access Denied page (403, still signed in); the visitor lands on
+// sign-in. Grant change: the page renders for everyone (the rule adds editing rights only). Every page copy carries the
+// page name; the pushpin is an image.
 function pageScenarios(record, manifest) {
   const out = [];
   const rule = manifest.records.find((r) => r.kind === "webpagerule" && r.path === record.path);
@@ -279,7 +287,7 @@ function pageScenarios(record, manifest) {
   const excluded = Object.entries(PERSONAS).find(([name, persona]) => persona.roles?.length && !named.includes(name))?.[0];
   const restrictRead = cites(rule, "pp.pagerule.right.restrictread");
   for (const persona of [...named, ...(excluded ? [excluded] : []), "anonymous"]) {
-    const expect = restrictRead && !named.includes(persona) ? {} : expectText;
+    const expect = restrictRead && !named.includes(persona) ? { present: [SIGNED_IN] } : expectText;
     // The anonymous visitor of a restrict-read page lands on the sign-in page (run 7a: 302 → /SignIn?ReturnUrl=…); a
     // grant-change-only page renders for it. `signIn` tells the live runner not to treat the sign-in page as a failure.
     const anonymous = restrictRead ? { present: SIGN_IN, absent: [], signIn: true } : { ...expect, absent: [] };

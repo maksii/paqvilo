@@ -595,3 +595,18 @@ test("saved query layout cells marked ishidden are not grid columns", async (t) 
   const result = await importSolutionMetadata(root, { portal: portal() });
   assert.deepEqual(result.componentSchemas.list.fields.map((field) => field.name), ["fullname"]);
 });
+
+test("a control naming a target table and a view is a dataset subgrid without the subgrid class (Contact ActionCards)", async t => {
+  const cards = '<row><cell showlabel="false" rowspan="6"><labels><label description="Assistant" languagecode="1033"/></labels><control id="ActionCards" classid="{F9A8A302-114E-466A-B582-6771B2AE0D92}"><parameters><ViewId>{view-id}</ViewId><RelationshipName /><TargetEntityType>contact</TargetEntityType><RecordsPerPage>4</RecordsPerPage></parameters></control></cell></row>';
+  const root = await fixture(t, {
+    'Entities/contact/Entity.xml': entity,
+    'Entities/contact/FormXml/main/{form-id}.xml': form('Name').replace('</rows>', cards + '</rows>'),
+    'Entities/contact/SavedQueries/{view-id}.xml': view.replace('<cell name="fullname" width="200"/>', '<cell name="fullname"/><cell name="firstname" disableSorting="1"/>'),
+  });
+  const metadata = await importSolutionMetadata(root, {portal: portal()});
+  const cell = formCells(metadata.componentSchemas['basic-form']).find(c => c.id === 'ActionCards');
+  // Layout cells without a width are zero-width columns; disableSorting="1" disables the sort.
+  assert.deepEqual(cell.fields.map(field => [field.name, field.widthless === true, field.sortDisabled === true]), [['fullname', true, false], ['firstname', true, true]]);
+  assert.deepEqual({type: cell.type, entity: cell.entity, relationship: cell.relationship, showLabel: cell.showLabel, rowspan: cell.rowspan, recordsPerPage: cell.recordsPerPage}, {type: 'subgrid', entity: 'contact', relationship: '', showLabel: false, rowspan: 6, recordsPerPage: 4});
+  assert.ok(cell.fetchXml);
+});

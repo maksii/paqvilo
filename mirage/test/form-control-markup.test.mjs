@@ -87,7 +87,7 @@ test("edit form: string, e-mail, phone and memo boxes carry the platform handler
   assert.match(picklist, /class="form-control picklist " onchange="setIsDirty\(this.id\);" required=""><option value="" label="Select" aria-label="Select"><\/option><option value="1">Email<\/option><option selected="selected" value="2">Phone<\/option>/);
   // Section titles are h3 headings; an unnamed section has no data-name.
   assert.match(html, /<legend class="section-title"><h3>Details<\/h3><\/legend><table role="presentation" data-name="details"/);
-  assert.match(html, /<fieldset><table role="presentation" class="section">/);
+  assert.match(html, /<fieldset aria-label=""><table role="presentation" class="section">/);
   // Date columns state their solution DateTimeBehavior.
   assert.match(element(html, /<input [^>]*id="birthdate"[^>]*>/), / data-type="date"[^>]*data-behavior="TimeZoneIndependent"/);
   // The panel keeps its default button handler.

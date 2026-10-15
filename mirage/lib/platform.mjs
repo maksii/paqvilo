@@ -2059,10 +2059,13 @@ async function renderForm(kind, name, context, options) {
       options.diagnostic?.({ code: 'PCF_NATIVE_DATASET_UNSUPPORTED', severity: 'warning', component: kind, form: definition?.id, grid: cell.id, message });
       codeComponentNotice = `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
     }
-    if (!model.relationship || !model.relationship.many || canonicalId(model.relationship.entity) !== canonicalId(cell.entity))
+    // A subgrid without a relationship (empty RelationshipName) lists its whole view and carries no
+    // parent attributes (live Contact form ActionCards).
+    const unbound = !String(cell.relationship ?? "").trim();
+    if (!unbound && (!model.relationship || !model.relationship.many || canonicalId(model.relationship.entity) !== canonicalId(cell.entity)))
       throw componentError(`Subgrid ${cell.id} requires exported relationship ${cell.relationship}`, 501, "SUBGRID_RELATIONSHIP_REQUIRED");
     const actions = actionLinks(model.settings, { portal, requestUrl: context.request?.url ?? "http://localhost/", website: websiteId });
-    for (const action of actions) action.Enabled = action.Enabled && (action.Type !== 3 || !store.allowed || store.allowed(cell.entity, "create", { [model.relationship.to]: id }, identity));
+    for (const action of actions) action.Enabled = action.Enabled && (action.Type !== 3 || !store.allowed || store.allowed(cell.entity, "create", unbound ? {} : { [model.relationship.to]: id }, identity));
     const layouts = gridLayouts(model, { secureBase: { t: "subgrid", w: websiteId, kind, form: schemaSourceId ?? definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions, language: formLanguage });
     const associate = actions.find((action) => action.Type === 5);
     let associateHtml = "";
@@ -2111,7 +2114,7 @@ async function renderForm(kind, name, context, options) {
     // The grid class keeps the platform default and appends the configured GridCssClass as is.
     extraControls.set(
       cell.id,
-      `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="${!bs.v5}" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"` : ""} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
+      `<h3 class="${bs.info} form-subgrid-heading">${cell.showLabel === false ? "" : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${subgridLabel(label)}</label>`}</h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="${!bs.v5}"${unbound ? "" : ` data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}"`} data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"` : ""} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {
@@ -2254,7 +2257,8 @@ async function renderForm(kind, name, context, options) {
           const sectionRow = sectionMetadata(section.name);
           const sectionLabel = formLabel(fieldOf(sectionRow, "label"), section.label ?? "");
           const widths = section.columnWidths ?? [100];
-          tabHtml += `<fieldset${sectionLabel ? ` aria-label="${attr(plainText(sectionLabel))}"` : ""}>${section.showLabel ? `<legend class="section-title"><h3>${renderFormLabel(sectionLabel)}</h3></legend>` : ""}<table role="presentation"${section.name ? ` data-name="${attr(section.name)}"` : ""} class="section${fieldOf(sectionRow, "cssclass") ? " " + attr(fieldOf(sectionRow, "cssclass")) : ""}"><colgroup>${widths.map((width) => `<col style="width:${width}%;">`).join("")}<col></colgroup><tbody>`;
+          // A visible section always names itself, an unlabelled one with an empty name (live Contact form).
+          tabHtml += `<fieldset aria-label="${attr(plainText(sectionLabel))}">${section.showLabel ? `<legend class="section-title"><h3>${renderFormLabel(sectionLabel)}</h3></legend>` : ""}<table role="presentation"${section.name ? ` data-name="${attr(section.name)}"` : ""} class="section${fieldOf(sectionRow, "cssclass") ? " " + attr(fieldOf(sectionRow, "cssclass")) : ""}"><colgroup>${widths.map((width) => `<col style="width:${width}%;">`).join("")}<col></colgroup><tbody>`;
           for (const row of section.rows) {
             tabHtml += "<tr>";
             for (const cell of row) {

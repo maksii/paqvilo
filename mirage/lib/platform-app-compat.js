@@ -150,7 +150,8 @@
     // Composite boxes (full name, address) get the tooltip toggle on their control and no dash.
     for (const box of all(".crmEntityFormView [data-composite-control]")) box.closest(".control")?.setAttribute("data-bs-toggle", "tooltip");
     for (const box of all(".crmEntityFormView input[readonly]:not([type='hidden']):not([type='file']):not([data-composite-control]), .crmEntityFormView textarea[readonly]:not([data-composite-control])")) {
-      if (box.value || box.nextElementSibling?.__ppEmptyDash) continue;
+      // A box with a placeholder shows its placeholder instead (live read-only phone boxes).
+      if (box.value || box.placeholder || box.nextElementSibling?.__ppEmptyDash) continue;
       const dash = document.createElement("div");
       dash.__ppEmptyDash = true;
       dash.className = "text-muted";

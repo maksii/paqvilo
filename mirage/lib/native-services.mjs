@@ -353,14 +353,16 @@ export function buildLayout({
     );
     // A platform lookup view names system columns the export does not describe.
     const field = known ?? (cell.dataverseType ? { dataverseType: cell.dataverseType, label: cell.label } : undefined);
-    const width = Number(override?.Width) || Number(cell.width) || 100;
+    // A view cell without a width serialises Width 0 (live: the ActionCards system view, every column 0, total 0).
+    const width = Number(override?.Width) || (cell.widthless ? 0 : Number(cell.width) || 100);
     columns.push({
       LogicalName: cell.name,
       Name: localizedText(override?.DisplayName, field?.label ?? cell.label ?? attribute),
       Metadata: compactAttributeMetadata(table, attribute, field, primaryName),
       Width: width,
       // Multi-select choice columns cannot sort; memo columns can (live subgrid evidence).
-      SortDisabled: /^multiselectpicklist$/i.test(field?.dataverseType ?? ""),
+      // disableSorting="1" view cells cannot sort either (live: ActionCards cardtypeid).
+      SortDisabled: Boolean(cell.sortDisabled) || /^multiselectpicklist$/i.test(field?.dataverseType ?? ""),
       Type: 0,
     });
   }
@@ -376,9 +378,10 @@ export function buildLayout({
       SortDisabled: true,
       Type: 2,
     });
-  const total = columns.reduce((sum, column) => sum + column.Width, 0) || 1;
+  // A zero total (every column widthless) serialises each share as .NET's "NaN" (live ActionCards layout).
+  const total = columns.reduce((sum, column) => sum + column.Width, 0);
   for (const column of columns)
-    column.WidthAsPercent = (column.Width / total) * 100;
+    column.WidthAsPercent = total ? (column.Width / total) * 100 : "NaN";
   return {
     Configuration: configuration,
     Base64SecureConfiguration: protectConfiguration(secure),
@@ -728,7 +731,7 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
         entity: cell.entity,
         name: solutionView(metadata, cell.viewId, cell.entity)?.name ?? cell.label ?? cell.id,
         fetchXml: cell.fetchXml,
-        fields: cell.fields?.map((field) => ({ name: field.name, width: field.width, label: field.label })) ?? [],
+        fields: cell.fields?.map((field) => ({ name: field.name, width: field.width, label: field.label, ...(field.widthless ? { widthless: true } : {}), ...(field.sortDisabled ? { sortDisabled: true } : {}) })) ?? [],
       }
     : null;
   if (!view)
@@ -1069,6 +1072,9 @@ function applyUserFilters(fetch, model, request, identity, website) {
 
 function applyRelationship(fetch, model, parentId, store) {
   if (model.kind !== "subgrid" && model.kind !== "associate") return;
+  // A subgrid without a relationship (empty RelationshipName) lists its whole view: no parent
+  // filter, table permissions decide (live Contact form ActionCards).
+  if (model.kind === "subgrid" && !String(model.cell?.relationship ?? "").trim()) return;
   const relation = model.relationship;
   if (!relation || !relation.many)
     fail(`Subgrid ${model.cell.id} requires exported relationship ${model.cell.relationship}`, 501, "SUBGRID_RELATIONSHIP_REQUIRED");
@@ -1766,6 +1772,9 @@ function sendJson(res, status, value, headers = {}) {
 }
 // A grid service's AccessDenied answer is cache-control: private, without the no-cache pragma/expires
 // (live list/item-list/permission/anonymous and item-list-modal/permission/anonymous entity-grid-data.json).
+// The subgrid service answers its denial with the page no-cache policy instead (live
+// basic-form/contact-read-current entity-subgrid-data.json #22: no-cache, no-store, must-revalidate, expires -1, pragma).
+const sendSubgridAccessDenied = (res) => sendJson(res, 200, { AccessDenied: true });
 function sendAccessDenied(res) {
   const body = Buffer.from(JSON.stringify({ AccessDenied: true }));
   res.writeHead(200, { "cache-control": "private", "content-type": "application/json; charset=utf-8", vary: "Accept-Encoding", "x-frame-options": "SAMEORIGIN", "content-length": body.length });
@@ -2230,10 +2239,10 @@ export async function handleNativeService(req, res, url, context) {
       const model = modelFor(secure, context);
       if (model.kind === "subgrid" && model.definition && secure.parent) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
-          return sendAccessDenied(res), true;
+          return sendSubgridAccessDenied(res), true;
       }
       const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) });
-      if (data.AccessDenied) sendAccessDenied(res);
+      if (data.AccessDenied) (model.kind === "subgrid" || model.kind === "associate" ? sendSubgridAccessDenied : sendAccessDenied)(res);
       else sendJson(res, 200, data);
       return true;
     }

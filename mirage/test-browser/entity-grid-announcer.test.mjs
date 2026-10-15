@@ -9,12 +9,14 @@ import { browserLaunchOptions } from "../lib/browser-launch.mjs";
 // dialog) with search. Live evidence: the page holds one SearchCountTextundefined announcer, which
 // the dialog grid takes over when it loads; grids outside the entity_list template post a null
 // natural-language filter; the associate dialog opens with OK disabled="disabled".
-const layout = (search, configuration = {}) => [{ Id: "view-1", ViewName: "Items", Configuration: { Search: { Enabled: search }, ...configuration }, Columns: [{ LogicalName: "name", Name: "Name", Width: 100, WidthAsPercent: 100 }], ColumnsTotalWidth: 120, Base64SecureConfiguration: "secure", SortExpression: "name ASC" }];
+const layout = (search, configuration = {}) => [{ Id: "view-1", ViewName: "Items", Configuration: { Search: { Enabled: search }, ...configuration }, Columns: [{ LogicalName: "name", Name: "Name", Width: 100, WidthAsPercent: 50 }, { LogicalName: "priority", Name: "Priority", Width: 20, WidthAsPercent: 50 }], ColumnsTotalWidth: 120, Base64SecureConfiguration: "secure", SortExpression: "name ASC, priority DESC" }];
 // The subgrid: pixel column widths and a download action (Wave M evidence: note-add live DOM).
-const DOWNLOAD = { ViewActionLinks: [{ Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }] };
+// The subgrid view filters by the user's account column, the dialog grid's by the user's column.
+const DOWNLOAD = { ViewActionLinks: [{ Type: 8, Enabled: true, Label: "Download items", Tooltip: "Download the items" }], FilterAccountAttributeName: "accountid" };
+const BY_USER = { FilterPortalUserAttributeName: "contactid" };
 const grid = (attributes, search, configuration, inner = "") => `<div class="entity-grid ${attributes}" data-get-url="/grid-data" data-select-mode="None" data-view-layouts='${JSON.stringify(layout(search, configuration))}'><div class="view-grid"></div><div class="view-empty message"></div><div class="view-loading message"></div><div class="view-pagination"></div>${inner}</div>`;
 // The subgrid's associate dialog (inside the subgrid, as the platform renders it).
-const ASSOCIATE = `<div class="entity-associate"><section class="modal modal-associate" data-bs-backdrop="static"><div class="modal-body">${grid('associate-lookup" data-defer-loading="true', true)}<div class="selected-records"></div></div><div class="modal-footer"><button class="primary btn btn-primary" type="button">OK</button></div></section></div>`;
+const ASSOCIATE = `<div class="entity-associate"><section class="modal modal-associate" data-bs-backdrop="static"><div class="modal-body">${grid('associate-lookup" data-defer-loading="true', true, BY_USER)}<div class="selected-records"></div></div><div class="modal-footer"><button class="primary btn btn-primary" type="button">OK</button></div></section></div>`;
 const PAGE = `<!doctype html><html lang="en"><head><title>Grids</title><link rel="stylesheet" href="/app.BootstrapV5.css"><script src="/app.BootstrapV5.bundle.js"></script></head><body>
 <div id="antiforgerytoken"><input type="hidden" name="__RequestVerificationToken" value="token"></div>
 <div class="entity-notes" data-url-get="/notes-data" data-url-add="/notes-add" data-bs-target='{"Id":"n1","LogicalName":"sample"}'><div class="notes"></div><div class="notes-empty"></div><div class="notes-loading"></div><div class="notes-pagination" data-pages="1"></div><a class="addnote" href="#">Add note</a><section class="modal modal-addnote" data-bs-backdrop="static"><div class="modal-body"><textarea name="text"></textarea><input type="file" name="file" accept="*" aria-label="Choose File" tabindex="0"></div><div class="modal-footer"><button class="primary" type="button">Add note</button></div></section></div>
@@ -94,8 +96,12 @@ test("Bootstrap 5 grids share one record-count announcer per id and post a null 
   await page.waitForFunction(() => document.querySelectorAll(".subgrid > .entity-grid > .view-grid table").length > 0);
   for (const deadline = Date.now() + 5000; posts.length < 3 && Date.now() < deadline; ) await new Promise((resolve) => setTimeout(resolve, 25));
   assert.deepEqual(posts.map((body) => body.search), [null, "", null]);
+  // The record filter follows each view's layout (live: "account", "user").
+  assert.deepEqual(posts.map((body) => body.filter), ["account", "user", "account"]);
   // It follows the dialog grid's toolbar.
   assert.equal(await page.evaluate(() => document.querySelector("#SearchCountTextundefined").previousElementSibling.className), "view-toolbar grid-actions clearfix");
+  // Columns the view sorts name their own direction in the hint (live ActionCards priority: ". sort descending").
+  assert.deepEqual(await page.locator(".subgrid > .entity-grid > .view-grid thead .sort-hint").allTextContents(), [". sort ascending", ". sort descending"]);
   // The Bootstrap 5 subgrid: a download button with a left margin, a table fixed to the pixel widths.
   assert.equal(await page.locator(".subgrid > .entity-grid > .view-toolbar button.entitylist-download").evaluate((b) => [b.type, b.title, b.getAttribute("style")].join("|")), "button|Download the items|margin-left: 8px;");
   assert.equal(await page.locator(".subgrid > .entity-grid > .view-grid > table").getAttribute("style"), "width:120px !important; max-width:120px !important;");

@@ -205,3 +205,19 @@ test("a hosted multi-select names the column by its display name, not the form c
   const html = await ticketForm({ fields, record: { ticketid: "r1" }, solution: { entities: { ticket: { fields: { tags: { label: "Ticket tags column" } } } } } });
   assert.match(html, /&quot;value_DisplayName&quot;:&quot;Ticket tags column&quot;/);
 });
+
+test("a subgrid without a relationship lists its view with no parent reference and an empty hidden heading", async () => {
+  const store = {
+    resolveMapping: (entity) => (entity === "card" ? { entitySet: "cards", idColumn: "cardid", nameColumn: "title" } : { entitySet: "tickets", idColumn: "ticketid" }),
+    get: async () => ({ ticketid: "r1" }),
+    query: async () => ({ value: [] }),
+    fetchXml: async () => { throw new Error("rows load through the grid service"); },
+  };
+  const portal = { forms: [{ id: "form", name: "Ticket", mode: 100000001, metadata: {} }], records: [], website: { id: "site" }, pages: [], settings: { "Site/BootstrapV5Enabled": "true" } };
+  const cards = { type: "subgrid", id: "Cards", entity: "card", viewId: "v1", relationship: "", showLabel: false, rowspan: 6, label: "Assistant", fields: [{ name: "title", label: "Title" }], fetchXml: '<fetch><entity name="card"><attribute name="title"/></entity></fetch>' };
+  const schemas = { form: { entity: "ticket", title: "Ticket", fields: [{ name: "title", label: "Title", dataverseType: "nvarchar", maxLength: 50 }], layout: [{ name: "t", columns: [{ sections: [{ name: "s", rows: [[{ name: "title" }], [cards]] }] }] }] } };
+  const html = await renderComponent("entityform", "form", { user: { id: "current" }, request: { params: { id: "r1" } } }, { portal, store, schemas });
+  assert.match(html, /class="clearfix cell subgrid-cell"><h3 class="table-info form-subgrid-heading"><\/h3><div class="control"><div id="Cards" class="subgrid"><div class="entity-grid subgrid"/);
+  const grid = /<div class="entity-grid subgrid"[^>]*>/.exec(html)[0];
+  assert.doesNotMatch(grid, /data-ref-entity|data-ref-id|data-ref-rel/);
+});

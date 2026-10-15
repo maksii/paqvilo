@@ -306,3 +306,13 @@ test("note records carry their columns as Attributes and the creator as PostedBy
   assert.equal(note.PostedByName, "Provisioning User");
   assert.deepEqual([byName.createdon.Value, byName.createdon.DisplayValue, byName.objecttypecode.Value, byName.createdby.Value.Name, byName.objectid.Value.Name, byName.subject.AttributeMetadata], [`/Date(${Date.parse("2026-01-02T03:04:05Z")})/`, "2026-01-02T03:04:05Z", "contact", "Provisioning User", null, null]);
 });
+
+test("view cells without a width serialise Width 0 and a NaN share; disableSorting cells cannot sort", async () => {
+  const { buildLayout } = await import("../lib/native-services.mjs");
+  const view = { id: "v", name: "Cards", fetchXml: '<fetch><entity name="sample_card"><attribute name="sample_title"/><attribute name="sample_type"/></entity></fetch>', fields: [{ name: "sample_title", widthless: true }, { name: "sample_type", widthless: true, sortDisabled: true }] };
+  const layout = buildLayout({ view, entity: "sample_card", idColumn: "sample_cardid", primaryName: "sample_title", metadata: {}, configuration: {}, secure: { t: "subgrid" } });
+  assert.equal(layout.ColumnsTotalWidth, 0);
+  assert.deepEqual(layout.Columns.map((c) => [c.LogicalName, c.Width, c.WidthAsPercent, c.SortDisabled]), [["sample_title", 0, "NaN", false], ["sample_type", 0, "NaN", true]]);
+  const sized = buildLayout({ view: { ...view, fields: [{ name: "sample_title", width: 300 }, { name: "sample_type" }] }, entity: "sample_card", idColumn: "sample_cardid", primaryName: "sample_title", metadata: {}, configuration: {}, secure: { t: "subgrid" } });
+  assert.deepEqual([sized.ColumnsTotalWidth, sized.Columns.map((c) => c.Width)], [400, [300, 100]]);
+});

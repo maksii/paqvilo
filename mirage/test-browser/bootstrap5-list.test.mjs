@@ -114,11 +114,13 @@ test("Bootstrap 5 lists: platform toolbar, record cells, row menus, pager and em
   assert.equal(await page.locator("body > .modal-backdrop + #modal-status-announcer.sr-only[role='status']").innerText(), "Dialog opened");
   await page.keyboard.press("Escape");
 
-  // A search without results drops a leading wildcard, removes the body and announces the empty message.
+  // A search keeps a leading wildcard (live posts "*Alpha"); without results the body goes and the
+  // empty message is announced. The list filters by no user column: filter stays null.
   await grid.locator("input.query").fill("*Zzz");
-  assert.equal(await grid.locator("input.query").inputValue(), "Zzz");
+  assert.equal(await grid.locator("input.query").inputValue(), "*Zzz");
   await grid.locator("input.query").press("Enter");
   await grid.locator(".view-empty[role='status']").waitFor();
+  assert.deepEqual([gridBodies.at(-1).search, gridBodies.at(-1).filter], ["*Zzz", null]);
   assert.equal(await grid.locator(".view-grid table tbody").count(), 0);
   assert.equal(await grid.locator(".view-pagination").evaluate((pager) => pager.style.display), "none");
   assert.equal(await grid.locator(".view-pagination li").count(), 4);

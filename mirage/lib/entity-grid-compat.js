@@ -440,6 +440,12 @@
         this.layouts[0]
       );
     }
+    // The list's own record filter (live data requests): "user" when the view filters by the portal
+    // user's column, "account" when it filters by the user's account column, else none.
+    userFilter() {
+      const config = this.config;
+      return config.FilterPortalUserAttributeName ? "user" : config.FilterAccountAttributeName ? "account" : null;
+    }
     get config() {
       return this.layout?.Configuration ?? {};
     }
@@ -522,12 +528,6 @@
           : `<input placeholder="${esc(search.PlaceholderText || "Search")}" title="${esc(search.TooltipText || "")}" aria-label="${esc(search.TooltipText || search.PlaceholderText || "Search")}" class="query form-control"><div class="input-group-btn" role="presentation"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default btn-hg">${search.ButtonLabel || "<span class='sr-only'>Search Results</span><span class='fa fa-search'></span>"}</button></div>`;
         if (this.bs5) group.style.display = "table";
         const input = group.querySelector("input");
-        // The Bootstrap 5 page grid does not accept a leading wildcard: it drops leading asterisks as typed.
-        if (this.bs5 && !this.dialog)
-          input.addEventListener("input", () => {
-            const value = input.value.replace(/^\*+/, "");
-            if (value !== input.value) input.value = value;
-          });
         const searchValue = new URLSearchParams(location.search).get(search.SearchQueryStringParameterName || "query");
         if (searchValue && !this.isLookup) input.value = searchValue;
         group.querySelector("button").addEventListener("click", () => this.load(1));
@@ -735,7 +735,8 @@
             th.setAttribute("aria-sort", ascending ? "ascending" : "descending");
           }
           const userSorted = this.state.sort != null;
-          const hint = sorted ? (userSorted ? (ascending ? "Sort_Descending_Order" : "Sort_Ascending_Order") : "Sort_Ascending_Order") : "Sort_Descending_Order";
+          // A column the view sorts names its own direction (live: a descending view column reads ". sort descending").
+          const hint = sorted ? (userSorted ? (ascending ? "Sort_Descending_Order" : "Sort_Ascending_Order") : ascending ? "Sort_Ascending_Order" : "Sort_Descending_Order") : "Sort_Descending_Order";
           th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${sorted ? ` <span class="fa ${ascending ? "fa-arrow-up" : "fa-arrow-down"}" aria-hidden="true"></span>` : ""}<span class="${this.bs5 ? "visually-hidden" : "sr-only"} sort-hint">. ${esc(resource(hint, hint === "Sort_Descending_Order" ? "sort descending" : "sort ascending"))}</span></a>`;
           onClick(th.querySelector("a"), (event) => {
             event.preventDefault();
@@ -806,7 +807,7 @@
         page,
         pageSize,
         pagingCookie: "",
-        filter: this.state.filter,
+        filter: this.state.filter ?? this.userFilter(),
         metaFilter: this.state.metaFilter,
         // The entity_list template's grid posts its data-nl-search-filter; other grids post null (live requests).
         nlSearchFilter: this.element.getAttribute("data-nl-search-filter"),
@@ -1311,7 +1312,7 @@
         base64SecureConfiguration: this.layout.Base64SecureConfiguration,
         sortExpression: this.state.sort ?? this.layout.SortExpression,
         search: this.child(".view-toolbar")?.querySelector(".view-search input.query")?.value ?? null,
-        filter: this.state.filter,
+        filter: this.state.filter ?? this.userFilter(),
         metaFilter: this.state.metaFilter,
         page: this.state.page,
         pageSize: this.state.pageSize,
