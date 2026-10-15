@@ -641,7 +641,7 @@ function reasonFor(item, state) {
   return STATE_REASONS[`*${item.area}`]?.[state];
 }
 
-const escapeCell = (value) => String(value ?? "").replace(/\|/g, "\\|").replace(/\n/g, " ");
+const escapeCell = (value) => String(value ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\n/g, " ");
 
 function powerPagesRows({ site }) {
   const rows = new Map();

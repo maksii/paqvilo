@@ -23,7 +23,7 @@ test('baseline business rules render well-formed XAML and executable client code
   assert.ok(code?.startsWith(`function pbl_${id}(eventContext)`),rule.name);
   const fn=new Function(`${code};return pbl_${id};`)();
   assert.equal(typeof fn,'function');
-  for(const field of new Set([rule.when.field,...rule.actions.map(a=>a.field)])) assert.ok(code.includes(`attributes.get('${field}')`),`${rule.name} ${field}`);
+  for(const field of new Set([rule.when.field,...rule.actions.map(a=>a.field)])) assert.ok(code.includes(`attributes.get(${JSON.stringify(field)})`),`${rule.name} ${field}`);
  }
 });
 

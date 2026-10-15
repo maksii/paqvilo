@@ -1,5 +1,23 @@
 import { isDeepStrictEqual } from 'node:util';
 
+export function validateRowIndex(rows, index, insertion = false) {
+  if (!Array.isArray(rows) || !Number.isSafeInteger(index) || index < 0 || index >= rows.length + Number(insertion) || !insertion && !Object.hasOwn(rows, index))
+    throw new RangeError('Row index must identify an own array element.');
+}
+export function assignRowValues(row, values) {
+  for (const [key, value] of Object.entries(values))
+    Object.defineProperty(row, key, { value, enumerable: true, configurable: true, writable: true });
+}
+function replaceRow(rows, index, row) {
+  validateRowIndex(rows, index);
+  Object.defineProperty(rows, index, { value: row, enumerable: true, configurable: true, writable: true });
+}
+function tableRows(target, table) {
+  const rows = Object.getOwnPropertyDescriptor(target.tables, table)?.value;
+  if (!Array.isArray(rows)) throw new TypeError('Rollback table must be an own row array.');
+  return rows;
+}
+
 /** Undo entries retain only replaced rows. Metadata is small and captured
  * separately; table arrays and unchanged row bodies are never cloned. */
 export class RowTransaction {
@@ -9,25 +27,29 @@ export class RowTransaction {
     this.tables = new Set(Object.keys(store.state.tables));
   }
   set(table, rows, index, row) {
-    const previous = rows[index]; this.undo.push(target => { (target === this.state ? rows : target.tables[table])[index] = target === this.state ? previous : structuredClone(previous); });
-    rows[index] = row; this.entries.push({ op: 'set', table, index, row });
+    validateRowIndex(rows, index);
+    const previous = rows.at(index);
+    this.undo.push(target => replaceRow(target === this.state ? rows : tableRows(target, table), index, target === this.state ? previous : structuredClone(previous)));
+    replaceRow(rows, index, row); this.entries.push({ op: 'set', table, index, row });
   }
   mutate(table, rows, index, values) {
-    const row = rows[index], previous = structuredClone(row);
+    validateRowIndex(rows, index);
+    const row = rows.at(index), previous = structuredClone(row);
     this.undo.push(target => {
-      const destination = target === this.state ? row : target.tables[table][index];
+      const destination = target === this.state ? row : tableRows(target, table).at(index);
       for (const key of Object.keys(destination)) delete destination[key];
-      for (const [key, value] of Object.entries(target === this.state ? previous : structuredClone(previous)))
-        Object.defineProperty(destination, key, { value, enumerable: true, configurable: true, writable: true });
+      assignRowValues(destination, target === this.state ? previous : structuredClone(previous));
     });
-    Object.assign(row, values); this.entries.push({ op: 'set', table, index, row });
+    assignRowValues(row, values); this.entries.push({ op: 'set', table, index, row });
   }
   insert(table, rows, index, row) {
-    this.undo.push(target => (target === this.state ? rows : target.tables[table]).splice(index, 1)); rows.splice(index, 0, row);
+    validateRowIndex(rows, index, true);
+    this.undo.push(target => (target === this.state ? rows : tableRows(target, table)).splice(index, 1)); rows.splice(index, 0, row);
     this.entries.push({ op: 'insert', table, index, row });
   }
   remove(table, rows, index) {
-    const previous = rows[index]; this.undo.push(target => (target === this.state ? rows : target.tables[table]).splice(index, 0, target === this.state ? previous : structuredClone(previous)));
+    validateRowIndex(rows, index);
+    const previous = rows.at(index); this.undo.push(target => (target === this.state ? rows : tableRows(target, table)).splice(index, 0, target === this.state ? previous : structuredClone(previous)));
     rows.splice(index, 1); this.entries.push({ op: 'delete', table, index });
   }
   *changes() {

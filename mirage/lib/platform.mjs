@@ -2172,7 +2172,7 @@ async function renderForm(kind, name, context, options) {
     recordQueryName: queryName,
     summaryHeader: "The form could not be submitted for the following reasons:",
     // Bootstrap 5 success panels carry the platform's close button (named like the form buttons).
-    ...(bs.v5 ? { messagePanel: { className: SUCCESS_PANEL_V5, closeButton: messageCloseButton(ids.buttons, bs) } } : {}),
+    ...(bs.v5 ? { messagePanel: { className: SUCCESS_PANEL_V5, closeButton: { name: `${ids.buttons}btnCloseMessage` } } } : {}),
     // A Power Pages export is a WebForms portal: native forms post the page back unless the
     // project selects the JSON transport (observed.nativeFormTransport: json).
     ...(nativeFormTransport(options.observed ?? portal.observed) === 'postback' ? { transport: 'postback' } : {}),

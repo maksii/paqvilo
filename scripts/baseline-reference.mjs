@@ -24,7 +24,7 @@ const readJson = async (file, fallback = null) => {
     return fallback;
   }
 };
-const escape = (text) => String(text ?? "").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
+const escape = (text) => String(text ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const QUERY = /\?[^\s"'<>)]*/g;
 const clip = (text, max = 160) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);

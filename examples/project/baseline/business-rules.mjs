@@ -82,17 +82,19 @@ export function businessRuleXaml(rule) {
 }
 
 const isEmpty = (v) => `((${v}) == undefined || (${v}) == null || (${v}) === "")`;
+// Client data may be embedded in an HTML script after the XML is decoded.
+const scriptLiteral = (value) => JSON.stringify(value).replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 
 function clientAction(a, v, id) {
   const controls = (call) => `${v}.controls.forEach(function(c,i){c.${call};});`;
   switch (a.type) {
-    case 'visibility': return controls(`setVisible(${a.visible})`);
-    case 'lock': return controls(`setDisabled(${a.locked})`);
+    case 'visibility': return controls(`setVisible(${Boolean(a.visible)})`);
+    case 'lock': return controls(`setDisabled(${Boolean(a.locked)})`);
     case 'required': return `${v}.setRequiredLevel('${a.required ? 'required' : 'none'}');`;
-    case 'setValue': return `${v}.setValue(${JSON.stringify(a.value)});`;
+    case 'setValue': return `${v}.setValue(${scriptLiteral(a.value)});`;
     case 'clearValue': return `${v}.setValue(null);`;
-    case 'setDefault': return `if(formType===1 && ${isEmpty(`${v}.getValue()`)}){${v}.setValue(${JSON.stringify(a.value)});}`;
-    case 'error': return controls(`setNotification(${JSON.stringify(a.message)},'${id}')`);
+    case 'setDefault': return `if(formType===1 && ${isEmpty(`${v}.getValue()`)}){${v}.setValue(${scriptLiteral(a.value)});}`;
+    case 'error': return controls(`setNotification(${scriptLiteral(a.message)},'${id}')`);
     default: throw new Error(`Unsupported business rule action ${a.type}`);
   }
 }
@@ -102,13 +104,13 @@ export function businessRuleClientData(rule) {
   const fields = [...new Set([rule.when.field, ...all.map((a) => a.field)])];
   const v = (field) => `v${fields.indexOf(field) + 1}`, value = `v${fields.length + 1}`;
   const { when } = rule;
-  const test = when.isNull === true ? isEmpty(`(${value})`) : 'equals' in when ? `(${value}) === (${JSON.stringify(when.equals)})` : `(${value}) != null && (${value}) > (${Number(when.greaterThan)})`;
+  const test = when.isNull === true ? isEmpty(`(${value})`) : 'equals' in when ? `(${value}) === (${scriptLiteral(when.equals)})` : `(${value}) != null && (${value}) > (${Number(when.greaterThan)})`;
   const run = (list) => list.map((a) => clientAction(a, v(a.field), id)).join('');
   // A shown error is cleared once the condition no longer holds, as designer-generated rules do.
   const clear = rule.actions.filter((a) => a.type === 'error').map((a) => `${v(a.field)}.controls.forEach(function(c,i){c.clearNotification('${id}');});`).join('');
   const elseCode = run(otherwise) + clear;
   const formType = all.some((a) => a.type === 'setDefault') ? `var formType=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().ui.getFormType() : Xrm.Page.ui.getFormType();` : '';
-  const code = `function pbl_${id}(eventContext){try{var v0=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().data.entity : Xrm.Page.data.entity;${fields.map((f) => `var ${v(f)}=v0.attributes.get('${f}');`).join('')}if (${fields.map((f) => isEmpty(v(f))).join(' || ')}){return;}${formType}var ${value}=(v1) ? v1.getValue() : null;if(${test}){${run(rule.actions)}}${elseCode ? `else if(true){${elseCode}}` : ''}}catch (e){Mscrm.BusinessRules.ErrorHandlerFactory.getHandler(e, arguments.callee).handleError();}}`;
+  const code = `function pbl_${id}(eventContext){try{var v0=(!Mscrm.BusinessRules.Utility.isNull(eventContext) && typeof eventContext.getFormContext === "function") ? eventContext.getFormContext().data.entity : Xrm.Page.data.entity;${fields.map((f) => `var ${v(f)}=v0.attributes.get(${scriptLiteral(f)});`).join('')}if (${fields.map((f) => isEmpty(v(f))).join(' || ')}){return;}${formType}var ${value}=(v1) ? v1.getValue() : null;if(${test}){${run(rule.actions)}}${elseCode ? `else if(true){${elseCode}}` : ''}}catch (e){Mscrm.BusinessRules.ErrorHandlerFactory.getHandler(e, arguments.callee).handleError();}}`;
   if (code.includes(']]>')) throw new Error('Business rule client code cannot contain a CDATA terminator.');
   return `<clientdata><labels></labels><clientcode><![CDATA[${code}]]></clientcode></clientdata>`;
 }

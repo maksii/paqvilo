@@ -173,7 +173,7 @@ const yamlRecord = (record) => mapping(record, 0) + "\n";
 const yamlList = (records) => records.map((record) => `- ${mapping(record, 2)}`).join("\n") + "\n";
 const fileName = (name) => name.replace(/[\\/:*?"<>|]/g, "").replace(/ /g, "-");
 const slug = (name) => fileName(name).toLowerCase();
-const script = (name) => `document.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset.baselineScript=${JSON.stringify(name)};});\n`;
+const script = (name) => `document.addEventListener('DOMContentLoaded',()=>{document.documentElement.dataset.baselineScript=${JSON.stringify(name).replace(/</g, '\\u003c')};});\n`;
 
 // Dialog settings (modal size: Default=0, Large=1, Small=2, the catalog's value order).
 const SIZE = { default: 0, large: 1, small: 2 };

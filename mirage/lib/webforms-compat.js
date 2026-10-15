@@ -527,7 +527,24 @@
     const variant = configOf(form)?.messagePanel;
     panel.className = variant?.className ?? "message alert alert-info success alert alert-success success alert alert-success";
     panel.setAttribute("role", "alert");
-    panel.innerHTML = `${variant?.closeButton ?? ""}<span id="MessageLabel">${message}</span>`;
+    panel.replaceChildren();
+    if (variant?.closeButton) {
+      const button = document.createElement("input");
+      button.type = "submit";
+      button.name = variant.closeButton.name;
+      button.value = "x";
+      button.id = "btnCloseMessage";
+      button.className = "btn-close";
+      button.setAttribute("data-bs-dismiss", "alert");
+      button.setAttribute("aria-label", "close");
+      button.style.borderStyle = "none";
+      button.addEventListener("click", () => w.WebForm_DoPostBackWithOptions(new w.WebForm_PostBackOptions(button.name, "", true, "", "", false, false)));
+      panel.append(button);
+    }
+    const label = document.createElement("span");
+    label.id = "MessageLabel";
+    label.textContent = message;
+    panel.append(label);
     panel.style.display = "";
     if (hide) for (const node of form.querySelectorAll("#EntityFormPanel, #WebFormPanel")) node.style.display = "none";
   }

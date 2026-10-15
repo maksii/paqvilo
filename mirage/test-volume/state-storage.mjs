@@ -19,7 +19,7 @@ try {
   } });
   const started = performance.now();
   await store.init();
-  const bytes = (await fs.stat(file)).size;
+  const bytes = await fs.open(file, 'r').then(async handle => { try { return (await handle.stat()).size; } finally { await handle.close(); } });
   assert.ok(bytes > constants.MAX_STRING_LENGTH, `${bytes} must exceed the engine string limit`);
   assert.equal(await hashStateFile(file), store.persistedDigest);
   const savedDigest = store.persistedDigest, savedMs = performance.now() - started;

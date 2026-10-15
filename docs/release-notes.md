@@ -2,6 +2,12 @@
 
 ## 0.9.4
 
+Security review: step announcements and JSON-transport success panels build DOM nodes
+without reinterpreting text as markup. Baseline generators escape JavaScript literals
+for HTML embedding and Markdown reports preserve literal backslashes. Changed-row
+transactions validate array indices and retain prototype-named data columns as own
+properties, including during rollback, without modifying object prototypes.
+
 Consumer feedback 67: version 1 persona catalogues are supported in registered
 packs, preset bodies and dataset fragments. Sign-in and administration gain grouped
 search/facets, default/pinned/recent choices, metadata editors and catalogue scenarios.

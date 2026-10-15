@@ -5,6 +5,38 @@ import http from 'node:http';
 import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 
+test('step announcers and postback success messages preserve text without interpreting markup', async t => {
+  const scripts = new Map(await Promise.all(['crmentityformview', 'webforms'].map(async name =>
+    [`/${name}.js`, await fs.readFile(new URL(`../lib/${name}-compat.js`, import.meta.url))])));
+  const server = http.createServer((req, res) => {
+    if (scripts.has(req.url)) { res.setHeader('content-type', 'text/javascript'); return res.end(scripts.get(req.url)); }
+    res.setHeader('content-type', 'text/html');
+    res.end('<!doctype html><html><body><div id="steps"><ol class="progress"><li class="list-group-item active"></li></ol></div><form id="form"><div id="EntityFormPanel"><fieldset></fieldset></div></form><script src="/webforms.js"></script><script src="/crmentityformview.js"></script></body></html>');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => { server.closeAllConnections(); return new Promise(resolve => server.close(resolve)); });
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true }));
+  t.after(() => browser.close());
+  const page = await browser.newPage(), errors = [];
+  page.on('pageerror', error => errors.push(error.message));
+  const hostile = 'Step <img src=x onerror="window.injected=true"> & details';
+  await page.addInitScript(message => {
+    sessionStorage.setItem('paqvilo-mirage:form-success:/', JSON.stringify({ form: 'form', message, hideForm: false }));
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelector('.active').textContent = message;
+      document.getElementById('form').__ppConfig = { messagePanel: { className: 'alert alert-success', closeButton: { name: 'form$btnCloseMessage' } } };
+    }, { once: true });
+  }, hostile);
+  await page.goto(`http://127.0.0.1:${server.address().port}/`);
+  assert.equal(await page.locator('#steps [aria-live="assertive"]').textContent(), hostile);
+  assert.equal(await page.locator('#steps [aria-live="assertive"]').getAttribute('id'), 'Step');
+  assert.equal(await page.locator('#MessageLabel').textContent(), hostile);
+  assert.equal(await page.locator('#MessagePanel .btn-close').count(), 1);
+  assert.equal(await page.locator('img').count(), 0);
+  assert.equal(await page.evaluate(() => window.injected), undefined);
+  assert.deepEqual(errors, []);
+});
+
 test('readonly links and grid frames reject executable URLs; the published sample PCF renders formatted values as text', async (t) => {
   const files = new Map(await Promise.all([
     ['form.js', new URL('../lib/crmentityformview-compat.js', import.meta.url)],

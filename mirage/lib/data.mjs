@@ -22,7 +22,7 @@ import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
 import { StateStorage } from './state-storage.mjs';
-import { RowTransaction } from './row-transaction.mjs';
+import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { stateDigest } from './state-stream.mjs';
 import { validatePersonaCatalog } from './persona-catalog.mjs';
 import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
@@ -915,16 +915,18 @@ export class DataStore {
     this.queue = run.catch(() => {}); return run;
   }
   writeRow(table, rows, index, row) {
+    validateRowIndex(rows, index);
     const cached = this.rowIndexes?.get(rows);
     if (cached && !equal(rows[index]?.[cached.column], row[cached.column])) this.rowIndexes.delete(rows);
     if (this.rowTransaction) this.rowTransaction.set(table, rows, index, row);
-    else rows[index] = row;
+    else Object.defineProperty(rows, index, { value: row, enumerable: true, configurable: true, writable: true });
   }
   mutateRow(table, rows, index, values) {
+    validateRowIndex(rows, index);
     const cached = this.rowIndexes?.get(rows);
     if (cached && own(values, cached.column) && !equal(rows[index][cached.column], values[cached.column])) this.rowIndexes.delete(rows);
     if (this.rowTransaction) this.rowTransaction.mutate(table, rows, index, values);
-    else Object.assign(rows[index], values);
+    else assignRowValues(rows.at(index), values);
   }
   insertRow(table, rows, row) {
     if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
@@ -937,6 +939,7 @@ export class DataStore {
     }
   }
   removeRow(table, rows, index) {
+    validateRowIndex(rows, index);
     if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
     else rows.splice(index, 1);
     this.rowIndexes?.delete(rows);
