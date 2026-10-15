@@ -44,7 +44,7 @@ test("native row actions fit the viewport, open Edit naturally, and remain keybo
   await frame.getByLabel("Message", { exact: true }).fill("Viewport-safe edit");
   await frame.locator("#UpdateButton").click();
   await page.waitForFunction(() => window.gridLoads >= 2);
-  assert.equal(app.store.snapshot().tables.child.find((entry) => entry.childkey === pendingId).message, "Viewport-safe edit");
+  assert.equal(app.store.snapshot().tables.child.find((entry) => entry.childkey === pendingId).notice, "Viewport-safe edit");
   await page.locator("#Children section.modal-form-edit").waitFor({ state: "hidden" });
   await page.setViewportSize({ width: 150, height: 96 });
   await page.evaluate(() => document.documentElement.setAttribute("dir", "rtl"));
@@ -99,7 +99,7 @@ test('a deep authored grid menu survives queued scroll and one-pixel completion 
   await frame.getByLabel('Message', { exact: true }).fill('Deep grid edit');
   await frame.locator('#UpdateButton').click();
   await page.locator('#Children section.modal-form-edit').waitFor({ state: 'hidden' });
-  assert.equal(app.store.snapshot().tables.child.find(entry => entry.childkey === pendingId).message, 'Deep grid edit');
+  assert.equal(app.store.snapshot().tables.child.find(entry => entry.childkey === pendingId).notice, 'Deep grid edit');
   await toggle.click();
   await page.evaluate(() => new Promise(resolve => {
     window.addEventListener('scroll', resolve, { once: true });

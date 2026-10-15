@@ -31,20 +31,38 @@ const createCrmType = (value, result) => {
   return `<${ref('EvaluateExpression')} DisplayName="EvaluateExpression"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments="x:String" x:Key="ExpressionOperator">CreateCrmType</InArgument><InArgument x:TypeArguments="s:Object[]" x:Key="Parameters">[New Object() { ${xml(params)} }]</InArgument><InArgument x:TypeArguments="s:Type" x:Key="TargetType"><mxswa:ReferenceLiteral x:TypeArguments="s:Type" Value="${type}" /></InArgument><OutArgument x:TypeArguments="x:Object" x:Key="Result">[${result}]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference>`;
 };
 
-function condition(rule) {
-  const { when, table } = rule;
-  const vars = ['<Variable x:TypeArguments="x:Boolean" Default="False" Name="ConditionBranchStep2_condition" />', '<Variable x:TypeArguments="x:Object" Name="ConditionBranchStep2_1" />'];
-  let activities = `<mxswa:GetEntityProperty Attribute="${xml(when.field)}" Entity="${PRIMARY}" EntityName="${xml(table)}" Value="[ConditionBranchStep2_1]"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments="s:Type"><mxswa:ReferenceLiteral x:TypeArguments="s:Type"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty>`;
+// One comparison: the attribute value into `value`, the result into `result`.
+function compare({ field, ...test }, table, ruleName, value, literal, result) {
+  const vars = [`<Variable x:TypeArguments="x:Object" Name="${value}" />`];
+  let activities = `<mxswa:GetEntityProperty Attribute="${xml(field)}" Entity="${PRIMARY}" EntityName="${xml(table)}" Value="[${value}]"><mxswa:GetEntityProperty.TargetType><InArgument x:TypeArguments="s:Type"><mxswa:ReferenceLiteral x:TypeArguments="s:Type"><x:Null /></mxswa:ReferenceLiteral></InArgument></mxswa:GetEntityProperty.TargetType></mxswa:GetEntityProperty>`;
+  const OPERATORS = { equals: 'Equal', notEqual: 'NotEqual', greaterThan: 'GreaterThan' };
+  const key = Object.keys(OPERATORS).find((k) => k in test);
   let operator, parameters = '<x:Null x:Key="Parameters" />';
-  if (when.isNull === true) operator = 'Null';
-  else if ('equals' in when || typeof when.greaterThan === 'number') {
-    operator = 'equals' in when ? 'Equal' : 'GreaterThan';
-    vars.push('<Variable x:TypeArguments="x:Object" Name="ConditionBranchStep2_2" />');
-    activities += createCrmType('equals' in when ? when.equals : when.greaterThan, 'ConditionBranchStep2_2');
-    parameters = '<InArgument x:TypeArguments="s:Object[]" x:Key="Parameters">[New Object() { ConditionBranchStep2_2 }]</InArgument>';
-  } else throw new Error(`Unsupported business rule condition in ${rule.name}`);
-  activities += `<${ref('EvaluateCondition')} DisplayName="EvaluateCondition"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments="mxsq:ConditionOperator" x:Key="ConditionOperator">${operator}</InArgument>${parameters}<InArgument x:TypeArguments="x:Object" x:Key="Operand">[ConditionBranchStep2_1]</InArgument><OutArgument x:TypeArguments="x:Boolean" x:Key="Result">[ConditionBranchStep2_condition]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference>`;
+  if (test.isNull === true) operator = 'Null';
+  else if (test.notNull === true) operator = 'NotNull';
+  else if (key && (key !== 'greaterThan' || typeof test.greaterThan === 'number')) {
+    operator = OPERATORS[key];
+    vars.push(`<Variable x:TypeArguments="x:Object" Name="${literal}" />`);
+    activities += createCrmType(test[key], literal);
+    parameters = `<InArgument x:TypeArguments="s:Object[]" x:Key="Parameters">[New Object() { ${literal} }]</InArgument>`;
+  } else throw new Error(`Unsupported business rule condition in ${ruleName}`);
+  activities += `<${ref('EvaluateCondition')} DisplayName="EvaluateCondition"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments="mxsq:ConditionOperator" x:Key="ConditionOperator">${operator}</InArgument>${parameters}<InArgument x:TypeArguments="x:Object" x:Key="Operand">[${value}]</InArgument><OutArgument x:TypeArguments="x:Boolean" x:Key="Result">[${result}]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference>`;
   return { vars, activities };
+}
+
+// `when` alone, or `when` AND `guard` (the rule's no-op test on its target, e.g. "not already set"), joined as the
+// workflow designer joins conditions: EvaluateLogicalCondition And.
+function condition(rule) {
+  const out = 'ConditionBranchStep2_condition';
+  if (!rule.guard) {
+    const { vars, activities } = compare(rule.when, rule.table, rule.name, 'ConditionBranchStep2_1', 'ConditionBranchStep2_2', out);
+    return { vars: [`<Variable x:TypeArguments="x:Boolean" Default="False" Name="${out}" />`, ...vars], activities };
+  }
+  const left = compare(rule.when, rule.table, rule.name, 'ConditionBranchStep2_1', 'ConditionBranchStep2_2', 'ConditionBranchStep2_3');
+  const right = compare(rule.guard, rule.table, rule.name, 'ConditionBranchStep2_4', 'ConditionBranchStep2_5', 'ConditionBranchStep2_6');
+  const and = `<${ref('EvaluateLogicalCondition')} DisplayName="EvaluateLogicalCondition"><mxswa:ActivityReference.Arguments><InArgument x:TypeArguments="mxsq:LogicalOperator" x:Key="LogicalOperator">And</InArgument><InArgument x:TypeArguments="x:Boolean" x:Key="LeftOperand">[ConditionBranchStep2_3]</InArgument><InArgument x:TypeArguments="x:Boolean" x:Key="RightOperand">[ConditionBranchStep2_6]</InArgument><OutArgument x:TypeArguments="x:Boolean" x:Key="Result">[${out}]</OutArgument></mxswa:ActivityReference.Arguments></mxswa:ActivityReference>`;
+  const flag = (name) => `<Variable x:TypeArguments="x:Boolean" Default="False" Name="${name}" />`;
+  return { vars: [flag(out), flag('ConditionBranchStep2_3'), flag('ConditionBranchStep2_6'), ...left.vars, ...right.vars], activities: left.activities + right.activities + and };
 }
 
 // Stable label id per rule and step, so re-rendering a rule yields identical XAML.
@@ -101,10 +119,10 @@ function clientAction(a, v, id) {
 
 export function businessRuleClientData(rule) {
   const id = compact(rule.id), otherwise = rule.otherwise ?? [], all = [...rule.actions, ...otherwise];
-  const fields = [...new Set([rule.when.field, ...all.map((a) => a.field)])];
+  const fields = [...new Set([rule.when.field, ...all.map((a) => a.field), ...(rule.guard ? [rule.guard.field] : [])])];
   const v = (field) => `v${fields.indexOf(field) + 1}`, value = `v${fields.length + 1}`;
-  const { when } = rule;
-  const test = when.isNull === true ? isEmpty(`(${value})`) : 'equals' in when ? `(${value}) === (${scriptLiteral(when.equals)})` : `(${value}) != null && (${value}) > (${Number(when.greaterThan)})`;
+  const check = (c, x) => c.isNull === true ? isEmpty(`(${x})`) : c.notNull === true ? `!${isEmpty(`(${x})`)}` : 'equals' in c ? `(${x}) === (${scriptLiteral(c.equals)})` : 'notEqual' in c ? `(${x}) !== (${scriptLiteral(c.notEqual)})` : `(${x}) != null && (${x}) > (${Number(c.greaterThan)})`;
+  const test = check(rule.when, value) + (rule.guard ? ` && ${check(rule.guard, `${v(rule.guard.field)}.getValue()`)}` : '');
   const run = (list) => list.map((a) => clientAction(a, v(a.field), id)).join('');
   // A shown error is cleared once the condition no longer holds, as designer-generated rules do.
   const clear = rule.actions.filter((a) => a.type === 'error').map((a) => `${v(a.field)}.controls.forEach(function(c,i){c.clearNotification('${id}');});`).join('');

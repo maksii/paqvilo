@@ -173,6 +173,9 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
   return `(() => {
     const token = ${JSON.stringify(token)};
     const simulation=window.__portalSimulation ||= {};simulation.revision=${JSON.stringify(revision)};simulation.local=true;
+    // The local postback verification token: native postbacks carry it without the token request
+    // live never makes for a postback (lib/webforms-compat.js reads it before shell.getTokenDeferred).
+    simulation.postbackToken=token;
     if(simulation.runtimeInstalled)return;simulation.runtimeInstalled=true;
     ${clientLocalSelfOriginRuntime()}
     ${clientDateControlsRuntime()}
@@ -628,12 +631,12 @@ function integerFormatChoices(field, portal) {
 const UNSUPPORTED_FORM_TYPES = /^bigint$/i;
 // ASP.NET omits the value attribute of an input whose value is empty.
 const valueAttr = (value) => (String(value ?? "") === "" ? "" : ` value="${attr(value)}"`);
-function nativeModal({ className, title, body, footer = "", size = "", label, bs = BOOTSTRAP_MARKUP.BootstrapV3, headingLabel = false, dismissText = "Close", rawTitle = false }) {
+function nativeModal({ className, title, body, footer = "", size = "", label, bs = BOOTSTRAP_MARKUP.BootstrapV3, headingLabel = false, dismissText = "Close", rawTitle = false, titleAttr = null }) {
   // headingLabel: the Bootstrap 5 lookup dialog labels its heading instead of the section.
   // rawTitle: the label and title attributes carry the title markup as is (details, error dialogs).
   const labelText = rawTitle ? title : label ?? plainText(title);
   const labelAttr = ` aria-label="${attr(labelText)}"`;
-  return `<section aria-hidden="true"${headingLabel ? "" : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + " " : ""}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ""} class="modal-title" title="${attr(rawTitle ? title : plainText(title))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></section>`;
+  return `<section aria-hidden="true"${headingLabel ? "" : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + " " : ""}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ""} class="modal-title" title="${attr(titleAttr ?? (rawTitle ? title : plainText(title)))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="${attr(dismissText)}" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">${escape(dismissText)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></section>`;
 }
 // An attribute value whose line breaks are CRLF: the HTML parser folds raw CR LF into LF, so the
 // platform's indented JSON attributes keep their CR as character references.
@@ -662,14 +665,28 @@ function gridErrorModal(bs = BOOTSTRAP_MARKUP.BootstrapV3, dialog = null, langua
 
 /** Native grid modals (create/edit/details forms, delete, error, workflow, (de)activate). */
 function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.BootstrapV3) {
+  // A configured dialog (CreateFormDialog, EditFormDialog, DetailsFormDialog, DeleteDialog: live
+  // subgrid markup) adds its CssClass to the section, sizes the dialog by Size (none, lg, sm),
+  // shows its Title (the create and edit headings keep "Create"/"Edit" as their label and title
+  // attribute), its LoadingMessage instead of the spinner and its DismissButtonSrText; the delete
+  // dialog asks the delete action's confirmation with the dialog's button texts.
   const dialog = (name, fallback) => formText(settings?.[name]?.Title, fallback, language);
-  const detailsTitle = dialog("DetailsFormDialog", "<span class='fa fa-info-circle' aria-hidden='true'></span> View details");
+  const configured = (name) => settings?.[name] && typeof settings[name] === "object";
+  const css = (name) => (configured(name) && settings[name].CssClass ? " " + attr(formText(settings[name].CssClass, "", language)) : "");
+  const size = (name) => (configured(name) ? MODAL_SIZES[Number(settings[name].Size)] ?? "" : "modal-lg");
+  const dismiss = (name) => formText(settings?.[name]?.DismissButtonSrText, "Close", language);
+  const heading = (name, fallback) => (settings?.[name]?.Title ? escape(dialog(name, "")) : fallback);
+  const body = (name) => (configured(name) ? `<div class="form-loading">${escape(formText(settings[name].LoadingMessage, "", language))}</div><iframe data-page="${attr(page)}" src="about:blank"></iframe>` : formModalBody(page));
+  const detailsTitle = heading("DetailsFormDialog", "<span class='fa fa-info-circle' aria-hidden='true'></span> View details");
+  const deleteAction = (settings?.ItemActions ?? []).find((action) => action?.Type === "CrmEntityFormView-DeleteAction");
+  const primary = escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, "Delete"));
+  const close = escape(localizedText(settings?.DeleteDialog?.CloseButtonText, "Cancel"));
   return [
-    nativeModal({ bs, className: "modal-form modal-form-insert", title: dialog("CreateFormDialog", "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create"), body: formModalBody(page), size: "modal-lg", label: "Create" }),
-    nativeModal({ bs, className: "modal-form modal-form-edit", title: dialog("EditFormDialog", "<span class='fa fa-edit'></span> Edit"), body: formModalBody(page), size: "modal-lg", label: "Edit" }),
+    nativeModal({ bs, className: `modal-form modal-form-insert${css("CreateFormDialog")}`, title: heading("CreateFormDialog", "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create"), body: body("CreateFormDialog"), size: size("CreateFormDialog"), label: "Create", titleAttr: "Create", dismissText: dismiss("CreateFormDialog") }),
+    nativeModal({ bs, className: `modal-form modal-form-edit${css("EditFormDialog")}`, title: heading("EditFormDialog", "<span class='fa fa-edit'></span> Edit"), body: body("EditFormDialog"), size: size("EditFormDialog"), label: "Edit", titleAttr: "Edit", dismissText: dismiss("EditFormDialog") }),
     // The details dialog keeps its raw title markup in the label and title attributes.
-    nativeModal({ bs, className: "modal-form modal-form-details", title: detailsTitle, rawTitle: true, body: formModalBody(page), size: "modal-lg" }),
-    nativeModal({ bs, className: "modal-delete", title: dialog("DeleteDialog", "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"), body: escape(formText(settings?.DeleteDialog?.Confirmation, "Are you sure you want to delete this record?", language)), footer: `<button aria-label="Delete" class="primary btn btn-primary" tabindex="0" title="Delete" type="button">${escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, "Delete"))}</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">${escape(localizedText(settings?.DeleteDialog?.CloseButtonText, "Cancel"))}</button>`, label: "Delete" }),
+    nativeModal({ bs, className: `modal-form modal-form-details${css("DetailsFormDialog")}`, title: detailsTitle, rawTitle: true, body: body("DetailsFormDialog"), size: size("DetailsFormDialog"), dismissText: dismiss("DetailsFormDialog") }),
+    nativeModal({ bs, className: `modal-delete${css("DeleteDialog")}`, title: heading("DeleteDialog", "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"), body: escape(formText(deleteAction?.Confirmation ?? settings?.DeleteDialog?.Confirmation, "Are you sure you want to delete this record?", language)), footer: `<button aria-label="${primary}" class="primary btn btn-primary" tabindex="0" title="${primary}" type="button">${primary}</button><button aria-label="${close}" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="${close}" type="button">${close}</button>`, label: configured("DeleteDialog") && settings.DeleteDialog.Title ? undefined : "Delete", dismissText: dismiss("DeleteDialog") }),
     gridErrorModal(bs, settings?.ErrorDialog, language),
     // Bootstrap 5 subgrids render no workflow, (de)activate or disassociate dialogs (live evidence).
     ...(bs.v5 ? [] : [
@@ -694,21 +711,25 @@ function listModalV5({ className, dialog = {}, title, body = "", footer = "", la
   return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ` aria-label="${attr(label)}"` : ""}${labelledBy ? ` aria-labelledby="${attr(labelledBy)}"` : ""}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ""}"><div class="modal-content"><div class="modal-header"><h4${labelledBy ? ` id="${attr(labelledBy)}"` : ""} class="modal-title ${attr(titleCss)}">${heading}</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></div>`;
 }
 function gridModalsV5(page, settings = {}, language = {}, listId = "") {
-  const formBody = (dialog, hidden = false) => `<div class="form-loading">${escape(formText(dialog?.LoadingMessage, "", language))}</div><iframe${hidden ? ' aria-hidden="true"' : ""} data-page="${attr(page)}" src="about:blank"></iframe>`;
+  // A list without grid settings renders the platform defaults: the loading spinner, the resolve
+  // dialog's default field names; a configured dialog repeats the default button classes after
+  // its own (live markup).
+  const defaults = !Object.keys(settings).length;
+  const formBody = (dialog, hidden = false) => `<div class="form-loading">${defaults ? '<span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span>' : escape(formText(dialog?.LoadingMessage, "", language))}</div><iframe${hidden ? ' aria-hidden="true"' : ""} data-page="${attr(page)}" src="about:blank"></iframe>`;
   const confirm = (name, primary, cancel = "Cancel") =>
-    `<button class="primary btn btn-primary " type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
+    `<button class="primary btn btn-primary ${settings?.[name] ? "btn btn-primary" : ""}" type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default ${settings?.[name] ? "btn btn-default" : ""}" data-bs-dismiss="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
   const deleteAction = (settings.ItemActions ?? []).find((action) => action?.Type === "CrmEntityFormView-DeleteAction");
-  const resolve = `<div class="row mb-3"><label class="required col-form-label col-md-3"></label><div class="col-md-9"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label=""></div></div><div class="row mb-3"><label class="required col-form-label col-md-3"></label><div class="col-md-9"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label=""></textarea></div></div>`;
+  const resolve = `<div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? "Resolution (required)" : ""}</label><div class="col-md-9"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label="${defaults ? "Resolution (required)" : ""}"></div></div><div class="row mb-3"><label class="required col-form-label col-md-3">${defaults ? "Description of resolution" : ""}</label><div class="col-md-9"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label="${defaults ? "Description of resolution" : ""}"></textarea></div></div>`;
   return [
     listModalV5({ className: "modal-form modal-form-insert", dialog: settings.CreateFormDialog, title: "<span class='fa fa-edit' aria-hidden='true'></span> Create", body: formBody(settings.CreateFormDialog), language }),
     listModalV5({ className: "modal-form modal-form-edit", dialog: settings.EditFormDialog, title: "<span class='fa fa-edit' aria-hidden='true'></span> Edit", body: formBody(settings.EditFormDialog), language }),
     listModalV5({ className: "modal-form modal-form-details", dialog: settings.DetailsFormDialog, title: "<span class='fa fa-info-circle' aria-hidden='true'></span> View details", body: formBody(settings.DetailsFormDialog, true), language, labelledBy: `modalTitleID_${listId}` }),
-    listModalV5({ className: "modal-delete", dialog: settings.DeleteDialog, title: "<span class='fa fa-trash-can' aria-hidden='true'></span> Delete", body: escape(formText(deleteAction?.Confirmation ?? settings.DeleteDialog?.Confirmation, "", language)), footer: confirm("DeleteDialog", "Delete"), language, label: "Delete" }),
-    listModalV5({ className: "modal-error", dialog: settings.ErrorDialog, title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error", footer: `<button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Close</button>`, language }),
+    listModalV5({ className: "modal-delete", dialog: settings.DeleteDialog, title: "<span class='fa fa-trash-can' aria-hidden='true'></span> Delete", body: escape(formText(deleteAction?.Confirmation ?? settings.DeleteDialog?.Confirmation, defaults ? "Are you sure you want to delete this record?" : "", language)), footer: confirm("DeleteDialog", "Delete"), language, label: "Delete" }),
+    listModalV5({ className: "modal-error", dialog: settings.ErrorDialog, body: defaults ? "<p>We're sorry, an error has occurred.</p>" : "", title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error", footer: `<button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Close</button>`, language }),
     listModalV5({ className: "modal-form modal-form-createrecord", dialog: settings.CreateRelatedRecordDialog, title: "<span class='fa fa-plus-circle' aria-hidden='true'></span> Create related record", body: formBody(settings.CreateRelatedRecordDialog), language }),
     listModalV5({ className: "modal-run-workflow", title: " Run workflow", body: escape("<p>Are you sure you want to run this workflow?</p>"), footer: confirm("WorkflowDialog", "Run workflow"), language }),
-    listModalV5({ className: "modal-deactivate", title: " Deactivate", footer: confirm("DeactivateDialog", "Deactivate"), language }),
-    listModalV5({ className: "modal-activate", title: " Activate", footer: confirm("ActivateDialog", "Activate"), language }),
+    listModalV5({ className: "modal-deactivate", title: " Deactivate", body: defaults ? "<p>Are you sure you want to deactivate this record?</p>" : "", footer: confirm("DeactivateDialog", "Deactivate"), language }),
+    listModalV5({ className: "modal-activate", title: " Activate", body: defaults ? "<p>Are you sure you want to activate this record?</p>" : "", footer: confirm("ActivateDialog", "Activate"), language }),
     `<div aria-hidden="true" aria-label="Resolve case" class="modal fade modal-resolvecase  " data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog  "><div class="modal-content"><div class="modal-header"><h4 class="modal-title "> Resolve case</h4><button class="form-close" data-bs-dismiss="modal" tabindex="0" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">Close</span></button></div><div class="modal-body">${resolve}</div><div class="modal-footer"><button tabindex="0" class="primary btn btn-success " type="button">Resolve</button><button tabindex="0" class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Cancel</button></div></div></div></div>`,
   ].join("");
 }
@@ -810,7 +831,12 @@ async function renderListGrid(model, context, options) {
       model.detailsActionLink = { Type: 1, Enabled: true, Target: 1, Label: model.detailsLabel, Tooltip: model.detailsLabel, URL: { PathWithQueryString: target.url, Path: target.url }, QueryStringIdParameterName: model.idParameter, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" };
   }
   const v5 = bootstrapMarkup(options.portal.settings).v5;
-  if (model.createPage && v5) {
+  // A list attached to a legacy ASPX page is the static EntityListControl of the WebForms master.
+  const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
+  // The Bootstrap 5 page control has no create page link (live layout: InsertActionLink disabled).
+  if (v5 && pageControl) {
+    /* no create link */
+  } else if (model.createPage && v5) {
     // Bootstrap 5: the list's create page is the grid's InsertActionLink, beside any configured create action.
     const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
     if (target) model.insertActionLink = { Type: 3, Enabled: true, Target: 2, Label: model.createLabel, Tooltip: "Create", URL: { PathWithQueryString: target.url, Path: target.url }, QueryStringIdParameterName: model.idParameter, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" };
@@ -819,18 +845,28 @@ async function renderListGrid(model, context, options) {
     if (target)
       actions.push({ position: "view", Type: 3, Enabled: true, Target: 1, Label: model.createLabel, Tooltip: model.createLabel, URL: { PathWithQueryString: target.url, Path: target.url }, FilterCriteriaId: "00000000-0000-0000-0000-000000000000", ActionIndex: 0 });
   }
+  const identity = context.user ?? context.identity;
+  // Without the create privilege the create links stay in the layout, disabled (live: reader and
+  // parent-scope lists), as the subgrids check it.
+  const store = options.store;
+  const canCreate = typeof store?.rules !== "function" || identity?.admin || store.state?.settings?.permissionMode === "permissive" || store.rules(model.entity, "create", identity ?? {}).length > 0;
+  if (!canCreate) {
+    if (model.insertActionLink) model.insertActionLink = { ...model.insertActionLink, Enabled: false };
+    for (const action of actions) if (action.Type === 3) action.Enabled = false;
+  }
   const layouts = gridLayouts(model, { secureBase: { t: "list", w: websiteId, list: model.list.id }, websiteId, metadata: options.metadata, actions, language });
   const settings = model.settings ?? {};
-  const identity = context.user ?? context.identity;
   const authenticated = Boolean(identity?.contactId ?? identity?.id);
   const bs = bootstrapMarkup(options.portal.settings);
-  const grid = bs.v5 ? listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) : `<div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "table-striped")}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
+  // Bootstrap 5 page control: the legacy grid markup (as subgrids), not the Bootstrap 5 list markup (live page/bound-entitylist).
+  const pageControlGrid = () => `<div><div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "")}" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, language)}${PAGINATION}${gridModals(page, settings, language, bs)}</div></div>`;
+  const grid = bs.v5 && pageControl ? pageControlGrid() : bs.v5 ? listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) : `<div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "table-striped")}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : "";
-  const body = filter ? (model.filter.vertical ? `<div class="row"><div class="col-md-3 filter-vertical">${filter}</div><div class="col-md-9">${grid}</div></div>` : filter + grid) : grid;
+  const body = filter ? (model.filter.vertical ? `<div class="row"><div class="${bs.v5 ? "col-lg-3" : "col-md-3"} filter-vertical">${filter}</div><div class="${bs.v5 ? "col-lg-9" : "col-md-9"}">${grid}</div></div>` : filter + grid) : grid;
   const js = model.list.js && (options.renderLiquid ? await options.renderLiquid(model.list.js, context) : model.list.js);
-  // A list attached to a legacy ASPX page is the static EntityListControl of the WebForms master.
-  const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
-  return `<div${pageControl ? ' id="EntityListControl"' : ""} class="entitylist">${body}${js ? `<script type="text/javascript">${js}</script>` : ""}</div>`;
+  const script = js ? `<script type="text/javascript">${js}</script>` : "";
+  if (bs.v5 && pageControl) return `<div id="EntityListControl"><div class="entitylist">${body}${script}</div></div>`;
+  return `<div${pageControl ? ' id="EntityListControl"' : ""} class="entitylist">${body}${script}</div>`;
 }
 
 /** Bootstrap 5 server markup of a list grid: the messages and dialogs the client fills. */
@@ -839,7 +875,7 @@ function listGridV5({ model, settings, layouts, websiteId, identity, authenticat
     ["class", `entity-grid entitylist ${settings.CssClass ?? ""}`],
     // An instance id the platform derives from the render time.
     ["data-id", `${Date.now()}.${String(Math.floor(Math.random() * 100)).padStart(2, "0")}`],
-    ["data-column-width-style", Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"],
+    ["data-column-width-style", settings.GridColumnWidthStyle == null ? "" : Number(settings.GridColumnWidthStyle) === 0 ? "Pixels" : "Percent"],
     ["data-defer-loading", "false"],
     ["data-enable-actions", "true"],
     ["data-get-url", `/_services/entity-grid-data.json/${websiteId}`],
@@ -863,38 +899,52 @@ function listGridV5({ model, settings, layouts, websiteId, identity, authenticat
   return `<div${attributes}>${messages}${gridModalsV5(page, settings, language, model.list.id)}</div>`;
 }
 
+const TEXT_FILTER_HINT = "To search on partial text, use the asterisk (*) wildcard character. ";
 /** Metadata filter panel (entity_list_filter built-in template). */
 async function renderListFilter(model, context, options) {
   const groups = metaFilterGroups(model.filter.definition);
   if (!groups.length) return "";
   const selected = new URLSearchParams(String(context.request?.params?.mf ?? ""));
+  const bs = bootstrapMarkup(options.portal.settings);
+  // Bootstrap 5: the option list items are presentational, text and option groups scroll in a box.
+  const li = bs.v5 ? '<li class="entitylist-filter-option" role="presentation">' : '<li class="entitylist-filter-option">';
+  const addon = bs.v5 ? "input-group-text" : "input-group-addon";
+  const box = (markup) => (bs.v5 ? `<div class="entitylist-filter-option-group-box-overflow">${markup}</div>` : markup);
   const items = [];
   for (const group of groups) {
     const elementId = `${String(group.selectionMode ?? "").toLowerCase()}_${group.id}`;
     let markup = "";
     if (group.type === "textfilter")
-      markup = `<li class="entitylist-filter-option"><div class="input-group entitylist-filter-option-text"><span class="input-group-addon"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? "")}" id="${attr(group.id)}" /></div></li>`;
+      markup = box(`${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control${bs.v5 ? " has-tooltip" : ""}" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? "")}" id="${attr(group.id)}"${bs.v5 ? ` title="${TEXT_FILTER_HINT}"` : ""}></div></li>`);
     // Dropdown groups (lookup or choice options) render one select box.
     else if (group.selectionMode === "Dropdown") {
-      const choices = await filterChoices(group, context, options);
-      markup = `<li class="entitylist-filter-option"><div class="input-group entitylist-filter-option-text"><span class="input-group-addon"><span class="fa fa-filter" aria-hidden="true"></span></span><select class="form-control" name="${attr(group.id)}" id="${attr(elementId)}"><option value="" label=" "></option>${choices.map((choice) => `<option value="${attr(choice.id)}" label="${attr(choice.label)}"${selected.getAll(group.id).includes(choice.id) ? " selected" : ""}>${escape(choice.label)}</option>`).join("")}</select></div></li>`;
+      const choices = await filterChoices(group, context, options, model);
+      markup = `${li}<div class="input-group entitylist-filter-option-text"><span class="${addon}"><span class="fa fa-filter" aria-hidden="true"></span></span><select class="form-control${bs.v5 ? " form-select" : ""}" name="${attr(group.id)}" id="${attr(elementId)}"><option value="" label=" "></option>${choices.map((choice) => `<option value="${attr(choice.id)}" label="${attr(choice.label)}"${selected.getAll(group.id).includes(choice.id) ? " selected" : ""}>${escape(choice.label)}</option>`).join("")}</select></div></li>`;
     } else {
-      const choices = await filterChoices(group, context, options);
+      const choices = await filterChoices(group, context, options, model);
       const type = group.selectionMode === "Single" ? "radio" : "checkbox";
-      markup = choices
+      markup = box(choices
         .slice(0, 6)
-        .map((choice) => `<li class="entitylist-filter-option"><div class="${type}"><label><input type="${type}" name="${attr(group.id)}" value="${attr(choice.id)}"${selected.getAll(group.id).includes(choice.id) ? ' checked="checked" data-checked="true"' : ""} /> ${escape(choice.label)}</label></div></li>`)
-        .join("");
+        .map((choice) => `${li}<div class="${type}"><label><input type="${type}" name="${attr(group.id)}" value="${attr(choice.id)}"${selected.getAll(group.id).includes(choice.id) ? ' checked="checked" data-checked="true"' : ""} /> ${escape(choice.label)}</label></div></li>`)
+        .join(""));
     }
-    items.push(`<li class="entitylist-filter-option-group"><label class="entitylist-filter-option-group-label h4" data-filter-id="${attr(group.id)}" for="${attr(group.type === "textfilter" ? group.id : elementId)}">${escape(group.label)}</label><ul class="list-unstyled" role="presentation" data-pagesize="6">${markup}</ul></li>`);
+    items.push(`<li class="entitylist-filter-option-group${bs.v5 ? " list-inline-item" : ""}"><label class="entitylist-filter-option-group-label h4" data-filter-id="${attr(group.id)}" for="${attr(["textfilter", "fetchfilter"].includes(group.type) ? group.id : elementId)}">${escape(group.label)}</label><ul class="list-unstyled" role="presentation"${bs.v5 ? "" : ' data-pagesize="6"'}>${markup}</ul></li>`);
   }
-  return `<div id="EntityList${attr(model.list.id)}" class="content-panel panel panel-default entitylist-filter"><div class="panel-body"><ul id="entitylist-filters" class="${model.filter.vertical ? " list-unstyled " : " list-inline "}">${items.join("")}</ul><div class="pull-right"><button class="btn btn-default btn-entitylist-filter-submit" data-serialized-query="mf" data-target="#EntityList${attr(model.list.id)}">${escape(model.filter.applyLabel)}</button></div></div></div>`;
+  // The Bootstrap 5 template leaves the panel's empty class slots as spaces.
+  return `<div id="EntityList${attr(model.list.id)}" class="${bs.v5 ? "content-panel card      entitylist-filter" : "content-panel panel panel-default entitylist-filter"}"><div class="${bs.v5 ? "card-body" : "panel-body"}"><ul id="entitylist-filters" class="${model.filter.vertical ? " list-unstyled " : " list-inline "}">${items.join("")}</ul><div class="${bs.right}"><button class="btn btn-default btn-entitylist-filter-submit" data-serialized-query="mf" data-target="#EntityList${attr(model.list.id)}">${escape(model.filter.applyLabel)}</button></div></div></div>`;
 }
 
-async function filterChoices(group, context, options) {
+async function filterChoices(group, context, options, model = null) {
   const node = group.node;
+  const indexed = (conditions) => conditions.map((condition) => ({ id: String(condition["adx.id"] ?? ""), label: condition.uiname ?? condition["adx.uiname"] ?? String(condition.value ?? "") }));
+  if (group.type === "rangeset") return indexed(node.filters ?? []);
+  if (group.type === "dynamicpicklistset") {
+    const attribute = node["adx.attribute"] ?? node.conditions?.[0]?.attribute;
+    return (options?.metadata?.entities?.[model?.entity]?.fields?.[attribute]?.options ?? []).map((option) => ({ id: String(option.value), label: String(option.label ?? option.value) }));
+  }
   if (group.kind === "link") {
     const condition = node.filters?.[0]?.conditions?.[0] ?? {};
+    if (condition["adx.uiinputtype"] !== "dynamic") return indexed(node.filters?.[0]?.conditions ?? []);
     const viewId = condition["adx.view"];
     const labelColumn = condition["adx.labelcolumn"];
     const target = node.name;
@@ -903,7 +953,7 @@ async function filterChoices(group, context, options) {
     const mapping = options.store.resolveMapping(target);
     const xml = view?.fetchXml ?? `<fetch><entity name="${attr(target)}"><attribute name="${attr(mapping.idColumn)}"/><attribute name="${attr(labelColumn || mapping.nameColumn || "name")}"/></entity></fetch>`;
     const rows = await readLookupView(contextualViewFetchXml(xml, context), options.readProvider, context.user ?? context.identity);
-    return rows.map((row) => ({ id: canonicalId(row[mapping.idColumn]), label: String(row[labelColumn] ?? row[mapping.nameColumn ?? "name"] ?? row[mapping.idColumn] ?? "") })).filter((row) => row.id);
+    return rows.map((row) => ({ id: canonicalId(row[mapping.idColumn]), label: String(row[labelColumn] ?? row[mapping.nameColumn ?? "name"] ?? row[mapping.idColumn] ?? "") })).filter((row) => row.id).map((row) => ({ ...row, id: `{${row.id}}` }));
   }
   return (node.conditions ?? []).map((condition) => ({ id: String(condition["adx.id"] ?? ""), label: condition.uiname ?? condition["adx.uiname"] ?? String(condition.value ?? "") }));
 }
@@ -1334,7 +1384,14 @@ async function renderForm(kind, name, context, options) {
           ? await renderLiquid(snippet, context)
           : snippet
         : "<div class='alert alert-block alert-danger'><span class='fa fa-lock' aria-hidden='true'></span>You don't have the appropriate permissions.</div>";
-    return `<div id="${attr(ids.wrapper)}">${await startupScript()}${message}</div>`;
+    // The denial renders inside the native form control (live permission captures, anonymous and
+    // no-role personas): the panel, a read-only view holding the message in an editable-snippet
+    // wrapper, and an empty actions row, within the page's WebForms form.
+    const formName = kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name;
+    const dateMarker = (schema.fields ?? []).some((field) => nativeControlKind(field) === "datetime") ? "<!--pp-date-controls-->" : "";
+    // The layout's multi-select columns keep the hosted controls stylesheet in the head (lib/liquid.mjs).
+    const multiSelectMarker = (schema.fields ?? []).some((field) => nativeControlKind(field) === "multiselect") ? "<!--MultiSelectPicklist.UpdMSPicklistControl-->" : "";
+    return `<!--pp-native-form--><!--pp-native-form-denied-->${dateMarker}${multiSelectMarker}<div id="${attr(ids.wrapper)}">${await startupScript()}<div id="${attr(ids.panel)}" class="crmEntityFormView" data-form-name="${attr(formName)}"><div id="${attr(ids.view)}" class="form-readonly entity-form" readonly="readonly"><div><div class="xrm-editable-html xrm-attribute"><div class="xrm-attribute-value">${message}</div></div></div></div><div class="actions"></div></div></div>`;
   }
   // The control still renders inside the page's WebForms form (native marker); the Bootstrap 5
   // panel carries a close button without a postback handler (live evidence).
@@ -1352,15 +1409,15 @@ async function renderForm(kind, name, context, options) {
       context.__diagnostics?.push({ code: "ADVANCEDFORM_SOURCE_INVALID", severity: "info", form: definition?.name ?? name, redirect: location, message: `Advanced form step '${schema.stepId}' has no source record; the platform redirects with msg=source-invalid.` });
       return `<script>location.replace(${json(location)});</script>`;
     }
-    return `<div id="${attr(ids.wrapper)}" data-pp-native-form><div id="MessagePanel" class="message error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+    return `<!--pp-native-form--><div id="${attr(ids.wrapper)}"><div id="MessagePanel" class="message error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
   }
   if (notFound)
     return bs.v5
-      ? `<div id="${attr(ids.wrapper)}" data-pp-native-form>${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="${attr(ids.buttons)}btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">${escape(notFound)}</span></div></div>`
-      : `<div id="${attr(ids.wrapper)}" data-pp-native-form>${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+      ? `<!--pp-native-form--><div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="${attr(ids.buttons)}btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">${escape(notFound)}</span></div></div>`
+      : `<!--pp-native-form--><div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
   if (kind === "entityform" && mode === FORM_MODE.insert && !formCreateAllowed(store, schema.entity, identity))
     // Still a basic form control: the page keeps its WebForms server form (live permission-denied captures).
-    return ENTITY_FORM_CLIENT_VALIDATE + createAccessDeniedForm({ ids, formName: schema.formName ?? schema.title ?? name, snippet: portal.snippets?.["EntitySecurity/Record/CreateAccessDeniedMessage"] }).replace(/^<div id="[^"]*"/, "$& data-pp-native-form");
+    return ENTITY_FORM_CLIENT_VALIDATE + createAccessDeniedForm({ ids, formName: schema.formName ?? schema.title ?? name, snippet: portal.snippets?.["EntitySecurity/Record/CreateAccessDeniedMessage"] }).replace(/^<div id="[^"]*"/, "<!--pp-native-form-->$&");
   const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
   // Posted values re-render; an unchanged lookup keeps its record value, which carries the display name.
   if (postback?.values) record = { ...record, ...Object.fromEntries(Object.entries(postback.values).filter(([key, value]) => !(record?.[key] && typeof record[key] === "object" && canonicalId(scalarValue(record[key])) === canonicalId(value)))) };
@@ -1414,6 +1471,8 @@ async function renderForm(kind, name, context, options) {
       rangeMessage: formLabel(fieldOf(row, "rangevalidationerrormessage"), ""),
       cssClass: fieldOf(row, "cssclass") ?? "",
       controlStyle: Number.isFinite(style) ? style : null,
+      // Survey control styles (constant sum, rank order, matrix, multiple choice, stack rank) group cells by name.
+      groupName: String(fieldOf(row, "groupname") ?? ""),
       lookupStyle: style === 756150000 ? "dropdown" : field.lookupStyle,
       ignoreDefault: truthy(fieldOf(row, "ignoredefaultvalue")),
       randomize: truthy(fieldOf(row, "randomizeoptionsetvalues")),
@@ -1422,6 +1481,13 @@ async function renderForm(kind, name, context, options) {
       createFormId: canonicalId(fieldOf(row, "entityformforcreate")),
       minimum: field.minimum ?? field.minValue,
       maximum: field.maximum ?? field.maxValue,
+      // The Dataverse composite full name (the computed fullname column, valid for neither create
+      // nor update): the platform's full name composite box, required and without a maximum
+      // length; the platform composes it from the name parts (live contact forms).
+      ...(field.name === "fullname" && field.validForCreate === false && field.validForUpdate === false ? { composite: "fullname", required: true, maxLength: undefined } : {}),
+      // A computed composite address (<prefix>_composite, valid for neither create nor update): the
+      // platform's address composite box and its parts container (live contact forms).
+      ...(/^[a-z]+\d*_composite$/.test(field.name) && field.validForCreate === false && field.validForUpdate === false ? { composite: "address", maxLength: undefined } : {}),
     };
   });
   // A column placed on the form more than once renders only its first cell (see layout below).
@@ -1473,7 +1539,9 @@ async function renderForm(kind, name, context, options) {
     if (field.lookupStyle === "dropdown" && !field.hidden)
       for (const entity of targets) {
         const targetMapping = store.resolveMapping(entity);
-        const view = field.lookupView?.entity === entity ? field.lookupView : null;
+        // Without a DefaultViewId the choices come from the target's default lookup view (querytype 64; live:
+        // its active-records filter leaves deactivated rows out of the dropdown).
+        const view = field.lookupView?.entity === entity ? field.lookupView : (metadata?.views ?? []).find((candidate) => candidate.entity === entity && candidate.queryType === 64 && candidate.isDefault && candidate.fetchXml) ?? null;
         let rows;
         try {
           rows = view?.fetchXml
@@ -1491,6 +1559,11 @@ async function renderForm(kind, name, context, options) {
   }
   const validators = [];
   const nameAttr = (field, suffix = "") => attr(`${ids.names}${field.name}${suffix}`);
+  // The fields of a survey control group (adx_groupname with the same control style), in layout order.
+  let layoutFields = null;
+  const surveyGroup = (field) =>
+    (layoutFields ??= formCells(schema).map((cell) => byName.get(cell.name)).filter(Boolean))
+      .filter((other) => field.groupName && other.groupName === field.groupName && other.controlStyle === field.controlStyle);
   const optionsFor = (field) => {
     const options = [...(field.options ?? [])];
     // adx_randomizeoptionsetvalues: native shuffles the options on each render.
@@ -1520,7 +1593,7 @@ async function renderForm(kind, name, context, options) {
     const fieldLevel = field.fieldReadOnly ?? field.readOnly;
     const formLevel = readOnly && !fieldLevel;
     const formReadonly = readOnly ? ' readonly="readonly"' : "";
-    const emptyOption = (selected) => `<option${selected ? ' selected="selected"' : ""} value=""${postback && mode === FORM_MODE.insert ? "" : ' label="Select" aria-label="Select"'}></option>`;
+    const emptyOption = (selected) => `<option${selected ? ' selected="selected"' : ""} value=""${postback ? "" : ' label="Select" aria-label="Select"'}></option>`;
     const css = field.cssClass ? ` ${attr(field.cssClass)}` : " ";
     const required = field.required && !disabled ? ' aria-required="true"' : "";
     switch (field.control) {
@@ -1539,7 +1612,7 @@ async function renderForm(kind, name, context, options) {
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ""}${disabled ? ' disabled="disabled" aria-disabled="true"' : ""}${formReadonly}>${emptyOption(false).replace("<option", `<option${item}`)}${choices.map((choice) => `<option value="${attr(choice.id)}"${item}${polymorphic ? ` data-entity="${attr(choice.entity)}"` : ''}${choice.id === idValue ? ' selected="selected"' : ""}>${escape(choice.label)}</option>`).join("")}</select><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical || (field.targets?.length === 1 ? field.targets[0] : ""))}>`;
         }
         if (disabled)
-          return `<div><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${bs.v5 && formLevel ? "" : "  readonly"}" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+          return `<div><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${css}${bs.v5 && formLevel ? "" : " readonly"}" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
         const lookupBase = { kind: "lookup", views: [], settings: {}, pageSize: Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10, search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character. " } };
         let layouts = [];
         try {
@@ -1576,8 +1649,11 @@ async function renderForm(kind, name, context, options) {
         const gridChildren = bs.v5
           ? `<div class="view-grid"></div>${gridMessages(bs)}${PAGINATION}${gridErrorModal(bs)}`
           : `<div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}`;
+        // A required lookup holding a value is labelled by its required-field message and its value
+        // field is marked invalid (live: referenced and edited required lookups, the shown owner;
+        // an empty required lookup keeps its label).
+        const referenced = Boolean(field.required && idValue);
         // A referenced lookup posts no entity name (live evidence).
-        const referenced = entityReference?.field === field.name && field.required && !disabled;
         if (entityReference?.field === field.name) logical = "";
         return `<div class="input-group"${bs.v5 ? "" : ' role="none"'}><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${referenced ? "" : attr(field.id) + "_label"}" aria-label="${attr(referenced ? field.requiredMessage || `${field.label} is a required field.` : field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}${referenced ? ' aria-invalid="true"' : ""}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : `<div class="input-group-btn">${buttons}</div>`}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal({
           bs,
@@ -1595,6 +1671,13 @@ async function renderForm(kind, name, context, options) {
         const options = field.options?.length ? field.options : [{ value: 0, label: "No" }, { value: 1, label: "Yes" }];
         const label = (bit) => options.find((option) => Number(option.value) === bit)?.label ?? (bit ? "Yes" : "No");
         const classId = canonicalId(field.controlClassId);
+        // Multiple choice (adx_controlstyle 100000007): a check box of the group; the group's first
+        // box carries the group validator (live response body).
+        if (field.controlStyle === 100000007) {
+          const group = attr(field.groupName);
+          const first = surveyGroup(field)[0]?.name === field.name;
+          return `<span class="${formLevel ? "aspNetDisabled " : ""}checkbox checkbox${css} ${group}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bool ? ' checked="checked"' : ""} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ""}></span>${first ? `<span id="multipleChoiceValidator${group}" class="validator-text" style="display:none;"></span>` : ""}`;
+        }
         if (classId === DROPDOWN_CLASS) {
           const blank = field.ignoreDefault && scalar == null;
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? "aspNetDisabled " : ""}form-control boolean-dropdown${css}" onchange="setIsDirty(this.id);"${fieldLevel ? ' disabled="disabled" aria-disabled="true"' : formLevel ? ' disabled="disabled"' : ""}${formReadonly}>${field.ignoreDefault ? `<option value=""${blank ? ' selected="selected"' : ""}></option>` : ""}<option${!blank && !bool ? ' selected="selected"' : ""} value="0">${escape(label(0))}</option><option${!blank && bool ? ' selected="selected"' : ""} value="1">${escape(label(1))}</option></select>`;
@@ -1607,6 +1690,10 @@ async function renderForm(kind, name, context, options) {
       case "picklist": {
         const options = optionsFor(field);
         const selected = scalar == null || scalar === "" ? null : Number(scalar);
+        // Matrix (adx_controlstyle 100000006): one table row of labelled radio buttons, labels on
+        // top, the options in reverse order (live response bodies of a local and a global choice).
+        if (field.controlStyle === 100000006)
+          return `<table id="${attr(field.id)}" class="picklist horizontal labels-top${css}" role="presentation" onchange="setIsDirty(this.id);"><tr>${[...options].reverse().map((option, index) => `<td><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label><input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}></td>`).join("")}</tr></table>`;
         if (field.controlStyle === 100000000 || field.controlStyle === 100000001)
           return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? "vertical" : "horizontal"}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true" aria-invalid="false" title="Please select an item in this list"' : ""}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>`).join(field.controlStyle === 100000000 ? "<br>" : "")}</span>`;
         // PicklistControlTemplate: every option follows an empty "Select" option; a required
@@ -1627,14 +1714,8 @@ async function renderForm(kind, name, context, options) {
         const hiddenValue = bs.v5 ? `<input name="${nameAttr(field, field.control === "state" ? "_EntityState" : "_EntityStatus")}" type="hidden" id="${attr(field.id)}${field.control === "state" ? "_EntityState" : "_EntityStatus"}"${valueAttr(scalar)}>` : "";
         return `<span id="${attr(field.id)}" class="${field.control}${css}">${escape(current?.label ?? option?.label ?? scalar ?? "")}</span>${hiddenValue}`;
       }
-      case "multiselect": {
-        const values = String(Array.isArray(current) ? current.map(scalarValue).join(",") : scalar ?? "").split(",").filter(Boolean);
-        const options = optionsFor(field);
-        const optionsHtml = options
-          .map((option, index) => `<li class="msos-option" role="option"><label name="${attr(field.id)}msos-label" class="msos-label" title="${attr(option.label)}"><input type="checkbox" id="${attr(field.id)}_item${index + 1}" class="msos-checkbox" name="character" tabindex="-1" aria-label="${attr(option.label)}" value="${attr(option.value)}"${values.includes(String(option.value)) ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><div class="msos-label-text msos-optionitem-text" aria-hidden="true">${escape(option.label)}</div></label></li>`)
-          .join("");
-        return `<div id="PcfControl_${attr(compactId(field.id + N).slice(0, 32))}" onchange="setIsDirty(this.id);"><span id="${attr(field.id)}_Container" class="flexbox"><div id="${attr(field.id)}_ControlView" class="flexbox"><div id="${attr(field.id)}_i" class="msos-container ${values.length ? "msos-some-selected" : "msos-none-selected"}" data-paqvilo-mirage-multiselect="${attr(field.id)}"><div class="msos-selecteditems-container" tabindex="0"><ul class="msos-selecteditems msos-current-selection-normal" tabindex="-1">${values.map((v) => `<li class="msos-selected-display-item" data-value="${attr(v)}">${escape(options.find((option) => String(option.value) === v)?.label ?? v)}</li>`).join("")}</ul></div><div class="msos-inner-container" role="combobox" aria-haspopup="true" aria-expanded="false" aria-label="${attr(field.label)}"><div class="msos-filter-container"><div class="msos-input-container"><input id="${attr(field.id)}_ledit" type="text" class="msos-input" placeholder="Search"${disabled ? ' disabled="disabled"' : ""}></div><div class="msos-caret-container"><button class="msos-caret-button" tabindex="-1" aria-label="Toggle menu" type="button"${disabled ? ' disabled="disabled"' : ""}><span class="msos-glyph"></span></button></div></div><div class="msos-selection-container" hidden><div class="msos-action-buttons"><label name="${attr(field.id)}msos-label" class="msos-label msos-selectall msos-option"><input type="checkbox" class="msos-checkbox" id="${attr(field.id)}_selectAll" tabindex="-1" aria-label="Select all"${disabled ? ' disabled="disabled"' : ""}><div class="msos-label-text" aria-hidden="true"><div class="msos-optionitem-text">Select all</div><div id="${attr(field.id)}msos-no-of-Items" class="msos-itemcount-text">${options.length} items</div></div></label></div><div id="${attr(field.id)}_no-results" class="msos-no-results msos-hidden">No results found</div><ul class="msos-selected-items msos-selection" role="listbox" tabindex="-1" aria-multiselectable="true" aria-labelledby="${attr(field.id)}msos-no-of-Items">${optionsHtml}</ul></div></div><select id="${attr(field.id)}_0" multiple="multiple" style="display: none;">${options.map((option) => `<option value="${attr(option.value)}"${values.includes(String(option.value)) ? " selected" : ""}>${escape(option.label)}</option>`).join("")}</select></div></div></span></div><input type="hidden" name="${nameAttr(field)}" id="${attr(field.id)}" value="${attr(values.join(","))}">`;
-      }
+      case "multiselect":
+        return multiSelectControl(field, { current, options: optionsFor(field), off: disabled || readOnly, formReadonly, nameAttr, hostKey: `${field.id}:${N}`, lcid: formLanguage?.lcid ?? formLanguage?.defaultLcid ?? 1033 });
       case "datetime": {
         // Solution columns use Format=DateAndTime while their generic input
         // type is still "date". The exported format determines the picker.
@@ -1654,8 +1735,19 @@ async function renderForm(kind, name, context, options) {
         return richTextInput(field, current, { portal, managedControls, nameAttr });
       case "file":
       case "image":
-        return fileColumnInput(field, { id, entity: schema.entity, record, scalar, nameAttr });
+        return fileColumnInput(field, { id, entity: schema.entity, record, scalar, nameAttr, readOnly, origin: requestOrigin(context) });
       case "textarea":
+        if (field.composite === "address") {
+          // The platform's address composite: the trigger box (its value the composed address) and
+          // a hidden container with one box per address part, labelled by the platform's part
+          // names, and its Done button (live read-only contact form).
+          const prefix = field.name.replace(/_composite$/, "");
+          const parts = [["line1", "Address line 1"], ["line2", "Address line 2"], ["line3", "Address line 3"], ["city", "City"], ["stateorprovince", "State/Province"], ["postalcode", "ZIP/Postal code"], ["country", "Country/Region"]];
+          const contentId = randomUUID();
+          const readonlyAttr = disabled ? ' readonly="readonly"' : "";
+          const boxes = parts.map(([part, label]) => `<input name="${nameAttr(field, "_" + part)}" type="text" id="${attr(field.id)}_${part}" class=" content  text form-control"${valueAttr(scalarValue(record?.[`${prefix}_${part}`]))} aria-label="${label}" onchange="setIsDirty(this.id);"${readonlyAttr}>`).join("");
+          return `<textarea name="${nameAttr(field)}" rows="4" cols="20" id="${attr(field.id)}" class="trigger text form-control${css} addressCompositeControl${disabled ? " readonly " : " "}" data-composite-control="" data-content-id="${contentId}" data-editable="${disabled ? "False" : "True"}" data-content-template="{${prefix}_composite_line1} {${prefix}_composite_line2} {${prefix}_composite_line3}{BREAK}{${prefix}_composite_city} {${prefix}_composite_stateorprovince} {${prefix}_composite_postalcode}{BREAK}{${prefix}_composite_country}"${readonlyAttr}>${escape(String(scalar ?? ""))}</textarea><div id="${contentId}" class="content d-none addressCompositeControlContainer">${boxes}<input id="popoverUpdateButton_${randomUUID()}" class="btn btn-primary w-100" role="button" aria-label="Done" readonly="true" value="Done"></div>`;
+        }
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
         // A one-row cell keeps the two-row (4 line) memo box.
@@ -1674,6 +1766,17 @@ async function renderForm(kind, name, context, options) {
           const selected = scalar == null || scalar === "" ? null : String(scalar);
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${formLevel ? "aspNetDisabled " : ""}integer form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ""}${formReadonly}><option${selected == null ? ' selected="selected"' : ""} value="" label=" "></option>${choices.map((choice) => `<option${String(choice.value) === selected ? ' selected="selected"' : ""} value="${attr(choice.value)}">${escape(choice.label)}</option>`).join("")}</select>`;
         }
+        // Rank order (100000004 no ties, 100000005 allow ties), stack rank (100000008) and constant
+        // sum (100000003) whole-number boxes (live response bodies): narrow boxes classed by group.
+        if (field.control === "integer" && [100000003, 100000004, 100000005, 100000008].includes(field.controlStyle)) {
+          const group = attr(field.groupName);
+          const readonlyAttr = disabled ? ' readonly="readonly"' : "";
+          if (field.controlStyle !== 100000003)
+            return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="form-control text integer${css} ${group}" onchange="setPrecision(this.id);setIsDirty(this.id);" style="width:30px;"${readonlyAttr}>${field.controlStyle === 100000004 ? `<span id="RankOrderTieValidator${attr(field.id)}" class="validator-text" style="visibility:hidden;">*</span>` : ""}`;
+          // The group's last box carries the read-only total (0 until the client sums) and its validator.
+          const last = surveyGroup(field).at(-1)?.name === field.name;
+          return `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text integer ${group}${css}" onchange="setIsDirty(this.id);setPrecision(this.id);updateConstantSum('${group}');" style="width:30px;"${readonlyAttr}>${last ? `<input name="${attr(ids.names)}ConstantSumTotalValue${group}" type="text" value="0" id="ConstantSumTotalValue${group}" class="total" readonly="readonly" style="width:30px;"><span id="ConstantSumTotalValidator${group}" class="validator-text" style="visibility:hidden;">*</span>` : ""}`;
+        }
         const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}"${field.control === "double" ? ` data-numberdecimalseparator="${attr(decimalSeparator)}"` : ""} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
         if (field.control !== "money") return control;
         // A money box shows the record currency's symbol as an input-group addon; without a
@@ -1684,6 +1787,10 @@ async function renderForm(kind, name, context, options) {
       default:
         if (field.hidden && field.control !== "lookup")
           return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(scalar)}>`;
+        // The full name composite box (live read-only contact form and step): the platform's
+        // composite trigger with a per-render content id; the client composes the name parts.
+        if (field.composite === "fullname")
+          return `<input name="${nameAttr(field)}" type="text"${valueAttr(scalar)} id="${attr(field.id)}" class="trigger text form-control${css} fullNameCompositeControl${disabled ? " readonly" : ""}" data-composite-control="" data-content-id="${randomUUID()}" data-editable="${disabled ? "False" : "True"}" data-content-template="{fullnamefirstname} {fullnamelastname}" onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}>`;
         {
           // String text boxes: e-mail format adds type="email" and the launchEmail handler,
           // phone format the platform placeholder, a maximum length the LengthError keypress
@@ -1699,8 +1806,11 @@ async function renderForm(kind, name, context, options) {
           const launch = email ? "launchEmail" : url ? "launchUrl" : ticker ? "launchTickerSymbolUrl" : "";
           const change = `setIsDirty(this.id);${url ? `validateUrlInput(this,${Number(field.maxLength) || 0});` : ticker ? "uppercaseTickerSymbol(this);" : ""}`;
           // Bootstrap 5 keeps the required-field attributes of a box a read-only form disables.
+          // A multistep step's text box whose description shows below it carries the description as its
+          // role description (live step markup; basic forms render none).
+          const roleDescription = kind === "webform" && field.description?.text && field.description.position === 100000001 ? ` aria-roledescription="${attr(plainText(field.description.text))}"` : "";
           const requiredText = field.required && !(bs.v5 ? fieldLevel : disabled) ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"` : "";
-          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${field.description?.text ? ` aria-roledescription="${attr(field.description.text)}"` : ""}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
+          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${roleDescription}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
         }
     }
   };
@@ -1731,7 +1841,7 @@ async function renderForm(kind, name, context, options) {
         const current = value(field);
         args[name] = field.control === 'lookup'
           ? current ? [{ id: canonicalId(scalarValue(current)), entityType: current.logical_name ?? field.targets?.[0], name: current.name ?? '' }] : []
-          : field.control === 'multiselect' ? (Array.isArray(current) ? current.map(scalarValue) : String(scalarValue(current) ?? '').split(',').filter(Boolean)) : scalarValue(current);
+          : field.control === 'multiselect' ? multiSelectValues(current) : scalarValue(current);
         properties.push(name);
         if (parameter.type) propertyTypes[name] = parameter.type;
       } else return unsupported(`Code component ${component.name} has an unresolved or unsupported native property binding: ${name}.`);
@@ -1759,7 +1869,7 @@ async function renderForm(kind, name, context, options) {
   for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes", "webresource"].includes(candidate.type))) {
     if (cell.type === "webresource") {
       // WebResourceControl: an iframe on /_webresource/{name}, labelled by the cell.
-      const label = cell.showLabel === false ? "" : `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label ?? cell.id)}</label>`;
+      const label = cell.showLabel === false ? "" : `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(cell.label ?? cell.id)}</label>`;
       extraControls.set(cell.id, `<div class="${bs.info}">${label}</div><div class="control"><iframe id="${attr(cell.id)}" src="/_webresource/${attr(String(cell.url ?? "").replace(/^\/+/, ""))}" width="100%" height="100%" frameborder="${cell.border ? 1 : 0}" scrolling="${attr(cell.scrolling ?? "auto")}"></iframe></div>`);
       continue;
     }
@@ -1776,7 +1886,7 @@ async function renderForm(kind, name, context, options) {
       const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}${bs.v5 ? `&isprofilepage=false&lang=${encodeURIComponent(languageCode)}` : ""}` : "about:blank";
       // The Bootstrap 5 quick view cell is labelled and its frame carries only the platform's data attributes.
       extraControls.set(cell.id, bs.v5
-        ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label)}</label>` : ""}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="${relatedId ? 0 : -1}" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
+        ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${renderFormLabel(cell.label)}</label>` : ""}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="${relatedId ? 0 : -1}" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
         : `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
       continue;
     }
@@ -1861,7 +1971,7 @@ async function renderForm(kind, name, context, options) {
     // The grid class keeps the platform default and appends the configured GridCssClass as is.
     extraControls.set(
       cell.id,
-      `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="${!bs.v5}" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"` : ""} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
+      `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label"${readOnly ? ' readonly="readonly"' : ""}>${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="${!bs.v5}" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"` : ""} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs, settings, formLanguage)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {
@@ -1870,7 +1980,7 @@ async function renderForm(kind, name, context, options) {
     if (resolved.ownerHidden) return "";
     const fieldValidatorsList = fieldValidators(resolved, { linksEnabled, readOnly });
     validators.push(...fieldValidatorsList);
-    const labelFor = (resolved.control === "lookup" && resolved.lookupStyle !== "dropdown") || ["file", "image"].includes(resolved.control) || resolved.control === "boolean" && canonicalId(resolved.controlClassId) === RADIO_CLASS || resolved.control === "picklist" && [100000000, 100000001].includes(resolved.controlStyle) || /^(state|status)$/.test(resolved.control)
+    const labelFor = (resolved.control === "lookup" && resolved.lookupStyle !== "dropdown") || ["file", "image"].includes(resolved.control) || resolved.control === "boolean" && canonicalId(resolved.controlClassId) === RADIO_CLASS || resolved.control === "picklist" && [100000000, 100000001, 100000006].includes(resolved.controlStyle) || /^(state|status)$/.test(resolved.control)
       ? ""
       : ` for="${attr(resolved.id)}"`;
     const description = resolved.description?.text ? resolved.description : null;
@@ -1881,7 +1991,7 @@ async function renderForm(kind, name, context, options) {
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
     // Bootstrap 5 marks a required column required even when it is read-only.
-    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? " required" : ""}">${labelHtml}${fieldLevelReadOnly ? "" : `<div class="validators">${validatorMarkup(fieldValidatorsList, { readonly: readOnly })}</div>`}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? " required" : ""}">${labelHtml}${fieldLevelReadOnly && !/^(?:file|image)$/.test(resolved.control) ? "" : `<div class="validators">${validatorMarkup(fieldValidatorsList, { readonly: readOnly })}</div>`}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === "quickform") return "crmquickform-cell";
@@ -1897,21 +2007,25 @@ async function renderForm(kind, name, context, options) {
       case "lookup":
         return "lookup form-control-cell";
       case "picklist":
-        return "picklist-cell";
+        return field.controlStyle === 100000006 ? "picklist-matrix-cell" : "picklist-cell";
       case "multiselect":
         return "form-control-cell";
       case "boolean": {
         const classId = canonicalId(field.controlClassId);
+        if (field.controlStyle === 100000007) return "checkbox-cell";
         return classId === DROPDOWN_CLASS ? "boolean-dropdown-cell" : classId === RADIO_CLASS ? "boolean-radio-cell" : "checkbox-cell";
       }
       case "datetime":
         return "datetime form-control-cell";
       case "textarea":
-        return "textarea form-control-cell";
+        return field.composite === "address" ? "text form-control-cell" : "textarea form-control-cell";
       case "integer":
       case "decimal":
       case "double":
       case "money":
+        if (field.control === "integer" && (field.controlStyle === 100000004 || field.controlStyle === 100000005)) return "rank-order-cell";
+        if (field.control === "integer" && field.controlStyle === 100000008) return "stack-rank-cell";
+        if (field.control === "integer" && field.controlStyle === 100000003) return "constant-sum form-control-cell";
         return `${field.control} form-control-cell`;
       case "state":
       case "status":
@@ -2022,6 +2136,13 @@ async function renderForm(kind, name, context, options) {
             }
             if (truncated) break;
             tabHtml += '<td class="cell zero-cell"></td></tr>';
+            // A constant sum group's hidden member count follows the row of its first member (live response body).
+            for (const cell of row) {
+              const field = byName.get(cell.name);
+              if (field?.control !== "integer" || field.controlStyle !== 100000003 || !field.groupName) continue;
+              const members = surveyGroup(field);
+              if (members[0]?.name === field.name) tabHtml += `<input type="hidden" name="${attr(ids.names)}ConstantSumIndex${attr(field.groupName)}" id="ConstantSumIndex${attr(field.groupName)}" value="${members.length}">`;
+            }
           }
           if (truncated) break;
           tabHtml += "</tbody></table></fieldset>";
@@ -2083,6 +2204,8 @@ async function renderForm(kind, name, context, options) {
   const onclick = (buttonName) =>
     `javascript:if(typeof ${hook} === 'function'){if(${hook}()){if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}}else{return false;}}else{if(typeof Page_ClientValidate === 'function'){if(Page_ClientValidate('${group}')){clearIsDirty();disableButtons();this.value = '${busy}';}}else{clearIsDirty();disableButtons();this.value = '${busy}';}};WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions("${buttonName}", "", true, "${group}", "", false, true))`;
   let actionsHtml = "";
+  // The configured Create related record action as the layout configuration describes it.
+  let createRelatedLink = null;
   let defaultButton = "";
   const renderedActions = [];
   if (kind === "webform") {
@@ -2108,12 +2231,12 @@ async function renderForm(kind, name, context, options) {
     const recordButtons = [];
     const recordDialogs = [];
     if (kind === "entityform" && id) {
-      const inactive = Number(scalarValue(record?.statecode)) === 1;
       const formSettings = settingsJson(portalField(componentMetadata ?? {}, "settings") ?? "", "form settings") ?? {};
       const canUpdate = !store.allowed || store.allowed(mapping.logicalName, "update", record, identity);
       const canDelete = !store.allowed || store.allowed(mapping.logicalName, "delete", record, identity);
       const linkCss = (action) => attr(`${action.ButtonCssClass || "btn btn-default"} btn`);
-      const stateButton = (action, type, hidden) => `<button class="${type}-link ${linkCss(action)}${hidden ? " hidden" : ""}" data-url="/_services/action-${type}/${websiteId}" href="/_services/action-${type}/${websiteId}" type="button"${hidden ? ' style="display: none;"' : ""}>${escape(formLabel(action.ButtonLabel, type === "activate" ? "Activate" : "Deactivate"))}</button>`;
+      // Both state buttons render; the app bundle hides the one the record state rules out (live DOM).
+      const stateButton = (action, type) => `<button class="${type}-link ${linkCss(action)}" data-url="/_services/action-${type}/${websiteId}" href="/_services/action-${type}/${websiteId}" type="button">${escape(formLabel(action.ButtonLabel, type === "activate" ? "Activate" : "Deactivate"))}</button>`;
       for (const action of configuredActions) {
         if (action.Type === "DeleteAction" && canDelete) {
           const dialog = formSettings.DeleteDialog ?? {};
@@ -2131,15 +2254,33 @@ async function renderForm(kind, name, context, options) {
             body: escape(formLabel(action.Confirmation, "") || "Are you sure you want to delete this record?"),
             footer: `<button aria-label="${primary}" class="primary btn btn-primary${dialog.PrimaryButtonCssClass ? " " + attr(text(dialog.PrimaryButtonCssClass, "")) : ""}" tabindex="0" title="${primary}" type="button">${primary}</button><button aria-label="${close}" class="cancel btn btn-default${dialog.CloseButtonCssClass ? " " + attr(text(dialog.CloseButtonCssClass, "")) : ""}" ${bs.dismiss}="modal" tabindex="0" title="${close}" type="button">${close}</button>`,
           }));
-        } else if (action.Type === "ActivateAction" && canUpdate) recordButtons.push(stateButton(action, "activate", !inactive));
-        else if (action.Type === "DeactivateAction" && canUpdate) recordButtons.push(stateButton(action, "deactivate", inactive));
+        } else if (action.Type === "ActivateAction" && canUpdate) recordButtons.push(stateButton(action, "activate"));
+        else if (action.Type === "DeactivateAction" && canUpdate) recordButtons.push(stateButton(action, "deactivate"));
         else if (action.Type === "CreateRelatedRecordAction") {
           // The platform stamps a fresh filter criteria id on the button and its dialog; the
           // dialog is the generic confirmation (live), posted to the button's (empty) URL.
           const criteria = randomUUID();
+          createRelatedLink = {
+            Modal: {},
+            ...(action.EntityFormId ? { EntityForm: { Id: canonicalId(action.EntityFormId), LogicalName: "adx_entityform", KeyAttributes: [] } } : {}),
+            Target: Number(action.TargetType ?? 0),
+            Type: 29,
+            Label: formLabel(action.ButtonLabel, ""),
+            Tooltip: formLabel(action.ButtonTooltip, ""),
+            Enabled: true,
+            ButtonCssClass: action.ButtonCssClass ?? "",
+            SuccessMessage: formLabel(action.SuccessMessage, ""),
+            Confirmation: formLabel(action.Confirmation, ""),
+            ShowModal: Number(action.ShowModal ?? 0),
+            FilterCriteriaId: criteria,
+          };
           recordButtons.push(`<button class="create-related-record-link ${linkCss(action)}" data-filtercriteriaid="${criteria}" data-url="" href="" type="button">${escape(formLabel(action.ButtonLabel, "Create related record"))}</button>`);
           const title = "<span class='fa fa-plus-circle' aria-hidden='true'></span> Create related record";
-          recordDialogs.push(nativeModal({ bs, className: "modal-form-createrecord", title, rawTitle: true, body: "Create related record", footer: `<button aria-label="Ok" class="primary btn btn-primary btn-danger" tabindex="0" title="Ok" type="button">Ok</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button>` }).replace(' role="dialog"', ` data-filtercriteriaid="${criteria}" role="dialog"`));
+          // An action that opens its target form in a modal (EntityFormId, ShowModal) gets the form dialog
+          // with an empty frame the client points at the target form (live response body).
+          if (action.EntityFormId && Number(action.ShowModal) === 1)
+            recordDialogs.push(nativeModal({ bs, className: "modal-form modal-form-createrecord", title, rawTitle: true, size: "modal-lg", body: formModalBody(`/_portal/modal-form-template-path/${websiteId}`) }).replace(' role="dialog"', ` data-filtercriteriaid="${criteria}" role="dialog"`));
+          else recordDialogs.push(nativeModal({ bs, className: "modal-form-createrecord", title, rawTitle: true, body: "Create related record", footer: `<button aria-label="Ok" class="primary btn btn-primary btn-danger" tabindex="0" title="Ok" type="button">Ok</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button>` }).replace(' role="dialog"', ` data-filtercriteriaid="${criteria}" role="dialog"`));
         } else if (!["SubmitAction", "DeleteAction", "ActivateAction", "DeactivateAction"].includes(action.Type))
           options.diagnostic?.({ code: 'FORM_ACTION_UNSUPPORTED', severity: 'warning', component: 'entityform', form: definition?.name ?? name, action: action.Type, message: `Native form action '${action.Type}' is unsupported.` });
       }
@@ -2189,7 +2330,7 @@ async function renderForm(kind, name, context, options) {
     SubmitActionLink: { Modal: {}, Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     PreviousActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     NextActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
-    CreateRelatedRecordActionLink: { Modal: {}, Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
+    CreateRelatedRecordActionLink: createRelatedLink ?? { Modal: {}, Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     // The multistep control reports false whatever the step's setting (live evidence).
     EnableEntityPermissions: kind !== "webform" && fieldOf(componentMetadata, "entitypermissionsenabled") !== false,
     LanguageCode: 0,
@@ -2226,7 +2367,7 @@ async function renderForm(kind, name, context, options) {
   const honeypot = !readOnly && !autoSteps ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
   // The entity form view; a reference entity read-only view (options.referenceForm) renders the
   // live "read-only" class and an empty layout configuration, and is returned on its own.
-  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? " read-only" : ""}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? "" : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${truncated ? "" : attachHtml + stepButtons + honeypot + "</div>"}`;
+  const viewHtml = `<div id="${attr(ids.view)}" class="${entityFormClass}${options.referenceForm ? options.referenceForm.className ?? " read-only" : ""}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig"${options.referenceForm ? "" : ` data-form-layout="${attr(JSON.stringify(layoutConfig))}"`}></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${truncated ? "" : attachHtml + stepButtons + honeypot + "</div>"}`;
   if (options.referenceForm) return { html: viewHtml, controls: placed };
   let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(kind === "webform" ? definition?.name ?? schema.formName ?? name : schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""}>${referenceHtml}${viewHtml}${truncated ? "" : actionsHtml + "</div>"}`;
   if (truncated) formHtml = formHtml.replace(TRUNCATED_ACTIONS, () => actionsHtml);
@@ -2242,7 +2383,7 @@ async function renderForm(kind, name, context, options) {
   const progressBottom = progress && progress.position === "bottom" ? progress.html : "";
   // Native order: validation runtime and default hook before the control, custom
   // JavaScript first inside the control, validator expandos after the markup.
-  const runtime = `<script src="${NATIVE_FORMS_SCRIPT}"></script>${kind === "webform" ? "" : ENTITY_FORM_CLIENT_VALIDATE}`;
+  const runtime = kind === "webform" ? "" : ENTITY_FORM_CLIENT_VALIDATE;
   if (options.onNativePostbackDescriptor) {
     const writable = fields.filter((field) => renderedFields.has(field.name) && !field.readOnly && !field.ownerHidden && !field.disabled && !["file", "image"].includes(field.control));
     const descriptor = nativeFormPostbackDescriptor({ kind, formId: definition?.id ?? name, fields: writable, actions: renderedActions, modal, pageControl });
@@ -2260,7 +2401,12 @@ async function renderForm(kind, name, context, options) {
   // The auto-generated step state travels in __VIEWSTATE (lib/platform-manifest.mjs webFormsForm
   // moves the attribute into the hidden field): the tab index and the earlier tabs' posted values.
   const viewState = autoSteps ? ` data-pp-viewstate="${attr(encodeNativeViewState({ form: definition?.id ?? name, autoStep: autoSteps.index, values: Object.fromEntries(Object.entries(postback?.values ?? {}).filter(([, value]) => typeof value === "string")) }))}"` : "";
-  return `${runtime}<div id="${attr(ids.wrapper)}" data-pp-native-form${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${formHtml}${truncated ? "" : progressBottom}${kind === "webform" && !truncated ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : "</div>"}`;
+  // adx_savechangeswarningonclose: the multistep control's confirm-on-exit fields after the
+  // instructions (live response body); webform.js prompts with the message on unload.
+  const confirmOnExit = kind === "webform" && truthy(fieldOf(definition?.metadata ?? {}, "savechangeswarningonclose"))
+    ? `<input type="hidden" name="${attr(ids.buttons)}confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="${attr(ids.buttons)}confirmOnExitMessage" id="confirmOnExitMessage" value="${attr(formLabel(fieldOf(definition?.metadata ?? {}, "savechangeswarningmessage"), ""))}">`
+    : "";
+  return `${runtime}<!--pp-native-form--><div id="${attr(ids.wrapper)}"${viewState}>${script ? `<span><script type="text/javascript">${script}</script></span>` : ""}<script type="application/json" data-paqvilo-mirage-form-config>${json(submitConfig)}</script>${kind === "webform" ? '<div class="row">' : ""}${progressTop}${instructions ? `<div class="instructions">${instructions}</div>` : ""}${confirmOnExit}${formHtml}${truncated ? "" : progressBottom}${kind === "webform" && !truncated ? "</div>" : ""}${validatorStartupScript(validators, summaryId, summaryHeader)}${richTextReady}${managedReady}${truncated ? RENDER_ABORT_MARKER : "</div>"}`;
 }
 
 function controlForSubmit(field) {
@@ -2353,20 +2499,75 @@ const FILE_CONTROL_MAX_KB = 1048576;
  * hidden file input, choose/delete buttons and the hidden state inputs the upload script fills.
  * The platform names the file input after a generated control index; the column id is used here.
  */
-function fileColumnInput(field, { id, entity, record, scalar, nameAttr }) {
+/**
+ * MultiSelectPicklist column (MscrmControls.MultiSelectPicklist.UpdMSPicklistControl): the
+ * PCF host markup and the control's own DOM as the hosted bundle leaves them on first load
+ * (live evidence: empty insert, populated edit, read-only). The host id is a 32-hex token
+ * (the platform's is a per-request GUID); the hosted bundle's instance counter is 1.
+ * The hidden value is the platform's JSON array of the selected option metadata; label
+ * MetadataIds are not exported, so they are null.
+ */
+/** Selected option values of a multi-select column: a record array, a comma list or the control's posted JSON array. */
+function multiSelectValues(current) {
+  if (Array.isArray(current)) return current.map((item) => String(scalarValue(item)));
+  const text = String(scalarValue(current) ?? "").trim();
+  if (text.startsWith("[")) {
+    try { return JSON.parse(text).map((item) => String(item && typeof item === "object" ? item.Value : item)); } catch { return []; }
+  }
+  return text.split(",").map((part) => part.trim()).filter(Boolean);
+}
+
+function multiSelectControl(field, { current, options, off, formReadonly = "", nameAttr, hostKey, lcid }) {
+  const id = field.id;
+  const values = multiSelectValues(current);
+  const label = field.label ?? field.name;
+  const localized = (value) => ({ Label: value, LanguageCode: Number(lcid) || 1033, IsManaged: false, MetadataId: null, HasChanged: null });
+  const optionMetadata = (option) => ({ Value: Number(option.value), Label: { LocalizedLabels: [localized(option.label)], UserLocalizedLabel: localized(option.label) }, Description: { LocalizedLabels: [], UserLocalizedLabel: null }, Color: null, IsManaged: false, ExternalValue: "", Tag: null, MetadataId: null, HasChanged: null, ParentValues: null });
+  const selected = options.filter((option) => values.includes(String(option.value)));
+  const controlName = "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl";
+  const manifest = {
+    SubscribedFunctionalities: {}, DataConnectors: [], AuthConfigPropertiesGroups: [],
+    Resources: [
+      { Type: 3, Path: JSON.stringify({ Id: "ManifestTemplate", Data: { ConstructorName: controlName, CustomControlId: controlName, IsVirtual: false, Properties: { Resources: [], GroupDefinitions: null, DataSetDefinitions: {}, Properties: { value: { Required: true, Usage: 0, DefaultValue: "" } }, FeatureUsage: null }, Events: null, CommonEvents: null, DesignMap: null, PropertyDependencies: [] } }), ModifiedPath: "", LoadingOrder: 1, IsControlSpecific: false },
+      { Type: 3, Path: JSON.stringify({ Id: "ManifestPropertyTypes", Data: { Properties: [{ Name: "value", Type: "MultiSelectOptionSet", ComplexType: "", IsPrimary: false, IsIncluded: false }, ...["X", "Y", "Width", "Height"].map((Name) => ({ Name, Type: "Number", ComplexType: "", IsPrimary: false, IsIncluded: true })), { Name: "Visible", Type: "Boolean", ComplexType: "", IsPrimary: false, IsIncluded: true }, { Name: "DisplayMode", Type: "DisplayMode", ComplexType: "", IsPrimary: false, IsIncluded: true }, { Name: "TabIndex", Type: "Number", ComplexType: "", IsPrimary: false, IsIncluded: true }, { Name: "Tooltip", Type: "String", ComplexType: "", IsPrimary: false, IsIncluded: true }] } }), ModifiedPath: "", LoadingOrder: 2, IsControlSpecific: false },
+    ],
+  };
+  const controlContext = { UniqueId: `${id}_ControlView`, ControlId: id, GridDataControlId: null, ControlName: controlName, ControlProperties: { value_Options: options.map(optionMetadata), value_DefaultValue: null, value_DisplayName: label }, IsDisabled: off, PcfControlHiddenValueId: id, PcfDynamicProperyName: "value" };
+  const host = `PcfControl_${createHash("sha256").update(`pcf\u0000${hostKey}`).digest("hex").slice(0, 32)}`;
+  // The view is empty and the value carries the selected Values only in the server response; the
+  // app bundle equivalent (multiselect-compat.js) builds the control's DOM, expands the value to
+  // the option metadata and marks an editing host with a value dirty, as the hosted host does.
+  // MakeControlsReadonly marks the container span of a read-only form.
+  return `<div id="${attr(host)}"${off ? "" : ' onchange="setIsDirty(this.id);"'}><span id="${attr(id)}_Container" class="flexbox"${formReadonly}><span id="PcfControlConfig_${attr(id)}" data-pcf-control="${attr(JSON.stringify(manifest))}" pcf-controlcontext="${attr(JSON.stringify(controlContext))}"></span><div id="${attr(id)}_ControlView" class="flexbox"></div></span></div><input type="hidden" name="${nameAttr(field)}" id="${attr(id)}"${valueAttr(selected.length ? JSON.stringify(selected.map((option) => ({ Value: Number(option.value) }))) : "")}>`;
+}
+
+/** The origin of the rendered request (absolute platform links such as file downloads), else "". */
+function requestOrigin(context) {
+  try {
+    return new URL(context?.request?.url ?? "").origin;
+  } catch {
+    return "";
+  }
+}
+
+function fileColumnInput(field, { id, entity, record, scalar, nameAttr, readOnly = false, origin = "" }) {
   const fieldId = field.id;
   const image = field.control === "image";
   const hiddenNames = image ? ["", "_image_size", "_image_change", "_record_id"] : ["_filename", "_filetype", "_record_id", "_file_id", "_file_change", "_file_size"];
   const fileName = record?.[`${field.name}_name`] ?? "";
   const values = { _record_id: id ? canonicalId(id) : "", _filename: fileName, _file_id: !image && scalar ? canonicalId(scalar) : "" };
   const hidden = hiddenNames.map((suffix) => `<input type="hidden" name="${nameAttr(field, `hidden${suffix}`)}" id="${attr(fieldId)}hidden${suffix}"${valueAttr(values[suffix])}>`).join("");
-  const validator = image ? "" : `<span id="FileValidator${attr(fieldId)}hidden_filename" style="display:none;"></span>`;
+  const validator = image ? "" : `<span id="FileValidator${attr(fieldId)}hidden_filename"${readOnly ? ' readonly="readonly"' : ""} style="display:none;"></span>`;
+  // Read-only form: the choose/delete buttons are hidden, the empty text is "---", the file box is disabled.
+  const none = readOnly ? "---" : "No file selected";
+  const hide = readOnly ? ' style="display:none"' : "";
   if (!id) return `<div><div>${escape(image ? "This record hasn't been created yet. To enable image upload, create this record" : "This record hasn't been created yet. To enable file upload, create this record.")}</div></div>${hidden}${validator}`;
   const trash = "<span class='fa fa-trash iconforimage'></span>Delete";
   if (image)
-    return `<div><input name="${nameAttr(field, "_input_file")}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');">Choose File</button><div class="gap-between-vertical-element break-image-name">No file selected</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div><div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div></div>${hidden}`;
-  const download = fileName ? `/File/download.aspx?Entity=${encodeURIComponent(entity ?? "")}&Attribute=${encodeURIComponent(field.name)}&Id=${canonicalId(id)}` : "";
-  return `${validator}<div class="file-control-container"><div class="container-file-input"><div><input type="file" name="${nameAttr(field, "_input_file")}" id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');" style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}">${fileName ? "Change File" : "Choose File"}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileName ? `<a href="${attr(download)}"><span id="${attr(fieldId)}_file_name">${escape(fileName)}</span></a><div style="display:none">No file selected</div>` : "<div>No file selected</div>"}</div>${fileName ? `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');">${trash}</button></div>` : ""}</div></div>${hidden}`;
+    return `<div><input name="${nameAttr(field, "_input_file")}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');"${hide}>Choose File</button><div class="gap-between-vertical-element break-image-name">${none}</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div>${readOnly ? "" : `<div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div>`}</div>${hidden}`;
+  // The download link is absolute on the request origin (live response body).
+  const download = fileName ? `${origin}/File/download.aspx?Entity=${encodeURIComponent(entity ?? "")}&Attribute=${encodeURIComponent(field.name)}&Id=${canonicalId(id)}` : "";
+  return `${validator}<div class="file-control-container"><div${readOnly ? "" : ' class="container-file-input"'}><div><input type="file" name="${nameAttr(field, "_input_file")}"${readOnly ? ' disabled="disabled" class="aspNetDisabled"' : ""} id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');"${readOnly ? ' value=" " readonly="readonly"' : ""} style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}"${hide}>${fileName ? "Change File" : "Choose File"}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileName ? `<a href="${attr(download)}"><span id="${attr(fieldId)}_file_name">${escape(fileName)}</span></a><div style="display:none">${none}</div>` : `<div>${none}</div>`}</div>${fileName ? `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');"${hide}>${trash}</button></div>` : ""}</div></div>${hidden}`;
 }
 
 function richTextInput(field, current, { portal, managedControls, nameAttr }) {
@@ -2429,7 +2630,7 @@ async function richTextRuntime(fields, { portal, managedControls, richTextCompat
 }
 
 /** Native quick view form document (/_portal/quickform-template-path/{websiteId}). */
-export async function renderQuickForm({ portal, schemas, store, readProvider, identity, params }) {
+export async function renderQuickForm({ portal, schemas, store, readProvider, identity, params, metadata }) {
   const entity = canonicalId(params.entityname);
   const controlId = params.controlid;
   let quick = null;
@@ -2442,12 +2643,19 @@ export async function renderQuickForm({ portal, schemas, store, readProvider, id
   if (!quick) throw componentError("The quick view form is not part of an exported form layout.", 404, "QUICKFORM_NOT_FOUND");
   const record = params.entityid ? await readProvider.get(entity, params.entityid, identity) : null;
   if (!record) throw componentError(`Entity '${entity}' With Id = ${canonicalId(params.entityid)} Does Not Exist`, 404, "QUICKFORM_RECORD_NOT_FOUND");
-  const display = (value) => value?.name ?? value?.label ?? scalarValue(value) ?? "";
-  const rows = (quick.schema.fields ?? [])
-    .filter((field) => !field.hidden)
-    .map((field) => `<tr><td colspan="1" rowspan="1" class="clearfix cell text form-control-cell"><div class="info"><label for="${attr(field.name)}" id="${attr(field.name)}_label" class="field-label">${renderFormLabel(field.label ?? field.name)}</label></div><div class="control" data-logical-name="${attr(field.name)}"><input type="text" id="${attr(field.name)}" readonly="readonly" class="text form-control readonly" value="${attr(display(record[field.name]))}"></div></td><td class="cell zero-cell"></td></tr>`)
-    .join("");
-  return `<div id="QuickFormControl" class="crmEntityFormView readonly"><div class="form-readonly entity-form"><table role="presentation" class="section"><colgroup><col style="width:100%;"><col></colgroup><tbody>${rows}</tbody></table></div></div>`;
+  // The platform renders the quick view as a read-only entity form view named by the control id
+  // (ContentContainer_FormPanel > #<controlid>.form-readonly.entity-form.crmEntityFormView, live evidence).
+  const view = String(quick.id);
+  const { html } = await renderForm("entityform", view, { user: identity, identity, request: { params: {} } }, {
+    portal, store, readProvider, metadata, schemas: { [view]: { entity, mode: FORM_MODE.readOnly, ...quick.schema } },
+    referenceForm: {
+      definition: { id: view, name: view, entityName: entity, mode: FORM_MODE.readOnly, metadata: { adx_entityname: entity, adx_mode: FORM_MODE.readOnly } },
+      id: canonicalId(params.entityid),
+      ids: { wrapper: view, panel: view, view, names: `ctl00$ContentContainer$${view}$`, buttons: "ctl00$ContentContainer$" },
+      className: " crmEntityFormView",
+    },
+  });
+  return `<div id="ContentContainer_FormPanel">${html}</div>`;
 }
 
 /** The single lookup that references the native refentity parent. */

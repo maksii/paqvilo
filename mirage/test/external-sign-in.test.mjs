@@ -406,7 +406,7 @@ test("the portal's provider form runs the platform chain: ExternalLogin, the pro
   const signInPage = await browser.request("/SignIn?returnUrl=%2Fmembers%2F");
   const html = await text(signInPage);
   assert.equal(signInPage.status, 200);
-  assert.match(html, new RegExp(`<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post" class="paqvilo-mirage-provider"><input name="__RequestVerificationToken" type="hidden" value="${csrf}"><button name="provider" type="submit" class="btn btn-primary" value="https://idp.example.test/local/" title="Local IdP">Local IdP</button></form>`));
+  assert.match(html, new RegExp(`<form action="/Account/Login/ExternalLogin\\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="${csrf}"><div class=""><h2 class="login-heading-section" id="external-login-heading">.*?<button name="provider" type="submit" class="btn btn-primary btn-line" id="https://idp.example.test/local/" title="Sign in with your Local IdP account." value="https://idp.example.test/local/">Local IdP</button></div></form>`));
   assert.doesNotMatch(html, /paqvilo-mirage-persona/);
   const local = await browser.request("/SignIn", formBody({ contactId: "alex", ReturnUrl: "/" }));
   assert.equal(local.status, 400);
@@ -564,7 +564,7 @@ test("a new user's first sign-in follows the registration settings: open registr
     const { app, idp } = await simulator(t, settings);
     const refused = await signInThrough(client(app), idp, { newUser: { given_name: "Eve", family_name: "Outside", email: "eve@example.test" } });
     assert.equal(refused.status, 403);
-    assert.match(await text(refused), /<div class="alert alert-danger" role="alert">New accounts are closed\.<\/div>/);
+    assert.match(await text(refused), /id="loginValidationSummary" tabindex="0" role="alert"><ul><li>New accounts are closed\.<\/li><\/ul><\/div>/);
     const browser = client(app);
     const mapped = await signInThrough(browser, idp, { returnUrl: "/members/", newUser: { given_name: "Alex", family_name: "Elsewhere", email: "alex@EXAMPLE.test" } });
     assert.equal(mapped.headers.get("location"), "/members/");

@@ -77,7 +77,7 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
-import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL, PAGE_HEADERS } from "./lib/response-headers.mjs";
+import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL, PAGE_HEADERS, platformResourceHeaders } from "./lib/response-headers.mjs";
 import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
 import { runtimePort } from './lib/runtime-port.mjs';
@@ -86,7 +86,7 @@ import { formWriteError } from "./lib/form-error-presentation.mjs";
 import { assertPortalSource, portalSourceDir } from "./lib/source-dialect.mjs";
 import { discoverPacks } from "./lib/preset-registry.mjs";
 import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
-import { injectRuntime, renderComponent } from "./lib/platform.mjs";
+import { injectRuntime, renderComponent, renderQuickForm } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
 import { multipartControls, nativeFormTransport, decodeNativeViewState } from './lib/native-postback.mjs';
@@ -2674,6 +2674,8 @@ export async function createSimulator({
     const html = (exported?.html ?? "") + SIGN_IN_MARKER;
     const page = {
       id: "paqvilo-mirage-sign-in",
+      // The platform's account pages are not site map nodes (live sign-in: data-sitemap-state "/").
+      outsideSitemap: true,
       name: exported?.name ?? "Sign in",
       title: exported?.title ?? "Sign in",
       url: "/SignIn/",
@@ -2706,9 +2708,24 @@ export async function createSimulator({
     });
     for (const diagnostic of rendered.diagnostics ?? []) recordDiagnostic({ ...diagnostic, path: url.pathname });
     let html = String(rendered.html ?? "");
-    if (html.includes(SIGN_IN_MARKER)) html = html.replace(SIGN_IN_MARKER, () => content);
-    else if (/<body[^>]*>/i.test(html)) html = html.replace(/<body[^>]*>/i, (tag) => tag + content);
-    else html += content;
+    const marker = html.indexOf(SIGN_IN_MARKER);
+    // A content function is an account layout region (the sign-in page, lib/auth-session.mjs
+    // signInContent): it replaces the page's main region and receives the rendered page copy.
+    const main = marker >= 0 ? html.lastIndexOf('<main id="mainContent">', marker) : -1;
+    if (typeof content === "function" && main >= 0) {
+      const valueOpen = '<div class="xrm-attribute-value">';
+      const valueStart = html.indexOf(valueOpen, main);
+      const copy = valueStart >= 0 && valueStart < marker ? html.slice(valueStart + valueOpen.length, marker).trim() : "";
+      const mainEnd = html.indexOf("</main>", marker);
+      html = html.slice(0, main) + content(copy) + html.slice(mainEnd < 0 ? marker + SIGN_IN_MARKER.length : mainEnd + "</main>".length);
+      // Account pages link the platform's account stylesheet after the platform styles (live head).
+      html = html.replace(/<link href="[^"]*\/privatemode\.bundle-[^"]*"[^>]*>/,(link) => `${link}<link rel="stylesheet" href="/Areas/Account/css/account.css">`);
+    } else {
+      const markup = typeof content === "function" ? content("") : content;
+      if (marker >= 0) html = html.replace(SIGN_IN_MARKER, () => markup);
+      else if (/<body[^>]*>/i.test(html)) html = html.replace(/<body[^>]*>/i, (tag) => tag + markup);
+      else html += markup;
+    }
     if (rendered.isDocument !== false) {
       html = injectRuntimeDependencies(html, sourceDependencies);
       html = injectLocalHead(injectRuntimeCompatibility(html, sourceDependencies), localOverrides);
@@ -2728,7 +2745,10 @@ export async function createSimulator({
     const flags = authenticationSettings(portal);
     const providers = externalSignIn?.signInProviders() ?? [];
     const showPersonas = flags.localLogin || !providers.length;
-    const content = signInContent({
+    const content = (copy) => signInContent({
+      copy,
+      registerTab: flags.registration && flags.openRegistration,
+      redeemTab: flags.registration && flags.invitation && !invitationCode,
       personas: showPersonas ? signInPersonas() : [],
       personaCatalog: showPersonas ? personaReport() : null,
       personaReturnUrl: returnUrlParameter(url.searchParams) || status >= 400 ? returnUrl : null,
@@ -3067,7 +3087,48 @@ export async function createSimulator({
         : await flowHandler({ ...context, runExportedCloudFlow: () => runExportedCloudFlow(context) });
       return json(res, answer.status ?? 200, Object.hasOwn(answer, 'body') ? answer.body : answer, { ...answer.headers, 'x-sim-route': 'cloud-flow-local', 'cache-control': 'no-store' });
     }
-    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
+    // The platform's account stylesheet (account pages): local equivalent.
+    if (/^\/areas\/account\/css\/account\.css$/i.test(url.pathname) && ["GET", "HEAD"].includes(req.method)) {
+      const body = await fs.readFile(path.join(ROOT, "lib", "account-compat.css"));
+      res.writeHead(200, { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "text/css; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"] }), "cache-control": "public,max-age=604800", "x-sim-resource-provider": "local-platform-equivalent" });
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
+    // The platform's stack ranking plug-in (form pages with stack rank cells): local equivalent.
+    if (url.pathname === "/xrm-adx/js/jquery.stackranking.js" && ["GET", "HEAD"].includes(req.method)) {
+      const body = await fs.readFile(path.join(ROOT, "lib", "stackranking-compat.js"));
+      res.writeHead(200, { ...platformResourceHeaders("static", { pathname: url.pathname.toLowerCase(), body, contentType: "application/javascript; charset=utf-8", frameOptions: siteHeaders(portal)["x-frame-options"] }), "x-sim-resource-provider": "local-platform-equivalent" });
+      return res.end(req.method === "HEAD" ? undefined : body);
+    }
+    // Native quick view document (/_portal/quickform-template-path/{websiteId}): the platform
+    // serves it through the layout master (live evidence): the layout frame of a document outside
+    // the site map (lib/liquid.mjs serviceLayout), the platform chrome and the WebForms content_form
+    // around the read-only entity form view (lib/platform.mjs renderQuickForm).
+    const quickView = /^\/_portal\/quickform-template-path\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
+    const quickSite = String(portal.website?.id ?? portal.website?.adx_websiteid ?? portal.website?.mspp_websiteid ?? "").replace(/[{}]/g, "").toLowerCase();
+    if (quickView && config().pageMode !== "live" && quickView[1].toLowerCase() === quickSite) {
+      try {
+        if (!["GET", "HEAD"].includes(req.method)) throw error("Quick view forms require GET.", 405, "MethodNotAllowed");
+        const quickIdentity = currentIdentity();
+        const body = await renderQuickForm({ portal, store, readProvider, identity: quickIdentity, params: Object.fromEntries(url.searchParams), metadata: solutionMetadata, schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas } });
+        const layout = await renderer.serviceLayout(url.pathname + url.search, { user: quickIdentity });
+        const resource = (entry) => renderShellResource(entry, "css", { localOnly: true });
+        const bootstrapFile = portal.webFiles.find((f) => /\/bootstrap\.min\.css$/i.test(f.url ?? ""));
+        const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} };
+        const sourceStyles = await renderer.contentStylesheets(home, layout.context);
+        const quickPlatform = platformShell({ variant: bootstrapVariant(portal.settings), profile: config().shellProfile ?? null, websiteId: quickSite, languageCode: layout.languageCode, bootstrap: sourceStyles.bootstrap || resource(bootstrapFile?.url ?? "/css/bootstrap.min.css"), renderStyles: (paths) => paths.map(resource).join("") });
+        const styles = quickPlatform.headStart + quickPlatform.remaining.stylesheets.map(resource).join("") + formContentStyles(sourceStyles.content, config().shellProfile) + layout.head + quickPlatform.headEnd;
+        for (const item of formStyleDiagnostics(body, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });
+        // The form posts back to the document's own path (./{websiteId}?query); only the entity form view script loads.
+        const form = webFormsForm({ id: "content_form", action: `./${quickSite}${url.search}`, content: body, validators: true, formScriptPaths: ["/xrm-adx/js/crmentityformview.js"], variant: quickPlatform.variant });
+        const document = `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${styles}</head>${layout.body}${quickPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(`/_portal/${quickSite}/Layout/GetAntiForgeryToken`)}${quickPlatform.bodyStart}<div id="content-container" class="container quickform"><div id="content">${form}</div></div>${quickPlatform.afterContent}${quickPlatform.afterFooter}</body></html>`;
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...PAGE_HEADERS, "x-frame-options": siteHeaders(portal)["x-frame-options"] });
+        return res.end(req.method === "HEAD" ? undefined : frameReadiness.decorate(injectLocalHead(document, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }));
+      } catch (cause) {
+        res.writeHead(cause.status ?? 500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
+        return res.end(`<!doctype html><title>Quick view</title><p role="alert">${escaped(cause.message)}</p>`);
+      }
+    }
+    if (await handleNativeService(req, res, url, { portal, store, readProvider, identity: currentIdentity(), csrf, config: config(), schemas: { ...solutionMetadata.componentSchemas, ...config().componentSchemas }, metadata: solutionMetadata, compat: localOverrides.compat, live, liveMapping, change, origin: localOrigin, cache, recordDiagnostic, decorateDocument: html => frameReadiness.decorate(injectLocalHead(html, localOverrides), { path: url.pathname, observed: config().observed ?? portal.observed }), formStyles: async target => { const home = servicePages(portal).home ?? { id: null, url: "/", name: "", metadata: {} }; return renderer.contentStylesheets(home, renderer.contextForPage(home, target, { user: currentIdentity() })); }, renderLiquid: (source, ctx) => renderer.renderString(source, ctx), serviceLayout: (target) => renderer.serviceLayout(target, { user: currentIdentity() }), pageContext: (target) => renderer.contextForPage(servicePages(portal).home ?? { id: "service", url: "/", name: "", title: "", metadata: {} }, target, { user: currentIdentity() }) })) return;
     if (url.pathname.startsWith("/_api/")) return api(req, res, url);
     if (config().pageMode === "live") return forward(req, res, url);
     // Routing and sign-in : repeated slashes collapse before resolution (portal
@@ -3080,6 +3141,13 @@ export async function createSimulator({
       return res.end();
     }
     if (language?.kind === "rewrite") url.pathname = language.pathname;
+    // /Register is the platform's invitation redemption page (the sign-in page's "Redeem
+    // invitation" tab); locally it is the RedeemInvitation route.
+    if (/^\/register\/?$/i.test(url.pathname) && !exportedPageFor(portal, url.pathname)) {
+      const back = returnUrlParameter(url.searchParams);
+      url.pathname = "/Account/Login/RedeemInvitation";
+      url.search = back ? `?ReturnUrl=${encodeURIComponent(back)}` : "";
+    }
     // External sign-in: ExternalLogin, the provider's response at the reply URL,
     // ExternalLoginCallback, RedeemInvitation, LogOff and the default-provider redirect.
     if (await externalSignIn.route(req, res, url, { language: language?.code ?? null })) return;
@@ -3293,7 +3361,6 @@ export async function createSimulator({
         languageCode: context.website?.selected_language?.code ?? "en-US",
         bootstrap: sourceStyles.bootstrap || resource(bootstrapFile?.url ?? "/css/bootstrap.min.css", "css"),
         renderStyles: (paths) => paths.map((p) => resource(p, "css")).join(""),
-        controlsRoot: false,
       });
       const remaining = modalPlatform.remaining;
       const styles = remaining.stylesheets.map((p) => resource(p, "css")).join("") + formContentStyles(sourceStyles.content, config().shellProfile);
@@ -3303,17 +3370,21 @@ export async function createSimulator({
       const bodyScripts = [...remaining.bodyScripts.filter((p) => !isAspNetScript(p)), ...remaining.afterFooterScripts]
         .map((p) => resource(p, "js"))
         .join("");
+      // The platform's page caching headers (live modal document response).
       const headers = {
         "content-type": "text/html; charset=utf-8",
-        "cache-control": "no-store",
+        ...PAGE_HEADERS,
       };
       Object.assign(headers, siteHeaders(portal, { confinement: confinementPolicy(), kind: "page" }));
       res.writeHead(200, headers);
       // Native modal form page (Form.aspx): content_form wraps the static
       // EntityFormControl; its empty anti-forgery holder uses the portal-scoped URL.
+      // The platform serves it through the layout master (live evidence): the layout frame of a
+      // document outside the site map (lib/liquid.mjs serviceLayout) and the platform chrome.
       const scopedSite = normalizeId(portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid);
+      const layout = await renderer.serviceLayout(url.pathname + url.search, { user: formIdentity, languageCode: language?.code ?? null });
       const document = injectRuntimeCompatibility(
-        `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${modalPlatform.bodyOpen}${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        `<!doctype html>${layout.html}<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${layout.title}</title>${modalPlatform.headStart}${styles}${headScripts}${layout.head}${modalPlatform.headEnd}</head>${layout.body}${modalPlatform.bodyOpen}${layout.chrome}${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
         sourceDependencies, configuredHeadScripts,
       );
       for (const item of formStyleDiagnostics(document, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });

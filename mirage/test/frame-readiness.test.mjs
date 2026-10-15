@@ -31,6 +31,8 @@ test('a missing ready release fails open at a bounded timeout and cleans owned r
   t.after(async () => { readiness.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const document = readiness.decorate('<html><body>Frame</body></html>', { path: '/synthetic' });
   const route = /src="([^"]+)"/.exec(document)[1];
+  // Local instrumentation is marked so the baseline compare skips it (no extra body child).
+  assert.match(document, /<img hidden alt="" aria-hidden="true" data-paqvilo-frame-ready src="\/__sim\/frame-ready\/[^"]+"><script data-paqvilo-frame-ready>/);
   const response = await fetch(`http://127.0.0.1:${server.address().port}${route}`);
   await response.arrayBuffer();
   assert.equal(diagnostics[0].code, 'FRAME_READY_TIMEOUT');

@@ -265,13 +265,23 @@ async function loadCapture(dir) {
 
 // Platform-generated element ids whose value is a per-render GUID or a hosted-bundle instance counter: both sides keep
 // the element, only the token is normalised, so a missing element still shows up as a delta (decision D11).
-const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"]];
-export const normalizeGeneratedIds = (text) => GENERATED_IDS.reduce((acc, [pattern, token]) => acc.replace(pattern, token), text);
-const normalizedCapture = (capture) => capture && { ...capture, dom: normalizeGeneratedIds(capture.dom ?? ""), elements: JSON.parse(normalizeGeneratedIds(JSON.stringify(capture.elements ?? []))) };
+// Also: ASP.NET control counters in generated control names ($ctl<n>), per-render GUID values of data-content-id
+// attributes, and each side's own origin in absolute self links ({origin}).
+const GENERATED_IDS = [[/PcfControl_[0-9a-f]{32}/g, "PcfControl_{hex32}"], [/UpdMSPicklistControl\d+/g, "UpdMSPicklistControl{n}"], [/\$ctl\d+/g, "$ctl{n}"], [/(data-content-id=\\?")[0-9a-f-]{36}/g, "$1{guid}"]];
+const LOOPBACK_ORIGIN = /https?:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):\d+/g;
+export const normalizeGeneratedIds = (text, origins = []) => {
+  let out = GENERATED_IDS.reduce((acc, [pattern, token]) => acc.replace(pattern, token), text);
+  for (const origin of origins) if (origin) out = out.split(origin).join("{origin}");
+  return out.replace(LOOPBACK_ORIGIN, "{origin}");
+};
+const normalizedCapture = (capture, origins = []) => {
+  if (!capture) return capture;
+  return { ...capture, dom: normalizeGeneratedIds(capture.dom ?? "", origins), elements: JSON.parse(normalizeGeneratedIds(JSON.stringify(capture.elements ?? []), origins)) };
+};
 
-export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist }) {
-  const live = normalizedCapture(await loadCapture(liveDir));
-  const mirage = normalizedCapture(await loadCapture(mirageDir));
+export async function compareScenario({ scenario, liveDir, mirageDir, secondDir = null, allowlist, origins = [] }) {
+  const live = normalizedCapture(await loadCapture(liveDir), origins);
+  const mirage = normalizedCapture(await loadCapture(mirageDir), origins);
   const result = { id: scenario.id, verdict: "error", counts: { total: 0, allowed: 0, unexplained: 0 }, deltas: [], variance: null, signatures: [] };
   if (!live || !mirage) {
     result.reason = !live ? "live capture missing" : "mirage capture missing";
@@ -292,7 +302,7 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
   // Live-run variance: deltas that also appear between two independent live captures are reported with that proof.
   let variance = null;
   if (secondDir) {
-    const second = normalizedCapture(await loadCapture(secondDir));
+    const second = normalizedCapture(await loadCapture(secondDir), origins);
     if (second?.meta.status === "captured") {
       const between = [];
       between.push(...compareRequests(live.requests, second.requests));

@@ -11,7 +11,7 @@ import { FetchRenderCache } from './fetch-render-cache.mjs';
 // runtime templates) and the page shell. Behaviour and evidence: docs/liquid-parity.md.
 import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { pageAccess } from "./page-access.mjs";
-import { siteSetting } from "./redirects.mjs";
+import { siteSetting, servicePages } from "./redirects.mjs";
 import { reconcileFooterLogos } from "./footer-capture.mjs";
 import { reconcileHeaderNotifications } from "./header-notification-capture.mjs";
 import { headerNotificationQueries } from "./extensions.mjs";
@@ -1492,7 +1492,7 @@ export function createPortalRenderer(portal, options = {}) {
       const htmlAttributes = layoutHtmlAttributes(languageCode, context.__language?.lcid);
       // The footer-spacing adapter is a script element; authored footer markup is not modified.
       const html = injectRuntimeCompatibility(
-        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}${calendar?.head ?? ""}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
+        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}${/MultiSelectPicklist\.UpdMSPicklistControl/.test(content) ? platform.controlsStyle : ""}${calendar?.head ?? ""}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
         { ...(options.sourceDependencies ?? {}), footerSpacing: Boolean(footer) || options.sourceDependencies?.footerSpacing },
         configuredHeadScripts,
       );
@@ -1515,6 +1515,28 @@ export function createPortalRenderer(portal, options = {}) {
         diagnostics,
       };
     }
+  }
+  /**
+   * The platform layout frame of documents served outside the site map (modal form and quick
+   * view documents, live evidence): the language attributes, the site map state of the Page Not
+   * Found page, the home page title, the Head/Bottom snippet and the private-mode banner and
+   * offline bar that open the body.
+   */
+  async function serviceLayout(target = "/", extra = {}) {
+    const { notFound, home } = servicePages(portal);
+    const page = notFound ?? home ?? { id: null, parentId: null, url: "/", name: "", title: "", metadata: {} };
+    const context = contextForPage(page, target, extra);
+    const languageCode = layoutLanguageCode(context);
+    const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? "rtl" : "ltr";
+    return {
+      context,
+      languageCode,
+      html: `<html lang="${htmlEscape(languageCode)}" dir="${direction}"${layoutHtmlAttributes(languageCode, context.__language?.lcid)}>`,
+      title: htmlEscape(home?.title ?? page.title ?? ""),
+      head: await renderSource(portal.snippets?.["Head/Bottom"] ?? "", context),
+      body: `<body${layoutBodyAttributes(page, context)}>`,
+      chrome: `${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}`,
+    };
   }
   /**
    * Language attributes of the platform layout's <html>: crm-lang and data-lang carry the current
@@ -1603,7 +1625,8 @@ export function createPortalRenderer(portal, options = {}) {
     const timeFormat = setting("DateTime/TimeFormat") ?? "h:mm tt";
     const ancestors = [...(context.page?.breadcrumbs ?? [])].reverse().map((node) => node?.url).filter(Boolean);
     const attributes = {
-      "data-sitemap-state": [page.url, ...ancestors].join(":"),
+      // A page outside the site map (the platform account pages) reports its ancestors only.
+      "data-sitemap-state": (page.outsideSitemap ? ancestors : [page.url, ...ancestors]).join(":"),
       "data-dateformat": dateFormat,
       "data-timeformat": timeFormat,
       "data-datetimeformat": setting("DateTime/DateTimeFormat") ?? `${dateFormat} ${timeFormat}`,
@@ -1666,7 +1689,7 @@ export function createPortalRenderer(portal, options = {}) {
       diagnostics,
     };
   }
-  return { engine, renderString, renderPage, contextForPage, requestLanguage, inspectCapabilities, contentStylesheets };
+  return { engine, renderString, renderPage, contextForPage, requestLanguage, inspectCapabilities, contentStylesheets, serviceLayout };
 }
 const AUTO_ENCODE_ROOTS = new Set(["user", "request"]);
 

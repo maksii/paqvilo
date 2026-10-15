@@ -354,16 +354,19 @@ export function extras() {
     image: { table: ITEM, schemaName: "EntityImage", maxSizeKb: 1024 },
     statusReasons: { [ITEM]: [{ state: 0, value: 18327020, label: "Reviewed" }, { state: 1, value: 18327021, label: "Archived" }] },
     defaultViews: VIEWS.filter((view) => view.isDefault).map((view) => ({ id: view.id, table: view.table })),
-    // Rule schema: { id, table, name, scope: "entity" | "all-forms" | "form", formId? (scope "form"), when: { field, equals | greaterThan | isNull }, actions[], otherwise? }.
+    // Rule schema: { id, table, name, scope: "entity" | "all-forms" | "form", formId? (scope "form"), when: { field, equals | greaterThan | isNull },
+    // guard?: { field, notEqual | notNull } (ANDed with when), actions[], otherwise? }. when.field is the rule's only trigger.
+    // The rules run as background workflows on live (mode 0) and each write sends the whole record image, which re-triggers
+    // every rule on its fields (O16): a rule that writes must no-op once its target holds the value, hence the guards.
     // Action types: visibility, lock, required, setValue, setDefault, clearValue, error.
     businessRules: [
       { id: guid("br:hide-by-flag"), table: ITEM, name: "Baseline hide by flag", scope: "entity", when: { field: p("flag"), equals: false }, actions: [{ type: "visibility", field: p("hiddenbyrule"), visible: false }], otherwise: [{ type: "visibility", field: p("hiddenbyrule"), visible: true }] },
       { id: guid("br:lock-by-flag"), table: ITEM, name: "Baseline lock by flag", scope: "entity", when: { field: p("flag"), equals: true }, actions: [{ type: "lock", field: p("lockedbyrule"), locked: true }], otherwise: [{ type: "lock", field: p("lockedbyrule"), locked: false }] },
       { id: guid("br:require-by-text"), table: ITEM, name: "Baseline require by text", scope: "entity", when: { field: p("text"), equals: "require" }, actions: [{ type: "required", field: p("requiredbyrule"), required: true }], otherwise: [{ type: "required", field: p("requiredbyrule"), required: false }] },
       { id: guid("br:default-value"), table: ITEM, name: "Baseline default value", scope: "entity", when: { field: p("defaultbyrule"), isNull: true }, actions: [{ type: "setDefault", field: p("defaultbyrule"), value: "rule default" }] },
-      { id: guid("br:set-value"), table: ITEM, name: "Baseline set value", scope: "entity", when: { field: p("flag"), equals: true }, actions: [{ type: "setValue", field: p("setbyrule"), value: "set by rule" }] },
+      { id: guid("br:set-value"), table: ITEM, name: "Baseline set value", scope: "entity", when: { field: p("flag"), equals: true }, guard: { field: p("setbyrule"), notEqual: "set by rule" }, actions: [{ type: "setValue", field: p("setbyrule"), value: "set by rule" }] },
       { id: guid("br:show-error"), table: ITEM, name: "Baseline show error", scope: "entity", when: { field: p("ruleerror"), greaterThan: 500 }, actions: [{ type: "error", field: p("ruleerror"), message: "Rule error must be 500 or less" }] },
-      { id: guid("br:clear-value"), table: ITEM, name: "Baseline clear value", scope: "entity", when: { field: p("flag"), equals: false }, actions: [{ type: "clearValue", field: p("setbyrule") }] },
+      { id: guid("br:clear-value"), table: ITEM, name: "Baseline clear value", scope: "entity", when: { field: p("flag"), equals: false }, guard: { field: p("setbyrule"), notNull: true }, actions: [{ type: "clearValue", field: p("setbyrule") }] },
       { id: guid("br:all-forms-scope"), table: ITEM, name: "Baseline all forms scope", scope: "all-forms", when: { field: p("text"), equals: "all-forms" }, actions: [{ type: "required", field: p("recommended"), required: true }] },
       { id: guid("br:form-scope"), table: ITEM, name: "Baseline form scope", scope: "form", formId: guid("form:item-main"), when: { field: p("text"), equals: "form-scope" }, actions: [{ type: "visibility", field: p("recommended"), visible: false }] },
     ],
@@ -384,6 +387,11 @@ export function extras() {
         contact: ["contactid", "fullname", "emailaddress1", "telephone1", "parentcustomerid", "address1_city", "address1_telephone1", "statecode", "statuscode"],
         account: ["accountid", "name", "emailaddress1", "telephone1", "accountnumber", "primarycontactid", "address1_city", "statecode", "statuscode"],
       }).flatMap(([table, names]) => names.map((name) => ({ type: 2, table, name, reason: `${table} lookup view column` }))),
+      // Columns bound on the platform Contact main form (1fed44d1…, read by the project's platform-components.mjs) beyond those above.
+      // Not here: msdyn_designation, msdynce_bankbranch, msdynce_selectedspecialties, msdynce_specialties, msdynce_specialtiescategory.
+      // Their base layer is the managed app PowerPages_BookMeetingSalesRep_V2, so the export lists them as non-System MissingDependency.
+      ...["address1_composite", "address1_freighttermscode", "address1_shippingmethodcode", "anniversary", "birthdate", "creditlimit", "creditonhold", "description", "donotbulkemail", "donotemail", "donotfax", "donotphone", "donotpostalmail", "familystatuscode", "fax", "followemail", "gendercode", "jobtitle", "mobilephone", "ownerid", "paymenttermscode", "preferredcontactmethodcode", "spousesname", "transactioncurrencyid"]
+        .map((name) => ({ type: 2, table: "contact", name, reason: "contact main form column" })),
     ],
   };
 }

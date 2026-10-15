@@ -231,7 +231,7 @@ const INSERT = 100000000;
 test("an insert form without a Create permission renders the denial inside the native form control", async () => {
   const html = await render({ mode: INSERT, params: {}, storeOverride: { ...store(), rules: () => [] } });
   assert.match(html, /^<script type="text\/javascript">function entityFormClientValidate\(\)/);
-  assert.match(html, /<div id="EntityFormControl_f0000000000040008000000000000001" data-pp-native-form><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="Gadget"/);
+  assert.match(html, /<!--pp-native-form--><div id="EntityFormControl_f0000000000040008000000000000001"><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="Gadget"/);
   assert.match(html, /<span class='fa fa-lock' aria-hidden='true'><\/span>You don't have the appropriate permissions\.<\/div><\/div><\/div><\/div><\/div><div class="actions"><\/div>/);
   assert.doesNotMatch(html, /id="name"/);
   const allowed = await render({ mode: INSERT, params: {}, storeOverride: { ...store(), rules: () => [{ scope: "global" }] } });
@@ -264,5 +264,5 @@ test("a success message that hides the form renders the message only", async () 
 
 test("Bootstrap 5 basic form without its record keeps the WebForms marker and the closable danger panel", async () => {
   const html = await render({ params: {} });
-  assert.match(html, /<div id="EntityFormControl_[0-9a-f]+" data-pp-native-form><div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="[^"]*btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">/);
+  assert.match(html, /<!--pp-native-form--><div id="EntityFormControl_[0-9a-f]+"><div id="MessagePanel" class="message alert error alert alert-danger"><input type="submit" name="[^"]*btnCloseMessage" value="x" id="btnCloseMessage" class="btn-close" data-bs-dismiss="alert" aria-label="close" type="button" style="border-style: none"><span id="MessageLabel">/);
 });

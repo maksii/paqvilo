@@ -78,7 +78,7 @@ test("a Bootstrap 5 list renders the platform grid attributes, messages and div 
 test("a Bootstrap 3 list keeps its section dialogs and striped grid", async () => {
   const { html } = await render(false);
   assert.match(html, /data-grid-class="table-striped"/);
-  assert.match(html, /<section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert"/);
+  assert.match(html, /<section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert widget-dialog"/);
   assert.equal(layouts(html)[0].Configuration.InsertActionLink.Enabled, false);
 });
 
@@ -107,6 +107,40 @@ test("a choice filter in Dropdown selection mode renders one select box", async 
   const site = portal(true);
   Object.assign(site.lists[0].metadata, { adx_filter_enabled: true, adx_filter_definition: JSON.stringify(definition) });
   const { html } = await renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: site, metadata, store, schemas: {}, args: { key: "Widgets" } });
-  assert.match(html, /<label class="entitylist-filter-option-group-label h4" data-filter-id="1" for="dropdown_1">Region<\/label>[\s\S]*?<select class="form-control" name="1" id="dropdown_1"><option value="" label=" "><\/option><option value="0" label="North">North<\/option><option value="1" label="South">South<\/option><\/select>/);
+  assert.match(html, /<label class="entitylist-filter-option-group-label h4" data-filter-id="1" for="dropdown_1">Region<\/label>[\s\S]*?<select class="form-control form-select" name="1" id="dropdown_1"><option value="" label=" "><\/option><option value="0" label="North">North<\/option><option value="1" label="South">South<\/option><\/select>/);
   assert.doesNotMatch(html, /type="checkbox" name="1"/);
+});
+
+test("without the create privilege the list keeps its create links disabled; a page control list uses the legacy grid markup", async () => {
+  const rulesStore = (operations) => ({ ...store, state: { settings: { permissionMode: "enforce" } }, rules: (entity, operation) => (operations.includes(operation) ? [{ id: "rule" }] : []) });
+  const renderWith = (operations, args = { key: "Widgets" }) =>
+    renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: portal(true), metadata, store: rulesStore(operations), schemas: {}, args });
+  const reader = layouts((await renderWith(["read"])).html)[0].Configuration;
+  assert.equal(reader.InsertActionLink.Enabled, false);
+  assert.ok(reader.ViewActionLinks.filter((link) => link.Type === 3).every((link) => link.Enabled === false));
+  const editor = layouts((await renderWith(["read", "create"])).html)[0].Configuration;
+  assert.equal(editor.InsertActionLink.Enabled, true);
+  // A list bound to a legacy page: #EntityListControl > .entitylist > div > .entity-grid with the
+  // grid messages and section dialogs, and no create page link (live page/bound-entitylist).
+  const { html } = await renderWith(["read", "create"], { key: "Widgets", pp_page_control: true });
+  assert.match(html, /^<div id="EntityListControl"><div class="entitylist"><div><div class="entity-grid entitylist" data-column-width-style="Percent" data-defer-loading="false" data-enable-actions="true" data-get-url="\/_services\/entity-grid-data\.json\/[^"]+" data-grid-class="" data-mobile-view-enabled="false" data-select-mode="None" data-selected-view="[^"]+" data-update-url="\/_services\/entity-grid-update-entity\/[^"]+" data-user-isauthenticated="true" data-user-parent-account-name="" data-view-layouts="[^"]+"><div class="view-grid"><\/div><div aria-label="There are no records to display\." aria-live="polite" class="view-empty message"/);
+  assert.match(html, /<div class="view-pagination" data-current-page="1" data-pages="1" data-pagesize=""><\/div><section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert/);
+  assert.doesNotMatch(html, /data-id="|data-get-ai-insights-url/);
+  assert.equal(layouts(html)[0].Configuration.InsertActionLink.Enabled, false);
+});
+
+test("section grid dialogs follow their dialog settings: class, size, title, loading text, dismiss text and delete confirmation", async () => {
+  const text = (value) => [{ LCID: 1033, Value: value }];
+  const configured = {
+    ...settings,
+    CreateFormDialog: { Size: 0, CssClass: "widget-dialog", Title: text("Create widget"), LoadingMessage: text("Loading create widget..."), DismissButtonSrText: text("Close dialog") },
+    DetailsFormDialog: { Size: 2, CssClass: "widget-dialog", Title: text("Widget"), LoadingMessage: text("Loading widget..."), DismissButtonSrText: text("Close dialog") },
+    DeleteDialog: { Size: 0, CssClass: "widget-dialog", Title: text("Delete widget"), PrimaryButtonText: text("OK"), CloseButtonText: text("Close"), DismissButtonSrText: text("Close dialog") },
+  };
+  const base = portal(false);
+  base.lists[0].metadata.adx_settings = JSON.stringify(configured);
+  const { html } = await renderComponent("entitylist", "Widgets", { user: { id: "current" }, request: { url: "http://localhost/widgets/" }, key: "Widgets" }, { portal: base, metadata, store, schemas: {}, args: { key: "Widgets" } });
+  assert.match(html, /<section aria-hidden="true" aria-label="Create" class="modal fade modal-form modal-form-insert widget-dialog" data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog"><div class="modal-content"><div class="modal-header"><h1 class="modal-title" title="Create">Create widget<\/h1><button aria-label="Close" class="form-close" data-dismiss="modal" style="position: absolute; top: 3%;" tabindex="0" title="Close dialog" type="button"><span aria-hidden="true">×<\/span><span class="sr-only">Close dialog<\/span><\/button><\/div><div class="modal-body"><div class="form-loading">Loading create widget\.\.\.<\/div><iframe /);
+  assert.match(html, /aria-label="Widget" class="modal fade modal-form modal-form-details widget-dialog" [^>]*><div class="modal-sm modal-dialog">/);
+  assert.match(html, /aria-label="Delete widget" class="modal fade modal-delete widget-dialog" [^>]*>[^]*?<div class="modal-body">Delete this widget\?<\/div><div class="modal-footer"><button aria-label="OK" class="primary btn btn-primary" tabindex="0" title="OK" type="button">OK<\/button><button aria-label="Close" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Close" type="button">Close<\/button>/);
 });

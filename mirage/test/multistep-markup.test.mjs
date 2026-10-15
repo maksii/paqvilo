@@ -44,7 +44,9 @@ test("multistep step markup follows the platform control (row wrapper, form name
   assert.match(html, /&quot;EnableEntityPermissions&quot;:false/);
   assert.match(html, /<div class="frm-g-[0-9a-f]{8}" [^>]*aria-hidden="true"><label for="frm_pref_/);
   assert.match(html, /<div class="actions"><div class="col-md-6 clearfix"><div role="group" class="btn-group entity-action-button"><input type="button" [^>]*id="NextButton" class="btn btn-primary button next submit-btn" nonactionlinkbutton="true"><\/div><\/div><\/div><\/div>/);
-  assert.match(html, /id="note" class="text form-control "[^>]* aria-roledescription="Shown below"/);
+  // A step's box whose description shows below it carries the description as its role
+  // description (live multistep step; basic forms render none).
+  assert.match(html, /id="note" class="text form-control " onchange="setIsDirty\(this\.id\);" aria-roledescription="Shown below"/);
   assert.match(html, /<span id="colour" class="picklist horizontal " role="presentation" onchange="setIsDirty\(this.id\);" data-required="true" aria-invalid="false" title="Please select an item in this list">/);
 });
 
@@ -63,7 +65,7 @@ test("a step without its source record redirects to msg=source-invalid and then 
   const first = await renderComponent("webform", "Survey Wizard", { request: { url: "http://localhost/survey/", params: {} } }, options);
   assert.equal(first, '<script>location.replace("/survey/?msg=source-invalid&stepid=one");</script>');
   const html = await renderComponent("webform", "Survey Wizard", { request: { url: "http://localhost/survey/?msg=source-invalid&stepid=one", params: { msg: "source-invalid", stepid: "one" } } }, options);
-  assert.equal(html, '<div id="WebFormControl_survey" data-pp-native-form><div id="MessagePanel" class="message error alert alert-danger" role="alert"><span id="MessageLabel">The record you are looking for couldn&#39;t be found.</span></div></div>');
+  assert.equal(html, '<!--pp-native-form--><div id="WebFormControl_survey"><div id="MessagePanel" class="message error alert alert-danger" role="alert"><span id="MessageLabel">The record you are looking for couldn&#39;t be found.</span></div></div>');
 });
 
 test("Bootstrap 5 marks a completed step with the platform's check icon and Previous as a non-action-link button", async () => {
@@ -86,4 +88,12 @@ test("Bootstrap 5 side indicators: left progress bar and right title list with t
   const right = await render({ adx_progressindicatortype: 756150000, adx_progressindicatorposition: 756150003 });
   assert.match(right, /<div id="WebFormControl_survey_ProgressIndicator" class=" col-md-3 col-lg-2 div-right order-lg-1 col-md-3 col-lg-2 div-right order-lg-1"><ol class="progress list-group right">/);
   assert.match(right, /<div id="WebFormPanel" class="crmEntityFormView left col-lg-10"/);
+});
+
+test("a multistep form with the save-changes warning renders the confirm-on-exit fields before its panel", async () => {
+  const warned = { ...portal, advancedForms: [{ id: "survey", name: "Survey Wizard", metadata: { adx_savechangeswarningonclose: true, adx_savechangeswarningmessage: '[{"LCID":1033,"Value":"Leave without saving?"}]' } }] };
+  const html = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, { portal: warned, store, schemas, renderLiquid: async (s) => s, webFormSessions: createWebFormSessions(), webFormOwner: () => "visitor:c" });
+  assert.match(html, /<input type="hidden" name="ctl00\$ContentContainer\$WebFormControl_survey\$confirmOnExit" id="confirmOnExit" value="true"><input type="hidden" name="ctl00\$ContentContainer\$WebFormControl_survey\$confirmOnExitMessage" id="confirmOnExitMessage" value="Leave without saving\?"><div id="WebFormPanel"/);
+  const plain = await renderComponent("webform", "Survey Wizard", { request: { params: {} } }, { portal, store, schemas, renderLiquid: async (s) => s, webFormSessions: createWebFormSessions(), webFormOwner: () => "visitor:d" });
+  assert.doesNotMatch(plain, /confirmOnExit/);
 });

@@ -45,7 +45,11 @@
     chooser.setAttribute("data-paqvilo-local", "");
     chooser.setAttribute("aria-label", display.getAttribute("aria-label") || "Choose date");
     chooser.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0";
-    root.append(chooser);
+    // The platform's picker group holds only the box and the calendar button until it opens:
+    // the native chooser joins the DOM while a choice is pending, the action buttons only
+    // while a source script shows one (DOM parity with the live group).
+    const detachChooser = () => { if (chooser.isConnected) chooser.remove(); };
+    chooser.addEventListener("blur", detachChooser);
     const buttons = document.createElement("span");
     buttons.className = "paqvilo-mirage-date-actions";
     buttons.setAttribute("data-paqvilo-local", "");
@@ -63,8 +67,8 @@
       return button;
     };
     const todayButton = makeButton("Today", () => setDate(moment(), true)),
-      clearButton = makeButton("Clear date", () => setDate(null, true));
-    root.append(buttons);
+      clearButton = makeButton("Clear date", () => setDate(null, true)),
+      syncButtons = () => { if (todayButton.hidden && clearButton.hidden) buttons.remove(); else if (!buttons.isConnected) root.append(buttons); };
     let lastGoodValue = '';
     const parseCurrent = () =>
         parse(canonical.value || display.value, format),
@@ -97,6 +101,7 @@
       },
       show = () => {
         trigger(root, "show", { date: parseCurrent() });
+        if (!chooser.isConnected) root.append(chooser);
         try {
           if (typeof chooser.showPicker === "function") chooser.showPicker();
           else chooser.focus();
@@ -104,9 +109,10 @@
           chooser.focus();
         }
       };
-    chooser.addEventListener("change", () =>
-      setDate(chooser.value ? moment(chooser.value, hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD", true) : null, true),
-    );
+    chooser.addEventListener("change", () => {
+      setDate(chooser.value ? moment(chooser.value, hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD", true) : null, true);
+      detachChooser();
+    });
     display.addEventListener("change", () => {
       const value = parse(display.value, format);
       if (value?.isValid()) {
@@ -151,15 +157,17 @@
       showTodayButton(value) {
         if (!arguments.length) return !todayButton.hidden;
         todayButton.hidden = !value;
+        syncButtons();
         return api;
       },
       showClear(value) {
         if (!arguments.length) return !clearButton.hidden;
         clearButton.hidden = !value;
+        syncButtons();
         return api;
       },
       show,
-      hide() { chooser.blur(); return api; },
+      hide() { chooser.blur(); detachChooser(); return api; },
       clear() { setDate(null, true, false); return api; },
       enable() { display.disabled = false; chooser.disabled = false; return api; },
       disable() { display.disabled = true; chooser.disabled = true; return api; },

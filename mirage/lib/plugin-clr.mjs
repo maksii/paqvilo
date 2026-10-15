@@ -196,7 +196,8 @@ export function recordToSdkEntity(store,entity,row,columns={allColumns:true}){
   }
   else if(['choice','picklist','state','status','optionset'].includes(type)){const option=value?.value??value;attributes[key]=typed('OptionSetValue',option);const label=value?.label??field.options?.find(entry=>Number(entry.value)===Number(option))?.label;if(typeof label==='string')formattedValues[key]=label;}
   else if(type==='multiselectpicklist'){
-   const values=Array.isArray(value)?value:typeof value==='string'?value.split(',').filter(part=>part.trim()!==''):null;
+   const parsed=typeof value==='string'&&/^\s*\[/.test(value)?(()=>{try{return JSON.parse(value).map(item=>item&&typeof item==='object'?item.Value??item.value:item);}catch{return null;}})():value;
+   const values=Array.isArray(parsed)?parsed:typeof parsed==='string'?parsed.split(',').filter(part=>part.trim()!==''):null;
    if(!values)fail('SDK choices require stored option values.','LocalPluginSdkUnsupported',501);
    attributes[key]={$type:'OptionSetValueCollection',values:values.map(item=>{const raw=item?.value??item,number=typeof raw==='number'?raw:typeof raw==='string'&&/^[+-]?\d+$/.test(raw.trim())?Number(raw.trim()):NaN;if(!Number.isInteger(number)||number< -2147483648||number>2147483647)fail('SDK choices require Int32 option values.','LocalPluginSdkUnsupported',501);return typed('OptionSetValue',number);})};
   }

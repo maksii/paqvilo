@@ -23,8 +23,8 @@ const VALIDATED = 'var Page_Validators = (window.Page_Validators || []).concat([
 
 test("page kinds follow the rendered native controls", () => {
   assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "code-component", "modal-form"]);
-  assert.equal(pageKind('<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "basic-form");
-  assert.equal(pageKind('<div id="WebFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "multistep-form");
+  assert.equal(pageKind('<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>'), "basic-form");
+  assert.equal(pageKind('<!--pp-native-form--><div id="WebFormControl_0123456789abcdef0123456789abcdef"></div>'), "multistep-form");
   assert.equal(pageKind('<div data-mirage-component="codecomponent" data-pcf-schema="Sample.Widget"></div>'), "code-component");
   assert.equal(pageKind('<div class="entity-grid entitylist" data-view-layouts=""></div>'), "list");
   assert.equal(pageKind("<p>Welcome</p>", { authenticated: true }), "authenticated");
@@ -48,7 +48,7 @@ test("standalone code components require a server form without native basic form
 });
 
 test("the WebForms server form carries the native hidden fields, postback stub and form scripts in order", () => {
-  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div><script>${VALIDATED}</script>` });
+  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div></div><script>${VALIDATED}</script>` });
   // Without a form control only the ScriptManager's blockUI reference loads.
   const bare = webFormsForm({ id: "content_form", content: "<p>Copy</p>" });
   assert.match(bare, /<script src="\/js\/jquery\.blockUI\.js" type="text\/javascript"><\/script>/);
@@ -71,7 +71,7 @@ test("the WebForms server form carries the native hidden fields, postback stub a
     '<script src="/xrm-adx/js/radcaptcha.js"',
     '<script src="/xrm-adx/js/crmentityformview.js"',
     "function WebForm_OnSubmit()",
-    '<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div>',
+    '<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div></div>',
     // ASP.NET renders the generator and event validation fields last in the server form.
     'name="__VIEWSTATEGENERATOR"',
     'name="__VIEWSTATEENCRYPTED"',
@@ -88,7 +88,7 @@ test("the WebForms server form carries the native hidden fields, postback stub a
   assert.doesNotMatch(html, /crmentityformview-datetime\.js/);
   // Read-only forms register no validators, so the form has no onsubmit handler; date
   // controls add the date-time form script; captured AXD paths replace the local runtime.
-  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<div id="EntityFormControl" data-pp-native-form><input id="effective" data-ui="datetimepicker" data-type="date"></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
+  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<!--pp-native-form--><div id="EntityFormControl"><input id="effective" data-ui="datetimepicker" data-type="date"></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
   assert.match(readOnly, /^<form method="post" action="\/_portal\/modal" id="content_form">/);
   assert.match(readOnly, /var theForm = document\.forms\['content_form'\];/);
   assert.match(readOnly, /<script src="\/WebResource\.axd\?d=a&amp;t=1"><\/script>/);
@@ -99,11 +99,11 @@ test("the WebForms server form carries the native hidden fields, postback stub a
 test("AXD scripts load inside the form on form pages and nowhere else; captured bundles replace local equivalents", () => {
   const scripts = ["/WebResource.axd?d=w&t=1", { src: "/ScriptResource.axd?d=s&t=2", type: "text/javascript" }, "/scripts/extra.js"];
   const render = (paths) => paths.map((entry) => `<script src="${typeof entry === "string" ? entry : entry.src}"></script>`).join("");
-  const form = nativePageRegions({ content: '<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>', action: "/form/", bodyScripts: scripts, renderScripts: render });
+  const form = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>', action: "/form/", bodyScripts: scripts, renderScripts: render });
   assert.equal(form.kind, "basic-form");
   assert.match(form.content, /^<form method="post" action="\/form\/" id="liquid_form">/);
   assert.ok(form.content.indexOf("/WebResource.axd?d=w&t=1") < form.content.indexOf("/ScriptResource.axd?d=s&t=2"));
-  assert.ok(form.content.indexOf("/ScriptResource.axd") < form.content.indexOf("data-pp-native-form"));
+  assert.ok(form.content.indexOf("/ScriptResource.axd") < form.content.indexOf("<!--pp-native-form-->"));
   assert.doesNotMatch(form.content, /webforms-compat\.js/);
   assert.equal(form.bodyScripts, '<script src="/scripts/extra.js"></script>');
   const plain = nativePageRegions({ content: "<p>Guidance</p>", action: "/guidance/", bodyScripts: scripts, renderScripts: render, authenticated: true });
@@ -189,7 +189,7 @@ test("layout pages carry the native chrome around the header, content and footer
   assert.match(list, /class="entity-grid entitylist/);
   assert.doesNotMatch(list, /id="liquid_form"|\.axd/);
   const form = bodyOf(await (await get("/form/?source=1")).text());
-  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', '<div class="page-header"><h1>Contact us</h1></div>', "data-pp-native-form", 'name="__EVENTVALIDATION"', "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
+  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', '<div class="page-header"><h1>Contact us</h1></div>', "<!--pp-native-form-->", 'name="__EVENTVALIDATION"', "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
   assert.equal(form.match(/WebResource\.axd/g).length, 1);
   assert.equal(form.match(/id="antiforgerytoken"/g).length, 1);
   assert.doesNotMatch(form, /<input name="__RequestVerificationToken"/);
@@ -314,12 +314,12 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
   assert.deepEqual(layout.Columns.map((column) => column.LogicalName), ["name"]);
   // Page.aspx (WebFormsContent.master): two columns, the static EntityFormControl, sidebar.
   const profile = await body("/profile/");
-  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<div id="EntityFormControl" data-pp-native-form>', 'name="ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
+  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<!--pp-native-form--><div id="EntityFormControl">', 'name="ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
   assert.match(profile, /<script src="\/xrm-adx\/js\/crmentityformview\.js"/);
   // A page whose attached basic form is not in the export renders without it.
   const missing = await (await fetch(app.url + "/missing/", { headers: session })).text();
   assert.match(missing, /<div class="page-copy">/);
-  assert.doesNotMatch(missing, /data-pp-native-form|Liquid error/);
+  assert.doesNotMatch(missing, /pp-native-form|Liquid error/);
   // Blank.aspx (Default.master) has no server form.
   const home = await body("/");
   assert.doesNotMatch(home, /content_form|liquid_form/);
@@ -346,7 +346,7 @@ test("classic workflow execution reports its local limitation and Bootstrap glyp
   }
 });
 
-// The 17 platform bundles in the default shell order.
+// The 18 platform bundles in the default shell order (the control stylesheet last, outside the page slots).
 const BOOTSTRAP3_BUNDLES = [
   "dist/font-awesome.bundle-3d8a58a48f.css",
   "dist/preform.bundle-b72a6ea21d.css",
@@ -365,13 +365,16 @@ const BOOTSTRAP3_BUNDLES = [
   "dist/postpreform.bundle-4687dda8df.js",
   "dist/app.bundle-1e948af604.js",
   "dist/default-1033.moment_2_29_4.bundle-eda4e638fd.js",
+  "1.4.772-master/controlsAssets/msos.4774A53.css",
 ].map((name) => `/resource/powerappsportal/${name}`);
 
 test("platform bundles follow the live order per Bootstrap build; a captured shell supplies the deployed names", () => {
   const sources = (html) => [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
   const shell = platformShell({ websiteId: `{${SITE.toUpperCase()}}`, bootstrap: '<link rel="stylesheet" href="/bootstrap.min.css">' });
-  assert.equal(PLATFORM_BUNDLES.length, 17);
-  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyOpen, shell.bodyStart, shell.afterContent, shell.afterFooter].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
+  assert.equal(PLATFORM_BUNDLES.length, 18);
+  // The MultiSelectPicklist stylesheet has its own slot: pages link it only with a multi-select column.
+  assert.match(shell.controlsStyle, /^<link href="\/resource\/powerappsportal\/[^/"]+\/controlsAssets\/msos\.[0-9a-f]+\.css" rel="stylesheet">$/i);
+  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyOpen, shell.bodyStart, shell.afterContent, shell.afterFooter, shell.controlsStyle].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
   // pcf-style opens the body; the other stylesheets stay in the head.
   assert.match(shell.bodyOpen, /^<link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]+" rel="stylesheet">$/);
   assert.doesNotMatch(shell.headEnd, /pcf-style/);
@@ -433,7 +436,7 @@ test("pages load the platform bundles in live order per Bootstrap build; bundle 
     const expected = platformShell({ variant }).bundles;
     const resources = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map((match) => match[1].split("?")[0]);
     // The site has no bootstrap.min.css content style, so the platform's default is linked.
-    assert.deepEqual(resources, [`/_portal/${SITE}/Resources/ResourceManager`, "/css/bootstrap.min.css", ...expected.map((bundle) => bundle.path)], variant);
+    assert.deepEqual(resources, [`/_portal/${SITE}/Resources/ResourceManager`, "/css/bootstrap.min.css", ...expected.filter((bundle) => bundle.slot !== "controls-style").map((bundle) => bundle.path)], variant);
     assert.doesNotMatch(html, /__sim-static/);
     for (const bundle of PLATFORM_BUNDLES) {
       const pathname = expected.find((entry) => entry.id === bundle.id).path;
@@ -497,9 +500,11 @@ test("the layout shell matches the platform skeleton: head metas, bare content s
   assert.doesNotMatch(html.slice(0, html.indexOf("</head>")), /pcf-style/);
   assert.match(html, /<body[^>]*><link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]*link\.href = '\/dist\/pcf-style\.bundle-[0-9a-f]+\.css'[^"]*" rel="stylesheet"><div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web"/);
   assert.doesNotMatch(html, /privateModeText/);
-  // BootstrapV5 sites load the date control script from its BootstrapV5 folder.
-  const v5 = webFormsForm({ content: '<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form><div class="input-group datetimepicker"></div></div>', variant: "BootstrapV5" });
+  // BootstrapV5 sites load the date control script from its BootstrapV5 folder, only for forms
+  // with date controls (live: forms without date controls load none).
+  const v5 = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input id="when" data-ui="datetimepicker" data-type="date"></div>', variant: "BootstrapV5" });
   assert.match(v5, /<script src="\/xrm-adx\/js\/BootstrapV5\/crmentityformview-datetime\.js" type="text\/javascript"><\/script>/);
+  assert.doesNotMatch(webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="input-group datetimepicker"></div></div>', variant: "BootstrapV5" }), /crmentityformview-datetime/);
   assert.equal((await get("/xrm-adx/js/BootstrapV5/crmentityformview-datetime.js")).status, 200);
   // Site visibility is not exported: observed.siteVisibility "private" adds the private-site banner.
   const { get: getPrivate } = await shellFixture(t, { observed: { siteVisibility: "private", evidence: "synthetic" } });

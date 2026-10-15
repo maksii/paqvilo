@@ -93,9 +93,10 @@ test("user-local grid dates follow the user's zone with daylight saving", () => 
   assert.equal(requestTimeZone({ headers: {} }, now.getTimezoneOffset(), now), Intl.DateTimeFormat().resolvedOptions().timeZone);
 });
 
-test("subgrid records read through parent-scoped permissions report no record privileges", async () => {
+test("grid records without item actions or read through parent-scoped permissions report no record privileges", async () => {
   const { gridRecord } = await import("../lib/native-services.mjs");
-  const model = { kind: "subgrid", entity: "sample_child", idColumn: "sample_childid", primaryName: "sample_name", view: { fetchXml: '<fetch><entity name="sample_child"><attribute name="sample_name"/></entity></fetch>' } };
+  const settings = { ItemActions: [{ Type: "CrmEntityFormView-DetailsAction" }] };
+  const model = { kind: "subgrid", settings, entity: "sample_child", idColumn: "sample_childid", primaryName: "sample_name", view: { fetchXml: '<fetch><entity name="sample_child"><attribute name="sample_name"/></entity></fetch>' } };
   const layout = { Columns: [{ Type: 0, LogicalName: "sample_name" }] };
   const row = { sample_childid: "c0000000-0000-4000-8000-000000000001", sample_name: "Child", statecode: 0, statuscode: 1 };
   const context = (scope) => ({ metadata: {}, portal: { settings: {} }, identity: { id: "p" }, store: { rules: () => [{ scope }], allowed: () => true, get: () => row } });
@@ -103,6 +104,12 @@ test("subgrid records read through parent-scoped permissions report no record pr
   assert.deepEqual(flags(gridRecord(row, model, layout, context("parent"))), [false, false, false, 0, 0]);
   assert.deepEqual(flags(gridRecord(row, model, layout, context("global"))), [true, true, true, 0, 1]);
   assert.deepEqual(flags(gridRecord(row, { ...model, kind: "list" }, layout, context("parent"))), [true, true, true, 0, 1]);
+  // The platform assesses privileges only for grids with item actions (lookup dialogs, lists without ItemActions);
+  // an unassessed inactive record reports StateCode 0 while its statecode attribute keeps the value.
+  const inactive = { ...row, statecode: 1, statuscode: 2 };
+  assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "list", settings: { ItemActions: [] } }, layout, context("global"))), [false, false, false, 0, 0]);
+  assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "lookup", settings: undefined }, layout, context("global"))), [false, false, false, 0, 0]);
+  assert.deepEqual(flags(gridRecord(inactive, { ...model, kind: "list" }, layout, context("global"))), [true, true, true, 1, 2]);
 });
 
 test("grid money values carry the record currency's symbol and precision", async () => {
@@ -135,4 +142,19 @@ test("records created through the store get the same column defaults as seeded r
   assert.deepEqual(pick(created), { flag: true, color: 100000001, state: 0, status: 1, code: "T-1000" });
   assert.deepEqual(pick(seeded), pick(created));
   assert.ok(created.createdon && created.modifiedon === created.createdon);
+});
+
+test("system columns of system tables report managed metadata; custom tables and columns stay unmanaged", () => {
+  const states = { type: "state", states: [{ value: 0, labels: { 1033: "Active" }, defaultStatus: 1, invariantName: "Active" }] };
+  const column = (facts) => ({ columnMetadata: { type: "state", labels: { 1033: "Status" }, optionSet: states, ...facts } });
+  const managedFlags = (metadata) => [metadata.IsManaged, metadata.DisplayName.UserLocalizedLabel.IsManaged, metadata.OptionSet.IsManaged, metadata.OptionSet.Options[0].IsManaged, metadata.OptionSet.Options[0].Label.UserLocalizedLabel.IsManaged];
+  assert.deepEqual(managedFlags(attributeMetadata("sample_person", "statecode", column({ isCustomField: false, customTable: false }))), [true, true, true, true, true]);
+  assert.deepEqual(managedFlags(attributeMetadata("sample_widget", "statecode", column({ isCustomField: false, customTable: true }))), [false, false, false, false, false]);
+  assert.deepEqual(managedFlags(attributeMetadata("sample_person", "sample_extra", column({ isCustomField: true, customTable: false }))), [false, false, false, false, false]);
+  const text = (facts) => attributeMetadata("sample_person", "sample_text", { columnMetadata: { type: "nvarchar", labels: { 1033: "Text" }, ...facts } });
+  const locks = (m) => [m.IsCustomizable.CanBeChanged, m.IsRenameable.CanBeChanged, m.CanModifyAdditionalSettings.CanBeChanged, m.AutoNumberFormat, m.FormulaDefinition];
+  assert.deepEqual(locks(text({ isCustomField: false, customTable: false })), [false, false, false, "", null]);
+  assert.deepEqual(locks(text({ isCustomField: true, customTable: true })), [true, true, true, null, ""]);
+  const required = (type, facts) => attributeMetadata("sample_person", "x", { columnMetadata: { type, requiredLevel: "systemrequired", ...facts } }).RequiredLevel.CanBeChanged;
+  assert.deepEqual([required("primarykey", { customTable: true }), required("state", { isCustomField: false, customTable: false }), required("state", { isCustomField: false, customTable: true })], [false, false, true]);
 });

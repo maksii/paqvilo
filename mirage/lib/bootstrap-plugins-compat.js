@@ -119,10 +119,18 @@
       const state = instance(element, "modal") ?? create(element, "modal", { options: { ...MODAL_DEFAULTS, ...dataOptions(element, ["backdrop", "keyboard", "show"]) } });
       if (event(element, "show.bs.modal", { relatedTarget }).isDefaultPrevented() || state.shown) return;
       state.shown = true;
+      const bs5 = element.hasAttribute("data-bs-backdrop") || element.hasAttribute("data-bs-toggle");
+      // Bootstrap 5 hides the page scrollbar and pads the body by its width (live: overflow: hidden; padding-right: 15px).
+      const scrollbar = window.innerWidth - document.documentElement.clientWidth;
+      if (bs5 && !document.body.classList.contains("modal-open")) {
+        document.body.style.overflow = "hidden";
+        if (scrollbar > 0) document.body.style.paddingRight = scrollbar + "px";
+      }
       document.body.classList.add("modal-open");
       if (state.options.backdrop) {
         state.backdrop = document.createElement("div");
-        state.backdrop.className = "modal-backdrop fade in show";
+        // Bootstrap 5 backdrops carry "fade show" only (live parent-edit/associate-dialog).
+        state.backdrop.className = bs5 ? "modal-backdrop fade show" : "modal-backdrop fade in show";
         document.body.append(state.backdrop);
       }
       setShown(element, true);
@@ -151,7 +159,12 @@
       element.removeEventListener("keydown", state.keydown);
       state.backdrop?.remove();
       state.backdrop = null;
-      if (!document.querySelector(".modal.in, .modal.show")) document.body.classList.remove("modal-open");
+      if (!document.querySelector(".modal.in, .modal.show")) {
+        document.body.classList.remove("modal-open");
+        document.body.style.removeProperty("overflow");
+        document.body.style.removeProperty("padding-right");
+        if (!document.body.getAttribute("style")) document.body.removeAttribute("style");
+      }
       event(element, "hidden.bs.modal");
     },
     toggle(element, relatedTarget) { if (instance(element, "modal")?.shown) modal.hide(element); else modal.show(element, relatedTarget); },

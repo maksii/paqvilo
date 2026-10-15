@@ -45,6 +45,13 @@ test('decode binds request query to resolved record and removes advanced context
   assert.equal('stepId' in decoded.body, false);
 });
 
+test('a record query parameter the page URL does not carry stays out of the posted query (live Previous keeps ?stepid only)', () => {
+  const item = rendered('first', 'first-row', { context: { recordQueryName: 'row' } });
+  const decoded = resolveNativeFormSubmission(post(item, ''), [item], 'http://localhost/edit/?view=own');
+  assert.deepEqual(decoded.body.query, { view: 'own' });
+  assert.equal(decoded.body.recordId, 'first-row');
+});
+
 test('service validation and permission rejection remain authoritative without writing', async () => {
   const options = await fixture(), item = rendered('first', 'first-row');
   await assert.rejects(submitNativePostback(post(item, ''), [item], options), /required/i);

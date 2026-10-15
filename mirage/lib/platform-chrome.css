@@ -13,6 +13,7 @@
 .crmEntityFormView .cell .info{padding-bottom:4px}
 /* preform bundle: the empty width-less cell and a required cell's validator box are not laid out. */
 .crmEntityFormView .cell.zero-cell{display:none}
+.crmEntityFormView .actions:empty{display:none}
 .crmEntityFormView .cell div.table-info.required div.validators{display:none}
 .crmEntityFormView .cell.checkbox-cell div.table-info div.validators{display:none;clear:none}
 .crmEntityFormView .cell label{display:inline-block;margin-bottom:4px}
@@ -26,3 +27,5 @@
 .crmEntityFormView .input-group-btn,.crmEntityFormView .input-group-addon{flex:0 0 auto;display:flex;align-items:center}
 .crmEntityFormView .validation-summary{width:100%;box-sizing:border-box;padding:12px;margin:12px 0;border:1px solid #a94442;color:#a94442}
 @media(max-width:600px){.crmEntityFormView table.section>tbody>tr,.crmEntityFormView table.section>tbody>tr>td.cell{display:block;width:100%}}
+/* The lookup dialog's error block stays hidden until the grid reports an error (live: not rendered visible). */
+.modal-error.message{display:none}

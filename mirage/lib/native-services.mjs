@@ -1,20 +1,19 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
 import { csvCell } from './csv.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
+import { notesFilter } from "./form-service.mjs";
 import { platformResourceHeaders, siteHeaders, PAGE_HEADERS } from "./response-headers.mjs";
-import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
+import { contextualViewFetchXml } from "./platform.mjs";
 import { nativeActionStateValues } from "./native-form-actions.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
-import { platformBundleFor, localAspNetScript, platformShell, bootstrapVariant } from "./platform-manifest.mjs";
-import { renderShellResource } from './liquid.mjs';
-import { formStyleDiagnostics } from './platform-styles.mjs';
-import { formContentStyles } from './form-head.mjs';
+import { platformBundleFor, localAspNetScript } from "./platform-manifest.mjs";
 import { adapterEnabled } from './local-overrides.mjs';
 import { attributeMetadata } from './attribute-metadata.mjs';
 import { calendarSettings, calendarLanguageScript, calendarEvents, calendarIcs, parseCalendarPath } from './list-views.mjs';
@@ -868,7 +867,9 @@ export function associateModel(context) {
   const view = solutionView(context.metadata, action.ViewId, grid.entity) ?? {
     ...grid.views[0],
   };
-  return { ...grid, kind: "associate", views: [view], action };
+  // The associate dialog pages like a lookup dialog, not like its subgrid (live parent-edit/associate-dialog: pageSize 10).
+  const pageSize = Number(context.portal?.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10;
+  return { ...grid, kind: "associate", views: [view], action, pageSize };
 }
 
 // ---------------------------------------------------------------------------
@@ -1005,7 +1006,10 @@ function applyMetaFilter(fetch, metaFilter, definition) {
       if (!safeName(node.name) || !safeName(node.from) || !safeName(node.to)) continue;
       const condition = node.filters?.[0]?.conditions?.[0] ?? {};
       const attribute = condition.attribute ?? node.from;
-      const ids = selected.filter((value) => GUID.test(value));
+      const staticConditions = condition["adx.uiinputtype"] === "dynamic" ? [] : (node.filters?.[0]?.conditions ?? []);
+      const ids = selected
+        .map((value) => String(staticConditions.find((candidate) => String(candidate["adx.id"]) === value)?.value ?? value).replace(/[{}]/g, ""))
+        .filter((value) => GUID.test(value));
       if (!ids.length || !safeName(attribute)) continue;
       entity.children.push({
         name: "link-entity",
@@ -1337,20 +1341,25 @@ export function gridRecord(row, model, layout, context) {
   push(model.idColumn, id);
   const state = scalar(row.statecode);
   const status = scalar(row.statuscode);
+  const unassessed = context.config?.mode !== "live" && (!hasItemActions(model) || unassessedSubgridRecord(model, context));
   return {
     Id: id,
     EntityName: model.entity,
     Attributes: attributes,
-    ...(unassessedSubgridRecord(model, context) ? UNASSESSED : { ...permissionsFor(context, model.entity, row), StatusCode: status == null ? 0 : Number(status) }),
-    StateCode: state == null ? 0 : Number(state),
+    ...(unassessed ? UNASSESSED : { ...permissionsFor(context, model.entity, row), StatusCode: status == null ? 0 : Number(status) }),
+    StateCode: unassessed || state == null ? 0 : Number(state),
   };
 }
 
-// Live subgrid data of records the persona reads only through parent-scoped permissions report
-// every record privilege false and StatusCode 0 (the statuscode attribute keeps its value), and
-// the grid shows no item actions (evidence: basic-form/item-edit/populated and item-read/read-only,
-// entity-subgrid-data.json of pqvd_baselinechild under a parent-scope permission).
+// The platform assesses record privileges only for grids with item actions. Records it does not
+// assess report every privilege false, StatusCode 0 and StateCode 0 (the statecode/statuscode
+// attributes keep their values): grids without item actions (lookup dialogs, lists and subgrids
+// configured without ItemActions; evidence: list/item-list-filters, item-list-odata, item-list-mine,
+// basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid) and
+// subgrid records the persona reads only through parent-scoped permissions (basic-form/item-edit/populated
+// and item-read/read-only, pqvd_baselinechild under a parent-scope permission; the grid shows no item actions).
 const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
+const hasItemActions = (model) => (model.settings?.ItemActions ?? []).some((action) => ACTION_TYPES[action?.Type]);
 function unassessedSubgridRecord(model, context) {
   if (model.kind !== "subgrid" || context.config?.mode === "live" || typeof context.store?.rules !== "function" || context.identity?.admin) return false;
   let rules = [];
@@ -1522,6 +1531,7 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/xrm-adx/js/radcaptcha.js", { file: new URL("./radcaptcha-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview.js", { file: new URL("./crmentityformview-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/fileuploadcontrol.js", { file: new URL("./fileuploadcontrol-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/jquery.stackranking.js", { file: new URL("./stackranking-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/bootstrapv5/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
   // Calendar lists (list-views.mjs): one local client stands in for the platform calendar scripts.
@@ -1560,6 +1570,27 @@ const RESOURCE_STRINGS = {
   Click_Stay_To_Save_Your_Changes: "Your changes haven't been saved. Would you like to stay on the page to save your changes?",
 };
 const RESOURCE_MANAGER = /^\/_portal\/([^/]+)\/Resources\/ResourceManager\/?$/i;
+
+
+/**
+ * /_webresource/{name}: a solution web resource (WebResources/{name} of an imported solution
+ * root), served as the platform does: text/plain for images and markup, scripts and styles
+ * with their own types; private, revalidating for 30 days.
+ */
+async function serveSolutionWebResource(req, res, url, context) {
+  const match = /^\/_webresource\/([A-Za-z0-9_][A-Za-z0-9_./-]*)$/.exec(url.pathname);
+  if (!match || match[1].includes("..") || !["GET", "HEAD"].includes(req.method)) return false;
+  for (const root of context.metadata?.roots ?? []) {
+    const body = await fs.readFile(path.join(root, "WebResources", match[1])).catch(() => null);
+    if (!body) continue;
+    const type = /\.js$/i.test(match[1]) ? JAVASCRIPT : /\.css$/i.test(match[1]) ? "text/css; charset=utf-8" : "text/plain; charset=utf-8";
+    const now = Date.now();
+    res.writeHead(200, { "content-type": type, "cache-control": "private", expires: new Date(now + 30 * 86400 * 1000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "Accept-Encoding", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
+    res.end(req.method === "HEAD" ? undefined : body);
+    return true;
+  }
+  return false;
+}
 
 /** Serve a native platform path from its local equivalent unless the export or the asset cache owns it. */
 async function serveNativeEquivalent(req, res, url, context, websiteId) {
@@ -1723,6 +1754,13 @@ function sendJson(res, status, value, headers = {}) {
   });
   res.end(body);
 }
+// A grid service's AccessDenied answer is cache-control: private, without the no-cache pragma/expires
+// (live list/item-list/permission/anonymous and item-list-modal/permission/anonymous entity-grid-data.json).
+function sendAccessDenied(res) {
+  const body = Buffer.from(JSON.stringify({ AccessDenied: true }));
+  res.writeHead(200, { "cache-control": "private", "content-type": "application/json; charset=utf-8", vary: "Accept-Encoding", "x-frame-options": "SAMEORIGIN", "content-length": body.length });
+  res.end(body);
+}
 function sendError(res, error) {
   const status = error.status ?? error.statusCode ?? 500;
   const message = error.message || "Error completing request.";
@@ -1798,14 +1836,14 @@ function defaultStatus(metadata, entity, state) {
   return (statusField?.statuses ?? statusField?.options ?? []).find((option) => Number(option.state) === state)?.value ?? (state === 0 ? 1 : 2);
 }
 
-/** Notes (annotations) visible on portal forms: *WEB* prefix, private notes only for their author. */
-export function portalNotes(rows, identity) {
+/** Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author. */
+export function portalNotes(rows, identity, prefix = "*WEB*") {
   const contact = canonical(identity?.contactId ?? identity?.id);
   return rows.filter((row) => {
     const text = String(row.notetext ?? "");
     const subject = String(row.subject ?? "");
     const isPrivate = subject.includes("*PRIVATE*");
-    return (text.startsWith("*WEB*") && !isPrivate) || (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`));
+    return (text.startsWith(prefix) && !isPrivate) || (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`));
   });
 }
 
@@ -1819,7 +1857,7 @@ async function annotationRows(context, entity, id) {
 }
 
 const fileSizeDisplay = (bytes) =>
-  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(2)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(2)} KB` : `${bytes} B`;
+  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(2)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(2)} KB` : `${bytes} bytes`;
 
 async function handleNotes(action, req, res, context) {
   if (action === "entity-notes") {
@@ -1830,31 +1868,25 @@ async function handleNotes(action, req, res, context) {
       fail("The regarding record was not found", 404, "NotFound");
     const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
     const page = Math.max(1, Number(body.page) || 1);
-    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id), context.identity);
+    const prefix = notesFilter(context.portal);
+    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id), context.identity, prefix);
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
     const records = rows.slice((page - 1) * pageSize, page * pageSize).map((row) => {
       const id = canonical(row.annotationid);
       const size = Number(row.filesize) || (row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0);
       const mine = Boolean(contact) && String(row.subject ?? "").toLowerCase().includes(`[contact:${contact}]`);
-      const text = String(row.notetext ?? "").replace(/^\*WEB\*/, "");
+      const raw = String(row.notetext ?? "");
+      const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      // Live entity-notes records (basic-form/item-edit/note-add, plugin-mutation): attachment fields first,
+      // AttachmentSize serialised as an empty object, CreatedOn as a WCF date, append rights granted.
       return {
-        Id: id,
-        EntityName: "annotation",
-        Attributes: [],
-        CanRead: true,
-        CanWrite: mine,
-        CanDelete: mine,
-        CanAppend: false,
-        CanAppendTo: false,
-        StateCode: 0,
-        StatusCode: 0,
         AttachmentUrl: row.filename ? `/_entity/annotation/${id}/${context.portal.website?.id ?? ""}` : null,
         AttachmentContentType: row.mimetype ?? null,
         AttachmentFileName: row.filename ?? null,
         AttachmentIsImage: /^image\/(jpeg|gif|png)$/i.test(row.mimetype ?? ""),
-        AttachmentSize: size,
+        AttachmentSize: {},
         AttachmentSizeDisplay: row.filename ? fileSizeDisplay(size) : null,
-        CreatedOn: row.createdon ?? null,
+        CreatedOn: row.createdon ? `/Date(${Date.parse(row.createdon)})/` : null,
         CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, "Z") : null,
         HasAttachment: Boolean(row.filename),
         Subject: row.subject ?? "",
@@ -1862,20 +1894,33 @@ async function handleNotes(action, req, res, context) {
         Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]).replace(/\n/g, "<br />")}</p>`,
         UnformattedText: text,
         IsPostedByCurrentUser: mine,
-        PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? "")?.[1] ?? "",
+        PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? "")?.[1] ?? row.createdby?.name ?? "",
         DisplayToolbar: mine,
         IsPrivate: String(row.subject ?? "").includes("*PRIVATE*"),
+        Id: id,
+        EntityName: "annotation",
+        Attributes: [],
+        CanRead: true,
+        CanWrite: mine,
+        CanDelete: mine,
+        CanAppend: true,
+        CanAppendTo: true,
+        StateCode: 0,
+        StatusCode: 0,
       };
     });
     return sendJson(res, 200, {
+      MoreRecords: rows.length > page * pageSize,
       Records: records,
       ItemCount: rows.length,
       PageCount: Math.ceil(rows.length / pageSize),
       PageNumber: page,
       PageSize: pageSize,
-      MoreRecords: rows.length > page * pageSize,
-      CreateActionMetadata: { Disabled: false, DisabledMessage: null },
-      DisabledItemActionLinks: [],
+      NextPagePagingCookie: null,
+      ViewConfiguration: null,
+      CompleteViewLayout: null,
+      CreateActionMetadata: null,
+      DisabledItemActionLinks: null,
     });
   }
   // Add, update and delete take the native form transport (urlencoded fields, multipart with
@@ -1901,7 +1946,7 @@ async function handleNotes(action, req, res, context) {
       ([, rel]) => rel.many !== true && canonical(rel.from) === "objectid" && canonical(rel.entity) === canonical(parentMapping.logicalName),
     )?.[0];
     const values = {
-      notetext: `*WEB*${text}`,
+      notetext: `${notesFilter(context.portal)}${text}`,
       subject: `Note created on ${noteStamp(new Date())} by ${fullname} [contact:${contact}]${body.isPrivate ? " *PRIVATE*" : ""}`,
       objecttypecode: parentMapping.logicalName,
       ...(navigation
@@ -2052,35 +2097,7 @@ export async function handleNativeService(req, res, url, context) {
   if (await handleODataFeed(req, res, url, context)) return true;
   if (await handleImplicitGrant(req, res, url, { portal: context.portal, identity: context.identity, contact: contactRow(context), origin: context.origin })) return true;
   if (await serveCommunityPlacement(req, res, url, context, websiteId)) return true;
-  const quick = /^\/_portal\/quickform-template-path\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
-  if (quick) {
-    if (canonical(quick[1]) !== websiteId) return false;
-    try {
-      if (!["GET", "HEAD"].includes(req.method)) fail("Quick view forms require GET.", 405, "MethodNotAllowed");
-      const body = await renderQuickForm({
-        portal: context.portal,
-        schemas: context.schemas,
-        store: context.store,
-        readProvider: context.readProvider,
-        identity: context.identity,
-        params: Object.fromEntries(url.searchParams),
-      });
-      const resource = entry => renderShellResource(entry, 'css', { localOnly: true });
-      const bootstrap = (context.portal.webFiles ?? []).find(file => /\/bootstrap\.min\.css$/i.test(file.url ?? ''));
-      const sourceStyles = await context.formStyles?.(url.pathname + url.search) ?? {};
-      const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: sourceStyles.bootstrap || resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
-      // The quick view document's head carries the page metas; the body-open (PCF) stylesheet opens its body (live document).
-      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd;
-      for (const diagnostic of formStyleDiagnostics(body, context.config?.shellProfile)) context.recordDiagnostic?.({ ...diagnostic, path: url.pathname });
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      const document = `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>Quick view</title>${styles}</head><body>${platform.bodyOpen}<div id="content-container" class="container quickform"><div id="content"><form id="content_form">${body}</form></div></div></body></html>`;
-      res.end(context.decorateDocument?.(document) ?? document);
-    } catch (error) {
-      res.writeHead(error.status ?? 500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(`<!doctype html><title>Quick view</title><p role="alert">${xmlEscape(error.message)}</p>`);
-    }
-    return true;
-  }
+  if (await serveSolutionWebResource(req, res, url, context)) return true;
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
   if (token) {
     if (canonical(token[1]) !== websiteId) return false;
@@ -2147,10 +2164,11 @@ export async function handleNativeService(req, res, url, context) {
       const model = modelFor(secure, context);
       if (model.kind === "subgrid" && model.definition && secure.parent) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
-          return sendJson(res, 200, { AccessDenied: true }), true;
+          return sendAccessDenied(res), true;
       }
       const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) });
-      sendJson(res, 200, data);
+      if (data.AccessDenied) sendAccessDenied(res);
+      else sendJson(res, 200, data);
       return true;
     }
     if (normalized === "entity-grid-delete") {
@@ -2239,7 +2257,7 @@ export async function handleNativeService(req, res, url, context) {
       for (let page = 1; records.length < maximum; page++) {
         const data = await gridData(model, { ...body, page, pageSize: Math.min(maximum, 5000), allowLargePages: true, download: true }, { ...context, secure });
         if (data.AccessDenied) {
-          sendJson(res, 200, { AccessDenied: true });
+          sendAccessDenied(res);
           return true;
         }
         records.push(...(data.Records ?? []));

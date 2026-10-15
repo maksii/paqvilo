@@ -66,5 +66,18 @@ test('lookup changes reload quick views, clearing blanks them, and quick documen
     assert.ok(stylesheetPaths(quickHtml).some(href => href.startsWith('/_sim-local/head/')));
     assert.match(quickHtml, /id="content-container" class="container quickform"/);
     assert.match(modalHtml, /id="content-container" class="container wrapper-body"/);
+    // Both documents use the layout master frame outside the site map: language attributes,
+    // the home page title, layout body attributes, the offline bar and the portal-scoped holder.
+    for (const html of [quickHtml, modalHtml]) {
+      assert.match(html, /<html lang="en-US" dir="ltr" crm-lang="en-US" crm-lcid="1033"/);
+      assert.match(html, /<title>Home<\/title>/);
+      assert.match(html, /<body data-sitemap-state="\/" data-dateformat=/);
+      assert.match(html, /<div id="offlineNotificationBar" class="displayNone">/);
+      assert.match(html, new RegExp(`<div id="antiforgerytoken" data-url="/_portal/${website}/Layout/GetAntiForgeryToken"></div>`));
+      assert.match(html, /<div id="pp-native-controls-react-root"><\/div>/);
+    }
+    assert.match(quickHtml, /<form method="post" action="\.\/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa\?[^"]*" onsubmit="javascript:return WebForm_OnSubmit\(\);" id="content_form">/);
+    assert.match(quickHtml, /<div id="ContentContainer_FormPanel"><div id="ParentDetails" class="form-readonly entity-form crmEntityFormView" readonly="readonly"><input type="hidden" name="ctl00\$ContentContainer\$ParentDetails\$ParentDetails_EntityName"/);
+    assert.match(quickHtml, /<input name="ctl00\$ContentContainer\$ParentDetails\$name" type="text" value="Synthetic parent" id="name"/);
   }
 });

@@ -121,10 +121,10 @@ test("the attach-file control renders the platform upload control from the form'
   assert.match(single, /<input type="file" name="[^"]*\$AttachFile" id="AttachFile" accept="image\/\*," onchange="chooseAttachment\(\);"><\/div>/);
   assert.doesNotMatch(single, /RequiredFieldValidatorAttachFile/);
   // The WebForms form posts multipart and loads the upload control script after the form scripts.
-  const form = webFormsForm({ content: `<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>${single}</div>`, variant: "BootstrapV5" });
+  const form = webFormsForm({ content: `<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">${single}</div>`, variant: "BootstrapV5" });
   assert.match(form, /^<form method="post" action="\/" onsubmit="javascript:return WebForm_OnSubmit\(\);" id="liquid_form" enctype="multipart\/form-data">/);
   assert.ok(form.indexOf("/xrm-adx/js/crmentityformview.js") < form.indexOf('<script src="/xrm-adx/js/fileuploadcontrol.js" type="text/javascript"></script>'));
-  assert.doesNotMatch(webFormsForm({ content: '<div data-pp-native-form></div>' }), /enctype|fileuploadcontrol/);
+  assert.doesNotMatch(webFormsForm({ content: '<!--pp-native-form--><div></div>' }), /enctype|fileuploadcontrol/);
 });
 
 test("Set Entity Reference fills the target lookup from the query parameter with the platform's labelling", async () => {

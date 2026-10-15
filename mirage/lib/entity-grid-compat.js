@@ -294,7 +294,8 @@
         .off(".simModalAria")
         .on("show.bs.modal.simModalAria", () => (modal.hasAttribute("data-bs-backdrop") ? modal.removeAttribute("aria-hidden") : modal.setAttribute("aria-hidden", "false")))
         .on("hidden.bs.modal.simModalAria", () => modal.setAttribute("aria-hidden", "true"));
-      return void $(modal).modal("show");
+      $(modal).modal("show");
+      return void announceDialog(modal);
     }
     trigger(modal, "show.bs.modal");
     modal.hidden = false;
@@ -303,7 +304,20 @@
     modal.setAttribute("aria-hidden", "false");
     modal.setAttribute("aria-modal", "true");
     document.body.classList.add("modal-open");
+    announceDialog(modal);
     trigger(modal, "shown.bs.modal");
+  }
+  // The Bootstrap 5 bundle appends a status announcer to the body, after the backdrop, when a dialog
+  // other than a lookup opens (live DOM).
+  function announceDialog(modal) {
+    if (!document.querySelector('link[href*=".BootstrapV5."]') || modal.classList.contains("modal-lookup")) return;
+    let announcer = document.getElementById("modal-status-announcer");
+    if (!announcer) {
+      announcer = document.createElement("div");
+      for (const [name, value] of [["id", "modal-status-announcer"], ["role", "status"], ["aria-live", "polite"], ["aria-atomic", "true"], ["class", "sr-only"]]) announcer.setAttribute(name, value);
+      document.body.append(announcer);
+    }
+    announcer.textContent = "Dialog opened";
   }
   function hideModal(modal) {
     const $ = jq();
@@ -559,17 +573,27 @@
         }
       if (actions.children.length) toolbar.append(actions);
       if (toolbar.children.length) this.element.prepend(toolbar);
-      // A Bootstrap 5 page grid with search announces the record count after its toolbar.
-      if (this.bs5 && !this.dialog && search?.Enabled) this.ensureAnnouncer();
+      // A Bootstrap 5 page grid announces the record count after its toolbar (or first, without one).
+      if (this.bs5 && !this.dialog) this.ensureAnnouncer();
     }
 
-    /** The Bootstrap 5 record-count announcer after the toolbar (page grids: ...null, subgrids: ...undefined, lookups: ...<field>). */
+    /**
+     * The Bootstrap 5 record-count announcer after the toolbar: ...null for the entity_list template's grid
+     * (it carries data-nl-search-filter), ...undefined for subgrids and the ASPX page's EntityListControl,
+     * ...<field> for lookups (live evidence). The page holds one announcer per id: a grid loading later
+     * (an associate dialog's grid) takes it over from the grid that had it (live DOM).
+     */
     ensureAnnouncer() {
       if (this.child("[id^='SearchCountText']")) return;
-      const announcer = document.createElement("div");
-      const suffix = this.isLookup ? this.lookupField ?? "" : this.element.classList.contains("subgrid") ? "undefined" : "null";
-      for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", `SearchCountText${suffix}`], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
-      (this.child(".view-toolbar") ?? this.element.firstChild)?.after(announcer);
+      const suffix = this.isLookup ? this.lookupField ?? "" : this.element.hasAttribute("data-nl-search-filter") ? "null" : "undefined";
+      let announcer = document.getElementById(`SearchCountText${suffix}`);
+      if (!announcer) {
+        announcer = document.createElement("div");
+        for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", `SearchCountText${suffix}`], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
+      }
+      const toolbar = this.child(".view-toolbar");
+      if (toolbar) toolbar.after(announcer);
+      else this.element.prepend(announcer);
     }
 
     createActionElement(action) {
@@ -585,7 +609,7 @@
       link.className = `btn btn-primary ${this.bs5 ? "float-end" : "pull-right"} action create-action`;
       link.title = action.Tooltip || plain(action.Label) || "Create";
       link.setAttribute("tabindex", "0");
-      link.setAttribute("role", this.bs5 && !this.dialog ? "link" : "button");
+      link.setAttribute("role", this.bs5 && !this.dialog && !(action.Target === 0 && action.EntityForm) ? "link" : "button");
       link.innerHTML = action.Label;
       if (href !== "#" && window.parent !== window) link.target = "_top";
       if (action.Target === 0 && action.EntityForm) {
@@ -594,6 +618,13 @@
         onClick(link, (event) => {
           event.preventDefault();
           if (!modal) return;
+          // Opening the create dialog leaves the bundle's loading notification after the link (live DOM).
+          if (!link.parentElement.querySelector("#notificationDiv")) {
+            const notification = document.createElement("div");
+            for (const [name, value] of [["aria-relevant", "all"], ["aria-live", "assertive"], ["id", "notificationDiv"], ["class", "loading-text"]]) notification.setAttribute(name, value);
+            notification.textContent = resource("Loading_Message", "Loading");
+            link.after(notification);
+          }
           const frame = modal.querySelector("iframe");
           const page = frame.getAttribute("data-page");
           this.openFormModal(modal, this.withReference(withQuery(page, { entityformid: action.EntityForm.Id, languagecode: this.config.LanguageCode || 1033 })));
@@ -692,10 +723,32 @@
           onClick(th.querySelector("a"), (event) => {
             event.preventDefault();
             if (this.state.loading) return;
-            const direction = sorted && ascending ? "DESC" : "ASC";
+            const current = String(this.state.sort ?? layout.SortExpression ?? "").split(",").map((part) => part.trim().split(/s+/)).find((part) => part[0] === column.LogicalName);
+            const direction = current && !/desc/i.test(current[1] ?? "") ? "DESC" : "ASC";
             this.state.sort = `${column.LogicalName} ${direction}`;
-            this.renderTable();
-            this.load(1);
+            if (!this.bs5 || this.dialog) {
+              this.renderTable();
+              this.load(1);
+              return;
+            }
+            // The Bootstrap 5 page grid re-marks its header in place (live DOM): the previous column
+            // loses its classes and arrow (its text keeps the trailing space), the clicked column gets
+            // "sort-asc sort" and a bare arrow, the hints stay, and the header links keep style="".
+            for (const other of row.querySelectorAll("th.sort")) {
+              other.classList.remove("sort", "sort-asc", "sort-desc");
+              other.removeAttribute("aria-sort");
+              other.querySelector("a > .fa")?.remove();
+            }
+            th.classList.add(direction === "ASC" ? "sort-asc" : "sort-desc", "sort");
+            th.setAttribute("aria-sort", direction === "ASC" ? "ascending" : "descending");
+            const hintNode = th.querySelector(".sort-hint");
+            const arrow = document.createElement("span");
+            arrow.className = `fa ${direction === "ASC" ? "fa-arrow-up" : "fa-arrow-down"}`;
+            if (!/s$/.test(hintNode.previousSibling?.textContent ?? "")) hintNode.before(" ");
+            hintNode.before(arrow);
+            this.load(1).then(() => {
+              for (const link of row.querySelectorAll("th a")) link.setAttribute("style", "");
+            });
           });
         }
         row.append(th);
@@ -738,7 +791,8 @@
         pagingCookie: "",
         filter: this.state.filter,
         metaFilter: this.state.metaFilter,
-        nlSearchFilter: null,
+        // The entity_list template's grid posts its data-nl-search-filter; other grids post null (live requests).
+        nlSearchFilter: this.element.getAttribute("data-nl-search-filter"),
         timezoneOffset: new Date().getTimezoneOffset(),
         customParameters: [],
       };
@@ -767,6 +821,12 @@
           this.showMessage(null);
           if (!data || data.AccessDenied) {
             this.child(".view-access-denied").style.display = data?.AccessDenied ? "block" : "none";
+            // A denied grid announces no record count and hides its pager (live DOM).
+            if (data?.AccessDenied) {
+              this.child("[id^='SearchCountText']")?.remove();
+              const pager = this.child(".view-pagination");
+              if (pager) pager.style.display = "none";
+            }
             if (!data?.AccessDenied) this.child(".view-empty").style.display = "block";
             this.renderRows({ Records: [] });
             trigger(this.element, "loaded");
@@ -925,7 +985,8 @@
         const match = [...tbody.rows].find((tr) => tr.getAttribute("data-id") === selected);
         if (match) this.toggleRow(match, true);
       }
-      if (this.bs5 && this.isLookup && this.config.Search?.Enabled) this.ensureAnnouncer();
+      // Dialog grids (lookup, associate) announce once loaded.
+      if (this.bs5 && this.dialog && this.config.Search?.Enabled) this.ensureAnnouncer();
       const announcer = this.element.querySelector(":scope > .sr-only[id^='SearchCountText'], :scope > .visually-hidden[id^='SearchCountText']");
       if (announcer) announcer.textContent = `${data.ItemCount ?? (data.Records ?? []).length} ${resource("SearchCountText", "records found")}`;
     }
@@ -974,7 +1035,7 @@
           default:
             continue;
         }
-        if (this.bs5) link.classList.add("dropdown-item");
+        if (this.bs5) link.className = link.classList.contains("launch-modal") ? link.className.replace(/\blaunch-modal\b/, "dropdown-item launch-modal") : `${link.className} dropdown-item`;
         if (formTarget && (action.Type === ACTION.Details || action.Type === ACTION.Edit)) link.setAttribute("data-entityformid", action.EntityForm.Id);
         else if (action.Type === ACTION.Details || action.Type === ACTION.Edit) {
           const url = this.actionUrl(action, record);
@@ -1248,6 +1309,7 @@
   }
 
   // ---- lookup modal -------------------------------------------------------------
+  const lookupButtons = new Set();
   function initLookup(container) {
     if (container.__ppLookup) return;
     container.__ppLookup = true;
@@ -1304,11 +1366,12 @@
         setValue("", "", "");
       }
     });
+    for (const button of [primary, remove]) if (button) lookupButtons.add(button);
     on(modal, "show.bs.modal", (event) => {
       if (event.target !== modal) return;
       grid.state.selected = null;
-      if (primary) primary.disabled = true;
-      if (remove) remove.disabled = true;
+      // Opening any lookup dialog disables Select and Remove value in every lookup dialog of the page (live DOM).
+      for (const button of lookupButtons) button.disabled = true;
       trigger(gridElement, "refresh");
     });
     on(modal, "hidden.bs.modal", (event) => {
@@ -1394,16 +1457,28 @@
           item.querySelector(".remove").addEventListener("click", () => {
             grid.setRowSelected(tr, false);
             syncSelection();
+            syncOk();
           });
           return item;
         }),
       );
     };
-    on(gridElement, "selected", syncSelection);
+    // OK stays disabled (disabled="disabled", live DOM) until a record is chosen.
+    const ok = modal.querySelector(".modal-footer .btn-primary");
+    const syncOk = () => {
+      if (!ok) return;
+      if (grid.selectedRows().length) ok.removeAttribute("disabled");
+      else ok.setAttribute("disabled", "disabled");
+    };
+    on(gridElement, "selected", () => {
+      syncSelection();
+      syncOk();
+    });
     on(modal, "show.bs.modal", (event) => {
       if (event.target !== modal) return;
       succeeded = false;
       selected.replaceChildren();
+      syncOk();
       modal.querySelector(".modal-body > .alert")?.remove();
       trigger(gridElement, "refresh");
     });
@@ -1411,7 +1486,7 @@
       if (event.target !== modal || !succeeded) return;
       if (parent) trigger(parent, "refresh");
     });
-    modal.querySelector(".modal-footer .btn-primary")?.addEventListener("click", (event) => {
+    ok?.addEventListener("click", (event) => {
       event.preventDefault();
       let payload;
       try {
@@ -1610,6 +1685,8 @@
 
   // ---- initialisation -------------------------------------------------------------------
   function initialise(root = document) {
+    // Notes load before the grids (live: the notes POST precedes the subgrid POST).
+    for (const notes of root.querySelectorAll(".entity-notes")) initNotes(notes);
     for (const element of root.querySelectorAll(".entity-grid")) {
       if (element.__ppEntityGrid) continue;
       if (element.closest(".entity-lookup, .entity-associate")) continue;
@@ -1617,7 +1694,6 @@
     }
     for (const lookup of root.querySelectorAll(".entity-lookup")) initLookup(lookup);
     for (const associate of root.querySelectorAll(".entity-associate")) initAssociate(associate);
-    for (const notes of root.querySelectorAll(".entity-notes")) initNotes(notes);
   }
   window.__portalSimulation = window.__portalSimulation || {};
   window.__portalSimulation.nativeGrid = { initialise, EntityGrid };

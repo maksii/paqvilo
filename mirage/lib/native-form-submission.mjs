@@ -28,7 +28,9 @@ export function resolveNativeFormSubmission(entries, rendered, requestUrl) {
     throw new NativePostbackError('Native submission page URL required');
   const query = Object.fromEntries(page.searchParams);
   // Only the page's resolved record and session can reach the submission service.
-  if (context.recordQueryName && context.recordId) query[context.recordQueryName] = context.recordId;
+  // A record query parameter the page URL carries is pinned to the resolved record; one it does not
+  // carry stays absent, so step URLs keep the page's own query (live: ?stepid=… after Previous).
+  if (context.recordQueryName && context.recordId && page.searchParams.has(context.recordQueryName)) query[context.recordQueryName] = context.recordId;
   if (context.stepId) query.stepid = context.stepId;
   else delete query.stepid;
   if (context.sessionId) query.sessionid = context.sessionId;

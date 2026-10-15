@@ -35,23 +35,23 @@ const OPTION_SET_TYPES = { picklist: 0, state: 1, status: 2, bit: 3, boolean: 3 
 // Column types that can be calculated (FormulaDefinition/SourceTypeMask, SourceType); others report SourceType null.
 const CALCULABLE = new Set(["nvarchar", "string", "int", "integer", "decimal", "float", "double", "money", "datetime", "bit", "boolean", "picklist", "multiselectpicklist"]);
 
-const label = (text, lcid) => ({ Label: text, LanguageCode: Number(lcid), IsManaged: false, MetadataId: null, HasChanged: null, ExtensionData: {} });
-function labelSet(labels, lcid = 1033) {
+const label = (text, lcid, system = false) => ({ Label: text, LanguageCode: Number(lcid), IsManaged: system, MetadataId: null, HasChanged: null, ExtensionData: {} });
+function labelSet(labels, lcid = 1033, system = false) {
   const entries = Object.entries(labels ?? {}).filter(([code]) => /^\d+$/.test(code));
   const user = entries.find(([code]) => Number(code) === lcid) ?? entries[0];
-  return { LocalizedLabels: entries.map(([code, text]) => label(text, code)), UserLocalizedLabel: user ? label(user[1], user[0]) : null, ExtensionData: {} };
+  return { LocalizedLabels: entries.map(([code, text]) => label(text, code, system)), UserLocalizedLabel: user ? label(user[1], user[0], system) : null, ExtensionData: {} };
 }
 const managed = (value, canBeChanged, name) => ({ Value: value, CanBeChanged: canBeChanged, ManagedPropertyLogicalName: name, ExtensionData: {} });
 const flag = (mask, name) => new RegExp(`(?:^|\\|)${name}(?:\\||$)`, "i").test(mask ?? "");
 
-function option(o, extra, { externalValue }, lcid) {
+function option(o, extra, { externalValue }, lcid, system = false) {
   return {
     ...extra,
     Value: o.value,
-    Label: labelSet(o.labels, lcid),
-    Description: labelSet(o.descriptionLabels, lcid),
+    Label: labelSet(o.labels, lcid, system),
+    Description: labelSet(o.descriptionLabels, lcid, system),
     Color: o.color ?? null,
-    IsManaged: false,
+    IsManaged: system,
     ExternalValue: externalValue === null ? null : (o.externalValue ?? ""),
     ParentValues: null,
     Tag: null,
@@ -61,15 +61,15 @@ function option(o, extra, { externalValue }, lcid) {
   };
 }
 
-function optionSetMetadata(set, type, custom, lcid) {
+function optionSetMetadata(set, type, custom, lcid, system = false) {
   const kind = set.type ?? (type === "bit" ? "bit" : type === "state" || type === "status" ? type : "picklist");
   const base = {
-    Description: labelSet(set.descriptionLabels, lcid),
-    DisplayName: labelSet(set.displayLabels, lcid),
+    Description: labelSet(set.descriptionLabels, lcid, system),
+    DisplayName: labelSet(set.displayLabels, lcid, system),
     IsCustomOptionSet: custom,
     IsGlobal: Boolean(set.isGlobal),
-    IsManaged: false,
-    IsCustomizable: managed(set.isCustomizable ?? true, true, "iscustomizable"),
+    IsManaged: system,
+    IsCustomizable: managed(set.isCustomizable ?? true, !system, "iscustomizable"),
     Name: set.name ?? null,
     ExternalTypeName: null,
     OptionSetType: OPTION_SET_TYPES[kind] ?? 0,
@@ -80,14 +80,14 @@ function optionSetMetadata(set, type, custom, lcid) {
   };
   if (kind === "bit") {
     const of = (value) => (set.options ?? []).find((o) => o.value === value);
-    return { TrueOption: of(1) ? option(of(1), {}, {}, lcid) : null, FalseOption: of(0) ? option(of(0), {}, {}, lcid) : null, ...base };
+    return { TrueOption: of(1) ? option(of(1), {}, {}, lcid, system) : null, FalseOption: of(0) ? option(of(0), {}, {}, lcid, system) : null, ...base };
   }
   const options =
     kind === "state"
-      ? (set.states ?? []).map((o) => option(o, { DefaultStatus: o.defaultStatus ?? null, InvariantName: o.invariantName ?? null }, { externalValue: null }, lcid))
+      ? (set.states ?? []).map((o) => option(o, { DefaultStatus: o.defaultStatus ?? null, InvariantName: o.invariantName ?? null }, { externalValue: null }, lcid, system))
       : kind === "status"
-        ? (set.statuses ?? []).map((o) => option(o, { State: o.state ?? null, TransitionData: null }, { externalValue: null }, lcid))
-        : (set.options ?? []).map((o) => option(o, {}, {}, lcid));
+        ? (set.statuses ?? []).map((o) => option(o, { State: o.state ?? null, TransitionData: null }, { externalValue: null }, lcid, system))
+        : (set.options ?? []).map((o) => option(o, {}, {}, lcid, system));
   return { Options: options, ParentOptionSetName: null, ...base };
 }
 
@@ -102,6 +102,10 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
   const [attributeType, typeName] = TYPES[type] ?? TYPES.nvarchar;
   const mask = facts.displayMask;
   const custom = facts.isCustomField === true;
+  // A system column of a system table lives in the platform's managed layer (live Contacts Lookup View:
+  // fullname/statecode IsManaged true with managed labels); system columns of a table the unmanaged
+  // solution created (statecode of a custom table) are unmanaged, like its custom columns.
+  const system = !custom && facts.customTable === false;
   const isPrimaryName = attribute === primaryName || facts.isPrimaryName === true;
   const calculable = CALCULABLE.has(type);
   const audit = facts.isAuditEnabled ?? false;
@@ -110,8 +114,8 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     AttributeType: attributeType,
     AttributeTypeName: { Value: typeName, ExtensionData: {} },
     ColumnNumber: null,
-    Description: labelSet(facts.descriptionLabels, lcid),
-    DisplayName: labelSet(facts.labels, lcid),
+    Description: labelSet(facts.descriptionLabels, lcid, system),
+    DisplayName: labelSet(facts.labels, lcid, system),
     DeprecatedVersion: null,
     IntroducedVersion: facts.introducedVersion ?? null,
     EntityLogicalName: entity,
@@ -131,19 +135,23 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     IsRetrievable: facts.isRetrievable ?? false,
     IsFilterable: facts.isFilterable ?? false,
     IsSearchable: facts.isSearchable ?? false,
-    IsManaged: false,
+    IsManaged: system,
     IsGlobalFilterEnabled: managed(facts.isGlobalFilterEnabled ?? false, facts.canModifyGlobalFilterSettings ?? true, "canmodifyglobalfiltersettings"),
     IsSortableEnabled: managed(facts.isSortableEnabled ?? false, facts.canModifyIsSortableSettings ?? true, "canmodifyissortablesettings"),
     LinkedAttributeId: null,
     LogicalName: attribute,
-    IsCustomizable: managed(facts.isCustomizable ?? true, true, "iscustomizable"),
-    IsRenameable: managed(facts.isRenameable ?? true, true, "isrenameable"),
+    // Managed-layer columns lock their managed properties and report an empty AutoNumberFormat and null
+    // FormulaDefinition (live Contacts Lookup View records); unmanaged columns keep them changeable.
+    IsCustomizable: managed(facts.isCustomizable ?? true, !system, "iscustomizable"),
+    IsRenameable: managed(facts.isRenameable ?? true, !system, "isrenameable"),
     IsValidForAdvancedFind: managed(flag(mask, "ValidForAdvancedFind"), facts.canModifySearchSettings ?? true, "canmodifysearchsettings"),
     IsValidForForm: flag(mask, "ValidForForm"),
     IsRequiredForForm: flag(mask, "RequiredForForm"),
     IsValidForGrid: flag(mask, "ValidForGrid"),
-    RequiredLevel: managed(REQUIRED[facts.requiredLevel] ?? 0, facts.canModifyRequirementLevelSettings ?? true, "canmodifyrequirementlevelsettings"),
-    CanModifyAdditionalSettings: managed(facts.canModifyAdditionalSettings ?? true, true, "canmodifyadditionalsettings"),
+    // A primary key, and a managed-layer system-required column, cannot change its requirement level
+    // (live: contactid, contact.statecode false; statecode of a custom table true).
+    RequiredLevel: managed(REQUIRED[facts.requiredLevel] ?? 0, facts.canModifyRequirementLevelSettings ?? !(type === "primarykey" || (system && facts.requiredLevel === "systemrequired")), "canmodifyrequirementlevelsettings"),
+    CanModifyAdditionalSettings: managed(facts.canModifyAdditionalSettings ?? true, !system, "canmodifyadditionalsettings"),
     SchemaName: facts.schemaName ?? attribute,
     ExternalName: null,
     IsLogical: facts.isLogical ?? false,
@@ -152,13 +160,13 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     CreatedOn: null,
     ModifiedOn: null,
     SourceType: calculable ? (facts.sourceType ?? 0) : null,
-    AutoNumberFormat: facts.autoNumberFormat ?? null,
+    AutoNumberFormat: facts.autoNumberFormat ?? (system ? "" : null),
     Settings: null,
     MetadataId: null,
     HasChanged: null,
     ExtensionData: {},
   };
-  const formula = calculable ? { FormulaDefinition: facts.formulaDefinition ?? "", SourceTypeMask: 0 } : {};
+  const formula = calculable ? { FormulaDefinition: system ? null : (facts.formulaDefinition ?? ""), SourceTypeMask: 0 } : {};
   const ime = IME[facts.imeMode] ?? 0;
   const format = String(facts.format ?? "").toLowerCase();
   const range = { MaxValue: facts.maxValue ?? null, MinValue: facts.minValue ?? null };
@@ -193,7 +201,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
       return Object.assign(metadata, { Targets: field.targets ?? [], Format: 0 });
     case 0: {
       const set = facts.optionSet ?? {};
-      return Object.assign(metadata, { DefaultValue: facts.appDefaultValue === "1", OptionSet: optionSetMetadata(set, "bit", custom || facts.customTable, lcid) }, formula);
+      return Object.assign(metadata, { DefaultValue: facts.appDefaultValue === "1", OptionSet: optionSetMetadata(set, "bit", custom || facts.customTable, lcid, system) }, formula);
     }
     case 11:
     case 17: {
@@ -202,12 +210,12 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
         ParentPicklistLogicalName: null,
         ChildPicklistLogicalNames: null,
         DefaultFormValue: Number.isInteger(value) && value !== -1 && facts.appDefaultValue !== undefined ? value : null,
-        OptionSet: facts.optionSet ? optionSetMetadata(facts.optionSet, "picklist", custom || facts.customTable, lcid) : null,
+        OptionSet: facts.optionSet ? optionSetMetadata(facts.optionSet, "picklist", custom || facts.customTable, lcid, system) : null,
       });
     }
     case 12:
     case 13:
-      return Object.assign(metadata, { DefaultFormValue: null, OptionSet: facts.optionSet ? optionSetMetadata(facts.optionSet, type, custom || facts.customTable, lcid) : null });
+      return Object.assign(metadata, { DefaultFormValue: null, OptionSet: facts.optionSet ? optionSetMetadata(facts.optionSet, type, custom || facts.customTable, lcid, system) : null });
     default:
       return metadata;
   }

@@ -323,13 +323,16 @@
     }
     return true;
   };
-  // The server marks native form wrappers with data-pp-native-form for the runtime; the page
-  // adopts them here and drops the attribute the platform markup does not carry.
+  // The server marks native form wrappers with a <!--pp-native-form--> comment before them;
+  // the page adopts the wrapper here and drops the comment the platform markup does not carry.
   const nativeForms = new Set();
   const adoptNativeForms = () => {
-    for (const node of document.querySelectorAll("[data-pp-native-form]")) {
-      nativeForms.add(node);
-      node.removeAttribute("data-pp-native-form");
+    const comments = document.createNodeIterator(document.documentElement ?? document, NodeFilter.SHOW_COMMENT);
+    const found = [];
+    for (let comment = comments.nextNode(); comment; comment = comments.nextNode()) if (comment.data === "pp-native-form") found.push(comment);
+    for (const comment of found) {
+      if (comment.nextElementSibling) nativeForms.add(comment.nextElementSibling);
+      comment.remove();
     }
   };
   const nativeFormOf = (node) => {
@@ -589,6 +592,17 @@
     else label.textContent = message;
     panel.replaceChildren(label); panel.style.display = '';
   }
+  // The page's local verification token first: live makes no token request for a postback;
+  // shell.getTokenDeferred (which may fetch /_layout/tokenhtml) is the fallback.
+  function postbackToken() {
+    return new Promise((resolve) => {
+      if (w.__portalSimulation?.postbackToken) return resolve(w.__portalSimulation.postbackToken);
+      const deferred = w.shell?.getTokenDeferred?.();
+      if (deferred?.done) deferred.done(resolve);
+      else if (deferred?.then) deferred.then(resolve);
+      else resolve(document.querySelector('input[name="__RequestVerificationToken"]')?.value);
+    });
+  }
   async function submitNativeForm(form, action, button, eventArgument = '', eventTarget = '') {
     const config = configOf(form);
     if (!config) return;
@@ -600,12 +614,7 @@
         if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
         // Files post with the page only through a multipart form (the attach-file control's form).
         if (outer.enctype !== 'multipart/form-data' && [...form.querySelectorAll('input[type="file"]')].some(input => input.files?.length)) throw new Error('Native URLencoded file submission is not supported.');
-        const tokenValue = await new Promise(resolve => {
-          const deferred = w.shell?.getTokenDeferred?.();
-          if (deferred?.done) deferred.done(resolve);
-          else if (deferred?.then) deferred.then(resolve);
-          else resolve(document.querySelector('input[name="__RequestVerificationToken"]')?.value);
-        });
+        const tokenValue = await postbackToken();
         const hidden = (name, value) => {
           const existing = [...outer.elements].filter(node => node.name === name);
           if (existing.length > 1) throw new Error('Ambiguous native postback control.');
@@ -647,12 +656,7 @@
         }
       const attachments = [];
       if (action === 'submit') for (const input of form.querySelectorAll('input[type="file"][data-pp-attach-file], input[type="file"]#AttachFile')) for (const file of input.files ?? []) attachments.push(await readFile(file));
-      const tokenValue = await new Promise((resolve) => {
-        const deferred = w.shell?.getTokenDeferred?.();
-        if (deferred?.done) deferred.done(resolve);
-        else if (deferred?.then) deferred.then(resolve);
-        else resolve(document.querySelector('input[name="__RequestVerificationToken"]')?.value);
-      });
+      const tokenValue = await postbackToken();
       const response = await fetch(config.submitUrl, {
         method: "POST",
         headers: { "Content-Type": "application/json", __RequestVerificationToken: tokenValue },

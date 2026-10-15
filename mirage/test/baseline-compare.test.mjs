@@ -195,4 +195,5 @@ test("request-side x-sim-* headers are instrumentation and generated ids are nor
   const out = compareRequests([req({ accept: "*/*" })], [req({ accept: "*/*", "x-sim-parent-trace": "t" })]);
   assert.equal(out.length, 0);
   assert.equal(normalizeGeneratedIds('<div id="PcfControl_4eb7269f8c084cd683f6361ce8864541"><div id="UpdMSPicklistControl7_outer">'), '<div id="PcfControl_{hex32}"><div id="UpdMSPicklistControl{n}_outer">');
+  assert.equal(normalizeGeneratedIds('<input name="x$ctl371" data-content-id="1e93654f-3bc1-4a1a-9b1e-0123456789ab"><a href="https://site.example/File/download.aspx?Id=1"><a href="http://127.0.0.1:5311/x">', ["https://site.example"]), '<input name="x$ctl{n}" data-content-id="{guid}"><a href="{origin}/File/download.aspx?Id=1"><a href="{origin}/x">');
 });

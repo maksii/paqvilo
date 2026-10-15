@@ -225,7 +225,7 @@ test("the sign-in content lists personas, labels the simulation and escapes valu
   assert.match(html, /name="ReturnUrl" value="\/members\/\?x=&quot;1&quot;"><input name="__RequestVerificationToken" type="hidden" value="token-1">/);
   // Anonymous visitors see the page, so "Continue anonymously" is a plain link.
   assert.match(html, /<a class="paqvilo-mirage-continue-anonymously" href="\/">Continue anonymously<\/a>/);
-  assert.doesNotMatch(html, /paqvilo-mirage-provider|password|microsoftonline|b2clogin/i);
+  assert.doesNotMatch(html, /ExternalLogin|password|microsoftonline|b2clogin/i);
   const external = signInContent({
     providers: [{ id: "https://login.windows.net/tenant/", name: "AzureAD", caption: "Sign in <ExampleApp>" }],
     showPersonas: false,
@@ -236,9 +236,13 @@ test("the sign-in content lists personas, labels the simulation and escapes valu
   });
   assert.match(
     external,
-    /<form action="\/Account\/Login\/ExternalLogin\?ReturnUrl=%2Fmembers%2F" method="post" class="paqvilo-mirage-provider"><input name="__RequestVerificationToken" type="hidden" value="token-2"><input name="InvitationCode" type="hidden" value="CODE&amp;1"><button name="provider" type="submit" class="btn btn-primary" value="https:\/\/login.windows.net\/tenant\/" title="Sign in &lt;ExampleApp&gt;">Sign in &lt;ExampleApp&gt;<\/button><\/form>/,
+    /<div class="row"><div class="col-md-6"><form action="\/Account\/Login\/ExternalLogin\?ReturnUrl=%2Fmembers%2F" method="post"><input name="__RequestVerificationToken" type="hidden" value="token-2"><input name="InvitationCode" type="hidden" value="CODE&amp;1"><div class=""><h2 class="login-heading-section" id="external-login-heading"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value-encoded xrm-attribute-value">Sign in with an external account<\/span><\/span><\/h2><div [^>]*class="validation-summary-valid [^>]*id="loginValidationSummary"[^>]*><ul><li style="display:none"><\/li><\/ul><\/div><div id="6_ctl00_AzureADRebrandDisclaimer"><\/div><button name="provider" type="submit" class="btn btn-primary btn-line" id="https:\/\/login.windows.net\/tenant\/" title="Sign in with your Sign in &lt;ExampleApp&gt; account." value="https:\/\/login.windows.net\/tenant\/">Sign in &lt;ExampleApp&gt;<\/button><\/div><\/form><\/div><\/div>/,
   );
   assert.match(external, /href="\/Account\/Login\/RedeemInvitation\?ReturnUrl=%2Fmembers%2F">Redeem invitation/);
+  // The account layout: #content-container > #content > account tabs + #mainContent (page copy first).
+  const tabs = signInContent({ providers: [{ id: "p", caption: "P" }], showPersonas: false, returnUrl: "/m/", registerTab: true, redeemTab: true, copy: "<p>Copy</p>" });
+  assert.match(tabs, /^<div id="content-container" class="container wrapper-body" role="main"><div id="content"><ul class="nav nav-tabs nav-account" role="tablist" onkeydown="navigation\(event\)"><li role="none" class="nav-item"><a class="nav-link active" role="tab" aria-selected="True" href="javascript:void\(0\)" aria-label="Sign in" title="Sign in"><span class="fa fa-sign-in" aria-hidden="true"><\/span> Sign in<\/a><\/li><li role="none" class="nav-item"><a class="nav-link " role="tab" aria-selected="False" href="\/Account\/Login\/Register\?returnUrl=%2Fm%2F" aria-label="Register" title="Register">Register<\/a><\/li><li role="none" class="nav-item"><a class="nav-link  " role="tab" aria-selected="False" href="\/Register\?returnUrl=%2Fm%2F" aria-label="Redeem invitation" title="Redeem invitation">Redeem invitation<\/a><\/li><\/ul><script type="text\/javascript">[\s\S]*?window\.navigation = [\s\S]*?<\/script><div class="page-content" id="mainContent"><div class="xrm-editable-html xrm-attribute page-copy"><div class="xrm-attribute-value"><p>Copy<\/p><\/div><\/div><div class="row">/);
+  assert.doesNotMatch(tabs, /paqvilo-mirage-redeem-invitation/);
   assert.doesNotMatch(external, /paqvilo-mirage-persona|Continue anonymously|Local sign-in simulation/);
   assert.match(signInContent({ showPersonas: false }), /No sign-in method is available/);
 });
@@ -312,7 +316,7 @@ test("the sign-in page renders in the site shell; sign-in validates personas and
   assert.match(html, /href="\/">Continue anonymously/);
   // LocalLoginEnabled is false, but without an external provider the personas stay listed.
   assert.match(html, /This site configures no external identity provider/);
-  assert.doesNotMatch(html, /paqvilo-mirage-provider/);
+  assert.doesNotMatch(html, /login-heading-section/);
   // Submit exactly what the rendered form posts for Alex (URL-encoded, as a browser does).
   const action = /<form method="post" action="([^"]+)">/.exec(html)[1];
   const hidden = /name="ReturnUrl" value="([^"]*)"/.exec(html)[1];

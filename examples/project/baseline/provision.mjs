@@ -334,6 +334,11 @@ async function ensureViewFlags(client, extrasSpec, { apply, journal }) {
   }
 }
 
+// The platform re-serialises a rule's XAML and regenerates its client data on activation, so a stored rule is compared by
+// its logic only: condition operators, attributes and control actions.
+// ponytail: literal values (set/compare constants, messages) are not compared; rename the rule id to force a literal change.
+const ruleFingerprint = (xaml) => (String(xaml ?? "").match(/(?:Condition|Logical)Operator">\w+|Attribute="[^"]+"|ControlId="[^"]+"|Is(?:Visible|ReadOnly)="\w+"|RequiredLevel="\w+"/g) ?? []).join(" ");
+
 async function ensureBusinessRules(client, rules, { apply, solution, journal }) {
   for (const rule of rules) {
     const xaml = businessRuleXaml(rule);
@@ -341,24 +346,22 @@ async function ensureBusinessRules(client, rules, { apply, solution, journal }) 
       journal.push({ kind: "business-rule", id: rule.id, name: rule.name, action: "skipped", reason: "no XAML author yet" });
       continue;
     }
-    const existing = await client.optional(`workflows(${rule.id})?$select=workflowid,name,statecode`);
+    const existing = await client.optional(`workflows(${rule.id})?$select=workflowid,name,statecode,processtriggerscope,processtriggerformid,xaml,triggeronupdateattributelist`);
     // Designer rules keep scope 4; processtriggerscope is 2 = Entity or 1 = Form, with processtriggerformid
     // naming the form (null = All forms). Verified against the environment's own rules and option set.
     const scope = { entity: { processtriggerscope: 2 }, "all-forms": { processtriggerscope: 1 }, form: { processtriggerscope: 1, processtriggerformid: rule.formId } }[rule.scope ?? "entity"];
     if (!scope || (rule.scope === "form" && !/^[0-9a-f-]{36}$/i.test(rule.formId ?? ""))) throw new Error(`Unsupported business rule scope for ${rule.name}`);
     const body = { name: rule.name, category: 2, type: 1, primaryentity: rule.table, scope: 4, ...scope, mode: 0, businessprocesstype: 0, xaml, clientdata: businessRuleClientData(rule), triggeroncreate: true, triggeronupdateattributelist: rule.when.field, description: `Paqvilo baseline fixture rule ${rule.name}` };
-    const entry = { kind: "business-rule", id: rule.id, name: rule.name, action: existing ? "exists" : "create" };
+    const wantForm = scope.processtriggerformid ?? null;
+    const scopeChanged = existing && (existing.processtriggerscope !== scope.processtriggerscope || (existing.processtriggerformid ?? null) !== wantForm);
+    const definitionChanged = existing && (ruleFingerprint(existing.xaml) !== ruleFingerprint(xaml) || existing.triggeronupdateattributelist !== body.triggeronupdateattributelist);
+    const entry = { kind: "business-rule", id: rule.id, name: rule.name, action: !existing ? "create" : scopeChanged ? "scope-updated" : definitionChanged ? "definition-updated" : existing.statecode === 1 ? "active" : "exists" };
     if (apply) {
       if (!existing) await client.request("workflows", { method: "POST", body: { workflowid: rule.id, ...body }, solution });
-      else {
-        const current = await client.get(`workflows(${rule.id})?$select=processtriggerscope,processtriggerformid,statecode`);
-        const wantForm = scope.processtriggerformid ?? null;
-        if (current.processtriggerscope !== scope.processtriggerscope || (current.processtriggerformid ?? null) !== wantForm) {
-          // Scope lives on the activated rule: deactivate, patch, reactivate.
-          if (current.statecode === 1) await client.request(`workflows(${rule.id})`, { method: "PATCH", body: { statecode: 0, statuscode: 1 } });
-          await client.request(`workflows(${rule.id})`, { method: "PATCH", body: { processtriggerscope: scope.processtriggerscope, processtriggerformid: wantForm }, solution });
-          entry.action = "scope-updated";
-        } else if (existing.statecode === 1) entry.action = "active";
+      else if (scopeChanged || definitionChanged) {
+        // Scope and definition live on the activated rule: deactivate, patch, reactivate.
+        if (existing.statecode === 1) await client.request(`workflows(${rule.id})`, { method: "PATCH", body: { statecode: 0, statuscode: 1 } });
+        await client.request(`workflows(${rule.id})`, { method: "PATCH", body: { processtriggerscope: scope.processtriggerscope, processtriggerformid: wantForm, xaml, clientdata: body.clientdata, triggeronupdateattributelist: body.triggeronupdateattributelist }, solution });
       }
       const state = await client.get(`workflows(${rule.id})?$select=statecode`);
       if (state.statecode !== 1) {

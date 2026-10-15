@@ -17,6 +17,7 @@ const record = {
   donotemail: false,
   parentcustomerid: { id: "a0000000-0000-4000-8000-000000000001", logical_name: "account", name: "Org" },
   birthdate: "2020-01-02",
+  regions: "1,3",
 };
 const fields = [
   { name: "fullname", label: "Full name", dataverseType: "nvarchar", maxLength: 100, required: true },
@@ -28,6 +29,7 @@ const fields = [
   { name: "donotemail", label: "Do not e-mail", dataverseType: "boolean", controlClassId: "{3EF39988-22BB-4F0B-BBBE-64B5A3748AEE}", options: [{ value: 0, label: "Allow" }, { value: 1, label: "Do not allow" }] },
   { name: "parentcustomerid", label: "Company", dataverseType: "lookup", lookupTargets: ["account"] },
   { name: "birthdate", label: "Birthday", dataverseType: "datetime", format: "date", dateTimeBehavior: "TimeZoneIndependent" },
+  { name: "regions", label: "Regions", dataverseType: "multiselectpicklist", options: [{ value: 1, label: "North" }, { value: 2, label: "East" }, { value: 3, label: "South" }] },
 ];
 const layout = [
   {
@@ -90,6 +92,23 @@ test("edit form: string, e-mail, phone and memo boxes carry the platform handler
   assert.match(element(html, /<input [^>]*id="birthdate"[^>]*>/), / data-type="date"[^>]*data-behavior="TimeZoneIndependent"/);
   // The panel keeps its default button handler.
   assert.match(html, /id="EntityFormPanel"[^>]*onkeypress="javascript:return WebForm_FireDefaultButton\(event, 'UpdateButton'\)"/);
+});
+
+test("multi-select choice: the PCF host, its configuration and the JSON value; the view is filled in the browser", async () => {
+  const html = await render(100000001);
+  // Host with a stable 32-hex id, the configuration span and an empty view (the browser fills it).
+  const host = element(html, /<div id="PcfControl_[0-9a-f]{32}" onchange="setIsDirty\(this\.id\);"><span id="regions_Container" class="flexbox"><span id="PcfControlConfig_regions" data-pcf-control="[^"]+" pcf-controlcontext="[^"]+"><\/span><div id="regions_ControlView" class="flexbox"><\/div><\/span><\/div>/);
+  const context = JSON.parse(/pcf-controlcontext="([^"]+)"/.exec(host)[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&"));
+  assert.equal(context.ControlName, "MscrmControls.MultiSelectPicklist.UpdMSPicklistControl");
+  assert.deepEqual(context.ControlProperties.value_Options.map((option) => [option.Value, option.Label.UserLocalizedLabel.Label]), [[1, "North"], [2, "East"], [3, "South"]]);
+  assert.equal(context.IsDisabled, false);
+  assert.doesNotMatch(html, /msos-container|id="UpdMSPicklistControl/);
+  // The server value is the platform's JSON array of the selected Values (the browser expands it).
+  assert.match(html, /<input type="hidden" name="[^"]*\$regions" id="regions" value="\[\{&quot;Value&quot;:1\},\{&quot;Value&quot;:3\}\]">/);
+  // A read-only form disables the control (no onchange) and marks the container span read-only.
+  const readOnly = await render(100000002);
+  assert.match(readOnly, /<div id="PcfControl_[0-9a-f]{32}"><span id="regions_Container" class="flexbox" readonly="readonly">/);
+  assert.equal(JSON.parse(/pcf-controlcontext="([^"]+)"/.exec(readOnly)[1].replace(/&quot;/g, '"')).IsDisabled, true);
 });
 
 test("read-only form: MakeControlsReadonly marks labels, validators, summary and controls; lists are disabled", async () => {

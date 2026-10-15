@@ -275,8 +275,10 @@
         const primary = frame.dataset.entityprimarykeyname || previous.get('entityprimarykeyname') || '';
         // The platform client rebuilds the frame URL without the response's isprofilepage/lang
         // parameters and with the primary key name parameter always present (live requests).
-        url.search = new URLSearchParams({ entityid: id, entityname, entityprimarykeyname: primary, formname: frame.dataset.formname, controlid: frame.dataset.controlid });
-        if (frame.src !== url.href) frame.src = url.href;
+        // The platform sets a path-relative src with the values concatenated as they are (live DOM:
+        // "formname=Baseline Parent Quick View"); the browser encodes the request.
+        const src = `${url.pathname}?entityid=${id}&entityname=${entityname}&entityprimarykeyname=${primary}&formname=${frame.dataset.formname ?? ''}&controlid=${frame.dataset.controlid ?? ''}`;
+        if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
         frame.setAttribute('tabindex', '0');
       }
     };
@@ -288,14 +290,61 @@
     // platform client replaces each bound frame's response URL; the first navigation is abandoned.
     const refreshBoundQuickViews = () => setTimeout(() => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } }, 0);
     if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', refreshBoundQuickViews, { once: true }); else refreshBoundQuickViews();
+    // On ready the file controls' hidden size field and the image controls' hidden value and size
+    // fields (an image without a link) carry an explicit empty value (platform crmentityformview.js
+    // behaviour, live DOM); the file name field takes the shown file name.
+    for (const name of [...document.getElementsByClassName("break-file-name")]) {
+      const control = name.parentElement?.parentElement?.parentElement;
+      const link = name.querySelector(":scope > a");
+      const hiddenName = name.parentElement?.parentElement?.nextElementSibling;
+      if (link && hiddenName?.tagName === "INPUT") hiddenName.value = link.textContent;
+      const size = control?.lastElementChild;
+      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+    }
+    for (const inline of [...document.getElementsByClassName("image-inline")]) {
+      const value = inline.parentElement?.nextElementSibling;
+      if (!inline.firstElementChild?.getAttribute("href") && value?.tagName === "INPUT") value.setAttribute("value", "");
+      const size = value?.nextElementSibling;
+      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+    }
+    // File and image controls are laid out by their rendered width (platform crmentityformview.js
+    // behaviour, live read-only form): a file container narrower than 250px drops its class and
+    // stacks its link block (below 120px the name and delete blocks too); an image control whose
+    // box is at least 250px wide puts its button and file name side by side.
+    for (const container of [...document.getElementsByClassName("file-control-container")]) {
+      const width = container.clientWidth;
+      const links = container.firstElementChild?.nextElementSibling;
+      if (width >= 250 || !links) continue;
+      container.removeAttribute("class");
+      if (width >= 120) links.setAttribute("class", "container-filelink-delete gap-between-vertical-element");
+      else {
+        links.removeAttribute("class");
+        links.firstElementChild?.setAttribute("class", "break-file-name gap-between-vertical-element");
+        links.lastElementChild?.setAttribute("class", "gap-between-vertical-element");
+      }
+    }
+    for (const name of [...document.getElementsByClassName("break-image-name")]) {
+      const box = name.parentElement;
+      if (!box || !(box.parentElement?.clientWidth >= 250)) continue;
+      box.setAttribute("class", "div-for-image-input");
+      box.firstElementChild?.setAttribute("class", "btn btn-default btn-for-image-input btn-for-inputofimage");
+      name.setAttribute("class", "break-image-name");
+    }
     const active = document.querySelector(".progress .list-group-item.active");
     if (active) {
       const label = active.textContent;
       const host = active.parentElement?.parentElement;
-      // Preserve the platform's first-word id without interpreting the step title as HTML.
+      // The platform writes the step title as an unquoted id attribute: the first word is the id
+      // and every further word an empty attribute (live DOM). Reproduced without interpreting the
+      // title as HTML: only plain attribute-name words become attributes.
       if (host) {
         const announcer = document.createElement("div");
-        announcer.id = label.trim().split(/\s+/)[0];
+        const [first, ...rest] = label.trim().split(/\s+/);
+        announcer.id = first ?? "";
+        for (const word of rest) {
+          const name = word.toLowerCase();
+          if (/^[a-z_][a-z0-9_.-]*$/.test(name) && !["id", "class", "aria-live"].includes(name) && !announcer.hasAttribute(name)) announcer.setAttribute(name, "");
+        }
         announcer.className = "sr-only";
         announcer.setAttribute("aria-live", "assertive");
         announcer.textContent = label;
@@ -314,7 +363,7 @@
       link.className = "text-primary";
       link.style.cursor = "pointer";
       link.setAttribute("href", address.href);
-      if (target) { link.setAttribute("target", target); link.setAttribute("rel", "noopener noreferrer"); }
+      if (target) link.setAttribute("target", target);
       link.setAttribute("readonly", "readonly");
       link.textContent = text;
       input.style.display = "none";

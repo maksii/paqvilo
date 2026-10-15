@@ -38,7 +38,7 @@ test('native grid form dialogs save, retain parent edits and refresh authored ha
   await frame.locator('#UpdateButton').click();
   // The frame posts back, Form.aspx posts "Success" and the grid closes the dialog and refreshes.
   await page.waitForFunction(()=>window.gridLoads>=2);
-  assert.equal(app.store.snapshot().tables.child.find(entry=>entry.childkey===pendingId).message,'New notification message');
+  assert.equal(app.store.snapshot().tables.child.find(entry=>entry.childkey===pendingId).notice,'New notification message');
   await modal.waitFor({state:'hidden'});
   assert.equal(await page.getByLabel('Parent name',{exact:true}).inputValue(),'Unsaved parent edit');
   const deleteModal=page.locator('#Children section.modal-delete');

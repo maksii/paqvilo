@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
 import { DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
+import { siteSetting } from "./redirects.mjs";
 import { schemaFromFormXml, nativeControlKind, nativeRangeMessage, nativeDateOnly, resolveFormRecord } from "./platform.mjs";
 import { parseDateValue } from "./dataverse-values.mjs";
 import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
@@ -419,6 +420,9 @@ async function writeUnit(provider, work) {
   }
 }
 
+/** The note-text prefix that marks portal-visible notes: site setting KnowledgeManagement/NotesFilter, `*WEB*` by default. */
+export const notesFilter = (portal) => siteSetting(portal ?? {}, "KnowledgeManagement/NotesFilter") ?? "*WEB*";
+
 /** Native form saves have their own schema and table-permission boundary, separate from Web API site settings. */
 export async function submitPortalForm(
   kind,
@@ -829,7 +833,7 @@ export async function submitPortalForm(
         fail(text(portalField(componentMetadata, "attachfiletypeerrormessage"), `${file.name} is not of the file type(s) "${accept}".`), 400, "FormAttachmentType");
       notes.push((savedId) => ({
         subject: `Note created on ${now().toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "")} UTC by ${fullname}${contactId ? ` [contact:${contactId}]` : ""}`,
-        notetext: "*WEB*",
+        notetext: notesFilter(portal),
         objecttypecode: schema.entity,
         filename: file.name.slice(0, 255),
         mimetype: String(file.type || "application/octet-stream").slice(0, 255),

@@ -23,7 +23,7 @@ export const PAGE_KINDS = Object.freeze({
   "basic-form": "Page rendering {% entityform %}: content inside form#liquid_form with the WebForms resources.",
   "multistep-form": "Page rendering {% webform %}: as basic-form; the control is WebFormControl_<id>.",
   "code-component": "Page rendering {% codecomponent %}: the code control requires the Liquid WebForms server form.",
-  "modal-form": "Modal and quick view documents (/_portal/modal-form-template-path, quickform-template-path): form#content_form, no header or footer.",
+  "modal-form": "Modal and quick view documents (/_portal/modal-form-template-path, quickform-template-path): the layout master without header or footer (site map state of the Page Not Found page, home page title), form#content_form.",
 });
 
 /**
@@ -37,7 +37,7 @@ export const PLATFORM_RESOURCES = Object.freeze([
   { id: "resource-manager", phase: "head", kinds: ALL, native: "/_portal/{websiteId}/Resources/ResourceManager?lang={language}", local: "the same path (the strings that local scripts read)", provides: ["window.ResourceManager"] },
   { id: "bootstrap-style", phase: "head", kinds: ALL, native: "the Head/Bootstrap snippet, the site's bootstrap.min.css content style or /css/bootstrap.min.css", local: "the same choice (lib/liquid.mjs contentStylesheets); /css/bootstrap.min.css needs a capture", provides: ["Bootstrap styles"] },
   { id: "platform-styles", phase: "head", kinds: ALL, native: "/resource/powerappsportal/dist/{font-awesome,preform,privatemode,pwa-style,pcf-style}.bundle-<hash>.css", local: "the same paths (PLATFORM_BUNDLES): preform = toolkit-authored structural form/chrome CSS, the others empty placeholders", provides: ["#offlineNotificationBar", ".displayNone"] },
-  { id: "offline-notification-bar", phase: "body-start", kinds: ALL.filter((kind) => kind !== "modal-form"), native: "div#offlineNotificationBar.displayNone", local: "markup", provides: ["#offlineNotificationBar"] },
+  { id: "offline-notification-bar", phase: "body-start", kinds: ALL, native: "div#offlineNotificationBar.displayNone", local: "markup", provides: ["#offlineNotificationBar"] },
   { id: "antiforgery-holder", phase: "after-header", kinds: ALL, native: 'div#antiforgerytoken[data-url="/_layout/tokenhtml"] (empty)', local: "markup", provides: ["#antiforgerytoken"] },
   { id: "client-telemetry", phase: "after-header", kinds: ALL, native: "/resource/powerappsportal/dist/client-telemetry{,-wrapper}.bundle-<hash>.js", local: "the same paths, empty placeholders (telemetry is not simulated)", provides: ["ClientLogWrapper"] },
   { id: "preform", phase: "after-header", kinds: ALL, native: "/resource/powerappsportal/dist/preform.moment_2_29_4.bundle-<hash>.js", local: "the same path: jQuery, moment, datetimepicker and the jQuery UI dialog, datepicker and tabs adapters", provides: ["jQuery 3.6.2", "jQuery UI 1.13.2", "moment 2.29.4", "$.fn.datetimepicker"] },
@@ -48,7 +48,7 @@ export const PLATFORM_RESOURCES = Object.freeze([
   { id: "radcaptcha", phase: "form-start", kinds: FORMS, native: "/xrm-adx/js/radcaptcha.js", local: "/xrm-adx/js/radcaptcha.js", provides: ["radcaptcha"] },
   { id: "crmentityformview", phase: "form-start", kinds: FORMS, native: "/xrm-adx/js/crmentityformview.js", local: "/xrm-adx/js/crmentityformview.js", provides: ["scrollToAndFocus", "setFocus", "LimitInput", "validateRequiredField"] },
   { id: "crmentityformview-datetime", phase: "form-start", kinds: FORMS, native: "/xrm-adx/js/crmentityformview-datetime.js (forms with date controls)", local: "/xrm-adx/js/crmentityformview-datetime.js", provides: ["date control initialisation"] },
-  { id: "native-controls-root", phase: "after-content", kinds: ALL.filter((kind) => kind !== "modal-form"), native: "pcf-loader bundle, div#pp-native-controls-react-root, controls host chunk", local: "markup and empty placeholders at the bundle paths", provides: ["#pp-native-controls-react-root"] },
+  { id: "native-controls-root", phase: "after-content", kinds: ALL, native: "pcf-loader bundle, div#pp-native-controls-react-root, controls host chunk", local: "markup and empty placeholders at the bundle paths", provides: ["#pp-native-controls-react-root"] },
   { id: "bootstrap", phase: "after-footer", kinds: ALL, native: "/resource/powerappsportal/dist/bootstrap[.BootstrapV5].bundle-<hash>.js", local: "the same path: bootstrap-plugins-compat.js", provides: ["Bootstrap plugins and data API"] },
   { id: "postpreform", phase: "after-footer", kinds: ALL, native: "/resource/powerappsportal/dist/postpreform[.BootstrapV5].bundle-<hash>.js", local: "the same path: the Datejs part of date-format-compat.js, jquery-blockui-compat.js; shell.* in the client runtime", provides: ["Date.parse (Datejs)", "Date.today", "$.blockUI", "shell.getTokenDeferred", "shell.ajaxSafePost", "shell.refreshToken", "validateLoginSession"] },
   { id: "app", phase: "after-footer", kinds: ALL, native: "/resource/powerappsportal/dist/app[.BootstrapV5].bundle-<hash>.js", local: "the same path: platform-app-compat.js, entity-grid-compat.js, footer-spacing-compat.js", provides: ["entity grid, subgrid, lookup and notes runtime", "heading announcer", "dropdown accessibility", "portal.*"] },
@@ -84,7 +84,9 @@ export const NATIVE_CONTROLS_ROOT = `<div id="pp-native-controls-react-root"></d
  */
 export const CKEDITOR_BASEPATH = "/js/BaseHtmlContentDesigner/Libs/msdyncrm_/libs/ckeditor/";
 
-const NATIVE_FORM_MARKER = /\bdata-pp-native-form\b/;
+// The native form components leave a comment before their wrapper (lib/platform.mjs); the
+// platform markup carries no attribute, and the runtime drops the comment on adoption.
+const NATIVE_FORM_MARKER = /<!--pp-native-form-->/;
 /** The marker a failed native form control leaves (lib/platform.mjs RENDER_ABORT_MARKER). */
 const RENDER_ABORT_MARKER = "<!--paqvilo-mirage-render-aborted-->";
 const MULTISTEP_MARKER = /\bid="WebFormControl_[0-9a-f]{32}"/i;
@@ -95,9 +97,18 @@ const CODE_COMPONENT_MARKER = /\bdata-pcf-schema="/;
 const CALENDAR_LIST_MARKER = /<div class="entitylist" data-calendar-url="/;
 const VALIDATOR_MARKER = /Page_Validators = \(window\.Page_Validators \|\| \[\]\)\.concat\(\[document\.getElementById\(/;
 // The response markup of a date control is the bound box (data-ui="datetimepicker"); the picker group is built in the browser.
-const DATE_CONTROL_MARKER = /\bdata-ui="datetimepicker"/;
+// A form denied by table permissions renders no controls but keeps its date script when its
+// layout has date columns (lib/platform.mjs leaves the comment; live permission captures).
+const DATE_CONTROL_MARKER = /\bdata-ui="datetimepicker"|<!--pp-date-controls-->/;
+// A permission-denied form control (lib/platform.mjs): no validators or postback controls, so
+// ASP.NET registers neither WebUIValidation.js nor event validation (live permission captures).
+const DENIED_FORM_MARKER = /<!--pp-native-form-denied-->/;
 // The attach-file control posts its files with the page, so its form is multipart.
 const ATTACH_FILE_MARKER = /\bid="AttachFile"/;
+// Stack rank cells (adx_controlstyle 100000008) load the platform's stack ranking plug-in.
+const STACK_RANK_MARKER = /\bclass="clearfix cell stack-rank-cell"/;
+// The attach-file control and file/image columns make the server form multipart.
+const MULTIPART_MARKER = /\bid="AttachFile"|_input_file"/;
 
 /** Page kind of rendered page content (the Liquid output inside the layout). */
 export function pageKind(content, { authenticated = false } = {}) {
@@ -147,7 +158,7 @@ export function localAspNetScript(url) {
  * captured AXD paths when a live shell capture provides them; otherwise the local
  * WebForms equivalents load at the native AXD paths (LOCAL_ASPNET_SCRIPTS).
  */
-export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3", extraScripts = "", eventValidation = true } = {}) {
+export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3", extraScripts = "", eventValidation = true, formScriptPaths = null } = {}) {
   // A form component that keeps state across postbacks (auto-generated steps) supplies it as
   // data-pp-viewstate on its wrapper; the page's __VIEWSTATE carries it, as ASP.NET would.
   // A failed native form control aborts the server form's content (lib/platform.mjs
@@ -159,15 +170,18 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
   if (componentState) content = String(content).replace(componentState[0], "");
   const viewState = componentState ? componentState[1].replace(/&quot;/g, '"').replace(/&amp;/g, "&") : `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
-  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.map((entry) => script(entry.path)).join("\n");
+  const denied = DENIED_FORM_MARKER.test(String(content ?? ""));
+  if (denied) eventValidation = false;
+  const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.filter((entry) => !denied || entry.id !== "paqvilo-webuivalidation").map((entry) => script(entry.path)).join("\n");
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
-  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && (dateControls || variant === "BootstrapV5") ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
+  // A service document (the quick view) names its own form scripts (formScriptPaths).
+  const formScripts = formScriptPaths ? formScriptPaths.map(script).join("\n") :["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && STACK_RANK_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/jquery.stackranking.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : []), ...(formControls && ATTACH_FILE_MARKER.test(String(content ?? "")) ? ["/xrm-adx/js/fileuploadcontrol.js"] : [])].map(script).join("\n");
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : "";
   return (
-    `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}"${ATTACH_FILE_MARKER.test(String(content ?? "")) ? ' enctype="multipart/form-data"' : ""}>\n` +
+    `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}"${MULTIPART_MARKER.test(String(content ?? "")) ? ' enctype="multipart/form-data"' : ""}>\n` +
     `<div class="aspNetHidden">\n${hidden("__EVENTTARGET", "")}\n${hidden("__EVENTARGUMENT", "")}\n${hidden("__VIEWSTATE", viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
     `${resources}\n${formScripts}\n${extraScripts ? extraScripts + "\n" : ""}${onSubmit}${content}` +
@@ -301,8 +315,10 @@ export const PLATFORM_BUNDLES = Object.freeze(
     { id: "controls-host", kind: "script", capture: false, slot: "after-controls-root", defer: true, names: both("controls/host/main.3ee2491f78.chunk.js"), family: /^controls\/host\/main\.[0-9a-f]+\.chunk\.js$/i, local: [], reason: "The native controls host is not simulated." },
     { id: "bootstrap", kind: "script", slot: "after-footer", names: { BootstrapV3: "dist/bootstrap.bundle-105a4995b8.js", BootstrapV5: "dist/bootstrap.BootstrapV5.bundle-be8391e97d.js" }, family: /^dist\/bootstrap(?:\.BootstrapV5)?\.bundle-[0-9a-f]+\.js$/i, local: ["bootstrap-plugins-compat.js"] },
     { id: "postpreform", kind: "script", slot: "after-footer", names: { BootstrapV3: "dist/postpreform.bundle-4687dda8df.js", BootstrapV5: "dist/postpreform.BootstrapV5.bundle-1e48131190.js" }, family: /^dist\/postpreform(?:\.BootstrapV5)?\.bundle-[0-9a-f]+\.js$/i, local: ["date-format-compat.js#datejs", "jquery-blockui-compat.js"] },
-    { id: "app", kind: "script", capture: false, slot: "after-footer", names: { BootstrapV3: "dist/app.bundle-1e948af604.js", BootstrapV5: "dist/app.BootstrapV5.bundle-4299f393fc.js" }, family: /^dist\/app(?:\.BootstrapV5)?\.bundle-[0-9a-f]+\.js$/i, local: ["platform-app-compat.js", "entity-grid-compat.js", "footer-spacing-compat.js"] },
+    { id: "app", kind: "script", capture: false, slot: "after-footer", names: { BootstrapV3: "dist/app.bundle-1e948af604.js", BootstrapV5: "dist/app.BootstrapV5.bundle-4299f393fc.js" }, family: /^dist\/app(?:\.BootstrapV5)?\.bundle-[0-9a-f]+\.js$/i, local: ["platform-app-compat.js", "entity-grid-compat.js", "footer-spacing-compat.js", "multiselect-compat.js"] },
     { id: "moment-locale", kind: "script", slot: "after-footer", names: both("dist/default-1033.moment_2_29_4.bundle-eda4e638fd.js"), family: /^dist\/default-\d+\.moment_[\d_]+\.bundle-[0-9a-f]+\.js$/i, local: ["moment-locale"] },
+    // The MultiSelectPicklist control stylesheet ends the head of a page whose form has a multi-select column.
+    { id: "msos-style", kind: "stylesheet", slot: "controls-style", names: both("1.4.772-master/controlsAssets/msos.4774A53.css"), family: /^[^/]+\/controlsAssets\/msos\.[0-9a-f]+\.css$/i, local: ["platform-msos.css"] },
   ].map((bundle) => Object.freeze(bundle)),
 );
 
@@ -367,6 +383,7 @@ export function platformShell({ variant = "BootstrapV3", profile = null, website
     bundles: PLATFORM_BUNDLES.map((bundle) => ({ id: bundle.id, kind: bundle.kind, slot: bundle.slot, path: pathOf(bundle), captured: captured.has(bundle.id) })),
     headStart: `${resourceManager}${bootstrapMarkup}${slot("head-start")}`,
     headEnd: slot("head-end"),
+    controlsStyle: slot("controls-style"),
     bodyOpen: slot("body-open"),
     bodyStart: slot("body-start"),
     afterContent: `${slot("after-content")}${controlsRoot ? NATIVE_CONTROLS_ROOT : ""}${slot("after-controls-root")}`,

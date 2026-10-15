@@ -164,7 +164,11 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   ]);
   await page.locator("#effective_datepicker_description").waitFor();
   await page.locator("#effective_datepicker_description").evaluate((display) => {
-    const chooser = display.closest(".datetimepicker").querySelector(".paqvilo-mirage-date-chooser");
+    const group = display.closest(".datetimepicker");
+    // The native chooser and the action buttons stay out of the DOM until the picker opens.
+    if (group.querySelector(".paqvilo-mirage-date-chooser, .paqvilo-mirage-date-actions")) throw new Error("date picker adds local controls before it opens");
+    window.jQuery(group).datetimepicker("show");
+    const chooser = group.querySelector(".paqvilo-mirage-date-chooser");
     chooser.value = "2025-02-03";
     chooser.dispatchEvent(new Event("change", { bubbles: true }));
   });

@@ -90,7 +90,8 @@ function parseViewDocument(xml, entity, file, lcid) {
       fetchXml: fetch
         ? serialize(fetch)
         : decodeXml(child(view, "fetchxml")?.text.trim() ?? ""),
-      fields: descendants(layout, "cell").map((c) => ({
+      // Layout cells marked ishidden="1" are not grid columns (live Contacts Lookup View hides fax, address1_name, address1_fax).
+      fields: descendants(layout, "cell").filter((c) => c.attrs.ishidden !== "1").map((c) => ({
         name: c.attrs.name,
         width: Number(c.attrs.width) || undefined,
       })),

@@ -143,11 +143,15 @@
         const list = byId(binding.id + '_i');
         if (list) {
           for (const checkbox of list.querySelectorAll('.msos-selection input[type="checkbox"]')) checkbox.checked = values.has(checkbox.value);
+          const chosen = Array.from(list.querySelectorAll('.msos-selection .msos-option'), (item) => { const box = item.querySelector('input[type="checkbox"]'); item.classList.toggle('msos-option-selected', box.checked); if (box.checked) item.setAttribute('aria-selected', 'true'); else item.removeAttribute('aria-selected'); return box.checked ? { value: box.value, label: box.getAttribute('aria-label') ?? box.value, index: item.parentElement ? Array.prototype.indexOf.call(item.parentElement.children, item) + 1 : 0 } : null; }).filter(Boolean);
           const selected = list.querySelector('.msos-selecteditems');
-          if (selected && selection) {
-            selected.replaceChildren(...Array.from(selection.selectedOptions, option => { const item = document.createElement('li'); item.className = 'msos-selected-display-item'; item.dataset.value = option.value; item.textContent = option.textContent; return item; }));
+          if (selected) {
+            selected.replaceChildren(...chosen.map(option => { const item = document.createElement('li'); item.className = 'msos-selected-display-item msos-visible'; item.setAttribute('name', binding.id + '-selected-item-' + option.index); item.id = binding.id + '-selected-item-' + option.index; item.tabIndex = -1; item.title = ''; item.dataset.value = option.value; const text = document.createElement('span'); text.className = 'msos-selected-display-item-text'; text.textContent = option.label; item.append(text); return item; }));
           }
-          list.classList.toggle('msos-some-selected', values.size > 0); list.classList.toggle('msos-none-selected', values.size === 0);
+          const text = chosen.map(option => option.label).join(', ');
+          const view = list.querySelector('.msos-viewmode-text');
+          if (view) { view.textContent = text || '---'; view.title = text || '---'; }
+          list.classList.toggle('msos-none-selected', !list.classList.contains('msos-disabled') && values.size === 0);
         }
       }
       if (binding.control === 'datetime') {

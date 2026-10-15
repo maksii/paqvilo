@@ -584,3 +584,14 @@ test("hidden sections keep an empty place; subgrid and web resource cells resolv
   assert.deepEqual([views["lookup-view"].queryType, views["lookup-view"].isDefault], [64, true]);
   assert.deepEqual([views["view-id"].queryType, views["view-id"].isDefault], [0, false]);
 });
+
+test("saved query layout cells marked ishidden are not grid columns", async (t) => {
+  const hidden = view.replace('<cell name="fullname" width="200"/>', '<cell name="fullname" width="200"/><cell name="fax" ishidden="1" width="100"/>');
+  const root = await fixture(t, {
+    "Solution/Entities/Contact/Entity.xml": entity,
+    "Solution/Entities/Contact/FormXml/main/{form-id}.xml": form("Friendly name"),
+    "Solution/Entities/Contact/SavedQueries/{view-id}.xml": hidden,
+  });
+  const result = await importSolutionMetadata(root, { portal: portal() });
+  assert.deepEqual(result.componentSchemas.list.fields.map((field) => field.name), ["fullname"]);
+});

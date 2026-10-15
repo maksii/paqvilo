@@ -463,6 +463,10 @@
         "field": "pqvd_flag",
         "equals": true
       },
+      "guard": {
+        "field": "pqvd_setbyrule",
+        "notEqual": "set by rule"
+      },
       "actions": [
         {
           "type": "setValue",
@@ -496,6 +500,10 @@
       "when": {
         "field": "pqvd_flag",
         "equals": false
+      },
+      "guard": {
+        "field": "pqvd_setbyrule",
+        "notNull": true
       },
       "actions": [
         {
@@ -684,6 +692,150 @@
       "table": "account",
       "name": "statuscode",
       "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "address1_composite",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "address1_freighttermscode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "address1_shippingmethodcode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "anniversary",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "birthdate",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "creditlimit",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "creditonhold",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "description",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "donotbulkemail",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "donotemail",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "donotfax",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "donotphone",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "donotpostalmail",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "familystatuscode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "fax",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "followemail",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "gendercode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "jobtitle",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "mobilephone",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "ownerid",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "paymenttermscode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "preferredcontactmethodcode",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "spousesname",
+      "reason": "contact main form column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "transactioncurrencyid",
+      "reason": "contact main form column"
     }
   ]
 }

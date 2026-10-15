@@ -126,32 +126,124 @@
         <Dependent type="2" schemaName="address1_city" displayName="address1_city" />
       </MissingDependency>
       <MissingDependency>
+        <Required type="2" schemaName="address1_composite" displayName="address1_composite" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="address1_composite" displayName="address1_composite" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="address1_freighttermscode" displayName="address1_freighttermscode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="address1_freighttermscode" displayName="address1_freighttermscode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="address1_shippingmethodcode" displayName="address1_shippingmethodcode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="address1_shippingmethodcode" displayName="address1_shippingmethodcode" />
+      </MissingDependency>
+      <MissingDependency>
         <Required type="2" schemaName="address1_telephone1" displayName="address1_telephone1" parentSchemaName="contact" solution="System (5.0)" />
         <Dependent type="2" schemaName="address1_telephone1" displayName="address1_telephone1" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="anniversary" displayName="anniversary" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="anniversary" displayName="anniversary" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="birthdate" displayName="birthdate" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="birthdate" displayName="birthdate" />
       </MissingDependency>
       <MissingDependency>
         <Required type="2" schemaName="contactid" displayName="contactid" parentSchemaName="contact" solution="System (5.0)" />
         <Dependent type="2" schemaName="contactid" displayName="contactid" />
       </MissingDependency>
       <MissingDependency>
+        <Required type="2" schemaName="creditlimit" displayName="creditlimit" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="creditlimit" displayName="creditlimit" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="creditonhold" displayName="creditonhold" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="creditonhold" displayName="creditonhold" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="description" displayName="description" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="description" displayName="description" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="donotbulkemail" displayName="donotbulkemail" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="donotbulkemail" displayName="donotbulkemail" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="donotemail" displayName="donotemail" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="donotemail" displayName="donotemail" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="donotfax" displayName="donotfax" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="donotfax" displayName="donotfax" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="donotphone" displayName="donotphone" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="donotphone" displayName="donotphone" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="donotpostalmail" displayName="donotpostalmail" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="donotpostalmail" displayName="donotpostalmail" />
+      </MissingDependency>
+      <MissingDependency>
         <Required type="2" schemaName="emailaddress1" displayName="emailaddress1" parentSchemaName="account" solution="System (5.0)" />
         <Dependent type="2" schemaName="emailaddress1" displayName="emailaddress1" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="familystatuscode" displayName="familystatuscode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="familystatuscode" displayName="familystatuscode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="fax" displayName="fax" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="fax" displayName="fax" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="followemail" displayName="followemail" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="followemail" displayName="followemail" />
       </MissingDependency>
       <MissingDependency>
         <Required type="2" schemaName="fullname" displayName="fullname" parentSchemaName="contact" solution="System (5.0)" />
         <Dependent type="2" schemaName="fullname" displayName="fullname" />
       </MissingDependency>
       <MissingDependency>
+        <Required type="2" schemaName="gendercode" displayName="gendercode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="gendercode" displayName="gendercode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="jobtitle" displayName="jobtitle" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="jobtitle" displayName="jobtitle" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="mobilephone" displayName="mobilephone" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="mobilephone" displayName="mobilephone" />
+      </MissingDependency>
+      <MissingDependency>
         <Required type="2" schemaName="name" displayName="name" parentSchemaName="account" solution="System (5.0)" />
         <Dependent type="2" schemaName="name" displayName="name" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="ownerid" displayName="ownerid" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="ownerid" displayName="ownerid" />
       </MissingDependency>
       <MissingDependency>
         <Required type="2" schemaName="parentcustomerid" displayName="parentcustomerid" parentSchemaName="contact" solution="System (5.0)" />
         <Dependent type="2" schemaName="parentcustomerid" displayName="parentcustomerid" />
       </MissingDependency>
       <MissingDependency>
+        <Required type="2" schemaName="paymenttermscode" displayName="paymenttermscode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="paymenttermscode" displayName="paymenttermscode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="preferredcontactmethodcode" displayName="preferredcontactmethodcode" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="preferredcontactmethodcode" displayName="preferredcontactmethodcode" />
+      </MissingDependency>
+      <MissingDependency>
         <Required type="2" schemaName="primarycontactid" displayName="primarycontactid" parentSchemaName="account" solution="System (5.0)" />
         <Dependent type="2" schemaName="primarycontactid" displayName="primarycontactid" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="spousesname" displayName="spousesname" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="spousesname" displayName="spousesname" />
       </MissingDependency>
       <MissingDependency>
         <Required type="2" schemaName="statecode" displayName="statecode" parentSchemaName="account" solution="System (5.0)" />
@@ -164,6 +256,10 @@
       <MissingDependency>
         <Required type="2" schemaName="telephone1" displayName="telephone1" parentSchemaName="account" solution="System (5.0)" />
         <Dependent type="2" schemaName="telephone1" displayName="telephone1" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="transactioncurrencyid" displayName="transactioncurrencyid" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="transactioncurrencyid" displayName="transactioncurrencyid" />
       </MissingDependency>
     </MissingDependencies>
   </SolutionManifest>

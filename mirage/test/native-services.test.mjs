@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
-import { protectConfiguration, unprotectConfiguration } from "../lib/native-services.mjs";
+import { protectConfiguration, unprotectConfiguration, portalNotes } from "../lib/native-services.mjs";
+import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
@@ -186,8 +187,10 @@ test("grid reads follow table permissions and report native access denial", asyn
   const state = app.store.snapshot();
   state.permissions = state.permissions.filter((rule) => rule.entity !== "account");
   await app.store.replaceState(state);
-  const data = await (await post("entity-grid-data.json", gridRequest(layout.Base64SecureConfiguration))).json();
-  assert.deepEqual(data, { AccessDenied: true });
+  const response = await post("entity-grid-data.json", gridRequest(layout.Base64SecureConfiguration));
+  assert.deepEqual(await response.json(), { AccessDenied: true });
+  // Live: the denial is cache-control private, without the no-cache pragma/expires of a data page.
+  assert.deepEqual([response.headers.get("cache-control"), response.headers.get("pragma"), response.headers.get("expires")], ["private", null, null]);
 });
 
 test("notes service lists portal notes and annotation downloads stream the document body", async (t) => {
@@ -198,7 +201,9 @@ test("notes service lists portal notes and annotation downloads stream the docum
   // Only *WEB* notes are portal notes; the prefix is not displayed.
   assert.deepEqual(notes.Records.map((record) => [record.Id, record.UnformattedText, record.HasAttachment]), [[NOTE, "Shared note", true]]);
   assert.equal(notes.Records[0].AttachmentUrl, `/_entity/annotation/${NOTE}/${SITE}`);
-  assert.equal(notes.Records[0].AttachmentSizeDisplay, "8 B");
+  assert.equal(notes.Records[0].AttachmentSizeDisplay, "8 bytes");
+  // Live contract: AttachmentSize serialises as {}, unset paging/view members are null.
+  assert.deepEqual([notes.Records[0].AttachmentSize, notes.Records[0].CanAppend, notes.CreateActionMetadata, notes.DisabledItemActionLinks, notes.NextPagePagingCookie], [{}, true, null, null, null]);
   const download = await get(notes.Records[0].AttachmentUrl);
   assert.equal(download.status, 200);
   assert.equal(download.headers.get("content-type"), "text/plain");
@@ -232,8 +237,8 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   const { Id: id } = await added.json();
   let mine = (await list()).find((record) => record.Id === id);
   assert.deepEqual(
-    [mine.UnformattedText, mine.IsPostedByCurrentUser, mine.CanWrite, mine.CanDelete, mine.PostedByName, mine.AttachmentFileName, mine.AttachmentSize],
-    ["Local note", true, true, true, "Ada", "local.txt", 14],
+    [mine.UnformattedText, mine.IsPostedByCurrentUser, mine.CanWrite, mine.CanDelete, mine.PostedByName, mine.AttachmentFileName, mine.AttachmentSizeDisplay],
+    ["Local note", true, true, true, "Ada", "local.txt", "14 bytes"],
   );
   assert.equal(await (await get(mine.AttachmentUrl)).text(), "local evidence");
   // Notes the contact did not post stay read-only for it.
@@ -265,4 +270,12 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   assert.deepEqual(app.store.snapshot().tables.annotation.find((row) => row.annotationid === boundId).objectid, { id: CONTACT, logical_name: "contact", name: "Ada" });
   assert.equal((await list()).find((record) => record.Id === boundId).UnformattedText, "Bound note");
   assert.equal((await post("entity-form-addnote", { regardingEntityLogicalName: "contact", regardingEntityId: "c0000000-0000-4000-8000-0000000000ff", text: "Missing" })).status, 404);
+});
+
+test("portal notes follow the KnowledgeManagement/NotesFilter site setting, *WEB* by default", () => {
+  assert.equal(notesFilter({ settings: {} }), "*WEB*");
+  assert.equal(notesFilter({ settings: { "knowledgemanagement/notesfilter": { value: "*PORTAL*" } } }), "*PORTAL*");
+  const rows = [{ notetext: "*WEB*web" }, { notetext: "*PORTAL*portal" }, { notetext: "plain" }];
+  assert.deepEqual(portalNotes(rows, {}).map((row) => row.notetext), ["*WEB*web"]);
+  assert.deepEqual(portalNotes(rows, {}, "*PORTAL*").map((row) => row.notetext), ["*PORTAL*portal"]);
 });

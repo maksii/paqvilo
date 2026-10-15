@@ -3464,6 +3464,10 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       return raw;
     }
     case "multichoice": {
+      // The native form posts the MultiSelectPicklist control's JSON array of option metadata.
+      if (typeof value === "string" && /^\s*\[/.test(value)) {
+        try { value = JSON.parse(value).map((item) => item && typeof item === "object" ? item.Value : item).join(","); } catch { throw conversion("Edm.String"); }
+      }
       const parts = Array.isArray(value) ? value : typeof value === "string" ? value.split(",").filter((part) => part.trim() !== "") : null;
       if (!parts) throw conversion("Edm.String");
       for (const part of parts) {

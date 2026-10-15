@@ -88,15 +88,16 @@ test('native rendering keeps state action-only forms and does not invent unresol
   const options = await fixture(), diagnostics = [];
   const render = () => renderComponent('entityform', 'Entry', { identity: options.identity, request: { url: `http://localhost/form/?row=${id}`, params: { row: id } } }, { ...options, diagnostic: item => diagnostics.push(item) });
   // The platform's action bar (entityform.js): both state buttons render as button.*-link with
-  // the inapplicable one hidden; no postback inputs and no invented submit button.
+  // the inapplicable one hidden by the app bundle (lib/platform-app-compat.js); no postback inputs
+  // and no invented submit button.
   const active = await render();
   assert.match(active, /<button class="deactivate-link btn btn-default btn" data-url="\/_services\/action-deactivate\/[^"]*"[^>]*>Close entry<\/button>/);
-  assert.match(active, /<button class="activate-link btn btn-default btn hidden"[^>]* style="display: none;">Reopen entry<\/button>/);
+  assert.match(active, /<button class="activate-link btn btn-default btn" data-url="\/_services\/action-activate\/[^"]*" href="[^"]*" type="button">Reopen entry<\/button>/);
   assert.doesNotMatch(active, /id="(?:ActivateButton|DeactivateButton|UpdateButton)"/);
   await submit(options, body('deactivate'));
   const inactive = await render();
   assert.match(inactive, /<button class="activate-link btn btn-default btn" data-url="\/_services\/action-activate\/[^"]*"[^>]*>Reopen entry<\/button>/);
-  assert.match(inactive, /<button class="deactivate-link btn btn-default btn hidden"[^>]* style="display: none;">Close entry<\/button>/);
+  assert.match(inactive, /<button class="deactivate-link btn btn-default btn" data-url="\/_services\/action-deactivate\/[^"]*" href="[^"]*" type="button">Close entry<\/button>/);
   assert.doesNotMatch(inactive, /id="(?:ActivateButton|DeactivateButton|UpdateButton)"/);
   assert.deepEqual(diagnostics.filter(item => item.code === 'FORM_ACTION_UNSUPPORTED'), []);
 });

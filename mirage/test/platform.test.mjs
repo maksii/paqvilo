@@ -429,14 +429,15 @@ test("mapped form and list query identity, render escaping and original custom s
   assert.match(form, /<span id="RequiredFieldValidatorfullname" style="display:none;">\*<\/span>/);
   assert.match(form, /type="checkbox" name="[^"]*\$active" checked="checked"/);
   // Native order: the custom JavaScript span is the first child of the form control.
-  assert.match(form, /<div id="EntityFormControl_form" data-pp-native-form><span><script type="text\/javascript">window.formScript=true;<\/script><\/span>/);
+  assert.match(form, /<!--pp-native-form--><div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span>/);
   // Legacy EntityForm adds the startup script before reading the record: a missing record
   // or a read denial still runs it, ahead of the message.
   const notFound = await renderComponent("entityform", "form", { ...context, request: { params: {} } }, { portal, store, schemas });
-  assert.match(notFound, /^<div id="EntityFormControl_form" data-pp-native-form><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div id="MessagePanel"[^>]*><span id="MessageLabel">The record you are looking for couldn&#39;t be found\.<\/span>/);
+  assert.match(notFound, /^<!--pp-native-form--><div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div id="MessagePanel"[^>]*><span id="MessageLabel">The record you are looking for couldn&#39;t be found\.<\/span>/);
   const deniedStore = { ...store, get: async () => { throw Object.assign(new Error("denied"), { status: 403 }); } };
   const denied = await renderComponent("entityform", "form", context, { portal, store: deniedStore, schemas });
-  assert.match(denied, /^<div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div class='alert alert-block alert-danger'><span class='fa fa-lock'/);
+  // The denial keeps the native control: panel, read-only view, editable-snippet wrapper, empty actions.
+  assert.match(denied, /^<!--pp-native-form--><!--pp-native-form-denied--><div id="EntityFormControl_form"><span><script type="text\/javascript">window.formScript=true;<\/script><\/span><div id="EntityFormPanel" class="crmEntityFormView" data-form-name="form"><div id="EntityFormControl_form_EntityFormView" class="form-readonly entity-form" readonly="readonly"><div><div class="xrm-editable-html xrm-attribute"><div class="xrm-attribute-value"><div class='alert alert-block alert-danger'><span class='fa fa-lock'[^]*?<\/div><\/div><\/div><\/div><\/div><div class="actions"><\/div><\/div><\/div>$/);
   // An authored {% entitylist %} only exposes the list object; it does not render the grid.
   const list = await renderComponent("entitylist", "list", context, {
     portal,
@@ -1183,7 +1184,7 @@ test("advanced forms without resolved systemforms render approximated steps; unr
     diagnostic: (entry) => diagnostics.push(entry),
   };
   const html = await renderComponent("webform", "Appeal", { request: { params: {} } }, options);
-  assert.match(html, /<div id="WebFormControl_appeal" data-pp-native-form>/);
+  assert.match(html, /<!--pp-native-form--><div id="WebFormControl_appeal">/);
   assert.match(html, /id="subject"/);
   assert.match(html, /id="lastname"/);
   assert.match(html, /<textarea name="[^"]*\$description"[^>]*id="description"/);
@@ -1227,7 +1228,7 @@ test("advanced forms follow a start step that another advanced form's export own
     store: { resolveMapping: () => ({ entitySet: "products", idColumn: "productid", relationships: {} }) },
     diagnostic: (entry) => diagnostics.push(entry),
   });
-  assert.match(html, /<div id="WebFormControl_person" data-pp-native-form>/);
+  assert.match(html, /<!--pp-native-form--><div id="WebFormControl_person">/);
   assert.match(html, /<label for="name" id="name_label" class="field-label">Product name<\/label>/);
   assert.deepEqual(diagnostics.map((entry) => [entry.code, entry.step]), [["ADVANCEDFORM_SHARED_STEP_REFERENCE", "shared"], ["COMPONENT_SCHEMA_REQUIRED", "Identifier"]]);
 });
