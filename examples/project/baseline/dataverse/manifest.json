@@ -358,6 +358,18 @@
           "type": "integer",
           "min": 0,
           "max": 100
+        },
+        {
+          "name": "pqvd_collapsedtext",
+          "label": "Collapsed text",
+          "type": "string",
+          "maxLength": 50
+        },
+        {
+          "name": "pqvd_unlabelledtext",
+          "label": "Unlabelled text",
+          "type": "string",
+          "maxLength": 50
         }
       ],
       "keys": [

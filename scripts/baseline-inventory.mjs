@@ -97,11 +97,14 @@ async function loadExport(tables, classids) {
     }
   }
   const solution = await text(`${EXPORT}/Other/Solution.xml`);
-  const missing = [...solution.matchAll(/<MissingDependency>([\s\S]*?)<\/MissingDependency>/g)].map((m) => ({ required: attrsOf(/<Required ([^>]*)\/>/.exec(m[1])?.[1] ?? ""), dependent: attrsOf(/<Dependent ([^>]*)\/>/.exec(m[1])?.[1] ?? "") }));
+  const allMissing = [...solution.matchAll(/<MissingDependency>([\s\S]*?)<\/MissingDependency>/g)].map((m) => ({ required: attrsOf(/<Required ([^>]*)\/>/.exec(m[1])?.[1] ?? ""), dependent: attrsOf(/<Dependent ([^>]*)\/>/.exec(m[1])?.[1] ?? "") }));
+  // System-layer requirements (unmodified platform columns the solution lists itself) are present on every import; provision.mjs applies the same rule.
+  const missing = allMissing.filter((m) => !/^System \(/.test(m.required.solution ?? ""));
+  const systemMissing = allMissing.length - missing.length;
   const roots = [...solution.matchAll(/<RootComponent ([^>]*)\/>/g)].map((m) => attrsOf(m[1]));
   const security = await text(`${EXPORT}/Other/FieldSecurityProfiles.xml`);
   const permissions = [...security.matchAll(/<FieldPermission>([\s\S]*?)<\/FieldPermission>/g)].map((m) => ({ table: tag(m[1], "EntityName"), column: tag(m[1], "AttributeName"), read: tag(m[1], "CanRead"), update: tag(m[1], "CanUpdate"), create: tag(m[1], "CanCreate"), readUnmasked: tag(m[1], "CanReadUnmasked") }));
-  return { attributes, keys, forms, views, workflows, steps, relationships, missing, roots, permissions, profileName: /<FieldSecurityProfile name="([^"]+)"/.exec(security)?.[1] };
+  return { attributes, keys, forms, views, workflows, steps, relationships, missing, systemMissing, roots, permissions, profileName: /<FieldSecurityProfile name="([^"]+)"/.exec(security)?.[1] };
 }
 
 // Walks tabs → columns → sections → cells → controls of one exported FormXml.
@@ -505,7 +508,7 @@ function dataverseRows(data, catalog) {
 
   // Solution dependencies, from Solution.xml.
   const tableRoots = exported.roots.filter((r) => r.type === "1" && tables.includes(r.schemaName));
-  add("dv.solution.dependencies", `${exported.missing.length} MissingDependency entries; fixture tables as root components with behavior ${unique(tableRoots.map((r) => r.behavior)).join("/")} (all subcomponents, so statecode/statuscode/createdon/modifiedon/ownerid/primary keys travel with the tables); web resource root ${exported.roots.filter((r) => r.type === "61").map((r) => r.schemaName).join(", ")}${exported.missing.length ? `; missing: ${exported.missing.map((m) => `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution}) required by ${m.dependent.schemaName ?? m.dependent.displayName}`).join("; ")}` : ""}`, `${EXPORT}/Other/Solution.xml`, "MissingDependencies", exported.missing.length ? ["missing-dependency"] : ["self-contained"], []);
+  add("dv.solution.dependencies", `${exported.missing.length} MissingDependency entries outside the System layer (${exported.systemMissing} System-layer entries, present on every import); fixture tables as root components with behavior ${unique(tableRoots.map((r) => r.behavior)).join("/")} (all subcomponents, so statecode/statuscode/createdon/modifiedon/ownerid/primary keys travel with the tables); web resource root ${exported.roots.filter((r) => r.type === "61").map((r) => r.schemaName).join(", ")}${exported.missing.length ? `; missing: ${exported.missing.map((m) => `${m.required.schemaName ?? m.required.displayName} (type ${m.required.type}, solution ${m.required.solution}) required by ${m.dependent.schemaName ?? m.dependent.displayName}`).join("; ")}` : ""}`, `${EXPORT}/Other/Solution.xml`, "MissingDependencies", exported.missing.length ? ["missing-dependency"] : ["self-contained"], []);
 
   // Column security, from FieldSecurityProfiles.xml.
   add("dv.security.profile", `${exported.profileName} (${exported.permissions.length} column permission(s), no members)`, `${EXPORT}/Other/FieldSecurityProfiles.xml`, "FieldSecurityProfile", [], itemPages);

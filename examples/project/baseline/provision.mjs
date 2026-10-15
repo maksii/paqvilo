@@ -376,10 +376,10 @@ async function ensureBusinessRules(client, rules, { apply, solution, journal }) 
 
 async function ensureWebResource(client, spec, { apply, solution, journal }) {
   const rows = await client.list(`webresourceset?$select=webresourceid,content&$filter=name eq '${spec.name}'`);
-  const content = Buffer.from(spec.svg, "utf8").toString("base64");
+  const content = spec.content;
   const entry = { kind: "web-resource", name: spec.name, action: rows.length ? (rows[0].content === content ? "exists" : "update") : "create" };
   if (apply) {
-    if (!rows.length) await client.request("webresourceset", { method: "POST", body: { name: spec.name, displayname: spec.displayName, webresourcetype: 11, content }, solution });
+    if (!rows.length) await client.request("webresourceset", { method: "POST", body: { name: spec.name, displayname: spec.displayName, webresourcetype: spec.type, content }, solution });
     else if (rows[0].content !== content) await client.request(`webresourceset(${rows[0].webresourceid})`, { method: "PATCH", body: { content }, solution });
     const id = rows[0]?.webresourceid ?? (await client.list(`webresourceset?$select=webresourceid&$filter=name eq '${spec.name}'`))[0]?.webresourceid;
     if (id) {
@@ -389,6 +389,17 @@ async function ensureWebResource(client, spec, { apply, solution, journal }) {
   }
   journal.push(entry);
   log(entry);
+}
+
+/** Predecessor web resources, deleted once the forms no longer reference them (deletion also drops solution membership). */
+async function retireWebResources(client, names, { apply, journal }) {
+  for (const name of names) {
+    const rows = await client.list(`webresourceset?$select=webresourceid&$filter=name eq '${name}'`);
+    const entry = { kind: "retired-web-resource", name, action: rows.length ? (apply ? "delete" : "pending") : "absent" };
+    if (rows.length && apply) await client.request(`webresourceset(${rows[0].webresourceid})`, { method: "DELETE" });
+    journal.push(entry);
+    log(entry);
+  }
 }
 
 /** Existing platform forms/views the site renders: solution membership only, the component itself is never written. */
@@ -515,6 +526,8 @@ async function main() {
     log(await publishManifest(manifest, client));
     log(await checkKeys(manifest, client));
   }
+  // The published forms must stop naming a predecessor before Dataverse lets it go (the dependency follows the published form).
+  if (extrasSpec.webResource?.retire) await retireWebResources(client, extrasSpec.webResource.retire, options);
   await fs.writeFile(path.join(privateDir, `${apply ? "apply" : "plan"}-${stamp}.json`), JSON.stringify({ apply, startedAt: new Date(stamp).toISOString(), journal }, null, 2));
   if (values.export) {
     const zip = path.join(privateDir, `${solution}-${stamp}.zip`);

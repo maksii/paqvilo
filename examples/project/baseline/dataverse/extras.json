@@ -561,9 +561,14 @@
     ]
   },
   "webResource": {
-    "name": "pqvd_baseline_icon.svg",
-    "displayName": "Baseline icon",
-    "svg": "<svg xmlns=\"http://www.w3.org/2000/svg\" viewBox=\"0 0 16 16\"><rect width=\"16\" height=\"16\" rx=\"3\" fill=\"#4a6cf7\"/><text x=\"8\" y=\"12\" font-size=\"9\" text-anchor=\"middle\" fill=\"#fff\">B</text></svg>"
+    "name": "pqvd_baseline_banner.html",
+    "displayName": "Baseline banner",
+    "type": 1,
+    "content": "PCFET0NUWVBFIGh0bWw+PGh0bWw+PGhlYWQ+PG1ldGEgY2hhcnNldD0idXRmLTgiPjx0aXRsZT5CYXNlbGluZSBiYW5uZXI8L3RpdGxlPjwvaGVhZD48Ym9keT48aDIgY2xhc3M9ImJhc2VsaW5lLWJhbm5lciI+QmFzZWxpbmUgd2ViIHJlc291cmNlPC9oMj48cD5TdGF0aWMgSFRNTCB3ZWIgcmVzb3VyY2Ugb2YgdGhlIGJhc2VsaW5lIGZpeHR1cmUuPC9wPjwvYm9keT48L2h0bWw+",
+    "retire": [
+      "pqvd_baseline_icon.png",
+      "pqvd_baseline_icon.svg"
+    ]
   },
   "includeAllSubcomponents": [
     "pqvd_baselineparent",

@@ -116,6 +116,9 @@ export const ITEM_COLUMNS = [
   col("pqvd_calculated", "Calculated", "text", null, { catalog: "dv.column.calculated", extras: { kind: "calculated", maxLength: 4000, manual: "formula" } }),
   col("pqvd_formula", "Formula", "text", null, { catalog: "dv.column.formula", extras: { kind: "formula", maxLength: 200, formula: `Concatenate(${PREFIX}_name, " / ", ${PREFIX}_code)` } }),
   col("pqvd_file", "File", "file", null, { catalog: "dv.column.file", extras: { kind: "file", maxSizeKb: 1024 } }),
+  // Placed only in the collapsed tab and the unlabelled section: a column placed twice renders once and the platform warns (O17).
+  col("pqvd_collapsedtext", "Collapsed text", "text", { type: "string", maxLength: 50 }, { catalog: "dv.column.string.text" }),
+  col("pqvd_unlabelledtext", "Unlabelled text", "text", { type: "string", maxLength: 50 }, { catalog: "dv.column.string.text" }),
 ];
 export const PARENT_COLUMNS = [
   col("pqvd_code", "Code", "text", { type: "string", maxLength: 20, required: "required" }, { catalog: "dv.column.string.text" }),
@@ -202,7 +205,9 @@ const subgridControl = (id, table, relationship, viewId, { quickFind = true } = 
 // The QuickForms parameter carries XML-escaped text (as the form designer stores it), ids without braces.
 const quickViewControl = (id, field, table, formId) => `<control id="${id}" classid="${CLASSIDS.quickview}" datafieldname="${field}" disabled="false"><parameters><QuickForms>${escape(`<QuickFormIds><QuickFormId entityname="${table}">${formId.replace(/[{}]/g, "").toLowerCase()}</QuickFormId></QuickFormIds>`)}</QuickForms><ControlMode>Edit</ControlMode></parameters></control>`;
 const notesControl = `<control id="notescontrol" classid="${CLASSIDS.notes}" disabled="false" />`;
-const webResourceControl = `<control id="WebResource_baseline" classid="${CLASSIDS.webresource}"><parameters><Url>pqvd_baseline_icon.svg</Url><PassParameters>false</PassParameters><Security>false</Security><Scrolling>auto</Scrolling><Border>false</Border><ShowOnMobileClient>false</ShowOnMobileClient></parameters></control>`;
+const webResourceControl = `<control id="WebResource_baseline" classid="${CLASSIDS.webresource}"><parameters><Url>pqvd_baseline_banner.html</Url><PassParameters>false</PassParameters><Security>false</Security><Scrolling>auto</Scrolling><Border>false</Border><ShowOnMobileClient>false</ShowOnMobileClient></parameters></control>`;
+// Static, script-free document with a visible heading so captures show where it rendered.
+export const BANNER_HTML = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>Baseline banner</title></head><body><h2 class="baseline-banner">Baseline web resource</h2><p>Static HTML web resource of the baseline fixture.</p></body></html>';
 const iframeControl = `<control id="IFRAME_baseline" classid="${CLASSIDS.iframe}"><parameters><Url>about:blank</Url><PassParameters>false</PassParameters><Security>true</Security><Scrolling>auto</Scrolling><Border>true</Border><ShowOnMobileClient>false</ShowOnMobileClient></parameters></control>`;
 
 const byName = (columns, ...names) => names.map((name) => columns.find((c) => c.name === `${PREFIX}_${name}`));
@@ -246,10 +251,10 @@ function itemMainForm() {
       section("states", "States", states, { columns: 2 }),
       section("files", "Files", files),
       section("hiddensection", "Hidden section", [cell(c("text").name, "text", { label: "Text again (hidden section)", id: "hiddensection:text" })], { visible: false }),
-      section("unlabelled", "Unlabelled section", [cell(c("memo").name, "memo", { label: "Memo again", id: "unlabelled:memo" })], { showlabel: false }),
+      section("unlabelled", "Unlabelled section", [columnCell(c("unlabelledtext"), ITEM)], { showlabel: false }),
     ]),
     tab("related", "Related", [section("related", "Related records", related)]),
-    tab("collapsed", "Collapsed tab", [section("collapsed", "Collapsed", [cell(c("textarea").name, "text", { label: "Text area again", id: "collapsed:textarea" })])], { expanded: false }),
+    tab("collapsed", "Collapsed tab", [section("collapsed", "Collapsed", [columnCell(c("collapsedtext"), ITEM)])], { expanded: false }),
     tab("hiddentab", "Hidden tab", [section("hiddentab", "Hidden", [cell(c("email").name, "email", { label: "Email again", id: "hiddentab:email" })])], { visible: false }),
   ]);
 }
@@ -371,8 +376,11 @@ export function extras() {
       { id: guid("br:form-scope"), table: ITEM, name: "Baseline form scope", scope: "form", formId: guid("form:item-main"), when: { field: p("text"), equals: "form-scope" }, actions: [{ type: "visibility", field: p("recommended"), visible: false }] },
     ],
     columnSecurityProfile: { name: "Paqvilo baseline secured columns", columns: [{ table: ITEM, name: p("secret"), read: 0, update: 0, create: 0 }] },
-    // A fixture-owned image web resource so the form's web resource control has no dependency outside the solution.
-    webResource: { name: "pqvd_baseline_icon.svg", displayName: "Baseline icon", svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#4a6cf7"/><text x="8" y="12" font-size="9" text-anchor="middle" fill="#fff">B</text></svg>' },
+    // A fixture-owned web resource so the form's web resource control has no dependency outside the solution.
+    // HTML (type 1): "Render Web Resources Inline" embeds the resource's content, which only an HTML resource has; an image
+    // control is never created inline and its label association throws (O17). Plain forms frame the same resource.
+    // Predecessors are deleted by provision.mjs once the published form stops naming them.
+    webResource: { name: "pqvd_baseline_banner.html", displayName: "Baseline banner", type: 1, content: Buffer.from(BANNER_HTML, "utf8").toString("base64"), retire: ["pqvd_baseline_icon.png", "pqvd_baseline_icon.svg"] },
     // The three fixture tables are exported with every subcomponent so the solution is self-contained.
     includeAllSubcomponents: [PARENT, ITEM, CHILD],
     // Platform components of non-fixture tables the site renders: added to the solution as-is (AddSolutionComponent only,

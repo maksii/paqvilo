@@ -504,11 +504,11 @@
                   </labels>
                   <rows>
                     <row>
-                      <cell id="{40CC71C0-4E9A-4425-890B-CD2C4831AABB}" showlabel="true">
+                      <cell id="{C58EDD36-C236-4813-8148-1578A5EB90CC}" showlabel="true">
                         <labels>
-                          <label description="Memo again" languagecode="1033" />
+                          <label description="Unlabelled text" languagecode="1033" />
                         </labels>
-                        <control id="pqvd_memo" classid="{E0DECE4B-6FC8-4A8F-A065-082708572369}" datafieldname="pqvd_memo" disabled="false" />
+                        <control id="pqvd_unlabelledtext" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_unlabelledtext" disabled="false" />
                       </cell>
                     </row>
                   </rows>
@@ -578,7 +578,7 @@
                         </labels>
                         <control id="WebResource_baseline" classid="{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}">
                           <parameters>
-                            <Url>pqvd_baseline_icon.svg</Url>
+                            <Url>pqvd_baseline_banner.html</Url>
                             <PassParameters>false</PassParameters>
                             <Security>false</Security>
                             <Scrolling>auto</Scrolling>
@@ -631,11 +631,11 @@
                   </labels>
                   <rows>
                     <row>
-                      <cell id="{3222E6FD-5A2A-4121-8AC6-F2B88EA8E512}" showlabel="true">
+                      <cell id="{B67968CF-6CCE-4C04-8403-750F791DEA25}" showlabel="true">
                         <labels>
-                          <label description="Text area again" languagecode="1033" />
+                          <label description="Collapsed text" languagecode="1033" />
                         </labels>
-                        <control id="pqvd_textarea" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_textarea" disabled="false" />
+                        <control id="pqvd_collapsedtext" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_collapsedtext" disabled="false" />
                       </cell>
                     </row>
                   </rows>
