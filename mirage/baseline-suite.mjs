@@ -21,7 +21,7 @@ import { parseArgs } from "node:util";
 import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
-import { captureScenario, pageRunnerSource, runnerOptions, writeCapture } from "./baseline-capture.mjs";
+import { captureScenario, pageRunnerSource, runnerOptions, siteOriginPlaceholder, writeCapture } from "./baseline-capture.mjs";
 import { compareScenario, loadAllowlist, summarize, summaryMarkdown } from "./baseline-compare.mjs";
 import { startMcpServer } from "./mcp-stdio.mjs";
 
@@ -406,7 +406,7 @@ async function main() {
     const liveDir = scenarioDir(outDir, scenario, report.live);
     const mirageDir = scenarioDir(outDir, scenario, report.mirage);
     const secondDir = values["second-live"] ? scenarioDir(outDir, scenario, values["second-live"]) : null;
-    const result = await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist, origins: [matrix.origin].filter(Boolean) });
+    const result = await compareScenario({ scenario, liveDir, mirageDir, secondDir, allowlist, origins: [matrix.origin, siteOriginPlaceholder(matrix.origin)].filter(Boolean) });
     await fs.mkdir(path.join(outDir, ...scenario.id.split("/")), { recursive: true });
     await fs.writeFile(path.join(outDir, ...scenario.id.split("/"), "diff.json"), JSON.stringify(result, null, 2));
     report.scenarios.push({ id: scenario.id, verdict: result.verdict, counts: result.counts, signatures: result.signatures, reason: result.reason });

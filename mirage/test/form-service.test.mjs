@@ -825,3 +825,26 @@ test("labels and messages use the request's website language, then the default l
     (e) => e.code === "FormFieldRequired" && e.message === "Nom is a required field.",
   );
 });
+
+test("a read-only advanced form step saves nothing and advances to its next step", async () => {
+  const options = await setup();
+  options.portal.advancedForms.push({ id: "review" });
+  options.schemas.review = {
+    initialStepId: "first",
+    steps: [
+      { stepId: "first", entity: "contact", mode: 100000000, nextStepId: "look", fields: options.schemas.wizard.steps[0].fields },
+      { stepId: "look", entity: "contact", mode: 100000002, nextStepId: "last", fields: options.schemas.wizard.steps[0].fields },
+      { stepId: "last", entity: "contact", mode: 100000001, fields: options.schemas.wizard.steps[0].fields },
+    ],
+  };
+  const saved = await submitPortalForm("webform", "review", { stepId: "first", values: { fullname: "Reviewed" } }, options);
+  const before = JSON.stringify(options.store.snapshot().tables.contact);
+  const viewed = await submitPortalForm("webform", "review", { stepId: "look", values: {} }, options);
+  assert.equal(viewed.operation, "navigate");
+  assert.equal(viewed.record, null);
+  assert.match(viewed.outcome.url, /stepid=last/);
+  assert.equal(JSON.stringify(options.store.snapshot().tables.contact), before);
+  // The next step edits the record the session saved; the read-only step counts as visited.
+  const last = await submitPortalForm("webform", "review", { stepId: "last", recordId: saved.recordId, values: { fullname: "Final" } }, options);
+  assert.equal(last.recordId, saved.recordId);
+});

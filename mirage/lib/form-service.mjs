@@ -388,6 +388,24 @@ function redirectSettings(step) {
   };
 }
 
+/** Record a submitted (or viewed read-only) step in the session and return the step's outcome. */
+function advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text }) {
+  const entryIndex = session.history.findIndex((entry) => canonical(entry.stepId) === canonical(schema.stepId));
+  const entry = { stepId: schema.stepId, recordId: savedId, entity: schema.entity };
+  if (entryIndex >= 0) session.history.splice(entryIndex, session.history.length - entryIndex, entry);
+  else session.history.push(entry);
+  if (next && next.type !== "redirect") {
+    session.current = next.stepId;
+    return { type: "step", url: nextStepUrl(next.stepId, session, pageUrl, startNew) };
+  }
+  session.active = false;
+  session.completed = true;
+  const redirect = next?.type === "redirect" ? redirectTarget(redirectSettings(next), { portal, recordId: savedId, record: savedRecord, requestUrl: pageUrl }) : null;
+  return redirect
+    ? { type: "redirect", url: redirect }
+    : { type: "message", message: text(portalField(schema.metadata ?? {}, "successmessage"), "Submission completed successfully."), hideForm: portalField(schema.metadata ?? {}, "hideformonsuccess") !== false };
+}
+
 function nextStepUrl(stepId, session, requestUrl, startNew) {
   const target = new URL(requestUrl ?? "http://localhost/");
   target.searchParams.set("stepid", stepId);
@@ -517,7 +535,22 @@ export async function submitPortalForm(
   if (!schema.entity) fail("Native form table is unresolved", 501, "FormEntityRequired");
   const componentMetadata = schema.metadata ?? definition.metadata ?? {};
   let mode = Number(schema.mode ?? definition.mode);
-  if (mode === 100000002 && !stateAction) fail("This native form is read-only", 403, "FormReadOnly");
+  if (mode === 100000002 && !stateAction) {
+    if (!session) fail("This native form is read-only", 403, "FormReadOnly");
+    // A read-only advanced form step saves nothing: Next records the step as visited and moves on
+    // (live multistep-user/resume: the read-only Contact step's postback answers 302 ?stepid=<next>).
+    const source = await resolveFormRecord({ kind, definition, schema, metadata, context: { request: { params: query } }, readProvider, store, identity, session });
+    const viewedId = source.id ? canonical(source.id) : null;
+    let viewed = {};
+    try {
+      viewed = (viewedId && (await readProvider.get(schema.entity, viewedId, identity))) || {};
+    } catch {
+      viewed = {};
+    }
+    const next = nextAdvancedFormStep(portal, formSchema, schema.nextStepId, viewed);
+    return { record: null, recordId: viewedId, entity: schema.entity, operation: "navigate", componentId: definition.id, stepId: schema.stepId,
+      outcome: advanceSession(session, schema, next, viewedId, viewed, { portal, pageUrl, startNew, text }) };
+  }
   // A multistep insert step becomes an edit once its record exists in the session.
   const sessionRecordId = session ? sessionRecord(session, schema.stepId) : null;
   if (session && mode === 100000000 && sessionRecordId) mode = 100000001;
@@ -864,21 +897,7 @@ export async function submitPortalForm(
   const savedRecord = { ...current, ...record };
   let outcome;
   if (session) {
-    const entryIndex = session.history.findIndex((entry) => canonical(entry.stepId) === canonical(schema.stepId));
-    const entry = { stepId: schema.stepId, recordId: savedId, entity: schema.entity };
-    if (entryIndex >= 0) session.history.splice(entryIndex, session.history.length - entryIndex, entry);
-    else session.history.push(entry);
-    if (next && next.type !== "redirect") {
-      session.current = next.stepId;
-      outcome = { type: "step", url: nextStepUrl(next.stepId, session, pageUrl, startNew) };
-    } else {
-      session.active = false;
-      session.completed = true;
-      const redirect = next?.type === "redirect" ? redirectTarget(redirectSettings(next), { portal, recordId: savedId, record: savedRecord, requestUrl: pageUrl }) : null;
-      outcome = redirect
-        ? { type: "redirect", url: redirect }
-        : { type: "message", message: text(portalField(schema.metadata ?? {}, "successmessage"), "Submission completed successfully."), hideForm: portalField(schema.metadata ?? {}, "hideformonsuccess") !== false };
-    }
+    outcome = advanceSession(session, schema, next, savedId, savedRecord, { portal, pageUrl, startNew, text });
   } else {
     const settings = (() => {
       try {

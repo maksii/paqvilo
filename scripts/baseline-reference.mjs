@@ -27,6 +27,13 @@ const readJson = async (file, fallback = null) => {
 const escape = (text) => String(text ?? "").replace(/\\/g, "\\\\").replace(/\|/g, "\\|").replace(/\s+/g, " ").trim();
 const GUID = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
 const QUERY = /\?[^\s"'<>)]*/g;
+// The document is shared: ids, hosts (absolute URLs, e.g. a sign-in button naming the tenant's authority) and e-mail
+// addresses are reduced in everything printed, and the written text is scanned for any that remain.
+const EMAIL = /[\w.+-]+@[\w-]+(?:\.[\w-]+)+/g;
+const URL_HOST = /\b(https?:\/\/)[^/\s"'<>)|\\]+/gi;
+const HOST = /\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|ms|cloud|windows|microsoft|azure|dynamics|invalid)\b/gi;
+export const redact = (text) => String(text).replace(GUID, "{guid}").replace(EMAIL, "{email}").replace(URL_HOST, "$1{host}");
+export const leaks = (text) => [...new Set([GUID, EMAIL, HOST].flatMap((pattern) => [...String(text).matchAll(pattern)].map((match) => match[0])))];
 const clip = (text, max = 160) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
 
 // ---------------------------------------------------------------------------
@@ -123,6 +130,16 @@ function renderSummary(elements, dom, scenario) {
     }
     body = `"${clip(bodyText.replace(GUID, "{guid}"), 100)}" (${valid ? "valid JSON" : "not valid JSON"})`;
   }
+  // Page rows (Liquid, template and page-rule pages): the text the page content renders, from #mainContent or, for a
+  // template that replaces the layout, the body without header, footer, navigation and dialog templates.
+  let content = null;
+  if (scenario.component === "page" && bodyText === null && tree.body) {
+    const skip = (node) => ["script", "style", "template", "noscript", "header", "footer", "nav"].includes(node.tagName) || /\b(?:navbar|modal)\b/.test(node.attrs?.find((a) => a.name === "class")?.value ?? "");
+    const text = (node) => (node.nodeName === "#text" ? node.value : skip(node) ? "" : (node.childNodes ?? []).map(text).join(" "));
+    const main = tree.byId.get("mainContent");
+    const rendered = text(main ?? tree.body).replace(/\s+/g, " ").trim();
+    if (rendered) content = `${rendered.length} chars "${clip(rendered.replace(QUERY, "?…"), 200)}"`;
+  }
   // Visible notes (the notes control's rendered entries): text and attached file name, newest first as rendered.
   const notes = visible.filter((e) => e.tag === "div" && e.classes.includes("note") && e.attributes["data-id"]).map((e) => {
     const text = clip(String(e.attributes["data-unformattedtext"] ?? "").replace(/s+/g, " ").trim(), 60);
@@ -146,6 +163,7 @@ function renderSummary(elements, dom, scenario) {
     dialogs,
     actionsBar,
     body,
+    content,
     notes,
     messages: messages.map((text) => clip(text.replace(GUID, "{guid}").replace(QUERY, "?…"))).slice(0, 5),
     values,
@@ -225,6 +243,7 @@ async function main() {
             `${render.dialogs.length} open dialogs${render.dialogs.length ? ` (${render.dialogs.map(escape).join(", ")})` : ""}`,
             ...(render.actionsBar ? [`actions bar ${render.actionsBar} the form`] : []),
             ...(render.body ? [`body ${escape(render.body)}`] : []),
+            ...(render.content ? [`content ${escape(render.content)}`] : []),
             ...(render.notes.length ? [`notes: ${render.notes.map(escape).join("; ")}`] : []),
             `messages: ${render.messages.map((m) => `"${escape(m)}"`).join("; ") || "none"}`,
             ...(render.values.length ? [`values: ${render.values.map(escape).join(", ")}`] : []),
@@ -236,11 +255,14 @@ async function main() {
     lines.push("");
   }
   const out = values.out ?? path.join(root, "mirage/docs/baseline/reference.md");
-  await fs.writeFile(out, lines.join("\n"));
+  const document = redact(lines.join("\n"));
+  const left = leaks(document);
+  if (left.length) throw new Error(`The reference still names ${left.length} id(s), host(s) or e-mail address(es) after redaction (first starts "${left[0].slice(0, 6)}"); extend redact().`);
+  await fs.writeFile(out, document);
   console.log(JSON.stringify({ out, sections: sections.size, scenarios: matrix.scenarios.length, captured, noted, missing }));
 }
 
-main().catch((error) => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });

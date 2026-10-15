@@ -25,13 +25,19 @@ export function redactTokens(text) {
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g, "$1{token}");
 }
 
-function redactHeaders(headers) {
+// The capture's own origin (referer, origin, location headers) is reduced to the same `{site}` form the meta uses.
+export const siteOriginPlaceholder = (origin) => { try { const url = new URL(origin); return `${url.protocol}//${url.hostname.replace(/^[^.]+/, "{site}")}${url.port ? ":" + url.port : ""}`; } catch { return null; } };
+function redactHeaders(headers, origin = null) {
   const out = {};
+  const placeholder = siteOriginPlaceholder(origin);
   for (const [name, value] of Object.entries(headers ?? {})) {
     const key = name.toLowerCase();
     if (TOKEN_HEADERS.has(key)) {
       out[key] = key === "cookie" || key === "set-cookie" ? String(value).split(/,(?=\s*\w+=)|;/).map((part) => part.split("=")[0].trim()).filter(Boolean).sort().join(";") : "{token}";
-    } else out[key] = Array.isArray(value) ? value.join(", ") : String(value);
+    } else {
+      const text = Array.isArray(value) ? value.join(", ") : String(value);
+      out[key] = origin && placeholder ? text.split(origin).join(placeholder) : text;
+    }
   }
   return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
 }
@@ -332,7 +338,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
       ? {
           status: entry.response.status,
           ...(entry.response.failure ? { failure: entry.response.failure } : {}),
-          headers: redactHeaders(entry.response.headers),
+          headers: redactHeaders(entry.response.headers, origin),
           body: entry.response.body === null || entry.response.body === undefined ? null : redactTokens(entry.response.body),
           bodyBytes: entry.response.bodyBytes ?? null,
           bodySha256: entry.response.bodyHashInput ? sha(Buffer.from(entry.response.bodyHashInput, "base64")) : entry.response.body ? sha(redactTokens(entry.response.body)) : null,
@@ -350,7 +356,7 @@ export async function writeCapture({ summary, raw }, { outDir, origin, side, met
         }
       })(),
       resourceType: entry.resourceType,
-      headers: redactHeaders(entry.headers),
+      headers: redactHeaders(entry.headers, origin),
       body: entry.body === null || entry.body === undefined ? null : redactTokens(entry.body),
       response,
     };

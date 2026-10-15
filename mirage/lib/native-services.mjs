@@ -17,6 +17,7 @@ import { platformBundleFor, localAspNetScript } from "./platform-manifest.mjs";
 import { adapterEnabled } from './local-overrides.mjs';
 import { attributeMetadata } from './attribute-metadata.mjs';
 import { calendarSettings, calendarLanguageScript, calendarEvents, calendarIcs, parseCalendarPath } from './list-views.mjs';
+import { CALENDAR_TEMPLATES } from './entitylist-calendar-templates.mjs';
 import {
   subgridSettings,
   subgridActionApplies,
@@ -642,7 +643,9 @@ async function handleCalendarService(req, res, url, context, websiteId) {
   const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? "en-US";
   if (route.kind === "language") {
     const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : "en-US"));
-    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", "content-length": body.length });
+    // Live: a day of private caching from the render time.
+    const now = Date.now();
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", expires: new Date(now + 86400000).toUTCString(), "last-modified": new Date(now).toUTCString(), "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] ?? "SAMEORIGIN", "content-length": body.length });
     res.end(req.method === "HEAD" ? undefined : body);
     return true;
   }
@@ -650,7 +653,8 @@ async function handleCalendarService(req, res, url, context, websiteId) {
   if (!list) return false;
   try {
     const model = listModel({ portal: context.portal, metadata: context.metadata, store: context.store, list, schemas: context.schemas });
-    if (!model.calendar?.start) return sendJson(res, 200, { success: 0, error: "The list has no calendar start date column." }), true;
+    // The platform feed answers a list without its start or end date column with this error (live).
+    if (!model.calendar?.start || !model.calendar?.end) return sendJson(res, 200, { success: 0, error: "Calendars require both a start and end date." }), true;
     const from = Date.parse(url.searchParams.get("from") ?? "");
     const to = Date.parse(url.searchParams.get("to") ?? "");
     const query = await executeGridQuery(model, { viewId: route.view, page: 1, pageSize: 5000, allowLargePages: true, search: url.searchParams.get("search") ?? "" }, context);
@@ -1542,6 +1546,8 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/areas/entitylist/css/calendar.min.css", { file: new URL("./entitylist-calendar-compat.css", import.meta.url), type: "text/css; charset=utf-8" }],
   ["/areas/entitylist/css/bootstrapv5/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
   ["/areas/entitylist/css/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
+  // The calendar templates the calendar client fetches by name (local equivalents).
+  ...Object.entries(CALENDAR_TEMPLATES).flatMap(([name, source]) => ["/areas/entitylist/tmpls/bootstrapv5/", "/areas/entitylist/tmpls/"].map((folder) => [folder + name + ".html", { body: Buffer.from(source), type: "text/html; charset=utf-8" }])),
   ["/resource/powerappsportal/img/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/close.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/lock.png", { body: PNG_PIXEL, type: "image/png" }],
@@ -1620,10 +1626,13 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
   // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
-  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/js)\//.test(key) ? "static" : null;
+  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/js|areas\/entitylist)\//.test(key) ? "static" : null;
   const headers = kind
     ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"] })
     : { "content-type": equivalent.type, "cache-control": "no-cache" };
+  // Calendar assets (live): scripts and stylesheets cache for a week, templates are not cached.
+  if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers["cache-control"] = "public,max-age=604800";
+  if (/^\/areas\/entitylist\/tmpls\//.test(key)) Object.assign(headers, { "cache-control": "no-cache, no-store, must-revalidate", expires: "-1", pragma: "no-cache" });
   res.writeHead(200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
   res.end(req.method === "HEAD" ? undefined : body);
   return true;
@@ -1873,6 +1882,40 @@ async function annotationRows(context, entity, id, descending = true) {
   ).map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
 }
 
+// The notes service's record Attributes (live entity-notes responses): the note row's columns in the
+// platform's order, as grid attribute entries. The service resolves AttributeMetadata by column name on the
+// regarding table, not on annotation (live basic-form/item-read/read-only: createdon/modifiedon/createdby carry
+// pqvd_baselineitem metadata, EntityLogicalName included; subject, notetext, objectid... report null).
+const NOTE_COLUMNS = [
+  ["objectid", "lookup"], ["modifiedon", "datetime"], ["subject", "nvarchar"], ["isdocument", "bit"], ["filesize", "int"],
+  ["createdon", "datetime"], ["filename", "nvarchar"], ["objecttypecode", "nvarchar"], ["notetext", "memo"],
+  ["annotationid", "uniqueidentifier"], ["mimetype", "nvarchar"], ["createdby", "lookup"],
+];
+function noteAttributes(row, context, zone, regarding) {
+  const fields = entityFields(context.metadata, "annotation");
+  const regardingFields = entityFields(context.metadata, regarding);
+  const out = [];
+  for (const [name, dataverseType] of NOTE_COLUMNS) {
+    let value = row[name];
+    if (name === "isdocument") value ??= Boolean(row.filename);
+    if (name === "filesize") value ??= row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0;
+    if (name === "objecttypecode") value ??= row.objectid?.logical_name ?? regarding;
+    if (value == null || value === "") continue;
+    const field = fields[name] ?? { dataverseType, ...(dataverseType === "datetime" ? { dateTimeBehavior: "UserLocal" } : {}) };
+    const entry = attributeEntry(name, value, { field, settings: context.portal.settings, entity: "annotation", ...zone });
+    entry.AttributeMetadata = attributeMetadata(regarding, name, regardingFields[name]) ?? null;
+    // The regarding reference carries no name and no formatted value.
+    if (name === "objectid" && entry.Value) { entry.Value.Name = null; entry.FormattedValue = entry.DisplayValue = ""; }
+    // The table type shows the table's display name (live: "Baseline Item"), else its logical name.
+    if (name === "objecttypecode") {
+      const labels = mappingFor(context.store, String(scalar(value)))?.labels ?? {};
+      entry.FormattedValue = entry.DisplayValue = labels[1033] ?? Object.values(labels)[0] ?? String(scalar(value));
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 const fileSizeDisplay = (bytes) =>
   bytes >= 1048576 ? `${(bytes / 1048576).toFixed(2)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(2)} KB` : `${bytes} bytes`;
 
@@ -1886,6 +1929,9 @@ async function handleNotes(action, req, res, context) {
     const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
     const page = Math.max(1, Number(body.page) || 1);
     const prefix = notesFilter(context.portal);
+    // The notes request reports no offset: the user's zone comes from the timeZoneCode cookie, else the
+    // loopback browser shares this machine's zone (live formats the dates in the user's local time).
+    const zone = { timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) ?? (body.timezoneOffset == null ? Intl.DateTimeFormat().resolvedOptions().timeZone : null) };
     const order = Array.isArray(body.orders) ? body.orders.find((entry) => String(entry?.Attribute ?? "").toLowerCase() === "createdon") : null;
     const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
     const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id, descending), context.identity, prefix);
@@ -1918,7 +1964,7 @@ async function handleNotes(action, req, res, context) {
         IsPrivate: String(row.subject ?? "").includes("*PRIVATE*"),
         Id: id,
         EntityName: "annotation",
-        Attributes: [],
+        Attributes: noteAttributes(row, context, zone, canonical(regarding.LogicalName)),
         CanRead: true,
         CanWrite: mine,
         CanDelete: mine,

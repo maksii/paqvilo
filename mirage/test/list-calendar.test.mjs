@@ -11,6 +11,7 @@ import { calendarSettings, renderCalendarList, calendarResources, calendarLangua
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const LIST = "1b000000-0000-4000-8000-000000000001";
 const VIEW = "5c000000-0000-4000-8000-000000000001";
+const OPEN = "1b000000-0000-4000-8000-000000000002";
 const CONTACT = "c0000000-0000-4000-8000-000000000001";
 
 test("calendar list settings, markup shell and resources follow the exported list", () => {
@@ -42,7 +43,8 @@ test("calendar event feed returns rows in the requested period with summary and 
     "Main.pagetemplate.yml": "adx_pagetemplateid: template\nadx_webtemplateid: main",
     "Main.webtemplate.yml": "adx_webtemplateid: main\nadx_name: Main",
     "Main.webtemplate.source.html": "{% include 'entity_list' key: 'Accounts' %}",
-    "Accounts.list.yml": `adx_entitylistid: ${LIST}\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 2\nadx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city`,
+    "Accounts.list.yml": `adx_entitylistid: ${LIST}\nadx_name: Accounts\nadx_entityname: account\nadx_pagesize: 2\nadx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_enddatefieldname: opens\nadx_calendar_summaryfieldname: name\nadx_calendar_descriptionfieldname: city`,
+    "Open.list.yml": `adx_entitylistid: ${OPEN}\nadx_name: Open\nadx_entityname: account\nadx_calendar_enabled: true\nadx_calendar_startdatefieldname: opens\nadx_calendar_summaryfieldname: name`,
   };
   for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(dir, name), body);
   const initial = {
@@ -76,6 +78,14 @@ test("calendar event feed returns rows in the requested period with summary and 
   const language = await fetch(`${app.url}/EntityList/Calendar/${SITE}/language.js`, { headers });
   assert.equal(language.status, 200);
   assert.match(await language.text(), /calendar_languages/);
+  // A list without an end date column: the platform feed's error (live).
+  const open = await (await fetch(`${app.url}/EntityList/Calendar/${SITE}/${OPEN}/${VIEW}?from=2026-01-01T00:00:00Z&to=2027-01-01T00:00:00Z`, { headers })).json();
+  assert.deepEqual(open, { success: 0, error: "Calendars require both a start and end date." });
+  // The calendar templates are served by name, uncached, as on the platform.
+  const template = await fetch(`${app.url}/Areas/EntityList/tmpls/BootstrapV5/month-day.html`, { headers });
+  assert.equal(template.status, 200);
+  assert.equal(template.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  assert.match(await template.text(), /cal-month-day/);
   const client = await fetch(`${app.url}/Areas/EntityList/js/entitylist-calendar.js`, { headers });
   assert.equal(client.status, 200);
   assert.match(await client.text(), /data-view="calendar"/);

@@ -290,3 +290,14 @@ test("notes follow the request's createdon direction and keep creation order for
   assert.deepEqual(await ids(null), [NOTE, twin]);
   assert.deepEqual(await ids(1), [twin, NOTE]);
 });
+
+test("note records carry their columns as Attributes and the creator as PostedByName", async (t) => {
+  const { app, post } = await fixture(t);
+  const state = app.store.snapshot();
+  Object.assign(state.tables.annotation.find((row) => row.annotationid === NOTE), { createdby: { id: "a0000000-0000-4000-8000-0000000000bb", logical_name: "systemuser", name: "Provisioning User" } });
+  await app.store.replaceState(state);
+  const [note] = (await (await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT }, page: 1, pageSize: 10 })).json()).Records;
+  const byName = Object.fromEntries(note.Attributes.map((entry) => [entry.Name, entry]));
+  assert.equal(note.PostedByName, "Provisioning User");
+  assert.deepEqual([byName.createdon.Value, byName.createdon.DisplayValue, byName.objecttypecode.Value, byName.createdby.Value.Name, byName.objectid.Value.Name, byName.subject.AttributeMetadata], [`/Date(${Date.parse("2026-01-02T03:04:05Z")})/`, "2026-01-02T03:04:05Z", "contact", "Provisioning User", null, null]);
+});

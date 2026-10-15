@@ -48,6 +48,8 @@ function mappingFor(schema, name) {
     mapping.nameColumnSource = table.primaryNameSource;
   }
   if (table.isIntersect) mapping.intersect = true;
+  // The table's display name by language (Entity.xml LocalizedNames): services that show a table type use it.
+  if (table.labels && Object.keys(table.labels).length) mapping.labels = structuredClone(table.labels);
   // Alternate keys (Web API key addressing and uniqueness) with the defining file.
   const keys = Object.values(table.keys ?? {});
   if (keys.length)
@@ -274,7 +276,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
       // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
       // and create defaults (column defaults, state/status pairs) when it names none (as a preset
       // layered over the imported mappings does): a record created through it gets what Dataverse sets.
-      for (const key of ["relationships", "nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults"])
+      for (const key of ["relationships", "nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults", "labels"])
         if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
     }
     result.tables[name] ??= [];
