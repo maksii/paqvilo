@@ -16677,6 +16677,32 @@
    "notes": "Not provided out of the box and not supported by Power Pages."
   },
   {
+   "id": "pp.sitesetting.bingmaps.credentials",
+   "component": "site-setting",
+   "name": "Bingmaps/credentials",
+   "sources": [
+    "learn-add-geolocation"
+   ],
+   "field": "Bingmaps/credentials (mspp_sitesetting name)",
+   "values": [],
+   "renders": "Key that authenticates the map and geocoding requests of geolocation forms to the Bing Maps API.",
+   "states": [],
+   "notes": "Learn (Add geolocation): required for geolocation with map functionality on forms."
+  },
+  {
+   "id": "pp.sitesetting.bingmaps.resturl",
+   "component": "site-setting",
+   "name": "Bingmaps/restURL",
+   "sources": [
+    "learn-add-geolocation"
+   ],
+   "field": "Bingmaps/restURL (mspp_sitesetting name)",
+   "values": [],
+   "renders": "Bing Maps REST API URL the geolocation forms query.",
+   "states": [],
+   "notes": "Learn (Add geolocation): optional; default https://dev.virtualearth.net/REST/v1/Locations."
+  },
+  {
    "id": "pp.webapi.table.enabled",
    "component": "web-api-setting",
    "name": "Webapi/<table>/enabled",

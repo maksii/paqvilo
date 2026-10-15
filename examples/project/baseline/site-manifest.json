@@ -123,15 +123,6 @@
     },
     {
       "catalog": [
-        "pp.list.map.credentials"
-      ],
-      "reason": "Holds the Bing Maps key; Learn (List map view): the map view is powered by Bing maps. A key is a secret, so a site folder fixture carries none. The map columns and the geolocation forms are configured without it and render the map only where a key is set.",
-      "sources": [
-        "learn-ref-mspp-entitylist"
-      ]
-    },
-    {
-      "catalog": [
         "pp.list.map.latitude",
         "pp.list.map.longitude"
       ],
@@ -512,7 +503,7 @@
       "catalog": [
         "pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator"
       ],
-      "reason": "Baseline Item Edit Geolocation (Bing map type, no address columns, geolocation lookup validator on pqvd_wide) returned HTTP 500 while the Google/Esri geolocation forms without the validator render. Learn: the validator and the Bing map type require Bing Maps settings (Bingmaps/credentials, 'Required'); the site has no key and a fixture carries none, so the platform cannot render this configuration. Not separable without a key; kept as configured.",
+      "reason": "Baseline Item Edit Geolocation (Bing map type, no address columns, geolocation lookup validator on pqvd_wide) returned HTTP 500 while the Google/Esri geolocation forms without the validator render. Learn: the validator and the Bing map type require Bing Maps settings (Bingmaps/credentials, 'Required'); the fixture sets an invented key (O9), so the page is observed with a key the service rejects. Not separable without a real key; kept as configured.",
       "sources": [
         "learn-bfmeta",
         "learn-tblref-efmeta"
@@ -575,7 +566,7 @@
         "pp.bfmeta.attribute.controlstyle.geolocation-lookup-validator",
         "pp.msmeta.controlstyle.geolocationvalidator"
       ],
-      "reason": "Configured without a Bing Maps key (pp.list.map.credentials): the map columns are stored except the default centre (pp.list.map.latitude/longitude: not stored, see notExpressed), and the map and geocoding need the key. Learn (List map view): only Bing maps are supported as the map type.",
+      "reason": "Configured with an invented Bing Maps key (pp.list.map.credentials and Bingmaps/credentials, O9), which the service rejects: the map columns are stored except the default centre (pp.list.map.latitude/longitude: not stored, see notExpressed), and the map and geocoding need the key. Learn (List map view): only Bing maps are supported as the map type.",
       "sources": [
         "learn-ref-mspp-entitylist",
         "learn-list-map-view",
@@ -1902,7 +1893,7 @@
       "name": "Baseline Item Insert Steps",
       "path": "/baseline/item-create-steps/",
       "table": "pqvd_baselineitem",
-      "variation": "insert, tabs as auto-generated steps with next/previous labels and CSS",
+      "variation": "insert, tabs as auto-generated steps with next/previous labels and CSS; form Baseline Item Steps (the main form without the quick view, which needs a saved record)",
       "catalog": [
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
@@ -3706,6 +3697,7 @@
         "pp.list.name",
         "pp.list.pagesize",
         "pp.list.view",
+        "pp.list.map.credentials",
         "pp.list.map.resturl",
         "pp.list.map.zoom",
         "pp.list.map.distancevalues",
@@ -3750,6 +3742,7 @@
         "pp.list.name",
         "pp.list.pagesize",
         "pp.list.view",
+        "pp.list.map.credentials",
         "pp.list.map.resturl",
         "pp.list.map.zoom",
         "pp.list.map.distancevalues",
@@ -3794,6 +3787,7 @@
         "pp.list.name",
         "pp.list.pagesize",
         "pp.list.view",
+        "pp.list.map.credentials",
         "pp.list.map.resturl",
         "pp.list.map.zoom",
         "pp.list.map.distancevalues",
@@ -7040,6 +7034,30 @@
         "pp.sitesetting.table.description",
         "pp.sitesetting.table.name",
         "pp.sitesetting.table.value"
+      ]
+    },
+    {
+      "id": "43db54fa-8ebc-4603-88cf-0f3599e2c2da",
+      "kind": "sitesetting",
+      "name": "Bingmaps/credentials",
+      "variation": "invented Bing Maps key, so the map and geolocation pages render with a key the service rejects (O9)",
+      "catalog": [
+        "pp.sitesetting.table.description",
+        "pp.sitesetting.table.name",
+        "pp.sitesetting.table.value",
+        "pp.sitesetting.bingmaps.credentials"
+      ]
+    },
+    {
+      "id": "51b1783e-4bf1-4a95-817a-32043e350a66",
+      "kind": "sitesetting",
+      "name": "Bingmaps/restURL",
+      "variation": "Bing Maps REST URL (Learn's default)",
+      "catalog": [
+        "pp.sitesetting.table.description",
+        "pp.sitesetting.table.name",
+        "pp.sitesetting.table.value",
+        "pp.sitesetting.bingmaps.resturl"
       ]
     },
     {

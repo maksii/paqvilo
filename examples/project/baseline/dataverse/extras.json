@@ -150,6 +150,13 @@
       "file": "formxml/item-main.xml"
     },
     {
+      "id": "5dd6a7d1-f659-467c-8cdc-68988b1d311d",
+      "table": "pqvd_baselineitem",
+      "name": "Baseline Item Steps",
+      "type": 2,
+      "file": "formxml/item-steps.xml"
+    },
+    {
       "id": "9c8f6aaa-ef77-423f-81fe-7b58b8a19f5e",
       "table": "pqvd_baselineitem",
       "name": "Baseline Item Compact",

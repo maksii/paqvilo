@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Baseline fixture data: one invented dataset with stable GUIDs (2 parents + 1 deactivated, 8 items, 4 children + 1 deactivated), usable three ways —
+// Baseline fixture data: one invented dataset with stable GUIDs (2 parents + 1 deactivated, 14 items (item3, item9–item11 deactivated), 4 children + 1 deactivated), usable three ways —
 //   1. `reset` against the live environment (upsert every fixture row, delete every other row of
 //      the fixture tables, restore mutable values) so captures start from a known state;
 //   2. `mirageTables(testerContactId)` for the Mirage data pack (same rows, Mirage record shape);
@@ -26,7 +26,7 @@ export const ACCOUNT = guid("account:baseline");
 export const CURRENCY = "a4300000-0000-4000-8000-000000000001"; // the demo's EUR currency record
 export const ids = {
   parent1: guid("parent:1"), parent2: guid("parent:2"), parent3: guid("parent:3"),
-  item1: guid("item:1"), item2: guid("item:2"), item3: guid("item:3"), item4: guid("item:4"), item5: guid("item:5"), item6: guid("item:6"), item7: guid("item:7"), item8: guid("item:8"), item9: guid("item:9"), item10: guid("item:10"), item11: guid("item:11"),
+  item1: guid("item:1"), item2: guid("item:2"), item3: guid("item:3"), item4: guid("item:4"), item5: guid("item:5"), item6: guid("item:6"), item7: guid("item:7"), item8: guid("item:8"), item9: guid("item:9"), item10: guid("item:10"), item11: guid("item:11"), item12: guid("item:12"), item13: guid("item:13"), item14: guid("item:14"),
   child1: guid("child:1"), child2: guid("child:2"), child3: guid("child:3"), child4: guid("child:4"), child5: guid("child:5"),
   note1: guid("note:1"), note2: guid("note:2"),
   account: ACCOUNT, tester: TESTER_CONTACT, other: OTHER_CONTACT,
@@ -77,6 +77,13 @@ export function records(tester = TESTER_CONTACT) {
     item("item10", "Baseline Item Kappa", "I-010", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 100 } }),
     // item11 has no parent: the parent-scope role (items through their parent) is denied it while the reader reads it (persona probe).
     item("item11", "Baseline Item Lambda", "I-011", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 110 }, refs: { [p("parentid")]: null } }),
+    // item12–item14: active rows of the tester contact and the fixture account, so the contact-filtered list (item-list-mine)
+    // and the account-filtered list (item-list-options, account-scope persona) show at least four rows each. Name order
+    // (Mu, Nu, Omega) differs from code order (I-012 Omega, I-013 Mu, I-014 Nu), so a sort by code visibly reorders them.
+    // No parent (the helper defaults to parent1), date or coordinates: parent subgrids, calendars and maps keep their rows.
+    item("item12", "Baseline Item Omega", "I-012", { fields: { [p("wholenumber")]: 120 }, refs: { [p("parentid")]: null, [p("contactid")]: "tester", [p("accountid")]: "account" } }),
+    item("item13", "Baseline Item Mu", "I-013", { fields: { [p("wholenumber")]: 130 }, refs: { [p("parentid")]: null, [p("contactid")]: "tester", [p("accountid")]: "account" } }),
+    item("item14", "Baseline Item Nu", "I-014", { fields: { [p("wholenumber")]: 140 }, refs: { [p("parentid")]: null, [p("contactid")]: "tester", [p("accountid")]: "account" } }),
     { key: "child1", id: ids.child1, table: CHILD, fields: { [p("name")]: "Child One", [p("sortorder")]: 1, [p("note")]: "First child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child2", id: ids.child2, table: CHILD, fields: { [p("name")]: "Child Two", [p("sortorder")]: 2, [p("note")]: "Second child." }, refs: { [p("itemid")]: "item1" } },
     { key: "child3", id: ids.child3, table: CHILD, fields: { [p("name")]: "Child Three", [p("sortorder")]: 3 }, refs: { [p("itemid")]: "item1" } },

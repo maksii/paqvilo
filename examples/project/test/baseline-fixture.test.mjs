@@ -18,3 +18,25 @@ test('form web resource is a static HTML document so it renders inline as well a
  assert.match(BANNER_HTML,/^<!DOCTYPE html>[\s\S]*<h2 class="baseline-banner">/);
  assert.doesNotMatch(BANNER_HTML,/<script|on[a-z]+=/i);
 });
+
+test('stepped insert form keeps the Related tab without the quick view, which needs a saved record (O12)',()=>{
+ const build=file=>FORMS.find(form=>form.file===file).build();
+ assert.match(build('item-main'),/id="quickview_parent"/);
+ const steps=build('item-steps');
+ assert.doesNotMatch(steps,/quickview_parent/);
+ assert.match(steps,/<tab name="related"[\s\S]*id="subgrid_children"[\s\S]*<\/tab>/);
+ assert.equal(FORMS.find(form=>form.file==='item-steps').name,'Baseline Item Steps');
+});
+
+test('contact- and account-filtered item lists show at least four rows whose code order differs from name order',async()=>{
+ const data=await import('../baseline/data.mjs');
+ const items=data.records().rows.filter(row=>row.table===data.ITEM);
+ const check=rows=>{
+  const codes=rows.map(row=>row.fields.pqvd_code);
+  assert.ok(new Set(codes).size>=4,codes.join());
+  const byName=[...rows].sort((a,b)=>a.fields.pqvd_name.localeCompare(b.fields.pqvd_name)).map(row=>row.fields.pqvd_code);
+  assert.notDeepEqual(byName,[...codes].sort());
+ };
+ check(items.filter(row=>row.refs.pqvd_contactid==='tester')); // item-list-mine: all states (All Baseline Items view)
+ check(items.filter(row=>row.refs.pqvd_accountid==='account'&&row.fields.statecode===0)); // item-list-options: active view, account filter
+});

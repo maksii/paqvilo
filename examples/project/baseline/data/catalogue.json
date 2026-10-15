@@ -365,6 +365,63 @@
       "deferredRefs": []
     },
     {
+      "key": "item12",
+      "id": "3a076563-7967-4ffd-888b-9471eee5f055",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Omega",
+        "pqvd_code": "I-012",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 120
+      },
+      "refs": {
+        "pqvd_parentid": "parent1",
+        "pqvd_contactid": null,
+        "pqvd_accountid": "account"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item13",
+      "id": "de327fd6-e56e-4e30-8ddd-3adf0cae8f40",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Mu",
+        "pqvd_code": "I-013",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 130
+      },
+      "refs": {
+        "pqvd_parentid": "parent1",
+        "pqvd_contactid": null,
+        "pqvd_accountid": "account"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item14",
+      "id": "84e89526-b571-4550-8545-5f5c70e92eec",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Nu",
+        "pqvd_code": "I-014",
+        "pqvd_required": "required value",
+        "statecode": 0,
+        "statuscode": 1,
+        "pqvd_wholenumber": 140
+      },
+      "refs": {
+        "pqvd_parentid": "parent1",
+        "pqvd_contactid": null,
+        "pqvd_accountid": "account"
+      },
+      "deferredRefs": []
+    },
+    {
       "key": "child1",
       "id": "9c12a74d-d0e5-4387-89dd-67a0813443ad",
       "table": "pqvd_baselinechild",

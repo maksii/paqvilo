@@ -22,6 +22,14 @@
   adx_name: Webapi/pqvd_baselinechild/UseFieldsFromView
   adx_sitesettingid: 73a5400b-d001-4025-8aac-e1bfbed60740
   adx_value: 'false'
+- adx_description: 'Baseline fixture: invented Bing Maps key, so the map and geolocation pages render with a key the service rejects (O9).'
+  adx_name: Bingmaps/credentials
+  adx_sitesettingid: 43db54fa-8ebc-4603-88cf-0f3599e2c2da
+  adx_value: baseline-fake-bing-key
+- adx_description: 'Baseline fixture: Bing Maps REST URL (Learn''s default).'
+  adx_name: Bingmaps/restURL
+  adx_sitesettingid: 51b1783e-4bf1-4a95-817a-32043e350a66
+  adx_value: https://dev.virtualearth.net/REST/v1/Locations
 - adx_description: 'Baseline fixture: value from the Value column (Source = Table).'
   adx_name: Baseline/Source Table
   adx_sitesettingid: e418a2ee-b553-45d4-87aa-8bcb6bc5576b

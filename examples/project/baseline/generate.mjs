@@ -213,7 +213,9 @@ const iframeControl = `<control id="IFRAME_baseline" classid="${CLASSIDS.iframe}
 const byName = (columns, ...names) => names.map((name) => columns.find((c) => c.name === `${PREFIX}_${name}`));
 const NAME = `${PREFIX}_name`;
 
-function itemMainForm() {
+// quickView false: the stepped insert form (O12). A quick view needs a saved record, and on an insert form with
+// generated steps the platform throws at its cell after the step postback; the edit forms keep it.
+function itemMainForm({ quickView = true } = {}) {
   const c = (name) => byName(ITEM_COLUMNS, name)[0];
   const identity = [
     cell(NAME, "text", { label: "Name" }),
@@ -234,7 +236,7 @@ function itemMainForm() {
   const files = [cell("entityimage", "image", { label: "Image" }), columnCell(c("file"), ITEM)];
   const related = [
     `<cell id="${braced("cell:subgrid-children")}" showlabel="true" rowspan="6">${label("Children")}${subgridControl("subgrid_children", CHILD, `${PREFIX}_baselineitem_baselinechild`, "{PLATFORM_VIEW:pqvd_baselinechild:2}")}</cell>`,
-    `<cell id="${braced("cell:quickview-parent")}" showlabel="true">${label("Parent details")}${quickViewControl("quickview_parent", `${PREFIX}_parentid`, PARENT, braced("form:parent-quick-view"))}</cell>`,
+    ...(quickView ? [`<cell id="${braced("cell:quickview-parent")}" showlabel="true">${label("Parent details")}${quickViewControl("quickview_parent", `${PREFIX}_parentid`, PARENT, braced("form:parent-quick-view"))}</cell>`] : []),
     `<cell id="${braced("cell:notes")}" showlabel="false" rowspan="6">${label("Notes")}${notesControl}</cell>`,
     `<cell id="${braced("cell:webresource")}" showlabel="true" rowspan="2">${label("Web resource")}${webResourceControl}</cell>`,
     `<cell id="${braced("cell:iframe")}" showlabel="true" rowspan="4">${label("Iframe")}${iframeControl}</cell>`,
@@ -293,6 +295,7 @@ function childMainForm() {
 
 export const FORMS = [
   { file: "item-main", id: guid("form:item-main"), table: ITEM, name: "Baseline Item", type: 2, build: itemMainForm },
+  { file: "item-steps", id: guid("form:item-steps"), table: ITEM, name: "Baseline Item Steps", type: 2, build: () => itemMainForm({ quickView: false }) },
   { file: "item-compact", id: guid("form:item-compact"), table: ITEM, name: "Baseline Item Compact", type: 2, build: itemCompactForm },
   { file: "item-lookup-create", id: guid("form:item-lookup-create"), table: ITEM, name: "Baseline Item Lookup Create", type: 2, build: itemLookupCreateForm },
   { file: "item-card", id: guid("form:item-card"), table: ITEM, name: "Baseline Item Card", type: 11, build: () => cardForm(ITEM) },
