@@ -72,7 +72,8 @@ test("declared repeated values are preserved and repeated scalar values are reje
   assert.throws(() => parseNativePostback(post(scalar, [[scalar.fields[0].wireName, "one"], [scalar.fields[0].wireName, "two"]]), [scalar]), /Ambiguous scalar/);
   const repeated = descriptor(firstId, { fields: [{ name: "choices", multiple: true }] });
   assert.deepEqual(parseNativePostback(post(repeated, [[repeated.fields[0].wireName, "one"], [repeated.fields[0].wireName, "two"]]), [repeated]).body.values, { choices: ["one", "two"] });
-  assert.throws(() => descriptor(firstId, { fields: [{ name: "same" }, { name: "same" }] }), /Ambiguous declared/);
+  // A column placed twice renders once (live form warning), so it is declared once.
+  assert.deepEqual(descriptor(firstId, { fields: [{ name: "same" }, { name: "same" }] }).fields.map(field => field.name), ["same"]);
 });
 
 test("read-only and absent controls are not manufactured as submitted values", () => {

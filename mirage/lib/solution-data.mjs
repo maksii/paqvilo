@@ -265,6 +265,11 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     if (!existing || imported(existing)) {
       const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
       result.mappings[name] = structuredClone(rest);
+    } else {
+      // A configured mapping keeps the Solution's relationships and primary name column when it
+      // names none (as a preset layered over the imported mappings does).
+      for (const key of ["relationships", "nameColumn"])
+        if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
     }
     result.tables[name] ??= [];
   }

@@ -65,6 +65,17 @@ async function writeFolder(dir, { status = "captured", dom = "<html><head></head
   await fs.writeFile(path.join(dir, "dom.html"), dom);
 }
 
+test("grid data Attributes arrays are compared by name, other arrays by position", () => {
+  const body = (attrs, columns) => JSON.stringify({ Records: [{ Attributes: attrs }], Columns: columns });
+  const request = (postData) => [{ seq: 1, method: "POST", url: "https://a.test/_services/entity-grid-data.json/x", resourceType: "xhr", headers: { "content-type": "application/json" }, body: postData, response: { status: 200, headers: {}, body: null } }];
+  const same = compareRequests(request(body([{ Name: "b", Value: 2 }, { Name: "a", Value: 1 }], ["x", "y"])), request(body([{ Name: "a", Value: 1 }, { Name: "b", Value: 2 }], ["x", "y"])));
+  assert.deepEqual(same.filter((d) => d.field.startsWith("body")), []);
+  const valueChanged = compareRequests(request(body([{ Name: "a", Value: 1 }], ["x"])), request(body([{ Name: "a", Value: 9 }], ["x"])));
+  assert.deepEqual(valueChanged.filter((d) => d.field.startsWith("body")).map((d) => d.field), ["body.Records[0].Attributes.a.Value"]);
+  const columnsReordered = compareRequests(request(body([], ["x", "y"])), request(body([], ["y", "x"])));
+  assert.equal(columnsReordered.filter((d) => d.field.startsWith("body")).length, 2);
+});
+
 test("compareScenario verdicts, allowlist classification, second-live variance and summaries", async (t) => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-baseline-compare-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -90,6 +101,23 @@ test("compareScenario verdicts, allowlist classification, second-live variance a
   const allowedResult = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("changed"), allowlist });
   assert.equal(allowedResult.verdict, "ALLOWED");
   assert.equal(allowedResult.deltas[0].allowlist, "heading");
+  // A value pattern narrows an entry to the values it names: "Changed" is allowed, another text is not.
+  const valueFile = dir("allow-value.json");
+  const valueEntry = { id: "heading-value", scope: "dom", pattern: "h1", field: "^text$", value: "^Chang", reason: "invented", proof: "live-run-variance", evidence: "fixture" };
+  await fs.writeFile(valueFile, JSON.stringify({ version: 1, entries: [valueEntry] }));
+  const valued = await loadAllowlist(valueFile);
+  assert.equal((await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("changed"), allowlist: valued })).verdict, "ALLOWED");
+  await writeFolder(dir("other"), { dom: changed.replace("Changed", "Other") });
+  assert.equal((await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("other"), allowlist: valued })).verdict, "FAIL");
+  await fs.writeFile(valueFile, JSON.stringify({ version: 1, entries: [{ ...valueEntry, value: "" }] }));
+  await assert.rejects(loadAllowlist(valueFile), /empty value pattern/);
+  // With a second live capture, a live-run-variance entry explains only deltas that capture varied on.
+  await writeFolder(dir("live-same"));
+  const unproven = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("changed"), secondDir: dir("live-same"), allowlist });
+  assert.equal(unproven.verdict, "FAIL");
+  assert.equal(unproven.deltas[0].unprovenVariance, "heading");
+  const proven = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("changed"), secondDir: dir("live-2"), allowlist });
+  assert.equal(proven.verdict, "ALLOWED");
   const variance = await compareScenario({ scenario, liveDir: dir("live"), mirageDir: dir("changed"), secondDir: dir("live-2"), allowlist: none });
   assert.equal(variance.deltas[0].liveVariance, true);
   assert.equal(variance.variance.folder, "live-2");

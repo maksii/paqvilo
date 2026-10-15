@@ -20,7 +20,8 @@ test('native saved numeric controls retain exported display precision without ch
     store: { resolveMapping: () => ({ entitySet: 'samples', idColumn: 'sampleid' }), get: () => record, query: () => ({ value: [] }) },
   });
   for (const [field, value] of [['amount', '12.50'], ['ratio', '99.500'], ['estimate', '12.5000'], ['count', '12'], ['unspecified', '12.5']])
-    assert.match(html, new RegExp(`<input [^>]*id="${field}"[^>]*value="${value.replace('.', '\\.')}"`));
+    // The platform renders the value before the id.
+    assert.match(html, new RegExp(`<input [^>]*value="${value.replace('.', '\\.')}"[^>]*id="${field}"`));
   assert.deepEqual(record, before);
 });
 

@@ -25,8 +25,11 @@ const norm = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-const FORM_PARSER_ID = "metadata-form@5";
-const VIEW_PARSER_ID = "metadata-view@1";
+const FORM_PARSER_ID = "metadata-form@7";
+// Systemform control classes: web resource and subgrid (sub-grid) controls.
+const WEB_RESOURCE_CLASS = "9fdf5f91-88b1-47f4-ad53-c11efc01a01d";
+const SUBGRID_CLASS = "e7a81278-8635-4d9e-8d4d-59480b391c5b";
+const VIEW_PARSER_ID = "metadata-view@2";
 const IO_CONCURRENCY = 24;
 
 /** Systemform documents plus the tables/views they depend on (quick views, subgrids, lookups). */
@@ -79,6 +82,8 @@ function parseViewDocument(xml, entity, file, lcid) {
       id: norm(text(view, "savedqueryid") ?? path.basename(file, ".xml")),
       entity,
       name: label(child(view, "LocalizedNames"), lcid) ?? "",
+      queryType: Number(text(view, "querytype")) || 0,
+      isDefault: text(view, "isdefault") === "1",
       fetchXml: fetch
         ? serialize(fetch)
         : decodeXml(child(view, "fetchxml")?.text.trim() ?? ""),
@@ -353,7 +358,11 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
     for (const column of child(tab, "columns")?.children ?? []) {
       const sections = [];
       for (const section of child(column, "sections")?.children ?? []) {
-        if (section.attrs.visible === "false") continue;
+        // A hidden section keeps its (empty) place in the layout.
+        if (section.attrs.visible === "false") {
+          sections.push({ name: section.attrs.name, hidden: true, rows: [] });
+          continue;
+        }
         const rows = [];
         for (const row of child(section, "rows")?.children ?? []) {
           const cells = [];
@@ -365,13 +374,29 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 type: "notes",
                 id: control.attrs.id,
                 label: label(child(cell, "labels")) || "Notes",
+                showLabel: cell.attrs.showlabel !== "false",
                 hidden: cell.attrs.visible === "false",
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
               });
               continue;
             }
-            if (control?.attrs.indicationOfSubgrid === "true") {
+            // Web resource cells (the platform renders HTML and image web resources in an iframe).
+            if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) {
+              cells.push({
+                type: "webresource",
+                id: control.attrs.id,
+                url: text(parameters, "Url"),
+                scrolling: text(parameters, "Scrolling") || "auto",
+                border: text(parameters, "Border") === "true",
+                label: label(child(cell, "labels")),
+                showLabel: cell.attrs.showlabel !== "false",
+                colspan: Number(cell.attrs.colspan) || 1,
+                rowspan: Number(cell.attrs.rowspan) || 1,
+              });
+              continue;
+            }
+            if (control?.attrs.indicationOfSubgrid === "true" || norm(control?.attrs.classid) === SUBGRID_CLASS) {
               const entity = norm(text(parameters, "TargetEntityType"));
               const viewId = norm(text(parameters, "ViewId"));
               const view = metadata.views.find(
@@ -444,11 +469,9 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               name,
               id: control.attrs.id ?? name,
               label: label(child(cell, "labels")) ?? known[name]?.label ?? name,
-              readOnly:
-                control.attrs.disabled === "true" ||
-                (Number(definition.mode) === 100000000
-                  ? known[name]?.validForCreate === false
-                  : known[name]?.validForUpdate === false),
+              // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
+              // applies to the mode the form renders in (an inactive record renders read-only).
+              readOnly: control.attrs.disabled === "true",
               hidden: cell.attrs.visible === "false",
               showLabel: cell.attrs.showlabel !== "false",
               controlClassId: norm(control.attrs.classid),

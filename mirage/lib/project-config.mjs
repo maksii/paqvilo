@@ -68,6 +68,9 @@ const OBSERVED_CHOICES = {
   // Which Bootstrap stylesheet the layout links: the platform's /css/bootstrap.min.css or the
   // site's bootstrap.min.css web file (read by lib/liquid.mjs; default from the export).
   bootstrapStylesheet: ["platform", "web-file"],
+  // Site visibility (Power Platform admin, not exported): "private" renders the platform's
+  // private-site banner first in the layout body (lib/liquid.mjs).
+  siteVisibility: ["public", "private"],
   // Webapi/<table>/fields = "*": "enforced" (the hosted default; read by the Web API policy)
   // or "exempt" (the site was observed exposing every column for such a table).
   webApiWildcard: ["enforced", "exempt"],

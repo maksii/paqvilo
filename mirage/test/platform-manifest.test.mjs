@@ -71,10 +71,12 @@ test("the WebForms server form carries the native hidden fields, postback stub a
     '<script src="/xrm-adx/js/radcaptcha.js"',
     '<script src="/xrm-adx/js/crmentityformview.js"',
     "function WebForm_OnSubmit()",
+    '<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div>',
+    // ASP.NET renders the generator and event validation fields last in the server form.
     'name="__VIEWSTATEGENERATOR"',
     'name="__VIEWSTATEENCRYPTED"',
     'name="__EVENTVALIDATION"',
-    '<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div>',
+    "</div></form>",
   ];
   let at = -1;
   for (const marker of order) {
@@ -110,7 +112,7 @@ test("AXD scripts load inside the form on form pages and nowhere else; captured 
   assert.equal(plain.bodyScripts, '<script src="/scripts/extra.js"></script>');
 });
 
-async function shellFixture(t, { shellProfile, settings = [] } = {}) {
+async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-shell-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
@@ -158,7 +160,7 @@ async function shellFixture(t, { shellProfile, settings = [] } = {}) {
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, ...(observed ? { observed } : {}) });
   t.after(() => app.close());
   const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
   return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
@@ -187,7 +189,7 @@ test("layout pages carry the native chrome around the header, content and footer
   assert.match(list, /class="entity-grid entitylist/);
   assert.doesNotMatch(list, /id="liquid_form"|\.axd/);
   const form = bodyOf(await (await get("/form/?source=1")).text());
-  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', 'name="__EVENTVALIDATION"', '<div class="page-header"><h1>Contact us</h1></div>', "data-pp-native-form", "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
+  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', '<div class="page-header"><h1>Contact us</h1></div>', "data-pp-native-form", 'name="__EVENTVALIDATION"', "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
   assert.equal(form.match(/WebResource\.axd/g).length, 1);
   assert.equal(form.match(/id="antiforgerytoken"/g).length, 1);
   assert.doesNotMatch(form, /<input name="__RequestVerificationToken"/);
@@ -369,8 +371,15 @@ test("platform bundles follow the live order per Bootstrap build; a captured she
   const sources = (html) => [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
   const shell = platformShell({ websiteId: `{${SITE.toUpperCase()}}`, bootstrap: '<link rel="stylesheet" href="/bootstrap.min.css">' });
   assert.equal(PLATFORM_BUNDLES.length, 17);
-  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyStart, shell.afterContent, shell.afterFooter].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
-  assert.match(shell.afterContent, /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script src="[^"]+main\.3ee2491f78\.chunk\.js" type="text\/javascript" defer><\/script>$/);
+  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyOpen, shell.bodyStart, shell.afterContent, shell.afterFooter].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
+  // pcf-style opens the body; the other stylesheets stay in the head.
+  assert.match(shell.bodyOpen, /^<link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]+" rel="stylesheet">$/);
+  assert.doesNotMatch(shell.headEnd, /pcf-style/);
+  // Every dist/ bundle carries the platform's onerror fallback to /dist/<name> on the portal origin.
+  assert.ok(shell.headStart.includes(`<link href="/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css" onerror="javascript: var target = event.target; var link = document.createElement('link'); link.crossOrigin = target.crossOrigin; link.href = '/dist/font-awesome.bundle-3d8a58a48f.css'; link.rel = 'stylesheet'; target.insertAdjacentElement('afterend',link);" rel="stylesheet">`));
+  assert.ok(shell.afterFooter.includes(`<script onerror="javascript: var target = event.target; var script = document.createElement('script'); script.crossOrigin = target.crossOrigin; script.src = '/dist/app.bundle-1e948af604.js'; script.type = 'text/javascript'; target.insertAdjacentElement('afterend',script);" src="/resource/powerappsportal/dist/app.bundle-1e948af604.js" type="text/javascript"></script>`));
+  // The controls host chunk (not under dist/) has no fallback and is deferred.
+  assert.match(shell.afterContent, /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script defer="defer" src="[^"]+main\.3ee2491f78\.chunk\.js"><\/script>$/);
   assert.equal(platformShell({ controlsRoot: false }).afterContent.includes("pp-native-controls-react-root"), false);
   // Site/BootstrapV5Enabled = true (Example commondev) selects the BootstrapV5 builds.
   assert.equal(bootstrapVariant({ "Site/BootstrapV5Enabled": "True" }), "BootstrapV5");
@@ -404,7 +413,9 @@ test("platform bundles follow the live order per Bootstrap build; a captured she
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/default-1036.moment_2_29_4.bundle-0123456789.js")?.id, "moment-locale");
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/app.BootstrapV5.bundle-4299f393fc.js?v=1")?.id, "app");
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/unknown.bundle-0123456789.js"), null);
-  assert.equal(platformBundleFor("/dist/app.bundle-1e948af604.js"), null);
+  // The onerror fallback path /dist/<name> names the same bundle.
+  assert.equal(platformBundleFor("/dist/app.bundle-1e948af604.js")?.id, "app");
+  assert.equal(platformBundleFor("/distribution/app.bundle-1e948af604.js"), null);
 });
 
 test("pages load the platform bundles in live order per Bootstrap build; bundle paths serve local equivalents or placeholders", async (t) => {
@@ -457,7 +468,7 @@ test("form pages load the WebForms script resources at their native paths, serve
   const body = async (pathname) => {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
-    assert.equal(response.headers.get("content-type"), "application/javascript; charset=utf-8", pathname);
+    assert.equal(response.headers.get("content-type"), pathname.includes(".axd") ? "application/x-javascript" : "application/javascript; charset=utf-8", pathname);
     return { provider: response.headers.get("x-sim-resource-provider"), text: await response.text() };
   };
   const webForms = await body(axd[0]);
@@ -476,4 +487,60 @@ test("form pages load the WebForms script resources at their native paths, serve
   const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.state().csrf } })).json();
   const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
   assert.ok(entries.some((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER" && entry.bundle === "paqvilo-microsoftajaxwebforms"));
+});
+
+test("the layout shell matches the platform skeleton: head metas, bare content style links, pcf-style and the private banner opening the body", async (t) => {
+  const { get } = await shellFixture(t, { settings: [["Site/BootstrapV5Enabled", "true"], ["HTTP/SameSite/Default", "Lax"]] });
+  const html = await (await get("/form/")).text();
+  assert.match(html, /<html [^>]*same-site-mode="Lax"/);
+  assert.match(html, /<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>/);
+  assert.doesNotMatch(html.slice(0, html.indexOf("</head>")), /pcf-style/);
+  assert.match(html, /<body[^>]*><link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]*link\.href = '\/dist\/pcf-style\.bundle-[0-9a-f]+\.css'[^"]*" rel="stylesheet"><div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web"/);
+  assert.doesNotMatch(html, /privateModeText/);
+  // BootstrapV5 sites load the date control script from its BootstrapV5 folder.
+  const v5 = webFormsForm({ content: '<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form><div class="input-group datetimepicker"></div></div>', variant: "BootstrapV5" });
+  assert.match(v5, /<script src="\/xrm-adx\/js\/BootstrapV5\/crmentityformview-datetime\.js" type="text\/javascript"><\/script>/);
+  assert.equal((await get("/xrm-adx/js/BootstrapV5/crmentityformview-datetime.js")).status, 200);
+  // Site visibility is not exported: observed.siteVisibility "private" adds the private-site banner.
+  const { get: getPrivate } = await shellFixture(t, { observed: { siteVisibility: "private", evidence: "synthetic" } });
+  const privateHome = await (await getPrivate("/")).text();
+  assert.match(privateHome, /<body[^>]*><link href="[^"]*pcf-style[^"]*"[^>]*><div id="privateModeText" class="private-mode-banner"> <div class="private-mode-text"> <img alt="lock" class="col-3" [^>]*src="\/resource\/powerappsportal\/img\/Lock\.png"> <b>This site is private:<\/b>[\s\S]*?<\/div> <\/div><div id="offlineNotificationBar"/);
+  assert.equal((await getPrivate("/resource/powerappsportal/img/Lock.png")).status, 200);
+});
+
+test("platform resources on the portal origin carry the platform's headers; /dist/ fallbacks serve the bundles", async (t) => {
+  const { get } = await shellFixture(t);
+  const headers = async (pathname) => {
+    const response = await get(pathname);
+    assert.equal(response.status, 200, pathname);
+    await response.arrayBuffer();
+    return Object.fromEntries([...response.headers].filter(([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name)));
+  };
+  const axd = await headers("/WebResource.axd?d=paqvilo-webforms&t=0");
+  assert.deepEqual(Object.keys(axd).sort(), ["cache-control", "content-type", "expires", "last-modified", "x-frame-options"]);
+  assert.equal(axd["content-type"], "application/x-javascript");
+  assert.equal(axd["cache-control"], "public");
+  assert.ok(Date.parse(axd.expires) - Date.now() > 300 * 86400 * 1000);
+  assert.equal((await headers("/ScriptResource.axd?d=paqvilo-microsoftajax&t=0")).vary, undefined);
+  const manager = await headers(`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`);
+  assert.equal(manager["cache-control"], "public, max-age=86400");
+  assert.equal(manager["content-type"], "text/javascript; charset=utf-8");
+  assert.equal(manager["x-frame-options"], "SAMEORIGIN");
+  const blockUi = await headers("/js/jquery.blockUI.js");
+  assert.equal(blockUi["cache-control"], "public,max-age=604800");
+  assert.equal(blockUi["accept-ranges"], "bytes");
+  assert.match(blockUi.etag, /^"[0-9a-f]{13}:0"$/);
+  assert.equal(blockUi.vary, "Accept-Encoding");
+  const webform = await headers("/xrm-adx/js/webform.js");
+  assert.equal(webform["cache-control"], undefined);
+  assert.ok(webform["last-modified"]);
+  // The token fragment uses the page policy: no-store with Pragma and Expires.
+  const token = await headers("/_layout/tokenhtml?_=1");
+  assert.equal(token.pragma, "no-cache");
+  assert.equal(token.expires, "-1");
+  // The platform's onerror fallback path serves the same local equivalent as the CDN path.
+  const app = platformShell().bundles.find((bundle) => bundle.id === "app").path;
+  const [cdn, fallback] = await Promise.all([get(app), get(app.replace("/resource/powerappsportal", ""))]);
+  assert.equal(fallback.status, 200);
+  assert.equal(await fallback.text(), await cdn.text());
 });

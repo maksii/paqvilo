@@ -1,5 +1,6 @@
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { renderFormLabel } from './form-labels.mjs';
 import {
   clientManagedControlsRuntime,
@@ -23,10 +24,12 @@ import {
   executeGridQuery,
   settingsJson,
 } from "./native-services.mjs";
-import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId, nativeFormSubmissionContext } from "./form-service.mjs";
+import { webFormSession, sessionRecord, previousSessionRecord, formText, webFormSessionOwner, advancedFormAccess, appendRedirectRecordId, nativeFormSubmissionContext, formCreateAllowed } from "./form-service.mjs";
+import { formErrorPanel, createAccessDeniedForm } from "./form-error-presentation.mjs";
 import { deniedPageRoute } from "./redirects.mjs";
 import { approximateFormSchema, approximateAdvancedFormSchema } from "./form-schema-fallback.mjs";
-import { hasPlatformBundles } from "./platform-manifest.mjs";
+import { hasPlatformBundles, bootstrapVariant } from "./platform-manifest.mjs";
+import { portalLanguage } from "./portal-languages.mjs";
 import { clientPortalObjectRuntime } from "./portal-client-object.mjs";
 import { parseDateValue } from "./dataverse-values.mjs";
 import { nativeFormActions, NATIVE_STATE_ACTIONS, nativeActionStateValues } from './native-form-actions.mjs';
@@ -250,6 +253,8 @@ export function clientRuntime(token, revision, identity = {}, traceId = null, si
 /** Static native platform compatibility scripts served by lib/native-services.mjs. */
 export const NATIVE_GRID_SCRIPT = "/__sim-static/native/entity-grid-compat.js";
 export const NATIVE_FORMS_SCRIPT = "/__sim-static/native/webforms-compat.js";
+// The basic form control registers its custom client-validation hook, also ahead of a create denial.
+const ENTITY_FORM_CLIENT_VALIDATE = `<script type="text/javascript">function entityFormClientValidate() { // Custom client side validation. Method is called by the submit button's onclick event.\n// Must return true or false. Returning false will prevent the form from submitting.\nreturn true; }</script>`;
 
 /** The website id and language of a rendered platform page (its ResourceManager script). */
 function pageSite(html) {
@@ -364,6 +369,7 @@ export function nativeControlKind(field) {
   if (field.richText) return "richtext";
   if (field.type === "lookup" || /^(lookup|customer|owner)$/.test(type)) return "lookup";
   if (type === "multiselectpicklist") return "multiselect";
+  if (type === "file" || type === "image") return type;
   if (/^(state|status)$/.test(type)) return type;
   if (type === "picklist" || (field.options?.length && !/^(bit|boolean)$/.test(type) && field.type !== "boolean")) return "picklist";
   if (/^(bit|boolean)$/.test(type) || field.type === "boolean" || field.type === "checkbox") return "boolean";
@@ -372,7 +378,7 @@ export function nativeControlKind(field) {
   if (type === "decimal") return "decimal";
   if (/^(float|double)$/.test(type)) return "double";
   if (type === "money") return "money";
-  if (/^(memo|ntext)$/.test(type) || field.type === "textarea") return "textarea";
+  if (/^(memo|ntext)$/.test(type) || field.type === "textarea" || String(field.format ?? "").toLowerCase() === "textarea") return "textarea";
   if (field.type === "number") return "integer";
   if (field.type === "email" || String(field.format ?? "").toLowerCase() === "email") return "email";
   return "text";
@@ -465,7 +471,8 @@ export async function resolveFormRecord({ kind, definition, schema, metadata, co
 
 function validatorMarkup(validators, { readonly = false } = {}) {
   return validators
-    .map((validator) => `<span id="${attr(validator.id)}" style="${validator.display === "Dynamic" || validator.display === "None" ? "display:none;" : "visibility:hidden;"}"${readonly ? ' readonly="readonly"' : ""}>*</span>`)
+    // A regular expression validator renders no marker text.
+    .map((validator) => `<span id="${attr(validator.id)}" style="${validator.display === "Dynamic" || validator.display === "None" ? "display:none;" : "visibility:hidden;"}"${readonly ? ' readonly="readonly"' : ""}>${validator.id.startsWith("RegularExpressionValidator") ? "" : "*"}</span>`)
     .join("");
 }
 
@@ -509,6 +516,21 @@ function fieldValidators(field, { linksEnabled }) {
       evaluationfunction: "RegularExpressionValidatorEvaluateIsValid",
       validationexpression: field.pattern,
     });
+  const format = {
+    email: ["EmailFormatValidator", `${label} must be a valid email address.`],
+    integer: ["IntegerValidator", `${label} must be a valid integer value.`],
+    decimal: ["FloatValidator", `${label} must be a valid decimal value.`],
+    double: ["FloatValidator", `${label} must be a valid floating-point value.`],
+    datetime: ["DateFormatValidator", `${label} must have a valid date format.`],
+  }[field.control];
+  const formatValidator = format && {
+    id: `${format[0]}${id}`,
+    controltovalidate: id,
+    errormessage: summaryLink(id, field.validationMessage || format[1], linksEnabled),
+    evaluationfunction: "CustomValidatorEvaluateIsValid",
+  };
+  // The e-mail format validator precedes the maximum length validator.
+  if (formatValidator && field.control === "email") validators.push(formatValidator);
   if (field.maxLength && ["text", "email", "textarea"].includes(field.control))
     // Like the hosted control, these CustomValidators run on the server. They
     // deliberately have no clientvalidationfunction: a format error posts back.
@@ -518,20 +540,7 @@ function fieldValidators(field, { linksEnabled }) {
       errormessage: summaryLink(id, `${label} exceeds the maximum length of ${field.maxLength} characters.`, linksEnabled),
       evaluationfunction: "CustomValidatorEvaluateIsValid",
     });
-  const format = {
-    email: ["EmailFormatValidator", `${label} must be a valid email address.`],
-    integer: ["IntegerValidator", `${label} must be a valid integer value.`],
-    decimal: ["FloatValidator", `${label} must be a valid decimal value.`],
-    double: ["FloatValidator", `${label} must be a valid floating-point value.`],
-    datetime: ["DateFormatValidator", `${label} must have a valid date format.`],
-  }[field.control];
-  if (format)
-    validators.push({
-      id: `${format[0]}${id}`,
-      controltovalidate: id,
-      errormessage: summaryLink(id, field.validationMessage || format[1], linksEnabled),
-      evaluationfunction: "CustomValidatorEvaluateIsValid",
-    });
+  if (formatValidator && field.control !== "email") validators.push(formatValidator);
   if (["integer", "decimal", "double", "money"].includes(field.control) && (field.minimum != null || field.maximum != null))
     validators.push({
       id: `RangeValidator${id}`,
@@ -559,11 +568,52 @@ function validatorStartupScript(validators, summaryId, summaryHeader) {
   return `<script type="text/javascript">//<![CDATA[\n${lines.join("\n")}\n//]]></script>`;
 }
 
+/** Bootstrap 3 / Bootstrap 5 tokens of the native control markup (site setting Site/BootstrapV5Enabled). */
+const BOOTSTRAP_MARKUP = {
+  BootstrapV3: { v5: false, srOnly: "sr-only", toggle: "data-toggle", dismiss: "data-dismiss", backdrop: "data-backdrop", right: "pull-right", left: "pull-left", info: "info" },
+  BootstrapV5: { v5: true, srOnly: "visually-hidden", toggle: "data-bs-toggle", dismiss: "data-bs-dismiss", backdrop: "data-bs-backdrop", right: "float-end", left: "float-start", info: "table-info" },
+};
+export const bootstrapMarkup = (settings) => BOOTSTRAP_MARKUP[bootstrapVariant(settings)];
+// Bootstrap 5 grid messages carry no inline display style, and the error text has two details spans.
+const gridMessages = (bs = BOOTSTRAP_MARKUP.BootstrapV3) =>
+  bs.v5 ? LOOKUP_GRID_MESSAGES.replace(/ style="display:none"/g, "").replace('<span class="details"></span>', '<span class="details"></span><span class="details"></span>') : LOOKUP_GRID_MESSAGES;
 const LOOKUP_GRID_MESSAGES = `<div aria-label="There are no records to display." aria-live="polite" class="view-empty message" role="status" tabindex="-1" style="display:none"><div class="alert alert-block alert-warning">There are no records to display.</div></div><div class="view-access-denied message" role="presentation" tabindex="0" style="display:none"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message" role="presentation" tabindex="0" style="display:none"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center" role="presentation" tabindex="0" style="display:none"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>`;
 const PAGINATION = '<div class="view-pagination" data-current-page="1" data-pages="1" data-pagesize=""></div>';
+const EMPTY_GUID = "00000000-0000-0000-0000-000000000000";
+const SUCCESS_PANEL_V5 = "message alert success alert alert-success";
+/** The Bootstrap 5 message panel's close button: a WebForms postback button that dismisses the alert. */
+function messageCloseButton(buttonPrefix, bs) {
+  const name = `${buttonPrefix}btnCloseMessage`;
+  return `<input type="submit" name="${attr(name)}" value="x" onclick="${attr(`javascript:WebForm_DoPostBackWithOptions(new WebForm_PostBackOptions(${json(name)}, "", true, "", "", false, false))`)}" id="btnCloseMessage" class="btn-close" ${bs.dismiss}="alert" aria-label="close" style="border-style: none">`;
+}
+// The platform's duration choices, in minutes.
+const DURATION_MINUTES = [1, 5, 15, 30, 45, ...Array.from({ length: 15 }, (_, index) => 60 + index * 30), 1440, 2880, 4320];
+const plural = (count, unit) => `${count} ${unit}${count === 1 ? "" : "s"}`;
+const durationLabel = (minutes) => (minutes < 60 ? plural(minutes, "minute") : minutes < 1440 ? plural(minutes / 60, "hour") : plural(minutes / 1440, "day"));
+/** Option lists of whole-number formats: duration (fixed minutes) and language (the site's languages). */
+function integerFormatChoices(field, portal) {
+  const format = String(field.format ?? "").toLowerCase();
+  if (format === "duration") return DURATION_MINUTES.map((minutes) => ({ value: minutes, label: durationLabel(minutes) }));
+  if (format !== "language") return null;
+  const names = new Intl.DisplayNames(["en"], { type: "language", languageDisplay: "standard" });
+  const lcids = [...new Set((portal.websiteLanguages ?? []).map((language) => language.lcid).filter(Boolean))];
+  return lcids.map((lcid) => ({ lcid, code: portalLanguage({ lcid })?.code })).filter((language) => language.code).map(({ lcid, code }) => ({ value: lcid, label: names.of(code) }));
+}
+// Dataverse column types the portal form does not render (an empty cell).
+const UNSUPPORTED_FORM_TYPES = /^bigint$/i;
+// ASP.NET omits the value attribute of an input whose value is empty.
+const valueAttr = (value) => (String(value ?? "") === "" ? "" : ` value="${attr(value)}"`);
+// The error dialog a Bootstrap 5 lookup grid nests after its pagination: its title and label are
+// the raw icon markup.
+const gridErrorModal = (bs) => {
+  const title = "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error";
+  return nativeModal({ bs, className: "modal-error", title, label: title, body: "<p>We're sorry, an error has occurred.</p>", footer: `<button aria-label="Close" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Close" type="button">Close</button>` }).replace(` title="${attr(plainText(title))}"`, ` title="${attr(title)}"`);
+};
 
-function nativeModal({ className, title, body, footer = "", size = "", label }) {
-  return `<section aria-hidden="true" aria-label="${attr(label ?? plainText(title))}" class="modal fade ${className}" data-backdrop="static" role="dialog" tabindex="-1"><div class="${size ? size + " " : ""}modal-dialog"><div class="modal-content"><div class="modal-header"><h1 class="modal-title" title="${attr(plainText(title))}">${title}</h1><button aria-label="Close" class="form-close" data-dismiss="modal" style="position: absolute; top: 3%;" tabindex="0" title="Close" type="button"><span aria-hidden="true">×</span><span class="sr-only">Close</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></section>`;
+function nativeModal({ className, title, body, footer = "", size = "", label, bs = BOOTSTRAP_MARKUP.BootstrapV3, headingLabel = false }) {
+  // headingLabel: the Bootstrap 5 lookup dialog labels its heading instead of the section.
+  const labelAttr = ` aria-label="${attr(label ?? plainText(title))}"`;
+  return `<section aria-hidden="true"${headingLabel ? "" : labelAttr} class="modal fade ${className}" ${bs.backdrop}="static" role="dialog" tabindex="-1"><div class="${size ? size + " " : ""}modal-dialog"><div class="modal-content"><div class="modal-header"><h1${headingLabel ? labelAttr : ""} class="modal-title" title="${attr(plainText(title))}">${title}</h1><button aria-label="Close" class="form-close" ${bs.dismiss}="modal" style="position: absolute; top: 3%;" tabindex="0" title="Close" type="button"><span aria-hidden="true">×</span><span class="${bs.srOnly}">Close</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></section>`;
 }
 function plainText(html) {
   return String(html ?? "")
@@ -574,18 +624,50 @@ function plainText(html) {
 const formModalBody = (page) => `<div class="form-loading"><span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span></div><iframe data-page="${attr(page)}" src="about:blank"></iframe>`;
 
 /** Native grid modals (create/edit/details forms, delete, error, workflow, (de)activate). */
-function gridModals(page, settings = {}, language = {}) {
+function gridModals(page, settings = {}, language = {}, bs = BOOTSTRAP_MARKUP.BootstrapV3) {
   const dialog = (name, fallback) => formText(settings?.[name]?.Title, fallback, language);
   return [
-    nativeModal({ className: "modal-form modal-form-insert", title: dialog("CreateFormDialog", "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create"), body: formModalBody(page), size: "modal-lg", label: "Create" }),
-    nativeModal({ className: "modal-form modal-form-edit", title: dialog("EditFormDialog", "<span class='fa fa-edit'></span> Edit"), body: formModalBody(page), size: "modal-lg", label: "Edit" }),
-    nativeModal({ className: "modal-form modal-form-details", title: dialog("DetailsFormDialog", "<span class='fa fa-info-circle' aria-hidden='true'></span> View details"), body: formModalBody(page), size: "modal-lg" }),
-    nativeModal({ className: "modal-delete", title: dialog("DeleteDialog", "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"), body: escape(formText(settings?.DeleteDialog?.Confirmation, "Are you sure you want to delete this record?", language)), footer: `<button aria-label="Delete" class="primary btn btn-primary" tabindex="0" title="Delete" type="button">${escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, "Delete"))}</button><button aria-label="Cancel" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Cancel" type="button">${escape(localizedText(settings?.DeleteDialog?.CloseButtonText, "Cancel"))}</button>`, label: "Delete" }),
-    nativeModal({ className: "modal-error", title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error", body: "<p>We're sorry, an error has occurred.</p>", footer: '<button aria-label="Close" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Close" type="button">Close</button>' }),
-    nativeModal({ className: "modal-run-workflow", title: "Run workflow", body: "Are you sure you want to run this workflow?", footer: '<button class="primary btn btn-primary" type="button">Run workflow</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' }),
-    nativeModal({ className: "modal-deactivate", title: "Deactivate", body: "Are you sure you want to deactivate this record?", footer: '<button class="primary btn btn-primary" type="button">Deactivate</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' }),
-    nativeModal({ className: "modal-activate", title: "Activate", body: "Are you sure you want to activate this record?", footer: '<button class="primary btn btn-primary" type="button">Activate</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' }),
-    nativeModal({ className: "modal-disassociate", title: "Disassociate", body: "Are you sure you want to remove this association?", footer: '<button class="primary btn btn-primary" type="button">Remove</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' }),
+    nativeModal({ bs, className: "modal-form modal-form-insert", title: dialog("CreateFormDialog", "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create"), body: formModalBody(page), size: "modal-lg", label: "Create" }),
+    nativeModal({ bs, className: "modal-form modal-form-edit", title: dialog("EditFormDialog", "<span class='fa fa-edit'></span> Edit"), body: formModalBody(page), size: "modal-lg", label: "Edit" }),
+    nativeModal({ bs, className: "modal-form modal-form-details", title: dialog("DetailsFormDialog", "<span class='fa fa-info-circle' aria-hidden='true'></span> View details"), body: formModalBody(page), size: "modal-lg" }),
+    nativeModal({ bs, className: "modal-delete", title: dialog("DeleteDialog", "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete"), body: escape(formText(settings?.DeleteDialog?.Confirmation, "Are you sure you want to delete this record?", language)), footer: `<button aria-label="Delete" class="primary btn btn-primary" tabindex="0" title="Delete" type="button">${escape(localizedText(settings?.DeleteDialog?.PrimaryButtonText, "Delete"))}</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">${escape(localizedText(settings?.DeleteDialog?.CloseButtonText, "Cancel"))}</button>`, label: "Delete" }),
+    nativeModal({ bs, className: "modal-error", title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error", body: "<p>We're sorry, an error has occurred.</p>", footer: `<button aria-label="Close" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Close" type="button">Close</button>` }),
+    nativeModal({ bs, className: "modal-run-workflow", title: "Run workflow", body: "Are you sure you want to run this workflow?", footer: `<button class="primary btn btn-primary" type="button">Run workflow</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` }),
+    nativeModal({ bs, className: "modal-deactivate", title: "Deactivate", body: "Are you sure you want to deactivate this record?", footer: `<button class="primary btn btn-primary" type="button">Deactivate</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` }),
+    nativeModal({ bs, className: "modal-activate", title: "Activate", body: "Are you sure you want to activate this record?", footer: `<button class="primary btn btn-primary" type="button">Activate</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` }),
+    nativeModal({ bs, className: "modal-disassociate", title: "Disassociate", body: "Are you sure you want to remove this association?", footer: `<button class="primary btn btn-primary" type="button">Remove</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` }),
+  ].join("");
+}
+
+/*
+ * Bootstrap 5 list modals (entity_list template): plain div dialogs whose class, size and
+ * title class slots come from the list's dialog settings (CssClass, Size, TitleCssClass).
+ */
+const MODAL_SIZES = { 1: "modal-lg", 2: "modal-sm" };
+function listModalV5({ className, dialog = {}, title, body = "", footer = "", language = {}, labelledBy = "", label = "" }) {
+  const css = formText(dialog?.CssClass, "", language);
+  const titleCss = formText(dialog?.TitleCssClass, "", language);
+  const dismiss = formText(dialog?.DismissButtonSrText, "Close", language);
+  const heading = dialog?.Title ? escape(formText(dialog.Title, "", language)) : title;
+  return `<div aria-hidden="true" class="modal fade ${className} ${attr(css)}" role="dialog" tabindex="-1"${label ? ` aria-label="${attr(label)}"` : ""}${labelledBy ? ` aria-labelledby="${attr(labelledBy)}"` : ""}><div class="modal-dialog ${MODAL_SIZES[Number(dialog?.Size)] ?? ""}"><div class="modal-content"><div class="modal-header"><h4${labelledBy ? ` id="${attr(labelledBy)}"` : ""} class="modal-title ${attr(titleCss)}">${heading}</h4><button class="btn-close" data-bs-dismiss="modal" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">${escape(dismiss)}</span></button></div><div class="modal-body">${body}</div>${footer ? `<div class="modal-footer">${footer}</div>` : ""}</div></div></div>`;
+}
+function gridModalsV5(page, settings = {}, language = {}, listId = "") {
+  const formBody = (dialog, hidden = false) => `<div class="form-loading">${escape(formText(dialog?.LoadingMessage, "", language))}</div><iframe${hidden ? ' aria-hidden="true"' : ""} data-page="${attr(page)}" src="about:blank"></iframe>`;
+  const confirm = (name, primary, cancel = "Cancel") =>
+    `<button class="primary btn btn-primary " type="button">${escape(formText(settings?.[name]?.PrimaryButtonText, primary, language))}</button><button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">${escape(formText(settings?.[name]?.CloseButtonText, cancel, language))}</button>`;
+  const deleteAction = (settings.ItemActions ?? []).find((action) => action?.Type === "CrmEntityFormView-DeleteAction");
+  const resolve = `<div class="row mb-3"><label class="required col-form-label col-md-3"></label><div class="col-md-9"><input aria-required="true" class="resolution-input required form-control" type="text" aria-label=""></div></div><div class="row mb-3"><label class="required col-form-label col-md-3"></label><div class="col-md-9"><textarea aria-required="true" class="resolution-description-input required form-control" cols="20" rows="6" aria-label=""></textarea></div></div>`;
+  return [
+    listModalV5({ className: "modal-form modal-form-insert", dialog: settings.CreateFormDialog, title: "<span class='fa fa-edit' aria-hidden='true'></span> Create", body: formBody(settings.CreateFormDialog), language }),
+    listModalV5({ className: "modal-form modal-form-edit", dialog: settings.EditFormDialog, title: "<span class='fa fa-edit' aria-hidden='true'></span> Edit", body: formBody(settings.EditFormDialog), language }),
+    listModalV5({ className: "modal-form modal-form-details", dialog: settings.DetailsFormDialog, title: "<span class='fa fa-info-circle' aria-hidden='true'></span> View details", body: formBody(settings.DetailsFormDialog, true), language, labelledBy: `modalTitleID_${listId}` }),
+    listModalV5({ className: "modal-delete", dialog: settings.DeleteDialog, title: "<span class='fa fa-trash-can' aria-hidden='true'></span> Delete", body: escape(formText(deleteAction?.Confirmation ?? settings.DeleteDialog?.Confirmation, "", language)), footer: confirm("DeleteDialog", "Delete"), language, label: "Delete" }),
+    listModalV5({ className: "modal-error", dialog: settings.ErrorDialog, title: "<span class='fa fa-exclamation-triangle' aria-hidden='true'></span> Error", footer: `<button class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Close</button>`, language }),
+    listModalV5({ className: "modal-form modal-form-createrecord", dialog: settings.CreateRelatedRecordDialog, title: "<span class='fa fa-plus-circle' aria-hidden='true'></span> Create related record", body: formBody(settings.CreateRelatedRecordDialog), language }),
+    listModalV5({ className: "modal-run-workflow", title: " Run workflow", body: escape("<p>Are you sure you want to run this workflow?</p>"), footer: confirm("WorkflowDialog", "Run workflow"), language }),
+    listModalV5({ className: "modal-deactivate", title: " Deactivate", footer: confirm("DeactivateDialog", "Deactivate"), language }),
+    listModalV5({ className: "modal-activate", title: " Activate", footer: confirm("ActivateDialog", "Activate"), language }),
+    `<div aria-hidden="true" aria-label="Resolve case" class="modal fade modal-resolvecase  " data-backdrop="static" role="dialog" tabindex="-1"><div class="modal-dialog  "><div class="modal-content"><div class="modal-header"><h4 class="modal-title "> Resolve case</h4><button class="form-close" data-bs-dismiss="modal" tabindex="0" type="button"><span aria-hidden="true">&times;</span><span class="visually-hidden">Close</span></button></div><div class="modal-body">${resolve}</div><div class="modal-footer"><button tabindex="0" class="primary btn btn-success " type="button">Resolve</button><button tabindex="0" class="cancel btn btn-default " data-bs-dismiss="modal" type="button">Cancel</button></div></div></div></div>`,
   ].join("");
 }
 
@@ -683,7 +765,12 @@ async function renderListGrid(model, context, options) {
     if (target)
       model.detailsActionLink = { Type: 1, Enabled: true, Target: 1, Label: model.detailsLabel, Tooltip: model.detailsLabel, URL: { PathWithQueryString: target.url, Path: target.url }, QueryStringIdParameterName: model.idParameter, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" };
   }
-  if (model.createPage && !actions.some((action) => action.Type === 3)) {
+  const v5 = bootstrapMarkup(options.portal.settings).v5;
+  if (model.createPage && v5) {
+    // Bootstrap 5: the list's create page is the grid's InsertActionLink, beside any configured create action.
+    const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
+    if (target) model.insertActionLink = { Type: 3, Enabled: true, Target: 2, Label: model.createLabel, Tooltip: "Create", URL: { PathWithQueryString: target.url, Path: target.url }, QueryStringIdParameterName: model.idParameter, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" };
+  } else if (model.createPage && !actions.some((action) => action.Type === 3)) {
     const target = options.portal.pages.find((candidate) => canonicalId(candidate.id) === model.createPage);
     if (target)
       actions.push({ position: "view", Type: 3, Enabled: true, Target: 1, Label: model.createLabel, Tooltip: model.createLabel, URL: { PathWithQueryString: target.url, Path: target.url }, FilterCriteriaId: "00000000-0000-0000-0000-000000000000", ActionIndex: 0 });
@@ -692,13 +779,44 @@ async function renderListGrid(model, context, options) {
   const settings = model.settings ?? {};
   const identity = context.user ?? context.identity;
   const authenticated = Boolean(identity?.contactId ?? identity?.id);
-  const grid = `<div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "table-striped")}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
+  const bs = bootstrapMarkup(options.portal.settings);
+  const grid = bs.v5 ? listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) : `<div class="entity-grid entitylist${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-grid-data.json/${websiteId}" data-grid-class="${attr(settings.GridCssClass ?? "table-striped")}" data-select-mode="None" data-selected-view="${attr(model.views[0].id)}" data-view-layouts="${base64Json(layouts)}" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}" data-mobile-view-enabled="true"><div class="view-grid"></div><div class="view-empty message">${model.emptyText ? model.emptyText : '<div class="alert alert-block alert-warning">There are no records to display.</div>'}</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request.<span class="details"></span></div></div><div class="view-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div>${PAGINATION}${gridModals(page, settings, language)}</div>`;
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : "";
   const body = filter ? (model.filter.vertical ? `<div class="row"><div class="col-md-3 filter-vertical">${filter}</div><div class="col-md-9">${grid}</div></div>` : filter + grid) : grid;
   const js = model.list.js && (options.renderLiquid ? await options.renderLiquid(model.list.js, context) : model.list.js);
   // A list attached to a legacy ASPX page is the static EntityListControl of the WebForms master.
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
   return `<div${pageControl ? ' id="EntityListControl"' : ""} class="entitylist">${body}${js ? `<script type="text/javascript">${js}</script>` : ""}</div>`;
+}
+
+/** Bootstrap 5 server markup of a list grid: the messages and dialogs the client fills. */
+function listGridV5({ model, settings, layouts, websiteId, identity, authenticated, page, language }) {
+  const attributes = [
+    ["class", `entity-grid entitylist ${settings.CssClass ?? ""}`],
+    // An instance id the platform derives from the render time.
+    ["data-id", `${Date.now()}.${String(Math.floor(Math.random() * 100)).padStart(2, "0")}`],
+    ["data-column-width-style", Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"],
+    ["data-defer-loading", "false"],
+    ["data-enable-actions", "true"],
+    ["data-get-url", `/_services/entity-grid-data.json/${websiteId}`],
+    ["data-get-ai-insights-url", `/_services/entity-grid-ai-summary.json/${websiteId}`],
+    ["data-update-url", `/_services/entity-grid-update-entity/${websiteId}`],
+    ["data-grid-class", settings.GridCssClass ?? ""],
+    ["data-select-mode", "None"],
+    ["data-selected-view", model.views[0].id],
+    ["data-view-layouts", base64Json(layouts)],
+    ["data-user-isauthenticated", String(authenticated)],
+    ["data-user-parent-account-name", identity?.parentcustomerid?.name ?? ""],
+    ["data-mobile-view-enabled", "false"],
+    ["data-ai-insights-enabled", "false"],
+    ["data-enable-streaming", "true"],
+    ["data-ai-insights-expanded", "true"],
+    ["data-is-nl-search-enabled", "false"],
+    ["data-ai-insights-position", "top"],
+    ["data-nl-search-filter", ""],
+  ].map(([name, value]) => ` ${name}="${attr(value)}"`).join("");
+  const messages = `<div class="view-grid"></div><div class="view-empty message">There are no records to display.</div><div class="view-empty-maker message">To see records displayed here, choose preview.</div><div class="view-access-denied message"><div class="alert alert-block alert-danger">You don&#39;t have permissions to view these records.</div></div><div class="view-error message"><div class="alert alert-block alert-danger">Error completing request. <span class='details'></span></div></div><div class="view-loading message text-center"><span class='fa fa-spinner fa-spin' aria-hidden='true'></span> Loading...</div>${PAGINATION}`;
+  return `<div${attributes}>${messages}${gridModalsV5(page, settings, language, model.list.id)}</div>`;
 }
 
 /** Metadata filter panel (entity_list_filter built-in template). */
@@ -712,7 +830,8 @@ async function renderListFilter(model, context, options) {
     let markup = "";
     if (group.type === "textfilter")
       markup = `<li class="entitylist-filter-option"><div class="input-group entitylist-filter-option-text"><span class="input-group-addon"><span class="fa fa-filter" aria-hidden="true"></span></span><input class="form-control" type="text" name="${attr(group.id)}" value="${attr(selected.get(group.id) ?? "")}" id="${attr(group.id)}" /></div></li>`;
-    else if (group.kind === "link" && group.selectionMode === "Dropdown") {
+    // Dropdown groups (lookup or choice options) render one select box.
+    else if (group.selectionMode === "Dropdown") {
       const choices = await filterChoices(group, context, options);
       markup = `<li class="entitylist-filter-option"><div class="input-group entitylist-filter-option-text"><span class="input-group-addon"><span class="fa fa-filter" aria-hidden="true"></span></span><select class="form-control" name="${attr(group.id)}" id="${attr(elementId)}"><option value="" label=" "></option>${choices.map((choice) => `<option value="${attr(choice.id)}" label="${attr(choice.label)}"${selected.getAll(group.id).includes(choice.id) ? " selected" : ""}>${escape(choice.label)}</option>`).join("")}</select></div></li>`;
     } else {
@@ -957,8 +1076,12 @@ async function renderForm(kind, name, context, options) {
     modal = false,
   } = options;
   let managedControls = capturedManagedControls;
+  const bs = bootstrapMarkup(portal.settings);
   // Labels and messages in the request's website language (context.__language).
   const formLanguage = requestLanguage(context, portal);
+  // Number formats follow the request's website language (en-US when it is unknown).
+  const languageCode = portalLanguage({ lcid: formLanguage.lcid ?? formLanguage.defaultLcid })?.code ?? "en-US";
+  const decimalSeparator = new Intl.NumberFormat(languageCode).formatToParts(1.1).find((part) => part.type === "decimal")?.value ?? ".";
   const formLabel = (value, fallback = "") => formText(value, fallback, formLanguage);
   const pageControl = options.args?.pp_page_control === true || options.args?.pp_page_control === "true";
   const definition = (kind === "webform" ? portal.advancedForms : portal.forms)?.find(
@@ -1136,8 +1259,12 @@ async function renderForm(kind, name, context, options) {
   }
   if (notFound)
     return `<div id="${attr(ids.wrapper)}">${await startupScript()}<div id="MessagePanel" class="message alert error alert alert-danger error alert alert-danger" role="alert"><span id="MessageLabel">${escape(notFound)}</span></div></div>`;
+  if (kind === "entityform" && mode === FORM_MODE.insert && !formCreateAllowed(store, schema.entity, identity))
+    // Still a basic form control: the page keeps its WebForms server form (live permission-denied captures).
+    return ENTITY_FORM_CLIENT_VALIDATE + createAccessDeniedForm({ ids, formName: schema.formName ?? schema.title ?? name, snippet: portal.snippets?.["EntitySecurity/Record/CreateAccessDeniedMessage"] }).replace(/^<div id="[^"]*"/, "$& data-pp-native-form");
   const postback = options.nativePostbackState?.kind === kind && options.nativePostbackState?.formId === definition?.id ? options.nativePostbackState : null;
-  if (postback?.validationErrors || postback?.outcome?.type === 'error') record = { ...record, ...postback.values };
+  // Posted values re-render; an unchanged lookup keeps its record value, which carries the display name.
+  if (postback?.values) record = { ...record, ...Object.fromEntries(Object.entries(postback.values).filter(([key, value]) => !(record?.[key] && typeof record[key] === "object" && canonicalId(scalarValue(record[key])) === canonicalId(value)))) };
   // Edit becomes read-only for inactive records or without write permission.
   if (mode === FORM_MODE.edit) {
     const state = scalarValue(record?.statecode);
@@ -1154,7 +1281,9 @@ async function renderForm(kind, name, context, options) {
   const tableFields = metadata?.entities?.[canonicalId(schema.entity)]?.fields ?? {};
   const fields = (schema.fields ?? []).map((field) => {
     const row = metadataFor(metadataRows, 100000000, (candidate) => fieldOf(candidate, "attributelogicalname") === field.name);
-    const immutable = mode === FORM_MODE.insert ? field.validForCreate === false : field.validForUpdate === false;
+    // Column create/update validity applies to the mode rendered; a read-only rendering (a
+    // read-only form or an inactive record) marks no column read-only by it.
+    const immutable = mode === FORM_MODE.insert ? field.validForCreate === false : mode === FORM_MODE.edit ? field.validForUpdate === false : false;
     const control = nativeControlKind(field);
     const label = formLabel(fieldOf(row, "label"), field.label || tableFields[field.name]?.label || field.name);
     const ownerHidden = field.name === "ownerid" && fieldOf(componentMetadata, "showownerfields") !== true;
@@ -1196,7 +1325,9 @@ async function renderForm(kind, name, context, options) {
       maximum: field.maximum ?? field.maxValue,
     };
   });
-  const byName = new Map(fields.map((field) => [field.name, field]));
+  // A column placed on the form more than once renders only its first cell (see layout below).
+  const byName = new Map();
+  for (const field of fields) if (!byName.has(field.name)) byName.set(field.name, field);
   if (richTextCompatibility) {
     managedControls = {...managedControls};
     for (const field of fields) if(field.richText?.name)delete managedControls[field.richText.name];
@@ -1212,7 +1343,8 @@ async function renderForm(kind, name, context, options) {
         const relation = candidates.find((candidate) => candidate.schemaName === reference.rel) ?? (candidates.length === 1 && referenceField(fields, mapping, reference) === field.name ? candidates[0] : null);
         if (relation) return { id: canonicalId(reference.id), logical_name: relation.entity, name: "" };
       }
-      if (!field.ignoreDefault && field.default !== undefined) return field.default;
+      // An explicit schema default, else the column's exported default (AppDefaultValue).
+      if (!field.ignoreDefault && (field.default ?? field.defaultValue) !== undefined) return field.default ?? field.defaultValue;
     }
     return record?.[field.name] ?? null;
   };
@@ -1266,6 +1398,15 @@ async function renderForm(kind, name, context, options) {
       }
     return options;
   };
+  const currencySymbol = async (currency) => {
+    const currencyId = canonicalId(scalarValue(currency));
+    if (!currencyId) return "";
+    try {
+      return (await readProvider.get("transactioncurrency", currencyId, identity))?.currencysymbol ?? "";
+    } catch {
+      return "";
+    }
+  };
   const nativeInput = async (field) => {
     const current = value(field);
     const scalar = scalarValue(current);
@@ -1276,7 +1417,7 @@ async function renderForm(kind, name, context, options) {
     const fieldLevel = field.fieldReadOnly ?? field.readOnly;
     const formLevel = readOnly && !fieldLevel;
     const formReadonly = readOnly ? ' readonly="readonly"' : "";
-    const emptyOption = (selected) => `<option${selected ? ' selected="selected"' : ""} value="" label="Select" aria-label="Select"></option>`;
+    const emptyOption = (selected) => `<option${selected ? ' selected="selected"' : ""} value=""${postback && mode === FORM_MODE.insert ? "" : ' label="Select" aria-label="Select"'}></option>`;
     const css = field.cssClass ? ` ${attr(field.cssClass)}` : " ";
     const required = field.required && !disabled ? ' aria-required="true"' : "";
     switch (field.control) {
@@ -1285,16 +1426,18 @@ async function renderForm(kind, name, context, options) {
         const idValue = canonicalId(scalar);
         const logical = current?.logical_name ?? (idValue && field.targets?.length === 1 ? field.targets[0] : "");
         if (field.hidden)
-          return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}" value="${attr(idValue)}"><input name="${nameAttr(field, "_name")}" type="hidden" id="${attr(field.id)}_name" value="${attr(name)}"><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname" value="${attr(logical)}">`;
+          return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}><input name="${nameAttr(field, "_name")}" type="hidden" id="${attr(field.id)}_name"${valueAttr(name)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>`;
         if (field.lookupStyle === "dropdown") {
           const choices = field.choices.some((choice) => choice.id === idValue) || !idValue ? field.choices : [{ id: idValue, entity: logical, label: name }, ...field.choices];
           const polymorphic = field.targets?.length > 1;
           const onChange = polymorphic ? "document.getElementById(this.id + '_entityname').value=this.selectedOptions[0]?.dataset.entity || '';setIsDirty(this.id);" : 'setIsDirty(this.id);';
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ""}${disabled ? ' disabled="disabled" aria-disabled="true"' : ""}${formReadonly}>${emptyOption(false)}${choices.map((choice) => `<option value="${attr(choice.id)}"${polymorphic ? ` data-entity="${attr(choice.entity)}"` : ''}${choice.id === idValue ? ' selected="selected"' : ""}>${escape(choice.label)}</option>`).join("")}</select><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname" value="${attr(logical || (field.targets?.length === 1 ? field.targets[0] : ""))}">`;
+          // Bootstrap 5 marks every dropdown lookup option as a dropdown item.
+          const item = bs.v5 ? ' class="dropdown-item"' : "";
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="lookup form-control${css}" onchange="${attr(onChange)}"${field.required ? ' required=""' : ""}${disabled ? ' disabled="disabled" aria-disabled="true"' : ""}${formReadonly}>${emptyOption(false).replace("<option", `<option${item}`)}${choices.map((choice) => `<option value="${attr(choice.id)}"${item}${polymorphic ? ` data-entity="${attr(choice.entity)}"` : ''}${choice.id === idValue ? ' selected="selected"' : ""}>${escape(choice.label)}</option>`).join("")}</select><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical || (field.targets?.length === 1 ? field.targets[0] : ""))}>`;
         }
         if (disabled)
-          return `<div><input name="${nameAttr(field, "_name")}" type="text" value="${attr(name)}" id="${attr(field.id)}_name" class="text form-control lookup form-control  readonly" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}" value="${attr(idValue)}"><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname" value="${attr(logical)}"></div>`;
-        const lookupBase = { kind: "lookup", views: [], settings: {}, pageSize: Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10, search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character." } };
+          return `<div><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${bs.v5 && formLevel ? "" : "  readonly"}" readonly="${readOnly ? "readonly" : ""}" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" tabindex="0"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}></div>`;
+        const lookupBase = { kind: "lookup", views: [], settings: {}, pageSize: Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10, search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character. " } };
         let layouts = [];
         try {
           const model = nativeLookupModel({ portal, schemas, metadata, store, kind, formId: definition?.id, stepId: schema.stepId, field: field.name });
@@ -1308,7 +1451,8 @@ async function renderForm(kind, name, context, options) {
               primaryName: targetMapping.nameColumn ?? null,
               metadata,
               settings: {},
-              configuration: viewConfiguration(viewModel, view, { actions: [], websiteId, language: formLanguage }),
+              // A Bootstrap 5 lookup dialog's configuration carries the empty GUID as its id.
+              configuration: { ...viewConfiguration(viewModel, view, { actions: [], websiteId, language: formLanguage }), ...(bs.v5 ? { Id: EMPTY_GUID } : {}) },
               secure: { t: "lookup", w: websiteId, kind, form: definition?.id, step: schema.stepId ?? null, field: field.name, view: view.id },
               selectColumn: true,
             });
@@ -1316,15 +1460,29 @@ async function renderForm(kind, name, context, options) {
         } catch (error) {
           if (!/LOOKUP_TARGET_UNRESOLVED|LookupNotBound|FormNotFound|FormSchemaRequired/.test(error.code ?? "")) throw error;
         }
+        // The Bootstrap 5 selection column labels its check with visually-hidden text.
+        if (bs.v5) for (const layout of layouts) for (const column of layout.Columns ?? []) if (column.Type === 1 && typeof column.Name === "string") column.Name = column.Name.replace("sr-only", "visually-hidden");
         const createForm = field.createFormId && portal.forms?.some((form) => canonicalId(form.id) === field.createFormId) ? field.createFormId : "";
-        return `<div class="input-group" role="none"><input name="${nameAttr(field, "_name")}" type="text" id="${attr(field.id)}_name" class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}" value="${attr(name)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}" value="${attr(idValue)}"${required}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname" value="${attr(logical)}"><div class="input-group-btn"><button type="button" class="btn btn-default clearlookupfield" title="${attr(field.label)} Clear lookup field" aria-label="${attr(field.label)} Clear lookup field"${idValue ? "" : ' style="display: none;"'}><span class="sr-only">Clear lookup field</span><span class="fa fa-times" aria-hidden="true"></span></button><button type="button" class="btn btn-default launchentitylookup" data-toggle="tooltip" title="${attr(field.label)} Launch lookup modal" aria-label="${attr(field.label)} Launch lookup modal"><span class="sr-only">Launch lookup modal</span><span class="fa fa-search" aria-hidden="true"></span></button></div></div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal({
+        // Bootstrap 5 drops the input-group-btn wrapper, the search-count announcer and the
+        // hidden message styles, and nests the grid's error dialog; Bootstrap 3 keeps its markup.
+        const buttons = `<button type="button" class="btn btn-default clearlookupfield" title="${attr(field.label)} Clear lookup field" aria-label="${attr(field.label)} Clear lookup field"${idValue ? "" : ' style="display: none;"'}><span class="${bs.srOnly}">Clear lookup field</span><span class="fa fa-times" aria-hidden="true"></span></button><button type="button" class="btn btn-default launchentitylookup" ${bs.toggle}="tooltip" title="${attr(field.label)} Launch lookup modal" aria-label="${attr(field.label)} Launch lookup modal"><span class="${bs.srOnly}">Launch lookup modal</span><span class="fa fa-search" aria-hidden="true"></span></button>`;
+        const authenticated = Boolean(identity?.contactId ?? identity?.id);
+        const gridAttributes = bs.v5
+          ? `data-mobile-view-enabled="false" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Configuration?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${authenticated}" data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"`
+          : `data-mobile-view-enabled="true" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${authenticated}"`;
+        const gridChildren = bs.v5
+          ? `<div class="view-grid"></div>${gridMessages(bs)}${PAGINATION}${gridErrorModal(bs)}`
+          : `<div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}`;
+        return `<div class="input-group"${bs.v5 ? "" : ' role="none"'}><input name="${nameAttr(field, "_name")}" type="text"${valueAttr(name)} id="${attr(field.id)}_name" class="text form-control lookup form-control${css}" readonly="" aria-readonly="true" aria-labelledby="${attr(field.id)}_label" aria-label="${attr(field.label)}"><input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(idValue)}${required}><input name="${nameAttr(field, "_entityname")}" type="hidden" id="${attr(field.id)}_entityname"${valueAttr(logical)}>${bs.v5 ? buttons : `<div class="input-group-btn">${buttons}</div>`}</div><div id="${attr(field.id)}_lookupmodal" class="lookup-modal"><div class="entity-lookup" data-languagecode="1033" data-lookup-datafieldname="${attr(field.id)}" data-lookup-reference_entityformid="${attr(createForm)}" data-url="/_services/entity-lookup-grid-data.json/${websiteId}">${nativeModal({
+          bs,
+          headingLabel: bs.v5,
           className: "modal-lookup",
           title: "Lookup records",
           label: "Lookup records Dialog",
           size: "modal-lg",
-          body: `<div aria-hidden="true" class="modal-error message" style="display:none"><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" data-mobile-view-enabled="true" data-select-mode="Single" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-toggle-filter-text="Toggle filter" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div role="alert" aria-live="assertive" aria-atomic="true" aria-relevant="additions text" id="SearchCountText${attr(field.id)}" class="sr-only"></div><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div>`,
-          footer: `${createForm ? '<button type="button" class="btn btn-default pull-left new-value" title="New">New</button>' : ""}<button aria-label="Select" class="primary btn btn-primary" tabindex="0" title="Select" type="button">Select</button><button aria-label="Cancel" class="cancel btn btn-default" data-dismiss="modal" tabindex="0" title="Cancel" type="button">Cancel</button><button class="btn btn-default pull-right remove-value" title="Remove value" type="button">Remove value</button>`,
-        })}${createForm ? nativeModal({ className: "modal-form modal-form-insert modal-lookup-create-form", title: "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create", body: formModalBody(`/_portal/modal-form-template-path/${websiteId}`), size: "modal-lg", label: "Create" }) : ""}</div></div>`;
+          body: `<div aria-hidden="true" class="modal-error message"${bs.v5 ? "" : ' style="display:none"'}><div class="alert alert-block alert-danger"><p>We're sorry, an error has occurred.</p></div></div><div class="entity-grid" data-allow-filter-off="false" data-apply-related-record-filter="false" data-column-width-style="Percent" data-defer-loading="true" data-enable-actions="false" data-filter-attribute-name="" data-filter-entity-name="" data-filter-relationship-name="" data-get-url="/_services/entity-lookup-grid-data.json/${websiteId}" data-grid-class="" ${gridAttributes} data-view-layouts="${base64Json(layouts)}">${gridChildren}</div>`,
+          footer: `${createForm ? `<button type="button" class="btn btn-default ${bs.left} new-value" title="New">New</button>` : ""}<button aria-label="Select" class="primary btn btn-primary" tabindex="0" title="Select" type="button">Select</button><button aria-label="Cancel" class="cancel btn btn-default" ${bs.dismiss}="modal" tabindex="0" title="Cancel" type="button">Cancel</button><button class="btn btn-default ${bs.right} remove-value" title="Remove value" type="button">Remove value</button>`,
+        })}${createForm ? nativeModal({ bs, className: "modal-form modal-form-insert modal-lookup-create-form", title: "<span class='fa fa-pencil-square-o' aria-hidden='true'></span> Create", body: formModalBody(`/_portal/modal-form-template-path/${websiteId}`), size: "modal-lg", label: "Create" }) : ""}</div></div>`;
       }
       case "boolean": {
         const bool = scalar === true || scalar === 1 || /^(true|1)$/i.test(String(scalar ?? ""));
@@ -1335,28 +1493,33 @@ async function renderForm(kind, name, context, options) {
           const blank = field.ignoreDefault && scalar == null;
           return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? "aspNetDisabled " : ""}form-control boolean-dropdown${css}" onchange="setIsDirty(this.id);"${fieldLevel ? ' disabled="disabled" aria-disabled="true"' : formLevel ? ' disabled="disabled"' : ""}${formReadonly}>${field.ignoreDefault ? `<option value=""${blank ? ' selected="selected"' : ""}></option>` : ""}<option${!blank && !bool ? ' selected="selected"' : ""} value="0">${escape(label(0))}</option><option${!blank && bool ? ' selected="selected"' : ""} value="1">${escape(label(1))}</option></select>`;
         }
+        // A read-only form disables the ASP.NET list and box controls: aspNetDisabled wrappers.
         if (classId === RADIO_CLASS)
-          return `<span id="${attr(field.id)}" class="boolean-radio${css}" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true"' : ""}>${[0, 1].map((bit) => `<input id="${attr(field.id)}_${bit}" type="radio" name="${nameAttr(field)}" value="${bit}"${scalar != null && !field.ignoreDefault && bool === Boolean(bit) ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${bit}"><span class='sr-only'>${escape(field.label)} </span>${escape(label(bit))}</label>`).join("")}</span>`;
-        return `<span class="checkbox${css}"><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bool ? ' checked="checked"' : ""} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ""}></span>`;
+          return `<span id="${attr(field.id)}" class="${formLevel ? "aspNetDisabled " : ""}boolean-radio${css}" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true"' : ""}${formLevel ? ' disabled="disabled"' : ""}${formReadonly}>${[0, 1].map((bit) => { const radio = `<input id="${attr(field.id)}_${bit}" type="radio" name="${nameAttr(field)}" value="${bit}"${scalar != null && !field.ignoreDefault && bool === Boolean(bit) ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${bit}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(label(bit))}</label>`; return formLevel ? `<span class="aspNetDisabled">${radio}</span>` : radio; }).join("")}</span>`;
+        return `<span class="${formLevel ? "aspNetDisabled " : ""}checkbox${css}"${formReadonly}><input id="${attr(field.id)}" type="checkbox" name="${nameAttr(field)}"${bs.v5 ? ` aria-label="${attr(field.label)}"` : ""}${bool ? ' checked="checked"' : ""} onclick="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ""}></span>`;
       }
       case "picklist": {
         const options = optionsFor(field);
         const selected = scalar == null || scalar === "" ? null : Number(scalar);
         if (field.controlStyle === 100000000 || field.controlStyle === 100000001)
-          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? "vertical" : "horizontal"}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true"' : ""}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${index}"><span class='sr-only'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>${field.controlStyle === 100000000 ? "<br>" : ""}`).join("")}</span>`;
+          return `<span id="${attr(field.id)}" class="picklist ${field.controlStyle === 100000000 ? "vertical" : "horizontal"}${css}" role="presentation" onchange="setIsDirty(this.id);"${field.required ? ' data-required="true"' : ""}>${options.map((option, index) => `<input id="${attr(field.id)}_${index}" type="radio" name="${nameAttr(field)}" value="${attr(option.value)}"${Number(option.value) === selected ? ' checked="checked"' : ""}${disabled ? ' disabled="disabled"' : ""}><label for="${attr(field.id)}_${index}"><span class='${bs.srOnly}'>${escape(field.label)} </span>${escape(option.label ?? option.value)}</label>`).join(field.controlStyle === 100000000 ? "<br>" : "")}</span>`;
         // PicklistControlTemplate: every option follows an empty "Select" option; a required
         // dropdown carries required="" (the platform app bundle removes it on load).
         const picklistOptions = `${emptyOption(selected == null)}${options.map((option) => `<option${Number(option.value) === selected ? ' selected="selected"' : ""} value="${attr(option.value)}">${escape(option.label ?? option.value)}</option>`).join("")}`;
+        // Bootstrap 5 option sets are form-select boxes.
+        const selectClass = bs.v5 ? "form-control form-select picklist" : "form-control picklist";
         if (fieldLevel)
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? "aspNetDisabled " : ""}readonly form-control picklist${css}" onchange="setIsDirty(this.id);" disabled="disabled" aria-disabled="true"${formReadonly}>${picklistOptions}</select><input type="hidden" name="${nameAttr(field, "_Value")}" id="${attr(field.id)}_Value" value="${attr(selected ?? "")}">`;
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${readOnly ? "aspNetDisabled " : ""}readonly ${selectClass}${css}" onchange="setIsDirty(this.id);" disabled="disabled" aria-disabled="true"${formReadonly}>${picklistOptions}</select><input type="hidden" name="${nameAttr(field, "_Value")}" id="${attr(field.id)}_Value" value="${attr(selected ?? "")}">`;
         if (formLevel)
-          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="aspNetDisabled form-control picklist${css}" onchange="setIsDirty(this.id);" disabled="disabled"${formReadonly}>${picklistOptions}</select>`;
-        return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="form-control picklist${css}" onchange="setIsDirty(this.id);"${field.required ? ' required=""' : ""}>${picklistOptions}</select>`;
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="aspNetDisabled ${selectClass}${css}" onchange="setIsDirty(this.id);" disabled="disabled"${formReadonly}>${picklistOptions}</select>`;
+        return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${selectClass}${css}" onchange="setIsDirty(this.id);"${field.required ? ' required=""' : ""}>${picklistOptions}</select>`;
       }
       case "state":
       case "status": {
-        const option = (field.options ?? []).find((candidate) => Number(candidate.value) === Number(scalar));
-        return `<span id="${attr(field.id)}" class="${field.control}${css}">${escape(current?.label ?? option?.label ?? scalar ?? "")}</span>`;
+        const option = scalar == null || scalar === "" ? null : (field.options ?? []).find((candidate) => Number(candidate.value) === Number(scalar));
+        // The state and status spans carry their values in hidden EntityState/EntityStatus inputs.
+        const hiddenValue = bs.v5 ? `<input name="${nameAttr(field, field.control === "state" ? "_EntityState" : "_EntityStatus")}" type="hidden" id="${attr(field.id)}${field.control === "state" ? "_EntityState" : "_EntityStatus"}"${valueAttr(scalar)}>` : "";
+        return `<span id="${attr(field.id)}" class="${field.control}${css}">${escape(current?.label ?? option?.label ?? scalar ?? "")}</span>${hiddenValue}`;
       }
       case "multiselect": {
         const values = String(Array.isArray(current) ? current.map(scalarValue).join(",") : scalar ?? "").split(",").filter(Boolean);
@@ -1377,14 +1540,18 @@ async function renderForm(kind, name, context, options) {
         // crmentityformview-datetime.js: a read-only picker keeps its visible box without the
         // input group, the placeholder or the (hidden) calendar button, whose title and label
         // are the Datetimepicker_Datepicker_Label resource.
-        return `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="datetime form-control${css}" data-ui="datetimepicker" data-type="${dateOnly ? "date" : "datetime"}" data-attribute="${attr(field.id)}" data-behavior="${attr(behavior)}" value="${attr(iso)}" style="display: none;"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""} data-sim-date-value><div class="${disabled ? "datetimepicker" : "input-append input-group datetimepicker"}" role="none" data-sim-date-target="${attr(field.id)}" data-sim-date-only="${dateOnly}"><input type="text" data-date-format="${attr(format)}" aria-describedby="${attr(field.id)}_description" id="${attr(field.id)}_datepicker_description" aria-labelledby="${attr(field.id)}_label" onchange="setIsDirty(this.id);" class="form-control input-text-box${disabled ? " readonly" : ""}"${disabled ? ' readonly="readonly"' : ` placeholder="${attr(format)}"`}${field.required && !disabled ? " required" : ""}><span class="input-group-addon" tabindex="0" role="button" title="Choose a date" aria-label="Choose a date"${disabled ? ' style="display: none;"' : ""}><span data-date-icon="icon-calendar fa fa-calendar" data-time-icon="icon-time fa fa-clock-o" class="icon-calendar fa fa-calendar iconBorder"></span></span></div>`;
+        return `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="datetime form-control${css}" data-ui="datetimepicker" data-type="${dateOnly ? "date" : "datetime"}" data-attribute="${attr(field.id)}" data-behavior="${attr(behavior)}"${valueAttr(iso)} style="display: none;"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""} data-sim-date-value><div class="${disabled ? "datetimepicker" : "input-append input-group datetimepicker"}" role="none" data-sim-date-target="${attr(field.id)}" data-sim-date-only="${dateOnly}"><input type="text" data-date-format="${attr(format)}" aria-describedby="${attr(field.id)}_description" id="${attr(field.id)}_datepicker_description" aria-labelledby="${attr(field.id)}_label" onchange="setIsDirty(this.id);" class="form-control input-text-box${disabled ? " readonly" : ""}"${disabled ? ' readonly="readonly"' : ` placeholder="${attr(format)}"`}${field.required && !disabled ? " required" : ""}><span class="input-group-addon${bs.v5 ? " btn" : ""}" tabindex="0" role="button" title="Choose a date"${bs.v5 ? "" : ' aria-label="Choose a date"'}${disabled ? ' style="display: none;"' : ""}><span data-date-icon="icon-calendar fa fa-calendar" data-time-icon="icon-time fa fa-clock${bs.v5 ? "" : "-o"}" class="icon-calendar fa fa-calendar iconBorder"></span></span></div>`;
       }
       case "richtext":
         return richTextInput(field, current, { portal, managedControls, nameAttr });
+      case "file":
+      case "image":
+        return fileColumnInput(field, { id, entity: schema.entity, record, scalar, nameAttr });
       case "textarea":
         // MemoControlTemplate: rows = rowspan * 3 - 2; a maximum length adds the platform's
         // LimitInput/LimitPaste handlers (crmentityformview.js).
-        return `<textarea name="${nameAttr(field)}" rows="${(Number(field.rowspan) || 2) * 3 - 2}" cols="20"${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${required} aria-label="${attr(field.label)}"${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ""}>${escape(scalar ?? "")}</textarea>`;
+        // A one-row cell keeps the two-row (4 line) memo box.
+        return `<textarea name="${nameAttr(field)}" rows="${Math.max(Number(field.rowspan) || 2, 2) * 3 - 2}" cols="20"${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="textarea form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${required}${field.required && !disabled ? ` title="${attr(field.requiredMessage || `${field.label} is a required field.`)}"` : ""} aria-label="${attr(field.label)}"${field.maxLength ? ' onkeydown="javascript:return LimitInput(this, event);" oninput="javascript:return LimitInput(this, event);" onpaste="javascript:return LimitPaste(this, event);"' : ""}>${escape(scalar ?? "")}</textarea>`;
       case "integer":
       case "decimal":
       case "double":
@@ -1393,20 +1560,39 @@ async function renderForm(kind, name, context, options) {
         const displayed = field.control !== "integer" && scalar != null && scalar !== "" && Number.isFinite(Number(scalar)) && field.precision != null && Number.isInteger(precision) && precision >= 0 && precision <= 10
           ? Number(scalar).toFixed(precision)
           : scalar ?? "";
-        const control = `<input name="${nameAttr(field)}" type="text" id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);" value="${attr(displayed)}"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
-        return field.control === "money" ? `<div class="input-group">${control}</div>` : control;
+        // Whole numbers formatted as a duration or a language are option lists (blank first).
+        const choices = field.control === "integer" ? integerFormatChoices(field, portal) : null;
+        if (choices) {
+          const selected = scalar == null || scalar === "" ? null : String(scalar);
+          return `<select name="${nameAttr(field)}" id="${attr(field.id)}" class="${formLevel ? "aspNetDisabled " : ""}integer form-control${css}${fieldLevel ? " readonly" : ""}" onchange="setIsDirty(this.id);"${disabled ? ' disabled="disabled"' : ""}${formReadonly}><option${selected == null ? ' selected="selected"' : ""} value="" label=" "></option>${choices.map((choice) => `<option${String(choice.value) === selected ? ' selected="selected"' : ""} value="${attr(choice.value)}">${escape(choice.label)}</option>`).join("")}</select>`;
+        }
+        const control = `<input name="${nameAttr(field)}" type="text"${valueAttr(displayed)} id="${attr(field.id)}" class="text ${field.control} form-control${css}${fieldLevel ? " readonly" : ""}"${field.control === "double" ? ` data-numberdecimalseparator="${attr(decimalSeparator)}"` : ""} onchange="setIsDirty(this.id);"${disabled ? ' readonly="readonly"' : ""}${field.required && !disabled ? ' required=""' : ""}>`;
+        if (field.control !== "money") return control;
+        // A money box shows the record currency's symbol as an input-group addon; without a
+        // currency it is a plain wrapper.
+        const symbol = await currencySymbol(record?.transactioncurrencyid);
+        return symbol ? `<div class="input-group"><span class="${bs.v5 ? "input-group-text" : "input-group-addon"}">${escape(symbol)}</span>${control}</div>` : `<div>${control}</div>`;
       }
       default:
         if (field.hidden && field.control !== "lookup")
-          return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}" value="${attr(scalar ?? "")}">`;
+          return `<input name="${nameAttr(field)}" type="hidden" id="${attr(field.id)}"${valueAttr(scalar)}>`;
         {
           // String text boxes: e-mail format adds type="email" and the launchEmail handler,
           // phone format the platform placeholder, a maximum length the LengthError keypress
           // check, and a required editable box the required-field title and its label.
           const email = field.control === "email";
-          const phone = String(field.format ?? "").toLowerCase() === "phone";
-          const requiredText = field.required && !disabled ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"` : "";
-          return `<input name="${nameAttr(field)}" type="${email ? "email" : "text"}"${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="text form-control${css}${fieldLevel ? " readonly" : ""}"${email ? ' ondblclick="launchEmail(this.value);"' : ""} onchange="setIsDirty(this.id);" value="${attr(scalar ?? "")}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${field.pattern && !disabled ? ` pattern="${attr(field.pattern)}"` : ""}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}>`;
+          const format = String(field.format ?? "").toLowerCase();
+          const phone = format === "phone";
+          // Url and ticker symbol formats are url boxes with their launch and change handlers;
+          // e-mail, url and ticker boxes are underlined.
+          const url = format === "url";
+          const ticker = format === "tickersymbol";
+          const type = email ? "email" : url || ticker ? "url" : "text";
+          const launch = email ? "launchEmail" : url ? "launchUrl" : ticker ? "launchTickerSymbolUrl" : "";
+          const change = `setIsDirty(this.id);${url ? `validateUrlInput(this,${Number(field.maxLength) || 0});` : ticker ? "uppercaseTickerSymbol(this);" : ""}`;
+          // Bootstrap 5 keeps the required-field attributes of a box a read-only form disables.
+          const requiredText = field.required && !(bs.v5 ? fieldLevel : disabled) ? ` aria-required="true" title="${attr(field.requiredMessage || `${field.label} is a required field.`)}" aria-label="${attr(field.label)}"` : "";
+          return `<input name="${nameAttr(field)}" type="${type}"${valueAttr(scalar)}${field.maxLength ? ` maxlength="${Number(field.maxLength)}"` : ""} id="${attr(field.id)}" class="${ticker ? "tickersymbol " : ""}text form-control${css}${fieldLevel ? " readonly" : ""}"${launch ? ` ondblclick="${launch}(this.value);"` : ""} onchange="${change}"${phone ? ' placeholder="Provide a telephone number"' : ""}${disabled ? ' readonly="readonly"' : ""}${requiredText}${field.maxLength ? ' onkeypress="javascript:return LengthError(this, event);"' : ""}${launch ? ' style="text-decoration:underline;"' : ""}>`;
         }
     }
   };
@@ -1462,7 +1648,13 @@ async function renderForm(kind, name, context, options) {
   const extraControls = new Map();
   const subgridLabel = label => options.config?.observed?.subgridLabelMarkup === 'encoded' ? escape(label) : renderFormLabel(label);
   const cells = formCells(schema);
-  for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes"].includes(candidate.type))) {
+  for (const cell of cells.filter((candidate) => ["quickform", "subgrid", "notes", "webresource"].includes(candidate.type))) {
+    if (cell.type === "webresource") {
+      // WebResourceControl: an iframe on /_webresource/{name}, labelled by the cell.
+      const label = cell.showLabel === false ? "" : `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label ?? cell.id)}</label>`;
+      extraControls.set(cell.id, `<div class="${bs.info}">${label}</div><div class="control"><iframe id="${attr(cell.id)}" src="/_webresource/${attr(String(cell.url ?? "").replace(/^\/+/, ""))}" width="100%" height="100%" frameborder="${cell.border ? 1 : 0}" scrolling="${attr(cell.scrolling ?? "auto")}"></iframe></div>`);
+      continue;
+    }
     if (cell.type === "quickform") {
       if (!cell.schema) {
         extraControls.set(cell.id, `<div class="control"><div role="alert">Quick form ${escape(cell.id)} is absent in the selected solution sources.</div></div>`);
@@ -1473,8 +1665,11 @@ async function renderForm(kind, name, context, options) {
       const target = store.resolveMapping(cell.entity);
       const path = `/_portal/quickform-template-path/${websiteId}`;
       const formName = cell.schema.formName ?? cell.schema.title ?? cell.label ?? cell.id;
-      const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}` : "about:blank";
-      extraControls.set(cell.id, `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
+      const src = relatedId ? `${path}?entityid=${encodeURIComponent(relatedId)}&entityname=${encodeURIComponent(cell.entity)}&entityprimarykeyname=${encodeURIComponent(target.idColumn)}&formname=${encodeURIComponent(formName)}&controlid=${encodeURIComponent(cell.id)}${bs.v5 ? `&isprofilepage=false&lang=${encodeURIComponent(languageCode)}` : ""}` : "about:blank";
+      // The Bootstrap 5 quick view cell is labelled and its frame carries only the platform's data attributes.
+      extraControls.set(cell.id, bs.v5
+        ? `<div class="${bs.info}">${cell.label ? `<label for="${attr(cell.id)}" class="field-label">${renderFormLabel(cell.label)}</label>` : ""}</div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" role="presentation"></iframe></div>`
+        : `<div class="info"></div><div class="control"><iframe src="${attr(src)}" id="${attr(cell.id)}" tabindex="0" class="quickform" data-path="${attr(path)}" data-controlid="${attr(cell.id)}" data-formname="${attr(formName)}" data-lookup-element="${attr(cell.lookup)}" data-entityname="${attr(cell.entity)}" data-entityprimarykeyname="${attr(target.idColumn)}" role="presentation" scrolling="no" title="${attr(cell.label ?? cell.id)}"></iframe></div>`);
       continue;
     }
     if (cell.type === "notes") {
@@ -1484,13 +1679,13 @@ async function renderForm(kind, name, context, options) {
       for (const [flag, operation] of [["CreateEnabled", "create"], ["EditEnabled", "update"], ["DeleteEnabled", "delete"]]) {
         if (!store.allowed("annotation", operation, target, identity)) settings[flag] = false;
       }
-      extraControls.set(cell.id, renderNotesControl({ record, id, entity: schema.entity, websiteId, settings, label: cell.label, language: formLanguage }));
+      extraControls.set(cell.id, renderNotesControl({ record, id, entity: schema.entity, websiteId, settings, label: cell.showLabel === false ? null : cell.label, language: formLanguage, bs }));
       continue;
     }
     const label = cell.label ?? cell.id;
     if (!id) {
       // Native subgrids bind to an existing record and render nothing in Insert mode.
-      extraControls.set(cell.id, `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control"></div>`);
+      extraControls.set(cell.id, `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control"></div>`);
       continue;
     }
     const model = subgridModel({ portal, schemas, metadata, store, kind, formId: definition?.id ?? name, stepId: schema.stepId, gridId: cell.id });
@@ -1513,17 +1708,18 @@ async function renderForm(kind, name, context, options) {
       const associateLayouts = gridLayouts(associateModelValue, { secureBase: { t: "associate", w: websiteId, kind, form: definition?.id ?? name, step: schema.stepId ?? null, grid: cell.id, parent: canonicalId(id) }, websiteId, metadata, actions: [], selectColumn: true, language: formLanguage });
       const reverseSchema = model.relationship.schemaName ?? cell.relationship;
       associateHtml = `<div class="entity-associate associate-lookup" data-url="/_services/entity-lookup-associate/${websiteId}" data-associate="${attr(JSON.stringify({ Target: { LogicalName: schema.entity, Id: canonicalId(id) }, Relationship: { SchemaName: reverseSchema } }))}">${nativeModal({
+        bs,
         className: "modal-associate",
         title: formLabel(model.settings?.LookupDialog?.Title, "Associate"),
         size: "modal-lg",
-        body: `<div class="modal-error message" aria-hidden="true" style="display:none"><div class="alert alert-block alert-danger">We're sorry, an error has occurred.</div></div><div class="entity-grid associate-lookup" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-defer-loading="true" data-enable-actions="false" data-select-mode="Multiple" data-column-width-style="Percent" data-grid-class="" data-selected-view="${attr(associateLayouts[0]?.Id ?? "")}" data-view-layouts="${base64Json(associateLayouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}</div><div class="panel panel-default content-panel"><div class="panel-heading"><h4>Selected records</h4></div><div class="panel-body selected-records"></div></div>`,
-        footer: `<button class="primary btn btn-primary" type="button">${escape(formLabel(model.settings?.LookupDialog?.PrimaryButtonText, "Add"))}</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>`,
+        body: `<div class="modal-error message" aria-hidden="true"${bs.v5 ? "" : ' style="display:none"'}><div class="alert alert-block alert-danger">We're sorry, an error has occurred.</div></div><div class="entity-grid associate-lookup" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-defer-loading="true" data-enable-actions="false" data-select-mode="Multiple" data-column-width-style="Percent" data-grid-class="" data-selected-view="${attr(associateLayouts[0]?.Id ?? "")}" data-view-layouts="${base64Json(associateLayouts)}"><div class="view-grid"></div>${gridMessages(bs)}${PAGINATION}</div><div class="panel panel-default content-panel"><div class="panel-heading"><h4>Selected records</h4></div><div class="panel-body selected-records"></div></div>`,
+        footer: `<button class="primary btn btn-primary" type="button">${escape(formLabel(model.settings?.LookupDialog?.PrimaryButtonText, "Add"))}</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>`,
       })}</div>`;
     }
     const settings = model.settings ?? {};
     extraControls.set(
       cell.id,
-      `<h3 class="info form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="true" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}" data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${LOOKUP_GRID_MESSAGES}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage)}${associateHtml}</div></div></div>`,
+      `<h3 class="${bs.info} form-subgrid-heading"><label for="${attr(cell.id)}" class="field-label">${subgridLabel(label)}</label></h3><div class="control">${codeComponentNotice}<div id="${attr(cell.id)}" class="subgrid"><div class="entity-grid subgrid${settings.CssClass ? " " + attr(settings.CssClass) : ""}" data-column-width-style="${Number(settings.GridColumnWidthStyle ?? 1) === 0 ? "Pixels" : "Percent"}" data-defer-loading="false" data-enable-actions="true" data-get-url="/_services/entity-subgrid-data.json/${websiteId}" data-grid-class="table-striped${settings.GridCssClass && settings.GridCssClass !== "table-striped" ? " " + attr(settings.GridCssClass) : ""}" data-mobile-view-enabled="${!bs.v5}" data-ref-entity="${attr(schema.entity)}" data-ref-id="${attr(canonicalId(id))}" data-ref-rel="${attr(model.relationship.schemaName ?? cell.relationship)}" data-select-mode="None" data-selected-view="${attr(layouts[0]?.Id ?? "")}" data-update-url="/_services/entity-grid-update-entity/${websiteId}" data-user-isauthenticated="${Boolean(identity?.contactId ?? identity?.id)}"${bs.v5 ? ` data-user-parent-account-name="${attr(identity?.parentcustomerid?.name ?? "")}"` : ""} data-view-layouts="${base64Json(layouts)}"><div class="view-grid"></div>${gridMessages(bs)}${PAGINATION}${gridModals(`/_portal/modal-form-template-path/${websiteId}`, settings, formLanguage, bs)}${associateHtml}</div></div></div>`,
     );
   }
   const cellControl = async (cell) => {
@@ -1532,7 +1728,7 @@ async function renderForm(kind, name, context, options) {
     if (resolved.ownerHidden) return "";
     const fieldValidatorsList = fieldValidators(resolved, { linksEnabled, readOnly });
     validators.push(...fieldValidatorsList);
-    const labelFor = (resolved.control === "lookup" && resolved.lookupStyle !== "dropdown") || resolved.control === "boolean" && canonicalId(resolved.controlClassId) === RADIO_CLASS || resolved.control === "picklist" && [100000000, 100000001].includes(resolved.controlStyle) || /^(state|status)$/.test(resolved.control)
+    const labelFor = (resolved.control === "lookup" && resolved.lookupStyle !== "dropdown") || ["file", "image"].includes(resolved.control) || resolved.control === "boolean" && canonicalId(resolved.controlClassId) === RADIO_CLASS || resolved.control === "picklist" && [100000000, 100000001].includes(resolved.controlStyle) || /^(state|status)$/.test(resolved.control)
       ? ""
       : ` for="${attr(resolved.control === "datetime" ? `${resolved.id}_datepicker_description` : resolved.id)}"`;
     const description = resolved.description?.text ? resolved.description : null;
@@ -1542,15 +1738,20 @@ async function renderForm(kind, name, context, options) {
     // keeps its validators (marked read-only). The app bundle then makes the containers of
     // read-only lookups and option sets focusable (lib/platform-app-compat.js).
     const fieldLevelReadOnly = resolved.fieldReadOnly ?? resolved.readOnly;
-    return `${descriptionHtml(100000002)}<div class="info${resolved.required && !resolved.readOnly ? " required" : ""}">${labelHtml}${fieldLevelReadOnly ? "" : `<div class="validators">${validatorMarkup(fieldValidatorsList, { readonly: readOnly })}</div>`}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
+    // Bootstrap 5 marks a required column required even when it is read-only.
+    return `${descriptionHtml(100000002)}<div class="${bs.info}${resolved.required && (bs.v5 || !resolved.readOnly) ? " required" : ""}">${labelHtml}${fieldLevelReadOnly ? "" : `<div class="validators">${validatorMarkup(fieldValidatorsList, { readonly: readOnly })}</div>`}</div>${descriptionHtml(100000000)}<div class="control" data-logical-name="${attr(resolved.name)}">${await input(resolved)}</div>${descriptionHtml(100000001)}`;
   };
   const cellClass = (cell) => {
     if (cell.type === "quickform") return "crmquickform-cell";
     if (cell.type === "subgrid") return "subgrid-cell";
     if (cell.type === "notes") return "notes-cell";
+    if (cell.type === "webresource") return "web-resource-cell";
     const field = byName.get(cell.name);
     if (!field) return "";
     switch (field.control) {
+      case "file":
+      case "image":
+        return "";
       case "lookup":
         return "lookup form-control-cell";
       case "picklist":
@@ -1582,7 +1783,22 @@ async function renderForm(kind, name, context, options) {
   const sectionMetadata = (sectionName) => metadataFor(metadataRows, 100000001, (row) => fieldOf(row, "sectionname") === sectionName);
   const tabMetadata = (tabName) => metadataFor(metadataRows, 100000002, (row) => fieldOf(row, "tabname") === tabName);
   let layoutHtml = "";
+  const placed = new Set();
   if (schema.layout) {
+    // CrmEntityFormView reports columns placed more than once (outside hidden sections).
+    const seen = new Set();
+    const repeated = [];
+    for (const tab of schema.layout)
+      for (const column of tab.columns)
+        for (const section of column.sections.filter((candidate) => !candidate.hidden))
+          for (const cell of section.rows.flat())
+            if (cell.name && byName.has(cell.name)) {
+              if (seen.has(cell.name) && !repeated.includes(cell.name)) repeated.push(cell.name);
+              seen.add(cell.name);
+            }
+    // Listed in the order the columns first appear.
+    repeated.sort((a, b) => [...seen].indexOf(a) - [...seen].indexOf(b));
+    if (repeated.length) layoutHtml += `<div class="alert alert-danger alert-block">${escape(repeated.join(", "))} field is present multiple times on this form. Only first field will be rendered in the UI</div>`;
     for (const tab of schema.layout) {
       const tabRow = tabMetadata(tab.name);
       const tabLabel = formLabel(fieldOf(tabRow, "label"), tab.label ?? "");
@@ -1591,6 +1807,11 @@ async function renderForm(kind, name, context, options) {
       for (const column of tab.columns) {
         tabHtml += `<div class="tab-column"${column.width ? ` style="width:${attr(column.width)};"` : ""}><div>`;
         for (const section of column.sections) {
+          // A hidden section leaves an empty fieldset.
+          if (section.hidden) {
+            tabHtml += "<fieldset></fieldset>";
+            continue;
+          }
           const sectionRow = sectionMetadata(section.name);
           const sectionLabel = formLabel(fieldOf(sectionRow, "label"), section.label ?? "");
           const widths = section.columnWidths ?? [100];
@@ -1598,11 +1819,18 @@ async function renderForm(kind, name, context, options) {
           for (const row of section.rows) {
             tabHtml += "<tr>";
             for (const cell of row) {
-              if (cell.spacer) {
+              const field = byName.get(cell.name);
+              // A hidden cell and the repeated cells of a column already on the form render
+              // nothing; spacers, the hidden owner and unsupported (Int64) columns an empty cell.
+              if (cell.hidden) continue;
+              if (cell.name && field) {
+                if (placed.has(cell.name)) continue;
+                placed.add(cell.name);
+              }
+              if (cell.spacer || field?.ownerHidden || (field && UNSUPPORTED_FORM_TYPES.test(String(field.dataverseType ?? "")))) {
                 tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell"></td>`;
                 continue;
               }
-              const field = byName.get(cell.name);
               const hidden = cell.hidden || field?.ownerHidden || (field?.hidden && field?.control !== "lookup") || field?.hidden;
               const suffix = cellClass(cell);
               tabHtml += `<td colspan="${cell.colspan ?? 1}" rowspan="${cell.rowspan ?? 1}" class="clearfix cell${suffix ? " " + suffix : ""}"${hidden ? ' style="display: none;"' : ""}>${await cellControl(cell)}</td>`;
@@ -1712,16 +1940,19 @@ async function renderForm(kind, name, context, options) {
     operation: mode === FORM_MODE.insert ? "create" : "update",
     recordQueryName: queryName,
     summaryHeader: "The form could not be submitted for the following reasons:",
+    // Bootstrap 5 success panels carry the platform's close button (named like the form buttons).
+    ...(bs.v5 ? { messagePanel: { className: SUCCESS_PANEL_V5, closeButton: messageCloseButton(ids.buttons, bs) } } : {}),
     ...((options.observed ?? portal.observed)?.nativeFormTransport === 'postback' ? { transport: 'postback' } : {}),
     fields: fields
-      .filter((field) => !field.ownerHidden && !field.readOnly && !["state", "status"].includes(field.control))
+      .filter((field) => !field.ownerHidden && !field.readOnly && !["state", "status", "file", "image"].includes(field.control))
       .map((field) => ({ name: field.name, id: field.id, control: controlForSubmit(field), readOnly: false, bindings: field.bindings })),
   };
   const summaryId = `ValidationSummary${ids.view}`;
   const summaryHeader = "<h2 class='validation-header'><span role='presentation' class='fa fa-info-circle'></span> The form could not be submitted for the following reasons:</h2>";
   const layoutConfig = {
     EntityName: schema.entity,
-    Id: definition?.id ?? null,
+    // The Bootstrap 5 platform renders the empty GUID as the layout id.
+    Id: bs.v5 ? EMPTY_GUID : definition?.id ?? null,
     SubmitActionLink: { Modal: {}, Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     PreviousActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
     NextActionLink: { Type: 0, Enabled: false, ShowModal: 0, FilterCriteriaId: "00000000-0000-0000-0000-000000000000" },
@@ -1737,24 +1968,27 @@ async function renderForm(kind, name, context, options) {
     `<input type="hidden" name="${attr(ids.names.replace(/\$$/, ""))}$${attr(ids.view)}_${suffix}" id="${attr(ids.view)}_${suffix}"${String(valueText ?? "") !== "" ? ` value="${attr(valueText)}"` : ""}>`;
   const instructions = formLabel(fieldOf(componentMetadata, "instructions"), "");
   const panelClass = kind === "webform" && progress?.position === "left" ? "crmEntityFormView left" : kind === "webform" && progress?.position === "right" ? "crmEntityFormView right" : "crmEntityFormView";
-  const entityFormClass = readOnly ? "form-readonly entity-form" : "entity-form";
-  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""} role="form" aria-label="${kind === "webform" ? "Multistep Form" : "Basic Form"}"><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}</div>${actionsHtml}</div>`;
+  const entityFormClass = readOnly ? "form-readonly entity-form" : postback && mode === FORM_MODE.insert ? "entity-form entity-form" : "entity-form";
+  // An editable basic form carries the platform's off-screen honeypot box. The platform names it with a
+  // per-render token; the local token is derived from the form and record so renders stay repeatable.
+  const trap = createHash("sha256").update(`${definition?.id ?? name}:${id ?? ""}`).digest("hex").slice(0, 8);
+  const honeypot = kind === "entityform" && !readOnly ? `<div class="frm-g-${trap}" style="position:absolute;left:-9999px;top:-9999px;opacity:0;height:0;overflow:hidden;" aria-hidden="true"><label for="frm_pref_${trap}">Leave this field blank</label><input name="${attr(ids.names)}frm_pref_${trap}" type="text" id="frm_pref_${trap}" tabindex="-1" autocomplete="off"></div>` : "";
+  let formHtml = `<div id="${attr(ids.panel)}" class="${panelClass}" data-form-name="${attr(schema.formName ?? schema.title ?? name)}"${defaultButton ? ` onkeypress="javascript:return WebForm_FireDefaultButton(event, '${defaultButton}')"` : ""} role="form" aria-label="${kind === "webform" ? "Multistep Form" : "Basic Form"}"><div id="${attr(ids.view)}" class="${entityFormClass}"${readOnly ? ' readonly="readonly"' : ""}>${hidden("EntityName", schema.entity)}${hidden("EntityID", id ? canonicalId(id) : "")}${hidden("EntityState", scalarValue(record?.statecode) ?? "")}${hidden("EntityStatus", scalarValue(record?.statuscode) ?? "")}<span id="${attr(ids.view)}_EntityLayoutConfig" data-form-layout="${attr(JSON.stringify(layoutConfig))}"></span><div id="${attr(summaryId)}" class="${attr(fieldOf(componentMetadata, "validationsummarycssclass") || "validation-summary alert alert-error alert-danger alert-block")}" role="alert" style="${postback?.validationErrors ? "" : "display:none;"}"${readOnly ? ' readonly="readonly"' : ""}>${postback?.validationErrors ? summaryHeader + "<ul>" + postback.validationErrors.map(item => `<li><a href="#${attr(item.field)}_label">${escape(item.message)}</a></li>`).join("") + "</ul>" : ""}</div>${layoutHtml}${attachHtml}${honeypot}</div>${actionsHtml}</div>`;
   if (postback?.outcome?.type === 'message') {
-    const message = `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
-    formHtml = message + (postback.outcome.hideForm !== false ? '<div style="display:none;">' + formHtml + '</div>' : formHtml);
+    const message = bs.v5
+      ? `<div id="MessagePanel" class="${SUCCESS_PANEL_V5}" role="alert">${messageCloseButton(ids.buttons, bs)}<span id="MessageLabel">${postback.outcome.message}</span></div>`
+      : `<div id="MessagePanel" class="message alert alert-info success alert alert-success success alert alert-success" role="alert"><span id="MessageLabel">${postback.outcome.message}</span></div>`;
+    formHtml = message + (postback.outcome.hideForm !== false ? "" : formHtml);
   }
-  if (postback?.outcome?.type === 'error') {
-    const message = escape(postback.outcome.message);
-    const markup = postback.outcome.markup === 'paragraph' ? `<p>${message}</p>` : message;
-    formHtml = `<div id="MessagePanel" class="message alert alert-danger" role="alert"><span id="MessageLabel">${markup}</span></div>` + formHtml;
-  }
+  if (postback?.outcome?.type === 'error')
+    formHtml = formErrorPanel(postback.outcome, { v5: bs.v5, closeButton: bs.v5 ? messageCloseButton(ids.buttons, bs) : "" }) + formHtml;
   const progressTop = progress && progress.position !== "bottom" ? progress.html : "";
   const progressBottom = progress && progress.position === "bottom" ? progress.html : "";
   // Native order: validation runtime and default hook before the control, custom
   // JavaScript first inside the control, validator expandos after the markup.
-  const runtime = `<script src="${NATIVE_FORMS_SCRIPT}"></script>${kind === "webform" ? "" : `<script type="text/javascript">function entityFormClientValidate() { // Custom client side validation. Method is called by the submit button's onclick event.\n// Must return true or false. Returning false will prevent the form from submitting.\nreturn true; }</script>`}`;
+  const runtime = `<script src="${NATIVE_FORMS_SCRIPT}"></script>${kind === "webform" ? "" : ENTITY_FORM_CLIENT_VALIDATE}`;
   if (options.onNativePostbackDescriptor) {
-    const writable = fields.filter((field) => renderedFields.has(field.name) && !field.readOnly && !field.ownerHidden && !field.disabled);
+    const writable = fields.filter((field) => renderedFields.has(field.name) && !field.readOnly && !field.ownerHidden && !field.disabled && !["file", "image"].includes(field.control));
     const descriptor = nativeFormPostbackDescriptor({ kind, formId: definition?.id ?? name, fields: writable, actions: renderedActions, modal, pageControl });
     Object.freeze(descriptor.ids);
     for (const field of descriptor.fields) Object.freeze(field);
@@ -1796,11 +2030,72 @@ function controlForSubmit(field) {
   }
 }
 
-function renderNotesControl({ record, id, entity, websiteId, settings, label, language = {} }) {
-  if (!id) return `<div class="info"><label for="notescontrol">${escape(label ?? "Notes")}</label></div><div class="control"><div id="notescontrol"></div></div>`;
+function renderNotesControl({ record, id, entity, websiteId, settings, label, language = {}, bs = BOOTSTRAP_MARKUP.BootstrapV3 }) {
+  const info = `<div class="${bs.info}">${label === null ? "" : `<label for="notescontrol">${escape(label ?? "Notes")}</label>`}</div>`;
+  if (!id) return `${info}<div class="control"><div id="notescontrol"></div></div>`;
   const page = (name, fallback) => formText(settings?.[name], fallback, language);
   const addEnabled = settings.CreateEnabled !== false;
-  return `<div class="info"><label for="notescontrol">${escape(label ?? "Notes")}</label></div><div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? "True" : "False"}" data-edit-enabled="${settings.EditEnabled === true ? "True" : "False"}" data-delete-enabled="${settings.DeleteEnabled === true ? "True" : "False"}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page("EmptyMessage", "There are no notes to display."))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${addEnabled ? `<a class="btn btn-default addnote" href="#">${escape(page("AddNoteButtonLabel", "Add a note"))}</a>` : ""}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${nativeModal({ className: "modal-addnote", title: "Add a note", body: `<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>`, footer: '<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' })}${nativeModal({ className: "modal-editnote", title: "Edit note", body: `<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>`, footer: '<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' })}${nativeModal({ className: "modal-delete modal-deletenote", title: "Delete note", body: "Are you sure you want to delete this note?", footer: '<button class="primary btn btn-primary" type="button">Delete</button><button class="cancel btn btn-default" data-dismiss="modal" type="button">Cancel</button>' })}</div></div></div>`;
+  if (bs.v5) return `${info}<div class="control"><div id="notescontrol">${notesControlV5({ record, id, entity, websiteId, settings, page, addEnabled, bs })}</div></div>`;
+  return `${info}<div class="control"><div id="notescontrol"><div class="col-md-8 entity-notes" data-url-get="/_services/entity-notes/${websiteId}" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-get-attachments="" data-add-enabled="${addEnabled ? "True" : "False"}" data-edit-enabled="${settings.EditEnabled === true ? "True" : "False"}" data-delete-enabled="${settings.DeleteEnabled === true ? "True" : "False"}" data-use-scrolling-pagination="False" data-hide-field-label="False" data-orders='[{"Attribute":"createdon","Alias":null,"Direction":null}]' data-target="${attr(JSON.stringify({ Id: canonicalId(id), LogicalName: entity, Name: record?.name ?? null }))}" data-pagesize="${Number(settings.PageSize) || 10}"><div class="notes-empty message"><div class="alert alert-block alert-info">${escape(page("EmptyMessage", "There are no notes to display."))}</div></div><div class="notes-access-denied message"><div class="alert alert-block alert-danger">You don't have permissions to view these notes.</div></div><div class="notes-error message"><div class="alert alert-block alert-danger">An error occurred while loading notes.<span class="details"></span></div></div><div class="notes-loading message text-center"><span class="fa fa-spinner fa-spin" aria-hidden="true"></span> Loading...</div><div class="notes" tabindex="0"></div><div class="note-actions row"><div class="col-sm-3">${addEnabled ? `<a class="btn btn-default addnote" href="#">${escape(page("AddNoteButtonLabel", "Add a note"))}</a>` : ""}</div><div class="notes-pagination col-sm-9" data-pages="1" data-pagesize="${Number(settings.PageSize) || 10}" data-current-page="1"></div></div>${nativeModal({ bs, className: "modal-addnote", title: "Add a note", body: `<div class="addnote form-horizontal"><div class="form-group"><label id="note_label" class="col-sm-3 control-label required" for="note-text">Note</label><div class="col-sm-9"><textarea id="note-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-file" name="file" type="file"></div></div></div>`, footer: `<button class="primary btn btn-primary" type="button">Add Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}${nativeModal({ bs, className: "modal-editnote", title: "Edit note", body: `<div class="editnote form-horizontal"><div class="form-group"><label class="col-sm-3 control-label required" for="note-edit-text">Note</label><div class="col-sm-9"><textarea id="note-edit-text" name="text" class="form-control" cols="20" rows="6"></textarea></div></div><div class="form-group"><label class="col-sm-3 control-label" for="note-edit-file">Attach a file</label><div class="col-sm-9 form-control-static"><input id="note-edit-file" name="file" type="file"></div></div></div>`, footer: `<button class="primary btn btn-primary" type="button">Update Note</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}${nativeModal({ bs, className: "modal-delete modal-deletenote", title: "Delete note", body: "Are you sure you want to delete this note?", footer: `<button class="primary btn btn-primary" type="button">Delete</button><button class="cancel btn btn-default" ${bs.dismiss}="modal" type="button">Cancel</button>` })}</div></div></div>`;
+}
+
+/**
+ * Bootstrap 5 notes control (the platform's timeline-less notes list): plain status messages,
+ * the list title, and add/edit/delete dialogs with the platform's fixed labels. The platform's
+ * data-attachmentsettings is an encrypted value and is not reproduced.
+ */
+function notesControlV5({ id, entity, websiteId, settings, page, addEnabled, bs }) {
+  const pageSize = Number(settings.PageSize) || 10;
+  const orders = (settings.ListOrders?.length ? settings.ListOrders : [{ Attribute: "createdon", Direction: "Descending" }]).map((order) => ({
+    Attribute: order.Attribute,
+    Alias: order.Alias ?? null,
+    Direction: /^desc/i.test(String(order.Direction)) || Number(order.Direction) === 1 ? 1 : 0,
+  }));
+  const regarding = { Id: canonicalId(id), LogicalName: entity, Name: null, KeyAttributes: [], RowVersion: null };
+  // The dialogs carry the regarding record as indented JSON with CRLF line breaks.
+  const dialogTarget = JSON.stringify({ LogicalName: entity, Id: canonicalId(id) }, null, 2).replace(/\n/g, "\r\n");
+  const message = (className, name, fallback) => `<div class="${className}" role="presentation" tabindex="0">${escape(page(name, fallback))}</div>`;
+  const loading = escape(page("LoadingMessage", "Loading..."));
+  const button = (label, primary = false) => `<button aria-label="${attr(label)}" class="${primary ? "primary btn btn-primary" : "cancel btn btn-default"}"${primary ? "" : ` ${bs.dismiss}="modal"`} tabindex="0" title="${attr(label)}" type="button">${escape(label)}</button>`;
+  const noteRow = (labelHtml, textarea) => `<div class="row mb-3">${labelHtml}<div class="col-md-9"><textarea aria-label="Note" class="form-control" cols="20"${textarea} name="text" rows="9" tabindex="0"></textarea></div></div>`;
+  const fileRow = (wrapper, accept) => `<div class="row mb-3"><label aria-label="Attach a file" class="col-form-label fw-bold col-md-3">Attach a file</label><div class="col-md-9"${wrapper}><div class="form-control-plaintext"><input${accept} aria-label="Choose File" name="file" tabindex="0" type="file"></div></div></div>`;
+  const deleteTitle = "<span class='fa fa-trash-o' aria-hidden='true'></span> Delete note";
+  return `<div class="col-lg-8 entity-notes" data-add-accept-types="*" data-add-enabled="${addEnabled ? "True" : "False"}" data-bs-target="${attr(JSON.stringify(regarding))}" data-delete-enabled="${settings.DeleteEnabled === true ? "True" : "False"}" data-edit-enabled="${settings.EditEnabled === true ? "True" : "False"}" data-hide-field-label="False" data-is-timeline="False" data-orders="${attr(JSON.stringify(orders))}" data-pagesize="${pageSize}" data-rte-enabled="False" data-url-add="/_services/entity-form-addnote/${websiteId}" data-url-delete="/_services/entity-form-deletenote/${websiteId}" data-url-edit="/_services/entity-form-updatenote/${websiteId}" data-url-get="/_services/entity-notes/${websiteId}" data-url-get-attachments="" data-url-get-attachments-count="" data-use-scrolling-pagination="False" disable-validation="false">${page("ListTitle", "") ? `<div class="col-md-12 page-header mr-0"><h3>${escape(page("ListTitle", ""))}</h3></div>` : ""}${message("notes-empty message", "EmptyMessage", "There are no notes to display.")}${message("notes-access-denied message", "AccessDeniedMessage", "You don't have permissions to view these notes.")}${message("notes-error message", "ErrorMessage", "An error occurred while loading notes.")}<div class="notes-loading message text-center" role="presentation" tabindex="0">${loading}</div><div class="notes"></div><div class="notes-loading-more message text-center">${loading}</div><div class="note-actions row"><div class="col-md-3">${addEnabled ? `<a class="addnote btn btn-default" href="#" role="button">${escape(page("AddNoteButtonLabel", "Add a note"))}</a>` : ""}</div><div class="notes-pagination col-md-9" data-current-page="1" data-pages="1" data-pagesize="${pageSize}"></div></div>${nativeModal({
+    bs,
+    className: "modal-addnote",
+    title: "Add note",
+    body: `<div class="  addnote" data-bs-target="${attr(dialogTarget)}" data-url="/_services/entity-form-addnote/${websiteId}">${noteRow('<label class="col-form-label fw-bold col-md-3" id="note_label_add">Note</label>', ' maxlength="100000"')}${fileRow("", ' accept="*"')}</div>`,
+    footer: `${button(" Add note", true)}${button("Cancel")}`,
+  })}${nativeModal({
+    bs,
+    className: "modal-editnote",
+    title: "Edit note",
+    body: `<div class="  editnote" data-bs-target="${attr(dialogTarget)}" data-url="/_services/entity-form-updatenote/${websiteId}">${noteRow('<label class="required col-form-label fw-bold col-md-3" id="note_label_edit">Note</label>', "")}${fileRow(' tabindex="0"', "")}</div>`,
+    footer: `${button("Update note", true)}${button("Cancel")}`,
+  })}${nativeModal({ bs, className: "modal-delete modal-deletenote", title: deleteTitle, label: deleteTitle, body: "<p>Are you sure you want to delete this note?</p>", footer: `${button("Delete", true)}${button("Cancel")}` }).replace(` title="${attr(plainText(deleteTitle))}"`, ` title="${attr(deleteTitle)}"`)}</div>`;
+}
+
+// The platform file and image controls' upload size argument (KB) as the live controls render it.
+const FILE_CONTROL_MAX_KB = 1048576;
+/**
+ * File and image column controls: before the record exists a notice; afterwards the platform's
+ * hidden file input, choose/delete buttons and the hidden state inputs the upload script fills.
+ * The platform names the file input after a generated control index; the column id is used here.
+ */
+function fileColumnInput(field, { id, entity, record, scalar, nameAttr }) {
+  const fieldId = field.id;
+  const image = field.control === "image";
+  const hiddenNames = image ? ["", "_image_size", "_image_change", "_record_id"] : ["_filename", "_filetype", "_record_id", "_file_id", "_file_change", "_file_size"];
+  const fileName = record?.[`${field.name}_name`] ?? "";
+  const values = { _record_id: id ? canonicalId(id) : "", _filename: fileName, _file_id: !image && scalar ? canonicalId(scalar) : "" };
+  const hidden = hiddenNames.map((suffix) => `<input type="hidden" name="${nameAttr(field, `hidden${suffix}`)}" id="${attr(fieldId)}hidden${suffix}"${valueAttr(values[suffix])}>`).join("");
+  const validator = image ? "" : `<span id="FileValidator${attr(fieldId)}hidden_filename" style="display:none;"></span>`;
+  if (!id) return `<div><div>${escape(image ? "This record hasn't been created yet. To enable image upload, create this record" : "This record hasn't been created yet. To enable file upload, create this record.")}</div></div>${hidden}${validator}`;
+  const trash = "<span class='fa fa-trash iconforimage'></span>Delete";
+  if (image)
+    return `<div><input name="${nameAttr(field, "_input_file")}" type="file" accept="image/*" id="${attr(fieldId)}" aria-label="${attr(field.name)}" style="display:none" onchange="imageLoad(this, '1', '${FILE_CONTROL_MAX_KB}');"><div><button id="${attr(fieldId)}_input_image" type="button" class="btn btn-default btn-for-image-input btn-for-inputofimage" onclick="chooseImage(this, '${attr(fieldId)}');">Choose File</button><div class="gap-between-vertical-element break-image-name">No file selected</div></div></div><div><div class="image-inline" style="display:none"><a target="_blank"><img src="" height="144px" width="144px" class="image-render" alt="${attr(field.label)}"></a></div><div><button type="button" class="buttonfordeleteimage btn btn-default btnforimage" onclick="deleteImage(this, '${attr(fieldId)}');" style="display:none">${trash}</button></div></div>${hidden}`;
+  const download = fileName ? `/File/download.aspx?Entity=${encodeURIComponent(entity ?? "")}&Attribute=${encodeURIComponent(field.name)}&Id=${canonicalId(id)}` : "";
+  return `${validator}<div class="file-control-container"><div class="container-file-input"><div><input type="file" name="${nameAttr(field, "_input_file")}" id="${attr(fieldId)}_input_file" aria-label="${attr(field.label)}" onchange="fileLoad(this, '${attr(fieldId)}', '${FILE_CONTROL_MAX_KB}', '1');" style="display:none"><button id="${attr(fieldId)}" type="button" class="btn btn-default btn-for-file-input " onclick="chooseFile(this, '${attr(fieldId)}');" aria-labelledby="Choose File" aria-label="Choose File for ${attr(field.label)}">${fileName ? "Change File" : "Choose File"}</button></div></div><div class="container-filelink-delete file-link-and-delete"><div class="break-file-name file-name-container">${fileName ? `<a href="${attr(download)}"><span id="${attr(fieldId)}_file_name">${escape(fileName)}</span></a><div style="display:none">No file selected</div>` : "<div>No file selected</div>"}</div>${fileName ? `<div><button id="${attr(fieldId)}_delete_button" type="button" class="btn btn-default btn-for-delete btn-without-border" onclick="deleteFile(this, '${attr(fieldId)}');">${trash}</button></div>` : ""}</div></div>${hidden}`;
 }
 
 function richTextInput(field, current, { portal, managedControls, nameAttr }) {

@@ -297,7 +297,7 @@ test("standard PAC names, language copy, URL, annotation attachment, and rendere
   // The platform's after-footer bundles follow the footer; the page script comes last.
   assert.match(
     rendered.html,
-    /<footer>2026<\/footer>(?:<script src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){4}<script>window\.work = true;<\/script><\/body>/,
+    /<footer>2026<\/footer>(?:<script(?: onerror="[^"]*")? src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){4}<script>window\.work = true;<\/script><\/body>/,
   );
   assert.doesNotMatch(rendered.html, /\/__sim-static\//);
   assert.match(rendered.html, /\.work \{color: red\}/);
@@ -519,7 +519,7 @@ test("render diagnostics expose unsupported tags and filters instead of reportin
   r = await createPortalRenderer(portal).renderPage("/work/");
   assert.equal(r.status, 200);
   // Platform chrome (antiforgery holder, platform bundles, native controls root) surrounds the content.
-  assert.match(r.html, /<header>Hello<\/header>(?:<div[^>]*><\/div>|<script src="\/resource\/powerappsportal\/[^"]+"[^>]*><\/script>)*Unknown tag 'unknown_portal_tag'(?:<div[^>]*><\/div>|<script src="\/resource\/powerappsportal\/[^"]+"[^>]*><\/script>)*<footer>/);
+  assert.match(r.html, /<header>Hello<\/header>(?:<div[^>]*><\/div>|<script(?: onerror="[^"]*"| defer="defer")? src="\/resource\/powerappsportal\/[^"]+"[^>]*><\/script>)*Unknown tag 'unknown_portal_tag'(?:<div[^>]*><\/div>|<script(?: onerror="[^"]*"| defer="defer")? src="\/resource\/powerappsportal\/[^"]+"[^>]*><\/script>)*<footer>/);
   assert.equal(r.diagnostics[0].code, "liquid-syntax-error");
   assert.match(r.diagnostics[0].message, /unknown_portal_tag/);
 });
@@ -834,7 +834,7 @@ test("metadata-only managed Page Copy renders source scripts and custom template
   // The platform layout's <body> carries data-sitemap-state and the DateTime/* attributes.
   assert.match(
     result.html,
-    /<body data-sitemap-state="\/work\/:\/"[^>]*>[\s\S]*?<header>Hello<\/header>(?:<div id="antiforgerytoken"[^>]*><\/div>)?(?:<script src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){6}<div class='page-header'>/,
+    /<body data-sitemap-state="\/work\/:\/"[^>]*>[\s\S]*?<header>Hello<\/header>(?:<div id="antiforgerytoken"[^>]*><\/div>)?(?:<script(?: onerror="[^"]*")? src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){6}<div class='page-header'>/,
   );
 });
 

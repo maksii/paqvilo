@@ -928,29 +928,25 @@ test("the platform layout carries the language attributes and links content styl
     ...css("08", "alpha.css", HOME, 3),
   };
   const { renderer, portal } = await setup(t, {}, files);
-  const stamp = Date.UTC(2026, 0, 2, 3, 4, 5);
-  for (const file of portal.webFiles) await fs.utimes(file.file, new Date(stamp + 678), new Date(stamp + 678));
   const page = await renderer.renderPage("/child/grand/");
   assert.equal(page.status, 200);
   // crm-lcid is the LCID of the request's website language (English here), not adx_website_language.
   assert.match(page.html, /<html lang="en-US" dir="ltr" crm-lang="en-US" crm-lcid="1033" data-lang="en-US" same-site-mode="None">/);
   const headLinks = (html) => [...html.slice(0, html.indexOf("</head>")).matchAll(/<link href="([^"]+)" rel="stylesheet" \/>/g)].map((match) => match[1]);
-  // bootstrap.min.css first, then the root's styles by display order and name, then the child page's.
-  assert.deepEqual(headLinks(page.html), [
-    `/bootstrap.min.css?${stamp}`,
-    `/first.css?${stamp}`,
-    `/second.css?${stamp}`,
-    `/alpha.css?${stamp}`,
-    `/beta.css?${stamp}`,
-    `/child/child.css?${stamp}`,
-  ]);
+  // bootstrap.min.css first, then the root's styles by display order and name, then the child
+  // page's; the URLs carry no cache-busting query (the reference site's layout links them bare).
+  assert.deepEqual(headLinks(page.html), ["/bootstrap.min.css", "/first.css", "/second.css", "/alpha.css", "/beta.css", "/child/child.css"]);
+  // same-site-mode is the HTTP/SameSite/Default setting when the site defines it.
+  portal.settings["HTTP/SameSite/Default"] = "Lax";
+  assert.match((await createPortalRenderer(portal).renderPage("/child/grand/")).html, /<html [^>]*same-site-mode="Lax">/);
+  delete portal.settings["HTTP/SameSite/Default"];
   // The home page has a bootstrap.min.css child, so the default is "web-file"; the observed
   // per-site setting "platform" links the platform's Bootstrap instead.
   portal.observed = { bootstrapStylesheet: "platform", evidence: "synthetic" };
   const observedPlatform = (await createPortalRenderer(portal).renderPage("/child/grand/")).html;
   assert.equal((observedPlatform.match(/bootstrap\.min\.css/g) ?? []).length, 1);
   assert.match(observedPlatform, /href="\/css\/bootstrap\.min\.css"/);
-  assert.equal(headLinks(observedPlatform)[0], `/first.css?${stamp}`);
+  assert.equal(headLinks(observedPlatform)[0], "/first.css");
   delete portal.observed;
   // Head/Bootstrap replaces the bootstrap link; without either the platform's own
   // /css/bootstrap.min.css is linked once, and no web-file Bootstrap appears.

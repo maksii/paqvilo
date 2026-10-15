@@ -44,7 +44,8 @@ export function nativeFormPostbackDescriptor({ kind, formId, fields = [], action
     if (!field || typeof field.name !== "string" || !field.name || dangerous.has(field.name)) invalid("Invalid declared native form field");
     if (field.readOnly || field.disabled || field.ownerHidden) continue;
     const wireName = ids.names + field.name;
-    if (names.has(wireName)) invalid("Ambiguous declared native form field");
+    // A column placed on the form more than once renders (and posts) only its first cell.
+    if (names.has(wireName)) continue;
     names.add(wireName);
     boundFields.push({ name: field.name, wireName, multiple: field.multiple === true });
   }
@@ -115,4 +116,21 @@ export function parseNativePostback(entries, descriptors) {
     eventArgument: argumentsPosted[0] ?? "",
     ignoredEntryCount: entryCount - consumed,
   };
+}
+
+/**
+ * Text controls of a multipart/form-data postback, in posted order. Empty file inputs are
+ * skipped; a selected file is refused because native file controls save through their own
+ * services, not the form postback.
+ */
+export async function multipartControls(bytes, contentType) {
+  let data;
+  try { data = await new Response(bytes, { headers: { "content-type": contentType } }).formData(); }
+  catch { throw new NativePostbackError("Malformed multipart native postback"); }
+  const controls = new URLSearchParams();
+  for (const [name, value] of data) {
+    if (typeof value === "string") controls.append(name, value);
+    else if (value.size || value.name) throw Object.assign(new NativePostbackError("Native postback file submission is not supported"), { status: 415 });
+  }
+  return controls;
 }

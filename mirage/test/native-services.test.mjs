@@ -140,6 +140,8 @@ test("entity grid service returns the native paging, search and layout-only sort
   assert.equal((await post("entity-grid-data.json", gridRequest(secure), {})).status, 403);
   let response = await post("entity-grid-data.json", gridRequest(secure));
   assert.equal(response.status, 200);
+  // The service answers with the page no-cache policy and frame confinement.
+  assert.deepEqual(["cache-control", "pragma", "expires", "x-frame-options"].map((name) => response.headers.get(name)), ["no-cache, no-store, must-revalidate", "no-cache", "-1", "SAMEORIGIN"]);
   let data = await response.json();
   assert.deepEqual([data.ItemCount, data.PageCount, data.PageNumber, data.PageSize, data.MoreRecords], [3, 2, 1, 2, true]);
   const name = data.Records[0].Attributes.find((attribute) => attribute.Name === "name");
@@ -166,7 +168,7 @@ test("entity grid service returns the native paging, search and layout-only sort
 test("lookup grid service serves the editable lookup's target view on demand", async (t) => {
   const { app, post, get } = await fixture(t);
   const page = await (await get(`/?id=${CONTACT}`)).text();
-  assert.match(page, /id="parentcustomerid_name"[^>]*value="Alpha"/);
+  assert.match(page, /value="Alpha"[^>]*id="parentcustomerid_name"/);
   assert.match(page, /<button type="button" class="btn btn-default launchentitylookup"[^>]*aria-label="Organisation Launch lookup modal"/);
   const [layout] = layoutsAfter(page, 'id="parentcustomerid_lookupmodal"');
   assert.equal(layout.Configuration.EntityName, "account");

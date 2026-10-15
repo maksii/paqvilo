@@ -249,6 +249,11 @@ test(
         "<h1>Form fixture</h1>{% entityform name: 'Edit contact' %}",
       "portal/Edit.basicform.yml":
         "adx_entityformid: basic-form\nadx_name: Edit contact\nadx_entityname: contact\nadx_formname: Portal edit\nadx_mode: 100000000\n",
+      // An insert form renders only for an identity with a Create permission.
+      "portal/webrole.yml":
+        "- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true\n",
+      "portal/contact.tablepermission.yml":
+        "adx_entitypermissionid: contact-create\nadx_entitylogicalname: contact\nadx_entityname: Contacts\nadx_scope: 756150000\nadx_create: true\nadx_entitypermission_webrole:\n- anonymous\n",
       "solutions/Package/Entities/contact/Entity.xml":
         '<Entity><Name>contact</Name><EntityInfo><entity Name="contact"><PrimaryIdAttribute>contactid</PrimaryIdAttribute><EntitySetName>contacts</EntitySetName><attributes><attribute PhysicalName="fullname"><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>',
       "solutions/Package/Entities/contact/FormXml/main/{form-id}.xml":

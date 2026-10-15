@@ -72,7 +72,7 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
-import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL } from "./lib/response-headers.mjs";
+import { siteHeaders, webFileHeaders, webFileDisposition, tokenHtmlHeaders, notModified, PAGE_CACHE_CONTROL, PAGE_HEADERS } from "./lib/response-headers.mjs";
 import { solutionWatchFilter } from "./lib/solution-roots.mjs";
 import { observedConfig } from "./lib/project-config.mjs";
 import { runtimePort } from './lib/runtime-port.mjs';
@@ -84,6 +84,7 @@ import { collectWebApiErrorTemplates } from "./lib/webapi-error-templates.mjs";
 import { injectRuntime, renderComponent } from "./lib/platform.mjs";
 import { submitPortalForm, createWebFormSessions, webFormSessionOwner } from "./lib/form-service.mjs";
 import { resolveNativeFormSubmission, submitNativePostback, nativePostbackResponse } from './lib/native-form-submission.mjs';
+import { multipartControls } from './lib/native-postback.mjs';
 import { readVisitor, newVisitor, visitorCookieName } from "./lib/visitor-session.mjs";
 import { handleNativeService, antiForgeryCookie } from "./lib/native-services.mjs";
 import { antiForgeryHolder, isAspNetScript, webFormsForm, platformShell, bootstrapVariant } from "./lib/platform-manifest.mjs";
@@ -2627,7 +2628,7 @@ export async function createSimulator({
     }
     res.writeHead(status, {
       "content-type": "text/html; charset=utf-8",
-      "cache-control": PAGE_CACHE_CONTROL,
+      ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: "page" }),
       "x-sim-route": route,
     });
@@ -2994,8 +2995,11 @@ export async function createSimulator({
         .split(";")[0]
         .trim()
         .toLowerCase();
-      if (contentType === "application/x-www-form-urlencoded") {
-        const controls = new URLSearchParams(bytes.toString('utf8'));
+      // A WebForms page whose form carries a file input posts multipart/form-data (live
+      // item-edit captures); its text controls decode like the URL-encoded postback.
+      const multipart = nativePostbackEnabled && contentType === "multipart/form-data" ? await multipartControls(bytes, req.headers["content-type"]) : null;
+      if (contentType === "application/x-www-form-urlencoded" || multipart) {
+        const controls = multipart ?? new URLSearchParams(bytes.toString('utf8'));
         if (nativePostbackEnabled && controls.has('__EVENTTARGET')) {
           const tokens = controls.getAll('__RequestVerificationToken');
           if (tokens.length !== 1 || tokens[0] !== csrf) throw error('Missing portal verification token.', 403);
@@ -3135,7 +3139,7 @@ export async function createSimulator({
         let response;
         try {
           const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url)));
-          response = nativePostbackResponse({ result, context });
+          response = nativePostbackResponse({ result, context, values: submission.body.values });
         } catch (cause) {
           response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
           trace.getStore().error = cause;
@@ -3183,7 +3187,7 @@ export async function createSimulator({
       // EntityFormControl; its empty anti-forgery holder uses the portal-scoped URL.
       const scopedSite = normalizeId(portal.website.id ?? portal.website.adx_websiteid ?? portal.website.mspp_websiteid);
       const document = injectRuntimeCompatibility(
-        `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
+        `<!doctype html><html><head><meta charset="utf-8"><title>Portal form</title>${modalPlatform.headStart}${styles}${headScripts}${modalPlatform.headEnd}</head><body>${modalPlatform.bodyOpen}${antiForgeryHolder(`/_portal/${scopedSite}/Layout/GetAntiForgeryToken`)}${modalPlatform.bodyStart}<div id="content-container" class="container wrapper-body" role="main"><div id="content"><div id="mainContent">${webFormsForm({ id: "content_form", action: url.pathname + url.search, content: html, aspNetScripts })}</div></div></div>${modalPlatform.afterContent}${bodyScripts}${modalPlatform.afterFooter}</body></html>`,
         sourceDependencies, configuredHeadScripts,
       );
       for (const item of formStyleDiagnostics(document, config().shellProfile)) recordDiagnostic({ ...item, path: url.pathname });
@@ -3251,9 +3255,7 @@ export async function createSimulator({
       if (relative.startsWith("..") || path.isAbsolute(relative))
         throw error("Asset escaped the export directory.", 403);
       // Web file headers as online (lib/response-headers.mjs): charset on every type, the
-      // record's disposition, platform caching, ETag and Last-Modified with 304, HTTP/* settings.
-      const fileIdentity = currentIdentity();
-      const modified = (await fs.stat(file)).mtime;
+      // record's disposition, platform caching, ETag with 304, HTTP/* settings.
       const sendFile = (body, contentType, extra = {}) => {
         const headers = {
           ...siteHeaders(portal, { confinement: confinementPolicy(), kind: "webFile" }),
@@ -3261,8 +3263,6 @@ export async function createSimulator({
             body,
             contentType,
             fileName: asset.metadata?.filename ?? asset.metadata?._attachment?.name ?? path.basename(file),
-            modified,
-            signedIn: Boolean(fileIdentity?.contactId ?? fileIdentity?.id),
             caching: store.state.settings?.webFileCaching === "revalidate" ? "revalidate" : "platform",
             disposition: webFileDisposition(asset.metadata),
             mimeCharset: portal.observed?.webFileMimeCharset,
@@ -3364,7 +3364,7 @@ export async function createSimulator({
       let response;
       try {
         const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, formSubmissionOptions(pageIdentity, nativeContext?.visitor, url)));
-        response = nativePostbackResponse({ result, context });
+        response = nativePostbackResponse({ result, context, values: submission.body.values });
       } catch (cause) {
         response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
         nativeContext.error = cause;
@@ -3406,7 +3406,7 @@ export async function createSimulator({
     // headers; the loopback policy only with config.confinePortalPages (lib/response-headers.mjs).
     const headers = {
       "content-type": contentType,
-      "cache-control": PAGE_CACHE_CONTROL,
+      ...PAGE_HEADERS,
       ...siteHeaders(portal, { confinement: confinementPolicy(), kind: "page" }),
     };
     if (route?.kind === "redirect") Object.assign(headers, { location: route.location, "x-sim-route": route.source ?? "redirect" });

@@ -6,6 +6,7 @@ import { DataError } from "./data.mjs";
 import { csvCell } from './csv.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
+import { platformResourceHeaders, siteHeaders, PAGE_HEADERS } from "./response-headers.mjs";
 import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
@@ -14,6 +15,8 @@ import { renderShellResource } from './liquid.mjs';
 import { formStyleDiagnostics } from './platform-styles.mjs';
 import { formContentStyles } from './form-head.mjs';
 import { adapterEnabled } from './local-overrides.mjs';
+import { attributeMetadata } from './attribute-metadata.mjs';
+import { calendarSettings, calendarLanguageScript, calendarEvents, calendarIcs, parseCalendarPath } from './list-views.mjs';
 import {
   subgridSettings,
   subgridActionApplies,
@@ -388,6 +391,8 @@ export function buildLayout({
 }
 
 /** Native action link objects (subset of the managed ViewActionLink contract). */
+// The platform's default action tooltips (live list layouts).
+const ACTION_TOOLTIPS = { 1: "View details", 2: "Edit", 3: "Create", 4: "Delete" };
 export function actionLinks(settings, { portal, requestUrl, website }) {
   const actions = [];
   for (const [position, list] of [
@@ -440,7 +445,7 @@ export function actionLinks(settings, { portal, requestUrl, website }) {
         source: action,
         Type: type,
         Label: label,
-        Tooltip: localizedText(action.ButtonTooltip, ""),
+        Tooltip: localizedText(action.ButtonTooltip, ACTION_TOOLTIPS[type] ?? ""),
         Enabled: true,
         Target: target,
         EntityForm:
@@ -605,7 +610,7 @@ export function listModel({ portal, metadata, store, list, schemas = {} }) {
       placeholder: localizedText(portalField(m, "searchplaceholdertext", ""), "Search"),
       tooltip: localizedText(
         portalField(m, "searchtooltiptext", ""),
-        "To search on partial text, use the asterisk (*) wildcard character.",
+        "To search on partial text, use the asterisk (*) wildcard character. ",
       ),
     },
     filter: {
@@ -625,7 +630,49 @@ export function listModel({ portal, metadata, store, list, schemas = {} }) {
     detailsLabel: localizedText(portalField(m, "detailsbuttonlabel", ""), "View details"),
     createLabel: localizedText(portalField(m, "createbuttonlabel", ""), "Create"),
     emptyText: localizedText(portalField(m, "emptylisttext", ""), ""),
+    calendar: calendarSettings(list),
   };
+}
+
+/** Calendar list services: language table, event feed and iCalendar download. */
+async function handleCalendarService(req, res, url, context, websiteId) {
+  const route = parseCalendarPath(url.pathname);
+  if (!route || route.website !== websiteId || !["GET", "HEAD"].includes(req.method)) return false;
+  const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? "en-US";
+  if (route.kind === "language") {
+    const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : "en-US"));
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", "content-length": body.length });
+    res.end(req.method === "HEAD" ? undefined : body);
+    return true;
+  }
+  const list = (context.portal.lists ?? []).find((candidate) => canonical(candidate.id) === route.list);
+  if (!list) return false;
+  try {
+    const model = listModel({ portal: context.portal, metadata: context.metadata, store: context.store, list, schemas: context.schemas });
+    if (!model.calendar?.start) return sendJson(res, 200, { success: 0, error: "The list has no calendar start date column." }), true;
+    const from = Date.parse(url.searchParams.get("from") ?? "");
+    const to = Date.parse(url.searchParams.get("to") ?? "");
+    const query = await executeGridQuery(model, { viewId: route.view, page: 1, pageSize: 5000, allowLargePages: true, search: url.searchParams.get("search") ?? "" }, context);
+    if (query.accessDenied) return sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true;
+    // ponytail: one read per row for the calendar columns the view may not select; a FetchXML with the calendar attributes if lists grow large.
+    const rows = [];
+    for (const row of query.rows) {
+      const id = row[model.idColumn];
+      rows.push({ ...row, ...((id != null && (await context.readProvider.get(model.entity, id, context.identity))) || {}) });
+    }
+    const details = model.detailsPage ? context.portal.pages.find((page) => canonical(page.id) === model.detailsPage)?.url : null;
+    const events = calendarEvents(rows, { calendar: model.calendar, idColumn: model.idColumn, detailsUrl: details, idParameter: model.idParameter, from, to });
+    if (route.kind === "icalendar") {
+      const body = Buffer.from(calendarIcs(events));
+      res.writeHead(200, { "content-type": "text/calendar; charset=utf-8", "content-disposition": 'attachment; filename="calendar.ics"', ...PAGE_HEADERS, "content-length": body.length });
+      res.end(req.method === "HEAD" ? undefined : body);
+      return true;
+    }
+    sendJson(res, 200, { success: 1, result: events });
+  } catch (error) {
+    sendError(res, error);
+  }
+  return true;
 }
 
 function formDefinition(portal, kind, formId) {
@@ -728,6 +775,9 @@ export function lookupModel({ portal, schemas, metadata, store, kind, formId, st
     const name = primaryNameColumn(store, metadata, target) ?? targetMapping.idColumn;
     if (field.lookupView?.entity === canonical(target))
       return { ...field.lookupView, name: solutionView(metadata, field.lookupView.id)?.name ?? "Lookup View" };
+    // Without a form-selected view, the target's exported default lookup view (query type 64).
+    const lookupView = (metadata?.views ?? []).find((view) => view.entity === canonical(target) && view.queryType === 64 && view.isDefault);
+    if (lookupView) return { id: lookupView.id, entity: lookupView.entity, name: lookupView.name, fetchXml: lookupView.fetchXml, fields: lookupView.fields, sourceFile: lookupView.file };
     // A lookup without an imported default view still exposes the target's
     // primary name, sorted ascending, as the minimum native lookup projection.
     return {
@@ -1057,7 +1107,40 @@ export function formatDotNetDate(date, format) {
   );
 }
 
-function attributeEntry(name, value, { field, settings, entity, primaryName, timezoneOffset = 0 }) {
+/**
+ * The user's time zone with its daylight-saving rules. The platform reads it from the
+ * timeZoneCode cookie its client sets; an IANA name there is honoured. Otherwise, on loopback
+ * the browser shares this machine's zone: use it when its current offset matches the offset
+ * the grid request reports (getTimezoneOffset), else the fixed offset applies.
+ */
+export function requestTimeZone(req, offset, now = new Date()) {
+  const cookie = /(?:^|;\s*)timeZoneCode=([^;]+)/.exec(req?.headers?.cookie ?? "")?.[1];
+  const zone = cookie ? decodeURIComponent(cookie) : null;
+  if (zone && validTimeZone(zone)) return zone;
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return offset !== undefined && offset !== null && offset !== "" && Number(offset) === now.getTimezoneOffset() ? local : null;
+}
+const validTimeZone = (zone) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone.includes("/") || zone === "UTC";
+  } catch {
+    return false;
+  }
+};
+/** A Date whose UTC fields are the wall-clock time in the user's zone (or fixed offset). */
+export function userLocalDate(date, { timeZone, timezoneOffset = 0 } = {}) {
+  if (!timeZone) return new Date(date.getTime() - Number(timezoneOffset || 0) * 60000);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(date).map((part) => [part.type, part.value]));
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)));
+}
+
+// The grid service formats values with the request language's culture (en-US for 1033):
+// date and time "M/d/yyyy h:mm tt"; the site's DateTime/* settings apply in the client only.
+const CULTURE_DATE = "M/d/yyyy";
+const CULTURE_DATETIME = "M/d/yyyy h:mm tt";
+
+function attributeEntry(name, value, { field, settings, entity, primaryName, timezoneOffset = 0, timeZone = null, currency = () => null }) {
   const dataverseType = String(field?.dataverseType ?? "").toLowerCase();
   let type = NET_TYPES[dataverseType];
   const inner = scalar(value);
@@ -1069,14 +1152,16 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     else if (typeof value === "string" && GUID.test(value)) type = "System.Guid";
     else type = "System.String";
   }
+  // Strings and ids carry no formatted value (Dataverse FormattedValues has none for them).
   const entry = {
     Name: name,
     Type: type,
     Value: inner,
-    FormattedValue: inner == null ? "" : String(inner),
+    FormattedValue: "",
     DateTimeFormat: "DateAndTime",
     DisplayValue: inner == null ? "" : String(inner),
-    AttributeMetadata: compactAttributeMetadata(entity, name.split(".").at(-1), field, primaryName),
+    AttributeMetadata: attributeMetadata(entity, name.split(".").at(-1), field, { primaryName }) ?? compactAttributeMetadata(entity, name.split(".").at(-1), field, primaryName),
+    DateTimeBehavior: null,
   };
   if (type === NET_TYPES.lookup) {
     const id = canonical(value?.id ?? value);
@@ -1088,17 +1173,22 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.Value = number == null ? null : { Value: number, ExtensionData: null };
     entry.FormattedValue = entry.DisplayValue = value?.label ?? option?.label ?? (number == null ? "" : String(number));
   } else if (type === NET_TYPES.multiselectpicklist) {
-    const values = (Array.isArray(value) ? value : String(inner ?? "").split(","))
+    const values = (Array.isArray(value) ? value : String(inner ?? "").split(",").filter((item) => item.trim() !== ""))
       .map((item) => Number(scalar(item)))
       .filter(Number.isFinite);
-    entry.Value = values.map((number) => ({ Value: number, ExtensionData: null }));
-    entry.FormattedValue = entry.DisplayValue = values
-      .map((number) => (field?.options ?? []).find((option) => Number(option.value) === number)?.label ?? String(number))
-      .join("; ");
+    const labels = values.map((number) => (field?.options ?? []).find((option) => Number(option.value) === number)?.label ?? String(number));
+    entry.Value = values.map((number) => ({ Value: number, ExtensionData: {} }));
+    // The service's formatted value of a choices column is its last selected label; the display value joins all.
+    entry.FormattedValue = labels.at(-1) ?? "";
+    entry.DisplayValue = labels.join("; ");
   } else if (type === "Microsoft.Xrm.Sdk.Money") {
     const number = inner == null || inner === "" ? null : Number(inner);
     entry.Value = number == null ? null : { Value: number, ExtensionData: null };
-    entry.FormattedValue = entry.DisplayValue = number == null ? "" : number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // The record's currency supplies the symbol and, for currency-precision columns (PrecisionSource 2), the decimals.
+    const money = number == null ? null : currency();
+    const digits = Number(field?.precisionSource) === 2 && Number.isInteger(Number(money?.currencyprecision)) ? Number(money.currencyprecision) : Number(field?.precision ?? 2);
+    // ponytail: en-US positive pattern ($n) with the record currency symbol; negative amounts use a leading minus until a live capture shows the platform's pattern.
+    entry.FormattedValue = entry.DisplayValue = number == null ? "" : `${number < 0 ? "-" : ""}${money?.currencysymbol ?? ""}${Math.abs(number).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
   } else if (type === "System.Boolean") {
     const bool = inner === true || inner === 1 || /^(true|1)$/i.test(String(inner ?? ""));
     entry.Value = inner == null ? null : bool;
@@ -1106,15 +1196,13 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.FormattedValue = entry.DisplayValue = inner == null ? "" : option?.label ?? (bool ? "Yes" : "No");
   } else if (type === "System.DateTime") {
     const date = inner == null || inner === "" ? null : new Date(inner);
-    const dateOnly = /dateonly/i.test(field?.behavior ?? field?.format ?? "") || field?.type === "date";
+    const dateOnly = field?.dateTimeBehavior === "DateOnly" || /^date(only)?$/i.test(field?.format ?? "");
+    if (field?.dateTimeBehavior) entry.DateTimeBehavior = { Value: field.dateTimeBehavior, ExtensionData: {} };
     if (date && !Number.isNaN(date.getTime())) {
       entry.Value = `/Date(${date.getTime()})/`;
       entry.DateTimeFormat = dateOnly ? "DateOnly" : "DateAndTime";
-      const local = dateOnly ? date : new Date(date.getTime() - Number(timezoneOffset || 0) * 60000);
-      const format = dateOnly
-        ? settings?.["DateTime/DateFormat"] || "dd/MM/yyyy"
-        : settings?.["DateTime/DateTimeFormat"] || `${settings?.["DateTime/DateFormat"] || "dd/MM/yyyy"} ${settings?.["DateTime/TimeFormat"] || "HH:mm"}`;
-      entry.FormattedValue = formatDotNetDate(local, format);
+      const local = dateOnly || field?.dateTimeBehavior === "TimeZoneIndependent" ? date : userLocalDate(date, { timeZone, timezoneOffset });
+      entry.FormattedValue = formatDotNetDate(local, dateOnly ? CULTURE_DATE : CULTURE_DATETIME);
       entry.DisplayValue = dateOnly ? date.toISOString().slice(0, 10) : date.toISOString().replace(/\.\d{3}Z$/, "Z");
     } else {
       entry.Value = null;
@@ -1131,7 +1219,7 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.FormattedValue = entry.DisplayValue = number == null ? "" : number.toLocaleString("en-US");
   } else if (type === "System.Guid") {
     entry.Value = inner == null ? null : canonical(inner);
-    entry.FormattedValue = entry.DisplayValue = entry.Value ?? "";
+    entry.DisplayValue = entry.Value ?? "";
   }
   return entry;
 }
@@ -1171,8 +1259,9 @@ export function gridRecord(row, model, layout, context) {
   const id = canonical(row[model.idColumn]);
   const attributes = [];
   const seen = new Set();
+  // The service returns only the attributes a record has a value for.
   const push = (name, value) => {
-    if (seen.has(name) || value === undefined) return;
+    if (seen.has(name) || value == null || value === "") return;
     seen.add(name);
     const { table, field } = columnMetadata(context.metadata, model.entity, fetch, name);
     attributes.push(
@@ -1182,10 +1271,12 @@ export function gridRecord(row, model, layout, context) {
         entity: table,
         primaryName: model.primaryName,
         timezoneOffset: context.timezoneOffset,
+        timeZone: context.timeZone,
+        currency: () => recordCurrency(context, model.entity, row, id),
       }),
     );
   };
-  for (const column of layout.Columns) if (column.Type === 0) push(column.LogicalName, row[column.LogicalName] ?? null);
+  for (const column of layout.Columns) if (column.Type === 0) push(column.LogicalName, row[column.LogicalName]);
   for (const [key, value] of Object.entries(row)) {
     if (key.includes("@") || key.startsWith("__") || /^_.*_value$/.test(key)) continue;
     if (!key.includes(".") && !fields[key] && key !== model.idColumn && !/^(statecode|statuscode)$/.test(key)) continue;
@@ -1198,10 +1289,36 @@ export function gridRecord(row, model, layout, context) {
     Id: id,
     EntityName: model.entity,
     Attributes: attributes,
-    ...permissionsFor(context, model.entity, row),
+    ...(unassessedSubgridRecord(model, context) ? UNASSESSED : { ...permissionsFor(context, model.entity, row), StatusCode: status == null ? 0 : Number(status) }),
     StateCode: state == null ? 0 : Number(state),
-    StatusCode: status == null ? 0 : Number(status),
   };
+}
+
+// Live subgrid data of records the persona reads only through parent-scoped permissions report
+// every record privilege false and StatusCode 0 (the statuscode attribute keeps its value), and
+// the grid shows no item actions (evidence: basic-form/item-edit/populated and item-read/read-only,
+// entity-subgrid-data.json of pqvd_baselinechild under a parent-scope permission).
+const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
+function unassessedSubgridRecord(model, context) {
+  if (model.kind !== "subgrid" || context.config?.mode === "live" || typeof context.store?.rules !== "function" || context.identity?.admin) return false;
+  let rules = [];
+  try {
+    rules = context.store.rules(model.entity, "read", context.identity) ?? [];
+  } catch {
+    return false;
+  }
+  return rules.length > 0 && rules.every((rule) => rule.scope === "parent");
+}
+
+/** The transactioncurrency row of a record (read as the platform's formatter, not the persona). */
+function recordCurrency(context, entity, row, id) {
+  try {
+    const reference = row.transactioncurrencyid ?? context.store?.get?.(entity, id, { admin: true })?.transactioncurrencyid;
+    const currencyId = canonical(reference?.id ?? reference);
+    return currencyId ? (context.store.get("transactioncurrency", currencyId, { admin: true }) ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Execute one native grid data request. */
@@ -1242,6 +1359,13 @@ export async function executeGridQuery(model, request, context) {
   const fetch = parseFetchTree(
     contextualViewFetchXml(view.fetchXml, { user: identity, website: context.portal.website }),
   );
+  // The service also reads the record state (statecode, statuscode) for the state actions.
+  const root = rootEntity(fetch);
+  const tableFields = entityFields(context.metadata, model.entity);
+  if (!childNodes(root, "all-attributes").length)
+    for (const name of ["statecode", "statuscode"])
+      if (tableFields[name] && !childNodes(root, "attribute").some((node) => node.attrs.name === name))
+        root.children.unshift({ name: "attribute", attrs: { name }, children: [], text: "" });
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
   if (model.search?.enabled !== false) applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity);
@@ -1315,6 +1439,10 @@ export async function gridData(model, request, context) {
   };
 }
 
+// A download cell: the formatted value, or the display value of strings, ids and choices columns.
+const downloadText = (attribute) =>
+  !attribute ? "" : attribute.FormattedValue && !/OptionSetValueCollection$/.test(attribute.Type) ? attribute.FormattedValue : (attribute.DisplayValue ?? "");
+
 // ---------------------------------------------------------------------------
 // Request handling.
 
@@ -1342,8 +1470,18 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/xrm-adx/js/radcaptcha.js", { file: new URL("./radcaptcha-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview.js", { file: new URL("./crmentityformview-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/bootstrapv5/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
+  // Calendar lists (list-views.mjs): one local client stands in for the platform calendar scripts.
+  ["/areas/entitylist/js/entitylist-calendar.js", { file: new URL("./entitylist-calendar-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/areas/entitylist/js/bootstrapv5/calendar.min.js", { body: Buffer.from("/* Mirage: the calendar renderer is part of entitylist-calendar.js. */"), type: JAVASCRIPT }],
+  ["/areas/entitylist/js/calendar.min.js", { body: Buffer.from("/* Mirage: the calendar renderer is part of entitylist-calendar.js. */"), type: JAVASCRIPT }],
+  ["/areas/entitylist/css/bootstrapv5/calendar.min.css", { file: new URL("./entitylist-calendar-compat.css", import.meta.url), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/calendar.min.css", { file: new URL("./entitylist-calendar-compat.css", import.meta.url), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/bootstrapv5/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
   ["/resource/powerappsportal/img/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/close.png", { body: PNG_PIXEL, type: "image/png" }],
+  ["/resource/powerappsportal/img/lock.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/close.png", { body: PNG_PIXEL, type: "image/png" }],
 ]);
@@ -1394,7 +1532,12 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle, context.compat) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
-  res.writeHead(200, { "content-type": equivalent.type, "cache-control": "no-cache", "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
+  // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
+  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/js)\//.test(key) ? "static" : null;
+  const headers = kind
+    ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"] })
+    : { "content-type": equivalent.type, "cache-control": "no-cache" };
+  res.writeHead(200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
   res.end(req.method === "HEAD" ? undefined : body);
   return true;
 }
@@ -1476,9 +1619,11 @@ async function readJson(req, limit = 4 * 1024 * 1024) {
 
 function sendJson(res, status, value, headers = {}) {
   const body = Buffer.from(JSON.stringify(value));
+  // The services answer with the page no-cache policy and frame confinement (live grid data responses).
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
+    ...PAGE_HEADERS,
+    "x-frame-options": "SAMEORIGIN",
     "content-length": body.length,
     ...headers,
   });
@@ -1805,6 +1950,7 @@ export async function handleNativeService(req, res, url, context) {
   }
   const websiteId = canonical(context.portal.website?.id);
   if (await serveNativeEquivalent(req, res, url, context, websiteId)) return true;
+  if (await handleCalendarService(req, res, url, context, websiteId)) return true;
   if (await handleODataFeed(req, res, url, context)) return true;
   if (await handleImplicitGrant(req, res, url, { portal: context.portal, identity: context.identity, contact: contactRow(context), origin: context.origin })) return true;
   if (await serveCommunityPlacement(req, res, url, context, websiteId)) return true;
@@ -1825,7 +1971,7 @@ export async function handleNativeService(req, res, url, context) {
       const bootstrap = (context.portal.webFiles ?? []).find(file => /\/bootstrap\.min\.css$/i.test(file.url ?? ''));
       const sourceStyles = await context.formStyles?.(url.pathname + url.search) ?? {};
       const platform = platformShell({ variant: bootstrapVariant(context.portal.settings), profile: context.config?.shellProfile ?? null, websiteId, bootstrap: sourceStyles.bootstrap || resource(bootstrap?.url ?? '/css/bootstrap.min.css'), renderStyles: paths => paths.map(resource).join(''), controlsRoot: false });
-      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd;
+      const styles = platform.headStart + platform.remaining.stylesheets.map(resource).join('') + formContentStyles(sourceStyles.content, context.config?.shellProfile) + platform.headEnd + platform.bodyOpen;
       for (const diagnostic of formStyleDiagnostics(body, context.config?.shellProfile)) context.recordDiagnostic?.({ ...diagnostic, path: url.pathname });
       res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
       const document = `<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><div id="content-container" class="container quickform"><div id="content"><form id="content_form">${body}</form></div></div></body></html>`;
@@ -1902,7 +2048,7 @@ export async function handleNativeService(req, res, url, context) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
           return sendJson(res, 200, { AccessDenied: true }), true;
       }
-      const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0 });
+      const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) });
       sendJson(res, 200, data);
       return true;
     }
@@ -1994,7 +2140,7 @@ export async function handleNativeService(req, res, url, context) {
       }
       const columns = (Array.isArray(body.columns) ? body.columns : []).filter((column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2);
       const header = columns.map((column) => csvCell(String(column.Name ?? column.LogicalName).replace(/<[^>]*>/g, ""))).join(",");
-      const lines = records.slice(0, maximum).map((record) => columns.map((column) => csvCell(record.Attributes.find((attribute) => attribute.Name === column.LogicalName)?.FormattedValue ?? "")).join(","));
+      const lines = records.slice(0, maximum).map((record) => columns.map((column) => csvCell(downloadText(record.Attributes.find((attribute) => attribute.Name === column.LogicalName)))).join(","));
       // Excel downloads are served as CSV with an explicit diagnostic header:
       // the local runtime does not generate Office Open XML workbooks.
       const key = `${new Date().toISOString().slice(0, 19)}|${String(body.viewName ?? "export").replace(/[\\/:*?"<>|]/g, "_")}.csv`;

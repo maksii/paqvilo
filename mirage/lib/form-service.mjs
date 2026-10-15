@@ -907,3 +907,13 @@ export async function submitPortalForm(
     outcome,
   };
 }
+
+/**
+ * A create (insert) form renders for an identity holding a Create table permission of any
+ * scope on its table; without one the platform shows its create access-denied message in
+ * place of the form (live basic-form permission-denied captures: reader, no role, anonymous).
+ */
+export function formCreateAllowed(store, entity, identity = {}) {
+  if (typeof store?.rules !== "function" || identity.admin || store.state?.settings?.permissionMode === "permissive") return true;
+  return store.rules(store.resolveMapping(entity).logicalName, "create", identity).length > 0;
+}

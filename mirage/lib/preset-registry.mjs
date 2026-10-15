@@ -3,6 +3,7 @@ import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerExpressionOperators, registerShellConventions, validateEndpoints } from "./extensions.mjs";
 import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
+import { seedPresetBody } from "./solution-schema.mjs";
 
 /**
  * Project-agnostic preset registry.
@@ -370,7 +371,7 @@ export function presetLibrary({ portal, metadata, packs = [], options } = {}) {
     for (const [id, entry] of packPresetEntries(pack, { portal, metadata, options })) {
       if (Object.hasOwn(library, id))
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
-      defineLazyPreset(library, id, entry, { pack: pack.id });
+      defineLazyPreset(library, id, entry, { pack: pack.id, finish: (body) => seedPresetBody(body, metadata?.schema) });
     }
   }
   return library;

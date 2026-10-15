@@ -65,7 +65,14 @@ const escapeAttribute = (value) =>
 
 /** Offline notification markup with platform images served from the local origin. */
 export const OFFLINE_NOTIFICATION_BAR =
-  `<div id="offlineNotificationBar" class="displayNone"> <img alt="web" id="web" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/web.png'; img.alt = 'web'; img.id = 'web' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/web.png"> <div id="message">You’re offline. This is a read only version of the page.</div> <div id="close" onclick="this.parentElement.style.display='none';"><img alt="close" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/close.png'; img.alt = 'close'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/close.png"></div> </div>`;
+  `<div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/web.png'; img.alt = 'web'; img.id = 'web' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/web.png"> <div id="message">You’re offline. This is a read only version of the page.</div> <div id="close" onclick="this.parentElement.style.display='none';"><img alt="close" class="col-3" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '/css/images/close.png'; img.alt = 'close'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/close.png"></div> </div>`;
+
+/**
+ * The platform's private-site banner (first body region of a site whose visibility is private).
+ * Site visibility is not in the export: observed.siteVisibility "private" selects it.
+ */
+export const PRIVATE_MODE_BANNER =
+  `<div id="privateModeText" class="private-mode-banner"> <div class="private-mode-text"> <img alt="lock" class="col-3" onerror="javascript: var target = event.target; var img = document.createElement('img'); img.src = '~/img/Lock.png'; img.alt = 'lock'; img.id = '' ; target.insertAdjacentElement('afterend',img); target.remove();" src="/resource/powerappsportal/img/Lock.png"> <b>This site is private:</b><span>Only specific people can view this site.</span> <u><a href="https://go.microsoft.com/fwlink/?linkid=2204617" target="_blank">Learn more</a></u> </div> </div>`;
 
 /** The platform renders the holder empty; scripts fill it from data-url on first use. */
 export const antiForgeryHolder = (url = "/_layout/tokenhtml") => `<div id="antiforgerytoken" data-url="${escapeAttribute(url)}"></div>`;
@@ -131,13 +138,13 @@ export function localAspNetScript(url) {
  * captured AXD paths when a live shell capture provides them; otherwise the local
  * WebForms equivalents load at the native AXD paths (LOCAL_ASPNET_SCRIPTS).
  */
-export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")) } = {}) {
+export function webFormsForm({ id = "liquid_form", action = "/", content = "", aspNetScripts = "", validators = VALIDATOR_MARKER.test(String(content ?? "")), dateControls = DATE_CONTROL_MARKER.test(String(content ?? "")), formControls = NATIVE_FORM_MARKER.test(String(content ?? "")), variant = "BootstrapV3" } = {}) {
   const viewState = `/wE${opaque("viewstate", action).replace(/=+$/, "")}`;
   const script = (src) => `<script src="${escapeAttribute(src)}" type="text/javascript"></script>`;
   const resources = aspNetScripts || LOCAL_ASPNET_SCRIPTS.map((entry) => script(entry.path)).join("\n");
   // The ScriptManager registers jquery.blockUI.js; basic and advanced form controls add
   // their form scripts (legacy WebForms.master, EntityForm, WebForm, CellTemplate).
-  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && dateControls ? ["/xrm-adx/js/crmentityformview-datetime.js"] : [])].map(script).join("\n");
+  const formScripts = ["/js/jquery.blockUI.js", ...(formControls ? ["/xrm-adx/js/webform.js", "/xrm-adx/js/radcaptcha.js", "/xrm-adx/js/crmentityformview.js"] : []), ...(formControls && dateControls ? [`/xrm-adx/js/${variant === "BootstrapV5" ? "BootstrapV5/" : ""}crmentityformview-datetime.js`] : [])].map(script).join("\n");
   const onSubmit = validators
     ? `<script type="text/javascript">\n//<![CDATA[\nfunction WebForm_OnSubmit() {\nif (typeof(ValidatorOnSubmit) == "function" && ValidatorOnSubmit() == false) return false;\nreturn true;\n}\n//]]>\n</script>\n`
     : "";
@@ -145,9 +152,9 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
     `<form method="post" action="${escapeAttribute(action)}"${validators ? ` onsubmit="javascript:return WebForm_OnSubmit();"` : ""} id="${escapeAttribute(id)}">\n` +
     `<div class="aspNetHidden">\n${hidden("__EVENTTARGET", "")}\n${hidden("__EVENTARGUMENT", "")}\n${hidden("__VIEWSTATE", viewState)}\n</div>\n\n` +
     `<script type="text/javascript">\n//<![CDATA[\nvar theForm = document.forms['${id}'];\nif (!theForm) {\n    theForm = document.${id};\n}\nfunction __doPostBack(eventTarget, eventArgument) {\n    if (!theForm.onsubmit || (theForm.onsubmit() != false)) {\n        theForm.__EVENTTARGET.value = eventTarget;\n        theForm.__EVENTARGUMENT.value = eventArgument;\n        theForm.submit();\n    }\n}\n//]]>\n</script>\n\n` +
-    `${resources}\n${formScripts}\n${onSubmit}` +
-    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`)}\n</div>` +
-    `${content}</form>`
+    `${resources}\n${formScripts}\n${onSubmit}${content}` +
+    // ASP.NET renders the generator and event validation fields at the end of the server form.
+    `<div class="aspNetHidden">\n\n${hidden("__VIEWSTATEGENERATOR", createHash("sha256").update(`generator\u0000${id}`).digest("hex").slice(0, 8).toUpperCase())}\n${hidden("__VIEWSTATEENCRYPTED", "")}\n${hidden("__EVENTVALIDATION", `/wE${opaque("validation", action).replace(/=+$/, "")}`)}\n</div></form>`
   );
 }
 
@@ -155,7 +162,7 @@ export function webFormsForm({ id = "liquid_form", action = "/", content = "", a
  * Native body regions for a Liquid layout page. Form pages wrap the content in the
  * WebForms form and carry the AXD scripts; other pages load no AXD script.
  */
-export function nativePageRegions({ content = "", action = "/", bodyScripts = [], renderScripts = (paths) => paths.map((src) => `<script src="${escapeAttribute(src)}"></script>`).join("\n"), authenticated = false, serverFormId = null } = {}) {
+export function nativePageRegions({ content = "", action = "/", bodyScripts = [], renderScripts = (paths) => paths.map((src) => `<script src="${escapeAttribute(src)}"></script>`).join("\n"), authenticated = false, serverFormId = null, variant = "BootstrapV3" } = {}) {
   const kind = pageKind(content, { authenticated });
   const scripts = Array.isArray(bodyScripts) ? bodyScripts : [];
   const aspNet = scripts.filter(isAspNetScript);
@@ -165,7 +172,7 @@ export function nativePageRegions({ content = "", action = "/", bodyScripts = []
   const form = Boolean(serverFormId) || kind === "basic-form" || kind === "multistep-form" || kind === "code-component";
   return {
     kind,
-    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "" }) : content,
+    content: form ? webFormsForm({ id: serverFormId ?? "liquid_form", action, content, aspNetScripts: aspNet.length ? renderScripts(aspNet) : "", variant }) : content,
     bodyScripts: other.length ? renderScripts(other) : "",
   };
 }
@@ -264,7 +271,7 @@ export const PLATFORM_BUNDLES = Object.freeze(
     { id: "preform-style", kind: "stylesheet", slot: "head-start", names: { BootstrapV3: "dist/preform.bundle-b72a6ea21d.css", BootstrapV5: "dist/preform.BootstrapV5.bundle-e3e84e09a3.css" }, family: /^dist\/preform(?:\.BootstrapV5)?\.bundle-[0-9a-f]+\.css$/i, local: ["platform-chrome.css"] },
     { id: "privatemode", kind: "stylesheet", slot: "head-start", names: both("dist/privatemode.bundle-049b12b66e.css"), family: /^dist\/privatemode\.bundle-[0-9a-f]+\.css$/i, local: [], reason: "Private-site mode is a hosted feature that is not simulated." },
     { id: "pwa-style", kind: "stylesheet", slot: "head-end", names: both("dist/pwa-style.bundle-55718a4c0d.css"), family: /^dist\/pwa-style\.bundle-[0-9a-f]+\.css$/i, local: [], reason: "Progressive web app support is a hosted feature that is not simulated." },
-    { id: "pcf-style", kind: "stylesheet", slot: "head-end", names: both("dist/pcf-style.bundle-373a0f4982.css"), family: /^dist\/pcf-style\.bundle-[0-9a-f]+\.css$/i, local: [], reason: PCF_REASON },
+    { id: "pcf-style", kind: "stylesheet", slot: "body-open", names: both("dist/pcf-style.bundle-373a0f4982.css"), family: /^dist\/pcf-style\.bundle-[0-9a-f]+\.css$/i, local: [], reason: PCF_REASON },
     { id: "client-telemetry", kind: "script", capture: false, slot: "body-start", names: both("dist/client-telemetry.bundle-d490766e4f.js"), family: /^dist\/client-telemetry\.bundle-[0-9a-f]+\.js$/i, local: [], reason: TELEMETRY_REASON },
     { id: "client-telemetry-wrapper", kind: "script", capture: false, slot: "body-start", names: both("dist/client-telemetry-wrapper.bundle-633e70f51b.js"), family: /^dist\/client-telemetry-wrapper\.bundle-[0-9a-f]+\.js$/i, local: [], reason: TELEMETRY_REASON },
     { id: "preform", kind: "script", slot: "body-start", names: { BootstrapV3: "dist/preform.moment_2_29_4.bundle-750b699ecd.js", BootstrapV5: "dist/preform.BootstrapV5.moment_2_29_4.bundle-e6db58f462.js" }, family: /^dist\/preform(?:\.BootstrapV5)?\.moment_[\d_]+\.bundle-[0-9a-f]+\.js$/i, local: ["jquery", "moment", "datetimepicker-compat.js", "jqueryui-dialog-compat.js", "jqueryui-widgets-compat.js"] },
@@ -283,8 +290,9 @@ export const PLATFORM_BUNDLES = Object.freeze(
 /** The bundle a /resource/powerappsportal/ path names (any build), or null. */
 export function platformBundleFor(pathname) {
   const path = String(pathname ?? "").split(/[?#]/)[0];
-  if (!path.toLowerCase().startsWith(PLATFORM_BUNDLE_ROOT)) return null;
-  const rest = path.slice(PLATFORM_BUNDLE_ROOT.length);
+  // The platform's onerror fallback loads a CDN bundle from the portal origin at /dist/<name>.
+  const rest = path.toLowerCase().startsWith(PLATFORM_BUNDLE_ROOT) ? path.slice(PLATFORM_BUNDLE_ROOT.length) : /^\/dist\//i.test(path) ? path.slice(1) : null;
+  if (rest === null) return null;
   return PLATFORM_BUNDLES.find((bundle) => bundle.family.test(rest)) ?? null;
 }
 
@@ -327,10 +335,11 @@ export function platformShell({ variant = "BootstrapV3", profile = null, website
     }
   }
   const pathOf = (bundle) => captured.get(bundle.id) ?? `${PLATFORM_BUNDLE_ROOT}${bundle.names[variant] ?? bundle.names.BootstrapV3}`;
-  const tag = (bundle) =>
-    bundle.kind === "stylesheet"
-      ? `<link rel="stylesheet" href="${escapeAttribute(pathOf(bundle))}">`
-      : `<script src="${escapeAttribute(pathOf(bundle))}" type="text/javascript"${bundle.defer ? " defer" : ""}></script>`;
+  const tag = (bundle) => {
+    const path = pathOf(bundle);
+    if (bundle.kind === "stylesheet") return `<link href="${escapeAttribute(path)}"${fallback(path, "link")} rel="stylesheet">`;
+    return bundle.defer ? `<script defer="defer" src="${escapeAttribute(path)}"></script>` : `<script${fallback(path, "script")} src="${escapeAttribute(path)}" type="text/javascript"></script>`;
+  };
   const slot = (name) => PLATFORM_BUNDLES.filter((bundle) => bundle.slot === name).map(tag).join("");
   const site = String(websiteId ?? "").replace(/[{}]/g, "").toLowerCase();
   const resourceManager = site ? `<script src="/_portal/${escapeAttribute(site)}/Resources/ResourceManager?lang=${encodeURIComponent(languageCode)}"></script>` : "";
@@ -339,11 +348,23 @@ export function platformShell({ variant = "BootstrapV3", profile = null, website
     bundles: PLATFORM_BUNDLES.map((bundle) => ({ id: bundle.id, kind: bundle.kind, slot: bundle.slot, path: pathOf(bundle), captured: captured.has(bundle.id) })),
     headStart: `${resourceManager}${bootstrapMarkup}${slot("head-start")}`,
     headEnd: slot("head-end"),
+    bodyOpen: slot("body-open"),
     bodyStart: slot("body-start"),
     afterContent: `${slot("after-content")}${controlsRoot ? NATIVE_CONTROLS_ROOT : ""}${slot("after-controls-root")}`,
     afterFooter: slot("after-footer"),
     remaining,
   };
+}
+
+/**
+ * The platform's onerror fallback of a CDN bundle under dist/: on a load error the same bundle
+ * is inserted from the portal origin at /dist/<name> (served by lib/native-services.mjs).
+ */
+function fallback(path, element) {
+  const match = /\/resource\/powerappsportal\/(dist\/[^?#'"]+)/i.exec(path);
+  if (!match) return "";
+  const [attribute, extra] = element === "link" ? ["href", "link.rel = 'stylesheet';"] : ["src", "script.type = 'text/javascript';"];
+  return ` onerror="${escapeAttribute(`javascript: var target = event.target; var ${element} = document.createElement('${element}'); ${element}.crossOrigin = target.crossOrigin; ${element}.${attribute} = '/${match[1]}'; ${extra} target.insertAdjacentElement('afterend',${element});`)}"`;
 }
 
 /** True when a document carries the platform bundles (the platform jQuery/moment provider). */

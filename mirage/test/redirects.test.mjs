@@ -432,13 +432,17 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
   const home = await get("/");
   assert.equal(home.status, 200);
   assert.equal(home.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  // The ASP.NET no-store policy's companions, as observed online.
+  assert.equal(home.headers.get("pragma"), "no-cache");
+  assert.equal(home.headers.get("expires"), "-1");
+  assert.equal(home.headers.get("vary"), "Accept-Encoding");
   assert.equal(home.headers.get("x-frame-options"), "DENY");
   assert.equal(home.headers.get("referrer-policy"), "strict-origin-when-cross-origin");
   // One parseable policy: the site's own.
   assert.equal(home.headers.get("content-security-policy"), "default-src 'self'; object-src 'none'; connect-src 'self' https://*.powerappsportals.com");
   for (const absent of ["x-content-type-options", "access-control-allow-origin", "samesite"]) assert.equal(home.headers.get(absent), null, absent);
   // Web files: charset on every type, the record's disposition (none = inline), the
-  // attachment file name, unquoted base64 SHA-256 ETag, Last-Modified and 304.
+  // attachment file name, unquoted base64 SHA-256 ETag, Vary, no Last-Modified, and 304.
   const file = await get("/site.css");
   assert.equal(file.status, 200);
   assert.equal(await file.text(), css);
@@ -446,9 +450,9 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
   assert.equal(file.headers.get("content-disposition"), "inline;filename*=UTF-8''site.css");
   const etag = createHash("sha256").update(css).digest("base64");
   assert.equal(file.headers.get("etag"), etag);
-  const stat = await fs.stat(path.join(dir, "web-files", "site.css"));
-  assert.equal(file.headers.get("last-modified"), new Date(Math.floor(stat.mtimeMs / 1000) * 1000).toUTCString());
-  // The platform's caching by default: public for anonymous visitors, private when signed in.
+  assert.equal(file.headers.get("last-modified"), null);
+  assert.equal(file.headers.get("vary"), "Accept-Encoding");
+  // The platform's caching by default (observed online): public for anonymous and signed-in visitors.
   assert.equal(file.headers.get("cache-control"), "public, max-age=3600");
   assert.ok(file.headers.get("expires"));
   assert.equal(file.headers.get("x-frame-options"), "DENY");
@@ -465,7 +469,7 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
   assert.equal((await get("/site.css")).headers.get("cache-control"), "no-cache");
   await settings({ webFileCaching: undefined });
   signInAs("person", []);
-  assert.equal((await get("/site.css")).headers.get("cache-control"), "private, max-age=3600");
+  assert.equal((await get("/site.css")).headers.get("cache-control"), "public, max-age=3600");
   // The Mirage's own responses keep nosniff.
   assert.equal((await get("/__sim/api/state?summary=1")).headers.get("x-content-type-options"), "nosniff");
   // Loopback confinement is an explicit opt-in: a separate policy beside the site's.
@@ -600,12 +604,12 @@ test("site header settings: one header per HTTP/* setting, nonce policies and co
   assert.equal(sitePolicy(portal({ "http/content-security-policy": "default-src 'self'", "HTTP/Content-Security-Policy/Enabled": "false" })).reason, "disabled");
   assert.equal(sitePolicy(portal({ "HTTP/Content-Security-Policy": "default-src 'self'", "HTTP/Content-Security-Policy/InjectHeader": "false" })).reason, "not-injected");
   assert.deepEqual(siteHeaders(portal({ "HTTP/Content-Security-Policy": "default-src 'self'" }), { confinement: "connect-src 'self'" })["content-security-policy"], ["default-src 'self'", "connect-src 'self'"]);
-  const headers = webFileHeaders({ body: "x", contentType: "text/plain; charset=utf-8", fileName: "a b'(1).txt", modified: new Date("2026-01-02T03:04:05.678Z") });
+  const headers = webFileHeaders({ body: "x", contentType: "text/plain; charset=utf-8", fileName: "a b'(1).txt" });
   assert.equal(headers["content-type"], "text/plain; charset=utf-8");
   assert.equal(headers["content-disposition"], "inline;filename*=UTF-8''a%20b%27%281%29.txt");
   assert.equal(headers["cache-control"], "public, max-age=3600");
-  assert.equal(headers["last-modified"], "Fri, 02 Jan 2026 03:04:05 GMT");
-  assert.equal(webFileHeaders({ body: "x", fileName: "a.pdf", disposition: "attachment", signedIn: true })["cache-control"], "private, max-age=3600");
+  assert.equal(headers["last-modified"], undefined);
+  assert.equal(headers.vary, "Accept-Encoding");
   assert.equal(webFileHeaders({ body: "x", fileName: "a.pdf", caching: "revalidate" })["cache-control"], "no-cache");
   assert.equal(webFileHeaders({ body: "x", fileName: "a.pdf", caching: "revalidate" }).expires, undefined);
   // adx_contentdisposition: 756150001 attachment; 756150000 or no value inline (Learn, Web File).
@@ -614,8 +618,9 @@ test("site header settings: one header per HTTP/* setting, nonce policies and co
     ["attachment", "inline", "inline", "inline", "attachment", "inline", "attachment"],
   );
   assert.equal(notModified({ "if-none-match": `"${headers.etag}"` }, headers), true);
-  assert.equal(notModified({ "if-none-match": "x", "if-modified-since": "Sat, 03 Jan 2026 00:00:00 GMT" }, headers), false);
-  assert.equal(notModified({ "if-modified-since": "Sat, 03 Jan 2026 00:00:00 GMT" }, headers), true);
+  const dated = { ...headers, "last-modified": "Fri, 02 Jan 2026 03:04:05 GMT" };
+  assert.equal(notModified({ "if-none-match": "x", "if-modified-since": "Sat, 03 Jan 2026 00:00:00 GMT" }, dated), false);
+  assert.equal(notModified({ "if-modified-since": "Sat, 03 Jan 2026 00:00:00 GMT" }, dated), true);
   assert.equal(notModified({}, headers), false);
 });
 

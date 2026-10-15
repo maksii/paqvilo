@@ -323,12 +323,32 @@
     }
     return true;
   };
+  // The server marks native form wrappers with data-pp-native-form for the runtime; the page
+  // adopts them here and drops the attribute the platform markup does not carry.
+  const nativeForms = new Set();
+  const adoptNativeForms = () => {
+    for (const node of document.querySelectorAll("[data-pp-native-form]")) {
+      nativeForms.add(node);
+      node.removeAttribute("data-pp-native-form");
+    }
+  };
+  const nativeFormOf = (node) => {
+    adoptNativeForms();
+    for (let current = node; current && current.nodeType === 1; current = current.parentElement) if (nativeForms.has(current)) return current;
+    return null;
+  };
+  const firstNativeForm = () => {
+    adoptNativeForms();
+    return [...nativeForms].find((node) => node.isConnected) ?? null;
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", adoptNativeForms, { once: true });
+  else adoptNativeForms();
   w.__doPostBack = function (eventTarget, eventArgument) {
     const buttons = [...document.querySelectorAll("input, button")];
     // Multiple native controls share button IDs; the full WebForms name identifies
     // the component that owns this postback.
     const button = buttons.find((node) => node.name === eventTarget) ?? buttons.find((node) => node.id === String(eventTarget).split("$").pop());
-    const form = button?.closest("[data-pp-native-form]") ?? findFormFromTarget(eventTarget);
+    const form = nativeFormOf(button) ?? findFormFromTarget(eventTarget);
     if (!form) {
       // A postback without a rendered native form (for example an authored
       // copy of the native button) re-renders the page natively.
@@ -341,7 +361,7 @@
   };
   function findFormFromTarget(eventTarget) {
     const control = /\$(EntityFormControl_[0-9a-f]{32}|WebFormControl_[0-9a-f]{32}|EntityFormControl|WebFormControl)\$/i.exec(String(eventTarget))?.[1];
-    return control ? document.getElementById(control)?.closest("[data-pp-native-form]") ?? document.getElementById(control) : document.querySelector("[data-pp-native-form]");
+    return control ? nativeFormOf(document.getElementById(control)) ?? document.getElementById(control) : firstNativeForm();
   }
   function restoreButtons() {
     for (const input of document.querySelectorAll("input")) {
@@ -355,7 +375,7 @@
     "click",
     (event) => {
       const button = event.target.closest?.('input[type="button"], input[type="submit"]');
-      if (button && button.closest("[data-pp-native-form]") && button.__ppOriginalValue == null) button.__ppOriginalValue = button.value;
+      if (button && nativeFormOf(button) && button.__ppOriginalValue == null) button.__ppOriginalValue = button.value;
     },
     true,
   );
@@ -456,27 +476,42 @@
   function showValidationErrors(form, errors) {
     const summary = form.querySelector('.validation-summary');
     if (!summary) { showError(form, errors.map((error) => error.message).join(' ')); return; }
+    // Server validation is a postback: the re-rendered form carries the posted values and the
+    // server's summary (no role or style, focusable, a decorated heading and summary links).
+    const config = configOf(form);
+    restorePostedControls(form, preservePostedControls(form));
+    if (config?.operation === 'create') postbackInsertRender(form);
     summary.replaceChildren();
     const heading = document.createElement('h2');
     heading.className = 'validation-header';
-    heading.textContent = configOf(form)?.summaryHeader || 'The form could not be submitted for the following reasons:';
+    heading.setAttribute('role', 'none');
+    const icon = document.createElement('span');
+    icon.setAttribute('role', 'presentation');
+    icon.className = 'fa fa-info-circle';
+    heading.append(icon, ` ${config?.summaryHeader || 'The form could not be submitted for the following reasons:'}`);
     summary.append(heading);
     const list = document.createElement('ul');
+    list.setAttribute('role', 'presentation');
     for (const error of errors) {
       for (const validator of w.Page_Validators ?? []) {
         if (validator.controltovalidate === error.field && (validator.errormessage === error.message || validator.errormessage?.includes(escapeHtml(error.message)))) {
           validator.isvalid = false;
           w.ValidatorUpdateDisplay(validator);
+          // A validator the server found invalid renders without a display style.
+          validator.removeAttribute('style');
         }
       }
       const item = document.createElement('li'), link = document.createElement('a');
       link.href = '#' + error.field + '_label';
-      link.textContent = error.message;
-      link.addEventListener('click', (event) => { event.preventDefault(); w.scrollToAndFocus?.(error.field + '_label', error.field); });
+      link.setAttribute('onclick', `javascript:scrollToAndFocus(${JSON.stringify(error.field + '_label')},${JSON.stringify(error.field)});return false;`);
+      link.setAttribute('referencecontrolid', error.field);
+      link.textContent = `${error.message} `;
       item.append(link); list.append(item);
     }
     summary.append(list);
-    summary.style.display = '';
+    summary.removeAttribute('role');
+    summary.removeAttribute('style');
+    summary.setAttribute('tabindex', '0');
     w.ValidatorUpdateIsValid();
     list.querySelector('a')?.focus();
   }
@@ -488,9 +523,11 @@
       const host = form.querySelector("#EntityFormPanel, #WebFormPanel");
       (host ?? form.firstElementChild)?.before?.(panel);
     }
-    panel.className = "message alert alert-info success alert alert-success success alert alert-success";
+    // The form configuration carries the Bootstrap 5 panel class and close button.
+    const variant = configOf(form)?.messagePanel;
+    panel.className = variant?.className ?? "message alert alert-info success alert alert-success success alert alert-success";
     panel.setAttribute("role", "alert");
-    panel.innerHTML = `<span id="MessageLabel">${message}</span>`;
+    panel.innerHTML = `${variant?.closeButton ?? ""}<span id="MessageLabel">${message}</span>`;
     panel.style.display = "";
     if (hide) for (const node of form.querySelectorAll("#EntityFormPanel, #WebFormPanel")) node.style.display = "none";
   }
@@ -499,6 +536,32 @@
       .filter(node => node.id && !['file', 'submit', 'button'].includes(node.type))
       .map(node => ({ id: node.id, value: node.value, checked: node.checked,
         ...(node.multiple ? { selected: [...node.selectedOptions].map(option => option.value) } : {}) }));
+  }
+  // Posted values come back as rendered values (value attributes) of the re-rendered form.
+  function restorePostedControls(form, controls) {
+    for (const control of controls ?? []) {
+      const node = document.getElementById(control.id);
+      if (!node || !form.contains(node)) continue;
+      node.value = control.value;
+      if (node instanceof HTMLInputElement && !['checkbox', 'radio', 'file'].includes(node.type)) {
+        if (control.value) node.setAttribute('value', control.value);
+        else node.removeAttribute('value');
+      }
+      if (typeof control.checked === 'boolean') node.checked = control.checked;
+      if (node.multiple && Array.isArray(control.selected)) for (const option of node.options) option.selected = control.selected.includes(option.value);
+    }
+  }
+  // An insert form re-rendered by its postback: the view repeats its entity-form class and the
+  // option sets' blank options lose their "Select" label (the platform labels them on first render).
+  function postbackInsertRender(form) {
+    for (const view of form.querySelectorAll('.entity-form')) view.setAttribute('class', `${view.getAttribute('class')} entity-form`);
+    for (const select of form.querySelectorAll('select.picklist')) {
+      const blank = select.options[0];
+      if (!blank || blank.value !== '') continue;
+      blank.removeAttribute('label');
+      blank.removeAttribute('aria-label');
+      blank.textContent = '';
+    }
   }
   function showSaveFailure(form, message, markup) {
     let panel = form.querySelector('#MessagePanel');
@@ -591,7 +654,7 @@
         if (result.postback?.type === 'error') {
           const target = postbackTarget(form);
           if (target.origin !== location.origin) throw new Error('Native postback must use this portal origin.');
-          sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ form: form.id, error: result.postback.message, errorMarkup: result.postback.markup, controls: preservePostedControls(form) }));
+          sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ form: form.id, error: result.postback.message, errorMarkup: result.postback.markup, controls: preservePostedControls(form), insert: config.operation === "create" }));
           if (target.href === location.href) location.reload(); else location.assign(target.href);
           return;
         }
@@ -609,7 +672,9 @@
       // Native success is a postback: the page or modal frame re-renders at the
       // WebForms form's action (scripts may change it) with the message.
       const target = postbackTarget(form);
-      sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ id: result.recordId || "", name: result.name ?? "", message, hideForm: outcome.hideForm !== false, form: form.id }));
+      // A form that stays visible re-renders with its posted values, like the platform postback.
+      const hideForm = outcome.hideForm !== false;
+      sessionStorage.setItem(`paqvilo-mirage:form-success:${target.pathname}${target.search}`, JSON.stringify({ id: result.recordId || "", name: result.name ?? "", message, hideForm, form: form.id, ...(hideForm ? {} : { controls: preservePostedControls(form), insert: config.operation === "create" }) }));
       if (target.href === location.href) location.reload();
       else location.assign(target.href);
     } catch (error) {
@@ -642,7 +707,7 @@
       if (!(form instanceof HTMLFormElement) || !/^(liquid_form|content_form)$/.test(form.id) || event.defaultPrevented) return;
       event.preventDefault();
       const submitter = event.submitter;
-      if (submitter?.closest?.("[data-pp-native-form]") && (submitter.name || submitter.id)) {
+      if (submitter && nativeFormOf(submitter) && (submitter.name || submitter.id)) {
         w.__doPostBack(submitter.name || submitter.id, "");
         return;
       }
@@ -659,22 +724,23 @@
     sessionStorage.removeItem(key);
     try {
       const state = JSON.parse(saved);
-      const form = (state.form && document.getElementById(state.form)) || document.querySelector("[data-pp-native-form]");
+      const form = (state.form && document.getElementById(state.form)) || firstNativeForm();
       if (!form) return;
       if (state.error) {
-        for (const control of state.controls ?? []) {
-          const node = document.getElementById(control.id);
-          if (!node || !form.contains(node)) continue;
-          node.value = control.value;
-          if (typeof control.checked === 'boolean') node.checked = control.checked;
-          if (node.multiple && Array.isArray(control.selected)) for (const option of node.options) option.selected = control.selected.includes(option.value);
-        }
+        restorePostedControls(form, state.controls);
+        if (state.insert) postbackInsertRender(form);
         showSaveFailure(form, state.error, state.errorMarkup);
         return;
       }
       showSuccess(form, state.message, state.hideForm);
-      const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
-      if (idInput && state.id && !idInput.value) idInput.value = state.id;
+      if (state.controls) {
+        // The form stays visible: it re-renders with the posted values, still in insert mode.
+        restorePostedControls(form, state.controls);
+        if (state.insert) postbackInsertRender(form);
+      } else {
+        const idInput = form.querySelector("input[type=hidden][id$='_EntityID']");
+        if (idInput && state.id && !idInput.value) idInput.value = state.id;
+      }
       // Form.aspx and LiquidServerControl register this script after ItemSaved;
       // lookup create forms (?lookup=) post the created record instead.
       const lookup = /^\/_portal\/modal-form-template-path\//i.test(location.pathname) && new URLSearchParams(location.search).get("lookup");

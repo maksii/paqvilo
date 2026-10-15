@@ -61,7 +61,7 @@ test("form dates retain canonical submission fields and native adjacent picker c
   // ISO value; the picker group follows it with the *_datepicker_description box.
   assert.match(
     html,
-    /<input name="[^"]*\$effective" type="text" id="effective" class="datetime form-control " data-ui="datetimepicker" data-type="date" data-attribute="effective" data-behavior="DateOnly" value="" style="display: none;" required="" data-sim-date-value>/,
+    /<input name="[^"]*\$effective" type="text" id="effective" class="datetime form-control " data-ui="datetimepicker" data-type="date" data-attribute="effective" data-behavior="DateOnly" style="display: none;" required="" data-sim-date-value>/,
   );
   assert.match(
     html,

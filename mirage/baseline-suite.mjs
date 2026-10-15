@@ -248,7 +248,15 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
 export async function captureMatrix({ matrix, side, outDir, label, ids = {}, only = null }) {
   const results = [];
   let currentPersona = Symbol("none");
-  const selected = matrix.scenarios.filter((scenario) => !only || only.includes(scenario.id));
+  // Persona switches are the expensive step on a live portal (its permission cache lags role changes by
+  // minutes), so scenarios run grouped by persona in first-appearance order; the order within a persona is kept.
+  const personaOrder = [];
+  for (const scenario of matrix.scenarios) if (!personaOrder.includes(scenario.persona ?? null)) personaOrder.push(scenario.persona ?? null);
+  const selected = matrix.scenarios
+    .filter((scenario) => !only || only.includes(scenario.id))
+    .map((scenario, index) => ({ scenario, index }))
+    .sort((a, b) => personaOrder.indexOf(a.scenario.persona ?? null) - personaOrder.indexOf(b.scenario.persona ?? null) || a.index - b.index)
+    .map(({ scenario }) => scenario);
   for (const scenario of selected) {
     const folder = scenarioDir(outDir, scenario, label);
     const personaName = scenario.persona ?? null;

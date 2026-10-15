@@ -161,8 +161,8 @@ test("editable hidden lookups retain native navigation bindings without reading 
   );
   const field = formConfig(html).fields.find((candidate) => candidate.name === "contactid");
   assert.deepEqual(field.bindings, { contact: { navigation: "contactnav", entitySet: "contacts" } });
-  assert.match(html, /<input name="[^"]*\$contactid" type="hidden" id="contactid" value="">/);
-  assert.match(html, /id="contactid_entityname" value=""/, "blank lookup preserves its navigation mapping without inventing a selected entity");
+  assert.match(html, /<input name="[^"]*\$contactid" type="hidden" id="contactid">/);
+  assert.match(html, /id="contactid_entityname">/, "blank lookup preserves its navigation mapping without inventing a selected entity");
 });
 
 test("rich text adapters fetch source-bound configuration URLs and reject malformed source JSON", async (t) => {
@@ -427,7 +427,7 @@ test("mapped form and list query identity, render escaping and original custom s
   });
   assert.deepEqual(received, { id: "abc", identity: context.user });
   assert.equal(formConfig(form).submitUrl, "/__sim/forms/entityform/form/submit");
-  assert.match(form, /id="fullname" class="text form-control " onchange="setIsDirty\(this.id\);" value="&lt;Ada&gt;" aria-required="true"/);
+  assert.match(form, /value="&lt;Ada&gt;"[^>]*id="fullname" class="text form-control " onchange="setIsDirty\(this.id\);" aria-required="true"/);
   assert.match(form, /<span id="RequiredFieldValidatorfullname" style="display:none;">\*<\/span>/);
   assert.match(form, /type="checkbox" name="[^"]*\$active" checked="checked"/);
   // Native order: the custom JavaScript span is the first child of the form control.
@@ -778,7 +778,7 @@ test("configured component read provider supplies records, lookups and views con
     { request: { params: { id: "person" } } },
     { portal, store, readProvider, schemas },
   );
-  assert.match(form, /id="parentcustomerid_name"[^>]*value="Online organisation"/);
+  assert.match(form, /value="Online organisation" id="parentcustomerid_name"/);
   // Lookup rows load through the lookup grid service on demand, not during rendering.
   assert.deepEqual(reads, [["get", "contact", "person"]]);
   const [lookupLayout] = layoutsOf(form, 'id="parentcustomerid_lookupmodal"');

@@ -17,7 +17,8 @@ const readJson = async (file, fallback = null) => {
   }
 };
 
-/** Allowlist entries: { id, scope: request|response|dom|element|console, pattern, field, reason, proof, evidence }. */
+/** Allowlist entries: { id, scope: request|response|dom|element|console, pattern, field, reason, proof, evidence, value? }.
+ * `value` (optional regex) narrows the entry to deltas whose live or Mirage value matches it. */
 export async function loadAllowlist(file) {
   const data = JSON.parse(await fs.readFile(file, "utf8"));
   if (data.version !== 1 || !Array.isArray(data.entries)) throw new Error("Allowlist version 1 with entries is required.");
@@ -27,23 +28,44 @@ export async function loadAllowlist(file) {
     if (!["live-run-variance", "platform-generated"].includes(entry.proof)) throw new Error(`Allowlist entry ${entry.id} needs proof live-run-variance or platform-generated.`);
     entry.regex = new RegExp(entry.pattern);
     entry.fieldRegex = new RegExp(entry.field);
+    if (entry.value !== undefined) {
+      if (typeof entry.value !== "string" || !entry.value) throw new Error(`Allowlist entry ${entry.id} has an empty value pattern.`);
+      entry.valueRegex = new RegExp(entry.value);
+    }
   }
   return data;
 }
 
 function allowed(delta, allowlist) {
-  for (const entry of allowlist.entries ?? []) if (entry.scope === delta.scope && entry.regex.test(delta.location) && entry.fieldRegex.test(delta.field)) return entry.id;
+  for (const entry of allowlist.entries ?? []) {
+    if (entry.scope !== delta.scope || !entry.regex.test(delta.location) || !entry.fieldRegex.test(delta.field)) continue;
+    if (entry.valueRegex && !entry.valueRegex.test(String(delta.live ?? "")) && !entry.valueRegex.test(String(delta.mirage ?? ""))) continue;
+    return entry.id;
+  }
   return null;
 }
 
 const delta = (scope, location, field, live, mirage, extra = {}) => ({ scope, location, field, live, mirage, signature: sha(`${scope}|${field}|${typeof live}|${typeof mirage}|${String(live).slice(0, 40)}|${String(mirage).slice(0, 40)}`), ...extra });
+
+// Grid data records list their `Attributes` in storage order, which differs from record to record on a
+// live portal; those arrays are compared by attribute `Name`, every other array keeps its order.
+function namedAttributes(value) {
+  if (Array.isArray(value)) return value.map(namedAttributes);
+  if (!value || typeof value !== "object") return value;
+  const out = {};
+  for (const [key, item] of Object.entries(value)) {
+    const named = key === "Attributes" && Array.isArray(item) && item.length && item.every((entry) => entry && typeof entry === "object" && typeof entry.Name === "string");
+    out[key] = named ? Object.fromEntries([...item].sort((x, y) => x.Name.localeCompare(y.Name)).map((entry) => [entry.Name, namedAttributes(entry)])) : namedAttributes(item);
+  }
+  return out;
+}
 
 function canonicalBody(body, contentType = "") {
   if (body === null || body === undefined) return null;
   const text = String(body);
   if (/json/i.test(contentType) || /^\s*[[{]/.test(text)) {
     try {
-      return { kind: "json", value: JSON.parse(text) };
+      return { kind: "json", value: namedAttributes(JSON.parse(text)) };
     } catch {
       /* not JSON */
     }
@@ -74,6 +96,8 @@ function requestKey(request) {
 }
 
 /** Align two request sequences in order, then compare each aligned pair field by field. */
+const withoutDiagnostics = (headers) => Object.fromEntries(Object.entries(headers ?? {}).filter(([name]) => !/^x-sim-/i.test(name)));
+
 export function compareRequests(live = [], mirage = []) {
   const out = [];
   const keysA = live.map(requestKey);
@@ -113,7 +137,8 @@ export function compareRequests(live = [], mirage = []) {
     const ra = A.response ?? {};
     const rb = B.response ?? {};
     if (ra.status !== rb.status) out.push(delta("response", location, "status", ra.status ?? null, rb.status ?? null));
-    diffValue("response", location, "headers", ra.headers ?? {}, rb.headers ?? {}, out);
+    // A local runtime's own diagnostic headers (x-sim-*) are instrumentation, not rendered behaviour.
+    diffValue("response", location, "headers", withoutDiagnostics(ra.headers), withoutDiagnostics(rb.headers), out);
     const typeA = ra.headers?.["content-type"] ?? "";
     if (ra.body !== undefined || rb.body !== undefined) {
       if (/text\/html/i.test(typeA) && ra.body && rb.body) diffDom(parse(ra.body), parse(rb.body), out, `${location} body`);
@@ -259,9 +284,15 @@ export async function compareScenario({ scenario, liveDir, mirageDir, secondDir 
       result.variance = { deltas: between.length, folder: path.basename(secondDir) };
     }
   }
+  const entryById = new Map((allowlist.entries ?? []).map((entry) => [entry.id, entry]));
   for (const item of deltas) {
-    item.allowlist = allowed(item, allowlist);
     if (variance?.has(`${item.scope}|${item.location}|${item.field}`)) item.liveVariance = true;
+    item.allowlist = allowed(item, allowlist);
+    // A live-run-variance entry only explains a delta the second live capture actually varied on.
+    if (item.allowlist && variance && entryById.get(item.allowlist)?.proof === "live-run-variance" && !item.liveVariance) {
+      item.unprovenVariance = item.allowlist;
+      item.allowlist = null;
+    }
   }
   result.deltas = deltas;
   result.counts = { total: deltas.length, allowed: deltas.filter((d) => d.allowlist).length, unexplained: deltas.filter((d) => !d.allowlist).length };

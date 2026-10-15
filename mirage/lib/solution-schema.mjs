@@ -23,7 +23,7 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@10";
+export const SCHEMA_PARSER_ID = "schema@11";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
@@ -133,13 +133,25 @@ async function walkFiles(dir, accept = () => true) {
 // ---------------------------------------------------------------------------
 // Parsing (pure; results are JSON-serializable and cached per file)
 
+// <Descriptions><Description description=".." languagecode=".."/></Descriptions> keyed by LCID.
+function descriptionsOf(node) {
+  const labels = {};
+  for (const row of child(node, "Descriptions")?.children ?? [])
+    if (row.name === "Description" && row.attrs.description != null) labels[String(row.attrs.languagecode ?? "")] ??= row.attrs.description;
+  return Object.keys(labels).length ? labels : undefined;
+}
+
 function optionSetFacts(node) {
   return compact({
     name: node.attrs.Name,
     type: norm(childText(node, "OptionSetType")) || undefined,
     isGlobal: bit(childText(node, "IsGlobal")),
+    introducedVersion: childText(node, "IntroducedVersion") || undefined,
+    isCustomizable: bit(childText(node, "IsCustomizable")),
+    displayLabels: labelsOf(child(node, "displaynames")),
+    descriptionLabels: descriptionsOf(node),
     options: descendants(node, "option").map((o) =>
-      compact({ value: Number(o.attrs.value), labels: labelsOf(o) }),
+      compact({ value: Number(o.attrs.value), labels: labelsOf(o), externalValue: o.attrs.ExternalValue, color: o.attrs.Color, descriptionLabels: descriptionsOf(o) }),
     ),
     states: descendants(node, "state").map((o) =>
       compact({
@@ -188,6 +200,29 @@ function attributeFacts(node) {
     attributeOf: norm(t("AttributeOf")) || undefined,
     lookupStyle: t("LookupStyle"),
     labels: labelsOf(child(node, "displaynames")),
+    descriptionLabels: descriptionsOf(node),
+    // Platform metadata the native services echo as AttributeMetadata.
+    imeMode: norm(t("ImeMode")) || undefined,
+    introducedVersion: t("IntroducedVersion") || undefined,
+    isAuditEnabled: bit(t("IsAuditEnabled")),
+    isCustomizable: bit(t("IsCustomizable")),
+    isRenameable: bit(t("IsRenameable")),
+    canModifySearchSettings: bit(t("CanModifySearchSettings")),
+    canModifyRequirementLevelSettings: bit(t("CanModifyRequirementLevelSettings")),
+    canModifyAdditionalSettings: bit(t("CanModifyAdditionalSettings")),
+    canModifyGlobalFilterSettings: bit(t("CanModifyGlobalFilterSettings")),
+    canModifyIsSortableSettings: bit(t("CanModifyIsSortableSettings")),
+    canChangeDateTimeBehavior: bit(t("CanChangeDateTimeBehavior")),
+    sourceType: num(t("SourceType")),
+    isGlobalFilterEnabled: bit(t("IsGlobalFilterEnabled")),
+    isSortableEnabled: bit(t("IsSortableEnabled")),
+    isDataSourceSecret: bit(t("IsDataSourceSecret")),
+    isSearchable: bit(t("IsSearchable")),
+    isFilterable: bit(t("IsFilterable")),
+    isRetrievable: bit(t("IsRetrievable")),
+    isLocalizable: bit(t("IsLocalizable")),
+    databaseLength: num(t("Length")),
+    formulaDefinition: t("FormulaDefinition") || undefined,
     optionSetName: t("OptionSetName"),
     optionSet: optionSet ? optionSetFacts(optionSet) : undefined,
   });
@@ -1006,6 +1041,17 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
   };
 }
 
+/**
+ * Exported column facts behind the platform's AttributeMetadata (entity-grid-data echoes
+ * them per record): the column's own properties and its local or global option set.
+ */
+function columnMetadataFacts(tableName, attribute, globalSet) {
+  if (attribute.implicit || attribute.intersectTarget) return undefined;
+  const { source: _s, sources: _ss, name: _n, optionSet, ...facts } = attribute;
+  const set = optionSet ?? (globalSet && !globalSet.dynamic ? (({ source: _gs, sourceKind: _k, ...rest }) => rest)(globalSet) : undefined);
+  return { ...facts, ...(set ? { optionSet: set } : {}), customTable: !standardTable(tableName) };
+}
+
 /** Field definition used by forms, the Web API policy and persisted mapping metadata. */
 export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lcid ?? 1033, provenance = true, diagnostics } = {}) {
   const table = schema.tables[tableName];
@@ -1093,7 +1139,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       isPrimaryName: table?.primaryNameAttribute === attribute.name || undefined,
       attributeOf: attribute.attributeOf,
       implicit: attribute.implicit,
-      ...(provenance ? { source: attribute.source, sources: attribute.sources?.length > 1 ? attribute.sources : undefined } : {}),
+      ...(provenance ? { source: attribute.source, sources: attribute.sources?.length > 1 ? attribute.sources : undefined, columnMetadata: columnMetadataFacts(tableName, attribute, globalSet) } : {}),
     }),
   };
 }
@@ -1110,4 +1156,61 @@ export function tableFields(schema, tableName, options = {}) {
     for (const [name, column] of Object.entries(IMPLICIT_SYSTEM_COLUMNS))
       fields[name] ??= options.provenance === false ? (({ source, ...rest }) => rest)(column) : { ...column };
   return fields;
+}
+
+/**
+ * Rows a data pack or preset seeds bypass the create pipeline; give them what Dataverse sets on
+ * create: `createdon`/`modifiedon` (the seeding time) on tables that export them, the column
+ * default of omitted Yes/No and choice columns (AppDefaultValue), a state with its default status
+ * reason, and autonumber values ({SEQNUM:n} from seed 1000 in row order; `sequences` receives the
+ * next value per `table.column`, the DataStore's autoNumberSequences). Explicit values
+ * (including null) are kept. Returns new row arrays.
+ */
+export function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
+  if (!schema?.tables || !tables) return tables;
+  const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const out = {};
+  for (const [name, rows] of Object.entries(tables)) {
+    const attributes = schema.tables[name]?.attributes;
+    if (!attributes || !Array.isArray(rows)) {
+      out[name] = rows;
+      continue;
+    }
+    const defaults = [];
+    for (const a of Object.values(attributes)) {
+      const raw = a.appDefaultValue;
+      if (a.type === "bit" && /^[01]$/.test(raw ?? "")) defaults.push([a.name, raw === "1"]);
+      else if (a.type === "picklist" && /^-?\d+$/.test(raw ?? "") && raw !== "-1") defaults.push([a.name, Number(raw)]);
+    }
+    // ponytail: {SEQNUM:n} formats only; RANDSTRING/DATETIMEUTC columns stay empty until a create fills them.
+    const autonumbers = Object.values(attributes).filter((a) => /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? "") && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat));
+    const states = attributes.statecode?.optionSet?.states ?? [];
+    const statusOf = (state) => states.find((s) => s.value === Number(state))?.defaultStatus;
+    out[name] = rows.map((row) => {
+      if (!row || typeof row !== "object") return row;
+      const next = { ...row };
+      for (const [column, value] of defaults) if (!Object.hasOwn(next, column)) next[column] = value;
+      if (states.length && !Object.hasOwn(next, "statecode")) next.statecode = 0;
+      if (states.length && attributes.statuscode && !Object.hasOwn(next, "statuscode") && statusOf(next.statecode) !== undefined) next.statuscode = statusOf(next.statecode);
+      for (const a of autonumbers) {
+        if (next[a.name] != null && next[a.name] !== "") continue;
+        const key = `${name}.${a.name}`;
+        const value = Number(sequences[key] ?? 1000);
+        sequences[key] = value + 1;
+        next[a.name] = a.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) => String(value).padStart(Number(width), "0"));
+      }
+      if (attributes.createdon && !Object.hasOwn(next, "createdon")) next.createdon = stamp;
+      if (attributes.modifiedon && !Object.hasOwn(next, "modifiedon")) next.modifiedon = next.createdon ?? stamp;
+      return next;
+    });
+  }
+  return out;
+}
+
+/** A preset body with seeded tables; autonumber counters continue in its settings. */
+export function seedPresetBody(body, schema, options = {}) {
+  if (!body?.tables || !schema?.tables) return body;
+  const sequences = { ...body.settings?.autoNumberSequences };
+  const tables = seedRecordDefaults(body.tables, schema, { ...options, sequences });
+  return { ...body, tables, ...(Object.keys(sequences).length ? { settings: { ...body.settings, autoNumberSequences: sequences } } : {}) };
 }

@@ -23,6 +23,34 @@
   };
   const ResourceManager = () => window.ResourceManager || {};
   const resource = (key, fallback) => ResourceManager()[key] || fallback;
+  // Browser-local date formatting with the site's .NET date patterns (body data-dateformat,
+  // data-datetimeformat), as the platform grid renders <time> cells.
+  const pad = (value, length = 2) => String(value).padStart(length, "0");
+  function formatLocal(date, pattern) {
+    const h = date.getHours();
+    const tokens = { yyyy: date.getFullYear(), yy: pad(date.getFullYear() % 100), MM: pad(date.getMonth() + 1), M: date.getMonth() + 1, dd: pad(date.getDate()), d: date.getDate(), HH: pad(h), H: h, hh: pad(h % 12 || 12), h: h % 12 || 12, mm: pad(date.getMinutes()), m: date.getMinutes(), ss: pad(date.getSeconds()), s: date.getSeconds(), tt: h < 12 ? "AM" : "PM" };
+    return String(pattern).replace(/'[^']*'|yyyy|yy|MM|M|dd|d|HH|H|hh|h|mm|m|ss|s|tt/g, (token) => (token.startsWith("'") ? token.slice(1, -1) : String(tokens[token])));
+  }
+  function isoLocal(date) {
+    const offset = -date.getTimezoneOffset();
+    const sign = offset < 0 ? "-" : "+";
+    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}${sign}${pad(Math.floor(Math.abs(offset) / 60))}:${pad(Math.abs(offset) % 60)}`;
+  }
+  /** The site-formatted local text and ISO datetime of a DateTime grid value, or null without site formats. */
+  function siteDate(attribute) {
+    const body = document.body;
+    const pattern = attribute.DateTimeFormat === "DateOnly" ? body?.getAttribute("data-dateformat") : body?.getAttribute("data-datetimeformat");
+    const match = /\/Date\((-?\d+)\)\//.exec(String(attribute.Value ?? ""));
+    if (!pattern || !match) return null;
+    if (attribute.DateTimeFormat === "DateOnly") {
+      const [year, month, day] = String(attribute.DisplayValue ?? "").split("-").map(Number);
+      if (!year) return null;
+      const date = new Date(year, month - 1, day);
+      return { text: formatLocal(date, pattern), iso: String(attribute.DisplayValue) };
+    }
+    const date = new Date(Number(match[1]));
+    return { text: formatLocal(date, pattern), iso: isoLocal(date) };
+  }
 
   // ---- events --------------------------------------------------------------
   function trigger(element, name, extra) {
@@ -308,6 +336,10 @@
       this.gridClass = data("grid-class") || "";
       this.widthStyle = data("column-width-style") || "Percent";
       this.selectedView = data("selected-view");
+      // Grids inside a Bootstrap 5 dialog (lookup, associate) and grids of a page that loads the
+      // Bootstrap 5 platform bundles render the Bootstrap 5 toolbar, table and pagination.
+      this.dialog = Boolean(element.closest(".modal[data-bs-backdrop]"));
+      this.bs5 = this.dialog || Boolean(document.querySelector('script[src*=".BootstrapV5."]'));
       this.reference = { entity: data("ref-entity"), id: data("ref-id"), rel: data("ref-rel"), role: data("ref-rel-role") };
       this.state = { page: 1, pages: 1, pageSize: null, sort: null, filter: null, metaFilter: null, selected: null, loading: null };
       if ($) {
@@ -360,20 +392,30 @@
       toolbar.className = "view-toolbar grid-actions clearfix";
       if (this.layouts.length > 1) {
         const select = document.createElement("ul");
-        select.className = "view-select nav nav-pills pull-left";
+        select.className = `view-select nav nav-pills ${this.bs5 ? "float-start" : "pull-left"}`;
         const current = this.layout;
         const name = current.Configuration?.ViewDisplayName || current.ViewName;
-        select.innerHTML = `<li class="dropdown"><a class="selected-view dropdown-toggle" data-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span><span class="caret" aria-hidden="true"></span></a><ul class="dropdown-menu" role="menu">${this.layouts
-          .map(
-            (layout) =>
-              `<li role="none"${layout === current ? ' class="active"' : ""}><a href="#" role="menuitem" data-view-id="${esc(layout.Id)}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
-          )
-          .join("")}</ul></li>`;
+        const count = this.layouts.length;
+        select.innerHTML = this.bs5
+          ? `<li class="dropdown" id="filterDropdownId"><a class="selected-view dropdown-toggle" data-bs-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}" aria-expanded="false" tabindex="0"><span class="fa fa-list" aria-hidden="true"></span><span class="title">${esc(name)}</span></a><ul class="dropdown-menu" role="menu">${this.layouts
+              .map(
+                (layout, index) =>
+                  `<li role="none"${layout === current ? ' class="active"' : ""}><a href="#" role="menuitem" class="dropdown-item" tabindex="0" aria-posinset="${index + 1}" aria-setsize="${count}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
+              )
+              .join("")}</ul></li>`
+          : `<li class="dropdown"><a class="selected-view dropdown-toggle" data-toggle="dropdown" href="#" role="button" title="${esc(name)}" aria-label="${esc(name)}"><span class="fa fa-list" aria-hidden="true"></span><span class="title"> ${esc(name)}</span><span class="caret" aria-hidden="true"></span></a><ul class="dropdown-menu" role="menu">${this.layouts
+              .map(
+                (layout) =>
+                  `<li role="none"${layout === current ? ' class="active"' : ""}><a href="#" role="menuitem" data-view-id="${esc(layout.Id)}" aria-label="${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}">${esc(layout.Configuration?.ViewDisplayName || layout.ViewName)}</a></li>`,
+              )
+              .join("")}</ul></li>`;
         onClick(select, (event) => {
-          const item = event.target.closest("[data-view-id]");
+          const item = event.target.closest('[role="menuitem"]');
           if (item) {
             event.preventDefault();
-            this.changeView(item.getAttribute("data-view-id"));
+            // Bootstrap 5 menu items carry no view id: their position names the layout.
+            const index = [...select.querySelectorAll('[role="menuitem"]')].indexOf(item);
+            this.changeView(item.getAttribute("data-view-id") ?? this.layouts[index]?.Id);
             return;
           }
           const toggle = event.target.closest(".dropdown-toggle");
@@ -384,15 +426,35 @@
         });
         toolbar.append(select);
       }
+      // A Bootstrap 5 page grid shows the list's create page (InsertActionLink) as its own toolbar button.
+      const insert = config.InsertActionLink;
+      if (this.bs5 && !this.dialog && this.enableActions && insert?.Enabled && insert.URL?.PathWithQueryString) {
+        const link = document.createElement("a");
+        link.href = this.withReference(insert.URL.PathWithQueryString);
+        link.className = "btn insert-Action-link btn-primary float-end action";
+        link.title = insert.Tooltip || plain(insert.Label);
+        link.innerHTML = insert.Label;
+        toolbar.append(link);
+      }
       const actions = document.createElement("div");
-      actions.className = "pull-right toolbar-actions";
+      actions.className = `${this.bs5 ? "float-end" : "pull-right"} toolbar-actions`;
       const search = config.Search;
       if (search?.Enabled) {
         const group = document.createElement("div");
-        group.className = "input-group pull-left view-search entitylist-search";
+        group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"} view-search entitylist-search`;
         group.setAttribute("role", "none");
-        group.innerHTML = `<input placeholder="${esc(search.PlaceholderText || "Search")}" title="${esc(search.TooltipText || "")}" aria-label="${esc(search.TooltipText || search.PlaceholderText || "Search")}" class="query form-control"><div class="input-group-btn" role="presentation"><button type="button" aria-label="${esc(resource("Search_Results", "Search Results"))}" title="${esc(resource("Search_Results", "Search Results"))}" class="btn btn-default btn-hg">${search.ButtonLabel || "<span class='sr-only'>Search Results</span><span class='fa fa-search'></span>"}</button></div>`;
+        const results = resource("Search_Results", "Search Results");
+        group.innerHTML = this.bs5
+          ? `<input placeholder="${esc(search.PlaceholderText || "Search")}" title="${esc(search.TooltipText || "")}" aria-label="${esc(search.TooltipText || search.PlaceholderText || "Search")}" class="query form-control" style="display: table-cell; width: 100%; font-size: 14px;"><div class="input-group-btn align-top" role="presentation" style="display: table-cell;"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default" style="border-radius: 0px;"><span class="visually-hidden">${esc(results)}</span><span class="fa fa-search"></span></button></div>`
+          : `<input placeholder="${esc(search.PlaceholderText || "Search")}" title="${esc(search.TooltipText || "")}" aria-label="${esc(search.TooltipText || search.PlaceholderText || "Search")}" class="query form-control"><div class="input-group-btn" role="presentation"><button type="button" aria-label="${esc(results)}" title="${esc(results)}" class="btn btn-default btn-hg">${search.ButtonLabel || "<span class='sr-only'>Search Results</span><span class='fa fa-search'></span>"}</button></div>`;
+        if (this.bs5) group.style.display = "table";
         const input = group.querySelector("input");
+        // The Bootstrap 5 page grid does not accept a leading wildcard: it drops leading asterisks as typed.
+        if (this.bs5 && !this.dialog)
+          input.addEventListener("input", () => {
+            const value = input.value.replace(/^\*+/, "");
+            if (value !== input.value) input.value = value;
+          });
         const searchValue = new URLSearchParams(location.search).get(search.SearchQueryStringParameterName || "query");
         if (searchValue && !this.isLookup) input.value = searchValue;
         group.querySelector("button").addEventListener("click", () => this.load(1));
@@ -443,21 +505,28 @@
         }
       if (actions.children.length) toolbar.append(actions);
       if (toolbar.children.length) this.element.prepend(toolbar);
+      // A Bootstrap 5 page grid with search announces the record count after its toolbar.
+      if (this.bs5 && !this.dialog && search?.Enabled && !this.child("[id^='SearchCountText']")) {
+        const announcer = document.createElement("div");
+        for (const [name, value] of [["role", "alert"], ["aria-live", "assertive"], ["aria-atomic", "true"], ["aria-relevant", "additions text"], ["id", "SearchCountTextnull"], ["class", "visually-hidden"]]) announcer.setAttribute(name, value);
+        (this.child(".view-toolbar") ?? this.element.firstChild)?.after(announcer);
+      }
     }
 
     createActionElement(action) {
       const group = document.createElement("div");
-      group.className = "input-group pull-left";
+      group.className = `input-group ${this.bs5 ? "float-start" : "pull-left"}`;
+      if (this.bs5 && !this.dialog) group.setAttribute("style", "display: table; width: auto;");
       const link = document.createElement("a");
       const inactive = this.parentInactive();
       let href = "#";
       if ((action.Target === 1 || action.Target === 2) && action.URL?.PathWithQueryString)
         href = this.withReference(action.URL.PathWithQueryString);
       link.href = href;
-      link.className = "btn btn-primary pull-right action create-action";
+      link.className = `btn btn-primary ${this.bs5 ? "float-end" : "pull-right"} action create-action`;
       link.title = action.Tooltip || plain(action.Label) || "Create";
       link.setAttribute("tabindex", "0");
-      link.setAttribute("role", "button");
+      link.setAttribute("role", this.bs5 && !this.dialog ? "link" : "button");
       link.innerHTML = action.Label;
       if (href !== "#" && window.parent !== window) link.target = "_top";
       if (action.Target === 0 && action.EntityForm) {
@@ -526,14 +595,15 @@
       const layout = this.layout;
       const table = document.createElement("table");
       table.setAttribute("aria-relevant", "additions");
-      table.className = `table${this.gridClass ? " " + this.gridClass : ""} table-fluid${this.selectMode !== "None" ? " table-hover" : ""}`;
+      table.className = `table${this.gridClass ? " " + this.gridClass : ""}${this.bs5 ? "" : " table-fluid"}${this.selectMode !== "None" ? " table-hover" : ""}`;
       const head = document.createElement("thead");
       const row = document.createElement("tr");
       const sortParts = String(this.state.sort ?? layout.SortExpression ?? "").split(",").map((part) => part.trim().split(/\s+/));
       for (const column of layout.Columns ?? []) {
         const th = document.createElement("th");
         th.setAttribute("scope", "col");
-        th.style.width = this.widthStyle === "Pixels" ? `${column.Width}px` : `${column.WidthAsPercent}%`;
+        // The platform writes the unrounded width (style="width:15.686274509803921%;").
+        th.setAttribute("style", this.widthStyle === "Pixels" ? `width:${column.Width}px;` : `width:${column.WidthAsPercent}%;`);
         const name = column.Name ?? column.LogicalName;
         if (column.Type === 1 || column.Type === 2 || column.SortDisabled) {
           th.className = "sort-disabled";
@@ -542,6 +612,9 @@
             th.setAttribute("data-th", name);
           } else if (column.Type === 2) {
             th.setAttribute("aria-label", "Actions");
+            th.setAttribute("data-th", name);
+          } else if (this.bs5) {
+            th.setAttribute("aria-label", plain(name));
             th.setAttribute("data-th", name);
           }
           th.innerHTML = name;
@@ -555,7 +628,7 @@
           }
           const userSorted = this.state.sort != null;
           const hint = sorted ? (userSorted ? (ascending ? "Sort_Descending_Order" : "Sort_Ascending_Order") : "Sort_Ascending_Order") : "Sort_Descending_Order";
-          th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${sorted ? ` <span class="fa ${ascending ? "fa-arrow-up" : "fa-arrow-down"}" aria-hidden="true"></span>` : ""}<span class="sr-only sort-hint">. ${esc(resource(hint, hint === "Sort_Descending_Order" ? "sort descending" : "sort ascending"))}</span></a>`;
+          th.innerHTML = `<a href="#" role="button" aria-label="${esc(plain(name))}" tabindex="0">${name}${sorted ? ` <span class="fa ${ascending ? "fa-arrow-up" : "fa-arrow-down"}" aria-hidden="true"></span>` : ""}<span class="${this.bs5 ? "visually-hidden" : "sr-only"} sort-hint">. ${esc(resource(hint, hint === "Sort_Descending_Order" ? "sort descending" : "sort ascending"))}</span></a>`;
           onClick(th.querySelector("a"), (event) => {
             event.preventDefault();
             if (this.state.loading) return;
@@ -569,11 +642,24 @@
       }
       head.append(row);
       table.append(head, document.createElement("tbody"));
+      if (this.bs5) {
+        // A Bootstrap 5 dialog grid is responsive and, for a single selection, states the task first.
+        container.classList.add("table-responsive");
+        const hint = this.selectMode === "Single" ? resource("Lookup_Modal_Single_Select_Hint", "Choose one record and click Select to continue") : "";
+        if (hint) {
+          const label = document.createElement("span");
+          label.setAttribute("aria-label", hint);
+          label.setAttribute("tabindex", "0");
+          label.textContent = hint;
+          container.replaceChildren(label, table);
+          return;
+        }
+      }
       container.replaceChildren(table);
     }
 
     showMessage(selector) {
-      for (const name of [".view-empty", ".view-access-denied", ".view-error", ".view-loading"]) {
+      for (const name of [".view-empty", ".view-empty-maker", ".view-access-denied", ".view-error", ".view-loading"]) {
         const node = this.child(name);
         if (node) node.style.display = name === selector ? "block" : "none";
       }
@@ -639,7 +725,12 @@
           const $ = jq();
           if ($) $(this.element).data("totalRecordCount", data.ItemCount);
           this.renderRows(data);
-          if (!data.Records?.length) this.child(".view-empty").style.display = "block";
+          if (!data.Records?.length) {
+            const empty = this.child(".view-empty");
+            empty.style.display = "block";
+            // The Bootstrap 5 page grid announces its empty message.
+            if (this.bs5 && !this.dialog) for (const [name, value] of [["role", "status"], ["aria-live", "polite"], ["aria-atomic", "true"], ["tabindex", "0"]]) empty.setAttribute(name, value);
+          }
           this.renderPagination(data);
           trigger(this.element, "loaded");
         })
@@ -652,7 +743,7 @@
         })
         .finally(() => {
           if (request === this.state.loading) this.state.loading = null;
-          for (const link of this.element.querySelectorAll(".view-grid th a")) link.style.pointerEvents = "";
+          for (const link of this.element.querySelectorAll(".view-grid th a")) { link.style.pointerEvents = ""; if (!link.getAttribute("style")) link.removeAttribute("style"); }
         });
     }
 
@@ -672,6 +763,8 @@
     cellContent(attribute) {
       if (!attribute) return "";
       const display = attribute.DisplayValue ?? attribute.FormattedValue ?? "";
+      const local = this.bs5 && attribute.Type === "System.DateTime" ? siteDate(attribute) : null;
+      if (local) return `<time datetime="${esc(local.iso)}">${esc(local.text)}</time>`;
       if (attribute.Type === "System.DateTime" && attribute.Value) {
         const iso = typeof attribute.DisplayValue === "string" ? attribute.DisplayValue : "";
         return `<time datetime="${esc(iso)}">${esc(attribute.FormattedValue ?? iso)}</time>`;
@@ -692,12 +785,19 @@
     renderRows(data) {
       const table = this.child(".view-grid")?.querySelector("table");
       if (!table) return;
-      const tbody = table.tBodies[0];
+      const tbody = table.tBodies[0] ?? (this.__ppBody ??= document.createElement("tbody"));
+      this.__ppBody = tbody;
       tbody.replaceChildren();
+      // A Bootstrap 5 page grid without records has no table body.
+      if (this.bs5 && !this.dialog) {
+        if (!(data.Records ?? []).length) tbody.remove();
+        else if (!tbody.isConnected) table.append(tbody);
+      }
       tbody.setAttribute("style", "");
       if (this.selectMode === "Single") tbody.setAttribute("role", "radiogroup");
       const config = this.config;
       const details = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Details && action.Enabled) ?? (config.DetailsActionLink?.Enabled ? config.DetailsActionLink : null) : null;
+      const edit = this.enableActions ? (config.ItemActionLinks ?? []).find((action) => action.Type === ACTION.Edit && action.Enabled && action.Target !== 0) ?? null : null;
       const disabled = new Set((data.DisabledItemActionLinks ?? []).map((item) => `${String(item.EntityId).toLowerCase()}|${String(item.LinkUniqueId).toLowerCase()}`));
       let firstData = true;
       for (const record of data.Records ?? []) {
@@ -717,7 +817,9 @@
             td.setAttribute("aria-label", "action menu");
             const items = this.itemActions(record, disabled);
             if (items.length) {
-              td.innerHTML = `<div class="dropdown action"><button class="btn btn-default btn-xs aria-exp" data-toggle="dropdown" aria-expanded="false" aria-label="action menu" title="action menu" type="button"><span class="fa fa-chevron-circle-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`;
+              td.innerHTML = this.bs5
+                ? `<div class="dropdown action"><button class="btn btn-default btn-md aria-exp" data-bs-toggle="dropdown" aria-expanded="false" aria-label="action menu"><span class="fa fa-chevron-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`
+                : `<div class="dropdown action"><button class="btn btn-default btn-xs aria-exp" data-toggle="dropdown" aria-expanded="false" aria-label="action menu" title="action menu" type="button"><span class="fa fa-chevron-circle-down fa-fw" aria-hidden="true"></span></button><ul class="dropdown-menu" role="menu" style="position: fixed;"></ul></div>`;
               const menu = td.querySelector("ul");
               bindActionMenu(td.querySelector(".dropdown.action"));
               items.forEach((item, index) => {
@@ -731,15 +833,21 @@
             }
           } else {
             const attribute = record.Attributes?.find((candidate) => candidate.Name === column.LogicalName);
-            td.setAttribute("data-type", attribute?.Type ?? "");
-            td.setAttribute("data-attribute", column.LogicalName);
-            td.setAttribute("data-value", this.cellValue(attribute));
+            // Bootstrap 5 cells of absent values carry only the column header and an empty label.
+            if (attribute || !this.bs5) {
+              td.setAttribute("data-type", attribute?.Type ?? "");
+              td.setAttribute("data-attribute", column.LogicalName);
+              td.setAttribute("data-value", this.cellValue(attribute));
+            }
             td.setAttribute("data-th", plain(column.Name));
-            td.setAttribute("aria-label", attribute?.FormattedValue ?? attribute?.DisplayValue ?? "");
+            const local = this.bs5 && attribute?.Type === "System.DateTime" ? siteDate(attribute) : null;
+            td.setAttribute("aria-label", local ? local.text : this.bs5 ? (attribute?.DisplayValue ?? "") : (attribute?.FormattedValue ?? attribute?.DisplayValue ?? ""));
             let content = this.cellContent(attribute);
             if (firstData && details) {
-              const url = details.Target === 0 ? "#" : this.actionUrl(details, record) ?? "#";
-              content = `<a href="${esc(url)}" class="details-link has-tooltip${details.Target === 0 ? " launch-modal" : ""}" data-toggle="tooltip" title="${esc(details.Tooltip || plain(details.Label))}"${details.Target === 0 && details.EntityForm ? ` data-entityformid="${esc(details.EntityForm.Id)}"` : ""}${url !== "#" && window.parent !== window ? ' target="_top"' : ""}>${attribute?.DisplayValue != null ? esc(attribute.DisplayValue) : content}</a>`;
+              // The Bootstrap 5 primary column opens the edit page when the list has an edit action.
+              const target = this.bs5 && !this.dialog && details.Target !== 0 ? edit ?? details : details;
+              const url = target.Target === 0 ? "#" : this.actionUrl(target, record) ?? "#";
+              content = `<a href="${esc(url)}" class="details-link has-tooltip${details.Target === 0 ? " launch-modal" : ""}" ${this.bs5 ? "data-bs-toggle" : "data-toggle"}="tooltip" title="${esc(details.Tooltip || plain(details.Label))}"${details.Target === 0 && details.EntityForm ? ` data-entityformid="${esc(details.EntityForm.Id)}"` : ""}${url !== "#" && window.parent !== window ? ' target="_top"' : ""}>${attribute?.DisplayValue != null ? esc(attribute.DisplayValue) : content}</a>`;
             }
             td.innerHTML = content;
             firstData = false;
@@ -755,8 +863,8 @@
         const match = [...tbody.rows].find((tr) => tr.getAttribute("data-id") === selected);
         if (match) this.toggleRow(match, true);
       }
-      const announcer = this.element.querySelector(":scope > .sr-only[id^='SearchCountText']");
-      if (announcer) announcer.textContent = `${data.ItemCount ?? (data.Records ?? []).length} records found`;
+      const announcer = this.element.querySelector(":scope > .sr-only[id^='SearchCountText'], :scope > .visually-hidden[id^='SearchCountText']");
+      if (announcer) announcer.textContent = `${data.ItemCount ?? (data.Records ?? []).length} ${resource("SearchCountText", "records found")}`;
     }
 
     itemActions(record, disabled) {
@@ -803,6 +911,7 @@
           default:
             continue;
         }
+        if (this.bs5) link.classList.add("dropdown-item");
         if (formTarget && (action.Type === ACTION.Details || action.Type === ACTION.Edit)) link.setAttribute("data-entityformid", action.EntityForm.Id);
         else if (action.Type === ACTION.Details || action.Type === ACTION.Edit) {
           const url = this.actionUrl(action, record);
@@ -825,7 +934,7 @@
       tbody.addEventListener("click", (event) => {
         const link = event.target.closest("a.details-link, a.edit-link, a.delete-link, a.disassociate-link, a.workflow-link, a.deactivate-link, a.activate-link");
         if (!link || !tbody.contains(link)) {
-          const toggle = event.target.closest('[data-toggle="dropdown"]');
+          const toggle = event.target.closest('[data-toggle="dropdown"], [data-bs-toggle="dropdown"]');
           if (toggle && tbody.contains(toggle) && !(jq() && jq().fn.dropdown)) {
             event.preventDefault();
             const container = toggle.parentElement;
@@ -1000,7 +1109,8 @@
       } else {
         if (!(pages > 1)) {
           pagination.style.display = "none";
-          pagination.replaceChildren();
+          // Bootstrap 5 hides the pager and keeps its last pages.
+          if (!this.bs5) pagination.replaceChildren();
           grid?.classList.remove("has-pagination");
           return;
         }
@@ -1008,10 +1118,12 @@
         let start = Math.max(1, current - Math.floor(span / 2));
         const end = Math.min(pages, start + span - 1);
         start = Math.max(1, end - span + 1);
-        const item = (page, label, { active = false, disabled = false, aria, className } = {}) =>
-          `<li${active ? ' class="active"' : disabled ? ' class="disabled"' : ""}><a${disabled ? "" : ' href="#"'}${aria ? ` aria-label="${esc(aria)}"` : ""} data-page="${page}" role="button"${active ? ' aria-current="page"' : ""}${disabled ? ' aria-disabled="true"' : ""}${className ? ` class="${className}"` : ""}>${esc(label)}</a></li>`;
+        const bs5 = this.bs5;
+        // Bootstrap 5 pager links are page-link items; previous/next show < and > with a tooltip.
+        const item = (page, label, { active = false, disabled = false, aria, className, tooltip = false } = {}) =>
+          `<li class="${[bs5 ? "page-item" : "", active ? "active" : disabled ? "disabled" : ""].filter(Boolean).join(" ")}"><a${bs5 || className ? ` class="${[bs5 ? "page-link" : "", className ?? ""].filter(Boolean).join(" ")}"` : ""}${disabled ? "" : ' href="#"'}${aria && !(bs5 && tooltip) ? ` aria-label="${esc(aria)}"` : ""} data-page="${page}" role="button"${bs5 && tooltip ? ` data-bs-toggle="tooltip" aria-label="${esc(aria)}"` : ""}${active ? ' aria-current="page"' : ""}${disabled ? ' aria-disabled="true"' : ""}${bs5 && tooltip ? ` data-bs-original-title="${esc(aria)}"` : ""}>${esc(label)}</a></li>`.replace(' class=""', "");
         const parts = [
-          item(current > 1 ? current - 1 : 0, resource("Pagination_Previous_Page", "Previous"), { disabled: current <= 1, aria: "Previous page", className: "entity-pager-prev-link" }),
+          item(current > 1 ? current - 1 : 0, bs5 ? "<" : resource("Pagination_Previous_Page", "Previous"), { disabled: current <= 1, aria: resource("Pagination_Previous_Page", "Previous page"), className: "entity-pager-prev-link", tooltip: true }),
         ];
         if (start > 1) {
           parts.push(item(1, "1", { aria: "page 1" }));
@@ -1022,10 +1134,11 @@
           if (end < pages - 1) parts.push(item("..", "..", { disabled: true, aria: "Load more pages" }));
           parts.push(item(pages, String(pages), { aria: `page ${pages}` }));
         }
-        parts.push(item(current < pages ? current + 1 : 0, resource("Pagination_Next_Page", "Next"), { disabled: current >= pages, aria: "Next page", className: "entity-pager-next-link" }));
+        parts.push(item(current < pages ? current + 1 : 0, bs5 ? ">" : resource("Pagination_Next_Page", "Next"), { disabled: current >= pages, aria: resource("Pagination_Next_Page", "Next page"), className: "entity-pager-next-link", tooltip: true }));
         pagination.innerHTML = `<div class="jquery-bootstrap-pagination"><ul class="pagination">${parts.join("")}</ul></div>`;
       }
       pagination.style.display = "";
+      if (this.bs5 && !pagination.hasAttribute("style")) pagination.setAttribute("style", "");
       grid?.classList.add("has-pagination");
       pagination.onclick = (event) => {
         const link = event.target.closest("a[data-page]");
@@ -1251,17 +1364,26 @@
     container.__ppNotes = true;
     const regarding = (() => {
       try {
-        return JSON.parse(container.getAttribute("data-target") || "{}");
+        return JSON.parse(container.getAttribute("data-target") || container.getAttribute("data-bs-target") || "{}");
       } catch {
         return {};
       }
     })();
     const list = container.querySelector(".notes");
     const state = { page: 1 };
+    // The Bootstrap 5 control (data-bs-target) moves its dialogs to the document body and shows
+    // its list only when it has notes.
+    const bs5 = container.hasAttribute("data-bs-target");
+    if (bs5) for (const name of [".modal-editnote", ".modal-deletenote", ".modal-addnote"]) { const modal = container.querySelector(`:scope > ${name}`); if (modal) document.body.append(modal); }
     const show = (selector) => {
       for (const name of [".notes-empty", ".notes-access-denied", ".notes-error", ".notes-loading"]) {
         const node = container.querySelector(name);
         if (node) node.style.display = name === selector ? "block" : "none";
+      }
+      if (bs5) {
+        if (list) list.style.display = selector ? "none" : "block";
+        const more = container.querySelector(".notes-loading-more");
+        if (more) more.style.display = "none";
       }
     };
     const load = (page = 1) => {

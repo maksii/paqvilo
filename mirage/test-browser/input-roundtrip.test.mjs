@@ -246,7 +246,8 @@ test('native format and range errors post to the server, preserve input and reje
   assert.deepEqual((await response.json()).error.validationErrors.map((entry) => entry.message), expected);
   const summary = page.locator('#EntityFormPanel .validation-summary');
   await summary.waitFor({ state: 'visible' });
-  assert.deepEqual(await summary.locator('li a').allTextContents(), expected);
+  // The server summary links end with a space, as the platform renders them.
+  assert.deepEqual(await summary.locator('li a').allTextContents(), expected.map((message) => `${message} `));
   assert.equal(await page.evaluate(() => Page_IsValid), false);
   assert.equal(await page.locator('#email').inputValue(), 'not an email');
   assert.equal(await page.locator('#count').inputValue(), 'not a number');
@@ -269,7 +270,7 @@ test('native format and range errors post to the server, preserve input and reje
   await page.getByRole('button', { name: 'Submit', exact: true }).click();
   assert.equal((await rejected).status(), 400);
   await summary.waitFor({ state: 'visible' });
-  assert.deepEqual(await summary.locator('li a').allTextContents(), ['Title exceeds the maximum length of 500 characters.', 'Email must be a valid email address.']);
+  assert.deepEqual(await summary.locator('li a').allTextContents(), ['Title exceeds the maximum length of 500 characters. ', 'Email must be a valid email address. ']);
   assert.deepEqual(app.store.snapshot().tables.sample, [row], 'invalid update cannot partially change another field');
   await assertInert(page);
   assert.deepEqual(errors, []);
@@ -333,7 +334,7 @@ test('native hidden dates require the native round-trip representation while Dat
     await page.getByRole('button', { name: 'Submit', exact: true }).click();
     assert.equal((await posted).status(), 400, value);
     await page.locator('.validation-summary li a').waitFor({ state: 'visible' });
-    assert.equal(await page.locator('.validation-summary li a').textContent(), 'Appointment must have a valid date format.');
+    assert.equal(await page.locator('.validation-summary li a').textContent(), 'Appointment must have a valid date format. ');
     assert.equal(app.store.snapshot().tables.sample.length, 0);
   }
   const identity = { id: 'fixture-editor', roles: ['Editor'] };

@@ -41,11 +41,14 @@
     if (!display) return;
     chooser.type = hasTime ? "datetime-local" : "date";
     chooser.className = "paqvilo-mirage-date-chooser";
+    // Local-only controls are marked so parity comparisons can tell them from platform markup.
+    chooser.setAttribute("data-paqvilo-local", "");
     chooser.setAttribute("aria-label", display.getAttribute("aria-label") || "Choose date");
     chooser.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0";
     root.append(chooser);
     const buttons = document.createElement("span");
     buttons.className = "paqvilo-mirage-date-actions";
+    buttons.setAttribute("data-paqvilo-local", "");
     buttons.setAttribute("role", "group");
     buttons.setAttribute("aria-label", "Date actions");
     const makeButton = (label, action) => {

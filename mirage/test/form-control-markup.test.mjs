@@ -73,9 +73,9 @@ test("edit form: string, e-mail, phone and memo boxes carry the platform handler
   const phone = element(html, /<input [^>]*id="telephone1"[^>]*>/);
   assert.match(phone, / type="text"/);
   assert.match(phone, / placeholder="Provide a telephone number"/);
-  // rows = rowspan * 3 - 2 (MemoControlTemplate), with the LimitInput/LimitPaste handlers.
+  // MemoControlTemplate rows: a one-row cell keeps a four-line box (rowspan * 3 - 2 from two rows), with the LimitInput/LimitPaste handlers.
   const memo = element(html, /<textarea [^>]*id="description"[^>]*>/);
-  assert.match(memo, / rows="1"/);
+  assert.match(memo, / rows="4"/);
   assert.match(memo, / onkeydown="javascript:return LimitInput\(this, event\);" oninput="javascript:return LimitInput\(this, event\);" onpaste="javascript:return LimitPaste\(this, event\);"/);
   assert.match(element(html, /<textarea [^>]*id="notes"[^>]*>/), / rows="4"[^>]*class="textarea form-control  readonly"[^>]*readonly="readonly"/);
   // A field-level read-only cell has no validator container.

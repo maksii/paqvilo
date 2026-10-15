@@ -11,6 +11,7 @@ import { FetchRenderCache } from './fetch-render-cache.mjs';
 // runtime templates) and the page shell. Behaviour and evidence: docs/liquid-parity.md.
 import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { pageAccess } from "./page-access.mjs";
+import { siteSetting } from "./redirects.mjs";
 import { reconcileFooterLogos } from "./footer-capture.mjs";
 import { reconcileHeaderNotifications } from "./header-notification-capture.mjs";
 import { headerNotificationQueries } from "./extensions.mjs";
@@ -19,7 +20,7 @@ import { resolveObservedPageCopy } from "./observed-pagecopy-layout.mjs";
 import { applyObservedLiquidObjects } from "./liquid-observed-objects.mjs";
 import { editableMetadataAttributes } from "./liquid-editable-metadata.mjs";
 import { injectRuntimeCompatibility, isHtmlDocument } from "./source-dependencies.mjs";
-import { OFFLINE_NOTIFICATION_BAR, antiForgeryHolder, nativePageRegions, rewritePageLayout, CKEDITOR_BASEPATH, platformShell, bootstrapVariant, PLATFORM_BOOTSTRAP_STYLESHEET } from "./platform-manifest.mjs";
+import { OFFLINE_NOTIFICATION_BAR, PRIVATE_MODE_BANNER, antiForgeryHolder, nativePageRegions, rewritePageLayout, CKEDITOR_BASEPATH, platformShell, bootstrapVariant, PLATFORM_BOOTSTRAP_STYLESHEET } from "./platform-manifest.mjs";
 import {
   LiquidEngine,
   LiquidContext,
@@ -1471,6 +1472,7 @@ export function createPortalRenderer(portal, options = {}) {
         renderScripts: (paths) => urls(paths, "js"),
         authenticated: Boolean(context.user),
         serverFormId: rewriteLayout?.serverFormId ?? null,
+        variant: platform.variant,
       });
       const languageCode = layoutLanguageCode(context);
       const direction = /^(ar|fa|he|ur)(-|$)/i.test(languageCode) ? "rtl" : "ltr";
@@ -1478,7 +1480,7 @@ export function createPortalRenderer(portal, options = {}) {
       const htmlAttributes = layoutHtmlAttributes(languageCode, context.__language?.lcid);
       // The footer-spacing adapter is a script element; authored footer markup is not modified.
       const html = injectRuntimeCompatibility(
-        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}</head><body${bodyAttributes}>${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
+        `<!DOCTYPE html><html lang="${htmlEscape(languageCode)}" dir="${direction}"${htmlAttributes}><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>${htmlEscape(page.title)}${encodedSuffix ? ` ${encodedSuffix}` : ""}</title>${platform.headStart}${siteStyles}${shellHeadScripts}${css}${head}${extra.headHtml ?? ""}${platform.headEnd}</head><body${bodyAttributes}>${platform.bodyOpen}${portal.observed?.siteVisibility === "private" ? PRIVATE_MODE_BANNER : ""}${OFFLINE_NOTIFICATION_BAR}${renderedHeader}${antiForgeryHolder()}${platform.bodyStart}${shellBeforeContentScripts}${nativeRegions.content}${nativeRegions.bodyScripts}${platform.afterContent}${renderedFooter}${shellAfterFooterScripts}${platform.afterFooter}${js}${extra.bodyHtml ?? ""}</body></html>`,
         { ...(options.sourceDependencies ?? {}), footerSpacing: Boolean(footer) || options.sourceDependencies?.footerSpacing },
         configuredHeadScripts,
       );
@@ -1505,35 +1507,21 @@ export function createPortalRenderer(portal, options = {}) {
   /**
    * Language attributes of the platform layout's <html>: crm-lang and data-lang carry the current
    * language code, crm-lcid the LCID of the request's website language (else the website language
-   * LCID), same-site-mode the session cookie mode (None on every observed site).
+   * LCID), same-site-mode the session cookie mode: the HTTP/SameSite/Default setting, else None.
    */
   function layoutHtmlAttributes(languageCode, languageLcid) {
     const lcid = Number(languageLcid ?? portalField(portal.website ?? {}, "website_language") ?? 1033) || 1033;
-    return ` crm-lang="${htmlEscape(languageCode)}" crm-lcid="${lcid}" data-lang="${htmlEscape(languageCode)}" same-site-mode="None"`;
-  }
-  const styleTimes = new Map();
-  /** Epoch milliseconds (whole seconds) of a web file's modification, the live cache-busting query. */
-  async function webFileTimestamp(file) {
-    const modified = portalField(file.metadata ?? {}, "modifiedon");
-    if (modified && !Number.isNaN(Date.parse(modified))) return Math.floor(Date.parse(modified) / 1000) * 1000;
-    if (!file.file) return null;
-    if (!styleTimes.has(file.file))
-      styleTimes.set(
-        file.file,
-        fs.stat(file.file).then(
-          (stat) => Math.floor(stat.mtimeMs / 1000) * 1000,
-          () => null,
-        ),
-      );
-    return styleTimes.get(file.file);
+    const sameSite = String(siteSetting(portal, "HTTP/SameSite/Default") ?? "").trim() || "None";
+    return ` crm-lang="${htmlEscape(languageCode)}" crm-lcid="${lcid}" data-lang="${htmlEscape(languageCode)}" same-site-mode="${htmlEscape(sameSite)}"`;
   }
   /**
    * Content stylesheets of the platform layout (Adxstudio StyleExtensions.ContentStyles): active
    * web files whose partial URL ends with ".css" and whose parent is the page or one of its
    * ancestors, root first, then by display order. bootstrap.min.css is linked first on its own:
    * the Head/Bootstrap snippet when it exists, else the content style of that name (the platform
-   * default /css/bootstrap.min.css is the platform bundle slot's). Every web file href carries
-   * its modification time.
+   * default /css/bootstrap.min.css is the platform bundle slot's). Hrefs are the web file URLs
+   * without a query: a site-wide cache-busting query was seen on one earlier capture of the
+   * reference site and not on later ones, so it is not derivable from the export.
    */
   async function contentStylesheets(page, context) {
     const path = [];
@@ -1559,10 +1547,7 @@ export function createPortalRenderer(portal, options = {}) {
       // The platform keeps record (creation) order, which exports do not carry; locally the
       // order is deterministic: page path root first, then display order, then name.
       .sort((a, b) => b.offset - a.offset || a.order - b.order || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0) || a.index - b.index);
-    const link = async (entry) => {
-      const stamp = await webFileTimestamp(entry.file);
-      return `<link href="${htmlEscape(stamp == null ? entry.file.url : `${entry.file.url}?${stamp}`)}" rel="stylesheet" />`;
-    };
+    const link = async (entry) => `<link href="${htmlEscape(entry.file.url)}" rel="stylesheet" />`;
     const isBootstrap = (entry) => entry.partial.toLowerCase() === "bootstrap.min.css";
     const bootstrapSnippet = portal.snippets?.["Head/Bootstrap"];
     // A per-site observed.bootstrapStylesheet selects the platform stylesheet or exported web file.

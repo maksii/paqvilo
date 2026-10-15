@@ -234,7 +234,8 @@ test("native audit and operation-specific immutable columns retain exported Data
     update.componentSchemas["basic-form"].fields[0].validForUpdate,
     false,
   );
-  assert.equal(update.componentSchemas["basic-form"].fields[0].readOnly, true);
+  // Column validity stays on the field; the renderer applies it to the mode it renders.
+  assert.equal(update.componentSchemas["basic-form"].fields[0].readOnly, false);
   site.forms[0].mode = 100000000;
   const create = await importSolutionMetadata(root, { portal: site });
   assert.equal(create.componentSchemas["basic-form"].fields[0].readOnly, false);
@@ -553,4 +554,32 @@ test('notes cells without datafieldname survive exported systemform parsing', as
   assert.equal(cell.label, 'Related notes');
   assert.equal(cell.colspan, 2);
   assert.equal(metadata.componentSchemas['basic-form'].fields.length, 1);
+});
+
+test("hidden sections keep an empty place; subgrid and web resource cells resolve by control class; lookup views carry their query type", async (t) => {
+  const base = form("Name");
+  const sections = `<section name="secret" visible="false" showlabel="true"><labels><label description="Secret" languagecode="1033"/></labels><rows><row><cell><labels><label description="Hidden name" languagecode="1033"/></labels><control id="hidden-name" datafieldname="fullname"/></cell></row></rows></section><section name="extras" showlabel="true"><labels><label description="Extras" languagecode="1033"/></labels><rows><row><cell rowspan="4"><labels><label description="Related" languagecode="1033"/></labels><control id="related_grid" classid="{E7A81278-8635-4D9E-8D4D-59480B391C5B}"><parameters><TargetEntityType>contact</TargetEntityType><ViewId>{view-id}</ViewId><RelationshipName>contact_children</RelationshipName></parameters></control></cell></row><row><cell showlabel="false" rowspan="2"><labels><label description="Logo" languagecode="1033"/></labels><control id="WebResource_logo" classid="{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}"><parameters><Url>acme_logo.svg</Url><Scrolling>no</Scrolling><Border>true</Border></parameters></control></cell></row></rows></section>`;
+  const lookupView = view.replace("<savedqueryid>{view-id}</savedqueryid>", "<savedqueryid>{lookup-view}</savedqueryid><isdefault>1</isdefault><querytype>64</querytype>");
+  const root = await fixture(t, {
+    "Entities/Contact/Entity.xml": entity,
+    "Entities/Contact/FormXml/main/{form-id}.xml": base.replace("</section></sections>", `</section>${sections}</sections>`),
+    "Entities/Contact/SavedQueries/{view-id}.xml": view,
+    "Entities/Contact/SavedQueries/{lookup-view}.xml": lookupView,
+  });
+  const site = portal();
+  site.forms[0].metadata = {};
+  const metadata = await importSolutionMetadata(root, { portal: site });
+  const schema = metadata.componentSchemas["basic-form"];
+  const [general, hidden, extras] = schema.layout[0].columns[0].sections;
+  assert.equal(general.name, "general");
+  assert.deepEqual(hidden, { name: "secret", hidden: true, rows: [] });
+  assert.deepEqual(extras.rows.map((row) => row[0].type), ["subgrid", "webresource"]);
+  assert.equal(extras.rows[0][0].relationship, "contact_children");
+  assert.deepEqual(
+    { url: extras.rows[1][0].url, scrolling: extras.rows[1][0].scrolling, border: extras.rows[1][0].border, showLabel: extras.rows[1][0].showLabel, rowspan: extras.rows[1][0].rowspan },
+    { url: "acme_logo.svg", scrolling: "no", border: true, showLabel: false, rowspan: 2 },
+  );
+  const views = Object.fromEntries(metadata.views.map((item) => [item.id, item]));
+  assert.deepEqual([views["lookup-view"].queryType, views["lookup-view"].isDefault], [64, true]);
+  assert.deepEqual([views["view-id"].queryType, views["view-id"].isDefault], [0, false]);
 });

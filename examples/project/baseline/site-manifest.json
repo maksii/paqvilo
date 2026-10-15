@@ -591,6 +591,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert",
       "path": "/baseline/item-create/",
+      "table": "pqvd_baselineitem",
       "variation": "insert",
       "catalog": [
         "pp.basicform.table-name",
@@ -622,6 +623,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit",
       "path": "/baseline/item-edit/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, record from query string id; carries the metadata records",
       "catalog": [
         "pp.basicform.table-name",
@@ -1222,6 +1224,7 @@
       "kind": "basicform",
       "name": "Baseline Item Read",
       "path": "/baseline/item-read/",
+      "table": "pqvd_baselineitem",
       "variation": "read-only",
       "catalog": [
         "pp.basicform.table-name",
@@ -1252,6 +1255,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Success",
       "path": "/baseline/item-create-success/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, success message and hide form",
       "catalog": [
         "pp.basicform.table-name",
@@ -1283,6 +1287,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Redirect",
       "path": "/baseline/item-create-redirect/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, redirect to the edit page appending the record id; a redirect URL can come from ?returnurl=",
       "catalog": [
         "pp.basicform.table-name",
@@ -1316,6 +1321,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Redirect URL",
       "path": "/baseline/item-create-redirect-url/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, redirect to a URL (or the URL in ?returnurl=) appending the existing query string, the record id, a custom query string and code=<pqvd_code>",
       "catalog": [
         "pp.basicform.table-name",
@@ -1353,6 +1359,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit No Summary Links",
       "path": "/baseline/item-edit-nolinks/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, validation summary links disabled",
       "catalog": [
         "pp.basicform.table-name",
@@ -1386,6 +1393,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Captcha",
       "path": "/baseline/item-create-captcha/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, captcha for anonymous users only",
       "catalog": [
         "pp.basicform.captcha",
@@ -1417,6 +1425,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Captcha All Users",
       "path": "/baseline/item-create-captcha-all/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, captcha for anonymous and authenticated users",
       "catalog": [
         "pp.basicform.captcha",
@@ -1449,6 +1458,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Attach",
       "path": "/baseline/item-create-attach/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, attach file (image/*, 1024 KB) saved as notes",
       "catalog": [
         "pp.basicform.table-name",
@@ -1487,6 +1497,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Attach Multiple",
       "path": "/baseline/item-create-attach-multiple/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, multiple required PDF attachments saved as portal comments, with type/size/required messages",
       "catalog": [
         "pp.basicform.table-name",
@@ -1531,6 +1542,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Geolocation",
       "path": "/baseline/item-edit-geo/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, geolocation enabled (no address columns mapped)",
       "catalog": [
         "pp.basicform.table-name",
@@ -1586,6 +1598,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Geolocation Google",
       "path": "/baseline/item-edit-geo-google/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, geolocation Google map with every address column mapped to an item text/number column",
       "catalog": [
         "pp.basicform.table-name",
@@ -1632,6 +1645,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Geolocation Esri",
       "path": "/baseline/item-edit-geo-esri/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, geolocation Esri without map display, address columns mapped",
       "catalog": [
         "pp.basicform.table-name",
@@ -1677,6 +1691,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Associated",
       "path": "/baseline/item-edit-associated/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, record associated to current portal user through pqvd_contactid, create if null",
       "catalog": [
         "pp.basicform.table-name",
@@ -1711,6 +1726,7 @@
       "kind": "basicform",
       "name": "Baseline Contact Read Current User",
       "path": "/baseline/contact-read-current/",
+      "table": "contact",
       "variation": "read-only, record source current portal user (the signed-in contact; no write)",
       "catalog": [
         "pp.basicform.table-name",
@@ -1740,6 +1756,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit General Tab",
       "path": "/baseline/item-edit-tab/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, tab general only",
       "catalog": [
         "pp.basicform.table-name",
@@ -1774,6 +1791,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Options",
       "path": "/baseline/item-edit-options/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, validation group, inline web resources, tooltips, unsupported and owner fields, summary CSS/link/header text, instructions, record-not-found message, submit label/busy text/CSS, custom JavaScript",
       "catalog": [
         "pp.basicform.custom-javascript",
@@ -1821,6 +1839,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Required",
       "path": "/baseline/item-create-required/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, recommended and all fields required",
       "catalog": [
         "pp.basicform.table-name",
@@ -1853,6 +1872,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Steps",
       "path": "/baseline/item-create-steps/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, tabs as auto-generated steps with next/previous labels and CSS",
       "catalog": [
         "pp.basicform.table-name",
@@ -1888,6 +1908,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Owner",
       "path": "/baseline/item-create-owner/",
+      "table": "pqvd_baselineitem",
       "variation": "insert, associate the current portal user through pqvd_contactid (not an activity party)",
       "catalog": [
         "pp.basicform.table-name",
@@ -1920,6 +1941,7 @@
       "kind": "basicform",
       "name": "Baseline Child Insert Reference",
       "path": "/baseline/child-create-reference/",
+      "table": "pqvd_baselinechild",
       "variation": "insert child, reference the item from ?itemid=<id>, populate the lookup, show the item read-only",
       "catalog": [
         "pp.basicform.table-name",
@@ -1960,6 +1982,7 @@
       "kind": "basicform",
       "name": "Baseline Child Insert Reference Code",
       "path": "/baseline/child-create-reference-code/",
+      "table": "pqvd_baselinechild",
       "variation": "insert child, reference the item whose pqvd_code matches ?code=",
       "catalog": [
         "pp.basicform.table-name",
@@ -1998,6 +2021,7 @@
       "kind": "basicform",
       "name": "Baseline Item Insert Contact Reference",
       "path": "/baseline/item-create-contact-reference/",
+      "table": "pqvd_baselineitem",
       "variation": "insert item, reference the record associated to the current portal user (contact)",
       "catalog": [
         "pp.basicform.table-name",
@@ -2034,6 +2058,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Actions",
       "path": "/baseline/item-edit-actions/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, submit/delete/activate/deactivate/create-related actions below the form, delete redirects to a page, default delete dialog (workflow skipped)",
       "catalog": [
         "pp.basicform.settings",
@@ -2090,6 +2115,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Actions Above",
       "path": "/baseline/item-edit-actions-above/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, actions above the form, delete redirects to a URL, large delete dialog",
       "catalog": [
         "pp.basicform.settings",
@@ -2145,6 +2171,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Actions Small Dialog",
       "path": "/baseline/item-edit-actions-small/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, actions below the form, small delete dialog",
       "catalog": [
         "pp.basicform.settings",
@@ -2198,6 +2225,7 @@
       "id": "e3e16411-3741-477d-83a1-891c50788e72",
       "kind": "basicform",
       "name": "Baseline Child Insert",
+      "table": "pqvd_baselinechild",
       "variation": "subgrid create dialog form",
       "catalog": [
         "pp.basicform.rendering.modal",
@@ -2217,6 +2245,7 @@
       "id": "3d8a7e86-47b8-4786-821a-4bc5a78f988b",
       "kind": "basicform",
       "name": "Baseline Child Read",
+      "table": "pqvd_baselinechild",
       "variation": "subgrid details dialog form",
       "catalog": [
         "pp.basicform.rendering.modal",
@@ -2236,6 +2265,7 @@
       "id": "a93455bc-e941-4c52-8b7d-00c71012472b",
       "kind": "basicform",
       "name": "Baseline Child Edit",
+      "table": "pqvd_baselinechild",
       "variation": "subgrid edit dialog form",
       "catalog": [
         "pp.basicform.rendering.modal",
@@ -2258,6 +2288,7 @@
       "id": "c67b55ff-055e-41c4-8d57-139239401b4b",
       "kind": "basicform",
       "name": "Baseline Item Lookup Create",
+      "table": "pqvd_baselineitem",
       "variation": "form for create of the child's item lookup (opened from the lookup dialog)",
       "catalog": [
         "pp.basicform.rendering.modal",
@@ -2277,6 +2308,7 @@
       "id": "afb21148-d182-4b0c-804b-2af70e263224",
       "kind": "basicform",
       "name": "Baseline Parent Lookup Create",
+      "table": "pqvd_baselineparent",
       "variation": "form for create of the multistep parent lookup",
       "catalog": [
         "pp.basicform.rendering.modal",
@@ -2297,6 +2329,7 @@
       "kind": "basicform",
       "name": "Baseline Child Edit Lookup",
       "path": "/baseline/child-edit-lookup/",
+      "table": "pqvd_baselinechild",
       "variation": "edit child; item lookup offers Baseline Item Lookup Create",
       "catalog": [
         "pp.basicform.table-name",
@@ -2347,6 +2380,7 @@
       "kind": "basicform",
       "name": "Baseline Parent Edit",
       "path": "/baseline/parent-edit/",
+      "table": "pqvd_baselineparent",
       "variation": "edit parent; items subgrid with associate/disassociate",
       "catalog": [
         "pp.basicform.table-name",
@@ -2425,6 +2459,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Survey",
       "path": "/baseline/item-edit-survey/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, survey control styles: constant-sum, multiple-choice, matrix",
       "catalog": [
         "pp.basicform.table-name",
@@ -2586,6 +2621,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Rank No Ties",
       "path": "/baseline/item-edit-rank-no-ties/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, survey control styles: rank-no-ties",
       "catalog": [
         "pp.basicform.table-name",
@@ -2679,6 +2715,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Rank Allow Ties",
       "path": "/baseline/item-edit-rank-allow-ties/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, survey control styles: rank-allow-ties",
       "catalog": [
         "pp.basicform.table-name",
@@ -2769,6 +2806,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Stack Rank",
       "path": "/baseline/item-edit-stack-rank/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, survey control styles: stack-rank",
       "catalog": [
         "pp.basicform.table-name",
@@ -2859,6 +2897,7 @@
       "kind": "basicform",
       "name": "Baseline Item Edit Timeline",
       "path": "/baseline/item-edit-timeline/",
+      "table": "pqvd_baselineitem",
       "variation": "edit, timeline metadata",
       "catalog": [
         "pp.basicform.table-name",
@@ -2914,6 +2953,7 @@
       "kind": "basicform",
       "name": "Baseline Item Read Inactive",
       "path": "/baseline/item-read-inactive/",
+      "table": "pqvd_baselineitem",
       "variation": "read-only, deactivated record",
       "catalog": [
         "pp.basicform.table-name",
@@ -2945,6 +2985,7 @@
       "kind": "list",
       "name": "Baseline Item List",
       "path": "/baseline/item-list/",
+      "table": "pqvd_baselineitem",
       "variation": "classic list, three views with selector, search, page size 5, create/details/edit/delete to pages, percent column widths",
       "catalog": [
         "pp.list.action.viewactions",
@@ -2995,6 +3036,7 @@
       "kind": "list",
       "name": "Baseline Item List Modal",
       "path": "/baseline/item-list-modal/",
+      "table": "pqvd_baselineitem",
       "variation": "create/details/edit in modal dialogs (basic forms), default dialog size; the row link opens the details dialog",
       "catalog": [
         "pp.list.action.viewactions",
@@ -3068,6 +3110,7 @@
       "kind": "list",
       "name": "Baseline Item List Modal Large",
       "path": "/baseline/item-list-modal-large/",
+      "table": "pqvd_baselineitem",
       "variation": "create/details/edit in modal dialogs (basic forms), large dialog size; the row link opens the details dialog",
       "catalog": [
         "pp.list.action.viewactions",
@@ -3141,6 +3184,7 @@
       "kind": "list",
       "name": "Baseline Item List Modal Small",
       "path": "/baseline/item-list-modal-small/",
+      "table": "pqvd_baselineitem",
       "variation": "create/details/edit in modal dialogs (basic forms), small dialog size; the row link opens the details dialog",
       "catalog": [
         "pp.list.action.viewactions",
@@ -3214,6 +3258,7 @@
       "kind": "list",
       "name": "Baseline Item List Options",
       "path": "/baseline/item-list-options/",
+      "table": "pqvd_baselineitem",
       "variation": "key, primary key name, search tooltip, account filter; actions to URLs, download, activate/deactivate, tooltips/CSS/confirmation, grid messages and CSS, pixel widths, column override, large delete dialog, error dialog, custom JavaScript",
       "catalog": [
         "pp.list.action.viewactions",
@@ -3296,6 +3341,7 @@
       "kind": "list",
       "name": "Baseline Item List Filters",
       "path": "/baseline/item-list-filters/",
+      "table": "pqvd_baselineitem",
       "variation": "metadata filters: text, dropdown, checkbox set, radio, range, dynamic picklist, lookup set, dynamic lookup, FetchXML",
       "catalog": [
         "pp.listfilter.definition",
@@ -3363,6 +3409,7 @@
       "kind": "list",
       "name": "Baseline Item List Filters Horizontal",
       "path": "/baseline/item-list-filters-horizontal/",
+      "table": "pqvd_baselineitem",
       "variation": "metadata filter, horizontal orientation, text filter, default apply label",
       "catalog": [
         "pp.listfilter.definition",
@@ -3396,6 +3443,7 @@
       "kind": "list",
       "name": "Baseline Item List OData",
       "path": "/baseline/item-list-odata/",
+      "table": "pqvd_baselineitem",
       "variation": "OData feed",
       "catalog": [
         "pp.list.entityname",
@@ -3426,6 +3474,7 @@
       "kind": "list",
       "name": "Baseline Item List Calendar",
       "path": "/baseline/item-list-calendar/",
+      "table": "pqvd_baselineitem",
       "variation": "calendar view on pqvd_datetime",
       "catalog": [
         "pp.list.entityname",
@@ -3462,6 +3511,7 @@
       "kind": "list",
       "name": "Baseline Item List Calendar Year",
       "path": "/baseline/item-list-calendar-year/",
+      "table": "pqvd_baselineitem",
       "variation": "calendar event list, year view from 2026-01-01, specific time zone (85, GMT), end/organizer/location/all-day columns",
       "catalog": [
         "pp.list.entityname",
@@ -3504,6 +3554,7 @@
       "kind": "list",
       "name": "Baseline Item List Calendar Week",
       "path": "/baseline/item-list-calendar-week/",
+      "table": "pqvd_baselineitem",
       "variation": "full calendar, week view",
       "catalog": [
         "pp.list.entityname",
@@ -3545,6 +3596,7 @@
       "kind": "list",
       "name": "Baseline Item List Calendar Day",
       "path": "/baseline/item-list-calendar-day/",
+      "table": "pqvd_baselineitem",
       "variation": "full calendar, day view",
       "catalog": [
         "pp.list.entityname",
@@ -3586,6 +3638,7 @@
       "kind": "list",
       "name": "Baseline Item List Mine",
       "path": "/baseline/item-list-mine/",
+      "table": "pqvd_baselineitem",
       "variation": "sorted view (All Baseline Items, code ascending) filtered to the portal user's pqvd_contactid",
       "catalog": [
         "pp.list.sorting",
@@ -3614,6 +3667,7 @@
       "kind": "list",
       "name": "Baseline Item List Map",
       "path": "/baseline/item-list-map/",
+      "table": "pqvd_baselineitem",
       "variation": "map view (Bing, miles) over pqvd_float/pqvd_decimal, info box and pushpin settings (pushpin: the Baseline web file baseline-pushpin.png); renders only with a Bing Maps key",
       "catalog": [
         "pp.list.entityname",
@@ -3657,6 +3711,7 @@
       "kind": "list",
       "name": "Baseline Item List Map Google",
       "path": "/baseline/item-list-map-google/",
+      "table": "pqvd_baselineitem",
       "variation": "map view type Google (Learn: only Bing is supported), kilometres",
       "catalog": [
         "pp.list.entityname",
@@ -3700,6 +3755,7 @@
       "kind": "list",
       "name": "Baseline Item List Map Esri",
       "path": "/baseline/item-list-map-esri/",
+      "table": "pqvd_baselineitem",
       "variation": "map view type Esri (Learn: only Bing is supported), kilometres",
       "catalog": [
         "pp.list.entityname",
@@ -3743,6 +3799,7 @@
       "kind": "list",
       "name": "Baseline Item List Inactive",
       "path": "/baseline/item-list-inactive/",
+      "table": "pqvd_baselineitem",
       "variation": "deactivated list record",
       "catalog": [
         "pp.list.entityname",
@@ -5182,6 +5239,7 @@
       "id": "c55b14a0-497b-4f94-8a8d-4473ac5c6b57",
       "kind": "tablepermission",
       "name": "Baseline parent global read",
+      "table": "Baseline parent global read",
       "variation": "parent lookup read for every baseline role",
       "catalog": [
         "pp.tableperm.table",
@@ -5198,6 +5256,7 @@
       "id": "4cb6afb1-7b4f-47e5-8bbe-10726763991a",
       "kind": "tablepermission",
       "name": "Baseline Editors parents",
+      "table": "Baseline Editors parents",
       "variation": "editors edit parents and associate items",
       "catalog": [
         "pp.tableperm.table",
@@ -5217,6 +5276,7 @@
       "id": "243335e7-e960-4e69-8f25-422cdfbf4e5c",
       "kind": "tablepermission",
       "name": "Baseline Editors items",
+      "table": "Baseline Editors items",
       "variation": "global full privileges",
       "catalog": [
         "pp.tableperm.table",
@@ -5236,6 +5296,7 @@
       "id": "8650dae7-e56c-4668-8e22-84d299ecd9fb",
       "kind": "tablepermission",
       "name": "Baseline Editors items children",
+      "table": "Baseline Editors items children",
       "variation": "child rows through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5257,6 +5318,7 @@
       "id": "6f534a7c-595d-493e-8efa-69285fd61e0d",
       "kind": "tablepermission",
       "name": "Baseline Editors items notes",
+      "table": "Baseline Editors items notes",
       "variation": "notes through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5278,6 +5340,7 @@
       "id": "e293df2d-f825-46c0-867f-cfdbd1c1066c",
       "kind": "tablepermission",
       "name": "Baseline Readers items",
+      "table": "Baseline Readers items",
       "variation": "global read only",
       "catalog": [
         "pp.tableperm.table",
@@ -5292,6 +5355,7 @@
       "id": "e162b022-7c2b-47df-867d-b1ef09b179e2",
       "kind": "tablepermission",
       "name": "Baseline Readers items children",
+      "table": "Baseline Readers items children",
       "variation": "child rows through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5308,6 +5372,7 @@
       "id": "6c9ab741-48b5-4b87-8744-e0730fb22a6a",
       "kind": "tablepermission",
       "name": "Baseline Readers items notes",
+      "table": "Baseline Readers items notes",
       "variation": "notes through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5324,6 +5389,7 @@
       "id": "ceea9fb7-d88e-4b6b-8c25-00560c27a8bd",
       "kind": "tablepermission",
       "name": "Baseline Contact Scope items",
+      "table": "Baseline Contact Scope items",
       "variation": "contact scope through pqvd_contact_baselineitem",
       "catalog": [
         "pp.tableperm.table",
@@ -5344,6 +5410,7 @@
       "id": "859b08a4-c5df-49e1-817b-fd3825873228",
       "kind": "tablepermission",
       "name": "Baseline Contact Scope items children",
+      "table": "Baseline Contact Scope items children",
       "variation": "child rows through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5365,6 +5432,7 @@
       "id": "78632be7-b72f-42b0-8f7c-5372d6397ae1",
       "kind": "tablepermission",
       "name": "Baseline Contact Scope items notes",
+      "table": "Baseline Contact Scope items notes",
       "variation": "notes through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5386,6 +5454,7 @@
       "id": "b093a5a3-308b-48f1-86f4-a70ca1a7c1cd",
       "kind": "tablepermission",
       "name": "Baseline Account Scope items",
+      "table": "Baseline Account Scope items",
       "variation": "account scope through pqvd_account_baselineitem",
       "catalog": [
         "pp.tableperm.table",
@@ -5406,6 +5475,7 @@
       "id": "c2af0f41-db03-4b6c-87dc-54315d18ced0",
       "kind": "tablepermission",
       "name": "Baseline Account Scope items children",
+      "table": "Baseline Account Scope items children",
       "variation": "child rows through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5427,6 +5497,7 @@
       "id": "e8b635cf-8d39-4f87-8c1c-d8536a59de9b",
       "kind": "tablepermission",
       "name": "Baseline Account Scope items notes",
+      "table": "Baseline Account Scope items notes",
       "variation": "notes through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5448,6 +5519,7 @@
       "id": "643eb798-e8d7-4d50-899c-fadfc9344d5a",
       "kind": "tablepermission",
       "name": "Baseline Parent Scope items",
+      "table": "Baseline Parent Scope items",
       "variation": "items read through the parent permission (its children and notes form a parent chain two levels deep)",
       "catalog": [
         "pp.tableperm.table",
@@ -5464,6 +5536,7 @@
       "id": "d58de063-c461-4296-8ba4-5943f9e2da44",
       "kind": "tablepermission",
       "name": "Baseline Parent Scope items children",
+      "table": "Baseline Parent Scope items children",
       "variation": "child rows through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5480,6 +5553,7 @@
       "id": "1f802693-ed1a-41e3-882a-fe504269bf17",
       "kind": "tablepermission",
       "name": "Baseline Parent Scope items notes",
+      "table": "Baseline Parent Scope items notes",
       "variation": "notes through the item permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5496,6 +5570,7 @@
       "id": "00a6e9a9-d2d6-499b-852f-a9066395c453",
       "kind": "tablepermission",
       "name": "Baseline Editors account read",
+      "table": "Baseline Editors account read",
       "variation": "customer lookup read",
       "catalog": [
         "pp.tableperm.table",
@@ -5512,6 +5587,7 @@
       "id": "43e9b685-92bd-42f8-8077-1a5e095ca4be",
       "kind": "tablepermission",
       "name": "Baseline Editors contact read",
+      "table": "Baseline Editors contact read",
       "variation": "customer lookup read",
       "catalog": [
         "pp.tableperm.table",
@@ -5528,6 +5604,7 @@
       "id": "b7d3003b-a11e-42e0-8573-884c92aaaa04",
       "kind": "tablepermission",
       "name": "Baseline Contact Scope self",
+      "table": "Baseline Contact Scope self",
       "variation": "self scope: the signed-in contact reads its own contact record",
       "catalog": [
         "pp.tableperm.table",
@@ -5542,6 +5619,7 @@
       "id": "d5ba9b05-ab6e-4867-8df7-4884a2b81994",
       "kind": "tablepermission",
       "name": "Baseline inactive items read",
+      "table": "Baseline inactive items read",
       "variation": "deactivated global read permission",
       "catalog": [
         "pp.tableperm.table",
@@ -5557,6 +5635,7 @@
       "id": "3e054add-fd41-463e-8617-3c35f986c440",
       "kind": "tablepermission",
       "name": "Baseline privileges none",
+      "table": "Baseline privileges none",
       "variation": "privilege combination 0 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5570,6 +5649,7 @@
       "id": "76a9d9a7-6016-4b10-8674-923e764dcdf6",
       "kind": "tablepermission",
       "name": "Baseline privileges read",
+      "table": "Baseline privileges read",
       "variation": "privilege combination 1 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5584,6 +5664,7 @@
       "id": "10eab06e-eef7-4c5b-8c8a-49afe049a90c",
       "kind": "tablepermission",
       "name": "Baseline privileges write",
+      "table": "Baseline privileges write",
       "variation": "privilege combination 2 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5598,6 +5679,7 @@
       "id": "97a6db9c-a5f9-40ed-8181-9cc156ced216",
       "kind": "tablepermission",
       "name": "Baseline privileges read write",
+      "table": "Baseline privileges read write",
       "variation": "privilege combination 3 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5613,6 +5695,7 @@
       "id": "000794b2-a438-4a0e-8ece-c077dcc0280f",
       "kind": "tablepermission",
       "name": "Baseline privileges create",
+      "table": "Baseline privileges create",
       "variation": "privilege combination 4 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5627,6 +5710,7 @@
       "id": "eb3b3941-d4f5-468c-8358-b4f04a755f33",
       "kind": "tablepermission",
       "name": "Baseline privileges read create",
+      "table": "Baseline privileges read create",
       "variation": "privilege combination 5 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5642,6 +5726,7 @@
       "id": "73b3e9fc-64b9-4034-8462-7c9094c730f3",
       "kind": "tablepermission",
       "name": "Baseline privileges write create",
+      "table": "Baseline privileges write create",
       "variation": "privilege combination 6 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5657,6 +5742,7 @@
       "id": "0d8de245-b989-4b12-8ca5-0f75eb4c45b3",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create",
+      "table": "Baseline privileges read write create",
       "variation": "privilege combination 7 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5673,6 +5759,7 @@
       "id": "62cce1e4-c429-4878-873f-248129d73005",
       "kind": "tablepermission",
       "name": "Baseline privileges delete",
+      "table": "Baseline privileges delete",
       "variation": "privilege combination 8 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5687,6 +5774,7 @@
       "id": "6b5512e2-ab1e-4ce6-8a63-58218381f62b",
       "kind": "tablepermission",
       "name": "Baseline privileges read delete",
+      "table": "Baseline privileges read delete",
       "variation": "privilege combination 9 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5702,6 +5790,7 @@
       "id": "8d28e615-8eec-49fc-898f-67f5e21fb805",
       "kind": "tablepermission",
       "name": "Baseline privileges write delete",
+      "table": "Baseline privileges write delete",
       "variation": "privilege combination 10 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5717,6 +5806,7 @@
       "id": "726060ca-7571-4b6d-85ed-38b160eb8305",
       "kind": "tablepermission",
       "name": "Baseline privileges read write delete",
+      "table": "Baseline privileges read write delete",
       "variation": "privilege combination 11 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5733,6 +5823,7 @@
       "id": "4e82ed5f-c5a5-4ea0-8083-66f6146a2667",
       "kind": "tablepermission",
       "name": "Baseline privileges create delete",
+      "table": "Baseline privileges create delete",
       "variation": "privilege combination 12 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5748,6 +5839,7 @@
       "id": "4b832705-9066-41a9-8822-2bab380f064d",
       "kind": "tablepermission",
       "name": "Baseline privileges read create delete",
+      "table": "Baseline privileges read create delete",
       "variation": "privilege combination 13 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5764,6 +5856,7 @@
       "id": "f497de6a-d43e-42f2-8229-5ba936ca0bce",
       "kind": "tablepermission",
       "name": "Baseline privileges write create delete",
+      "table": "Baseline privileges write create delete",
       "variation": "privilege combination 14 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5780,6 +5873,7 @@
       "id": "f97a134e-a486-4652-8695-d61a77372a8f",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create delete",
+      "table": "Baseline privileges read write create delete",
       "variation": "privilege combination 15 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5797,6 +5891,7 @@
       "id": "fe8dadaa-b7ae-41a9-8cc9-76ef088c8162",
       "kind": "tablepermission",
       "name": "Baseline privileges append",
+      "table": "Baseline privileges append",
       "variation": "privilege combination 16 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5811,6 +5906,7 @@
       "id": "7f0da074-20ff-4d19-8ea6-ec8ce5d2cec0",
       "kind": "tablepermission",
       "name": "Baseline privileges read append",
+      "table": "Baseline privileges read append",
       "variation": "privilege combination 17 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5826,6 +5922,7 @@
       "id": "d6bf0eac-396d-4b50-8286-6794dcfef69e",
       "kind": "tablepermission",
       "name": "Baseline privileges write append",
+      "table": "Baseline privileges write append",
       "variation": "privilege combination 18 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5841,6 +5938,7 @@
       "id": "112f6c7b-b7ff-4a0e-8a13-67d09e89b49c",
       "kind": "tablepermission",
       "name": "Baseline privileges read write append",
+      "table": "Baseline privileges read write append",
       "variation": "privilege combination 19 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5857,6 +5955,7 @@
       "id": "26504aa6-4630-4563-87b2-168b95092cde",
       "kind": "tablepermission",
       "name": "Baseline privileges create append",
+      "table": "Baseline privileges create append",
       "variation": "privilege combination 20 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5872,6 +5971,7 @@
       "id": "0821c60e-5daa-4fed-8e52-e1bdd31cc43f",
       "kind": "tablepermission",
       "name": "Baseline privileges read create append",
+      "table": "Baseline privileges read create append",
       "variation": "privilege combination 21 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5888,6 +5988,7 @@
       "id": "60752990-30db-4dd4-8648-6f81866a0ea4",
       "kind": "tablepermission",
       "name": "Baseline privileges write create append",
+      "table": "Baseline privileges write create append",
       "variation": "privilege combination 22 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5904,6 +6005,7 @@
       "id": "a50ffcbf-0636-4358-8031-0020c5539f82",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create append",
+      "table": "Baseline privileges read write create append",
       "variation": "privilege combination 23 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5921,6 +6023,7 @@
       "id": "6ec266b5-2c18-48fd-8e85-8f606b5ff242",
       "kind": "tablepermission",
       "name": "Baseline privileges delete append",
+      "table": "Baseline privileges delete append",
       "variation": "privilege combination 24 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5936,6 +6039,7 @@
       "id": "61a3011e-69a1-4a96-8cc5-43ac1fe351a2",
       "kind": "tablepermission",
       "name": "Baseline privileges read delete append",
+      "table": "Baseline privileges read delete append",
       "variation": "privilege combination 25 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5952,6 +6056,7 @@
       "id": "db023e64-310c-4cf9-8b11-b7ad458a7c34",
       "kind": "tablepermission",
       "name": "Baseline privileges write delete append",
+      "table": "Baseline privileges write delete append",
       "variation": "privilege combination 26 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5968,6 +6073,7 @@
       "id": "2bc7f265-9ea6-404a-8b81-205eead6ac5c",
       "kind": "tablepermission",
       "name": "Baseline privileges read write delete append",
+      "table": "Baseline privileges read write delete append",
       "variation": "privilege combination 27 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -5985,6 +6091,7 @@
       "id": "c654fe31-4d24-428e-8197-9b43cfd3f93e",
       "kind": "tablepermission",
       "name": "Baseline privileges create delete append",
+      "table": "Baseline privileges create delete append",
       "variation": "privilege combination 28 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6001,6 +6108,7 @@
       "id": "ca23b892-c921-400b-88a1-f7860f689e9b",
       "kind": "tablepermission",
       "name": "Baseline privileges read create delete append",
+      "table": "Baseline privileges read create delete append",
       "variation": "privilege combination 29 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6018,6 +6126,7 @@
       "id": "4fcfcb52-d220-4695-8452-ed44cd10bb39",
       "kind": "tablepermission",
       "name": "Baseline privileges write create delete append",
+      "table": "Baseline privileges write create delete append",
       "variation": "privilege combination 30 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6035,6 +6144,7 @@
       "id": "779e94c4-d9a7-4e9b-8cf9-9170873762e6",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create delete append",
+      "table": "Baseline privileges read write create delete append",
       "variation": "privilege combination 31 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6053,6 +6163,7 @@
       "id": "18af2007-3820-407c-8dff-753788d0b5f2",
       "kind": "tablepermission",
       "name": "Baseline privileges appendto",
+      "table": "Baseline privileges appendto",
       "variation": "privilege combination 32 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6067,6 +6178,7 @@
       "id": "37efa613-20ed-430e-8af4-1848e153dfae",
       "kind": "tablepermission",
       "name": "Baseline privileges read appendto",
+      "table": "Baseline privileges read appendto",
       "variation": "privilege combination 33 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6082,6 +6194,7 @@
       "id": "ffe64596-2f8b-4ec1-836f-7e969a718b47",
       "kind": "tablepermission",
       "name": "Baseline privileges write appendto",
+      "table": "Baseline privileges write appendto",
       "variation": "privilege combination 34 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6097,6 +6210,7 @@
       "id": "54192e62-5482-4b27-8563-6719ec843555",
       "kind": "tablepermission",
       "name": "Baseline privileges read write appendto",
+      "table": "Baseline privileges read write appendto",
       "variation": "privilege combination 35 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6113,6 +6227,7 @@
       "id": "f820faf1-f2c3-4ca5-8074-ce0bc30570e1",
       "kind": "tablepermission",
       "name": "Baseline privileges create appendto",
+      "table": "Baseline privileges create appendto",
       "variation": "privilege combination 36 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6128,6 +6243,7 @@
       "id": "2ec53fab-b743-47cc-8a82-792ff000bbd3",
       "kind": "tablepermission",
       "name": "Baseline privileges read create appendto",
+      "table": "Baseline privileges read create appendto",
       "variation": "privilege combination 37 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6144,6 +6260,7 @@
       "id": "f22043a0-9719-48fb-8de9-d290e3241d5f",
       "kind": "tablepermission",
       "name": "Baseline privileges write create appendto",
+      "table": "Baseline privileges write create appendto",
       "variation": "privilege combination 38 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6160,6 +6277,7 @@
       "id": "74218d80-2a5a-4256-8a8e-148e7e6da8f0",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create appendto",
+      "table": "Baseline privileges read write create appendto",
       "variation": "privilege combination 39 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6177,6 +6295,7 @@
       "id": "e9ad52a3-84a1-473e-835a-d0d3c8e3fd6a",
       "kind": "tablepermission",
       "name": "Baseline privileges delete appendto",
+      "table": "Baseline privileges delete appendto",
       "variation": "privilege combination 40 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6192,6 +6311,7 @@
       "id": "57cd5e1f-855e-4f41-856c-4e878091e38e",
       "kind": "tablepermission",
       "name": "Baseline privileges read delete appendto",
+      "table": "Baseline privileges read delete appendto",
       "variation": "privilege combination 41 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6208,6 +6328,7 @@
       "id": "7d92b746-2b98-4295-8760-469bf6ca08bd",
       "kind": "tablepermission",
       "name": "Baseline privileges write delete appendto",
+      "table": "Baseline privileges write delete appendto",
       "variation": "privilege combination 42 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6224,6 +6345,7 @@
       "id": "82e5a30a-61c7-4b96-81c8-5e9f049dbc90",
       "kind": "tablepermission",
       "name": "Baseline privileges read write delete appendto",
+      "table": "Baseline privileges read write delete appendto",
       "variation": "privilege combination 43 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6241,6 +6363,7 @@
       "id": "d94ed673-f4d7-4aa9-8ead-adda227902d3",
       "kind": "tablepermission",
       "name": "Baseline privileges create delete appendto",
+      "table": "Baseline privileges create delete appendto",
       "variation": "privilege combination 44 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6257,6 +6380,7 @@
       "id": "1e464b90-216f-44cb-80d1-efde2b6d462e",
       "kind": "tablepermission",
       "name": "Baseline privileges read create delete appendto",
+      "table": "Baseline privileges read create delete appendto",
       "variation": "privilege combination 45 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6274,6 +6398,7 @@
       "id": "69bb85c5-7258-4c74-80b6-509404f11c35",
       "kind": "tablepermission",
       "name": "Baseline privileges write create delete appendto",
+      "table": "Baseline privileges write create delete appendto",
       "variation": "privilege combination 46 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6291,6 +6416,7 @@
       "id": "83efdf42-5b6a-412a-8e66-fb553990e4d1",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create delete appendto",
+      "table": "Baseline privileges read write create delete appendto",
       "variation": "privilege combination 47 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6309,6 +6435,7 @@
       "id": "257c81b7-548c-4807-8281-d934f95555a3",
       "kind": "tablepermission",
       "name": "Baseline privileges append appendto",
+      "table": "Baseline privileges append appendto",
       "variation": "privilege combination 48 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6324,6 +6451,7 @@
       "id": "b3250761-7be4-4a70-81b2-ed28992d1fd2",
       "kind": "tablepermission",
       "name": "Baseline privileges read append appendto",
+      "table": "Baseline privileges read append appendto",
       "variation": "privilege combination 49 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6340,6 +6468,7 @@
       "id": "6067b7d5-1134-4d6b-8e6f-6b145e6edf27",
       "kind": "tablepermission",
       "name": "Baseline privileges write append appendto",
+      "table": "Baseline privileges write append appendto",
       "variation": "privilege combination 50 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6356,6 +6485,7 @@
       "id": "41c6e581-5f93-4a6e-8015-fb92579b812d",
       "kind": "tablepermission",
       "name": "Baseline privileges read write append appendto",
+      "table": "Baseline privileges read write append appendto",
       "variation": "privilege combination 51 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6373,6 +6503,7 @@
       "id": "9b944b44-b7a0-45e8-8b39-27c5c4754591",
       "kind": "tablepermission",
       "name": "Baseline privileges create append appendto",
+      "table": "Baseline privileges create append appendto",
       "variation": "privilege combination 52 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6389,6 +6520,7 @@
       "id": "7a1fc2f2-6215-49d6-8921-ebbc4915bba2",
       "kind": "tablepermission",
       "name": "Baseline privileges read create append appendto",
+      "table": "Baseline privileges read create append appendto",
       "variation": "privilege combination 53 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6406,6 +6538,7 @@
       "id": "321a03fa-2036-402b-8e20-7539d1b5bd1b",
       "kind": "tablepermission",
       "name": "Baseline privileges write create append appendto",
+      "table": "Baseline privileges write create append appendto",
       "variation": "privilege combination 54 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6423,6 +6556,7 @@
       "id": "fba474ee-1b67-42e3-8cd6-52dad963ae57",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create append appendto",
+      "table": "Baseline privileges read write create append appendto",
       "variation": "privilege combination 55 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6441,6 +6575,7 @@
       "id": "1ac7fada-58de-47fe-8968-e20861f1fdc4",
       "kind": "tablepermission",
       "name": "Baseline privileges delete append appendto",
+      "table": "Baseline privileges delete append appendto",
       "variation": "privilege combination 56 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6457,6 +6592,7 @@
       "id": "9f79e48d-09a9-427e-8696-8dcfd86c161c",
       "kind": "tablepermission",
       "name": "Baseline privileges read delete append appendto",
+      "table": "Baseline privileges read delete append appendto",
       "variation": "privilege combination 57 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6474,6 +6610,7 @@
       "id": "ec674133-8315-4c90-86ea-e3bb59506699",
       "kind": "tablepermission",
       "name": "Baseline privileges write delete append appendto",
+      "table": "Baseline privileges write delete append appendto",
       "variation": "privilege combination 58 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6491,6 +6628,7 @@
       "id": "45a36336-08d5-44b4-8dc9-21902adbffbf",
       "kind": "tablepermission",
       "name": "Baseline privileges read write delete append appendto",
+      "table": "Baseline privileges read write delete append appendto",
       "variation": "privilege combination 59 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6509,6 +6647,7 @@
       "id": "7bbb2574-efdd-4412-8de8-be8245c33aea",
       "kind": "tablepermission",
       "name": "Baseline privileges create delete append appendto",
+      "table": "Baseline privileges create delete append appendto",
       "variation": "privilege combination 60 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6526,6 +6665,7 @@
       "id": "43c004c1-0c59-4160-8b02-1fca5315bbd8",
       "kind": "tablepermission",
       "name": "Baseline privileges read create delete append appendto",
+      "table": "Baseline privileges read create delete append appendto",
       "variation": "privilege combination 61 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6544,6 +6684,7 @@
       "id": "dbe2101b-c3e0-4bd1-89f5-6aa5eecf53b9",
       "kind": "tablepermission",
       "name": "Baseline privileges write create delete append appendto",
+      "table": "Baseline privileges write create delete append appendto",
       "variation": "privilege combination 62 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6562,6 +6703,7 @@
       "id": "9ee8f887-04c9-42f5-8792-55a4f97ccddb",
       "kind": "tablepermission",
       "name": "Baseline privileges read write create delete append appendto",
+      "table": "Baseline privileges read write create delete append appendto",
       "variation": "privilege combination 63 of 64",
       "catalog": [
         "pp.tableperm.table",
@@ -6917,6 +7059,7 @@
       "kind": "pagetemplate",
       "name": "Baseline Page Template",
       "path": "/baseline/template-page-template/",
+      "table": "adx_webpage",
       "variation": "Baseline: web template with the site header and footer.",
       "catalog": [
         "pp.template.pagetemplate.entityname",
@@ -6940,6 +7083,7 @@
       "kind": "pagetemplate",
       "name": "Baseline Json Template",
       "path": "/baseline/template-json-template/",
+      "table": "adx_webpage",
       "variation": "Baseline: JSON web template without header and footer.",
       "catalog": [
         "pp.template.pagetemplate.entityname",
@@ -6985,6 +7129,7 @@
       "kind": "pagetemplate",
       "name": "Baseline Extends Template",
       "path": "/baseline/template-extends-template/",
+      "table": "adx_webpage",
       "variation": "Baseline: web template that extends Baseline Layout, includes Baseline Include Part and places the Baseline snippets.",
       "catalog": [
         "pp.template.pagetemplate.entityname",
@@ -7008,6 +7153,7 @@
       "kind": "pagetemplate",
       "name": "Baseline Two Column Template",
       "path": "/baseline/template-two-column-template/",
+      "table": "adx_webpage",
       "variation": "Baseline: web template that extends the built-in Layout 2 Column Wide Left (main and aside blocks).",
       "catalog": [
         "pp.template.pagetemplate.entityname",

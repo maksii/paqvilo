@@ -131,7 +131,8 @@
       });
     const picklists = all(".control select.form-control.picklist");
     if (picklists[0]?.hasAttribute("required")) for (const picklist of picklists) picklist.removeAttribute("required");
-    for (const picklist of picklists) {
+    // Bootstrap 5 option sets (form-select) keep their options unannotated.
+    for (const picklist of picklists.filter((candidate) => !candidate.classList.contains("form-select"))) {
       const options = [...picklist.options];
       options.forEach((option, index) => {
         const label = option.text.replace(/\s+/g, " ").trim();
@@ -143,7 +144,23 @@
     }
     for (const form of all(".entity-form[readonly]"))
       for (const control of form.querySelectorAll(".lookup[readonly], .picklist[readonly], .MultiSelectPicklist[readonly]")) control.closest(".control")?.setAttribute("tabindex", "0");
-    if (document.querySelector("div .info.required")) for (const input of all("input.form-control.input-text-box")) input.setAttribute("aria-required", "true");
+    if (document.querySelector("div .info.required, div .table-info.required")) for (const input of all("input.form-control.input-text-box")) input.setAttribute("aria-required", "true");
+    // An empty read-only form box shows a muted dash, hidden from assistive technology.
+    for (const box of all(".crmEntityFormView input[readonly]:not([type='hidden']), .crmEntityFormView textarea[readonly]")) {
+      if (box.value || box.nextElementSibling?.__ppEmptyDash) continue;
+      const dash = document.createElement("div");
+      dash.__ppEmptyDash = true;
+      dash.className = "text-muted";
+      dash.setAttribute("aria-hidden", "true");
+      dash.setAttribute("style", "position: absolute; top: 4px; left: 1px;");
+      dash.textContent = "—";
+      box.parentElement.style.position = "relative";
+      box.after(dash);
+    }
+    document.addEventListener("change", (event) => {
+      const dash = event.target?.nextElementSibling;
+      if (dash?.__ppEmptyDash) dash.style.display = event.target.value ? "none" : "";
+    }, true);
 
     // Heading announcer.
     if (heading || document.querySelector(".page-header h1")) {

@@ -61,11 +61,46 @@ export function siteHeaders(portal, { confinement = null, kind = null } = {}) {
  * the page's configured site headers (siteHeaders kind "page").
  */
 export function tokenHtmlHeaders(portal, { confinement = null } = {}) {
-  return { "cache-control": PAGE_CACHE_CONTROL, ...siteHeaders(portal, { confinement, kind: "page" }) };
+  return { ...PAGE_HEADERS, ...siteHeaders(portal, { confinement, kind: "page" }) };
 }
 
 /** HTML page responses: the platform sends no-cache, no-store, must-revalidate. */
 export const PAGE_CACHE_CONTROL = "no-cache, no-store, must-revalidate";
+/**
+ * Caching headers of portal page responses as observed online: the ASP.NET no-store
+ * policy sends Pragma: no-cache and Expires: -1 with it; Vary: Accept-Encoding accompanies
+ * every compressible portal response.
+ */
+export const PAGE_HEADERS = Object.freeze({ "cache-control": PAGE_CACHE_CONTROL, pragma: "no-cache", expires: "-1", vary: "Accept-Encoding" });
+
+const httpDate = (time) => new Date(Math.floor(time / 1000) * 1000).toUTCString();
+const STARTED = Date.now();
+/**
+ * Headers of the platform's own portal-origin resources (lib/native-services.mjs serves their
+ * local equivalents), as observed online for each kind:
+ * - "axd": WebResource.axd/ScriptResource.axd, application/x-javascript, public, one year
+ *   (WebResource.axd's Vary: Accept-Encoding varies between live captures and is not sent).
+ * - "resource-manager": the ResourceManager script, public for one day.
+ * - "static": platform static files (/js/, /xrm-adx/js/) as IIS serves them: byte ranges, an
+ *   IIS-style quoted ETag and Last-Modified; /js/ adds public,max-age=604800.
+ * Last-Modified is the runtime start (the platform's is its build or cache time); X-Frame-Options
+ * comes from the site (siteHeaders).
+ */
+export function platformResourceHeaders(kind, { pathname = "", body = "", contentType = "", frameOptions = "SAMEORIGIN" } = {}) {
+  const now = Date.now();
+  if (kind === "axd")
+    return { "content-type": "application/x-javascript", "cache-control": "public", expires: httpDate(now + 365 * 86400 * 1000), "last-modified": httpDate(STARTED), "x-frame-options": frameOptions };
+  if (kind === "resource-manager") return { "content-type": contentType, "cache-control": "public, max-age=86400", expires: httpDate(now + 86400 * 1000), "last-modified": httpDate(now), "x-frame-options": frameOptions };
+  return {
+    "accept-ranges": "bytes",
+    ...(/^\/js\//i.test(pathname) ? { "cache-control": "public,max-age=604800" } : {}),
+    "content-type": contentType,
+    etag: `"${createHash("sha256").update(body).digest("hex").slice(0, 13)}:0"`,
+    "last-modified": httpDate(STARTED),
+    vary: "Accept-Encoding",
+    "x-frame-options": frameOptions,
+  };
+}
 
 const rfc5987 = (value) => encodeURIComponent(String(value)).replace(/['()*]/g, (c) => "%" + c.charCodeAt(0).toString(16).toUpperCase());
 
@@ -81,20 +116,21 @@ export function webFileDisposition(metadata = {}) {
 /**
  * Web file response headers as the platform sends them: content type with ";charset=utf-8" on
  * every type, Content-Disposition (the record's inline or attachment) with the RFC 5987
- * attachment file name, an unquoted base64 SHA-256 ETag of the body and Last-Modified.
- * Caching is the platform's by default: public (anonymous) or private (signed in)
- * max-age=3600 with Expires (Learn: static files are public, max-age one hour).
+ * attachment file name, an unquoted base64 SHA-256 ETag of the body and Vary: Accept-Encoding,
+ * without Last-Modified (observed online). Caching is the platform's by default: public,
+ * max-age=3600 with Expires for anonymous and signed-in visitors alike (observed online;
+ * Learn describes private caching for signed-in users).
  * settings.webFileCaching "revalidate" is the explicit opt-in to no-cache, so an edited
  * source is fetched again on every reload (still answered 304 while unchanged).
  */
-export function webFileHeaders({ body, contentType, fileName, modified, signedIn = false, caching = "platform", disposition = "inline", mimeCharset = "utf8" }) {
+export function webFileHeaders({ body, contentType, fileName, caching = "platform", disposition = "inline", mimeCharset = "utf8" }) {
   const type = String(contentType || "application/octet-stream");
   const headers = {
     "content-type": mimeCharset === "source" || /;\s*charset=/i.test(type) ? type : `${type}; charset=utf-8`,
     "content-disposition": `${disposition === "attachment" ? "attachment" : "inline"};filename*=UTF-8''${rfc5987(fileName)}`,
     etag: createHash("sha256").update(body).digest("base64"),
-    "last-modified": new Date(Math.floor(new Date(modified ?? Date.now()).getTime() / 1000) * 1000).toUTCString(),
-    "cache-control": caching === "revalidate" ? "no-cache" : `${signedIn ? "private" : "public"}, max-age=3600`,
+    "cache-control": caching === "revalidate" ? "no-cache" : "public, max-age=3600",
+    vary: "Accept-Encoding",
   };
   if (caching !== "revalidate") headers.expires = new Date(Date.now() + 3600 * 1000).toUTCString();
   return headers;

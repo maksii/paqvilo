@@ -268,7 +268,12 @@
         if (!id) { frame.setAttribute('src', 'about:blank'); frame.setAttribute('tabindex', '-1'); frame.style.height = '0px'; continue; }
         const url = new URL(frame.dataset.path, location.href);
         if (url.origin !== location.origin) continue;
-        url.search = new URLSearchParams({ entityid: id, entityname: frame.dataset.entityname, entityprimarykeyname: frame.dataset.entityprimarykeyname, formname: frame.dataset.formname, controlid: frame.dataset.controlid });
+        // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
+        // the current frame query supply them.
+        const previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
+        const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
+        const primary = frame.dataset.entityprimarykeyname || previous.get('entityprimarykeyname') || '';
+        url.search = new URLSearchParams({ entityid: id, entityname, ...(primary ? { entityprimarykeyname: primary } : {}), formname: frame.dataset.formname, controlid: frame.dataset.controlid, ...(previous.has('lang') ? { isprofilepage: previous.get('isprofilepage') ?? 'false', lang: previous.get('lang') } : {}) });
         if (frame.src !== url.href) frame.src = url.href;
         frame.setAttribute('tabindex', '0');
       }

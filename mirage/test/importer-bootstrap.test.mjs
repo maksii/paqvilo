@@ -304,6 +304,9 @@ test("form and view changes in a solution layer reach the next rendered page aft
     ...portalFiles,
     "web-templates/Main.webtemplate.source.html": "<!doctype html><html><head><title>Home</title></head><body>{% entityform name: 'Item form' %}</body></html>",
     "basic-forms/item-form/Item-form.basicform.yml": "adx_entityformid: item-form\nadx_name: Item form\nadx_entityname: sample_item\nadx_formname: Portal item\nadx_mode: 100000000",
+    // An insert form renders only for an identity with a Create permission.
+    "table-permissions/Create.tablepermission.yml":
+      "adx_entitypermissionid: create\nadx_entityname: Create items\nadx_entitylogicalname: sample_item\nadx_scope: 756150000\nadx_create: true\nadx_entitypermission_webrole:\n- anonymous",
   });
   await write(solutions, {
     "Entities/sample_item/Entity.xml": entity("sample_itemrecords"),

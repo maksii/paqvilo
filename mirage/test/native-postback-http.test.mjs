@@ -92,7 +92,7 @@ test('native field validation renders HTML200 with posted escaped values and no 
   const html = await response.text();
   assert.match(html, /Title is a required field/);
   assert.match(html, /must be a valid integer/);
-  assert.match(html, /id="count"[^>]*value="bad"/);
+  assert.match(html, /value="bad"[^>]*id="count"/);
   assert.match(html, /&lt;script&gt;unexecuted&lt;\/script&gt;/);
   assert.equal(app.store.snapshot().tables.sample[1].title, 'Second');
 });

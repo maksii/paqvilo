@@ -1,4 +1,5 @@
 import { isDeepStrictEqual } from "node:util";
+import { seedPresetBody } from "./solution-schema.mjs";
 import {
   LAZY_PRESET,
   defineLazyPreset,
@@ -178,7 +179,7 @@ export function bootstrapPresetLibrary({
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
       defineLazyPreset(library, id, entry, {
         pack: pack.id,
-        finish: (body) => ({
+        finish: (body) => seedPresetBody({
           ...clone(body),
           id,
           builtin: true,
@@ -188,7 +189,7 @@ export function bootstrapPresetLibrary({
           ...(body.tables
             ? { tables: { ...clone(importedTables), ...clone(body.tables) } }
             : {}),
-        }),
+        }, metadata?.schema),
       });
     }
   }

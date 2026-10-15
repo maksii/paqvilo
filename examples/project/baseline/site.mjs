@@ -193,7 +193,7 @@ export function buildSite(identity = readIdentity()) {
   const files = new Map();
   const records = [];
   const put = (relative, content) => files.set(relative.split(path.sep).join("/"), content);
-  const record = (kind, recordId, name, variation, catalog, extra = {}, values = {}) => records.push({ id: recordId, kind, name, ...extra, variation, catalog: unique([...catalog, ...derivedIds(kind, values)]) });
+  const record = (kind, recordId, name, variation, catalog, extra = {}, values = {}) => records.push({ id: recordId, kind, name, ...extra, ...(values.adx_entityname ? { table: values.adx_entityname } : {}), variation, catalog: unique([...catalog, ...derivedIds(kind, values)]) });
 
   // Pages ------------------------------------------------------------------
   const pages = new Map();

@@ -118,5 +118,6 @@ export function nativePostbackResponse({ result, error, context, values, observe
   const outcome = result?.outcome;
   if (['redirect', 'step'].includes(outcome?.type) && typeof outcome.url === 'string' && outcome.url)
     return { status: 302, location: outcome.url };
-  return { status: 200, state: { ...context, outcome: outcome ?? { type: 'none' } } };
+  // A form that stays visible after its save re-renders the posted values (live insert captures).
+  return { status: 200, state: { ...context, ...(outcome?.type === 'message' && outcome.hideForm === false && values ? { values } : {}), outcome: outcome ?? { type: 'none' } } };
 }
