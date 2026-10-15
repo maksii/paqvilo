@@ -21,7 +21,17 @@ test("source-filled spacer and readonly controls preserve native two-column form
     store: { resolveMapping: () => ({ idColumn: "itemid", relationships: {} }), get: async () => ({ owner: { id: "account", name: "Example account", logical_name: "account" } }) },
   });
   // The response markup carries the bound date box only; the date-controls runtime builds the picker group as crmentityformview-datetime.js does.
-  const server = http.createServer((_req, res) => res.end(`<!doctype html><style>.zero-cell{display:none}table{width:800px}td{vertical-align:top}input{width:90%}</style><script>window.setIsDirty=()=>{};</script>${html}<script>${clientDateControlsRuntime()}</script>`));
+  const dateRuntime = clientDateControlsRuntime();
+  const server = http.createServer((req, res) => {
+    if (req.url === '/date-runtime.js') {
+      res.setHeader('content-type', 'text/javascript');
+      return res.end(dateRuntime);
+    }
+    res.setHeader('content-type', 'text/html');
+    res.write('<!doctype html><style>.zero-cell{display:none}table{width:800px}td{vertical-align:top}input{width:90%}</style><script>window.setIsDirty=()=>{};</script>');
+    res.write(html);
+    res.end('<script src="/date-runtime.js"></script>');
+  });
   await new Promise(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => {
     // A preconnected socket that never sent a request would hold server.close open.

@@ -10,6 +10,7 @@ import { DataStore } from '../lib/data.mjs';
 import { hashStateFile } from '../lib/state-stream.mjs';
 
 const root = await fs.mkdtemp(join(tmpdir(), 'mirage-volume-'));
+let stateHandle;
 try {
   const rows = 600000, payload = 'x'.repeat(1024), file = join(root, 'state.json');
   let store = new DataStore({ file, state: {
@@ -19,7 +20,9 @@ try {
   } });
   const started = performance.now();
   await store.init();
-  const bytes = await fs.open(file, 'r').then(async handle => { try { return (await handle.stat()).size; } finally { await handle.close(); } });
+  // Keep the same descriptor through the checks and deliberate external edit.
+  stateHandle = await fs.open(file, 'a+');
+  const bytes = (await stateHandle.stat()).size;
   assert.ok(bytes > constants.MAX_STRING_LENGTH, `${bytes} must exceed the engine string limit`);
   assert.equal(await hashStateFile(file), store.persistedDigest);
   const savedDigest = store.persistedDigest, savedMs = performance.now() - started;
@@ -43,7 +46,8 @@ try {
   store = await new DataStore({ file }).init();
   assert.equal(store.persistedDigest, digest);
   for (let i = 0; i < 20; i++) assert.equal(store.state.tables.item[rows - 1 - i].name, `patch-${i}`);
-  await fs.appendFile(file, ' ');
+  await stateHandle.appendFile(' ');
+  await stateHandle.close(); stateHandle = null;
   await assert.rejects(store.update('items', 'row-0', { name: 'conflict' }), { code: 'StateConflict' });
   assert.equal(store.state.tables.item[0].name, undefined);
   store = null; global.gc?.();
@@ -75,4 +79,4 @@ try {
   for (let n = 0; n < 20; n++) assert.equal(persisted.state.tables.item[299999 - n].name, `http-${299999 - n}`);
   assert.equal(persisted.state.tables.item[21].name, 'http-21'); assert.equal(persisted.state.tables.item[22].name, 'http-22');
   console.log(JSON.stringify({ rows, bytes, saveMs: Math.round(savedMs), loadMs: Math.round(loadMs), twentyPatchMs: Math.round(patchMs), httpRows: 300000, twentyHttpPatchMs: Math.round(httpPatchMs), digestVerified: true, externalConflictVerified: true, concurrentClientsVerified: true }));
-} finally { await fs.rm(root, { recursive: true, force: true }); }
+} finally { await stateHandle?.close(); await fs.rm(root, { recursive: true, force: true }); }
