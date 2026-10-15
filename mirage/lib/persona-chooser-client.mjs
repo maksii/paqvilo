@@ -13,6 +13,8 @@ if(root){
   };
   const decorate=()=>{for(const button of root.querySelectorAll('[data-chooser-pin]')){button.hidden=false;const pinned=preferences.pin.includes(button.dataset.chooserPin);button.setAttribute('aria-pressed',String(pinned));button.textContent=pinned?'★':'☆';}};
   const refresh=async(address)=>{
+    const count=[...new FormData(form)].filter(([name,value])=>['role','tag','group','subgroup','account','hasRoles'].includes(name)&&value).length;
+    form.querySelector('.chooser-filter-disclosure>summary').textContent='Filters'+(count?` · ${count} active`:'');
     controller?.abort();const active=controller=new AbortController();
     const visible=new URL(address,location.href);for(const name of ['view','pin','recent'])visible.searchParams.delete(name);
     const request=new URL(visible);request.searchParams.set('view','picker');for(const name of ['pin','recent'])for(const value of preferences[name])request.searchParams.append(name,value);

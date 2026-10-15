@@ -11,8 +11,19 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {loadConfig} from '../../lense/config.mjs';
 import {identityProviderAssets} from '../lib/identity-provider-settings.mjs';
+import {chooserSearch} from '../lib/persona-chooser.mjs';
 const nodes=html=>{const all=[];const visit=node=>{all.push(node);for(const child of node.childNodes??[])visit(child);};visit(parse(html));return all;};
 const attr=(node,name)=>node.attrs?.find(a=>a.name===name)?.value;
+
+test('bounded account facets retain a selected value when URL spelling differs in case',()=>{
+  const {report}=identityChooserFixture(250);
+  report.personas.forEach((persona,index)=>persona.account={id:`account-${index}`,name:`Account ${index}`});
+  for(const account of ['ACCOUNT-249','ACCOUNT 249']){
+    const html=chooserSearch(report,new URLSearchParams({account}),'/', '');
+    const selected=nodes(html).find(node=>node.tagName==='option'&&attr(node,'value')==='account-249');
+    assert.ok(selected);assert.equal(attr(selected,'selected'),'');assert.match(html,/first 100 values/);
+  }
+});
 
 for(const count of [500,5000])test(`identity chooser bounds markup and search at ${count} personas`,async t=>{
   const {users,report,provider,params}=identityChooserFixture(count);const idp=await startIdentityProvider({providers:()=>[provider],users:()=>users,personaCatalog:()=>report,registration:()=>({registration:false})});t.after(()=>idp.close());

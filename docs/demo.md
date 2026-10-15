@@ -10,6 +10,12 @@ npx --no-install paqvilo mirage demo
 
 The command creates `paqvilo-example/`, selects a free port and opens the browser. Keep the terminal running. Close the browser or press **Ctrl+C** to stop.
 
+The pack also includes editor/reader persona groups and isolated **Entra · editor** and
+**Entra · reader** scenarios. Open them under **Manage data and personas > Identity &
+permissions** to try the local Microsoft Entra simulation, including the styled searchable
+operator dialog and sign-out. It uses invented contacts and loopback endpoints. See the
+[demo's sign-in walkthrough](../examples/project/README.md#try-simulated-microsoft-entra).
+
 ## Prefer VS Code tasks
 
 Create a folder and open it through **File > Open Folder** in VS Code. In **Terminal > New Terminal**, run these lines once:
@@ -52,7 +58,7 @@ These are implemented sample scenarios. They do not demonstrate every Power Page
 
 ## Check access and empty states
 
-Use **Tweaks** to switch from **Alex Example 01**, the editor, to **Blair Demo 01**, the reader. Blair can read accounts, related contacts and notes. Web API and PCF hide write actions; native redirect links can open a form that denies creation or editing. Write requests are denied. Switch back to Alex to continue editing. Compare global account access with contact relationships scoped through the parent account. Inspect shows the exported role grants and local permission context.
+Use **Tweaks** to switch from **Alex Example 01**, the editor, to **Alex Demo 01**, the reader. The reader can read accounts, related contacts and notes. Web API and PCF hide write actions; native redirect links can open a form that denies creation or editing. Write requests are denied. Switch back to Alex Example 01 to continue editing. Compare global account access with contact relationships scoped through the parent account. Inspect shows the exported role grants and local permission context.
 
 Open **Manage data and personas > Operations** to inspect the exported server logic and flow. Set a local JSON response mock, call the operation from **Extended** and compare its result. Choose **Use source default** to restore its configured behavior. These controls affect local simulation. See [operation modes](../mirage/docs/operations.md) before enabling exported code.
 

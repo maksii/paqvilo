@@ -17,7 +17,8 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   const page=await context.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);t.diagnostic(e.message);});await page.goto(app.url);
   const root=page.locator('#paqvilo-panel');await root.locator('.pill').click();await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('[data-panel-persona-count]').filter({hasText:'of 500 personas'}).waitFor();assert.ok(await root.locator('[data-panel-persona-row]').count()<100);
-  await root.locator('[data-panel-persona-query]').fill('requester');await root.locator('[data-panel-persona-count]').filter({hasText:'of 1 personas'}).waitFor();await root.locator('[data-panel-persona-facet="roles"]').selectOption('Reviewer');
+  assert.equal(await root.locator('.pp-persona-filter-disclosure').getAttribute('open'),null);await root.locator('.pp-persona-filter-disclosure>summary').click();
+  await root.locator('[data-panel-persona-query]').fill('requester');await root.locator('[data-panel-persona-count]').filter({hasText:'of 1 personas'}).waitFor();await root.locator('[data-panel-persona-facet="roles"]').selectOption('Reviewer');assert.equal(await root.locator('.pp-persona-filter-disclosure>summary').textContent(),'Filters · 1 active');
   await root.locator('[data-act="choosepersona"][data-contact="'+contactId(1)+'"]').first().click();await Promise.all([page.waitForNavigation({waitUntil:'load'}),root.locator('[data-act="signin"]').click()]);await page.waitForURL(app.url+'/');await root.locator('.pill').waitFor({state:'attached'});
   if(await root.locator('.pill').isVisible())await root.locator('.pill').click();await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('select[data-pick="scenario"]').selectOption('@catalogue/review-flow');await root.locator('[data-act="ask"][data-kind="scenario"]').click();await root.locator('[data-act="confirm-yes"]').click();

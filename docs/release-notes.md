@@ -18,6 +18,20 @@ overrides, and accepts project-owned presentation and head assets. Lense catalog
 use portal sign-in and support isolated setups. Persona validation names missing groups and
 invalid return URLs correctly; search also folds letters such as ø, æ, œ, ß, đ and ł.
 
+Additional operator audit: anonymous sign-in-page requests no longer cache their identity
+as the runtime's configured default. Concurrent visitors retain separate session reports.
+Registration uses its own form, so pressing Enter cannot select an existing persona.
+Configuration reads project only their required state sections. Failed child or bridge
+cleanup no longer prevents other owned services from shutting down; failed child stops
+remain visible and retryable. Picker filters retain selected values beyond their bounded
+menus, explain the menu limit, and open matching groups. Narrow layouts and dialog Escape
+navigation have browser regressions.
+The demo now includes curated editor/reader groups, isolated simulated Entra scenarios,
+and a branded sign-in dialog. Browser coverage exercises its callback, roles, sign-out,
+parent-session isolation and owned-runtime cleanup. Scaffold guides cover current pack,
+configuration, session and journal APIs. Picker filters start collapsed to leave room for
+choices, including on narrow screens.
+
 Security review: step announcements and JSON-transport success panels build DOM nodes
 without reinterpreting text as markup. Baseline generators escape JavaScript literals
 for HTML embedding and Markdown reports preserve literal backslashes. Changed-row

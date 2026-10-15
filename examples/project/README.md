@@ -24,7 +24,24 @@ Open **Liquid** for parameterized partials, a manifest-backed component, custom 
 
 Press **Alt+Shift+P** for **Inspect** source links and **Tweaks** persona controls. Open **Manage data and personas** for records, presets and **Operations**. Follow the complete [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md).
 
-Use **Alex Example 01** for editor access and **Blair Demo 01** for reader access. Readers can view accounts, related contacts and notes; their write requests are denied. Exported web roles and table permissions provide global account access and contact access scoped through parent accounts.
+Use **Alex Example 01** for editor access and **Alex Demo 01** for reader access. Readers can view accounts, related contacts and notes; their write requests are denied. Exported web roles and table permissions provide global account access and contact access scoped through parent accounts.
+
+## Try simulated Microsoft Entra
+
+Open **Manage data and personas > Identity & permissions**, then choose **Entra · editor**
+or **Entra · reader** from the catalogue scenarios. Each opens an isolated local runtime;
+the original demo keeps its data, settings and browser session. Launch initially signs in
+the selected persona; sign out in the copy, then on its **Sign in** page choose **Demo
+Microsoft Entra** and an invented contact in the styled operator dialog.
+Search, roles, tags, accounts, pinned/recent choices and full-page presentation work there.
+No Microsoft account or credentials are used. Sign out follows the simulated provider too.
+
+To enable that flow in the current runtime instead, open **Platform rules > Configuration
+presets**, select **Simulated Microsoft Entra sign-in**, and apply it. Choose **Source defaults**
+to reset its overrides. The pack owns this configuration and the editor/reader catalogue;
+the deployable portal export stays unchanged. **Stop and discard** in the parent removes
+an isolated copy. The demo permits two copies at once; adjust `mirage.personaContexts` for
+your machine. `mirage.identityProvider` in the catalogue controls the title, accent and dialog.
 
 ## Compare the source patterns
 

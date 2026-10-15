@@ -526,21 +526,23 @@ export async function createSimulator({
     watcherReadyRelease = null;
     frameReadiness.close();
     closePromise = (async () => {
-      await personaRuntimes.close();
-      await watcher?.close();
+      const failures = [], attempt = async operation => { try { await operation(); } catch (cause) { failures.push(cause); } };
+      await attempt(() => personaRuntimes.close());
+      await attempt(() => watcher?.close());
       await reloadPromise?.catch(() => {});
       while(activeRequests.size)await Promise.all([...activeRequests]);
-      await mutation;
-      await store.queue;
-      await settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true});
-      for(const runtime of registeredPluginRuntimes.values())closeClrHostPool({runtime,diagnostic:recordDiagnostic});
+      await attempt(() => mutation);
+      await attempt(() => store.queue);
+      await attempt(() => settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true}));
+      for(const runtime of registeredPluginRuntimes.values())await attempt(() => closeClrHostPool({runtime,diagnostic:recordDiagnostic}));
       for (const event of events) event.end();
-      await live.close();
+      await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
-      await externalSignIn?.close();
+      await attempt(() => externalSignIn?.close());
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-    })();
+      if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
+    })().catch(cause => { closePromise = null; throw cause; });
     return closePromise;
   };
   const events = new Set(),
@@ -1335,7 +1337,7 @@ export async function createSimulator({
     let effective;
     for (const entry of [...catalogs].reverse()) effective = mergePersonaCatalogs(effective, entry.catalog);
     const value = { ...catalog, scope: createHash('sha256').update(sourceDir).digest('hex').slice(0, 20),
-      identity: identitySummary(), roleSource: state.simulator?.identity?.roleSource ?? 'override',
+      roleSource: state.simulator?.identity?.roleSource ?? 'override',
       permissionMode: state.settings?.permissionMode ?? 'enforce', permissionSource: state.simulator?.permissionSource ?? 'configured',
       contactMapped: Boolean(state.mappings?.contact), personas: catalog.enabled ? catalog.personas : model.personas,
       webRoles: model.webRoles, memberships: model.memberships, contacts, catalog: effective ?? {version:1,groups:[],personas:[]},
@@ -1345,7 +1347,7 @@ export async function createSimulator({
       deploymentProfiles: Object.keys(profileConfig.profiles), contextRuntime: personaInstance ? {id:personaInstance.id ?? null,label: personaInstance.label, ownerOrigin:personaInstance.ownerOrigin, isolated:true} : null };
     personaCache = {key, portal, value}; return value;
   };
-  const personasPayload = () => ({ ...personaReport(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
+  const personasPayload = () => ({ ...personaReport(), identity: identitySummary(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
   const findPersona = key => {
     const report = personaReport(), persona = report.personas.find(entry => entry.key === key);
     if (!report.enabled || !persona) throw error('Unknown persona "' + key + '". Closest keys: ' + closestPersonaKeys(key, report.personas).join(', '), 404, 'PersonaNotFound');
@@ -2043,20 +2045,21 @@ export async function createSimulator({
         await saveState(next);
         return json(res, 200, { imported: true, revision, tableCounts: store.summary().tableCounts });
       });
-    if(relative==='/platform-settings'&&method==='GET')return json(res,200,platformSettingEntries(store.snapshot()));
+    const platformState = () => store.snapshot({sections:['simulator','settings'],tables:['organization']});
+    if(relative==='/platform-settings'&&method==='GET')return json(res,200,platformSettingEntries(platformState()));
     if(relative==='/platform-settings'&&method==='PATCH')return change(async()=>{
       const patch=validatePlatformOverrides(await jsonBody(req)),state=store.snapshot();
       state.simulator.platformOverrides={...state.simulator.platformOverrides,...patch};delete state.simulator.activeExperiment;
-      await saveState(state);return json(res,200,platformSettingEntries(store.snapshot()));
+      await saveState(state);return json(res,200,platformSettingEntries(platformState()));
     });
     if(relative.startsWith('/platform-settings/')&&method==='DELETE')return change(async()=>{
-      const key=decodeURIComponent(relative.slice('/platform-settings/'.length));if(!platformSettingEntries(store.snapshot()).some(x=>x.key===key))throw error('Unknown platform setting.',404);
+      const key=decodeURIComponent(relative.slice('/platform-settings/'.length));if(!platformSettingEntries(platformState()).some(x=>x.key===key))throw error('Unknown platform setting.',404);
       const state=store.snapshot();delete (state.simulator.platformOverrides??{})[key];delete state.simulator.activeExperiment;await saveState(state);return json(res,200,{reset:key});
     });
     const experimentRoute=/^\/experiments(?:\/([^/]+)(\/apply)?)?$/.exec(relative);
     if(experimentRoute){
       const id=experimentRoute[1]&&experimentId(decodeURIComponent(experimentRoute[1]));
-      if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot(),sourcePortal,packConfigurations.presets),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
+      if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot({sections:['simulator']}),sourcePortal,packConfigurations.presets),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
       return change(async()=>{
         const state=store.snapshot(),presets=experimentPresets(state,sourcePortal,packConfigurations.presets),existing=presets.find(p=>p.id===id);
         if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);await saveState(applyExperiment(state,existing));return json(res,200,{applied:id});}

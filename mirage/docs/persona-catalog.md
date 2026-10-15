@@ -137,6 +137,8 @@ The default maximum is four copies. Configure
 launches. **Stop and discard** resets a copy; relaunch snapshots the current parent.
 Children cannot start nested copies. Return to the parent to switch setup. Parent
 shutdown removes owned copies. Temporary copies do not survive parent restart.
+If stopping a child fails, its status remains `stopping`; retry Stop to finish cleanup.
+It cannot be reused while stopping. Other owned children still close if one fails.
 Their files stay under the project's ignored `.paqvilo/persona-runtimes/` folder.
 Children follow the parent's source-watch setting; source refreshes preserve each
 copy's local data and configuration overrides.
@@ -201,8 +203,10 @@ inside one facet. Supported parameters: `q`, `group`, `subgroup`, `role`, `tag`,
 `account`, `hasRoles`; repeated values select multiple options.
 
 Responses show 50 matching personas per page (hard cap 200); Show more/Previous preserve
-filters and the authorization request. Groups above 25 matches start collapsed. One POST
-form owns all subject buttons; protocol fields are never repeated per persona. Each identity
+filters and the authorization request. Filter menus start collapsed, and GET responses with
+active facets expand them. Groups above 25 matches start collapsed. One POST
+form owns existing-persona buttons; a separate form owns registration so Enter creates the
+entered identity. Protocol fields are never repeated per persona. Each identity
 card explains the session effect. Contexts remain explicit isolated setups in the full picker;
 selecting an identity at the provider does not silently apply its configuration.
 
