@@ -43,6 +43,7 @@ const OBSERVED_CHOICES = {
   webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
   webApiReferenceErrors: ["dataverse", "unexpected"],
   webApiInvalidDate: ["invalid-format", "crm-minimum"],
+  webApiDateParsing: ['iso', 'month-first'],
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
   webApiErrorDetails: ["diagnostic", "odata-wrapper"],
   anonymousDataAccess: ["allowed", "blocked"],

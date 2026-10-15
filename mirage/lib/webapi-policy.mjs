@@ -1,7 +1,7 @@
 import { parseFetchXml, DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
 import { planFetch } from "./fetchxml-engine.mjs";
-import { fieldKind, GUID_PATTERN } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, portalMonthFirstDate } from "./dataverse-values.mjs";
 import {isExactNumeric} from './exact-numeric.mjs';
 import {attachODataReaderDetails, odataConversionDetails} from './webapi-error-details.mjs';
 import {
@@ -503,7 +503,9 @@ export function webApiPolicy(portal, store, entity) {
                 value,
                 operation,
               )
-          : value;
+          : portal.observed?.webApiDateParsing === 'month-first' && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
+            ? portalMonthFirstDate(value) ?? value
+            : value;
     }
     return result;
   };

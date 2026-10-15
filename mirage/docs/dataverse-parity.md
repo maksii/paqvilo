@@ -68,3 +68,20 @@ An explicitly registered trusted pack can supply evidenced reader-specific error
 Project parity runners should retain field-by-field requests, status, stored values after both accepted and rejected writes, rendered values, search results and cleanup outcomes. Keep reference cookies, tokens and opaque native hidden-field values out of evidence. Record generated identifiers and timestamps without treating independently generated values as literal mismatches; declare any comparison normalization and retain raw results.
 
 Mirage's native form service uses local JSON submission. Native Power Pages uses framework postbacks, view state and redirects. Transport differences and framework error-detail differences remain diagnostics even when validation, persistence and rendering match. Passing a bounded input corpus does not establish complete penetration-test coverage or compatibility with every Dataverse operation.
+
+### Observed portal culture-parsed dates
+
+`observed.webApiDateParsing: month-first` (with `evidence`) accepts `M/D/YYYY`
+and `MM/DD/YYYY`, optionally followed by a 24-hour time or AM/PM, at the portal Web API
+write boundary. Calendar/clock components and the existing supported date range remain
+validated. ISO input, direct datastore/SDK writes, query literals and native form parsing
+retain their contracts. `14/10/2026` and impossible dates remain errors. DateOnly columns
+store canonical dates; datetime columns retain canonical UTC instants. This option does not
+infer arbitrary cultures from a browser locale.
+
+An authorized development reference check on 2026-10-15 confirmed that month-first inputs
+and ISO values reach the backend plugin for both date column types, whereas day-first and
+impossible dates fail culture conversion before the plugin. A pre-existing business-write
+guard prevented persisted-value readback in that check. This establishes the parser boundary,
+not end-to-end stored-value parity on every portal. Validate accepted writes/readbacks in the
+consumer's own sandbox before enabling the observation there.

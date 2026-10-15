@@ -69,3 +69,30 @@ Standard PCF controls use selected Solution manifests and declared resources. Ta
 For imported Dataverse plugin steps, expose `pluginSteps: { '<exported-step-id>': synchronousHandler }` on your pack. Handlers explicitly model local validation or target-field changes; they do not execute the assembly. See [plugin contracts and rollback](dataverse-plugins.md#model-a-write).
 
 A pack can name a `shell.headerNotificationQuery` web template for an explicitly captured header presentation. The template owns all audience and visibility rules and returns `{ "notifications": [{ "notificationText": "Local notice", "severity": "info", "visible": true }] }`. Severity accepts `success`, `danger`, `warning` or `info`. The count includes visible rows only. Text is bounded plain text and displayed literally with HTML escaping; the runtime does not decode project field formats or infer visibility from custom audience values. Invalid rows produce `HEADER_NOTIFICATION_QUERY_INVALID` and are omitted.
+
+## Pack configuration presets
+
+A trusted pack may export a `configurationPresets` array (at most 100 entries):
+
+```js
+configurationPresets: [{
+  id: 'sample-feature-on', name: 'Feature enabled', description: 'Synthetic variant',
+  platformOverrides: { QueryLinkEntityLimit: 30 },
+  portalOverrides: { settings: { 'Feature/Enabled': 'True' }, snippets: { Greeting: 'Hello' } },
+}],
+presets: () => ({ sample: { name: 'Sample data', tables: {}, configurationPreset: 'sample-feature-on' } }),
+```
+
+These use the saved-experiment validation rules: plain setting/snippet values are strings
+or null; roles, access rules and prototype keys are forbidden. Invalid entries and duplicate
+IDs produce pack diagnostics. Valid entries are listed beside built-in/local experiments,
+marked with their pack source, and cannot be edited or deleted. IDs must be unique across
+packs, built-ins and saved experiments. Use a pack prefix.
+
+`POST /__sim/api/presets/sample/apply` keeps current overrides by default. Send
+`{ "applyConfiguration": true }` to apply its linked configuration atomically with data.
+The administration UI offers an unchecked opt-in. Directly applying a pack configuration
+uses `POST /__sim/api/experiments/sample-feature-on/apply`; applying `source-defaults`
+resets its overrides. Status exposes `activeConfigurationPreset` (ID, source and digest);
+portal audit entries and acceptance evidence retain that identity without copying snippet
+values into the ledger. Manual override edits clear the active-preset designation.

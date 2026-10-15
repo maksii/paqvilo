@@ -229,6 +229,7 @@ export function listPresets({ state = {}, library = {} } = {}) {
         "",
       source: saved?.userConfigured ? "stored" : meta ? "builtin" : "stored",
       ...(meta?.pack ? { pack: meta.pack } : {}),
+      ...((custom ? saved?.configurationPreset : meta?.configurationPreset) ? {configurationPreset:custom ? saved.configurationPreset : meta.configurationPreset} : {}),
       ...(unavailable ? { unavailable: true } : {}),
     };
   });

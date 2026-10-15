@@ -1,3 +1,4 @@
+import {identityProviderSettings,identityProviderAssets} from '../mirage/lib/identity-provider-settings.mjs';
 // Configuration, from the most general to the most specific:
 //
 //   paqvilo.config.yml        the team's catalogue: every portal, its source folder, its
@@ -236,7 +237,9 @@ export function isExtract(dir) {
 export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
+  if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
+    ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
     project: value.project ? path.resolve(configDir, value.project) : null,
     ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),

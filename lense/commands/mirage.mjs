@@ -468,6 +468,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       requestedPort: String(args.port ?? DEFAULT_PORT),
       render: renderSettings(cfg.mirageConfig?.render),
       personaContexts: cfg.mirageConfig?.personaContexts ?? {maxInstances:4},
+      identityProvider: cfg.mirageConfig?.identityProvider ?? {},
       platform: cfg.mirageConfig?.platform ?? projectInfo?.portals.find(item=>item.id===portalId)?.platform ?? null,
       deploymentProfiles: cfg.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, projectInfo?.configFile)
         ? cfg.mirageConfig.deploymentProfiles

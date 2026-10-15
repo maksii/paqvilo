@@ -5,6 +5,7 @@ import { registerExpressionOperators, registerShellConventions, validateEndpoint
 import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
 import { seedPresetBody } from "./solution-schema.mjs";
 import { validatePersonaCatalog } from './persona-catalog.mjs';
+import { configurationPresetReport, experimentId } from './experiment-presets.mjs';
 
 /**
  * Project-agnostic preset registry.
@@ -149,6 +150,7 @@ export function validatePack(pack, source = "data pack") {
   const catalogProperty = Object.getOwnPropertyDescriptor(pack, 'personaCatalog');
   if (catalogProperty && !('value' in catalogProperty)) fail('personaCatalog must be a data property');
   if (catalogProperty?.value !== undefined) validatePersonaCatalog(catalogProperty.value, `Data pack ${pack.id}`);
+  configurationPresetReport([pack]);
   // Extension points (lib/extensions.mjs): plugin expression operators and
   // HTTP endpoints under /__sim/ served while the pack matches the portal.
   const operators = dataProperty(pack, "expressionOperators")?.value;
@@ -304,6 +306,7 @@ export function presetDescriptor(library, id) {
     id,
     name: value?.name ?? id,
     description: value?.description ?? "",
+    ...(value?.configurationPreset ? {configurationPreset:value.configurationPreset} : {}),
     ...(value?.pack ? { pack: value.pack } : {}),
     lazy: false,
   };
@@ -327,6 +330,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
       if (!value || typeof value !== "object" || Array.isArray(value))
         throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ""} did not load an object`);
       if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
+      if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
       body = finish ? finish(value) : value;
       loaded = true;
     }
@@ -336,6 +340,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
     id,
     name: entry.name ?? id,
     description: entry.description ?? "",
+    ...(entry.configurationPreset ? {configurationPreset:entry.configurationPreset} : {}),
     ...(pack ? { pack } : {}),
     lazy: true,
   });

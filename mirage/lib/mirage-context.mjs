@@ -1,3 +1,4 @@
+import path from 'node:path';
 import { createSimulator } from '../server.mjs';
 import { DataStore } from './data.mjs';
 import { initialState } from './bootstrap.mjs';
@@ -57,6 +58,8 @@ export async function createMirageContext({ packs = [], config, site, portal, me
       platform: cfg?.mirageConfig.platform ?? selected?.platform,
       render: cfg?.mirageConfig.render,
       personaContexts: cfg?.mirageConfig.personaContexts,
+      identityProvider: cfg?.mirageConfig.identityProvider,
+      ...(cfg?.configFile?{projectRoot:path.dirname(cfg.configFile)}:{}),
       ...(cfg ? { sourceDir, origin, solutionRoots, solutionOrder, deploymentProfile: selected?.deploymentProfile, deploymentProfiles: profileConfig, observed: selected?.observed ?? cfg.mirageConfig.observed, localOverrides: cfg.mirageConfig.localOverrides } : {}),
       ...(project ? { project: projectSummary(project, selected.id), environmentVariables: project.environmentVariables } : {}),
       ...settings, packs: loaded,

@@ -2,6 +2,22 @@
 
 ## 0.9.4
 
+Feedback follow-up (63–64, 66, 68–72): acceptance cancels requests at document commit,
+including requests started during navigation, and budgets its document holds before settling.
+Windows state ownership ignores NTFS access-only ChangeTime updates; the published
+`paqvilo mirage verify-storage` command checks streaming, journals and volume performance.
+An evidenced `observed.webApiDateParsing: month-first` option converts portal Web API
+date strings while retaining ISO-only direct datastore/query behavior.
+
+Packs can contribute validated, read-only `configurationPresets`; a data preset's
+`configurationPreset` applies only with `applyConfiguration: true`. Status, acceptance
+evidence and audit record the active configuration's ID, source and digest. The local
+identity provider and Lense gain grouped, paged persona search, facets and pinned/recent
+choices. The identity provider follows registration settings, supports explicit negative-test
+overrides, and accepts project-owned presentation and head assets. Lense catalogue scenarios
+use portal sign-in and support isolated setups. Persona validation names missing groups and
+invalid return URLs correctly; search also folds letters such as ø, æ, œ, ß, đ and ł.
+
 Security review: step announcements and JSON-transport success panels build DOM nodes
 without reinterpreting text as markup. Baseline generators escape JavaScript literals
 for HTML embedding and Markdown reports preserve literal backslashes. Changed-row

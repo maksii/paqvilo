@@ -124,7 +124,7 @@ class SignInProblem extends Error {
  *   renderPage(req, res, url, { status, title, content, route }): pages in the site shell.
  * - readBody(req): the request body (Buffer).
  */
-export function createExternalSignIn({ portal, origin, csrf, sessions, store, personas, webRoles = () => [], identity, audit, trace, diagnostic = () => {}, renderSignIn, renderPage, readBody }) {
+export function createExternalSignIn({ portal, origin, csrf, sessions, store, personas, personaCatalog = () => null, identityProvider = {}, webRoles = () => [], identity, audit, trace, diagnostic = () => {}, renderSignIn, renderPage, readBody }) {
   let idp = null;
   // Protected data (the state's authentication properties and the external sign-in cookie) is
   // encrypted and authenticated (AES-256-GCM), as the platform's data protection does: the PKCE
@@ -261,12 +261,13 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
   // ---- the identity provider ----
   const presetUsers = (provider) => {
     const contacts = new Map(contactRows().map((item) => [item.id, item.row]));
-    const identities = identityRows().filter((row) => active(row) && providerMatches(provider, row.adx_identityprovidername));
+    const identities = new Map();for(const row of identityRows())if(active(row)&&providerMatches(provider,row.adx_identityprovidername)&&!identities.has(lookupOf(row,"adx_contactid")))identities.set(lookupOf(row,"adx_contactid"),row);
     return personas().map((persona) => {
       const contact = contacts.get(key(persona.contactId));
-      const existing = identities.find((row) => lookupOf(row, "adx_contactid") === key(persona.contactId));
+      const existing = identities.get(key(persona.contactId));
       const roles = (persona.roles ?? []).length ? persona.roles.join(", ") : "no web roles";
       return {
+        roles: persona.roles ?? [],
         contactId: persona.contactId,
         subject: existing?.adx_username ?? presetSubject(provider, persona.contactId),
         name: persona.name ?? contactName(contact) ?? persona.contactId,
@@ -300,6 +301,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
           clientKeys: provider.tokenAuthMethod === "private_key_jwt" && provider.certificateKid ? [{ ...clientKeyPair().publicKey.export({ format: "jwk" }), kid: provider.certificateKid, alg: "RS256", use: "sig" }] : [],
         })),
       users: async (provider) => presetUsers(provider),
+      personaCatalog, registration: settings, settings: identityProvider.settings, assets: identityProvider.assets, fullPicker: origin()+"/_sim/#identity",
       provision,
       allowRedirect: (target) => {
         try {
@@ -922,6 +924,7 @@ export function createExternalSignIn({ portal, origin, csrf, sessions, store, pe
           : null;
     return {
       available: Boolean(idp) && providers.length > 0,
+      chooser: {newUser:identityProvider.settings?.newUser??'auto',presentation:identityProvider.settings?.presentation??'page',localAssets:(identityProvider.assets??[]).map(asset=>asset.url)},
       reason,
       origin: idp?.origin ?? null,
       port: idp?.port ?? null,

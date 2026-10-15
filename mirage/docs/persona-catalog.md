@@ -189,3 +189,53 @@ methods include `launchPersona`, `personaRuntimes`, `stopPersonaRuntime`,
 leaves shared copies running; stop owned test instances through the parent or close
 the parent. Testing descriptions exclude identity cookies and expose persona
 extensions as `visitor.persona.extensions` for project automation.
+
+## Identity-provider and Lense pickers
+
+The local external identity provider reads the owning runtime's effective catalogue. It
+shows labels, contact names, descriptions, role/tag/account facets, ordered groups/subgroups,
+Default, Other contacts, and browser-local pinned/recent choices. GET search works without
+JavaScript; JavaScript updates results and the URL while preserving the search input. Search
+is case/accent insensitive, folds ø/æ/œ/ß/đ/ł, and ANDs terms and facets while ORing values
+inside one facet. Supported parameters: `q`, `group`, `subgroup`, `role`, `tag`,
+`account`, `hasRoles`; repeated values select multiple options.
+
+Responses show 50 matching personas per page (hard cap 200); Show more/Previous preserve
+filters and the authorization request. Groups above 25 matches start collapsed. One POST
+form owns all subject buttons; protocol fields are never repeated per persona. Each identity
+card explains the session effect. Contexts remain explicit isolated setups in the full picker;
+selecting an identity at the provider does not silently apply its configuration.
+
+New user follows the site's registration and provider switches. `prompt=create` exposes
+a forced registration test; `newUser: never` still suppresses it. Forced choices name the
+settings that may reject the callback. Forged creation POSTs are checked server-side.
+
+Configure the local chooser in site/default Mirage settings:
+
+```yaml
+mirage:
+  identityProvider:
+    newUser: auto             # auto | always | never
+    presentation: dialog      # page | dialog (same-origin presentation)
+    title: Choose a test operator
+    description: Select the identity for this browser session.
+    accentColor: '#315bd5'
+    head:
+      stylesheets: [./local/identity.css]
+      scripts: [./local/identity.js]
+```
+
+Head assets resolve relative to the catalogue/project root, must remain inside it even
+through symlinks, and are served on the local provider under reserved paths. CSS custom
+properties `--persona-accent`, `--persona-surface`, `--persona-border`,
+`--persona-muted` and stable `chooser-*` classes support branding and layout. Scripts
+are explicitly trusted project code. These settings/assets stay local and never change
+exports or a connected provider. Dialog presentation retains the provider's separate origin
+and frame protection. The display button switches between a bounded dialog layout and a
+full page. Credential/MFA simulation is outside this chooser.
+
+Lense Tweaks uses the same catalogue and indexed search rules, renders 50 results at a
+time, retains pinned/recent choices per browser, and links to the full management picker.
+Catalogue scenario choices name the persona, start page and isolated-setup effect. Opening
+one prepares the local setup and completes the portal's own sign-in flow before the start
+page. Uncatalogued contacts retain a searchable fallback.

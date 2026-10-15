@@ -1,12 +1,14 @@
 /** Shared by the server and the browser. Indexed once per catalogue refresh;
  * filtering never joins memberships or rebuilds the rest of the admin page. */
-export const foldPersonaText = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase();
+export const PERSONA_TRANSLITERATIONS = Object.freeze({ 'ø': 'o', 'æ': 'ae', 'œ': 'oe', 'ß': 'ss', 'đ': 'd', 'ð': 'd', 'ł': 'l', 'þ': 'th' });
+const transliterations = PERSONA_TRANSLITERATIONS;
+export const foldPersonaText = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[øæœßđðłþ]/g, letter => transliterations[letter]);
 const values = value => (Array.isArray(value) ? value : value ? [value] : []).map(foldPersonaText);
 export const personaRowKey = persona => persona.key ?? `@contact:${persona.contactId}`;
 
 export function personaFilters(parameters) {
   const params = parameters instanceof URLSearchParams ? parameters : new URLSearchParams(parameters);
-  return { q: params.get('q') ?? '', roles: params.getAll('role'), accounts: params.getAll('account'), groups: params.getAll('group'), tags: params.getAll('tag'), hideNoRoles: params.get('rolesOnly') === '1' };
+  return { q: params.get('q') ?? '', roles: params.getAll('role'), accounts: params.getAll('account'), groups: params.getAll('group'), tags: params.getAll('tag'), hideNoRoles: params.get('rolesOnly') === '1' || ['1','true'].includes(params.get('hasRoles')), ...(params.has('subgroup')?{subgroups:params.getAll('subgroup')}:{}), ...(params.get('hasRoles')==='false'||params.get('hasRoles')==='0'?{withoutRoles:true}:{}) };
 }
 
 export function indexPersonaCatalog(report) {
@@ -19,18 +21,18 @@ export function indexPersonaCatalog(report) {
       persona.group === '__other' ? 'Other contacts' : '',
     ].filter(Boolean).join(' ')), roles: new Set((persona.roles ?? []).map(foldPersonaText)),
     accounts: new Set([persona.account?.id, persona.account?.name, !persona.account?.id && !persona.account?.name ? '__none' : null].filter(Boolean).map(foldPersonaText)),
-    group: foldPersonaText(persona.group), tags: new Set((persona.tags ?? []).map(foldPersonaText)) };
+    group: foldPersonaText(persona.group), subgroup:foldPersonaText(persona.subgroup), tags: new Set((persona.tags ?? []).map(foldPersonaText)) };
   });
 }
 
 export function filterPersonaIndex(index, filters = {}) {
   const terms = foldPersonaText(filters.q).trim().split(/\s+/).filter(Boolean);
-  const roles = values(filters.roles), accounts = values(filters.accounts), groups = values(filters.groups), tags = values(filters.tags);
+  const roles = values(filters.roles), accounts = values(filters.accounts), groups = values(filters.groups), tags = values(filters.tags), subgroups=values(filters.subgroups);
   return index.filter(entry => terms.every(term => entry.text.includes(term)) &&
     (!roles.length || roles.some(role => entry.roles.has(role))) &&
     (!accounts.length || accounts.some(account => entry.accounts.has(account))) &&
     (!groups.length || groups.includes(entry.group)) &&
-    (!tags.length || tags.some(tag => entry.tags.has(tag))) && (!filters.hideNoRoles || entry.roles.size > 0));
+    (!tags.length || tags.some(tag => entry.tags.has(tag))) && (!subgroups.length||subgroups.some(group=>group===entry.subgroup||group===`${entry.group}:${entry.subgroup}`)) && (!filters.hideNoRoles || entry.roles.size > 0) && (!filters.withoutRoles||entry.roles.size===0));
 }
 
 export function closestPersonaKeys(key, personas, count = 5) {

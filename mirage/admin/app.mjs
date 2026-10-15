@@ -1017,7 +1017,7 @@ function solutionMetadataPanel() {
 function presetPicker() {
   const presets = state.status?.availablePresets || collection("presets");
   if (!presets.length) return "";
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Apply a simulation scenario</h2>${badge("Local state change")}</div><p class="muted">Presets can replace records, identity, roles, and backend rules. Review the selected scenario before applying it.</p><div class="toolbar"><label for="available-preset">Available preset</label><select id="available-preset">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}</option>`).join("")}</select><button class="button" data-apply-selected>Apply selected preset</button></div></section>`;
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>Apply a simulation scenario</h2>${badge("Local state change")}</div><p class="muted">Presets can replace records, identity, roles, and backend rules. Review the selected scenario before applying it.</p><div class="toolbar"><label for="available-preset">Available preset</label><select id="available-preset">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${preset.configurationPreset?` · configuration: ${escape(preset.configurationPreset)}`:""}</option>`).join("")}</select><label><input type="checkbox" id="preset-apply-configuration"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div></section>`;
 }
 
 let selectedPersona = null;
@@ -1354,8 +1354,9 @@ function portalValuePanels(overridesOnly) {
     }).join("");
 }
 
+document.addEventListener('change',event=>{if(event.target.id!=='experiment-select')return;const selected=config().experimentPresets?.find(p=>p.id===event.target.value),button=document.querySelector('[data-experiment="delete"]');if(button)button.disabled=!selected||selected.builtin||selected.readOnly;});
 function experimentPanel(){
- return `<section class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}">${escape(p.name)}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete">Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
+ return `<section class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}">${escape(p.name)}${p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
 }
 function platformRules(){
  const rows=config().platformSettings??[];
@@ -1745,7 +1746,7 @@ document.addEventListener("click", async (event) => {
         else if(action==='delete')await request('/experiments/'+encodeURIComponent(id),{method:'DELETE'});
         else if(action==='save')await request('/experiments',{method:'POST',body:JSON.stringify({id:$('#experiment-id').value,name:$('#experiment-name').value,platformOverrides:config().platformOverrides??{},portalOverrides:{settings:config().portalOverrides?.settings??{},snippets:config().portalOverrides?.snippets??{}}})});
         else if(action==='import')await request('/experiments',{method:'POST',body:JSON.stringify(JSON.parse($('#experiment-import').value))});
-        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,source,readOnly,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
       }
       await refresh();notify('Local configuration updated.');
     }catch(error){notify(error.message,true);}finally{control.disabled=false;}return;
@@ -2065,13 +2066,14 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.apply || target.hasAttribute("data-apply-selected")) {
     const id = target.dataset.apply || $("#available-preset").value;
+    const applyConfiguration = $("#preset-apply-configuration")?.checked === true;
     askConfirmation(
       "Apply this preset?",
       "The preset will update simulator records and configuration according to its definition.",
       async () => {
         await request(`/presets/${encodeURIComponent(id)}/apply`, {
           method: "POST",
-          body: "{}",
+          body: JSON.stringify({applyConfiguration}),
         });
         await refresh();
         notify("Preset applied.");

@@ -1,6 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { awaitNetworkQuiet, frameState, inflightWrites, ofCurrentDocument } from "../lib/navigation-settle.mjs";
+import { awaitWritesBeforeDocument, awaitNetworkQuiet, frameState, inflightWrites, ofCurrentDocument } from "../lib/navigation-settle.mjs";
+
+test('a navigation hold honors a settle deadline introduced after the hold starts',async()=>{
+  let deadline=Infinity;const started=Date.now();
+  const wait=awaitWritesBeforeDocument('main',()=>[{frameId:'main',method:'PATCH',type:'XHR',path:'/slow'}],()=>new Map(),{timeout:2000,poll:5,deadline:()=>deadline});
+  setTimeout(()=>{deadline=Date.now()+30;},20);
+  const result=await wait;assert.equal(result.settled,false);assert.ok(Date.now()-started<500,'the runner must not spend the full hold timeout after settling expires');
+});
 
 // Synthetic CDP Network records and Page frame events; no browser is involved.
 const events = [

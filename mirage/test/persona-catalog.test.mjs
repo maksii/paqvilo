@@ -10,6 +10,7 @@ test('persona catalogues validate source paths, versions, references and duplica
   assert.deepEqual(validatePersonaCatalog(catalog(), 'Data pack synthetic'), catalog());
   const invalid = [
     [value => { value.version = 2; }, /Data pack synthetic: personaCatalog.version must be 1/],
+    [value => { delete value.personas[0].group; }, /personaCatalog.personas\[0\].group is required/],
     [value => { value.personas[0].group = 'missing'; }, /personas\[0\].group "missing" is not a declared group/],
     [value => { value.personas.push({ ...value.personas[0] }); }, /personas\[1\].key "writer-one" repeats personas\[0\]/],
     [value => { value.personas[0].contactId = 'unknown'; }, /personas\[0\].contactId/],
@@ -62,6 +63,7 @@ test('joined catalogues derive identities from contacts, retain state precedence
 });
 
 test('persona paths reject external, escaped and control-character navigation', () => {
+  assert.throws(() => personaStartPath('https://other.example/', 'returnUrl'), /^Error: returnUrl must be a relative path/);
   assert.equal(personaStartPath('/requests/?search=one#details'), '/requests/?search=one#details');
   for (const path of ['https://external.invalid/', '//external.invalid', '/\\external.invalid', '/%2fexternal.invalid', '/%5cexternal.invalid', '/%0d%0aLocation:elsewhere', '/%']) assert.throws(() => personaStartPath(path), /path|encoding/);
 });
@@ -79,4 +81,10 @@ test('search folds accents and case, combines terms with AND and filter values w
   assert.equal(filterPersonaIndex(index, { hideNoRoles: true }).length, 2);
   assert.deepEqual(personaFilters('q=manager&role=Manager&role=Reviewer&tag=org-a&rolesOnly=1'), { q: 'manager', roles: ['Manager', 'Reviewer'], accounts: [], groups: [], tags: ['org-a'], hideNoRoles: true });
   assert.equal(closestPersonaKeys('manager-on', report.personas)[0], 'manager-one');
+});
+
+test('persona search transliterates letters without Unicode decompositions in both directions', () => {
+  for (const [label, query] of [['Ørsted','Orsted'],['Ægir','AEgir'],['Œuvre','oeuvre'],['Straße','strasse'],['Đorđe','Dorde'],['Łódź','Lodz']]) {
+    for (const [name, q] of [[label,query],[query,label]]) assert.equal(filterPersonaIndex(indexPersonaCatalog({ personas:[{ key:'one',label:name }] }),{q}).length,1,`${name}: ${q}`);
+  }
 });

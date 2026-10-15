@@ -1,5 +1,9 @@
 import http from "node:http";
 import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, verify } from "node:crypto";
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import {chooserReport,chooserResults,chooserSearch,CHOOSER_PARAMETERS} from './persona-chooser.mjs';
+import {identityProviderSettings,newUserPolicy} from './identity-provider-settings.mjs';
 
 /**
  * Local identity provider for the portal's external sign-in (docs/sim-administration.md,
@@ -29,7 +33,7 @@ const TITLE = "Local identity provider (simulation)";
 /** Protocol parameters of the authorize request; other parameters are the request's extras. */
 const AUTHORIZE_FIELDS = ["client_id", "redirect_uri", "response_type", "scope", "state", "response_mode", "nonce", "ui_locales", "login_hint", "prompt", "acr_values", "code_challenge", "code_challenge_method"];
 /** Fields of the chooser's own forms. */
-const CHOOSER_FIELDS = new Set(["subject", "given_name", "family_name", "email", "phone_number"]);
+const CHOOSER_FIELDS = new Set(["subject", "given_name", "family_name", "email", "phone_number", ...CHOOSER_PARAMETERS]);
 /** Response types the provider answers; Power Pages does not support code token (Learn). */
 const RESPONSE_TYPES = ["code", "id_token", "code id_token", "id_token token", "code id_token token"];
 const PROMPTS = ["none", "login", "consent", "select_account", "create"];
@@ -43,8 +47,8 @@ const remember = (map, key, value) => {
   if (map.size > LIMIT) map.delete(map.keys().next().value);
 };
 
-function page(body, { autoSubmit = false } = {}) {
-  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${TITLE}</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f4f4f4;color:#222}main{max-width:680px;margin:32px auto;padding:20px 24px;background:#fff;border:2px dashed #8a6d3b;border-radius:6px}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:20px 0 4px}.note{color:#8a6d3b;font-size:13px;margin:0 0 12px}ul{list-style:none;padding:0;margin:0}li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid #eee}button{font:inherit;padding:5px 12px;cursor:pointer}label{display:block;margin:6px 0}input[type=text],input[type=email],input[type=tel]{width:100%;padding:5px;box-sizing:border-box}small{color:#666}code{font-size:12px}dl{margin:0;font-size:13px}dt{font-weight:600}dd{margin:0 0 4px}</style></head><body${autoSubmit ? ' onload="document.forms[0].submit()"' : ""}><main>${body}</main></body></html>`;
+function page(body, { autoSubmit = false, head = '' } = {}) {
+  return `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${TITLE}</title><style>body{font:15px/1.5 system-ui,sans-serif;margin:0;background:#f4f4f4;color:#222}main{max-width:680px;margin:32px auto;padding:20px 24px;background:#fff;border:2px dashed #8a6d3b;border-radius:6px}h1{font-size:20px;margin:0 0 4px}h2{font-size:16px;margin:20px 0 4px}.note{color:#8a6d3b;font-size:13px;margin:0 0 12px}ul{list-style:none;padding:0;margin:0}li{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:10px 0;border-top:1px solid #eee}button{font:inherit;padding:5px 12px;cursor:pointer}label{display:block;margin:6px 0}input[type=text],input[type=email],input[type=tel]{width:100%;padding:5px;box-sizing:border-box}small{color:#666}code{font-size:12px}dl{margin:0;font-size:13px}dt{font-weight:600}dd{margin:0 0 4px}</style>${head}</head><body${autoSubmit ? ' onload="document.forms[0].submit()"' : ""}><main>${body}</main></body></html>`;
 }
 
 /** Display, given and family names of a preset user. */
@@ -80,7 +84,9 @@ function decodeJwt(token) {
  *   portal's data records that contact's identity at the provider (async).
  * - allowRedirect(url): whether a post_logout_redirect_uri is on the portal's origin.
  */
-export async function startIdentityProvider({ host = "127.0.0.1", port = 0, providers, users, provision = async () => {}, allowRedirect = () => false }) {
+export async function startIdentityProvider({ host = "127.0.0.1", port = 0, providers, users, personaCatalog = () => null, registration = () => ({}), settings = {}, assets = [], fullPicker = null, provision = async () => {}, allowRedirect = () => false }) {
+  settings = identityProviderSettings(settings);
+  const builtinAssets = new Map(await Promise.all(["persona-chooser-client.mjs", "persona-chooser.css"].map(async name => ["/_idp/"+name, await fs.readFile(new URL(name, import.meta.url))])));
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = publicKey.export({ format: "jwk" });
   const kid = createHash("sha256").update(jwk.n).digest("base64url").slice(0, 16);
@@ -239,41 +245,17 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
     remember(sessions, session, { subject: user.subject, provider: provider.slug, user, at: Date.now() });
     return deliver(res, params, fields, { "set-cookie": `${cookieName}=${session}; Path=/; HttpOnly; SameSite=Lax` });
   };
-  const chooser = (provider, params, extras, list) => {
-    const hidden = Object.entries({ ...extras, ...params })
-      .filter(([, value]) => value)
-      .map(([key, value]) => `<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`)
-      .join("");
-    const action = `/${escapeHtml(provider.slug)}/oauth2/authorize`;
-    const prompts = params.prompt.split(/\s+/).filter(Boolean);
-    const rows = list
-      .map((user) => {
-        const { name } = nameParts(user);
-        return `<li class="paqvilo-mirage-idp-user" data-subject="${escapeHtml(user.subject)}" data-contact-id="${escapeHtml(user.contactId ?? "")}"><span><strong>${escapeHtml(name)}</strong>${user.email ? ` <small>${escapeHtml(user.email)}</small>` : ""}${user.description ? `<br><small>${escapeHtml(user.description)}</small>` : ""}</span><form method="post" action="${action}">${hidden}<input type="hidden" name="subject" value="${escapeHtml(user.subject)}"><button type="submit">Continue as ${escapeHtml(name)}</button></form></li>`;
-      })
-      .join("");
-    const requester = (() => {
-      try {
-        return new URL(params.redirect_uri).origin;
-      } catch {
-        return params.redirect_uri;
-      }
-    })();
-    // What the request asked for beyond the user: prompt, authentication context and custom parameters.
-    const requested = [
-      prompts.length ? `<dt>prompt</dt><dd id="paqvilo-mirage-idp-prompt">${escapeHtml(prompts.join(" "))}</dd>` : "",
-      params.acr_values ? `<dt>acr_values</dt><dd id="paqvilo-mirage-idp-acr">${escapeHtml(params.acr_values)} <small>(the answer's acr claim; no step-up is simulated)</small></dd>` : "",
-      prompts.includes("consent") ? `<dt>consent</dt><dd>The portal asks for consent to the scope ${escapeHtml(params.scope)}.</dd>` : "",
-      ...Object.entries(extras).map(([key, value]) => `<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}">${escapeHtml(value)}</dd>`),
-    ].join("");
-    const presets = `<h2>Preset users</h2>` + (list.length ? `<ul aria-label="Preset users">${rows}</ul>` : "<p>No preset users: the local data has no active contacts.</p>");
-    const create = `<h2>New user</h2><p><small>Signs in with a new external identity, to exercise the portal's first-time registration.</small></p><form method="post" action="${action}" class="paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create">${hidden}<input type="hidden" name="subject" value="new"><label>Given name <input type="text" name="given_name" required maxlength="100"></label><label>Family name <input type="text" name="family_name" required maxlength="100"></label><label>Email <input type="email" name="email" required maxlength="200"></label><label>Phone (optional, a UserInfo claim) <input type="tel" name="phone_number" maxlength="50"></label><button type="submit">Continue as a new user</button></form>`;
-    return page(
-      `<h1>${TITLE}</h1><p class="note">Signing in to ${escapeHtml(requester)} with ${escapeHtml(provider.caption && provider.caption !== provider.key ? `${provider.caption} (${provider.key})` : provider.key)} · local simulation, no credentials are used</p>` +
-        (requested ? `<h2>Request</h2><dl aria-label="Request">${requested}</dl>` : "") +
-        // prompt=create (OpenID Connect Prompt Create) puts the sign-up form first.
-        (prompts.includes("create") ? create + presets : presets + create),
-    );
+  const chooser = (provider, params, extras, list, query) => {
+    const hidden = Object.entries({ ...extras, ...params }).filter(([,value])=>value).map(([key,value])=>`<input type="hidden" name="${escapeHtml(key)}" value="${escapeHtml(value)}">`).join('');
+    const action = `/${provider.slug}/oauth2/authorize`, report=chooserReport(personaCatalog(),list);
+    const parameters = new URLSearchParams(query);for(const [key,value]of Object.entries({...extras,...params}))if(value)parameters.set(key,value);
+    if(parameters.get('view')==='picker') return chooserResults(report,parameters,action);
+    const policy=newUserPolicy(settings,registration(),provider,params),presentation=parameters.get('presentation')==='dialog'?'dialog':settings.presentation;
+    const requested=[...Object.entries(extras),...['prompt','acr_values'].filter(key=>params[key]).map(key=>[key,params[key]])].map(([key,value])=>`<dt>${escapeHtml(key)}</dt><dd class="paqvilo-mirage-idp-extra" data-name="${escapeHtml(key)}"${['prompt','acr_values'].includes(key)?` id="paqvilo-mirage-idp-${key==='acr_values'?'acr':'prompt'}"`:''}>${escapeHtml(value)}</dd>`).join('')+(params.prompt.split(/\s+/).includes('consent')?`<dt>consent</dt><dd>The portal asks for consent to the scope ${escapeHtml(params.scope)}.</dd>`:'');
+    const create=policy.allowed?`<section class="chooser-registration paqvilo-mirage-idp-new-user" id="paqvilo-mirage-idp-create"><h2>New user</h2><p>Create an external identity for the portal’s first-time registration flow.</p>${policy.forced?`<p class="chooser-warning">Forced registration test. The portal disables registration with: ${escapeHtml(policy.disabled.join(', '))}. The portal may reject the callback.</p>`:''}<div class="chooser-registration-fields">${[['given_name','Given name','text',100],['family_name','Family name','text',100],['email','Email','email',200],['phone_number','Phone (optional, a UserInfo claim)','tel',50]].map(([name,label,type,max])=>`<label>${label}<input form="idp-choose" type="${type}" name="${name}" maxlength="${max}"${name!=='phone_number'?' required':''}></label>`).join('')}</div><button type="submit" form="idp-choose" name="subject" value="new">Continue as a new user</button></section>`:'';
+    const requester=new URL(params.redirect_uri).origin, content=chooserResults(report,parameters,action), heading=provider.caption&&provider.caption!==provider.key?`${provider.caption} (${provider.key})`:provider.key;
+    const head=`<link rel="stylesheet" href="/_idp/persona-chooser.css"><script type="module" src="/_idp/persona-chooser-client.mjs"></script>`+assets.map(asset=>asset.kind==='scripts'?`<script data-sim-local-only="identity-provider" src="${escapeHtml(asset.url)}"></script>`:`<link data-sim-local-only="identity-provider" rel="stylesheet" href="${escapeHtml(asset.url)}">`).join('');
+    return page(`<div data-persona-chooser data-scope="${escapeHtml(report.scope??'local')}" data-presentation="${presentation}" role="${presentation==='dialog'?'dialog':'main'}" aria-labelledby="chooser-title" style="--persona-accent:${settings.accentColor}"><header class="chooser-header"><div class="chooser-toolbar"><span class="chooser-kicker">Local identity provider · simulation</span><button type="button" data-chooser-display>${presentation==='dialog'?'Use full page':'Open as dialog'}</button></div><h1 id="chooser-title">${escapeHtml(settings.title)}</h1><p>${escapeHtml(settings.description)}</p><p class="chooser-meta">Signing in to ${escapeHtml(requester)} with ${escapeHtml(heading)} · local simulation, no credentials are used</p>${fullPicker?`<a href="${escapeHtml(fullPicker)}" target="_blank" rel="noopener">Open full persona picker and isolated setups</a>`:''}</header>${chooserSearch(report,parameters,action,hidden)}<p class="chooser-error" data-chooser-error role="alert"></p><form method="post" action="${action}" id="idp-choose">${hidden}</form>${params.prompt.split(/\s+/).includes('create')?create+content:content+create}${requested?`<details class="chooser-request"><summary>Authorization request details</summary><dl aria-label="Request">${requested}</dl></details>`:''}</div>`,{head});
   };
   const presetUsers = async (provider) => (await users(provider)) ?? [];
   const hinted = (list, hint) => {
@@ -362,6 +344,11 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
 
   async function handle(req, res) {
     const url = new URL(req.url, origin);
+    if(req.method==='GET'&&(builtinAssets.has(url.pathname)||assets.some(asset=>asset.url===url.pathname))){
+      const asset=assets.find(item=>item.url===url.pathname);let bytes=builtinAssets.get(url.pathname);
+      if(asset){const real=await fs.realpath(asset.file),relative=path.relative(asset.root,real);if(relative==='..'||relative.startsWith('..'+path.sep)||path.isAbsolute(relative))return fail(res,403,'Local identity-provider assets must remain inside the project');bytes=await fs.readFile(real);}
+      res.writeHead(200,{'content-type':url.pathname.endsWith('.css')?'text/css; charset=utf-8':'text/javascript; charset=utf-8','cache-control':'no-store','x-content-type-options':'nosniff'});return res.end(bytes);
+    }
     if (req.method === "GET" && url.pathname === "/") {
       const items = providers()
         .map((provider) => `<li><span><strong>${escapeHtml(provider.caption ?? provider.key)}</strong> <small>${escapeHtml(provider.key)}</small><br><code>${escapeHtml(authority(provider))}</code></span><a href="/${escapeHtml(provider.slug)}/.well-known/openid-configuration">Discovery document</a></li>`)
@@ -412,11 +399,13 @@ export async function startIdentityProvider({ host = "127.0.0.1", port = 0, prov
           return answer(res, provider, params, silent);
         }
         const match = prompts.length ? null : hinted(list, params.login_hint);
-        if (!match) return respond(res, 200, chooser(provider, params, extras, list));
+        if (!match) return respond(res, 200, chooser(provider, params, extras, list, url.searchParams));
         await provision(provider, match);
         return answer(res, provider, params, match);
       }
       if (form.subject === "new") {
+        const policy=newUserPolicy(settings,registration(),provider,params);
+        if(!policy.allowed)return fail(res,403,"Registration is disabled by "+(policy.disabled.join(", ")||"mirage.identityProvider.newUser=never"));
         const email = String(form.email ?? "").trim();
         const given = String(form.given_name ?? "").trim();
         const family = String(form.family_name ?? "").trim();

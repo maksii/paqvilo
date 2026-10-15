@@ -111,6 +111,18 @@ export function isDateOnlyField(definition) {
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** Opt-in portal conversion; direct data/query date parsing remains ISO-only. */
+export function portalMonthFirstDate(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{1,2})\/(\d{1,2})\/(\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i.exec(value.trim());
+  if (!match) return null;
+  let hour = +(match[4] ?? 0);
+  if (match[8]) { if (hour < 1 || hour > 12) return null; hour = hour % 12 + (match[8].toUpperCase() === 'PM' ? 12 : 0); }
+  const pad = text => String(text).padStart(2, '0');
+  const date = `${match[3]}-${pad(match[1])}-${pad(match[2])}`;
+  const result = match[4] === undefined ? date : `${date}T${pad(hour)}:${match[5]}:${match[6] ?? '00'}${match[7] ?? ''}Z`;
+  return parseDateValue(result) ? result : null;
+}
 const ISO_DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?(Z|[+-]\d{2}:?\d{2})?$/i;
 

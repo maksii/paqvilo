@@ -100,7 +100,7 @@ test('Mirage panel inspects an enhanced-data-model export and opens its componen
   // Signed in as the member, the restricted page is allowed by its enhanced access rule, and
   // its related web link and site marker (mspp_ field names) are listed with their sources.
   await openTab('tweaks');
-  await panelLocator('select[data-pick="persona"]').selectOption('alex');
+  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panelLocator('[data-act="signin"]').click()]);
   await page.goto(`${app.url}/secure/`);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
