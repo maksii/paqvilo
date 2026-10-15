@@ -123,6 +123,12 @@ function renderSummary(elements, dom, scenario) {
     }
     body = `"${clip(bodyText.replace(GUID, "{guid}"), 100)}" (${valid ? "valid JSON" : "not valid JSON"})`;
   }
+  // Visible notes (the notes control's rendered entries): text and attached file name, newest first as rendered.
+  const notes = visible.filter((e) => e.tag === "div" && e.classes.includes("note") && e.attributes["data-id"]).map((e) => {
+    const text = clip(String(e.attributes["data-unformattedtext"] ?? "").replace(/s+/g, " ").trim(), 60);
+    const file = e.attributes["data-attachmentfilename"];
+    return `"${text}"${file ? ` with ${file}${e.attributes["data-attachmentfilesize"] ? ` (${e.attributes["data-attachmentfilesize"]})` : ""}` : ""}`;
+  });
   // Controls the scenario filled or named in `watch`: their visibility and value after the capture.
   const watched = [...new Set([...(scenario.watch ?? []), ...(scenario.steps ?? []).map((step) => /^#([\w-]+)$/.exec(step.fill ?? step.clear ?? "")?.[1]).filter(Boolean)])];
   const values = watched.map((id) => {
@@ -140,6 +146,7 @@ function renderSummary(elements, dom, scenario) {
     dialogs,
     actionsBar,
     body,
+    notes,
     messages: messages.map((text) => clip(text.replace(GUID, "{guid}").replace(QUERY, "?…"))).slice(0, 5),
     values,
   };
@@ -218,6 +225,7 @@ async function main() {
             `${render.dialogs.length} open dialogs${render.dialogs.length ? ` (${render.dialogs.map(escape).join(", ")})` : ""}`,
             ...(render.actionsBar ? [`actions bar ${render.actionsBar} the form`] : []),
             ...(render.body ? [`body ${escape(render.body)}`] : []),
+            ...(render.notes.length ? [`notes: ${render.notes.map(escape).join("; ")}`] : []),
             `messages: ${render.messages.map((m) => `"${escape(m)}"`).join("; ") || "none"}`,
             ...(render.values.length ? [`values: ${render.values.map(escape).join(", ")}`] : []),
           ].join("; ")

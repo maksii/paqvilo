@@ -9,7 +9,7 @@ import { createHash } from "node:crypto";
 import { redactUrl, normalizeText } from "./parity-suite.mjs";
 
 export const SIGN_IN_MARKERS = Object.freeze(["form#loginForm", "form[action*='/SignIn']", "[action*='login.microsoftonline']", ".login-heading-section", "#SubmitButton[value='Sign in']"]);
-const TOKEN_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization", "x-csrf-token", "__requestverificationtoken", "x-ms-request-id", "x-request-id", "request-id", "x-azure-ref", "x-cache"]);
+const TOKEN_HEADERS = new Set(["cookie", "set-cookie", "authorization", "proxy-authorization", "x-csrf-token", "__requestverificationtoken", "x-ms-file-continuation-token", "x-ms-request-id", "x-request-id", "request-id", "x-azure-ref", "x-cache"]);
 const TOKEN_FIELDS = /(__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION|__CMSCsrfToken|__RequestVerificationToken_[\w-]+)=[^&]*/g;
 const TOKEN_ATTRIBUTES = /(name="?(?:__RequestVerificationToken|__VIEWSTATE(?:GENERATOR)?|__EVENTVALIDATION)"?[^>]*value=")[^"]*(")/g;
 const sha = (value) => createHash("sha256").update(value).digest("hex");
@@ -20,6 +20,8 @@ export function redactTokens(text) {
     .replace(TOKEN_FIELDS, "$1={token}")
     .replace(TOKEN_ATTRIBUTES, "$1{token}$2")
     .replace(/("__RequestVerificationToken"\s*:\s*")[^"]*(")/g, "$1{token}$2")
+    // Upload continuation tokens (file upload API responses and the bodies that echo them).
+    .replace(/((?:File)?ContinuationToken\\{0,2}"\s*:\s*\\{0,2}")[^"\\]{8,}/g, "$1{token}")
     .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]{20,}/g, "$1{token}");
 }
 
@@ -392,7 +394,8 @@ export function runnerOptions({ scenario, origin, ids, matrix, allowWrites }) {
     ...(matrix.readPosts ? { readPosts: matrix.readPosts } : {}),
     allowPaths: matrix.writeScope?.paths ?? [],
     allowEntitySets: matrix.writeScope?.entitySets ?? [],
-    signInMarkers: [...SIGN_IN_MARKERS],
+    // A scenario that expects the sign-in page (`expect.signIn`: anonymous access to a restrict-read page) checks its own markers.
+    signInMarkers: scenario.expect?.signIn ? [] : [...SIGN_IN_MARKERS],
     settle: matrix.settle ?? {},
   };
 }

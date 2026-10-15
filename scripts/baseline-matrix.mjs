@@ -118,7 +118,10 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   if (mode === "insert") {
     out.push(scenario(`basic-form/${idSuffix("empty")}`, { ...parts, state: "empty" }, [{ goto: page }], { present: [FORM] }));
     const attachments = cites(record, "pp.basicform.attach-file") ? [attach()] : [];
-    out.push(scenario(`basic-form/${idSuffix(captcha ? "insert-captcha" : "insert")}`, { ...parts, state: captcha ? "insert-captcha" : "insert" }, [{ goto: page }, ...T.insert("Baseline inserted item", "I-NEW-{id:run}"), ...attachments, ...submit, { wait: { navigation: true } }], external ? { leavesOrigin: true } : captcha ? { present: [FORM] } : {}));
+    // The attach forms redirect to the saved record's edit page (the uploaded note shows there): a rejected upload or
+    // submit stays on the insert form, so the capture fails instead of reporting a page that never saved.
+    const saved = attachments.length ? { urlPattern: "[?&]id=[0-9a-f-]{36}", present: ["#pqvd_name"], absent: [...SIGN_IN, ".validation-summary:visible"] } : {};
+    out.push(scenario(`basic-form/${idSuffix(captcha ? "insert-captcha" : "insert")}`, { ...parts, state: captcha ? "insert-captcha" : "insert" }, [{ goto: page }, ...T.insert("Baseline inserted item", "I-NEW-{id:run}"), ...attachments, ...submit, { wait: { navigation: true } }], external ? { leavesOrigin: true } : captcha ? { present: [FORM] } : saved));
     if (full || stepped) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: page }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
     rules((state) => T.insert(`Baseline ${state}`, `I-${state.replace(/-.*/, "").toUpperCase()}-{id:run}`), [{ goto: page }]);
     if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-create-${stage}`)}`, { ...parts, state: `plugin-error-create-${stage}` }, [{ goto: page }, ...T.insert(`Baseline plugin ${stage}`, `I-PL-${stage.slice(0, 3)}-{id:run}`), { fill: "#pqvd_text", value: `plugin-fail-create-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
@@ -143,10 +146,12 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     if (full || /summary/i.test(record.variation ?? "")) out.push(scenario(`basic-form/${idSuffix("required-missing")}`, { ...parts, state: "required-missing" }, [{ goto: open(T.record) }, { clear: T.required }, ...firstStep, { wait: 1500 }], { present: [FORM] }));
     rules(() => [], [{ goto: open(T.record) }]);
     if (full && T.plugins) for (const stage of PLUGIN_STAGES) out.push(scenario(`basic-form/${idSuffix(`plugin-error-update-${stage}`)}`, { ...parts, state: `plugin-error-update-${stage}` }, [{ goto: open(T.record) }, { fill: "#pqvd_text", value: `plugin-fail-update-${stage}` }, ...submit, { wait: { navigation: true } }], {}));
+    // The live portal serves the record from its read cache for a few seconds after the save (run 7a: pre-save values 3 s
+    // later; the plugin's write showed after 4 s and a navigation), so the reload waits 6 s and expects the plugin's text.
     // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
     // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
     const mutate = [{ goto: open(T.record) }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }];
-    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [...mutate, { wait: 3000 }, { goto: open(T.record) }, { wait: 1500 }], { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
+    if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [...mutate, { wait: 6000 }, { goto: open(T.record) }, { wait: 1500 }], { present: [FORM, "textarea#pqvd_textarea:has-text('mutated by plugin')"] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
     if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation-postback")}`, { ...parts, state: "plugin-mutation-postback" }, mutate, { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
     if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-dialog-open")}`, { ...parts, state: "lookup-dialog-open" }, [{ goto: open(T.record) }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: MODAL, state: "visible" } }, { wait: 1500 }], { present: [".modal"] }));
     if (full && T.lookup) out.push(scenario(`basic-form/${idSuffix("lookup-search")}`, { ...parts, state: "lookup-search" }, [{ goto: open(T.record) }, { click: `button.launchentitylookup[aria-label*='${T.lookup}']` }, { wait: { selector: MODAL, state: "visible" } }, { fill: ".modal.in input.query, .modal.show input.query", value: "*Other" }, { press: ".modal.in input.query, .modal.show input.query", key: "Enter" }, { wait: 1500 }], { present: [".modal"] }));
@@ -268,7 +273,10 @@ function pageScenarios(record, manifest) {
   const restrictRead = cites(rule, "pp.pagerule.right.restrictread");
   for (const persona of [...named, ...(excluded ? [excluded] : []), "anonymous"]) {
     const expect = restrictRead && !named.includes(persona) ? {} : expectText;
-    out.push(scenario(`page/${record.slug}/access/${persona}`, { ...parts, persona, state: "access" }, [{ goto: record.path }], persona === "anonymous" ? { ...expect, absent: [] } : expect));
+    // The anonymous visitor of a restrict-read page lands on the sign-in page (run 7a: 302 → /SignIn?ReturnUrl=…); a
+    // grant-change-only page renders for it. `signIn` tells the live runner not to treat the sign-in page as a failure.
+    const anonymous = restrictRead ? { present: SIGN_IN, absent: [], signIn: true } : { ...expect, absent: [] };
+    out.push(scenario(`page/${record.slug}/access/${persona}`, { ...parts, persona, state: "access" }, [{ goto: record.path }], persona === "anonymous" ? anonymous : expect));
   }
   return out;
 }
@@ -298,7 +306,7 @@ export function buildMatrix(manifest, project = {}) {
     // The project's `mirageIdentity` mirrors what the live portal shows for the signed-in tester (name, parent account,
     // the base roles it holds besides the baseline ones); Mirage personas carry those roles on top of their own.
     personas: Object.fromEntries(Object.entries(PERSONAS).map(([name, { account, ...persona }]) => [name, { ...persona, ...(persona.roles && project.mirageIdentity?.roles ? { roles: [...persona.roles, ...project.mirageIdentity.roles] } : {}), ...(persona.anonymous ? {} : { mirageContact: project.mirageContact }) }])),
-    mirage: { preset: "baseline", ...(project.mirageIdentity ? { identity: { contactId: project.mirageContact, contact: project.mirageIdentity.contact ?? {}, roles: project.mirageIdentity.roles ?? [] } } : {}) },
+    mirage: { preset: "baseline", ...(project.mirageIdentity ? { identity: { contactId: project.mirageContact, ...(project.mirageIdentity.contactId ? { liveContactId: project.mirageIdentity.contactId } : {}), contact: project.mirageIdentity.contact ?? {}, roles: project.mirageIdentity.roles ?? [] } } : {}) },
     settle: { quietMs: 1200, timeout: 30000 },
     generatedAt: new Date().toISOString().slice(0, 10),
     scenarios: unique,

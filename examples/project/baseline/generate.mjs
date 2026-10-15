@@ -372,6 +372,19 @@ export function extras() {
     webResource: { name: "pqvd_baseline_icon.svg", displayName: "Baseline icon", svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16"><rect width="16" height="16" rx="3" fill="#4a6cf7"/><text x="8" y="12" font-size="9" text-anchor="middle" fill="#fff">B</text></svg>' },
     // The three fixture tables are exported with every subcomponent so the solution is self-contained.
     includeAllSubcomponents: [PARENT, ITEM, CHILD],
+    // Platform components of non-fixture tables the site renders: added to the solution as-is (AddSolutionComponent only,
+    // never modified) so the export carries them. Ids are the platform's own; provision.mjs checks name and table.
+    // Not here: the managed Contact main form 1fed44d1-ae68-4a41-bd2b-f13acac4acfa (adx_formname Contact). ExportSolution
+    // omits an unmodified managed form and lists it as a MissingDependency, so membership alone cannot export it (O15).
+    platformComponents: [
+      { type: 26, table: "contact", id: "a2d479c5-53e3-4c69-addd-802327e67a0d", name: "Contacts Lookup View", reason: "default lookup view of the item form's contact and customer lookups" },
+      { type: 26, table: "account", id: "a9af0ab8-861d-4cfa-92a5-c6281fed7fab", name: "Account Lookup View", reason: "default lookup view of the item form's account, customer and any-record lookups" },
+      // Columns of those lookup views (type 2, resolved by logical name): the export then carries their attribute metadata.
+      ...Object.entries({
+        contact: ["contactid", "fullname", "emailaddress1", "telephone1", "parentcustomerid", "address1_city", "address1_telephone1", "statecode", "statuscode"],
+        account: ["accountid", "name", "emailaddress1", "telephone1", "accountnumber", "primarycontactid", "address1_city", "statecode", "statuscode"],
+      }).flatMap(([table, names]) => names.map((name) => ({ type: 2, table, name, reason: `${table} lookup view column` }))),
+    ],
   };
 }
 

@@ -429,14 +429,9 @@
       "ExtendedItemActions": [],
       "ColumnOverrides": [
         {
+          "Type": "CrmEntityFormView-ViewColumn",
           "AttributeLogicalName": "pqvd_sortorder",
-          "DisplayName": [
-            {
-              "Type": "LanguageResources",
-              "LCID": 1033,
-              "Value": "Order"
-            }
-          ],
+          "DisplayName": "Order",
           "Width": 80
         }
       ],

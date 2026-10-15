@@ -33,7 +33,7 @@ export const ids = {
 };
 const BRIEF = Buffer.from("Baseline fixture attachment.\nThis file is invented test data.\n", "utf8");
 
-const item = (key, name, code, extra = {}) => ({ key, id: ids[key], table: ITEM, fields: { [p("name")]: name, [p("code")]: code, [p("required")]: "required value", statecode: 0, statuscode: 1, ...extra.fields }, refs: { [p("parentid")]: "parent1", ...(extra.refs ?? {}) } });
+const item = (key, name, code, extra = {}) => ({ key, id: ids[key], table: ITEM, ...(extra.computed ? { computed: extra.computed } : {}), fields: { [p("name")]: name, [p("code")]: code, [p("required")]: "required value", statecode: 0, statuscode: 1, ...extra.fields }, refs: { [p("parentid")]: "parent1", ...(extra.refs ?? {}) } });
 
 /** Fixture rows in dependency order. `tester` is the signed-in contact of the side being reset. */
 export function records(tester = TESTER_CONTACT) {
@@ -52,10 +52,14 @@ export function records(tester = TESTER_CONTACT) {
         [p("datetime")]: "2026-03-04T10:30:00Z", [p("dateonly")]: "2026-03-05", [p("datetimetzi")]: "2026-03-06T08:00:00Z", [p("dateonlyuserlocal")]: "2026-03-07T00:00:00Z",
         [p("localchoice")]: 2, [p("globalchoice")]: 18327002, [p("multichoice")]: "18327010,18327012", [p("flag")]: true, [p("flagcheckbox")]: true,
         [p("recommended")]: "recommended value", [p("readonly")]: "read only value", [p("hidden")]: "hidden value", [p("nolabel")]: "no label value", [p("wide")]: "wide value", [p("relabelled")]: "relabelled value",
-        [p("hiddenbyrule")]: "hidden by rule value", [p("lockedbyrule")]: "locked by rule value", [p("requiredbyrule")]: "required by rule value", [p("defaultbyrule")]: "existing value", [p("setbyrule")]: "initial", [p("ruleerror")]: 10,
+        [p("hiddenbyrule")]: "hidden by rule value", [p("lockedbyrule")]: "locked by rule value", [p("requiredbyrule")]: "required by rule value", [p("defaultbyrule")]: "existing value", [p("setbyrule")]: "set by rule" /* the live entity-scope rule writes it on the reset's update */, [p("ruleerror")]: 10,
         [p("secret")]: "secret value", [p("notupdatable")]: "fixed at create", [p("defaulted")]: 7,
       },
       refs: { [p("contactid")]: "tester", [p("accountid")]: "account", [p("customerid")]: "account", [p("anyid")]: "parent2" },
+      // Values Dataverse computes on the live row, which the reset cannot write: the file column the reset uploads (BRIEF) and
+      // the formula column Concatenate(name, " / ", code). Mirage rows only.
+      // ponytail: stopgap formula value; a formula evaluator in core (FormulaDefinitionFileName) replaces it.
+      computed: { [p("file")]: guid("file:item1"), [p("file_name")]: "baseline-brief.txt", [p("formula")]: "Baseline Item Alpha / I-001" },
     }),
     item("item2", "Baseline Item Beta", "I-002", { fields: { [p("flag")]: false, [p("wholenumber")]: 7, [p("globalchoice")]: 18327000, [p("datetime")]: "2026-01-15T09:00:00Z" } }),
     item("item3", "Baseline Item Gamma", "I-003", { fields: { statecode: 1, statuscode: 2, [p("wholenumber")]: 3 }, refs: { [p("parentid")]: "parent2" } }),
@@ -129,7 +133,7 @@ export function mirageTables(tester = TESTER_CONTACT) {
   const tables = {};
   for (const row of rows) {
     const primary = TABLES.find((t) => t.name === row.table).primaryId;
-    const record = { [primary]: row.id, ...row.fields };
+    const record = { [primary]: row.id, ...row.fields, ...row.computed };
     if (row.table === ITEM) record.transactioncurrencyid = { id: CURRENCY, logical_name: "transactioncurrency", name: "Euro" };
     for (const [field, key] of Object.entries(row.refs)) record[field] = key ? { id: resolved[key].id, logical_name: resolved[key].table, name: nameOf(key) } : null;
     (tables[row.table] ??= []).push(record);

@@ -116,6 +116,55 @@
       <RootComponent type="92" id="{d6622bf7-e694-4a69-8380-a1800300edca}" behavior="0" />
       <RootComponent type="92" id="{e4f813e7-c687-43de-8b49-6470ab3f8040}" behavior="0" />
     </RootComponents>
-    <MissingDependencies />
+    <MissingDependencies>
+      <MissingDependency>
+        <Required type="2" schemaName="accountid" displayName="accountid" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="accountid" displayName="accountid" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="address1_city" displayName="address1_city" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="address1_city" displayName="address1_city" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="address1_telephone1" displayName="address1_telephone1" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="address1_telephone1" displayName="address1_telephone1" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="contactid" displayName="contactid" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="contactid" displayName="contactid" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="emailaddress1" displayName="emailaddress1" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="emailaddress1" displayName="emailaddress1" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="fullname" displayName="fullname" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="fullname" displayName="fullname" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="name" displayName="name" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="name" displayName="name" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="parentcustomerid" displayName="parentcustomerid" parentSchemaName="contact" solution="System (5.0)" />
+        <Dependent type="2" schemaName="parentcustomerid" displayName="parentcustomerid" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="primarycontactid" displayName="primarycontactid" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="primarycontactid" displayName="primarycontactid" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="statecode" displayName="statecode" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="statecode" displayName="statecode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="statuscode" displayName="statuscode" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="statuscode" displayName="statuscode" />
+      </MissingDependency>
+      <MissingDependency>
+        <Required type="2" schemaName="telephone1" displayName="telephone1" parentSchemaName="account" solution="System (5.0)" />
+        <Dependent type="2" schemaName="telephone1" displayName="telephone1" />
+      </MissingDependency>
+    </MissingDependencies>
   </SolutionManifest>
 </ImportExportXml>

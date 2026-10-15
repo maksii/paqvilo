@@ -164,7 +164,7 @@
         "pqvd_lockedbyrule": "locked by rule value",
         "pqvd_requiredbyrule": "required by rule value",
         "pqvd_defaultbyrule": "existing value",
-        "pqvd_setbyrule": "initial",
+        "pqvd_setbyrule": "set by rule",
         "pqvd_ruleerror": 10,
         "pqvd_secret": "secret value",
         "pqvd_notupdatable": "fixed at create",
@@ -314,6 +314,57 @@
       "deferredRefs": []
     },
     {
+      "key": "item9",
+      "id": "632b23df-6ae3-430c-8bd6-aad24add4595",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Iota",
+        "pqvd_code": "I-009",
+        "pqvd_required": "required value",
+        "statecode": 1,
+        "statuscode": 2,
+        "pqvd_wholenumber": 90
+      },
+      "refs": {
+        "pqvd_parentid": "parent1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item10",
+      "id": "d16ff4ec-a9f7-44eb-82fb-a64f45ae963b",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Kappa",
+        "pqvd_code": "I-010",
+        "pqvd_required": "required value",
+        "statecode": 1,
+        "statuscode": 2,
+        "pqvd_wholenumber": 100
+      },
+      "refs": {
+        "pqvd_parentid": "parent1"
+      },
+      "deferredRefs": []
+    },
+    {
+      "key": "item11",
+      "id": "133abc9a-9e56-4bcc-8e00-0721ec4de8b4",
+      "table": "pqvd_baselineitem",
+      "fields": {
+        "pqvd_name": "Baseline Item Lambda",
+        "pqvd_code": "I-011",
+        "pqvd_required": "required value",
+        "statecode": 1,
+        "statuscode": 2,
+        "pqvd_wholenumber": 110
+      },
+      "refs": {
+        "pqvd_parentid": null
+      },
+      "deferredRefs": []
+    },
+    {
       "key": "child1",
       "id": "9c12a74d-d0e5-4387-89dd-67a0813443ad",
       "table": "pqvd_baselinechild",
@@ -389,7 +440,7 @@
       "table": "annotation",
       "fields": {
         "subject": "Baseline note",
-        "notetext": "A plain note on the alpha item."
+        "notetext": "*WEB*A plain note on the alpha item."
       },
       "refs": {
         "objectid": "item1"
@@ -402,7 +453,7 @@
       "table": "annotation",
       "fields": {
         "subject": "Baseline attachment",
-        "notetext": "A note with a text attachment.",
+        "notetext": "*WEB*A note with a text attachment.",
         "filename": "baseline-brief.txt",
         "mimetype": "text/plain",
         "documentbody": "QmFzZWxpbmUgZml4dHVyZSBhdHRhY2htZW50LgpUaGlzIGZpbGUgaXMgaW52ZW50ZWQgdGVzdCBkYXRhLgo=",

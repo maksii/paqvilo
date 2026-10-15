@@ -561,5 +561,129 @@
     "pqvd_baselineparent",
     "pqvd_baselineitem",
     "pqvd_baselinechild"
+  ],
+  "platformComponents": [
+    {
+      "type": 26,
+      "table": "contact",
+      "id": "a2d479c5-53e3-4c69-addd-802327e67a0d",
+      "name": "Contacts Lookup View",
+      "reason": "default lookup view of the item form's contact and customer lookups"
+    },
+    {
+      "type": 26,
+      "table": "account",
+      "id": "a9af0ab8-861d-4cfa-92a5-c6281fed7fab",
+      "name": "Account Lookup View",
+      "reason": "default lookup view of the item form's account, customer and any-record lookups"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "contactid",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "fullname",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "emailaddress1",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "telephone1",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "parentcustomerid",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "address1_city",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "address1_telephone1",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "statecode",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "contact",
+      "name": "statuscode",
+      "reason": "contact lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "accountid",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "name",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "emailaddress1",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "telephone1",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "accountnumber",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "primarycontactid",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "address1_city",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "statecode",
+      "reason": "account lookup view column"
+    },
+    {
+      "type": 2,
+      "table": "account",
+      "name": "statuscode",
+      "reason": "account lookup view column"
+    }
   ]
 }

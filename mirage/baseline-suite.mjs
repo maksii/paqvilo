@@ -113,6 +113,8 @@ async function liveSide({ matrix, allowWrites, cwd, signInOut = null }) {
   const source = pageRunnerSource();
   const runInBridge = async (scenario, { ids = {}, allowWrites: writes = allowWrites } = {}) => {
     const options = runnerOptions({ scenario, origin: matrix.origin, ids, matrix, allowWrites: writes });
+    // A scenario expecting the sign-in page (`expect.signIn`, anonymous access to a restrict-read page) checks its markers itself.
+    if (scenario.expect?.signIn) options.signInMarkers = [];
     const code = `async (page) => {\n  const run = ${source};\n  const result = await run(page, ${JSON.stringify(options)});\n  const posted = await fetch(${JSON.stringify(saver.url)}, { method: "POST", headers: { "content-type": "application/json", "x-baseline-token": ${JSON.stringify(saver.token)} }, body: JSON.stringify(result) });\n  return JSON.stringify({ ...result.summary, posted: posted.status });\n}`;
     const received = saver.expect();
     const text = await client.callTool(runTool, { code }, (scenario.timeout ?? 240) * 1000 + 60000);
@@ -230,20 +232,34 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
     workDir,
   });
   const identity = createIdentityController(owned.url);
-  const browser = await chromium.launch(browserLaunchOptions({ headless: !headed }));
+  // Headless Chromium hides scrollbars (width 0) while the live capture's headed Edge has a 15 px one, which shows as
+  // body padding-right when a dialog opens: keep the scrollbar so both sides measure the same.
+  const browser = await chromium.launch(browserLaunchOptions({ headless: !headed, ignoreDefaultArgs: ["--hide-scrollbars"] }));
   const context = await browser.newContext({ viewport: { width: 1440, height: 1000 } });
   const status = await (await fetch(owned.url + "/__sim/api/state?summary=1")).json();
   const csrf = () => owned.app.state().csrf;
   // The live portal shows the signed-in tester's own name, parent account and base roles; the project declares those
   // observed values (`matrix.mirage.identity.contact`) and they are written onto the mirrored contact after every reset.
+  // With `liveContactId` (the live tester's contact id) the preset contact is rekeyed to it across the exported state (row
+  // ids and every lookup), so lookups and the signed-in identity carry the same id and name as on live.
+  const presetContact = matrix.mirage?.identity?.contactId ?? status.config?.identity?.contactId;
+  const liveContact = matrix.mirage?.identity?.liveContactId;
+  const contactOf = (id) => (liveContact && id && presetContact && id.toLowerCase() === presetContact.toLowerCase() ? liveContact : id);
+  let mirrored = false;
   const mirrorIdentityFields = async () => {
+    mirrored = true;
     const fields = matrix.mirage?.identity?.contact;
-    if (!fields) return;
-    const contactId = matrix.mirage.identity.contactId ?? status.config?.identity?.contactId;
-    const state = await (await fetch(owned.url + "/__sim/api/state/export")).json();
+    const rekey = Boolean(liveContact && presetContact && liveContact.toLowerCase() !== presetContact.toLowerCase());
+    if (!fields && !rekey) return;
+    const exported = await (await fetch(owned.url + "/__sim/api/state/export")).json();
+    const state = rekey ? JSON.parse(JSON.stringify(exported).replaceAll(presetContact, liveContact)) : exported;
+    const contactId = contactOf(presetContact);
     const row = (state.tables?.contact ?? []).find((record) => record.contactid === contactId);
     if (!row) throw new Error(`Mirage identity contact ${contactId} is not in the preset data; cannot mirror the live tester's fields.`);
-    for (const [field, value] of Object.entries(fields)) row[field] = value && typeof value === "object" && row[field] && typeof row[field] === "object" ? { ...row[field], ...value } : value;
+    for (const [field, value] of Object.entries(fields ?? {})) row[field] = value && typeof value === "object" && row[field] && typeof row[field] === "object" ? { ...row[field], ...value } : value;
+    // Lookups to the mirrored contact show its (mirrored) name.
+    const name = row.fullname ?? [row.firstname, row.lastname].filter(Boolean).join(" ");
+    if (name) for (const rows of Object.values(state.tables ?? {})) for (const record of Array.isArray(rows) ? rows : []) for (const value of Object.values(record)) if (value && typeof value === "object" && value.logical_name === "contact" && value.id === contactId) value.name = name;
     const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify(state) });
     if (!response.ok) throw new Error(`Mirage identity mirror failed (${response.status})`);
   };
@@ -257,8 +273,10 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
         await identity.restore();
         return;
       }
-      if (persona.roles) await identity.mirror({ contactId: persona.mirageContact ?? status.config?.identity?.contactId, roles: persona.roles });
-      else await identity.signInAs(persona.mirageContact);
+      // The first persona signs in before the first reset: the rekeyed contact must exist already.
+      if (!mirrored) await mirrorIdentityFields();
+      if (persona.roles) await identity.mirror({ contactId: contactOf(persona.mirageContact ?? status.config?.identity?.contactId), roles: persona.roles });
+      else await identity.signInAs(contactOf(persona.mirageContact));
       await identity.use("signed-in");
     },
     async reset() {

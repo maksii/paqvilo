@@ -1482,7 +1482,7 @@
       "name": "Baseline Item Insert Attach",
       "path": "/baseline/item-create-attach/",
       "table": "pqvd_baselineitem",
-      "variation": "insert, attach file (image/*, 1024 KB) saved as notes",
+      "variation": "insert, attach file (image/*, 1024 KB) saved as notes; success redirects to the edit page with the record id (the note shows)",
       "catalog": [
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
@@ -1492,7 +1492,7 @@
         "pp.basicform.name",
         "pp.basicform.validation-summary-links",
         "pp.basicform.on-success",
-        "pp.basicform.on-success.display-success-message",
+        "pp.basicform.on-success.redirect",
         "pp.basicform.hide-form-on-success",
         "pp.basicform.attach-file",
         "pp.basicform.attach-file-accept",
@@ -1501,7 +1501,10 @@
         "pp.basicform.attach-file-storage-location",
         "pp.basicform.attach-file-storage-location.note-attachment",
         "pp.basicform.attach-file-save-option",
-        "pp.basicform.attach-file-label"
+        "pp.basicform.attach-file-label",
+        "pp.basicform.redirect-web-page",
+        "pp.basicform.append-record-id",
+        "pp.basicform.redirect-url-query-string-name"
       ]
     },
     {
@@ -1521,7 +1524,7 @@
       "name": "Baseline Item Insert Attach Multiple",
       "path": "/baseline/item-create-attach-multiple/",
       "table": "pqvd_baselineitem",
-      "variation": "insert, multiple required PDF attachments saved as portal comments, with type/size/required messages",
+      "variation": "insert, multiple required PDF attachments saved as notes, with type/size/required messages; success redirects to the edit page with the record id",
       "catalog": [
         "pp.basicform.table-name",
         "pp.basicform.enable-table-permissions",
@@ -1531,7 +1534,7 @@
         "pp.basicform.name",
         "pp.basicform.validation-summary-links",
         "pp.basicform.on-success",
-        "pp.basicform.on-success.display-success-message",
+        "pp.basicform.on-success.redirect",
         "pp.basicform.hide-form-on-success",
         "pp.basicform.attach-file",
         "pp.basicform.attach-file-allow-multiple",
@@ -1546,7 +1549,10 @@
         "pp.basicform.attach-file-storage-location",
         "pp.basicform.attach-file-storage-location.note-attachment",
         "pp.basicform.attach-file-save-option",
-        "pp.basicform.attach-file-label"
+        "pp.basicform.attach-file-label",
+        "pp.basicform.redirect-web-page",
+        "pp.basicform.append-record-id",
+        "pp.basicform.redirect-url-query-string-name"
       ]
     },
     {

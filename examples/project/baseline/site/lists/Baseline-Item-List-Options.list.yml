@@ -172,14 +172,9 @@ adx_settings: >-
     "ExtendedItemActions": [],
     "ColumnOverrides": [
       {
+        "Type": "CrmEntityFormView-ViewColumn",
         "AttributeLogicalName": "pqvd_code",
-        "DisplayName": [
-          {
-            "Type": "LanguageResources",
-            "LCID": 1033,
-            "Value": "Baseline code"
-          }
-        ],
+        "DisplayName": "Baseline code",
         "Width": 120
       }
     ],

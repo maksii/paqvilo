@@ -186,6 +186,9 @@ const confirmDialog = (type, title) => { const { LoadingMessage, ...rest } = dia
 const errorDialog = (title) => { const { LoadingMessage, ...rest } = dialog("CrmEntityFormView-ErrorModal", title); return { ...rest, Body: res(`${title}.`) }; };
 // Notes dialogs carry no Type discriminator in exported settings (PAC rejects unknown Type values).
 const untypedDialog = (...args) => { const { Type, ...rest } = dialog(...args); return rest; };
+// Column overrides as platform-written lists carry them (typed CrmEntityFormView-ViewColumn, plain-text DisplayName); an
+// untyped entry made live drop the whole grid settings object (run 7: list-options and the item subgrid rendered defaults).
+const viewColumn = (attribute, displayName, width) => ({ Type: "CrmEntityFormView-ViewColumn", AttributeLogicalName: attribute, DisplayName: displayName, Width: width });
 const gridMessages = (what) => ({ LoadingMessage: res(`Loading ${what}...`), ErrorMessage: res(`Could not load ${what}.`), AccessDeniedMessage: res(`You do not have access to ${what}.`), EmptyMessage: res(`No ${what}.`), CssClass: "baseline-grid", GridCssClass: "table-striped" });
 
 // ---------------------------------------------------------------------------
@@ -266,8 +269,11 @@ export function buildSite(identity = readIdentity()) {
   basicForm("item-edit-nolinks", { name: "Baseline Item Edit No Summary Links", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_validationsummarylinksenabled: false }, variation: "edit, validation summary links disabled", page: "item-edit-nolinks" });
   basicForm("item-create-captcha", { name: "Baseline Item Insert Captcha", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: false }, variation: "insert, captcha for anonymous users only", page: "item-create-captcha" });
   basicForm("item-create-captcha-all", { name: "Baseline Item Insert Captcha All Users", mode: INSERT, fields: { ...MESSAGE, adx_captcharequired: true, adx_showcaptchaforauthenticatedusers: true }, variation: "insert, captcha for anonymous and authenticated users", page: "item-create-captcha-all" });
-  basicForm("item-create-attach", { name: "Baseline Item Insert Attach", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileaccept: "image/*", adx_attachfilerestrictaccept: true, adx_attachfilemaxsize: 1024, adx_attachfileallowmultiple: false, adx_attachfilerequired: false, adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150000, adx_attachfilelabel: json(label("Baseline attachment")) }, variation: "insert, attach file (image/*, 1024 KB) saved as notes", page: "item-create-attach" });
-  basicForm("item-create-attach-multiple", { name: "Baseline Item Insert Attach Multiple", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileallowmultiple: true, adx_attachfilerequired: true, adx_attachfilerequirederrormessage: json(label("Attach at least one baseline PDF.")), adx_attachfileaccept: "application/pdf", adx_attachfileacceptextensions: ".pdf", adx_attachfilerestrictaccept: true, adx_attachfiletypeerrormessage: json(label("Baseline attachments must be PDF files.")), adx_attachfilemaxsize: 2048, adx_attachfilesizeerrormessage: json(label("Baseline attachments must be 2 MB or smaller.")), adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150001, adx_attachfilelabel: json(label("Baseline PDFs")) }, variation: "insert, multiple required PDF attachments saved as portal comments, with type/size/required messages", page: "item-create-attach-multiple" });
+  // Portal Comment save option attaches to an adx_portalcomment activity; the baseline tables are not activity tables, so live
+  // refused the upload (403 AU0005, run 7a): both attach forms save notes and redirect to the record so the note is visible.
+  const TO_EDIT = { adx_onsuccess: 756150001, adx_hideformonsuccess: false, adx_redirectwebpage: edit.page.id, adx_redirecturlappendentityidquerystring: true, adx_redirecturlquerystringname: "id", adx_appendquerystring: false };
+  basicForm("item-create-attach", { name: "Baseline Item Insert Attach", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileaccept: "image/*", adx_attachfilerestrictaccept: true, adx_attachfilemaxsize: 1024, adx_attachfileallowmultiple: false, adx_attachfilerequired: false, adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150000, adx_attachfilelabel: json(label("Baseline attachment")), ...TO_EDIT }, variation: "insert, attach file (image/*, 1024 KB) saved as notes; success redirects to the edit page with the record id (the note shows)", page: "item-create-attach" });
+  basicForm("item-create-attach-multiple", { name: "Baseline Item Insert Attach Multiple", mode: INSERT, fields: { ...MESSAGE, adx_attachfile: true, adx_attachfileallowmultiple: true, adx_attachfilerequired: true, adx_attachfilerequirederrormessage: json(label("Attach at least one baseline PDF.")), adx_attachfileaccept: "application/pdf", adx_attachfileacceptextensions: ".pdf", adx_attachfilerestrictaccept: true, adx_attachfiletypeerrormessage: json(label("Baseline attachments must be PDF files.")), adx_attachfilemaxsize: 2048, adx_attachfilesizeerrormessage: json(label("Baseline attachments must be 2 MB or smaller.")), adx_attachfilestoragelocation: 756150000, adx_attachfilesaveoption: 756150000, adx_attachfilelabel: json(label("Baseline PDFs")), ...TO_EDIT }, variation: "insert, multiple required PDF attachments saved as notes, with type/size/required messages; success redirects to the edit page with the record id", page: "item-create-attach-multiple" });
   basicForm("item-edit-geo", { name: "Baseline Item Edit Geolocation", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_geolocation_enabled: true, adx_geolocation_displaymap: true, adx_geolocation_maptype: 756150000 }, variation: "edit, geolocation enabled (no address columns mapped)", page: "item-edit-geo" });
   const GEO_FIELDS = { adx_geolocation_addresslinefieldname: "pqvd_text", adx_geolocation_cityfieldname: "pqvd_wide", adx_geolocation_countyfieldname: "pqvd_nolabel", adx_geolocation_statefieldname: "pqvd_relabelled", adx_geolocation_countryfieldname: "pqvd_recommended", adx_geolocation_postalcodefieldname: "pqvd_ticker", adx_geolocation_latitudefieldname: "pqvd_float", adx_geolocation_longitudefieldname: "pqvd_decimal", adx_geolocation_formattedaddressfieldname: "pqvd_textarea", adx_geolocation_neighborhoodfieldname: "pqvd_memo" };
   basicForm("item-edit-geo-google", { name: "Baseline Item Edit Geolocation Google", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_geolocation_enabled: true, adx_geolocation_displaymap: true, adx_geolocation_maptype: 756150001, ...GEO_FIELDS }, variation: "edit, geolocation Google map with every address column mapped to an item text/number column", page: "item-edit-geo-google" });
@@ -296,8 +302,10 @@ export function buildSite(identity = readIdentity()) {
   basicForm("child-create-reference", { name: "Baseline Child Insert Reference", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "itemid", adx_referencequerystringisprimarykey: true, adx_referenceentityshowreadonlyform: true, adx_referenceentityreadonlyformname: "Baseline Item" }, variation: "insert child, reference the item from ?itemid=<id>, populate the lookup, show the item read-only", page: "child-create-reference" });
   basicForm("child-create-reference-code", { name: "Baseline Child Insert Reference Code", table: CHILD, formName: "Baseline Child", mode: INSERT, fields: { ...MESSAGE, ...REFERENCE_ITEM, adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150000, adx_referencequerystringname: "code", adx_referencequerystringisprimarykey: false, adx_referencequeryattributelogicalname: "pqvd_code", adx_referenceentityshowreadonlyform: false }, variation: "insert child, reference the item whose pqvd_code matches ?code= and populate the required item lookup, no read-only form", page: "child-create-reference-code" });
   basicForm("item-create-contact-reference", { name: "Baseline Item Insert Contact Reference", mode: INSERT, fields: { ...MESSAGE, adx_setentityreference: true, adx_referenceentitylogicalname: "contact", adx_referenceentityrelationshipname: "pqvd_contact_baselineitem", adx_referencetargetlookupattributelogicalname: "pqvd_contactid", adx_populatereferenceentitylookupfield: true, adx_referenceentitysourcetype: 756150001 }, variation: "insert item, reference the record associated to the current portal user (contact)", page: "item-create-contact-reference" });
-  const actionCss = { ButtonCssClass: "btn btn-default baseline-action" };
-  const actionsSettings = (size, placement, deleteTarget) => json({
+  // Platform-written FormActionMetadata (sources' exported basic forms) carries the placement on each action
+  // (ActionButtonPlacement/Alignment/Style per action); the root-level key alone renders the bar below the form (O14).
+  const actionsSettings = (size, placement, deleteTarget) => { const actionCss = { ButtonCssClass: "btn btn-default baseline-action", ActionButtonStyle: 0, ActionButtonPlacement: placement, ActionButtonAlignment: 0 }; return json({
+    Type: "FormActionMetadata",
     ActionButtonPlacement: placement,
     ActionButtonAlignment: 0,
     Actions: [
@@ -308,7 +316,7 @@ export function buildSite(identity = readIdentity()) {
       { Type: "CreateRelatedRecordAction", TargetType: 0, EntityFormId: id("basicform:Baseline Child Insert"), ShowModal: 1, SuccessMessage: label(""), EntityName: "pqvd_baselinechild", Relationship: "pqvd_baselineitem_baselinechild", ParentRecord: "", ButtonLabel: label("Add baseline child"), ButtonTooltip: label("Create a related child"), ...actionCss }, // key set of a real export (TargetType, EntityName, ParentRecord, ShowModal); without them the live button renders an empty data-url
     ],
     DeleteDialog: dialog("DeleteModal", "Delete baseline item", size),
-  });
+  }); };
   const ACTION_IDS = ["pp.basicform.settings", "pp.basicform.action.delete", "pp.basicform.action.activate", "pp.basicform.action.deactivate", "pp.basicform.action.create-related-record", "pp.basicform.action.button-label", "pp.basicform.action.button-tooltip", "pp.basicform.action.button-css-class", "pp.basicform.action.confirmation-required", "pp.basicform.action.confirmation", "pp.basicform.action.button-placement"];
   basicForm("item-edit-actions", { name: "Baseline Item Edit Actions", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_submitbuttontext: json(label("Save baseline item")), adx_settings: actionsSettings("default", 1, { RedirectWebpageId: id("page:item-list") }) }, variation: "edit, submit/delete/activate/deactivate/create-related actions below the form, delete redirects to a page, default delete dialog (workflow skipped)", catalog: [...ACTION_IDS, "pp.basicform.action.redirect-webpage", ...family("pp.basicform.action.dialog.", "default")], page: "item-edit-actions" });
   basicForm("item-edit-actions-above", { name: "Baseline Item Edit Actions Above", mode: EDIT, fields: { ...QUERY, ...MESSAGE, adx_settings: actionsSettings("large", 0, { RedirectUrl: "/baseline/item-list/" }) }, variation: "edit, actions above the form, delete redirects to a URL, large delete dialog", catalog: [...ACTION_IDS, "pp.basicform.action.redirect-url", ...family("pp.basicform.action.dialog.", "large")], page: "item-edit-actions-above" });
@@ -377,7 +385,7 @@ export function buildSite(identity = readIdentity()) {
       ],
       ExtendedViewActions: [],
       ExtendedItemActions: [],
-      ColumnOverrides: [{ AttributeLogicalName: "pqvd_sortorder", DisplayName: res("Order"), Width: 80 }],
+      ColumnOverrides: [viewColumn("pqvd_sortorder", "Order", 80)],
       ...gridMessages("baseline children"),
       EmptyMessage: res("No baseline children yet."),
       GridColumnWidthStyle: 0,
@@ -523,7 +531,7 @@ export function buildSite(identity = readIdentity()) {
       ],
       ExtendedViewActions: [],
       ExtendedItemActions: [],
-      ColumnOverrides: [{ AttributeLogicalName: "pqvd_code", DisplayName: res("Baseline code"), Width: 120 }],
+      ColumnOverrides: [viewColumn("pqvd_code", "Baseline code", 120)],
       ...gridMessages("baseline items"),
       GridColumnWidthStyle: 0,
       DeleteDialog: dialog("CrmEntityFormView-GridDeleteModal", "Delete baseline item", "large"),
@@ -689,7 +697,7 @@ export function buildSite(identity = readIdentity()) {
         ],
         ExtendedViewActions: [],
         ExtendedItemActions: [],
-        ColumnOverrides: [{ AttributeLogicalName: "pqvd_sortorder", DisplayName: res("Order"), Width: 20 }],
+        ColumnOverrides: [viewColumn("pqvd_sortorder", "Order", 20)],
         ...gridMessages("baseline children"),
         GridColumnWidthStyle: 1,
       }),

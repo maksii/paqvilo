@@ -11,6 +11,7 @@ adx_onsuccess: 756150000
 adx_recordidquerystringparametername: id
 adx_settings: >-
   {
+    "Type": "FormActionMetadata",
     "ActionButtonPlacement": 1,
     "ActionButtonAlignment": 0,
     "Actions": [
@@ -28,7 +29,10 @@ adx_settings: >-
             "Value": "Save the baseline item"
           }
         ],
-        "ButtonCssClass": "btn btn-default baseline-action"
+        "ButtonCssClass": "btn btn-default baseline-action",
+        "ActionButtonStyle": 0,
+        "ActionButtonPlacement": 1,
+        "ActionButtonAlignment": 0
       },
       {
         "Type": "DeleteAction",
@@ -45,6 +49,9 @@ adx_settings: >-
           }
         ],
         "ButtonCssClass": "btn btn-default baseline-action",
+        "ActionButtonStyle": 0,
+        "ActionButtonPlacement": 1,
+        "ActionButtonAlignment": 0,
         "ConfirmationRequired": true,
         "Confirmation": [
           {
@@ -67,7 +74,10 @@ adx_settings: >-
             "Value": "Activate"
           }
         ],
-        "ButtonCssClass": "btn btn-default baseline-action"
+        "ButtonCssClass": "btn btn-default baseline-action",
+        "ActionButtonStyle": 0,
+        "ActionButtonPlacement": 1,
+        "ActionButtonAlignment": 0
       },
       {
         "Type": "DeactivateAction",
@@ -83,7 +93,10 @@ adx_settings: >-
             "Value": "Deactivate"
           }
         ],
-        "ButtonCssClass": "btn btn-default baseline-action"
+        "ButtonCssClass": "btn btn-default baseline-action",
+        "ActionButtonStyle": 0,
+        "ActionButtonPlacement": 1,
+        "ActionButtonAlignment": 0
       },
       {
         "Type": "CreateRelatedRecordAction",
@@ -111,7 +124,10 @@ adx_settings: >-
             "Value": "Create a related child"
           }
         ],
-        "ButtonCssClass": "btn btn-default baseline-action"
+        "ButtonCssClass": "btn btn-default baseline-action",
+        "ActionButtonStyle": 0,
+        "ActionButtonPlacement": 1,
+        "ActionButtonAlignment": 0
       }
     ],
     "DeleteDialog": {

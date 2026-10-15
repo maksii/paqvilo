@@ -388,6 +388,32 @@ async function ensureWebResource(client, spec, { apply, solution, journal }) {
   log(entry);
 }
 
+/** Existing platform forms/views the site renders: solution membership only, the component itself is never written. */
+async function ensurePlatformComponents(client, components, { apply, solution, journal }) {
+  for (const component of components) {
+    if (component.type === 2) {
+      // Columns: resolved by logical name (MetadataId is environment-assigned for custom tables).
+      const meta = await attribute(client, component.table, component.name);
+      const entry = { kind: "platform-component", type: 2, table: component.table, name: component.name, id: meta?.MetadataId ?? null, action: meta ? (apply ? "include" : "pending") : "missing-or-mismatched" };
+      if (meta && apply) await includeComponent(client, meta.MetadataId, 2, solution);
+      journal.push(entry);
+      log(entry);
+      continue;
+    }
+    const row = component.type === 60
+      ? await client.optional(`systemforms(${component.id})?$select=name,objecttypecode`).then((r) => r && { name: r.name, table: r.objecttypecode })
+      : await client.optional(`savedqueries(${component.id})?$select=name,returnedtypecode`).then((r) => r && { name: r.name, table: r.returnedtypecode });
+    const entry = { kind: "platform-component", type: component.type, table: component.table, id: component.id, name: component.name };
+    if (!row || row.name !== component.name || row.table !== component.table) entry.action = "missing-or-mismatched";
+    else {
+      entry.action = apply ? "include" : "pending";
+      if (apply) await includeComponent(client, component.id, component.type, solution);
+    }
+    journal.push(entry);
+    log(entry);
+  }
+}
+
 /** Fixture tables are exported with all subcomponents (root component behaviour 0): self-contained solution. */
 async function ensureTableRoots(client, tables, { apply, solution, journal }) {
   for (const table of tables) {
@@ -480,6 +506,7 @@ async function main() {
   await ensureViewFlags(client, extrasSpec, options);
   await ensureBusinessRules(client, extrasSpec.businessRules, options);
   await ensureColumnSecurity(client, extrasSpec.columnSecurityProfile, options);
+  if (extrasSpec.platformComponents) await ensurePlatformComponents(client, extrasSpec.platformComponents, options);
   if (extrasSpec.includeAllSubcomponents) await ensureTableRoots(client, extrasSpec.includeAllSubcomponents, options);
   if (apply) {
     log(await publishManifest(manifest, client));
@@ -491,7 +518,8 @@ async function main() {
     const unpack = path.join(root, "solution");
     await fs.rm(unpack, { recursive: true, force: true });
     log(await exportSolution({ client, solutionName: solution, zipFile: zip, unpackFolder: unpack }));
-    const missing = (await fs.readFile(path.join(unpack, "Other", "Solution.xml"), "utf8").catch(() => "")).match(/<MissingDependency/g)?.length ?? 0;
+    // System-layer requirements (unmodified platform columns the solution lists itself) are always present on import.
+    const missing = [...(await fs.readFile(path.join(unpack, "Other", "Solution.xml"), "utf8")).matchAll(/<MissingDependency>[\s\S]*?<\/MissingDependency>/g)].filter(([entry]) => !/<Required\b[^>]*\bsolution="System \(/.test(entry)).length;
     if (missing) throw new Error(`Exported solution is not self-contained: ${missing} MissingDependency entries in Other/Solution.xml.`);
   }
   log({ done: true, apply, entries: journal.length, changes: journal.filter((e) => !["exists", "active"].includes(e.action)).length });
