@@ -93,7 +93,7 @@ test("user-local grid dates follow the user's zone with daylight saving", () => 
   assert.equal(requestTimeZone({ headers: {} }, now.getTimezoneOffset(), now), Intl.DateTimeFormat().resolvedOptions().timeZone);
 });
 
-test("grid records without item actions or read through parent-scoped permissions report no record privileges", async () => {
+test("grid records without item actions report no record privileges; a subgrid with item actions is assessed whatever the grant scope", async () => {
   const { gridRecord } = await import("../lib/native-services.mjs");
   const settings = { ItemActions: [{ Type: "CrmEntityFormView-DetailsAction" }] };
   const model = { kind: "subgrid", settings, entity: "sample_child", idColumn: "sample_childid", primaryName: "sample_name", view: { fetchXml: '<fetch><entity name="sample_child"><attribute name="sample_name"/></entity></fetch>' } };
@@ -101,7 +101,7 @@ test("grid records without item actions or read through parent-scoped permission
   const row = { sample_childid: "c0000000-0000-4000-8000-000000000001", sample_name: "Child", statecode: 0, statuscode: 1 };
   const context = (scope) => ({ metadata: {}, portal: { settings: {} }, identity: { id: "p" }, store: { rules: () => [{ scope }], allowed: () => true, get: () => row } });
   const flags = (record) => [record.CanRead, record.CanWrite, record.CanDelete, record.StateCode, record.StatusCode];
-  assert.deepEqual(flags(gridRecord(row, model, layout, context("parent"))), [false, false, false, 0, 0]);
+  assert.deepEqual(flags(gridRecord(row, model, layout, context("parent"))), [true, true, true, 0, 1]);
   assert.deepEqual(flags(gridRecord(row, model, layout, context("global"))), [true, true, true, 0, 1]);
   assert.deepEqual(flags(gridRecord(row, { ...model, kind: "list" }, layout, context("parent"))), [true, true, true, 0, 1]);
   // The platform assesses privileges only for grids with item actions (lookup dialogs, lists without ItemActions);

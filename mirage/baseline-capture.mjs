@@ -279,17 +279,28 @@ export async function pageRunner(page, options) {
     return out;
   };
   const started = Date.now();
+  let urlBeforeHarness = null;
   summary.timeline = [];
   const mark = (name) => summary.timeline.push({ at: Date.now() - started, name });
   try {
+    // A `harness: true` step (clearing the portal cache between a save and a reload) is not portal behaviour: what it
+    // records (requests, console entries, page errors, dialogs) is dropped once it has run, and a scenario that ends on one
+    // is judged at the URL before it. Its errors still fail the scenario.
     for (const step of scenario.steps ?? []) {
+      const before = step.harness ? { requests: raw.requests.length, console: raw.console.length, pageErrors: raw.pageErrors.length, dialogs: raw.dialogs.length, seq, url: owned.url() } : null;
       await runStep(step);
       summary.steps++;
-      mark("step " + summary.steps + " " + Object.keys(step)[0]);
+      mark("step " + summary.steps + " " + Object.keys(step)[0] + (step.harness ? " (harness)" : ""));
+      if (before) {
+        for (const key of ["requests", "console", "pageErrors", "dialogs"]) raw[key].splice(before[key]);
+        for (const [request, entry] of entries) if (entry.seq > before.seq) entries.delete(request);
+        seq = before.seq;
+        urlBeforeHarness = before.url;
+      } else urlBeforeHarness = null;
     }
     await settle();
     mark("settled");
-    const url = new URL(owned.url());
+    const url = new URL(urlBeforeHarness && urlBeforeHarness !== "about:blank" ? urlBeforeHarness : owned.url());
     const expect = scenario.expect || {};
     // A form that redirects off the site ends the scenario on another origin: with `expect.leavesOrigin` the hostname is
     // the evidence and the foreign page is not inventoried.
@@ -312,7 +323,7 @@ export async function pageRunner(page, options) {
   raw.elements = summary.leftOrigin ? [] : await owned.evaluate(elementInventory).catch(() => []);
   mark("inventoried");
   raw.title = await owned.title().catch(() => "");
-  raw.finalUrl = owned.url();
+  raw.finalUrl = urlBeforeHarness && urlBeforeHarness !== "about:blank" ? urlBeforeHarness : owned.url();
   try {
     raw.screenshot = (await owned.screenshot({ fullPage: true, timeout: 30000 })).toString("base64");
   } catch (error) {

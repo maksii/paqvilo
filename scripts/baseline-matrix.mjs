@@ -101,6 +101,10 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
   const parts = { component: "basic-form", variation: record.variation ?? record.name, persona: "editor" };
   const page = record.path + recordQuery(record);
   const mode = /insert/i.test(record.variation ?? "") || /Insert/.test(record.name) ? "insert" : /read/i.test(record.variation ?? record.name) ? "read-only" : "edit";
+  // The project's live refresh steps (portal "Clear cache") as harness steps (their requests are not evidence), optional
+  // because Mirage has no such control (the click is
+  // skipped there). Run 7 A2: a reload 16 s after a save still served the pre-save record from the portal cache.
+  const clearCache = (project.live?.refresh?.steps ?? []).map((step) => ({ ...step, optional: true, harness: true }));
   const idSuffix = (state, persona = "editor") => `${record.slug}/${state}/${persona}`;
   const open = (alias) => `${page}${page.includes("?") ? "&" : "?"}id={id:${alias}}`;
   // Validation rules configured on this form's metadata records (manifest `basicformmetadata`, linked by `form`): the
@@ -150,9 +154,6 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     // later; the plugin's write showed after 4 s and a navigation), so the reload waits 6 s and expects the plugin's text.
     // The update postback re-renders the posted values (the ticker is upper-cased on the client), so the plugin's write
     // ("mutate-me" → "mutated by plugin" on the text area) shows only when the record is reopened after the save.
-    // Run 7 A2: the reload 16 s after the save still served the pre-save record, so the scenario clears the portal cache
-    // with the project's live refresh steps; optional, because Mirage has no clear-cache control (the click is skipped).
-    const clearCache = (project.live?.refresh?.steps ?? []).map((step) => ({ ...step, optional: true }));
     const mutate = [{ goto: open(T.record) }, { fill: "#pqvd_ticker", value: "  mut  " }, { fill: "#pqvd_textarea", value: "mutate-me" }, ...submit, { wait: { navigation: true } }];
     if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation")}`, { ...parts, state: "plugin-mutation" }, [...mutate, { wait: 6000 }, ...clearCache, { goto: open(T.record) }, { wait: 1500 }], { present: [FORM, "textarea#pqvd_textarea:has-text('mutated by plugin')"] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
     if (full && T.plugins) out.push(scenario(`basic-form/${idSuffix("plugin-mutation-postback")}`, { ...parts, state: "plugin-mutation-postback" }, mutate, { present: [FORM] }, { watch: ["pqvd_ticker", "pqvd_textarea"] }));
@@ -166,9 +167,12 @@ function basicFormScenarios(record, project = {}, metadata = [], context = {}) {
     if (cites(record, "pp.basicform.action.delete")) out.push(scenario(`basic-form/${idSuffix("delete-dialog")}`, { ...parts, state: "delete-dialog" }, [{ goto: open(T.record) }, { click: "button.delete-link" }, { wait: { selector: ".modal-delete.in, .modal-delete.show", state: "visible" } }, { wait: 1000 }], { present: [".modal-delete"] }));
     // State actions run on a row reserved for this variant (T.actionRecords, deactivated in the fixture): the portal's
     // record cache would otherwise serve one variant's state change to the next capture of a shared record.
+    // The reset restores the row's inactive state in Dataverse, but the portal kept serving the state the previous scenario
+    // left (live run: deactivate found item11 active, Mirage found it inactive, so only Mirage clicked Activate): both
+    // state scenarios clear the portal cache first, so both sides start from the fixture's inactive row.
     const own = T.actionRecords?.[context.actionSlot?.get(record.path) ?? 0] ?? T.inactive;
-    if (cites(record, "pp.basicform.action.activate")) out.push(scenario(`basic-form/${idSuffix("activate")}`, { ...parts, state: "activate" }, [{ goto: open(own) }, { click: "button.activate-link" }, { wait: 3000 }], {}));
-    if (cites(record, "pp.basicform.action.deactivate")) out.push(scenario(`basic-form/${idSuffix("deactivate")}`, { ...parts, state: "deactivate" }, [{ goto: open(own) }, { click: "button.activate-link", optional: true }, { wait: 3000 }, { click: "button.deactivate-link" }, { wait: 3000 }], {}));
+    if (cites(record, "pp.basicform.action.activate")) out.push(scenario(`basic-form/${idSuffix("activate")}`, { ...parts, state: "activate" }, [...clearCache, { goto: open(own) }, { click: "button.activate-link" }, { wait: 3000 }], {}));
+    if (cites(record, "pp.basicform.action.deactivate")) out.push(scenario(`basic-form/${idSuffix("deactivate")}`, { ...parts, state: "deactivate" }, [...clearCache, { goto: open(own) }, { click: "button.activate-link", optional: true }, { wait: 3000 }, { click: "button.deactivate-link" }, { wait: 3000 }], {}));
     if (cites(record, "pp.basicform.action.create-related-record")) out.push(scenario(`basic-form/${idSuffix("create-related-dialog")}`, { ...parts, state: "create-related-dialog" }, [{ goto: open(T.record) }, { click: "button.create-related-record-link" }, { wait: { selector: MODAL, state: "visible" } }, { wait: 2500 }], { present: [".modal"] }));
     // Subgrid associate (lookup dialog) and disassociate (the first row's action menu; no confirmation configured).
     for (const meta of metadata.filter((m) => cites(m, "pp.bfmeta.subgrid.action.associate"))) out.push(scenario(`basic-form/${idSuffix("associate-dialog")}`, { ...parts, state: "associate-dialog" }, [{ goto: open(T.record) }, { click: `#${meta.name} a.action` }, { wait: { selector: MODAL, state: "visible" } }, { wait: 2500 }], { present: [".modal"] }));

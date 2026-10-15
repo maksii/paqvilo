@@ -632,7 +632,7 @@ export function listModel({ portal, metadata, store, list, schemas = {} }) {
     detailsLabel: localizedText(portalField(m, "detailsbuttonlabel", ""), "View details"),
     createLabel: localizedText(portalField(m, "createbuttonlabel", ""), "Create"),
     emptyText: localizedText(portalField(m, "emptylisttext", ""), ""),
-    calendar: calendarSettings(list),
+    calendar: calendarSettings(list, metadata),
   };
 }
 
@@ -1345,7 +1345,7 @@ export function gridRecord(row, model, layout, context) {
   push(model.idColumn, id);
   const state = scalar(row.statecode);
   const status = scalar(row.statuscode);
-  const unassessed = context.config?.mode !== "live" && (!hasItemActions(model) || unassessedSubgridRecord(model, context));
+  const unassessed = context.config?.mode !== "live" && !hasItemActions(model);
   return {
     Id: id,
     EntityName: model.entity,
@@ -1359,22 +1359,12 @@ export function gridRecord(row, model, layout, context) {
 // assess report every privilege false, StatusCode 0 and StateCode 0 (the statecode/statuscode
 // attributes keep their values): grids without item actions (lookup dialogs, lists and subgrids
 // configured without ItemActions; evidence: list/item-list-filters, item-list-odata, item-list-mine,
-// basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid) and
-// subgrid records the persona reads only through parent-scoped permissions (basic-form/item-edit/populated
-// and item-read/read-only, pqvd_baselinechild under a parent-scope permission; the grid shows no item actions).
+// basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid, the item-read and
+// item-edit-actions children subgrids). A subgrid with item actions is assessed whatever the grant's scope (live
+// basic-form/item-edit/populated and item-edit/permission/parent-scope: children reached through the parent chain
+// report CanRead/CanWrite/CanDelete true).
 const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
 const hasItemActions = (model) => (model.settings?.ItemActions ?? []).some((action) => ACTION_TYPES[action?.Type]);
-function unassessedSubgridRecord(model, context) {
-  if (model.kind !== "subgrid" || context.config?.mode === "live" || typeof context.store?.rules !== "function" || context.identity?.admin) return false;
-  let rules = [];
-  try {
-    rules = context.store.rules(model.entity, "read", context.identity) ?? [];
-  } catch {
-    return false;
-  }
-  return rules.length > 0 && rules.every((rule) => rule.scope === "parent");
-}
-
 /** The transactioncurrency row of a record (read as the platform's formatter, not the persona). */
 function recordCurrency(context, entity, row, id) {
   try {

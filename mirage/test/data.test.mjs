@@ -1106,3 +1106,11 @@ test("imported unresolved permissions stay disabled with actionable diagnostics 
   broken.permissions.find((p) => p.id === "parent").enabled = true;
   await assert.rejects(store.replaceState(broken), DataError);
 });
+
+test("rows the portal creates carry the observed portal application user as createdby", () => {
+  const store = new DataStore({ state: { mappings: { task: { entitySet: "tasks", idColumn: "taskid" } }, tables: { task: [] }, permissions: [], settings: { permissionMode: "permissive" } } });
+  assert.equal(store.createRecord("task", { title: "Before" }, { admin: true }).createdby, undefined);
+  store.setObserved({ portalApplicationUser: "# Portals-Sample" });
+  assert.deepEqual(store.createRecord("task", { title: "Portal" }, { admin: true }).createdby, { id: null, logical_name: "systemuser", name: "# Portals-Sample" });
+  assert.equal(store.createRecord("task", { title: "Explicit", createdby: null }, { admin: true }).createdby, null);
+});

@@ -292,6 +292,11 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
       const cookie = identity.cookie();
       if (cookie) await context.addCookies([{ name: cookie.name, value: cookie.value, url: owned.url }]);
       const page = await context.newPage();
+      // The live capture runs with the browser cache disabled, so every resource (frames included) is requested again;
+      // the Mirage page does the same so both sides record the same request sequence.
+      const cdp = await context.newCDPSession(page);
+      await cdp.send("Network.enable");
+      await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
       try {
         return await captureScenario(page, scenario, { origin: owned.url, outDir, ids, side: label, matrix, allowWrites: true, meta: { ...meta, origin: "{mirage}", runtime: "mirage", preset, solutionRoots: owned.solutionRoots.map((root) => path.basename(root)), sourceFingerprint: status.status?.sourceFingerprint ?? null, implementationFingerprint: status.status?.implementationFingerprint ?? null } });
       } finally {
