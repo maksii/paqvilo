@@ -32,6 +32,7 @@ import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error
 import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
 import {odataToSdkQuery} from './plugin-query.mjs';
 import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
+import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import {compileODataPermissionQuery,authoredScalarODataFetch} from './odata-permission-query.mjs';
 import {recordToSdkEntity,sdkQueryParameters,executeSdkFetch} from './plugin-clr.mjs';
 import {queryExpressionToFetch,fetchResultToSdkCollection} from './plugin-sdk-query.mjs';
@@ -1418,6 +1419,7 @@ export class DataStore {
       fetchLimits: { links: platform.QueryLinkEntityLimit, conditionsAndLinks: platform.FetchConditionLimit, aggregateRecords: platform.AggregateQueryRecordLimit, linkDepth: platform.FetchLinkDepth },
       // "strict" rejects FetchXML columns that complete Solution metadata lacks.
       fetchColumnValidation: settings.fetchColumnValidation,
+      fetchAllWithoutFilter: this.observed?.fetchAllWithoutFilter,
     };
   }
   /**
@@ -3147,6 +3149,9 @@ export class DataStore {
     return compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,...this.liquidFetchPermissionOptions(options)});
   }
   fetchXml(xml, identity = {}, options = {}) {
+    const authoredXml = xml;
+    if (options.portalRequest === true && !identity.admin)
+      xml = preparePortalFetchXml(xml, {linkTypes:options.profile === 'webapi'?this.observed?.webApiFetchXmlLinkTypes:this.observed?.liquidFetchXmlLinkTypes,profile:options.profile==='webapi'?'webapi':'liquid'});
     const authoredFetch=parseFetchXml(xml);
     const entity=authoredFetch.children.find(node=>node.name==='entity')?.attrs.name;
     // Observers may mutate data inside a read transaction before its revision advances.
@@ -3174,7 +3179,8 @@ export class DataStore {
       if(this.state.settings.permissionMode!=='permissive')for(const name of names)if(!this.rules(name,'read',identity).length)
         throw new DataError('Table permission denies read on '+name,403,'PermissionDenied',{operation:'read',table:name});
     }
-    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
+    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,defaultDistinct:options.profile!=='webapi',forceScopedDistinct:nativeAdmission,seedAliasesFromAuthoredLinks:nativeAdmission,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
+    permissionQuery.authoredXml = authoredXml;
     let result;
     try { result=this.executePermissionFetchXml(xml,identity,options,permissionQuery); }
     catch(cause) {
@@ -3188,7 +3194,7 @@ export class DataStore {
       }
       throw cause;
     }
-    if (options.portalRequest && ['false','0'].includes(authoredFetch.attrs.distinct?.toLowerCase()) && permissionQuery.multiplicativePaths.length && !result.columns?.aggregate) {
+    if (options.portalRequest && ['false','0'].includes(parseFetchXml(permissionQuery.xml).attrs.distinct?.toLowerCase()) && permissionQuery.multiplicativePaths.length && !result.columns?.aggregate) {
       const mapping=this.resolveMapping(entity);
       const returnedRows=result.entities.length,uniqueRootRows=new Set(result.entities.map(row=>row[mapping.idColumn])).size;
       const diagnostic={code:'PERMISSION_QUERY_ROW_MULTIPLICATION',severity:'info',table:entity,returnedRows,uniqueRootRows,additionalRows:returnedRows-uniqueRootRows,
@@ -3227,6 +3233,12 @@ export class DataStore {
     };
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
     const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();
+    // Native Liquid preserves omission of returntotalrecordcount in its
+    // exposed query and returns -1. The generic portal planner's historical
+    // injected count is not part of this independently observed transport.
+    if(options.portalRequest===true&&options.profile!=='webapi'&&options.permissionQuery&&
+      this.observed?.tablePermissionQueryPipeline==='native-classic'&&plan.fetch.attrs.returntotalrecordcount==null)
+      plan.returnTotal=false;
     // Web API $count=true counts the matching rows like returntotalrecordcount.
     if (options.returnTotal === true && plan.top == null && !plan.aggregate)
       plan.returnTotal = true;
@@ -3245,7 +3257,7 @@ export class DataStore {
       column: ctx.column,
       lookupName: ctx.lookupName,
       identity,
-      settings: ctx.settings,
+      settings: options.noBackendAdmission ? {...ctx.settings,fetchAllWithoutFilter:undefined} : ctx.settings,
       now: ctx.now,
       platformLanguageCode: options.platformLanguageCode,
       equalRows: options.fetchCache ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value) : undefined,

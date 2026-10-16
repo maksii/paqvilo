@@ -38,6 +38,31 @@ test('separate native OData profile does not silently qualify unsupported naviga
   assert.throws(()=>store.query('companies',{$select:'companyid',$expand:'grant'},identity,undefined,{portalRequest:true}),error=>error.code==='ODataPermissionQueryUnsupported');
   assert.throws(()=>observedConfig({odataPermissionQueryPipeline:'native-classic'}),/evidence/);
 });
+test('native conversion faults happen before observers and retain the CDS status and code at the Web API boundary',async()=>{
+  for(const hops of [1,4]){
+    const store=fixture(),stages=[];
+    let parent=store.state.permissions.find(p=>p.entity==='company');
+    for(let n=1;n<=hops;n++){
+      const child={id:id(100+n),entity:'level'+n,scope:'parent',parentPermissionId:parent.id,roles:['member'],operations:['read'],
+        relationship:{entity:parent.entity,from:'parentid',to:parent.entity+'id'}};
+      store.state.permissions.push(child);store.state.mappings[child.entity]={entitySet:child.entity+'s',idColumn:child.entity+'id'};store.state.tables[child.entity]=[];parent=child;
+    }
+    // A single selected path has no ordering ambiguity. Rebind the source hash
+    // after extending the invented graph instead of accepting stale evidence.
+    store.setObserved({...store.observed,odataPermissionGrantOrder:{normalizedGraphHash:permissionOrderGraphFingerprint(store.state.permissions),tables:{}}});
+    store.setPluginPipeline(event=>stages.push(event.stage),()=>true);
+    let status,body;
+    const response={headersSent:false,writeHead(code){status=code;this.headersSent=true;},end(value){body=JSON.parse(value);}};
+    const url=new URL('http://127.0.0.1/_api/'+parent.entity+'s?$select='+parent.entity+'id');
+    await handleWebApi({method:'GET',headers:{}},response,url,{store,identity,
+      portal:{settings:{['Webapi/'+parent.entity+'/enabled']:'true',['Webapi/'+parent.entity+'/fields']:parent.entity+'id','Webapi/error/innererror':'true'}},origin:url.origin,origins:[url.origin],csrf:'owned-test-cursor',
+      json(res,code,value){res.writeHead(code);res.end(JSON.stringify(value));}});
+    assert.equal(status,hops===1?400:501);
+    assert.equal(body.error.code,'9004010D');
+    assert.equal(body.error.innererror.code,hops===1?'0x80040216':'0x8006088a');
+    assert.deepEqual(stages,[]);
+  }
+});
 test('actual Web API collection handler executes the qualified initial OData page rather than falling back to QueryExpression',async()=>{
   const store=fixture(),queries=[];store.setPluginPipeline(event=>queries.push(event.query.$type),()=>true);
   let status,body;

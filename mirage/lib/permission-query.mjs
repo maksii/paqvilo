@@ -56,6 +56,9 @@ export function compilePermissionFetchXml(xml, {
   linkedPermissionOrdinals = [],
   grantOrder,
   unscopedCreate = false,
+  defaultDistinct = true,
+  forceScopedDistinct = false,
+  seedAliasesFromAuthoredLinks = false,
 } = {}) {
   const tree = parseXmlDocument(xml, { root: 'fetch' });
   const root = tree.children.find(element => element.name === 'entity');
@@ -69,7 +72,13 @@ export function compilePermissionFetchXml(xml, {
   const finish = (permissionGranted, permissionLinkCount = 0, grantIds = []) => {
     const finalLinks = [...walk(tree)].filter(element => element.name === 'link-entity');
     permissionLinkCount = generatedNodes.size;
-    if(normalizeQuery && permissionGranted && !(unscopedCreate&&operation==='create'))tree.attrs.distinct ??= 'true';
+    if(normalizeQuery && permissionGranted && !(unscopedCreate&&operation==='create')) {
+      if (forceScopedDistinct && !grantIds.some(grant => (grant.scope ?? 'global') === 'global')) {
+        if (tree.attrs.distinct !== 'true') diagnostics.push({code:'PERMISSION_QUERY_DISTINCT_FORCED',
+          message:'The qualified scoped portal permission compiler selects DISTINCT for the secured query.'});
+        tree.attrs.distinct = 'true';
+      } else if (defaultDistinct) tree.attrs.distinct ??= 'true';
+    }
     return ({
     xml: normalizeQuery ? serializePermissionFetchXml(tree) : xml,
     authoredXml: xml, authoredLinkCount, permissionLinkCount,
@@ -87,10 +96,10 @@ export function compilePermissionFetchXml(xml, {
   if (bypass || identity.admin) return finish(true);
   normalizeQuery = true;
   // Captured scoped FetchExpression serialization supplies these defaults and
-  // writes order nodes before filters. An explicit distinct=false is preserved
-  // until that authoring contract is qualified; it is never silently rewritten.
+  // writes order nodes before filters. Explicit DISTINCT is retained unless
+  // the caller selects the independently qualified scoped portal contract.
   tree.attrs.mapping ??= 'logical';
-  if (/^(?:false|0)$/i.test(String(tree.attrs.distinct ?? '')))
+  if (!forceScopedDistinct && /^(?:false|0)$/i.test(String(tree.attrs.distinct ?? '')))
     diagnostics.push({ code: 'PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED',
       message: 'Captured scoped queries qualify the default distinct=true shape; explicit distinct=false remains authored and unqualified.' });
   const rank = { attribute: 0, 'all-attributes': 0, order: 1, filter: 2, 'link-entity': 3 };
@@ -111,15 +120,20 @@ export function compilePermissionFetchXml(xml, {
     if(grantOrder&&grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
     return finish(grants.length>0,0,grants);
   }
-  if(grantOrder){
-    if(grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
-    const groups=grantOrder.tables?.[root.attrs.name];
+  const orderedGrants=(entity,selectedGrants)=>{
+    if(!grantOrder)return selectedGrants;
+    const groups=grantOrder.tables?.[entity];
     if(groups){
       const ranks=new Map(groups.flatMap((group,index)=>group.map(id=>[key(id),index])));
-      if(grants.some(grant=>!ranks.has(key(grant.id))))throw new DataError('Observed permission order does not cover a selected source grant.',501,'PermissionGrantOrderUnqualified');
-      grants=[...grants].sort((a,b)=>ranks.get(key(a.id))-ranks.get(key(b.id)));
-    }else if(grants.length>1&&!grants.some(grant=>(grant.scope??'global')==='global'))
+      if(selectedGrants.some(grant=>!ranks.has(key(grant.id))))throw new DataError('Observed permission order does not cover a selected source grant.',501,'PermissionGrantOrderUnqualified');
+      return [...selectedGrants].sort((a,b)=>ranks.get(key(a.id))-ranks.get(key(b.id)));
+    }else if(selectedGrants.length>1&&!selectedGrants.some(grant=>(grant.scope??'global')==='global'))
       throw new DataError('Multiple grants have no observed order for this table.',501,'PermissionGrantOrderUnqualified');
+    return selectedGrants;
+  };
+  if(grantOrder){
+    if(grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))throw new DataError('Observed permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
+    grants=orderedGrants(root.attrs.name,grants);
   }
   // The evidenced classic API lane constrains each authored linked table using
   // existential paths to its principal. Liquid only expands the root grants.
@@ -127,7 +141,7 @@ export function compilePermissionFetchXml(xml, {
   for (const ordinal of linkedPermissionOrdinals) {
     const link = authoredLinks[ordinal];
     if (!link) throw new DataError('Authored permission link ordinal is invalid.', 400, 'InvalidPermission');
-    const linkedGrants = selected(link.attrs.name, 'read');
+    const linkedGrants = orderedGrants(link.attrs.name,selected(link.attrs.name, 'read'));
     if (linkedGrants.some(grant => (grant.scope ?? 'global') === 'global')) continue;
     const alternatives = [], seen = new Set();
     for (const grant of linkedGrants) {
@@ -184,6 +198,8 @@ export function compilePermissionFetchXml(xml, {
   const byId = new Map(permissions.map(grant => [key(grant.id), grant]));
   const aliases = new Set([...walk(tree)].map(element => element.attrs.alias).filter(Boolean));
   const sequence = new Map();
+  if(seedAliasesFromAuthoredLinks)for(const link of authoredLinks)
+    sequence.set(link.attrs.name,(sequence.get(link.attrs.name)??0)+1);
   const alias = entity => {
     let index = sequence.get(entity) ?? 0, result;
     do { result = `generated_alias_${entity}_${index++}`; } while (aliases.has(result));

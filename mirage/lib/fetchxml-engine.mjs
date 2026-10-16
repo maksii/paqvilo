@@ -304,6 +304,20 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
             400,
             "InvalidFetchXml",
           );
+        const restricted = ['exists','in','matchfirstrowusingcrossapply'].includes(type);
+        if (restricted) {
+          const label = {exists:'Exists',in:'In',matchfirstrowusingcrossapply:'MatchFirstRowUsingCrossApply'}[type];
+          if (children(node,'order').length)
+            fail(`${label} doesn't support order inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+          const projected = node.children.some(child => ['attribute','all-attributes'].includes(child.name));
+          if (type !== 'matchfirstrowusingcrossapply' && projected)
+            fail(`${label} doesn't support attribute inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+          const selectedDescendant = part => part.children.some(child =>
+            ['attribute','all-attributes','order'].includes(child.name) || selectedDescendant(child));
+          if (children(node,'link-entity').some(selectedDescendant) ||
+              type === 'matchfirstrowusingcrossapply' && projected && children(node,'link-entity').length)
+            fail(`${label} doesn't allow attribute or order clause in child linkentity.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+        }
         links.push(node);
         nextLinkDepth++;
         if (links.length > limits.links)
@@ -558,6 +572,9 @@ export function structuralIntersects(plan, mappingOf) {
  */
 export function executeFetch(plan, ctx) {
   const settings = ctx.settings ?? {};
+  if (settings.fetchAllWithoutFilter === 'sql-error' && plan.links.some(link =>
+      link.attrs['link-type'] === 'all' && !children(link,'filter').length))
+    fail('Generic SQL error while evaluating an unfiltered ALL link.',500,'FetchXmlExecutionFailure',{innerCode:'0x80044150'});
   const collation = settings.collation ?? "CI_AI";
   const now = ctx.now ?? Date.now();
   const { root } = plan;
@@ -874,15 +891,18 @@ export function executeFetch(plan, ctx) {
       const all = new Map();
       for (const row of candidatesFor(link)) {
         const key = joinKey(fieldValue(row, link.attrs.from));
-        if (key != null) all.set(key, true);
+        if (key == null) continue;
+        if (!all.has(key)) all.set(key, []);
+        all.get(key).push(row);
       }
       result.unfiltered = all;
     }
     linkPlans.set(link, result);
     return result;
   };
-  const matchesFor = (row, link, parentAlias) => {
-    const { alias, index, filter } = linkPlan(link);
+  const matchesFor = (row, link, parentAlias, unfiltered = false) => {
+    const linked = linkPlan(link), { alias, filter } = linked;
+    const index = unfiltered ? linked.unfiltered : linked.index;
     const parent = parentAlias == null ? row.base : row.aliases[parentAlias];
     const key = parent == null ? null : joinKey(fieldValue(parent, link.attrs.to));
     const candidatesForRow = key == null ? [] : (index.get(key) ?? []);
@@ -890,7 +910,7 @@ export function executeFetch(plan, ctx) {
       base: row.base,
       aliases: { ...row.aliases, [alias]: candidate },
     }));
-    return filter ? items.filter(filter) : items;
+    return filter && !unfiltered ? items.filter(filter) : items;
   };
   const semiJoinTest = (link, ownerAlias) => {
     const type = link.attrs["link-type"] ?? "inner";
@@ -899,9 +919,9 @@ export function executeFetch(plan, ctx) {
       const exists = items.length > 0;
       if (type === "not any") return !exists;
       if (type === "all") {
-        const parent = ownerAlias == null ? row.base : row.aliases[ownerAlias];
-        const key = parent == null ? null : joinKey(fieldValue(parent, link.attrs.to));
-        return key != null && Boolean(linkPlan(link).unfiltered.get(key)) && !exists;
+        // Existence excludes this link's predicates but retains its descendant
+        // joins. A child removed by an inner descendant is no ALL candidate.
+        return !exists && joinTree(matchesFor(row, link, ownerAlias, true), link).length > 0;
       }
       return exists;
     };
@@ -939,7 +959,8 @@ export function executeFetch(plan, ctx) {
       for (const row of rows) {
         const matches = matchesFor(row, link, nodeAlias);
         if (type === "matchfirstrowusingcrossapply") {
-          if (matches.length) { countJoined(1); next.push(matches[0]); }
+          const qualifying = joinTree(matches, link);
+          if (qualifying.length) { countJoined(1); next.push(qualifying[0]); }
         } else if (matches.length) {
           countJoined(matches.length);
           for (const match of matches) next.push(match);
@@ -951,7 +972,7 @@ export function executeFetch(plan, ctx) {
       // Dataverse emits flat joins: a nested link joins against every row
       // produced so far, so an inner child of an outer link removes rows
       // whose outer parent is null.
-      rows = joinTree(next, link);
+      rows = type === 'matchfirstrowusingcrossapply' ? next : joinTree(next, link);
     }
     return rows;
   }
