@@ -658,7 +658,7 @@ export function panelUi(data) {
       const report = S.inspect.report;
       if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
       const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
-      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
+      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
       if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       if (S.selectedElement) {
         const selected = S.selectedElement;
@@ -1013,13 +1013,16 @@ export function panelUi(data) {
           float(`${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`);
         }
       }
+      const xray = document.getElementById('paqvilo-xray')?.__px;
+      xray?.update({ ...d, ui, inspectionError: S.inspect?.error }, S.inspect?.report);
+      if (xray?.enabled) ensureInspect();
       if (!ui.open) return;
       set(
         'head',
         el.head,
         `${dot}<span class="brand">paqvilo</span><span class="tag">${esc(d.site)}</span><span class="tag env">${esc(d.env)}</span>${real}<span class="grow"></span>
          ${d.mirageMode ? '' : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${d.online ? '' : 'on live'}" data-act="mode" data-v="local">Local</button><button class="${d.online ? 'on online' : ''}" data-act="mode" data-v="online">Online</button></span><button class="ib ${d.live ? 'on' : 'warn'}" data-act="live" title="Live reload is ${d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself'}">${icon(d.live ? 'bolt' : 'pause')}</button>`}
-         <button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
+         <button class="ib" data-act="xray" title="Lense X-ray (Alt+Shift+X)" aria-label="Toggle Lense X-ray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎</button><button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
          ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup">Setup</a>` : ''}
          <button class="ib" data-act="size" title="${ui.large ? 'Smaller panel' : 'Larger panel'}">${icon('size')}</button>
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
@@ -1154,6 +1157,12 @@ export function panelUi(data) {
       const url = row?.dataset.url || '';
       const d = S.d;
       switch (name) {
+        case 'xray':
+          stopPicking();
+          document.getElementById('paqvilo-xray')?.__px?.toggle();
+          S.ui.open = false;
+          render();
+          break;
         case 'choosepersona': {
           if(t.dataset.contact&&!S.tweaks?.personas?.some(p=>p.contactId===t.dataset.contact))break;
           S.pick.persona=t.dataset.contact;S.pick.personaKey=t.dataset.key;render();break;
@@ -1326,6 +1335,7 @@ export function panelUi(data) {
           if (!rel) break;
           const line = Number(t.dataset.line || row?.dataset.line) || undefined;
           const r = await api('open', { rel, line, col: Number(row?.dataset.col) || undefined, find: t.dataset.find || row?.dataset.find || undefined });
+          document.getElementById('paqvilo-xray')?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : r.error ?? 'Could not open the editor');
           if (r.ok) toast(`Opened ${baseName(rel)}${line ? ':' + line : ''} in the editor`);
           else if (r.url) location.href = r.url; // the editor's own link; the browser asks once
           else toast(r.error ?? 'Could not open the editor', true);
@@ -1423,6 +1433,19 @@ export function panelUi(data) {
         }
       });
     }
+    document.addEventListener('paqvilo-xray', (event) => {
+      const detail = event.detail ?? {};
+      if (detail.action === 'open') {
+        act('open', { dataset: { rel: detail.ref, line: detail.line, find: detail.find }, closest: () => null });
+      } else if (detail.action === 'refresh') {
+        act('inspect-refresh', { dataset: {}, closest: () => null });
+      } else if (detail.action === 'selected') {
+        S.selectedElement = detail.element;
+      } else if (detail.action === 'toggled') {
+        if (detail.enabled) { S.ui.hidden = false; S.ui.open = false; }
+        render();
+      }
+    }, { signal: lifetime.signal });
     const onKey = (e) => {
       if (!host.isConnected) return window.removeEventListener('keydown', onKey, true);
       if (!S.d || !e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return;
@@ -1440,6 +1463,7 @@ export function panelUi(data) {
       get token() { return S.d?.token; },
       dispose() {
         stopPicking();
+        document.getElementById('paqvilo-xray')?.__px?.dispose();
         lifetime.abort();
         clearTimeout(toastTimer);
         clearTimeout(floatTimer);
@@ -1487,4 +1511,6 @@ export function removePanelUi({ token }) {
   window.__paqviloRetiredSessions = retired;
   const host = document.getElementById('paqvilo-panel');
   if (host?.__pp?.token === token) host.__pp.dispose();
+  const xray = document.getElementById('paqvilo-xray');
+  if (xray?.__px?.token === token) xray.__px.dispose();
 }

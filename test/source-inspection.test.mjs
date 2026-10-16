@@ -6,6 +6,22 @@ import { createSourceInspector, inspectionSources, inspectRenderedPage } from '.
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
+test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async t => {
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'), '<div id="page-block"><button id="fx_title">Title</button></div>');
+  fs.appendFileSync(path.join(fx.portal,'web-templates/Partial.webtemplate.source.html'), '<aside id="template-block"></aside>');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Banner.contentsnippet.value.html'), '<span id="snippet-block">A source fixture</span>');
+  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'), 'document.getElementById("fx_title");');
+  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/');
+  for(const [selector,suffix] of [['#page-block','Home.webpage.copy.html'],['#template-block','Partial.webtemplate.source.html'],['#snippet-block','Banner.contentsnippet.value.html']]) {
+    const row=report.elementSources.find(item=>item.selector===selector);
+    assert.ok(row?.sourceFile.endsWith(suffix),`${selector} resolves to its owning exported source`);
+    assert.equal(row.certainty,'candidate');assert.equal(row.evidence,'source-selector');
+  }
+  const script=report.elementSources.find(item=>item.selector==='#fx_title'&&item.kind==='script');
+  assert.ok(script.sourceFile.endsWith('widget.js'));assert.equal(script.line,1);assert.equal(script.certainty,'candidate');
+});
+
 test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async t => {
   const fx = inspectionFixture(); t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');

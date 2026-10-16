@@ -7,6 +7,8 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { panelUi, removePanelUi } from './panel-ui.mjs';
+import { xrayUi } from './xray-ui.mjs';
+
 import {indexPersonaCatalog,PERSONA_TRANSLITERATIONS} from '../mirage/lib/persona-search.mjs';
 import {personaStartPath} from '../mirage/lib/persona-catalog.mjs';
 import { diffLines } from './line-diff.mjs';
@@ -15,6 +17,10 @@ import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
+
+// Compose the two self-contained browser functions on the Node side. A redraw remains one
+// bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
+const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`);
 
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
@@ -855,7 +861,7 @@ export function enablePanel(context, session, opts = {}) {
   const draw = async (page) => {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
     if (drawings.has(page)) { dirtyDrawings.add(page); return drawings.get(page); }
-    const drawing = Promise.resolve().then(() => disposed ? undefined : page.evaluate(panelUi, stateFor(page))).catch(() => {}).finally(() => {
+    const drawing = Promise.resolve().then(() => disposed ? undefined : page.evaluate(drawPanelUi, stateFor(page))).catch(() => {}).finally(() => {
       drawings.delete(page);
       if (dirtyDrawings.delete(page)) schedule(page);
     });

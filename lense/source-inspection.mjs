@@ -9,6 +9,7 @@ import { inspectPage } from '../mirage/lib/page-resources.mjs';
 import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
 import { importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
 
 const norm = (value) => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const unique = (rows, key) => [...new Map(rows.map((row) => [key(row), row])).values()];
@@ -66,7 +67,7 @@ export async function inspectionSources(cfg) {
 
 /** Fixed, bounded DOM read. Do not collect text, values, credentials or query parameters. */
 export function inspectRenderedPage() {
-  const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle');
+  const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
   const pathname = (value) => {
     try { const url = new URL(value, location.href); return url.origin === location.origin ? url.pathname : null; } catch { return null; }
   };
@@ -323,6 +324,13 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   }
   inspectFormDependencies(report, portal, metadata, rendered);
   const sourceBodies = [page?.html, page?.js, page?.css, ...(report.webTemplates ?? []).map((row) => portal.templates?.[row.name]?.source), ...(report.snippets ?? []).map((row) => portal.snippets?.[row.name])].filter(Boolean);
+  const markup = [
+    ...report.pageSources.filter(row => row.fieldPath === 'copy').map(row => ({ body: page?.html, ...row, kind: 'page' })),
+    ...(report.webTemplates ?? []).map(row => ({ ...row, body: portal.templates?.[row.name]?.source, kind: 'template' })),
+    ...(report.snippets ?? []).map(row => ({ ...row, body: portal.snippets?.[row.name], kind: 'snippet' })),
+  ];
+  report.elementSources = markup.flatMap(({ body, ...source }) => elementSourceHints(body, source)).slice(0, 600);
+  for (const source of report.pageSources.filter(row => row.fieldPath === 'customjavascript')) report.elementSources.push(...scriptSourceHints(page?.js, { ...source, kind: 'script' }));
   const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
   const observedPaths = new Set((rendered.assets ?? []).map((row) => row.path));
@@ -338,6 +346,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
         const real = await fs.realpath(file.file);
         if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
           const text = await readLocalFile(real, { root: portal.sourceDir, maxBytes: 1024 * 1024, encoding: 'utf8' });
+          if (/\.m?js$/i.test(file.file)) report.elementSources.push(...scriptSourceHints(text, { name: file.name ?? file.url, sourceFile: real, kind: 'script' }));
           sourceBodies.push(text);
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
@@ -346,6 +355,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   }
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
   report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
+  report.elementSources = report.elementSources.slice(0, 900);
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
   const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z][\w]*$/i.test(value)));
