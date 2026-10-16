@@ -455,7 +455,7 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
     write('paqvilo.config.local.yml', JSON.stringify({ browser }));
     await assert.rejects(load(), /browser\./);
   }
-  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9000" }');
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9000", debugPort: null }');
   write('.env', 'PAQVILO_CDP_URL=http://127.0.0.1:9001\n');
   assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9001');
   assert.equal((await load({}, { PAQVILO_CDP_URL: 'http://127.0.0.1:9002' })).browser.cdpUrl, 'http://127.0.0.1:9002');
@@ -464,6 +464,19 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
     await assert.rejects(load(selector), /browser.cdpUrl.*cannot be combined/);
   }
   await assert.rejects(load({ 'cdp-url': 'https://user:secret@example.com' }), /credentials/);
+});
+
+test('CDP selection cannot silently ignore an inherited or explicit launch debugger port', async () => {
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9222" }');
+  await assert.rejects(load(), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  assert.equal((await load({ 'debug-port': '0' })).browser.debugPort, null);
+  assert.equal((await load({}, { PAQVILO_DEBUG_PORT: '0' })).browser.debugPort, null);
+  for (const cdpUrl of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
+    await assert.rejects(load({ 'cdp-url': cdpUrl, 'debug-port': '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  }
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9333", debugPort: null }');
+  assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9333');
+  await assert.rejects(load({}, { PAQVILO_DEBUG_PORT: '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
 });
 
 test('all portal targets share resolved browser choices without sharing mutable settings', async () => {

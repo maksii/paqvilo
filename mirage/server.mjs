@@ -79,7 +79,7 @@ import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrl
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
-// half a second of silent 8 kHz audio. ponytail: no readable challenge; Mirage accepts no answer.
+// half a second of silent 8 kHz audio. No readable challenge is simulated, so CAPTCHA saves fail closed.
 const CAPTCHA_IMAGE = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z", "base64");
 const CAPTCHA_AUDIO = (() => {
   const samples = 4000;
@@ -553,21 +553,41 @@ export async function createSimulator({
   // annotation id before the form posts the ids (live: InitializeFileUpload, UploadFileBlock,
   // then the postback's AttachFile_HiddenField_AnnotationIds). Staged files live in memory until
   // the postback takes them.
-  // ponytail: in-memory, bounded to 50 files and one hour; a persistent store when uploads must survive restarts.
+  // Staging is process-local, bounded to 50 files and one hour; a restart discards pending uploads.
   const stagedUploads = new Map();
-  // The complete staged files a postback's AttachFile_HiddenField_AnnotationIds names (a JSON
-  // array); each is taken once.
-  const stagedAttachments = (controls) => {
-    const field = [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
+  const uploadOwner = () => {
+    const visitor = trace.getStore()?.visitor;
+    return visitor ? `${visitor}|${currentIdentity().contactId ?? currentIdentity().id ?? 'anonymous'}` : null;
+  };
+  // Read staged files only inside the serialized form save. Retain them until
+  // validation and persistence succeed, so a failed form can safely retry.
+  const stagedAttachments = (controls, { includeContent = true, prefix } = {}) => {
+    const field = prefix ? `${prefix}AttachFile_HiddenField_AnnotationIds` : [...controls.keys()].find((key) => /AttachFile_HiddenField_AnnotationIds$/.test(key));
+    if (!field || !controls.has(field)) return [];
     let ids = [];
-    try { ids = JSON.parse(controls.get(field) || "[]"); } catch { ids = []; }
-    if (!Array.isArray(ids)) return [];
-    return ids.flatMap((id) => {
+    try { ids = JSON.parse(controls.get(field) || "[]"); } catch { throw error('Staged attachment IDs must be a JSON array.', 400, 'FormAttachmentInvalid'); }
+    if (!Array.isArray(ids) || ids.length > 50 || controls.getAll(field).length !== 1) throw error('Staged attachment IDs must be one bounded JSON array.', 400, 'FormAttachmentInvalid');
+    if (new Set(ids.map(id => String(id).toLowerCase())).size !== ids.length) throw error('A staged attachment was repeated.', 400, 'FormAttachmentInvalid');
+    return ids.map((id) => {
       const entry = stagedUploads.get(String(id).toLowerCase());
-      if (!entry || entry.received !== entry.size) return [];
-      stagedUploads.delete(String(id).toLowerCase());
-      return [{ field: field.replace(/_HiddenField_AnnotationIds$/, ""), name: entry.name, type: entry.type, content: Buffer.concat(entry.chunks).toString("base64") }];
+      if (!entry || !entry.owner || entry.owner !== uploadOwner() || entry.received !== entry.size || Date.now() - entry.created > 3600000) throw error('A staged attachment is incomplete or no longer available. Upload it again before saving.', 400, 'FormAttachmentInvalid');
+      return { id: String(id).toLowerCase(), entry, attachment: { field: field.replace(/_HiddenField_AnnotationIds$/, ""), name: entry.name, type: entry.type, ...(includeContent ? { content: Buffer.concat(entry.chunks).toString("base64") } : {}) } };
     });
+  };
+  const submitStagedNativePostback = (entries, collected, options, files) => change(async () => {
+    const submission = resolveNativeFormSubmission(entries, collected, options.requestUrl);
+    const prefix = collected.find(item => item.descriptor.kind === submission.kind && item.descriptor.formId === submission.formId)?.descriptor.ids.names;
+    const staged = submission.body.action === 'submit' ? stagedAttachments(new URLSearchParams(entries), { prefix }) : [];
+    const result = await submitNativePostback(entries, collected, { ...options, attachments: [...files, ...staged.map(item => item.attachment)] });
+    for (const item of staged) if (stagedUploads.get(item.id) === item.entry) stagedUploads.delete(item.id);
+    return result;
+  });
+  const retainStagedAttachments = (state, entries, collected) => {
+    if (!state) return;
+    const prefix = collected.find(item => item.descriptor.kind === state.kind && item.descriptor.formId === state.formId)?.descriptor.ids.names;
+    let staged;
+    try { staged = stagedAttachments(new URLSearchParams(entries), { includeContent: false, prefix }); } catch { staged = []; }
+    state.stagedAttachments = staged.map(({ id, entry }) => ({ id, name: entry.name, size: entry.size }));
   };
   const verificationRuntimeId = randomUUID();
   let revision = 1,
@@ -3206,7 +3226,7 @@ export async function createSimulator({
         // by the platform client after its token request; on a remote portal that abandons this
         // navigation before it commits (live: status 0, none of its resources load). Loopback would
         // answer first, so the answer waits for that replacement.
-        // ponytail: fixed 3 s bound; a frame nobody replaces (no client script) loads that much later.
+        // Bound the replacement wait to three seconds; a frame without the platform client loads after that wait.
         if (url.searchParams.has("isprofilepage") && url.searchParams.get("entityid")) {
           let abandoned = false;
           await new Promise((resolve) => { const timer = setTimeout(resolve, 3000); res.once("close", () => { abandoned = true; clearTimeout(timer); resolve(); }); });
@@ -3249,18 +3269,28 @@ export async function createSimulator({
         await rawBody(req);
         const name = String(req.headers["x-ms-file-name"] ?? "").trim();
         const size = Number(req.headers["x-ms-file-size"]);
-        if (!name || !Number.isFinite(size) || size < 0 || size > 8 * 1024 * 1024) throw error("The file name and size are required (at most 8 MiB).", 400);
-        if (stagedUploads.size >= 50) stagedUploads.delete(stagedUploads.keys().next().value);
+        if (!name || !Number.isSafeInteger(size) || size < 0 || size > 8 * 1024 * 1024) throw error("The file name and size are required (at most 8 MiB).", 400);
+        if (stagedUploads.size >= 50) throw error("The local runtime has 50 staged files. Submit pending forms or wait for unused uploads to expire before adding another file.", 409, "StagedUploadLimit");
         const id = randomUUID();
         const token = randomBytes(24).toString("base64");
-        stagedUploads.set(id, { name, size, type: String(req.headers["x-ms-file-type"] ?? req.headers["content-type"] ?? "application/octet-stream"), token, chunks: [], received: 0, created: now });
+        if (!trace.getStore().visitor) {
+          const visitor = newVisitor(visitorName());
+          trace.getStore().visitor = visitor.id;
+          res.setHeader('set-cookie', visitor.cookie);
+        }
+        stagedUploads.set(id, { owner: uploadOwner(), name, size, type: String(req.headers["x-ms-file-type"] ?? req.headers["content-type"] ?? "application/octet-stream"), token, chunks: [], received: 0, created: now });
         return answer(200, { AnnotationId: id, FileContinuationToken: token });
       }
       if (req.method !== "PUT") throw error("File block upload requires PUT.", 405);
       const entry = stagedUploads.get(String(url.searchParams.get("noteId") ?? "").toLowerCase());
-      if (!entry || req.headers["x-ms-file-continuation-token"] !== entry.token) throw error("Unknown file upload.", 404);
+      if (!entry || entry.owner !== uploadOwner() || req.headers["x-ms-file-continuation-token"] !== entry.token) throw error("Unknown file upload.", 404);
       if (Number(url.searchParams.get("offset")) !== entry.received) throw error("The file block offset does not continue the upload.", 400);
       const block = await rawBody(req);
+      // Reading a slow body yields to other chunks and form postbacks. Recheck
+      // ownership and offset before committing, so duplicate chunks cannot append.
+      if (stagedUploads.get(String(url.searchParams.get("noteId") ?? "").toLowerCase()) !== entry) throw error("Unknown file upload.", 404);
+      if (Date.now() - entry.created > 3600000) { stagedUploads.delete(String(url.searchParams.get("noteId") ?? "").toLowerCase()); throw error("Unknown file upload.", 404); }
+      if (Number(url.searchParams.get("offset")) !== entry.received) throw error("The file block offset does not continue the upload.", 400);
       if (entry.received + block.length > entry.size) throw error("The file block exceeds the declared file size.", 400);
       entry.chunks.push(block);
       entry.received += block.length;
@@ -3336,7 +3366,7 @@ export async function createSimulator({
             return res.end(delta);
           }
           nativeEntries = [...controls];
-          nativeFiles = [...(controls.files ?? []), ...stagedAttachments(controls)];
+          nativeFiles = controls.files ?? [];
           const context = trace.getStore();
           // An auto-generated step form's posted __VIEWSTATE names the tab the page showed and the
           // earlier tabs' values: the page renders that tab first so the postback decodes against it.
@@ -3477,7 +3507,7 @@ export async function createSimulator({
         const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
         let response;
         try {
-          const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, { ...formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url), attachments: nativeFiles }));
+          const { result, context } = await submitStagedNativePostback(nativeEntries, collected, formSubmissionOptions(formIdentity, trace.getStore()?.visitor, url), nativeFiles);
           response = nativePostbackResponse({ result, context, values: submission.body.values });
         } catch (cause) {
           response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
@@ -3485,6 +3515,7 @@ export async function createSimulator({
           recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
         }
         if (response.location) return postbackRedirect(res, response, portal);
+        retainStagedAttachments(response.state, nativeEntries, collected);
         trace.getStore().nativePostbackState = response.state;
         html = await renderModalForm();
         // Form.aspx registers a startup script after ItemSaved: the grid that opened the dialog
@@ -3721,7 +3752,7 @@ export async function createSimulator({
       const submission = resolveNativeFormSubmission(nativeEntries, collected, url.href);
       let response;
       try {
-        const { result, context } = await change(() => submitNativePostback(nativeEntries, collected, { ...formSubmissionOptions(pageIdentity, nativeContext?.visitor, url), attachments: nativeFiles }));
+        const { result, context } = await submitStagedNativePostback(nativeEntries, collected, formSubmissionOptions(pageIdentity, nativeContext?.visitor, url), nativeFiles);
         response = nativePostbackResponse({ result, context, values: submission.body.values });
       } catch (cause) {
         response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
@@ -3729,6 +3760,7 @@ export async function createSimulator({
         recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
       }
       if (response.location) return postbackRedirect(res, response, portal);
+      retainStagedAttachments(response.state, nativeEntries, collected);
       nativeContext.nativePostbackState = response.state;
       rendered = await renderCurrentPage();
     }

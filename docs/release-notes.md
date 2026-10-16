@@ -44,6 +44,8 @@ use an exact preview version until the stable release is published.
   formatting profiles are available for sites that need them.
 - Migration and preset persistence preserve local edits and explicit definitions. Concurrent
   browser identities remain isolated; Windows state reads do not invalidate writer ownership.
+- Staged attachments belong to their browser and persona, survive failed saves and are
+  consumed once. Editor refresh preserves project scripts and validates debugger settings.
 
 ### Upgrade notes
 

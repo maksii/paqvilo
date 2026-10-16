@@ -282,7 +282,7 @@ The laboratory contract includes unpacked solutions, two plugin assemblies, regi
 
 Required checks:
 
-- Metadata exports resolve every table/column/key/relationship and entity set; core remains 18 custom business tables, support 3, evidence 3; no circular dependencies. All lookup/choice extensions have one owning solution.
+- Metadata exports resolve every table/column/key/relationship and entity set: core has 19 custom business/reference tables, support has three and evidence has three. Preserve the three existing standard tables and avoid circular dependencies. All lookup/choice extensions have one owning solution.
 - Marker guard preserves seeded results including null-name, OR-filter, outer-join, aggregate and distinct cases. Physical IDs/hashes differ across lanes/pages/retries, logical hashes agree, and ambiguous/cross-run markers are rejected/quarantined.
 - FetchExpression captures exact XML; QueryExpression and QueryByAttribute DTOs preserve types/operators/joins/values/paging. Observer neither changes results nor invokes query converters. Early/late isolated mutator snapshots demonstrate stage attribution.
 - Join-budget tests retain both last-success/first-failure evidence and pre-pipeline failures. No claim that every role adds a fixed join count or that a captured query is SQL.
@@ -294,6 +294,6 @@ Required checks:
 
 Offline checks use invented fixtures and explicit simulator packs. Mirage can run explicitly configured local CLR plugins and supported flow adapters with independent safety bounds. It does not reproduce the hosted Dataverse event pipeline or Azure services; local events must be labelled as models. Direct SDK tests do not prove Power Pages authorization. Live tests require separate authorization and the intended identity/environment. Runtime implementation requires relevant regressions and `npm run validate`; documentation review alone is not a runtime pass.
 
-This design is ready for implementation with the platform restrictions above. Successful site/cloud qualification, durable collector deployment and supported message discovery are implementation acceptance work, not claims made by these specifications.
+Site/cloud qualification, durable collector deployment and supported message discovery require separate validation against the selected environment. These specifications define the acceptance criteria without claiming deployment or qualification.
 
 Source5 adds original-context observation for Stock canary Equipment Create/Update/Delete and an optional CRUD Probe equipment lookup. Immutable SDK-prepared intents bind operation GUID, exact target GUID, expected message, Contact-owned Run and actual Context2 portal actor. Create and Update carry the exact CO-OP operation sentinel; Delete uses a trusted preparation of that sentinel before the source freeze and captures the original Before image. Probe-to-Equipment association validates the same Run/actor and disposable Stock ownership. Room rebinds preserve Building/Account ownership, assignment and financial/projection invariants. Existing guards remain enabled. Original source4 DLLs, registrations, schema and capture bytes remain immutable; source5 qualification requires new native receipts.

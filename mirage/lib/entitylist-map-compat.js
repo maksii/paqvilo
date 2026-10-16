@@ -3,7 +3,7 @@
  * on ready the map host is sized to the page and the loading status box is placed inside it, as
  * the platform script does before it loads the map provider (live Bing map list: the provider
  * script is blocked by the page's content security policy, so the map itself never draws).
- * ponytail: layout only; no map provider, search or directions locally.
+ * This adapter provides layout only; it does not emulate map providers, search or directions.
  */
 (() => {
   "use strict";

@@ -159,6 +159,9 @@ export class StateStorage {
         yield decoder.end();
       }
       state = await parseJsonStream(chunks(this.file)); this.digest = hash.digest('hex');
+      // An explicit reload can switch a previously journaled file back to JSON.
+      // Never append using offsets and a hash inherited from that previous file.
+      this.journal = false; this.hash = undefined; this.committedBytes = undefined; this.recoveredTail = false;
     }
     this.signature = await fileSignature(this.file);
     if (before !== this.signature) throw conflict();

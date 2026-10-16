@@ -2044,5 +2044,24 @@
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/134"
       }
     ]
+  },
+  "releaseReadinessReview": {
+    "reviewedAt": "2026-10-16",
+    "entries": [
+      {
+        "number": 168,
+        "rule": "js/file-access-to-http",
+        "securitySeverity": "medium",
+        "originalLocation": {
+          "path": "mirage/baseline-suite.mjs",
+          "start_line": 311,
+          "end_line": 311
+        },
+        "disposition": "false-positive",
+        "evidence": "Intentional fixture import into the disposable simulator started by startIsolatedMirage: port 0 and createSimulator's loopback host determine owned.url. The user-selected reference origin controls modeled portal URLs, never this destination. Only declared matrix identity fields and exported local state are imported through the fixed admin path with that runtime's CSRF token. Redirects are refused. There is no remote upload destination or implicit credential-file read.",
+        "verification": "mirage/test/parity-suite.test.mjs: isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin; complete staged validation and PR security analysis",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/168"
+      }
+    ]
   }
 }

@@ -45,8 +45,8 @@ export function calendarSettings(list, metadata = null) {
 
 /*
  * Dataverse time zone codes (timezonedefinition.timezonecode) of the zones a list's fixed calendar
- * time zone (adx_calendar_timezone) commonly names, as IANA zones. ponytail: a partial table; add
- * codes as sites use them (an unknown code leaves the instants unshifted).
+ * time zone (adx_calendar_timezone) commonly names, as IANA zones. This bounded table leaves
+ * instants unshifted for an unknown code.
  */
 const TIME_ZONES = { 4: "America/Los_Angeles", 10: "America/Denver", 20: "America/Chicago", 35: "America/New_York", 85: "Europe/London", 105: "Europe/Paris", 110: "Europe/Berlin", 235: "Asia/Tokyo", 255: "Australia/Sydney" };
 /** The wall-clock time of an instant in a zone, written as a UTC instant. */

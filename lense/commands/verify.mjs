@@ -225,7 +225,7 @@ export default async function verify(cfg, args) {
     await watcher.ready;
     page = context.pages()[0] ?? (await context.newPage());
 
-    // ---- phase 0: the untouched online page ------------------------------------------------
+    // Capture the unmodified page before testing local overlays.
     const requested = new Set();
     page.on('request', (r) => {
       try {
@@ -390,7 +390,7 @@ export default async function verify(cfg, args) {
       snippet = snippetCandidates.find((candidate) => visible.includes(candidate.rel)) ?? null;
     }
 
-    // ---- phase 1: edit like a developer, the watcher must bring the browser along -----------
+    // Edit sources and verify that the watcher updates the browser.
     log('editing the copy; waiting for the browser to follow ...');
     hits.length = 0;
     if (cssFile) fs.appendFileSync(cssFile.file, `\nhtml{--paqvilo-verify-css:"${token}"}\n`);
@@ -472,7 +472,7 @@ export default async function verify(cfg, args) {
     });
     check('the rest of the page still comes from the online site', stillOnline.status === 200 && !stillOnline.local);
 
-    // ---- phase 2: a stylesheet edit is swapped in without reloading the page -----------------
+    // Verify that a stylesheet swap preserves the current document.
     if (cssFile) {
       await watcher.whenIdle();
       await page.evaluate(() => (window.__paqviloNoReload = true));

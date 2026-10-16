@@ -119,7 +119,7 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
     DeprecatedVersion: null,
     IntroducedVersion: facts.introducedVersion ?? null,
     EntityLogicalName: entity,
-    // ponytail: audit lock inferred (system column with auditing off cannot change it); read the platform's CanModifyAuditSettings if an export ever carries it.
+    // Exports omit CanModifyAuditSettings; infer the managed audit lock from column kind and auditing state.
     IsAuditEnabled: managed(audit, custom || audit, "canmodifyauditsettings"),
     IsCustomAttribute: custom,
     IsPrimaryId: type === "primarykey",

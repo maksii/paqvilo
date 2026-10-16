@@ -207,6 +207,8 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
+      - name: Baseline fixture offline regressions
+        run: npm run test:example
       - name: Install pinned Microsoft SDK reference for original CLR regressions
         shell: pwsh
         run: |

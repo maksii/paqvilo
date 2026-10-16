@@ -2,6 +2,10 @@
 export const siteWorkflowName = (product, site) => ['pick', 'debug'].includes(site)
   ? `${product}:site:${site}:dev` : `${product}:${site}`;
 
+export const developmentScript = (name, workflow) => name.endsWith(':debug')
+  ? `npm run ${name.slice(0, -6)} -- --debug-port ${workflow.args.at(-1)}`
+  : `paqvilo ${workflow.args.join(' ')}`;
+
 /** Shared CLI arguments for npm shortcuts and catalogue-derived editor development tasks. */
 export function developmentWorkflows({ sites, browser, config = './paqvilo.config.yml' }) {
   const workflows = {};

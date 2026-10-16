@@ -143,3 +143,34 @@ test('the attach-file control uploads through the file API and posts the annotat
   assert.equal(Buffer.from(note.documentbody, 'base64').toString(), 'attached text');
   assert.deepEqual(errors, []);
 });
+
+test('a failed attachment save preserves the selected file in the browser for retry', async t => {
+  const { app, page, errors, postback } = await fixture(t);
+  let uploadRequests = 0;
+  page.on('request', request => { if (request.url().includes('/_api/file/')) uploadRequests++; });
+  await page.goto(`${app.url}/attach/`);
+  await page.locator('#title').fill('Retry with retained file');
+  await page.locator('#AttachFile').setInputFiles({ name: '<draft>.txt', mimeType: 'text/plain', buffer: Buffer.from('retained text') });
+  await page.waitForFunction(() => Boolean(document.getElementById('AttachFile_HiddenField_AnnotationIds')?.value));
+  const stagedIds = await page.locator('#AttachFile_HiddenField_AnnotationIds').inputValue();
+  let rejected = false;
+  app.store.setPluginPipeline(({ entity, stage }) => { if (entity === 'annotation' && stage === 20) { rejected = true; throw new Error('Synthetic note failure'); } });
+  let response = postback();
+  await page.locator('#InsertButton').click();
+  assert.equal((await response).status(), 200);
+  await page.locator('#newdivforfileinfo .filename').filter({ hasText: '<draft>.txt' }).waitFor();
+  assert.equal(rejected, true);
+  assert.equal(await page.locator('#AttachFile_HiddenField_AnnotationIds').inputValue(), stagedIds);
+  await page.waitForFunction(() => document.getElementById('UploadButton')?.disabled === true);
+  assert.equal(await page.locator('#UploadButton').isDisabled(), true);
+  assert.equal(app.store.state.tables.annotation.length, 0);
+  app.store.setPluginPipeline(() => {}, () => false);
+  response = postback();
+  await page.locator('#InsertButton').click();
+  assert.equal((await response).status(), 200);
+  await page.locator('#MessageLabel').filter({ hasText: 'Attached' }).waitFor();
+  assert.equal(app.store.state.tables.annotation.length, 1);
+  assert.equal(Buffer.from(app.store.state.tables.annotation[0].documentbody, 'base64').toString(), 'retained text');
+  assert.equal(uploadRequests, 2, 'Retry reuses the completed upload without uploading the file again');
+  assert.deepEqual(errors, []);
+});

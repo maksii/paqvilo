@@ -266,20 +266,27 @@
         if (frame.dataset.lookupElement !== input.id) continue;
         const id = input.value.replace(/[{}]/g, '').trim();
         if (!id) { frame.setAttribute('src', 'about:blank'); frame.setAttribute('tabindex', '-1'); frame.style.height = '0px'; continue; }
-        const url = new URL(frame.dataset.path, location.href);
-        if (url.origin !== location.origin) continue;
+        if (!frame.dataset.path?.trim()) continue;
+        let url;
+        // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
+        try { url = new URL(frame.dataset.path, location.href); decodeURI(url.href); } catch { continue; }
+        if (url.origin !== location.origin || !["http:", "https:"].includes(url.protocol) || url.pathname.startsWith('//')) continue;
         // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
         // the current frame query supply them.
-        const previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams;
+        let previous = new URLSearchParams();
+        try { previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams; } catch { /* Keep the lookup's own entity name when the previous URL is invalid. */ }
         const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
         // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
         // none and the platform client then sends it empty (live DOM).
         const primary = frame.dataset.entityprimarykeyname || '';
         // The platform client rebuilds the frame URL without the response's isprofilepage/lang
         // parameters and with the primary key name parameter always present (live requests).
-        // The platform sets a path-relative src with the values concatenated as they are (live DOM:
-        // "formname=Baseline Parent Quick View"); the browser encodes the request.
-        const src = `${url.pathname}?entityid=${id}&entityname=${entityname}&entityprimarykeyname=${primary}&formname=${frame.dataset.formname ?? ''}&controlid=${frame.dataset.controlid ?? ''}`;
+        // Keep native literal spaces in the path-relative src; other query characters must
+        // stay in their value rather than becoming another parameter or a fragment.
+        const queryValue = value => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
+        let src;
+        try { src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`; }
+        catch { continue; }
         if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
         frame.setAttribute('tabindex', '0');
       }

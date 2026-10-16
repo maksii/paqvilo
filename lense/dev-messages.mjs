@@ -5,3 +5,10 @@ export const DEV_BACKGROUND = Object.freeze({
   beginsPattern: '^browser\\s+',
   endsPattern: '^edit a file under the sources and the browser follows\\.',
 });
+
+// These tasks report readiness only; CLI errors remain visible in the terminal.
+export const DEV_PROBLEM_MATCHER = Object.freeze({
+  owner: 'paqvilo',
+  pattern: { regexp: '^(?!)()()()$', file: 1, location: 2, message: 3 },
+  background: DEV_BACKGROUND,
+});

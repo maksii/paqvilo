@@ -4,7 +4,7 @@ import YAML from 'yaml';
 import { writeScaffold } from './scaffold.mjs';
 import { editorFiles } from './project-editor.mjs';
 import { identifier } from './config-schema.mjs';
-import { developmentWorkflows } from './project-workflows.mjs';
+import { developmentScript, developmentWorkflows } from './project-workflows.mjs';
 
 const TEMPLATE = new URL('../templates/project/', import.meta.url);
 const json = value => JSON.stringify(value, null, 2) + '\n';
@@ -40,9 +40,7 @@ export function projectScripts({ sites, browser, packs, vscode }) {
   };
   const workflows = developmentWorkflows({ sites, browser });
   for (const [name, workflow] of Object.entries(workflows)) {
-    scripts[name] = name.endsWith(':debug')
-      ? `npm run ${name.slice(0, -6)} -- --debug-port ${workflow.args.at(-1)}`
-      : `paqvilo ${workflow.args.join(' ')}`;
+    scripts[name] = developmentScript(name, workflow);
   }
   for (const command of ['list', 'use', 'doctor', 'map', 'status', 'resources', 'agent', 'verify']) scripts[command] = lense(command);
   scripts['audit:resources'] = lense('audit');

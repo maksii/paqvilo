@@ -32,9 +32,9 @@
       "isBackground": true,
       "presentation": { "reveal": "always", "panel": "dedicated" },
       "problemMatcher": {
-        "owner": "paqvilo-demo",
-        "pattern": { "regexp": "^paqvilo: (.+)$", "message": 1 },
-        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s", "endsPattern": "^edit a file under the sources" }
+        "owner": "paqvilo",
+        "pattern": { "regexp": "^(?!)()()()$", "file": 1, "location": 2, "message": 3 },
+        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s+", "endsPattern": "^edit a file under the sources and the browser follows\\." }
       }
     },
     {
@@ -47,9 +47,9 @@
       "isBackground": true,
       "presentation": { "reveal": "always", "panel": "dedicated" },
       "problemMatcher": {
-        "owner": "paqvilo-demo",
-        "pattern": { "regexp": "^paqvilo: (.+)$", "message": 1 },
-        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s", "endsPattern": "^edit a file under the sources" }
+        "owner": "paqvilo",
+        "pattern": { "regexp": "^(?!)()()()$", "file": 1, "location": 2, "message": 3 },
+        "background": { "activeOnStart": true, "beginsPattern": "^browser\\s+", "endsPattern": "^edit a file under the sources and the browser follows\\." }
       }
     },
     {

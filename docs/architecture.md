@@ -9,12 +9,19 @@ Paqvilo owns reusable Power Pages behavior. Your portal project owns its sources
 | `mirage/lib/`, `mirage/server.mjs` | Importing, Liquid, FetchXML/Web API, forms/lists, permissions, platform compatibility and simulation |
 | `mirage/admin/` | Local `/_sim/` administration |
 | `mirage/testing/` | Reusable local sign-in helpers for project-owned tests |
+| `lense/dataverse/` | Explicit project-owned Dataverse provisioning, comparison and export APIs |
 | `test/`, `test-browser/` | Synthetic Lense and integration regressions |
 | `mirage/test/`, `mirage/test-browser/` | Synthetic Mirage regressions |
-| `examples/project/` | Invented standalone portal, external pack and acceptance test starter |
+| `templates/project/` | Empty consumer scaffold used by `paqvilo init` |
+| `examples/project/` | Populated standalone demo, external pack and native component fixture |
+| `examples/company-operations/` | Separate synthetic regression project for deep permissions and plugin observations |
 | `docs/`, `mirage/docs/` | Reusable contracts, configuration and workflow guidance |
+| `scripts/`, `.github/` | Contributor checks, package validation, repository maintenance and CI |
+| `site/` | Public website sources; `dist/` contains ignored generated output |
 
 The two products share the catalogue, source model and browser integration. Lense's Mirage lifecycle wrapper starts and stops only owned processes. Mirage imports Lense's source/configuration utilities; it does not require a live portal for local rendering.
+
+The empty scaffold and populated demo serve different purposes: use `paqvilo init` for a new project and `paqvilo mirage demo` to explore working sample pages. The Company Operations [reference designs](design/company-operations-demo.md) describe its own synthetic model and qualification contracts. They do not add business behavior to the toolkit or certify a live environment.
 
 ## Runtime scope
 

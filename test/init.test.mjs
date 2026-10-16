@@ -173,6 +173,33 @@ test('refresh adds/removes site tasks and uses catalogue/browser overrides witho
   assert.equal(overridden.args[overridden.args.indexOf('--browser') + 1], 'msedge');
 });
 
+test('editor refresh preserves project-authored dev shortcuts while retiring exact generated site workflows', async t => {
+  const directory = await project(t);
+  await prepareProject(directory, { name: 'custom', sites: ['old'] });
+  const manifest = await readJson(directory, 'package.json');
+  manifest.scripts['dev:trace'] = 'paqvilo lense dev --config ./paqvilo.config.yml --path /trace';
+  manifest.scripts['mirage:dev:scenario'] = 'paqvilo mirage dev --config ./paqvilo.config.yml --preset synthetic';
+  manifest.scripts['dev:trace:debug'] = 'npm run dev:trace -- --debug-port 9333';
+  manifest.scripts.dev += ' --path /project-start';
+  await fs.writeFile(path.join(directory, 'package.json'), JSON.stringify(manifest));
+  const catalogue = YAML.parse(await read(directory, 'paqvilo.config.yml'));
+  catalogue.sites.current = catalogue.sites.old;
+  delete catalogue.sites.old;
+  catalogue.defaultSite = 'current';
+  await fs.writeFile(path.join(directory, 'paqvilo.config.yml'), YAML.stringify(catalogue));
+  await refreshEditor(directory, { processEnv: {} });
+  const tasks = (await readJson(directory, '.vscode/tasks.json')).tasks;
+  for (const script of ['dev:trace', 'mirage:dev:scenario', 'dev:trace:debug']) {
+    assert.equal(tasks.find(task => task.script === script)?.type, 'npm', script);
+  }
+  assert.equal(tasks.find(task => task.script === 'dev')?.label, 'Custom: dev (project script)');
+  assert.equal(tasks.find(task => task.script === 'dev:debug')?.label, 'Custom: dev:debug (project script)', 'debug wrapper retains the customized base command');
+  assert.equal(tasks.find(task => task.label === 'Custom: dev')?.type, 'process', 'catalogue workflow remains available for generated launches');
+  assert.ok(!tasks.some(task => task.label.includes('dev:old')));
+  assert.ok(tasks.some(task => task.args?.includes('current')));
+  assert.deepEqual(await readJson(directory, 'package.json'), manifest);
+});
+
 test('completion check follows shell source selection and honors Git ignores even when all text is ignored', async t => {
   const directory = await project(t);
   await prepareProject(directory, { name: 'check' });

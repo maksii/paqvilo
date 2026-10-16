@@ -334,10 +334,56 @@ async function ensureViewFlags(client, extrasSpec, { apply, journal }) {
   }
 }
 
-// The platform re-serialises a rule's XAML and regenerates its client data on activation, so a stored rule is compared by
-// its logic only: condition operators, attributes and control actions.
-// ponytail: literal values (set/compare constants, messages) are not compared; rename the rule id to force a literal change.
-const ruleFingerprint = (xaml) => (String(xaml ?? "").match(/(?:Condition|Logical)Operator">\w+|Attribute="[^"]+"|ControlId="[^"]+"|Is(?:Visible|ReadOnly)="\w+"|RequiredLevel="\w+"/g) ?? []).join(" ");
+// Activation reserializes XAML and regenerates designer labels. Compare the executable
+// workflow, retaining operands, typed literals, action order and localized messages.
+export function ruleFingerprint(xaml) {
+  if (!xaml) return null;
+  // Property elements use Type.Member names, beyond the shared metadata parser's grammar.
+  const tree = JSON.parse(metadataXml(String(xaml).replace(/(<\/?[\w:-]+)\.(?=\w)/g, "$1-")));
+  const scopes = new WeakMap();
+  const resolve = (name, scope) => {
+    const at = name.indexOf(":");
+    const prefix = at < 0 ? "" : name.slice(0, at), local = at < 0 ? name : name.slice(at + 1);
+    return scope[prefix] ? `{${scope[prefix]}}${local}` : name;
+  };
+  const bind = (node, inherited) => {
+    const scope = { ...inherited };
+    for (const [name, value] of Object.entries(node.attrs)) {
+      if (name === "xmlns") scope[""] = value;
+      else if (name.startsWith("xmlns:")) scope[name.slice(6)] = value;
+    }
+    scopes.set(node, scope);
+    for (const child of node.children) bind(child, scope);
+  };
+  bind(tree, {});
+  const local = (node) => node.name.slice(node.name.indexOf(":") + 1);
+  const find = (node) => local(node) === "Workflow" ? node : node.children.map(find).find(Boolean);
+  const workflow = find(tree);
+  if (!workflow) throw new Error("Business rule XAML has no executable Workflow.");
+  const expression = (value) => {
+    const text = value.trim();
+    if (!text.startsWith("[") || !text.endsWith("]")) return value;
+    // Ignore VB formatting outside strings; quoted whitespace and doubled quotes are data.
+    const tokens = [...text.matchAll(/"(?:""|[^"])*"|[A-Za-z_]\w*|[^\s]/g)].map(([token]) => token);
+    if (tokens.includes("'")) return value; // Keep unfamiliar VB comments strictly comparable.
+    return tokens.map((token) => token.startsWith('"') ? token : token.toLowerCase());
+  };
+  const canonical = (node) => {
+    const scope = scopes.get(node);
+    const attrs = Object.entries(node.attrs).filter(([name]) => !name.startsWith("xmlns") && !["DisplayName", "LabelId"].includes(name)).map(([name, value]) => {
+      const key = name.slice(name.indexOf(":") + 1);
+      if (["TypeArguments", "TargetType"].includes(key) || local(node) === "ReferenceLiteral" && key === "Value") value = value.replace(/\b[\w]+:[\w]+/g, (type) => resolve(type, scope));
+      return [name.includes(":") ? resolve(name, scope) : name, expression(value)];
+    }).sort(([a], [b]) => a.localeCompare(b));
+    let children = node.children.map(canonical);
+    // These property bags are dictionaries. Activity collections retain execution order.
+    if (["ActivityReference-Arguments", "ActivityReference-Properties"].includes(local(node))) {
+      children.sort((a, b) => JSON.stringify(a.attrs.find(([key]) => key.endsWith("}Key"))?.[1] ?? "").localeCompare(JSON.stringify(b.attrs.find(([key]) => key.endsWith("}Key"))?.[1] ?? "")));
+    }
+    return { name: resolve(node.name, scope), attrs, text: expression(local(node) === "String" ? node.text : node.text.trim()), children };
+  };
+  return JSON.stringify(canonical(workflow));
+}
 
 async function ensureBusinessRules(client, rules, { apply, solution, journal }) {
   for (const rule of rules) {
@@ -541,7 +587,7 @@ async function main() {
   log({ done: true, apply, entries: journal.length, changes: journal.filter((e) => !["exists", "active"].includes(e.action)).length });
 }
 
-main().catch((error) => {
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) main().catch((error) => {
   console.error(error.message);
   process.exitCode = 1;
 });

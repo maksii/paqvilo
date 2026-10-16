@@ -1230,7 +1230,7 @@ export function seedRecordDefaults(tables, schema, { now = Date.now(), sequences
       continue;
     }
     const defaults = Object.entries(tableColumnDefaults(attributes));
-    // ponytail: {SEQNUM:n} formats only; RANDSTRING/DATETIMEUTC columns stay empty until a create fills them.
+    // Historical seed rows get deterministic sequence numbers only; random/time components are assigned on create.
     const autonumbers = Object.values(attributes).filter((a) => /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? "") && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat));
     const states = attributes.statecode?.optionSet?.states ?? [];
     const statusOf = (state) => states.find((s) => s.value === Number(state))?.defaultStatus;

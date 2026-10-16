@@ -20,6 +20,7 @@ import { platformConfig } from '../mirage/lib/platform-config.mjs';
 import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
+import { validateDebuggerMode } from './browser-profile.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
 
 /**
@@ -369,6 +370,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   }
   browser.debugPort = debugPort(browser.debugPort);
   if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  validateDebuggerMode(browser.cdpUrl, browser.debugPort);
 
   return {
     configFile,

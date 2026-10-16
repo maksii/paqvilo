@@ -229,6 +229,12 @@ test('browser/profile CLI choices are discoverable offline and incompatible comm
   assert.equal(JSON.parse(attach.stdout).inEffect.browser.mode, 'attach');
   assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');
   assert.deepEqual(JSON.parse(attach.stdout).inEffect.browser.profileInfo, { kind: 'attached', name: null, channel: null, userDataDir: null, profileDirectory: null });
+  for (const endpoint of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
+    const invalid = runWithin(3000, 'dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222');
+    assert.equal(invalid.status, 1, invalid.stderr);
+    assert.match(invalid.stderr, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+    assert.match(invalid.stderr, /--debug-port 0/);
+  }
   const conflict = run('list', '--config', file, '--profile', 'work', '--user-data-dir', 'test-browser-root', '--json');
   assert.equal(conflict.status, 1);
   assert.match(JSON.parse(conflict.stdout).problem, /cannot be combined/);

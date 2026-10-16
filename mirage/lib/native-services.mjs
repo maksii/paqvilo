@@ -662,7 +662,7 @@ async function handleCalendarService(req, res, url, context, websiteId) {
     const to = Date.parse(url.searchParams.get("to") ?? "");
     const query = await executeGridQuery(model, { viewId: route.view, page: 1, pageSize: 5000, allowLargePages: true, search: url.searchParams.get("search") ?? "" }, context);
     if (query.accessDenied) return sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true;
-    // ponytail: one read per row for the calendar columns the view may not select; a FetchXML with the calendar attributes if lists grow large.
+    // The view can omit calendar columns; a permission-checked record read supplies them for each selected row.
     const rows = [];
     for (const row of query.rows) {
       const id = row[model.idColumn];
@@ -1253,7 +1253,7 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     // The record's currency supplies the symbol and, for currency-precision columns (PrecisionSource 2), the decimals.
     const money = number == null ? null : currency();
     const digits = Number(field?.precisionSource) === 2 && Number.isInteger(Number(money?.currencyprecision)) ? Number(money.currencyprecision) : Number(field?.precision ?? 2);
-    // ponytail: en-US positive pattern ($n) with the record currency symbol; negative amounts use a leading minus until a live capture shows the platform's pattern.
+    // Symbols and precision come from the record; the current pattern uses en-US grouping and a leading minus.
     entry.FormattedValue = entry.DisplayValue = number == null ? "" : `${number < 0 ? "-" : ""}${money?.currencysymbol ?? ""}${Math.abs(number).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
   } else if (type === "System.Boolean") {
     const bool = inner === true || inner === 1 || /^(true|1)$/i.test(String(inner ?? ""));

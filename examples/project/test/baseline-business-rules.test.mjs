@@ -3,10 +3,44 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import {metadataXml} from 'paqvilo/lense/dataverse/provision.mjs';
 import {businessRuleXaml,businessRuleClientData} from '../baseline/business-rules.mjs';
+import {ruleFingerprint} from '../baseline/provision.mjs';
 
 // The toolkit parser rejects XAML property-element names (Type.Member), which are valid XML: rename them before parsing.
 const wellFormed=xaml=>metadataXml(xaml.replace(/^<\?xml[^>]*\?>/,'').replace(/(<\/?[\w:-]+)\.(?=\w)/g,'$1_'));
 const {businessRules}=JSON.parse(fs.readFileSync(new URL('../baseline/dataverse/extras.json',import.meta.url),'utf8'));
+
+test('business rule fingerprints match exported fixture XAML after platform serialization',()=>{
+ const directory=new URL('../baseline/solution/Workflows/',import.meta.url);
+ const workflows=fs.readdirSync(directory).filter(name=>name.endsWith('.xaml')).map(name=>fs.readFileSync(new URL(name,directory),'utf8'));
+ for(const rule of businessRules){
+  const stored=workflows.find(xaml=>xaml.includes('XrmWorkflow'+rule.id.replaceAll('-','')));
+  assert.ok(stored,rule.name);
+  assert.equal(ruleFingerprint(stored),ruleFingerprint(businessRuleXaml(rule)),rule.name);
+ }
+});
+
+test('business rule fingerprints retain comparison and assignment literals, message text and action order',()=>{
+ const rule={id:'12345678-1234-4567-8123-123456789abc',name:'Synthetic literals',table:'exa_record',when:{field:'exa_flag',equals:true},guard:{field:'exa_count',greaterThan:3},actions:[{type:'setValue',field:'exa_text',value:'  A "quoted" value  '},{type:'setDefault',field:'exa_number',value:42},{type:'error',field:'exa_text',message:'  A < B & C  '}],otherwise:[{type:'clearValue',field:'exa_text'}]};
+ const fingerprint=value=>ruleFingerprint(businessRuleXaml(value)),before=fingerprint(rule);
+ const changes=[
+  value=>value.when.equals=false,
+  value=>value.guard.greaterThan=4,
+  value=>value.actions[0].value=' A "quoted" value  ',
+  value=>value.actions[1].value=43,
+  value=>value.actions[1].value='42',
+  value=>value.actions[2].message='A < B & C',
+  value=>value.actions[2].field='exa_number',
+  value=>value.actions.reverse(),
+  value=>value.otherwise=[],
+ ];
+ for(const change of changes){const changed=structuredClone(rule);change(changed);assert.notEqual(fingerprint(changed),before,change.toString());}
+ const xaml=businessRuleXaml(rule);
+ const serialized=xaml.replaceAll('xmlns:mxswa=','xmlns:wf=').replaceAll('mxswa:','wf:').replaceAll('xmlns:x=','xmlns:xx=').replaceAll('x:','xx:').replaceAll('&quot;','&#34;').replaceAll('[New Object()','[ New\n Object()').replaceAll('DisplayName="EvaluateExpression"','DisplayName="Generated designer label"').replace(/LabelId="[^"]+"/g,'LabelId="aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"').replace(/></g,'>\n  <');
+ assert.equal(ruleFingerprint(serialized),before);
+ assert.equal(ruleFingerprint(null),null);
+ assert.throws(()=>ruleFingerprint('<broken>'),/XML|FetchXML/);
+ assert.throws(()=>ruleFingerprint('<Activity/>'),/no executable Workflow/);
+});
 
 test('baseline business rules render well-formed XAML and executable client code',()=>{
  assert.equal(businessRules.length,9);

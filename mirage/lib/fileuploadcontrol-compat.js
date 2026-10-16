@@ -7,7 +7,7 @@
  * annotation id and a continuation token, then PUT /_api/file/UploadFileBlock/note sends the
  * bytes. The postback carries the ids in AttachFile_HiddenField_AnnotationIds (a JSON array) and
  * an empty file input; the form service saves the staged files as annotations.
- * ponytail: one block per file (files are at most 8 MiB locally); chunk when larger files matter.
+ * One block per file stays within the local 8 MiB request and file bounds.
  */
 (() => {
   "use strict";
@@ -17,6 +17,20 @@
     size >= 1024 * 1024 * 1024 ? (size / (1024 * 1024 * 1024)).toFixed(1) + " GB" : size >= 1024 * 1024 ? (size / (1024 * 1024)).toFixed(1) + " MB" : size >= 1024 ? (size / 1024).toFixed(1) + " KB" : size + " bytes";
   const chosen = [];
   const uploaded = [];
+  let retainedCount = 0, restored = false;
+  const restore = () => {
+    const ids = byId("AttachFile_HiddenField_AnnotationIds");
+    if (restored || !ids) return;
+    restored = true;
+    let retained = [];
+    try { retained = JSON.parse(ids.value || "[]"); } catch { /* Ignore malformed local presentation state. */ }
+    if (Array.isArray(retained)) uploaded.push(...retained.filter((id) => typeof id === "string"));
+    retainedCount = uploaded.length;
+    if (retainedCount >= (Number(byId("AttachFile_HiddenField_MaxFile")?.value) || 1)) {
+      const button = byId("UploadButton");
+      if (button) button.disabled = true;
+    }
+  };
   const value = (suffix) => byId(`AttachFile${suffix}`)?.value ?? "";
   const token = () => new Promise((resolve, reject) => {
     const deferred = window.shell?.getTokenDeferred?.();
@@ -58,12 +72,13 @@
     byId("UploadButton")?.blur();
   };
   window.chooseAttachment = function () {
+    restore();
     const input = byId("AttachFile");
     const info = byId("newdivforfileinfo");
     if (!input || !info) return;
     const max = Number(byId("AttachFile_HiddenField_MaxFile")?.value) || 1;
     for (const file of input.files ?? []) {
-      if (chosen.length >= max) break;
+      if (retainedCount + chosen.length >= max) break;
       chosen.push(file);
       const item = document.createElement("div");
       item.className = "custom-button";
@@ -89,8 +104,10 @@
       if (error) error.style.display = "";
     });
     const button = byId("UploadButton");
-    if (button && chosen.length >= max) button.disabled = true;
+    if (button && retainedCount + chosen.length >= max) button.disabled = true;
   };
+  // Platform scripts can load before the form's controls exist.
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", restore, { once: true }); else restore();
   const hide = (selector) => { const node = document.querySelector(selector); if (node) node.style.display = "none"; };
   window.genericcloseAlert = () => hide(".errordiv.generic");
   window.deletecloseAlert = () => hide(".errordiv.deletefail");

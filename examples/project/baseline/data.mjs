@@ -57,8 +57,8 @@ export function records(tester = TESTER_CONTACT) {
       },
       refs: { [p("contactid")]: "tester", [p("accountid")]: "account", [p("customerid")]: "account", [p("anyid")]: "parent2" },
       // Values Dataverse computes on the live row, which the reset cannot write: the file column the reset uploads (BRIEF) and
-      // the formula column Concatenate(name, " / ", code). Mirage rows only.
-      // ponytail: stopgap formula value; a formula evaluator in core (FormulaDefinitionFileName) replaces it.
+      // the formula column Concatenate(name, " / ", code). Mirage rows only: this seeded
+      // formula output covers initial rendering and does not recalculate after name/code edits.
       computed: { [p("file")]: guid("file:item1"), [p("file_name")]: "baseline-brief.txt", [p("formula")]: "Baseline Item Alpha / I-001" },
     }),
     item("item2", "Baseline Item Beta", "I-002", { fields: { [p("flag")]: false, [p("wholenumber")]: 7, [p("globalchoice")]: 18327000, [p("datetime")]: "2026-01-15T09:00:00Z" } }),

@@ -101,13 +101,12 @@ test("a captcha shown to the visitor marks the form; signed-in visitors see it o
   // The RadCaptcha control follows the honeypot box; its resources are relative to the application root.
   const unique = "ctl00$ContentContainer$EntityFormControl_form$EntityFormControl_form_EntityFormView$captcha";
   const client = unique.replace(/\$/g, "_");
-  const literal = (text) => text.replace(/[$()]/g, "\\$&");
   assert.ok(shown.includes(`autocomplete="off"></div><div class="tr"><div class="captcha-cell"><div id="${client}" class="RadCaptcha&#32;RadCaptcha_Default">`));
   assert.match(shown, /<img id="[^"]+_captcha_CaptchaImageUP" alt="This&#32;is&#32;a&#32;CAPTCHA&#32;image,[^"]+" src="\.\.\/\.\.\/Telerik\.Web\.UI\.WebResource\.axd\?type=rca&amp;isc=cust&amp;guid=[0-9a-f-]{36}"/);
   assert.ok(shown.includes(`href="javascript:__doPostBack(&#39;${unique}$CaptchaLinkButton&#39;,&#39;&#39;)"`));
   assert.ok(shown.includes(`<input name="${unique}$CaptchaTextBox" type="text" maxlength="7" id="${client}_CaptchaTextBox">`));
   // Its validator joins the page validators and names the captcha in the summary.
-  assert.match(shown, new RegExp(`document\\.getElementById\\("${literal(client)}_ctl00"\\)\\]`));
+  assert.ok(shown.includes(`document.getElementById("${client}_ctl00")]`));
   assert.match(shown, /v\.errormessage="\\u003ca href='#captcha'[^"]*Captcha is incorrect, please re-enter captcha\.\\u003c\/a>";\nv\.display="None";/);
   // The refresh postback answers the update panel delta with a new challenge and the announcement.
   const delta = captchaRefreshDelta(unique, "/support/tickets/");

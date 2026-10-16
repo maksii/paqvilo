@@ -16,10 +16,22 @@ import {
   webFormsForm,
 } from "../lib/platform-manifest.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import { injectRuntime } from "../lib/platform.mjs";
 
 const SITE = "5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const CONTACT = "c0000000-0000-4000-8000-000000000011";
 const VALIDATED = 'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
+
+test('runtime ViewState keys preserve authored markup and entity-like text inside the saved form state', () => {
+  const state = { v: 1, form: 'synthetic', values: { title: '<span class="label">A &amp;quot; B</span>', nested: '&amp;amp;&quot;' } };
+  const encoded = '/wE' + Buffer.from(JSON.stringify(state)).toString('base64');
+  const content = `<html><head></head><body><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="${encoded}"><p><strong>Authored &amp; copy</strong></p></body></html>`;
+  const token = 'synthetic-&quot;-<token>';
+  const rendered = injectRuntime(content, token, 1);
+  const result = /name="__VIEWSTATE" id="__VIEWSTATE" value="([^"]*)"/.exec(rendered)[1];
+  assert.deepEqual(JSON.parse(Buffer.from(result.slice(3), 'base64').toString('utf8')), { ...state, k: token });
+  assert.ok(rendered.includes('<p><strong>Authored &amp; copy</strong></p>'));
+});
 
 test("page kinds follow the rendered native controls", () => {
   assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "code-component", "modal-form"]);
@@ -617,7 +629,7 @@ test("FullPage.aspx lays out div#mainContent with the page copy and the entity c
   assert.equal(layout.contentRegion, true);
   assert.equal(layout.serverFormId, "content_form");
   assert.match(layout.source, /<div class="container"><div id="mainContent">\{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %\}/);
-  assert.match(layout.source, new RegExp(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>\{% entitylist id: '${list}', pp_page_control: true %\}\{% endentitylist %\}</div><div class="page-metadata clearfix">`));
+  assert.ok(layout.source.includes(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}</div><div class="page-metadata clearfix">`));
   assert.equal(rewritePageLayout({}, { rewriteUrl: "~/Pages/WebForm.aspx" }).contentRegion, undefined);
 });
 

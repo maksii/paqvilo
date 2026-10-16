@@ -327,13 +327,26 @@
     }
     const formId = layout.CreateRelatedRecordActionLink?.EntityForm?.Id;
     if (!frame || !formId) return;
+    const pagePath = frame.getAttribute("data-page");
+    if (!pagePath?.trim()) return;
+    let address;
+    // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
+    try { address = new URL(pagePath, location.href); decodeURI(address.href); } catch { return; }
+    if (address.origin !== location.origin || !["http:", "https:"].includes(address.protocol) || address.pathname.startsWith("//")) return;
     event.preventDefault();
     event.stopImmediatePropagation();
     const record = (control.querySelector('input[id$="_EntityFormView_EntityID"]')?.value || "").replace(/[{}]/g, "");
     const lcid = layout.LanguageCode || document.documentElement.getAttribute("crm-lcid") || "";
+    const queryValue = value => encodeURIComponent(String(value ?? "")).replace(/%20/g, " ");
+    // Target-page options cannot override the action's record, form or language.
+    for (const key of ["id", "entityformid", "languagecode"]) address.searchParams.delete(key);
+    const options = address.searchParams.toString();
+    let src;
+    try { src = `${address.pathname}?${options ? options + "&" : ""}id=${queryValue(record)}&entityformid=${queryValue(formId)}&languagecode=${queryValue(lcid)}${address.hash}`; }
+    catch { return; }
     const loading = modal.querySelector(".form-loading");
     frame.addEventListener("load", () => { if (loading) loading.style.display = "none"; }, { once: true });
-    frame.setAttribute("src", `${frame.getAttribute("data-page")}?id=${record}&entityformid=${formId}&languagecode=${lcid}`);
+    frame.setAttribute("src", src);
     const $ = jq();
     if ($?.fn?.modal) $(modal).modal("show");
     else if (window.bootstrap?.Modal) window.bootstrap.Modal.getOrCreateInstance(modal).show();

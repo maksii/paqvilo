@@ -70,6 +70,18 @@ test('legacy JSON loads, large checkpoints stream, and digests cover exact commi
   assert.equal(legacy.state.tables.item[0].name, 'original');
 });
 
+test('explicitly reinitializing after a JSON replacement cannot append stale journal offsets', async t => {
+  const { file, store } = await workspace(t);
+  await store.update('items', 'one', { name: 'journal edit' });
+  await fs.writeFile(file, JSON.stringify(seed()));
+  await store.init();
+  assert.equal(store.storage.journal, false);
+  assert.equal(store.storage.recoveredTail, false);
+  await store.update('items', 'one', { name: 'after explicit reload' });
+  assert.deepEqual(await readStateFile(file), store.snapshot());
+  assert.equal(await hashStateFile(file), store.persistedDigest);
+});
+
 test('large metadata and individual records are fragmented without a document-sized string', async t => {
   const initial = seed();
   initial.simulator = { labels: Array.from({ length: 10000 }, (_, i) => `label-${i}`) };

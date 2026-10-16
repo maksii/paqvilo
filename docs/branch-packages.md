@@ -5,13 +5,13 @@ Maintainers can publish a branch build through the existing [Release workflow](.
 From an updated toolkit checkout with dependencies installed and GitHub CLI signed in, request a dry run:
 
 ```sh
-node scripts/preview-release.mjs --branch codex/input-behavior-parity
+node scripts/preview-release.mjs --branch feature/form-layout
 ```
 
 To generate and publish a new testing package instead:
 
 ```sh
-node scripts/preview-release.mjs --branch codex/input-behavior-parity --publish
+node scripts/preview-release.mjs --branch feature/form-layout --publish
 ```
 
 Use any existing branch in this repository. `--repo owner/name` can select the repository explicitly. The account needs permission to create version tags and dispatch workflows. Local uncommitted changes are not included: the helper reads the remote branch's commit once and reads package metadata at that exact SHA. The selected commit must include this preview workflow and its scripts; older branches must merge or rebase those changes first. This works before merging to `main` because `release.yml` already exists on the default branch and the run is dispatched on the new tag.

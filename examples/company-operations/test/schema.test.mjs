@@ -1,6 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readManifest,compileManifest } from 'paqvilo/dataverse';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const project=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
+const prepare=(args)=>spawnSync(process.execPath,[path.join(project,'prepare-schema.mjs'),...args],{cwd:project,encoding:'utf8',windowsHide:true,timeout:10000});
+
+test('default schema preparation reproduces the committed reviewed cohort',t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-schema-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const output=path.join(directory,'manifest.json'),result=prepare(['--out',output]);
+  assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).cohort,'source4');
+  assert.deepEqual(JSON.parse(fs.readFileSync(output,'utf8')),JSON.parse(fs.readFileSync(path.join(project,'dataverse/manifest.json'),'utf8')));
+});
+
+test('Source5 requires explicit selection and a separate output while preserving the reviewed schema',t=>{
+  const directory=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-schema-source5-'));t.after(()=>fs.rmSync(directory,{recursive:true,force:true}));
+  const committed=path.join(project,'dataverse/manifest.json'),before=fs.readFileSync(committed,'utf8');
+  for(const args of [['--cohort','source5'],['--cohort','source5','--out',committed],['--cohort','unknown']]){
+    const result=prepare(args);assert.notEqual(result.status,0);assert.match(result.stderr,/separate --out|Expected --cohort/);
+  }
+  const alias=path.join(directory,'schema-alias');fs.symlinkSync(path.dirname(committed),alias,process.platform==='win32'?'junction':'dir');
+  const refused=prepare(['--cohort','source5','--out',path.join(alias,'manifest.json')]);
+  assert.notEqual(refused.status,0);assert.match(refused.stderr,/separate --out/);
+  const output=path.join(directory,'source5.json'),result=prepare(['--cohort','source5','--out',output]);
+  assert.equal(result.status,0,result.stderr);assert.equal(JSON.parse(result.stdout).cohort,'source5');
+  const planned=JSON.parse(fs.readFileSync(output,'utf8')),current=JSON.parse(before);
+  const lookup=planned.relationships.find(r=>r.name==='pqvd_equipment_crudprobes');
+  assert.equal(lookup.lookup.name,'pqvd_equipmentid');assert.equal(lookup.cascade.Delete,'RemoveLink');
+  const variant=planned.tables.find(t=>t.name==='pqvd_testoperation').columns.find(c=>c.name==='pqvd_variant');
+  assert.equal(variant.maxLength,128);
+  planned.relationships=planned.relationships.filter(r=>r.name!==lookup.name);variant.maxLength=40;
+  assert.deepEqual(planned,current);assert.equal(fs.readFileSync(committed,'utf8'),before);
+});
 
 test('company manifest has complete schema inventory and protected role anchors',async()=>{
   const manifest=await readManifest(new URL('../dataverse/manifest.json',import.meta.url));

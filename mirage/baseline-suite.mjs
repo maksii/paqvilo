@@ -308,7 +308,8 @@ async function mirageSide({ matrix, config, site, env, source, state, headed, wo
     // Lookups to the mirrored contact show its (mirrored) name.
     const name = row.fullname ?? [row.firstname, row.lastname].filter(Boolean).join(" ");
     if (name) for (const rows of Object.values(state.tables ?? {})) for (const record of Array.isArray(rows) ? rows : []) for (const value of Object.values(record)) if (value && typeof value === "object" && value.logical_name === "contact" && value.id === contactId) value.name = name;
-    const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify(state) });
+    // Fixture fields go only to the disposable runtime started above, never matrix.origin.
+    const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-sim-csrf": csrf() }, body: JSON.stringify(state) });
     if (!response.ok) throw new Error(`Mirage identity mirror failed (${response.status})`);
   };
   return {

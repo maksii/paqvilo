@@ -74,7 +74,7 @@ export async function submitNativePostback(entries, rendered, options) {
   // A basic form or step that requires the captcha (for a signed-in visitor only with "show
   // captcha for authenticated users") rejects its save postback with the captcha message and
   // re-renders with the posted values (live multistep-survey step1-submit and captcha-all insert: 200).
-  // ponytail: the local challenge (platform.mjs captchaChallenge) has no answer, so such a save never passes.
+  // The local challenge has no verifiable answer; keep CAPTCHA-required saves closed.
   const captchaSettings = schema?.metadata ?? definition?.metadata ?? {};
   if (submission.body.action === 'submit' && truthy(portalField(captchaSettings, 'captcharequired', false))) {
     const signedIn = Boolean(options?.identity?.contactId ?? options?.identity?.id);

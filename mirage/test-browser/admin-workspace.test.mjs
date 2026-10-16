@@ -72,7 +72,19 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
   page.setDefaultTimeout(20_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const notice = (text) => page.locator("#notification").getByText(text, { exact: true }).waitFor();
+  const notice = async text => {
+    try { await page.locator("#notification").getByText(text, { exact: true }).waitFor(); }
+    catch (cause) {
+      const visible = await page.evaluate(() => ({
+        notice: document.querySelector('#notification')?.textContent,
+        noticeHidden: document.querySelector('#notification')?.hidden,
+        scenario: Object.fromEntries(['name', 'id', 'preset', 'persona', 'permission-mode'].map(key => [key, document.getElementById('scenario-' + key)?.value])),
+        invalid: [...(document.getElementById('scenario-form')?.elements ?? [])].filter(input => !input.validity.valid).map(input => input.id),
+      }));
+      cause.message += '\nAdmin state: ' + JSON.stringify({visible, errors});
+      throw cause;
+    }
+  };
   // Optional review screenshots (PAQVILO_MIRAGE_EVIDENCE_DIR); synthetic fixture data only.
   const evidence = async (name) => {
     if (!process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) return;

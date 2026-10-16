@@ -4,9 +4,18 @@ import { fileURLToPath } from 'node:url';
 import { validateManifest } from 'paqvilo/dataverse';
 import {extendReferenceSchema} from './portal-security/reference-projections.mjs';
 import {parseArgs} from 'node:util';
-const {values:args}=parseArgs({options:{out:{type:'string'}}});
+const {values:args}=parseArgs({options:{out:{type:'string'},cohort:{type:'string',default:'source4'}}});
 
 const project=path.dirname(fileURLToPath(import.meta.url));
+if(!['source4','source5'].includes(args.cohort))throw new Error('Expected --cohort source4 or source5.');
+const source5=args.cohort==='source5';
+const committedManifest=path.join(project,'dataverse/manifest.json');
+const output=args.out?path.resolve(args.out):committedManifest;
+if(source5){
+  if(!args.out)throw new Error('Source5 is an optional qualification cohort; provide a separate --out file.');
+  const resolvedOutput=await fs.realpath(output).catch(error=>{if(error.code==='ENOENT')return output;throw error;});
+  if(resolvedOutput===await fs.realpath(committedManifest))throw new Error('Source5 requires a separate --out file, not the committed manifest.');
+}
 const specDirectory=path.resolve(project,'../../docs/design');
 const documents=await Promise.all(['company-operations-demo.md','power-pages-permission-test-harness.md','dataverse-plugin-observation.md'].map(name=>fs.readFile(path.join(specDirectory,name),'utf8')));
 const [core,harness,plugins]=documents;
@@ -30,9 +39,11 @@ function parseColumns(table,text,solution) {
   const pattern=/`(pqvd_\w+)`\s+(Text\(\d+\)|Multiline\(\d+\)|L\([^)]+\)|Integer(?:\([^)]*\))?|Boolean|Choice(?:\([^)]*\))?|MultiSelect\([^)]+\)|Decimal(?:\([^)]*\))?|Money(?:\([^)]*\))?|DateOnly|Date|Time)(!)?/g;
   for(const match of text.matchAll(pattern)) {
     const [name,definition,mandatory]=match.slice(1);if(name==='pqvd_name') continue;
+    // The optional lookup cohort must not change the reviewed default schema.
+    if(!source5&&table==='pqvd_crudprobe'&&name==='pqvd_equipmentid')continue;
     const column={name,label:human(name),required:mandatory?'required':'none'};
     if(definition.startsWith('L(')) {lookupFields.set(table+'.'+name,{...column,target:definition.slice(2,-1),solution});continue;}
-    if(definition.startsWith('Text(')||definition.startsWith('Multiline(')) Object.assign(column,{type:definition.startsWith('Text')?'string':'memo',maxLength:Number(definition.match(/\d+/)[0])});
+    if(definition.startsWith('Text(')||definition.startsWith('Multiline(')) Object.assign(column,{type:definition.startsWith('Text')?'string':'memo',maxLength:!source5&&table==='pqvd_testoperation'&&name==='pqvd_variant'?40:Number(definition.match(/\d+/)[0])});
     else if(definition.startsWith('Choice')||definition.startsWith('MultiSelect')) {
       const choice=definition.match(/\((pqvd_\w+)\)/)?.[1]??choiceAliases[name]??name;Object.assign(column,{type:definition.startsWith('MultiSelect')?'multichoice':'choice',choice});
       if(defaults[name]) {const option=choices.find(c=>c.name===choice)?.options.find(o=>o.label===defaults[name]);if(!option)throw new Error('Missing declared default '+name);column.default=option.value;}
@@ -73,7 +84,7 @@ for(const [name,parent,child,lookup,solution] of [
   ['pqvd_contact_testruns','contact','pqvd_testrun','pqvd_runnercontactid',supportSolution],['pqvd_testrun_baselines','pqvd_testrun','pqvd_testrun','pqvd_baselinerunid',supportSolution],['pqvd_testrun_results','pqvd_testrun','pqvd_testresult','pqvd_runid',supportSolution],['pqvd_contact_crudprobes','contact','pqvd_crudprobe','pqvd_ownercontactid',supportSolution],['pqvd_testrun_crudprobes','pqvd_testrun','pqvd_crudprobe','pqvd_runid',supportSolution],
   ['pqvd_equipment_crudprobes','pqvd_equipment','pqvd_crudprobe','pqvd_equipmentid',supportSolution],
   ['pqvd_testrun_operations','pqvd_testrun','pqvd_testoperation','pqvd_runid',evidenceSolution],['pqvd_contact_testoperations','contact','pqvd_testoperation','pqvd_runnercontactid',evidenceSolution],['pqvd_testoperation_events','pqvd_testoperation','pqvd_pluginevent','pqvd_operationid',evidenceSolution],['pqvd_testoperation_chainnodes','pqvd_testoperation','pqvd_chainnode','pqvd_operationid',evidenceSolution],['pqvd_chainnode_children','pqvd_chainnode','pqvd_chainnode','pqvd_parentnodeid',evidenceSolution],['pqvd_contact_chainnodes','contact','pqvd_chainnode','pqvd_samplecontactid',evidenceSolution],
-]) relationship(name,parent,child,lookup,solution);
+]) if(source5||name!=='pqvd_equipment_crudprobes')relationship(name,parent,child,lookup,solution);
 relationships.push({name:'pqvd_chainnode_peers',kind:'manyToMany',parent:'pqvd_chainnode',child:'pqvd_chainnode',solution:evidenceSolution,intersectName:'pqvd_chainnodepeer',intersectColumns:['pqvd_chainnodeidone','pqvd_chainnodeidtwo']});
 for(const row of rows(section(plugins,'Evidence schema and metadata'))) {
   if(row[0]==='`pqvd_testresult`') {tables.find(t=>t.name==='pqvd_testresult').columns.push(...parseColumns('pqvd_testresult',row[1],pluginSolution));relationship('pqvd_testoperation_results','pqvd_testoperation','pqvd_testresult','pqvd_operationid',pluginSolution);}
@@ -97,7 +108,6 @@ for(const [field,definition] of lookupFields) if(!relationships.some(r=>r.kind==
 const manifest=validateManifest({schemaVersion:1,language:1033,publisher:{uniqueName:'PaqviloCompanyOperations',friendlyName:'Paqvilo Company Operations',prefix:'pqvd',optionValuePrefix:18327},solutions:[{uniqueName:coreSolution,friendlyName:'Company Operations Core',version:'1.0.0.0'},{uniqueName:'PaqviloCompanyOperationsForms',friendlyName:'Company Operations Forms',version:'1.0.0.0',dependsOn:[coreSolution]},{uniqueName:supportSolution,friendlyName:'Permission Test Support',version:'1.0.0.0',dependsOn:[coreSolution]},{uniqueName:evidenceSolution,friendlyName:'Plugin Evidence',version:'1.0.0.0',dependsOn:[coreSolution,supportSolution]},{uniqueName:pluginSolution,friendlyName:'Behaviour Plugins',version:'1.0.0.0',dependsOn:[evidenceSolution,supportSolution]}],choices,tables,relationships,forms:[],views:[],scope:{prepared:'Table/column/choice/relationship/key structure from the three specifications',remaining:'Named forms/views, website components, plugin binaries/steps/images, flows, runtime invariants and seed data are subsequent implementation increments; default forms/views are platform-generated.'}});
 extendReferenceSchema(manifest);
 validateManifest(manifest);
-const output=args.out?path.resolve(args.out):path.join(project,'dataverse/manifest.json');
 await fs.mkdir(path.dirname(output),{recursive:true});
 await fs.writeFile(output,JSON.stringify(manifest,null,2)+'\n');
-console.log(JSON.stringify({tables:tables.length,newTables:tables.filter(t=>!t.existing).length,choices:choices.length,relationships:manifest.relationships.length,keys:tables.reduce((n,t)=>n+t.keys.length,0),columns:tables.reduce((n,t)=>n+t.columns.length,0),prepared:output,liveMutations:0}));
+console.log(JSON.stringify({cohort:args.cohort,tables:tables.length,newTables:tables.filter(t=>!t.existing).length,choices:choices.length,relationships:manifest.relationships.length,keys:tables.reduce((n,t)=>n+t.keys.length,0),columns:tables.reduce((n,t)=>n+t.columns.length,0),prepared:output,liveMutations:0}));

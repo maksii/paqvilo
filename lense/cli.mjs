@@ -54,7 +54,7 @@ Other
   --headed          dev/verify: show the browser window
   --signed-in       verify: use the signed-in profile of "dev" instead of an anonymous one
   --no-reload       dev: do not reload tabs when sources change
-  --debug-port <n>  dev: port a debugger can attach to (0 = off)
+  --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
   --settings        list: also show every setting .env understands
   --all             doctor/audit: check every configured site's default environment offline

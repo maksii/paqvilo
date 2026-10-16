@@ -22,10 +22,15 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | Compare Mirage with a live portal on native components | [Native component baseline](baseline.md) |
 | Understand support and project boundaries | [Architecture](architecture.md) |
 | Contribute to the toolkit | [Contributing](../CONTRIBUTING.md) |
+| Maintain releases, security checks and hosting | [Repository maintenance](repository-admin.md) |
 
 ## Runtime reference
 
 The [Mirage reference](../mirage/docs/README.md) covers source imports, Liquid, FetchXML, Web API, forms, lists, permissions and parity evidence.
+
+## Example reference designs
+
+The separate [Company Operations regression project](../examples/company-operations/README.md) demonstrates deep permission paths, synthetic datasets and plugin observations. Its [data model](design/company-operations-demo.md), [permission harness](design/power-pages-permission-test-harness.md) and [plugin laboratory](design/dataverse-plugin-observation.md) are project specifications. Follow their installation and qualification prerequisites before using them against an authorized environment.
 
 ## Command notation
 

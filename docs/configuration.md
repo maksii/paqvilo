@@ -71,6 +71,9 @@ Refresh generated editor paths with `paqvilo init --refresh-editor` after changi
 
 Browser profiles keep identities separate. Attaching to an existing profile requires its
 explicit user-data root and child directory; attached CDP browsers remain user-owned.
+`--debug-port` configures a toolkit-launched browser. When attaching with `--cdp-url`,
+clear any inherited `browser.debugPort` with `null`, `PAQVILO_DEBUG_PORT=0` or
+`dev --debug-port 0`, then attach your debugger to the existing browser's CDP endpoint.
 See [Lense](lense.md) for the edit/preview workflow.
 
 ## Local runtime options

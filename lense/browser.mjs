@@ -8,7 +8,7 @@ import { chromium } from 'playwright-core';
 import { interceptOrigin } from './intercept.mjs';
 import { refreshUrl } from './navigation.mjs';
 import { pageKey } from './html-rewriter.mjs';
-import { browserProfileInfo, validateBrowserProfile } from './browser-profile.mjs';
+import { browserProfileInfo, validateBrowserProfile, validateDebuggerMode } from './browser-profile.mjs';
 export { browserProfileDir, browserProfileInfo } from './browser-profile.mjs';
 
 /**
@@ -18,6 +18,7 @@ export { browserProfileDir, browserProfileInfo } from './browser-profile.mjs';
  */
 export async function openBrowser(cfg, overrides = {}) {
   const b = cfg.browser;
+  validateDebuggerMode(b.cdpUrl, overrides.debugPort ?? b.debugPort);
   if (b.cdpUrl) {
     const browser = await chromium.connectOverCDP(b.cdpUrl);
     const contexts = browser.contexts();
