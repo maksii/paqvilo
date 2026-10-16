@@ -1,8 +1,6 @@
 # Compatibility baseline
 
-This checkpoint provides working ordinary flows for Lense and Mirage before the broader compatibility investigation continues. The tests use invented schemas, exported fixture structures and loopback services. Online observations are separate evidence; passing these tests does not establish complete Power Pages or Dataverse parity.
-
-The initial Windows qualification on 2026-10-11 ran `npm run validate` with the supplied Microsoft SDK reference: **1,552 passed, zero failed, four skipped**. Toolkit, Mirage and Lense source fingerprints were unchanged during that run. Each follow-up commit reruns the staged-source hook, which independently validates the committed tree and the installed package; CI qualifies the exact pushed revision.
+This guide maps ordinary local workflows to their regression coverage and remaining platform limits. Tests use invented schemas, exported fixture structures and loopback services. Native observations are separate evidence; passing local tests does not establish complete Power Pages or Dataverse parity. CI results qualify the exact tested revision.
 
 | Stream | Working positive flow | Regression coverage | Further parity work |
 | --- | --- | --- | --- |
@@ -19,6 +17,4 @@ The initial Windows qualification on 2026-10-11 ran `npm run validate` with the 
 
 `native` in a local test filename identifies the local form/protocol route being exercised; it does not mean that the test contacted an online portal. CLR tests on Windows compile invented original plugins against the supplied Microsoft SDK. CI installs the pinned SDK reference for the required CLR job.
 
-Private portal exports, observation receipts, exact fixture identities and the detailed restart checklist remain outside the distributable toolkit. The active investigation report is the ignored project checkpoint, `.paqvilo/compatibility-resume.md`. Retained fixture records are tracked there and must not be replayed as new invocations.
-
-Continue complete parity work from that checkpoint after this baseline is committed and pushed. Use [Liquid parity](liquid-parity.md), [data parity](dataverse-parity.md), [objects](object-parity.md), [plugins](dataverse-plugins.md), [flows](operations.md) and [PCF](code-components.md) for each runtime's supported contract and current limits.
+Keep private portal exports, observation receipts and environment identities in the separate project. For current supported contracts, use [Liquid](liquid-parity.md), [data](dataverse-parity.md), [objects](object-parity.md), [plugins](dataverse-plugins.md), [flows](operations.md) and [PCF](code-components.md).

@@ -25,7 +25,7 @@ export function inspectProjectBoundary(directory = root) {
   const findings = [];
   const walk = (dir) => {
     for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-      if (['node_modules', '.git', '.paqvilo', '.pp-local'].includes(entry.name)) continue;
+      if (['node_modules', '.git', '.paqvilo'].includes(entry.name)) continue;
       const file = path.join(dir, entry.name);
       const rel = path.relative(directory, file).replaceAll('\\', '/');
       if (entry.isDirectory()) walk(file);

@@ -227,7 +227,7 @@ export class SetupStore {
       // Make personal files and future local runtime state safe in a newly configured folder.
       const ignores = (await textFile(ignoreFile)) ?? '';
       const lines = ignores.split(/\r?\n/).map(line => line.trim());
-      const rules = ['.paqvilo/', '.pp-local/', '.env', 'paqvilo.config.local.yml'].filter(rule => !lines.includes(rule) && !lines.includes('/' + rule));
+      const rules = ['.paqvilo/', '.env', 'paqvilo.config.local.yml'].filter(rule => !lines.includes(rule) && !lines.includes('/' + rule));
       if (rules.length) await fs.appendFile(ignoreFile, `\n# Paqvilo local settings and state\n${rules.map(rule => '/' + rule).join('\n')}\n`);
       await fs.rename(temporary, file);
     } finally {

@@ -1,8 +1,8 @@
-# Power Pages Permission Test Harness Specification
+# Company Operations example: permission harness
 
-Revision 4, 13 October 2026. Implementation companion to [Company Operations Solution Implementation Specification](company-operations-demo.md) and [Dataverse Query and Plugin Behaviour Specification](dataverse-plugin-observation.md). The first document defines business paths; this one defines the single-page runner and three support tables; the third defines incoming-query/pipeline capture and three evidence tables. Implemented sources, commands and qualification limits are in the [project guide](../../examples/company-operations/README.md). Execute only against the task's authorised target.
+Reference design for the synthetic [Company Operations model](company-operations-demo.md) and [plugin observations](dataverse-plugin-observation.md). Implemented sources, commands and qualification limits are in the [project guide](../../examples/company-operations/README.md).
 
-Provide one visible page with one Run action that reads through Liquid and the portals Web API, compares results, optionally executes a planned CRUD sequence, and records every observation in Dataverse. Use plain text, JSON and expandable diagnostics. No dashboard design, PCF, native business forms or decorative UI is required.
+The single-page runner compares Liquid and portal Web API results, optionally executes a planned CRUD sequence, and records observations in Dataverse. Run it only against an explicitly authorized fixture. Its support/history tables and backend evidence remain distinct from the model's operational tables. Inspect results and expandable diagnostics rather than treating a completed run as a permission pass.
 
 ## Currency reference and system dependency
 
@@ -332,7 +332,7 @@ For each case show added/removed IDs, changed selected fields, duplicate/count/o
 
 Create `CO Test Run Administration` (identity/configuration/summary and result subgrid), `CO Test Result Administration` (metadata and payload text), and `CO CRUD Probe Administration`. Views: `CO Test Runs Recent` sorted createdon descending/ID; `CO Test Runs Incomplete` by runstate; `CO Results By Case` sorted case/engine/phase/page/part; `CO Failed Test Results` by verdict; `CO Outstanding CRUD Probes` by token. Adjust custom-table Lookup/Quick Find to name/run key/case/token only. No search indexes over payloads, no portal Basic Forms and no public all-runs view.
 
-## Implementation acceptance checks
+## Validation checks
 
 Deliver the page/data endpoint/assets and source-generated query/CRUD manifests, the three-table support solution, website-bound permission records for the declared consumer site, and project-owned tests. Do not run a private/live acceptance plan without separate authorisation.
 

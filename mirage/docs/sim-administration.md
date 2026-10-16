@@ -15,7 +15,7 @@ and browser options for a persona or catalogue scenario.
 
 Portal requests start anonymously. Local sign-in selects an active synthetic contact or explicit role override and stores a per-runtime `paqvilo-mirage-auth-<port>` cookie. The portal sign-in page, `_sim` and Lense Tweaks all operate on the browser session. Signing one browser in does not sign another browser in. The saved simulator identity is not a substitute for a request cookie.
 
-Embedded tools call `simulator.signIn(contactId)` and send the returned cookie header. Playwright tests use `signInContext` from `paqvilo/mirage/testing/session.mjs`. Local session administration uses CSRF protection. Sign-out clears only the local session.
+Embedded tools call `simulator.signIn(contactId)` and send the returned cookie header. Playwright tests use `signInContext` from `paqvilo/mirage/testing`. Local session administration uses CSRF protection. Sign-out clears only the local session.
 
 HTTP tools can use `createPortalSession` or `connectRuntime().createSession` from
 `paqvilo/mirage/testing` for independent visitors sharing one runtime. Each owns its

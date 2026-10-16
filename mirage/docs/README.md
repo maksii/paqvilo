@@ -12,6 +12,8 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Source import, Solutions and bootstrap | [Bootstrap and sources](bootstrap-and-sources.md) |
 | Several portals and state isolation | [Multi-portal projects](multi-portal.md) |
 | Local administration and sign-in | [Simulation administration](sim-administration.md) |
+| Grouped personas, custom sign-in and isolated scenarios | [Persona catalogues](persona-catalog.md) |
+| Exported environment settings and local profile selection | [Deployment profiles](deployment-profiles.md) |
 | Platform rules, site overrides and configuration presets | [Configuration experiments](configuration-experiments.md) |
 | External presets, data and extension contract | [Data packs](data-packs.md) |
 | Liquid behavior and conformance | [Liquid](liquid-parity.md), [conformance](liquid-conformance.md) |
@@ -24,7 +26,8 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Reference comparison and its limits | [Parity evidence](parity-evidence.md), [runtime evidence](runtime-evidence.md) |
 | Native component baseline: inventories, reference and comparison | [Dataverse inventory](baseline/dataverse-inventory.md), [Power Pages inventory](baseline/power-pages-inventory.md), [coverage](baseline/coverage.md), [parity](baseline/parity.md), [reference](baseline/reference.md), [runbook](baseline/rerun.md) |
 | Configuration families, children and observations | [Configuration object parity](object-parity.md) |
-| Atomic simulation state writes | [State integrity](state-write-integrity.md) |
+| Large datasets, journals and concurrent writers | [State storage](state-storage.md), [integrity](state-write-integrity.md) |
+| Embedded runtimes and automated visitors | [Public API](../../docs/public-api.md) |
 
 These guides describe reusable contracts. Organisation-specific observations, datasets, parity results and business backlogs belong to the separate portal project. Store evidence under ignored `.paqvilo/`.
 

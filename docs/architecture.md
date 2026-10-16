@@ -4,7 +4,7 @@ Paqvilo owns reusable Power Pages behavior. Your portal project owns its sources
 
 | Directory | Responsibility |
 | --- | --- |
-| `bin/` | Public `paqvilo lense` and `paqvilo mirage` command routing |
+| `bin/` | Public setup, Lense, Mirage and Dataverse command routing |
 | `lense/` | Source models, mapping, editing, overlays, browser sessions, panel and agent API |
 | `mirage/lib/`, `mirage/server.mjs` | Importing, Liquid, FetchXML/Web API, forms/lists, permissions, platform compatibility and simulation |
 | `mirage/admin/` | Local `/_sim/` administration |
@@ -23,7 +23,7 @@ The two products share the catalogue, source model and browser integration. Lens
 | Standard and enhanced portal exports | Source mapping and local import of pages, templates and configuration | Incomplete or ambiguous exports produce diagnostics. |
 | `.powerpages-site` code-site exports | Source import and supported resource handling | SPA application builds and deployment use their own tooling. |
 | Liquid, FetchXML, Web API, forms and lists | Local implementations driven by export and Solution metadata | Local behavior is a simulation; use recorded comparisons for parity claims. |
-| Dataverse business behavior | Synthetic rows, supported exported operations and registered project extensions | Dataverse plugins, external connectors and complex workflows require explicit project models. |
+| Dataverse business behavior | Synthetic rows, supported exported operations, trusted handlers and explicitly configured original CLR plugins | Unsupported SDK services, external connectors and complex workflows need explicit project models. |
 | Browser automation | Origin-confined session, page, event, snapshot and navigation APIs | Live browser actions still use the portal's backend. |
 
 The [Mirage reference](../mirage/docs/README.md) describes each runtime contract and its evidence. Microsoft's [developer tools](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) remain part of the source and release workflow.

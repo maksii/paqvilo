@@ -49,7 +49,16 @@ Run lifecycle commands with the same catalogue or `--project` used to start the 
 
 Use `/_sim/#platform` for simulated Dataverse rules and `/_sim/#overrides` for instance-specific site settings/snippets. Save/import configuration presets and use separate state files to test one source checkout concurrently. See [configuration experiments](docs/configuration-experiments.md) for supported settings, support-managed limits, coverage and APIs.
 
-Local identity comes from a per-runtime cookie. The `_sim` session and Lense Tweaks control only that browser's identity. Your project tests can use the public [session helpers](testing/session.mjs) to sign requests or browser contexts in explicitly. The [project starter](../examples/project/README.md) demonstrates an external pack and a test against invented sources.
+Local identity comes from a per-runtime cookie. The `_sim` session and Lense Tweaks control
+only that browser's identity. [Persona catalogues](docs/persona-catalog.md) add grouped
+selection, custom presentation and isolated setups for profiles, variables and overrides.
+Use the [public testing API](../docs/public-api.md#test-many-visitors-concurrently) for
+independent automated visitors. The [project starter](../examples/project/README.md)
+demonstrates an external pack and a test against invented sources.
+
+Large state files use streamed checkpoints and row journals. Read them with the public
+`readStateFile` API, and use separate state paths for independent runtimes. See
+[state storage](docs/state-storage.md) for persistence, concurrency and memory limits.
 
 ## Understand the simulation boundary
 

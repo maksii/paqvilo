@@ -75,7 +75,7 @@ The allowlist (`allowlist.json` in the project) lists the differences that are e
 There are two kinds of allowlist proof (a third explanation, evidence age, follows below):
 
 - **`platform-generated`.** The platform produces the value, and Mirage cannot derive it from the exported sources. Examples: hosting and transport headers, request and correlation ids, build hashes, platform runtime script bodies, and platform metadata ids. The entry cites the Learn page or the live evidence that shows it.
-- **`live-run-variance`.** The value differs between two independent live captures of the same scenario. Examples: anti-spam field names, per-run instance ids, and creation stamps. When compare runs with `--second-live` and a scenario has a captured second live folder (a *paired* scenario), the deltas between the two live captures are classified against the same allowlist; the entries they match are *witnessed* in that scenario (`variance.entries` in its `diff.json`). The live-vs-live comparison covers requests, DOM, frames and elements; console entries are excluded. The proof is per entry within the scenario, not per exact location, because the varying token often sits in an element id, a posted field name or a request index. In a paired scenario, a live-run-variance entry explains a Mirage delta only when it is witnessed there; any other delta it would cover is reported as `unprovenVariance` and stays unexplained. In an unpaired scenario, and in every scenario of a run without `--second-live`, the entry explains its deltas unconditionally, on the strength of the variance evidence from the paired scenarios. Nothing marks an entry pending: the report's `variance` section is the proof to read. It lists, per entry, the paired scenarios it explains a delta in, the scenarios that witnessed it, and the unproven scenarios and deltas. An entry that no paired scenario witnesses has no proof yet; the variance subset (D13) exists to pair it. A delta whose exact location and field also differ between the live captures carries `liveVariance`.
+- **`live-run-variance`.** The value differs between two independent live captures of the same scenario. Examples: anti-spam field names, per-run instance ids, and creation stamps. When compare runs with `--second-live` and a scenario has a captured second live folder (a *paired* scenario), the deltas between the two live captures are classified against the same allowlist; the entries they match are *witnessed* in that scenario (`variance.entries` in its `diff.json`). The live-vs-live comparison covers requests, DOM, frames and elements; console entries are excluded. The proof is per entry within the scenario, not per exact location, because the varying token often sits in an element id, a posted field name or a request index. In a paired scenario, a live-run-variance entry explains a Mirage delta only when it is witnessed there; any other delta it would cover is reported as `unprovenVariance` and stays unexplained. In an unpaired scenario, and in every scenario of a run without `--second-live`, the entry explains its deltas unconditionally, on the strength of the variance evidence from the paired scenarios. Nothing marks an entry pending: the report's `variance` section is the proof to read. It lists, per entry, the paired scenarios it explains a delta in, the scenarios that witnessed it, and the unproven scenarios and deltas. An entry that no paired scenario witnesses has no proof yet; the variance subset exists to pair it. A delta whose exact location and field also differ between the live captures carries `liveVariance`.
 
 ### Evidence age (third kind)
 
@@ -112,37 +112,25 @@ The report's `evidenceChanges` section and `summary.md` list each change with it
 
 ## Decisions that shape the comparison
 
-- **Shared site settings stay as they are (D8).** The fixture never changes the reference site's global settings, default roles or shared snippets. Their live values are recorded as observed values. Mirage derives them from the same export, like everything else it renders, so a settings difference is fixed in Mirage, never by changing the shared site.
-- **Platform runtime assets (D10).** Live serves the platform's runtime scripts, `WebResource.axd` and the ResourceManager strings. These bodies are absent from the export. Mirage ships local equivalents by design and never copies live bodies. One reviewed entry per asset family explains the body deltas (`platform-runtime-script-bodies`, `resource-manager-body`). The requests themselves, their order and their presence are still compared.
-- **Process (D12).**
+- **Shared site settings stay as they are.** The fixture never changes the reference site's global settings, default roles or shared snippets. Their live values are recorded as observed values. Mirage derives them from the same export, like everything else it renders, so a settings difference is fixed in Mirage, never by changing the shared site.
+- **Platform runtime assets.** Live serves the platform's runtime scripts, `WebResource.axd` and the ResourceManager strings. These bodies are absent from the export. Mirage ships local equivalents by design and never copies live bodies. One reviewed entry per asset family explains the body deltas (`platform-runtime-script-bodies`, `resource-manager-body`). The requests themselves, their order and their presence are still compared.
+- **Process.**
   - Fix findings as they arrive.
   - Prove each fix with a targeted capture of the scenarios it touches, then verify the evidence.
   - Recapture broadly only the scenarios the verified state changes.
   - Never run a broad recording or compare over an area whose fix is unverified. One unfixed cause repeats across scenarios and forces rerun after rerun.
   - One client owns the live browser bridge at a time.
-- **A change is captured once (D15).** A live change, such as a fixture upload, a role change or new rows, is captured on one representative scenario per affected component, not on every page it touches. The change and its proof scenarios are recorded for the evidence-age explanation above.
-- **No blanket recaptures (D13).** Every live run works from a reviewed list derived from the evidence. The variance proof follows the same rule: the second live run captures the fewest scenarios such that each live-run-variance entry is witnessed in two paired scenarios, chosen from the current `diff.json` files and recorded as an entry-to-scenario map in the project.
+- **A change is captured once.** A live change, such as a fixture upload, a role change or new rows, is captured on one representative scenario per affected component, not on every page it touches. The change and its proof scenarios are recorded for the evidence-age explanation above.
+- **No blanket recaptures.** Every live run works from a reviewed list derived from the evidence. The variance proof follows the same rule: the second live run captures the fewest scenarios such that each live-run-variance entry is witnessed in two paired scenarios, chosen from the current `diff.json` files and recorded as an entry-to-scenario map in the project.
 
-## Current state
+## Reading project results
 
-Final comparison of 2026-10-16 (all 257 scenarios, with the allowlist and the recorded evidence changes):
+Comparison results belong to the tested project and revision. Generate a fresh `summary.md`
+for your run rather than treating this guide or the bundled offline reference as a release
+qualification. Native and local captures can contain genuine rendering differences as well
+as stale evidence; inspect both before deciding whether a fix is needed.
 
-- Unexplained deltas: 10,487. Zero unexplained was not reached.
-  - 986 of them are in the 65 scenarios whose live capture postdates the item form fix (O17). These are the live signal for what Mirage still renders differently.
-  - 9,501 are in the 192 scenarios whose live capture is older. Their remaining deltas mix real Mirage differences with older live markup that no recorded change explains.
-- Scenarios with zero unexplained deltas: 77 (verdict `ALLOWED`). No scenario has zero deltas (`PASS` 0); 173 fail and 7 are errors. The seven errors are the states the reference portal cannot show: the two geolocation forms, the multistep insert submit, back and resume, and the survey and portal-user back steps.
-- Allowlist entries: 100, which explain 189,859 deltas.
-- Evidence age: 6 recorded changes, all accepted by their proof scenarios, explain 74,542 deltas: administrator role removal 6,010, item form fix 61,416, stepped insert form 0, sort rows 275, fake map key 146, frame inventory 6,695.
-
-The largest unexplained families in the post-fix scenarios are:
-
-- element-presence and child-count differences in form cell wrappers;
-- platform script and stylesheet requests (`ScriptResource.axd`, the ResourceManager, the site's theme stylesheets) that live loads on inactive-record and success pages and Mirage does not;
-- the `/_portal/quickform-template-path/` request of quick view forms;
-- a repeated `entity-form` class token;
-- blank `label` attributes on empty duration and language options;
-- visibility of the modal details dialog's list items;
-- lookup Select button disabling;
-- the home page's navigation order.
-
-Read the per-scenario verdicts and signatures in the project's `summary.md`. The reasons for states the reference portal cannot show are in the [reference](reference.md).
+Read the totals for `PASS`, `ALLOWED`, `FAIL` and `ERROR`, then inspect unexplained signatures,
+unproven variance and stale evidence. An allowlisted scenario is not identical output, and
+accepted evidence-age explanations are not observed parity. Unreachable states retain their
+not-observed reasons. These tools do not currently compare screenshots for pixel equality.

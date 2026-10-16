@@ -78,6 +78,12 @@ With only a portal export, Inspect resolves portal components, snippets, web fil
 
 ## Automation and evidence
 
+Projects with a [persona catalogue](../mirage/docs/persona-catalog.md) can search and filter
+named personas and scenarios in the panel. In live Lense, selection uses the portal's own
+sign-in flow; it does not issue native identity tokens for a synthetic contact. In Mirage,
+scenarios can open isolated local setups with their own profile, variables and overrides.
+Keep live identity mappings and scenario tests in the project.
+
 Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/agents`. Use `agent sessions` to locate a session; `status`, `pages`, `events`, `state`, `snapshot` and `screenshot` inspect it. Page IDs are different from offline resource IDs. Agent control is origin-confined and has no arbitrary evaluation or proxy endpoint. Consume `nextSequence` and report dropped events.
 
 Inspect applied resources, unmatched markup patches, deployment requirements, errors and failed requests after refresh. Audit coverage reports source classification, not successful navigation or browser application. A sign-in page is not successful target coverage. `verify --signed-in` requires closing the matching dev identity first; headed sign-in can be bounded with `--sign-in-timeout`.

@@ -1,6 +1,6 @@
 # Native component baseline
 
-The baseline measures how closely Mirage renders native Power Pages components compared with a real portal. It also lets you run the same measurement against your own portal. It is unrelated to the [compatibility baseline](../mirage/docs/compatibility-baseline.md), which is a test checkpoint of ordinary Lense and Mirage flows.
+The baseline measures how closely Mirage renders native Power Pages components compared with a real portal. It also lets you run the same measurement against your own portal. It is unrelated to the [compatibility baseline](../mirage/docs/compatibility-baseline.md), which summarizes local regression coverage for ordinary Lense and Mirage flows.
 
 ## What it is
 
@@ -33,6 +33,6 @@ You need an environment you are authorised to change, and a site you can upload 
    - the allowlist, the reasons file, the recorded live changes (`evidence-changes.json`) and the evidence
 2. **Provision the fixture and upload the site**, then download the export. Use the scripts in `examples/project/baseline/` and your PAC profile.
 3. **Generate the matrix** from the fixture manifest and your project file.
-4. **Capture live, capture Mirage, then compare** with `mirage/baseline-suite.mjs`.
+4. **Capture live, capture Mirage, then compare** with `paqvilo mirage baseline-suite`.
 
-The [runbook](../mirage/docs/baseline/rerun.md) lists every command in order. It also covers the prerequisites (PAC, a private Dataverse connection, the signed-in browser profile and its bridge token) and the live caching behaviour to plan for: role additions and page markup can lag behind a role change. Your results stay in your project: keep the toolkit generic.
+The [runbook](../mirage/docs/baseline/rerun.md) explains project inputs and the supported capture/compare commands. It also covers the prerequisites (PAC, a private Dataverse connection, the signed-in browser profile and its bridge token) and the live caching behaviour to plan for: role additions and page markup can lag behind a role change. Your results stay in your project: keep the toolkit generic.

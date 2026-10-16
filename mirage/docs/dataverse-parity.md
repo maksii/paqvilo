@@ -67,7 +67,7 @@ An explicitly registered trusted pack can supply evidenced reader-specific error
 
 Project parity runners should retain field-by-field requests, status, stored values after both accepted and rejected writes, rendered values, search results and cleanup outcomes. Keep reference cookies, tokens and opaque native hidden-field values out of evidence. Record generated identifiers and timestamps without treating independently generated values as literal mismatches; declare any comparison normalization and retain raw results.
 
-Mirage's native form service uses local JSON submission. Native Power Pages uses framework postbacks, view state and redirects. Transport differences and framework error-detail differences remain diagnostics even when validation, persistence and rendering match. Passing a bounded input corpus does not establish complete penetration-test coverage or compatibility with every Dataverse operation.
+Forms post back to the page by default, with an optional local JSON transport. Mirage does not reproduce opaque ASP.NET view-state or event-validation blobs. See [forms and lists](forms-lists-parity.md) for transport, validation and persistence behavior. Compare saved values and rendered results separately from transport details.
 
 ### Observed portal culture-parsed dates
 
@@ -88,14 +88,7 @@ annotation only. True DateOnly columns use the Edm.Date reader: ISO calendar dat
 whitespace and impossible dates are rejected before persistence. Fractions truncate to
 the platform's stored second precision without rounding into the next second.
 
-An earlier parser-only development check was insufficient to close stored-value parity.
-It was superseded on 2026-10-15 by an isolated native fixture covering all five supported
-behavior/format combinations: 170 cases with POST, PATCH, portal readbacks and 340
-independent backend comparisons. The bounded comparison checks write/read statuses,
-stored values, formatted annotations, inner error codes and rejected-write atomicity.
-One transient native GET 500 remains recorded separately from its successful reread.
-Full error text/stacks, native form controls, Liquid/query timezone semantics and other
-cultures are outside that comparison. No universal date/time parity is inferred.
+These rules cover a bounded Web API input contract. They do not establish every .NET culture, native datepicker/form submission, full error text or Liquid/query timezone semantics. Compare those separately for your site.
 
 UserLocal formatted annotations can use project-owned
 `settings.formattedValueTimeZone: { evidence, rules }`, where `rules` contains the

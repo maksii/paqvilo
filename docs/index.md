@@ -15,6 +15,9 @@ Paqvilo provides local-first, pro-code tools for Microsoft Power Pages. Start wi
 | Render exported pages locally | [Mirage](../mirage/README.md) |
 | Set sources, environments and browser choices | [Configuration](configuration.md) |
 | Add personas, datasets and acceptance tests | [Project starter](../examples/project/README.md), [extensions](project-extensions.md) |
+| Integrate tests or other tools | [Public API](public-api.md) |
+| Provision project-owned Dataverse schema and data | [Dataverse tooling](dataverse-provisioning.md) |
+| Upgrade or test a branch build | [Release notes](release-notes.md), [preview packages](branch-packages.md) |
 | Use the browser agent API | [Lense automation](lense.md#automation-and-evidence) |
 | Compare Mirage with a live portal on native components | [Native component baseline](baseline.md) |
 | Understand support and project boundaries | [Architecture](architecture.md) |

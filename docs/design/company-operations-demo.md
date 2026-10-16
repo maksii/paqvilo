@@ -1,14 +1,12 @@
-# Company Operations Solution Implementation Specification
+# Company Operations example: data model
 
-Revision 5, 13 October 2026. Dataverse structure specification, with implemented project sources and qualification described in the [project guide](../../examples/company-operations/README.md). This specification supersedes the previous workspace proposal and its role explorer.
+Reference design for the synthetic [Company Operations example](../../examples/company-operations/README.md). The example owns its schema, fixtures and qualification tools; reusable provisioning remains in Paqvilo's [Dataverse API](../dataverse-provisioning.md).
 
-Build an organisation, workforce, equipment and maintenance schema with simultaneous memberships/engagements, twelve combinable roles, and a permission relationship path eleven tables deep. Include Dataverse forms and saved views for later portal use. The permission blueprint is a structural contract: tables alone do not activate Power Pages permissions.
+The model covers organisation, workforce, equipment and maintenance records, simultaneous memberships, twelve combinable roles and deep permission paths. Its [permission harness](power-pages-permission-test-harness.md) and [plugin laboratory](dataverse-plugin-observation.md) define independent browser and backend observations. These are model contracts, not proof of a particular tenant's installed state or permissions.
 
-The [Power Pages Permission Test Harness Specification](power-pages-permission-test-harness.md), revision 4, covers paired Liquid/Web API queries, CRUD probes and Contact-scoped run history. The [Dataverse Query and Plugin Behaviour Specification](dataverse-plugin-observation.md), revision 3, adds incoming-query capture, nested SDK pipelines, configuration/cloud tests and server evidence. Together these are the three implementation documents; the observable currency reference adds one custom reference table while preserving the eighteen operational custom tables and no-general-Delete policy.
+## Components and scope
 
-## Deliverables and scope
-
-Own this example in a separate project, provisionally `examples/company-operations/`, with its own package and checks. Deliver unpacked solutions `PaqviloCompanyOperationsCore` for tables/relationships/choices/keys and `PaqviloCompanyOperationsForms` for forms/views, the latter depending on Core. Use publisher prefix `pqvd`, option value prefix `18327`, version `1.0.0.0` and language `1033`. Include invented seed data, a stable component ID registry, relationship inventory and machine-readable permission blueprint in the project.
+The separate `examples/company-operations/` project has its own package and checks. Its unpacked solutions are `PaqviloCompanyOperationsCore` for tables/relationships/choices/keys and `PaqviloCompanyOperationsForms` for forms/views, the latter depending on Core. Use publisher prefix `pqvd`, option value prefix `18327`, version `1.0.0.0` and language `1033`. Include invented seed data, a stable component ID registry, relationship inventory and machine-readable permission blueprint in the project.
 
 The [Dataverse provisioning toolkit](../dataverse-provisioning.md) supplies an npm API/CLI, a [project-owned schema manifest](../../examples/company-operations/dataverse/manifest.json) and a [merged fixture catalogue](../../examples/company-operations/data/stress-catalogue.json). Create metadata in Dataverse through the API, then export/unpack the server-generated solutions. The manifest covers tables, columns, relationships, choices and keys; separate project modules own forms/views, website security/pages and plugins. The data toolkit supports additive loading, comparison and paged backend retrievals. Do not hand-author table XML as a substitute for server creation/export.
 
@@ -394,9 +392,9 @@ Manifest aliases include A-RIV, A-HILL, A-EAST, B-LAKE, C-STUDIO, assets EQ-A-RI
 
 At least one persona for each single role plus these combination scenarios. The same Contact can appear in reset scenario variants. Role conflicts are cases to explain, not reasons to discard assignments.
 
-## Implementation acceptance and review result
+## Validation contract
 
-The implementation agent starts with solution metadata; no portal is needed. Include components explicitly in their intended solutions and preserve sibling fields/identities in any existing source. Deliver:
+Validate metadata independently from portal behavior. Components must belong to their intended solutions; updates preserve sibling fields and record identities. Check:
 
 1. Eighteen custom tables, specified standard extensions, seventeen choices, twelve role records, all keys, listed 1:N edges plus twelve principals, and five N:N relationships. Registry includes logical/schema names, GUIDs, entity sets, navigation/intersect columns, solution ownership and language.
 2. All forms/public views above, custom Lookup/Quick Find adjustments and stable IDs. Standard Account/Contact default forms/views remain intact. Portable forms/views exclude private/security/hidden-ancestor fields.
@@ -405,6 +403,6 @@ The implementation agent starts with solution metadata; no portal is needed. Inc
 5. Offline graph/metadata checks: all referenced fields exist; no required fixture lookup dangles; key components are non-null/unique; choice values valid; organisation and permission graphs acyclic; relationship ancestry stays role-specific; mandatory path counts eleven nodes/ten Parent edges; form/view fields and subgrids resolve. Cycles in the business relationship graph, such as equipment/current-assignment, are intentional and are not permission-tree cycles.
 6. Solution pack/schema check and dependency report where local tooling supports them. Environment import validation is separately authorised; archive creation is not an import pass. Run project checks in its own package. A reusable runtime change, if needed later, requires regression tests and toolkit `npm run validate`.
 
-The design review corrected the earlier one-active-engagement rule, role-combination ban, insufficient counted depth, generic role-field authorization assumption, shared Contact bridge, missing form/view inventory and UI/PCF scope. The project guide separates implemented target-site observations from model expectations and external dependencies. Future consumers must test role-root relationship selection, collisions/provenance, N:N traversal, deep GET/FetchXML behaviour, associations and revocation on their site/version.
+The project guide separates observed target-site behavior from model expectations and external dependencies. Qualify role-root relationship selection, collisions, N:N traversal, deep queries, associations and revocation against each intended site/version.
 
-Source5 is a separate qualification cohort: the support solution adds nullable `pqvd_crudprobe.pqvd_equipmentid` through `pqvd_equipment_crudprobes`, with RemoveLink Delete and no other cascading behavior. It introduces no table or permission grant and preserves all 253 permission node IDs. Money/currency reference design stays unchanged. See the [harness specification](power-pages-permission-test-harness.md) for the second Room and cooperating probe fixtures and the [plugin specification](dataverse-plugin-observation.md) for their exact intent/actor/Before-image guard contracts. Current source4 frozen inputs remain the baseline until source5 metadata is provisioned and independently recorded.
+Source5 is a separate qualification cohort: the support solution adds nullable `pqvd_crudprobe.pqvd_equipmentid` through `pqvd_equipment_crudprobes`, with RemoveLink Delete and no other cascading behavior. It introduces no table or permission grant and preserves all 253 permission node IDs. Money/currency reference design stays unchanged. See the [harness specification](power-pages-permission-test-harness.md) for the second Room and cooperating probe fixtures and the [plugin specification](dataverse-plugin-observation.md) for their exact intent/actor/Before-image guard contracts. Each schema revision needs its own provisioned metadata and independent recordings.

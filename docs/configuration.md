@@ -1,12 +1,97 @@
 # Configuration
 
-Use `paqvilo setup --open` to view readiness and edit these settings in the local `/_setup/` workspace, even before a preview can start. Generated projects provide `npm run configure`. Mirage also serves `/_setup/` beside `/_sim/`; Lense prints a separate local URL. Saves apply at the next start. See [the setup workspace](setup.md).
+Keep a shared `paqvilo.config.yml` in your portal project. It connects source exports,
+live environments and local runtimes. Start with [project scaffolding](project-scaffold.md),
+or run `paqvilo setup --open` to edit an existing or incomplete project in the local
+[setup workspace](setup.md).
 
-For a new consumer project, use [paqvilo init](project-scaffold.md) to generate the catalogue and its surrounding scripts/tests. Unknown source paths and development URLs carry `TODO(paqvilo-init):` markers. Run `paqvilo init --check` to list markers with file/line, catalogue schema failures, inert placeholder origins, missing pack modules and missing source/Solution folders. The check is read-only and does not execute pack modules. It exits one while any item remains; `lense doctor` adds a nonfatal reminder for unfinished generated projects. Personal settings still follow the precedence below.
+## Select a catalogue
 
-## Local project additions (0.9.4)
+Pass `--config <file>` when running outside your project. Otherwise Paqvilo uses the working
+directory's catalogue, falling back to the bundled example when none exists. The bundled
+live URL is an inert placeholder; configure your own environment before using Lense.
 
-Configure these in `defaults.mirage` or `sites.<id>.mirage`, including in ignored `paqvilo.config.local.yml`:
+```yaml
+sourceRoot: ./sources
+defaultSite: portal
+portals: selected
+sites:
+  portal:
+    source: portal-export
+    defaultEnv: dev
+    environments:
+      dev: https://your-portal.example.test
+      production:
+        url: https://production.example.test
+        caution: true
+    mirage:
+      port: 8787
+      solutionRoots: [../solutions/Core]
+      dataPacks:
+        - id: sample-data
+          module: ./pack/pack.mjs
+      preset: sample-data
+      presetMode: bootstrap
+```
+
+The pack and preset above are project-owned examples; register only modules you trust.
+
+| Path | Resolved from |
+| --- | --- |
+| `sourceRoot` | Catalogue directory |
+| Site `source` and `mirage.solutionRoots` | Resolved source root |
+| Pack modules, `mirage.project`, local head assets | Catalogue directory |
+| `--repo` | Invoking working directory; overrides `sourceRoot` |
+| Paths inside a standalone Mirage project | That project file's directory |
+
+Use `--source` for a direct export path. Live Lense Inspect can read the selected Solution
+roots without starting Mirage or loading pack code. Missing managed metadata is reported.
+
+## Personal settings and worktrees
+
+Settings resolve in this order, highest priority first:
+
+1. CLI options.
+2. Shell `PAQVILO_*` variables.
+3. `.env` beside the selected catalogue.
+4. `paqvilo.config.local.yml` beside that catalogue.
+5. The shared catalogue.
+
+Ignore personal configuration, `.env` and `.paqvilo/`. Common environment choices include
+`PAQVILO_REPO`, `PAQVILO_SITE`, `PAQVILO_ENV`, `PAQVILO_BROWSER`, `PAQVILO_PROFILE`,
+`PAQVILO_SCOPE` and `PAQVILO_BASELINE`.
+
+`paqvilo lense list --settings` shows available settings and their origins.
+`paqvilo lense list --json` exposes resolved site/source paths; programmatic integrations
+can use [`resolveCatalogue`](public-api.md#resolve-editor-paths).
+
+Linked worktrees do not automatically inherit another checkout's `.env`. Use an external
+shared project catalogue with personal overrides beside it, or set explicit shell values.
+Refresh generated editor paths with `paqvilo init --refresh-editor` after changing checkouts.
+
+Browser profiles keep identities separate. Attaching to an existing profile requires its
+explicit user-data root and child directory; attached CDP browsers remain user-owned.
+See [Lense](lense.md) for the edit/preview workflow.
+
+## Local runtime options
+
+Use `defaults.mirage` for shared defaults and `sites.<id>.mirage` for site overrides.
+Unknown settings are rejected. The setup workspace's YAML editor supports these settings.
+Restart running previews after configuration changes.
+
+| Setting | Purpose and reference |
+| --- | --- |
+| `dataPacks`, `preset` | Explicit project modules and seed data; [data packs](../mirage/docs/data-packs.md) |
+| `presetMode` | `bootstrap` keeps an existing state; `always` reapplies the selected preset at startup. Status reports the decision. |
+| `render.timeLimitMs` | Local Liquid budget, default 60,000 ms; [render limits](public-api.md#render-local-pages-within-a-budget) |
+| `deploymentProfiles` | Select exported environment settings; [deployment profiles](../mirage/docs/deployment-profiles.md) |
+| `personaContexts` | Bound isolated scenario copies; [persona setups](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios) |
+| `identityProvider` | Local chooser text, layout and project assets; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
+| `platform` | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md) |
+| `compat`, `head` | Local adapters and assets, described below |
+| `observed` | Evidenced platform conventions absent from exports, described below |
+
+### Local assets and compatibility
 
 ```yaml
 mirage:
@@ -17,68 +102,63 @@ mirage:
     scripts: [./local/flags.js]
 ```
 
-Files resolve from the catalogue directory and must exist inside that project, including after resolving symlinks. They are served under `/_sim-local/head/` and injected before platform/authored scripts. Doctor, status and page diagnostics identify these local-only additions. They never modify exports. Supported boolean adapter names: `footerSpacing`, `dateFormat`, `dateTimePicker`, `bootstrapPlugins`, `jqueryUiDialog`, `jqueryUiWidgets`, `blockUi`, `entityGrid`, `platformApp`, `webForms`. Unknown names are errors. Disabling a fallback omits it from standalone scripts and local platform bundles. Authored and captured scripts remain controlled by the site's sources/capture.
+These project files must exist inside the catalogue directory, including after resolving
+symlinks. They are served under `/_sim-local/head/` before platform/authored scripts.
+Doctor, status and page diagnostics identify them as local-only; exports are never edited.
 
-Your catalogue connects the toolkit to your sources and environments. Keep it in your portal project so the same configuration works with an installed package or a separate toolkit checkout. If this is your first setup, follow [getting started](getting-started.md).
+Boolean adapter switches are `footerSpacing`, `dateFormat`, `dateTimePicker`,
+`bootstrapPlugins`, `jqueryUiDialog`, `jqueryUiWidgets`, `blockUi`, `entityGrid`,
+`platformApp` and `webForms`. Disabling a fallback removes it from toolkit injection and
+local platform bundles. Authored and captured scripts retain their own behavior.
+See [platform resources](../mirage/docs/platform-resources.md) for explicit shell capture.
 
-Pass `--config /path/to/your-project/paqvilo.config.yml`. Without it the toolkit uses the working directory's `paqvilo.config.yml` when present, otherwise its bundled example catalogue. The bundled example URL is an inert placeholder and must be replaced before connecting to a live portal.
+## Observed platform behavior
 
-CLI choices override shell `PAQVILO_*` variables, then `.env` next to the selected catalogue, then `paqvilo.config.local.yml`, then the shared catalogue. The local catalogue and `.env` must be ignored in your project. Use `paqvilo lense list --settings` for supported settings and their resolved origins. Unknown settings fail rather than silently changing behavior.
+An `observed` mapping records behavior unavailable from exports. Every observation needs
+an `evidence` reference from the site being modeled. Do not copy another site's observations
+merely because both use Power Pages. Omitted settings retain their defaults.
 
-```yaml
-sourceRoot: ./sources
-defaultSite: customer
-portals: selected
-sites:
-  customer:
-    source: customer-portal
-    defaultEnv: sandbox
-    environments:
-      sandbox: https://your-portal.example.test
-      production: { url: https://production.example.test, caution: true }
-    mirage:
-      port: 8787
-      solutionRoots: [../solutions/Core, ../solutions/Extension]
-      dataPacks:
-        - { id: customer-demo, module: ./pack/pack.mjs }
-      preset: customer-demo
-```
+| Convention | Settings and scope |
+| --- | --- |
+| Sign-in and site visibility | `loginPath` supplies a site-relative fallback when the export omits the login setting. `siteVisibility: private` displays the private-site banner. |
+| Microsoft Entra authority | `azureAdAuthority` names one evidenced tenant authority when the exported AzureAD setting is absent. Shared tenant aliases and placeholders are rejected. |
+| Portal-created row identity | `portalApplicationUser` and `portalApplicationUserId` identify the application's display name and systemuser GUID; exports do not supply them. |
+| List OData feeds | `listODataFeeds: removed` is the default; use `served` only with evidence that the site still serves them. |
+| Web API dates | `webApiDateParsing: month-first` and optional `webApiTwoDigitYearMax`; see [date input contracts](../mirage/docs/dataverse-parity.md#observed-portal-culture-parsed-dates). |
+| Web API errors | `webApiErrorDetails: odata-wrapper` selects supported stable reader messages. `webApiErrorStacks: response-template` additionally needs exact trusted pack templates and visible source inner errors; see [data packs](../mirage/docs/data-packs.md). |
+| Page-query validation | `requestValidation: aspnet-query` rejects supported dangerous decoded GET query values before Liquid. It does not scan API JSON, form bodies or cookies. |
+| Page error presentation | `pageErrorPresentation: generic-error` selects the supported generic GET-query error page. It does not reproduce full hosted HTML or unrelated errors. |
+| Exported SDK facts | `sdkMessages` maps exact exported message GUIDs to `{ name, evidence }`; `pluginSources` maps exact C# type names to `{ path, evidence }`. Paths stay inside the selected source/project root. |
 
-`sourceRoot` resolves from the catalogue directory. `source` and `solutionRoots` resolve from that root. `--repo` overrides `sourceRoot` and resolves from the invoking working directory. `mirage.project` and data-pack modules resolve from the catalogue directory. A generated Mirage project records its own relative inputs. Explicit `--source` selects an exported portal directly.
+The table highlights common options rather than every adapter convention. Detailed form,
+Liquid, query and plugin contracts live in the [Mirage reference](../mirage/docs/README.md).
+Observations do not grant access, execute CLR assemblies or prove whole-response parity.
 
-Live Lense **Inspect** also reads `mirage.solutionRoots` or the matching portal's sources in `mirage.project`. No local runtime or data-pack code is started for inspection. Without Solution sources, portal dependencies remain inspectable and missing form/view/field definitions are reported explicitly.
+## State and several sites
 
-Use `portals: all` to support every configured target in one browser. Origins activate on visit, and `--site` selects the first portal. Each Mirage site has its own port and state; choose distinct ports or `0` for a free one. `--portals selected` limits lifecycle operations to one site. `--port`, `--state`, `--preset` and repeated `--solution-root` overrides apply to the selected site.
+`portals: all` makes configured targets available in one browser. Origins activate on visit;
+`--site` selects the first portal. Use `--portals selected` to limit lifecycle operations.
+Each Mirage site has its own port, state and session cookie. Choose distinct fixed ports
+or `0` for a free port. Port/state/preset/Solution CLI overrides apply to the selected site.
 
-Mirage projects use `version: 2`, `primaryPortal`, `portals`, `solutions`, `references` and `dataPacks`. Each portal specifies `{ id, path, origin?, solutions?, reference?, deploymentProfile?, observed?, dataModel? }`; Solutions specify `{ id, path }`; references specify `{ id, origin, default? }`. Paths are project-relative and every portal gets isolated state. References provide explicit selection context and never authorize network reads or writes. Solution sets are layered in dependency order; `solutionOrder: explicit` preserves a deliberately ordered list.
+Runtime discovery, logs and generated projects live under `.paqvilo/` beside the catalogue.
+A standalone `--project` uses its own directory. Use the same scope for `mirage status`
+and `mirage stop`, especially when running from another directory. Direct Mirage commands
+also accept `--state-dir` for explicit discovery/state storage.
 
-Mirage also supports [mapped deployment profiles](../mirage/docs/deployment-profiles.md):
-`mirage.deploymentProfiles` in a catalogue, or `deploymentProfiles` at project/portal level.
-Map named profiles to Pages and Solution settings files, choose defaults and required sections,
-then select and pin a local profile under `/_sim/` → Environment.
+Multiple visitors can share one runtime with independent cookies; configuration and records
+remain shared. Independent scenarios need separate state files or persona contexts.
+See [concurrent testing](public-api.md#test-many-visitors-concurrently) and
+[state storage](../mirage/docs/state-storage.md).
 
-An `observed` mapping records only behavior not available from exports. Supported fields include login-path, Web API and response-header conventions; validation requires an evidence reference. Use your site's own captured evidence. Never copy another organisation's observations merely because both sites use Power Pages.
+## Standalone Mirage projects
 
-`observed.webApiErrorDetails: odata-wrapper` selects evidenced stable OData reader exception messages for supported JSON root and primitive conversion failures. `diagnostic` is the default. The setting preserves HTTP status, rejection and write atomicity; inner messages remain gated by `Webapi/error/innererror`. It adds no CLR stack, source path or generated runtime exception details and does not change SDK or flow errors. Unsupported reader grammar retains its existing diagnostic. Record native message evidence for the site before enabling it; full hosted stack and response-body equality remain separate checks.
+Version 2 Mirage project files contain `primaryPortal`, `portals`, `solutions`, `references`
+and `dataPacks`. Portals specify `{ id, path, origin?, solutions?, reference?, deploymentProfile?,
+observed?, dataModel? }`; Solutions specify `{ id, path }`; references specify
+`{ id, origin, default? }`. Paths are project-relative and each portal has isolated state.
+References select context without authorizing network reads or writes. Solutions are layered
+in dependency order; `solutionOrder: explicit` preserves an explicitly ordered list.
 
-`observed.webApiErrorStacks: response-template` separately enables exact error suffixes supplied by an explicitly registered matching trusted pack's `webApiErrorTemplates`. The default is `diagnostic`; this option also requires `odata-wrapper`, site evidence and source inner-error visibility. Packs bind value-free reader descriptors to bounded CRLF suffixes with captured-source, fresh-variation and suffix hashes. The project verifies these receipts before exporting templates. This emulates captured response formatting and does not execute CLR code or establish whole JSON/body equality. See [the pack contract](../mirage/docs/data-packs.md).
-
-`observed.requestValidation: aspnet-query` rejects dangerous decoded GET page-query values before Liquid renders, using the string scanner from [Microsoft's .NET reference source](https://github.com/microsoft/referencesource/blob/main/System.Web/CrossSiteScriptingValidation.cs). It returns a fixed HTTP 500 diagnostic without echoing input. The default `diagnostic` mode retains existing handling. This option does not scan other request methods, Web API JSON, form bodies, or cookies, and does not reproduce a hosted .NET stack or full error page. Record native GET query rejection evidence for the site before enabling it; broader native grammar and method coverage remain separate validation tasks.
-
-`observed.pageErrorPresentation: generic-error` with `observed.evidence` selects the captured generic title, heading, local Error ID and fixed visible rejection message for GET page-query validation errors with HTTP 500. Its default is `diagnostic`. It does not change validation or apply to other exceptions, methods or API routes. Full hosted error HTML, styles, scripts and custom error snippets remain separate parity obligations.
-
-Core knows the platform-wide ids of the Create, Update, Delete, Retrieve and RetrieveMultiple SDK messages; for other exported message ids, `observed.sdkMessages` maps exact message GUIDs to `{ name, evidence }`. `observed.pluginSources` maps an exported full C# type name to `{ path, evidence }`. Paths resolve inside the catalogue source root or Mirage project folder; use a relative regular `.cs` file. These mappings provide source navigation and documented message identity, not .NET execution. See the [plugin reference](../mirage/docs/dataverse-plugins.md#configure-source-facts).
-
-`observed.siteVisibility: private` renders the platform's private-site banner first in the layout body; site visibility is set in the admin center and is not exported. The default `public` renders none.
-
-`observed.loginPath` is the site-relative sign-in path the platform redirects to when the export sets no `Authentication/ApplicationCookie/LoginPath`, such as `/SignIn`.
-
-`observed.azureAdAuthority` is the authority the built-in Microsoft Entra provider posts when the export carries no `Authentication/OpenIdConnect/AzureAD/Authority`. It must name one tenant (`https://login.windows.net/<tenant>/`); placeholders, `common` and `organizations` are rejected.
-
-`observed.portalApplicationUser` and `observed.portalApplicationUserId` are the display name and systemuser GUID of the site's application user. The platform records that user as the creator of notes and records the portal creates, and no export holds it.
-
-`observed.listODataFeeds` is `removed` (the platform default since list OData feeds were retired: the feed URL answers the Page Not Found page) or `served`, for a site observed still serving them.
-
-`PAQVILO_REPO`, `PAQVILO_SITE`, `PAQVILO_ENV`, `PAQVILO_BROWSER`, `PAQVILO_PROFILE`, `PAQVILO_SCOPE` and `PAQVILO_BASELINE` cover common personal choices. A named browser profile is a separate toolkit identity. Existing profiles require explicit user-data root and child directory; attached CDP browsers remain user-owned. Toolkit-managed state is under `.paqvilo/`, with `--state`, `--output` and profile settings for explicit locations.
-
-The default catalogue is the working directory's `paqvilo.config.yml` when present. State, runtime discovery, logs and generated Mirage project files live in `.paqvilo/` beside that catalogue. A standalone `--project` uses its own directory. `mirage status` and `mirage stop` use the same project scope; supply `--config` or `--project` when running from another directory. The installed toolkit contains reusable code only. Direct Mirage commands also support `--state-dir` to select the state/discovery directory explicitly.
+Use the catalogue workflow for ordinary project development. The standalone form is useful
+for embedded tools and repeatable runtime inputs; see [bootstrap and sources](../mirage/docs/bootstrap-and-sources.md).

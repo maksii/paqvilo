@@ -1,7 +1,6 @@
 # package.json files is the primary allowlist; never depend on local Git ignores.
 **/node_modules/
 **/.paqvilo/
-**/.pp-local/
 **/.git/
 **/obj/
 **/bin/

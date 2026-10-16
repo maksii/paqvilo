@@ -1,8 +1,8 @@
-# Dataverse Query and Plugin Behaviour Specification
+# Company Operations example: plugin observations
 
-Revision 3, 13 October 2026. Third implementation specification, aligned with [Company Operations Solution Implementation Specification](company-operations-demo.md) and [Power Pages Permission Test Harness Specification](power-pages-permission-test-harness.md). Implemented sources and qualification are documented in the [project guide](../../examples/company-operations/README.md) and [plugin laboratory guide](../../examples/company-operations/plugins/README.md). Prepared external collector/flow contracts are distinct from deployed and observed capabilities.
+Reference design for the synthetic [Company Operations model](company-operations-demo.md) and [permission harness](power-pages-permission-test-harness.md). Commands and qualification limits are documented in the [project guide](../../examples/company-operations/README.md) and [plugin laboratory guide](../../examples/company-operations/plugins/README.md).
 
-Deliver two plugin sets: an observer of incoming RetrieveMultiple queries and a controlled pipeline/SDK chain suite. Extend the existing one-page runner and recording schema rather than building another UI. Record browser intent, Liquid/API observations and backend runtime evidence under the same operation identifier, preserving their different origins. Use synthetic fixtures only.
+The observer records incoming RetrieveMultiple queries; the controlled pipeline suite records SDK chains. Browser intent, portal responses and backend evidence share operation identifiers while retaining their separate origins. Prepared collector/flow contracts do not imply those cloud services have been deployed or observed.
 
 ## Solution ownership and dependency order
 
@@ -276,9 +276,9 @@ The operation header is the single place to find evidence, not a single unlimite
 
 Compare runs using suite/source/schema/registration versions, fixture/grant/role snapshots and logical query hashes. Separate data parity, constraint outcomes, query-tree differences, context/image/identity differences, chain lineage and durability. Generated backend aliases, timestamps, request IDs and durations remain raw but are ignored only by named versioned comparison rules. Backend plugin outputs are another observation, not an oracle substituting for the independent fixture expectation. Record successful root commit, expected rollback or unknown outcome before interpreting child rows.
 
-## Implementation acceptance and qualification
+## Validation and qualification
 
-Deliver unpacked solutions, two plugin assemblies, registration/step/image manifests, typed capture DTO schema, marker/query generator, collector/worker source and deployment manifest, companion flow/connection references, secure-provisioning manifest without secrets, external SDK driver and project-owned tests. Document exact portal/Dataverse versions, SDK versions, cloud dependencies and supported/unsupported message matrix in each qualified run.
+The laboratory contract includes unpacked solutions, two plugin assemblies, registration/step/image manifests, typed capture DTO schema, marker/query generator, collector/worker source and deployment manifest, companion flow/connection references, secure-provisioning manifest without secrets, external SDK driver and project-owned tests. Document exact portal/Dataverse versions, SDK versions, cloud dependencies and supported/unsupported message matrix in each qualified run.
 
 Required checks:
 

@@ -74,7 +74,7 @@ export const PROJECT_TEMPLATE_FILES = [
 
 export const REQUIRED_RELEASE_FILES = [
   'lense/commands/setup.mjs', 'lense/setup/store.mjs', 'lense/setup/server.mjs', 'lense/setup/app.mjs',
-  'lense/setup/index.html', 'lense/setup/style.css', 'docs/setup.md', 'docs/setup-design.md',
+  'lense/setup/index.html', 'lense/setup/style.css', 'docs/setup.md',
   'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',
   'lense/project-workflows.mjs',
   'lense/project-editor.mjs', 'lense/scaffold.mjs', 'lense/dev-messages.mjs', 'docs/project-scaffold.md',
@@ -168,13 +168,26 @@ function checkEditorTasks(root) {
   }
 }
 
-function checkDocumentation(root) {
-  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'docs/index.md', 'docs/getting-started.md', 'docs/project-scaffold.md', 'docs/lense.md', 'docs/configuration.md', 'docs/demo.md', 'docs/coverage.md', 'docs/faq.md', 'examples/project/README.md', 'mirage/README.md', 'mirage/docs/README.md', 'mirage/docs/runtime-evidence.md', 'mirage/docs/code-components.md', 'mirage/docs/operations.md', 'mirage/docs/dataverse-plugins.md']) {
+export function checkDocumentation(root) {
+  const names = ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md'];
+  const visit = directory => {
+    if (!fs.existsSync(path.join(root, directory))) return;
+    for (const entry of fs.readdirSync(path.join(root, directory), { withFileTypes: true })) {
+      if (entry.name.startsWith('.') || ['node_modules', 'bin', 'obj', 'out', 'coverage'].includes(entry.name)) continue;
+      const name = path.join(directory, entry.name);
+      if (entry.isDirectory()) visit(name);
+      else if (entry.isFile() && name.endsWith('.md')) names.push(name);
+    }
+  };
+  for (const directory of ['docs', 'mirage/docs', 'examples/project', 'examples/company-operations']) visit(directory);
+  // Template-relative links are checked after generation by installed-package smoke.
+  for (const name of names) {
     const text = fs.readFileSync(path.join(root, name), 'utf8');
     for (const match of text.matchAll(/\[[^\]]+\]\(([^)]+)\)/g)) {
       const target = match[1].split('#')[0];
-      if (!target || /^https?:/.test(target)) continue;
-      if (!fs.existsSync(path.resolve(root, path.dirname(name), target))) throw new Error(`Broken documentation link in ${name}: ${target}`);
+      if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) continue;
+      const localPath = decodeURIComponent(target.replace(/^<|>$/g, ''));
+      if (!fs.existsSync(path.resolve(root, path.dirname(name), localPath))) throw new Error(`Broken documentation link in ${name}: ${target}`);
     }
   }
   for (const name of ['.env', 'paqvilo.config.local.yml']) {

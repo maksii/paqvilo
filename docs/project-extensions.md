@@ -29,10 +29,8 @@ my-portal-project/
 Install Paqvilo as a dependency, register your pack, and run your own tests from this project. The [starter](../examples/project/README.md) is complete and uses invented data. Your test suite can consume the public modules without editing Paqvilo's core:
 
 ```js
-import { createSimulator } from 'paqvilo/mirage/server.mjs';
-import { signInHeaders, signInContext } from 'paqvilo/mirage/testing/session.mjs';
-import { discoverPacks, presetLibrary } from 'paqvilo/mirage/lib/preset-registry.mjs';
-import { DataStore } from 'paqvilo/mirage/lib/data.mjs';
+import { createSimulator, DataStore, discoverPacks, presetLibrary } from 'paqvilo/mirage';
+import { signInHeaders, signInContext } from 'paqvilo/mirage/testing';
 
 const packs = await discoverPacks({ explicit: [{ module: './pack/pack.mjs' }] });
 const library = presetLibrary({ packs });

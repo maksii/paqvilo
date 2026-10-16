@@ -6,7 +6,7 @@ import YAML from 'yaml';
 import { readLocalFileSync } from './local-file.mjs';
 
 const MARKER = 'TODO(paqvilo-init):';
-const ignored = new Set(['.git', 'node_modules', '.paqvilo', '.pp-local', 'paqvilo.config.local.yml', 'coverage']);
+const ignored = new Set(['.git', 'node_modules', '.paqvilo', 'paqvilo.config.local.yml', 'coverage']);
 const privateName = name => ignored.has(name) || (name.startsWith('.env') && name !== '.env.example');
 const textFile = name => /\.(?:[cm]?js|json|md|ya?ml|txt|html|css|xml|template)$/.test(name) || name === '.env.example';
 const slash = value => value.replaceAll('\\', '/');

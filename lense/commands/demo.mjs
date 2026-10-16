@@ -46,7 +46,7 @@ export async function prepareDemo(directory) {
     await fs.cp(path.join(STARTER, name), path.join(target, name), {
       recursive: true, errorOnExist: true, force: false,
       // A development checkout can contain build outputs absent from the npm archive.
-      filter: (source) => !path.relative(STARTER, source).split(path.sep).some((part) => ['node_modules', '.paqvilo', '.pp-local', 'bin', 'obj', 'out', 'coverage'].includes(part)) && !source.endsWith('.log'),
+      filter: (source) => !path.relative(STARTER, source).split(path.sep).some((part) => ['node_modules', '.paqvilo', 'bin', 'obj', 'out', 'coverage'].includes(part)) && !source.endsWith('.log'),
     });
   }
   await fs.copyFile(path.join(STARTER, 'gitignore.template'), path.join(target, '.gitignore'));

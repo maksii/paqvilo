@@ -4,7 +4,23 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
-import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata } from '../scripts/release-check.mjs';
+import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata, checkDocumentation } from '../scripts/release-check.mjs';
+
+test('release checks nested user guides and example documentation links', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (name, text) => { const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md']) write(name, '# Guide\n');
+  write('.gitignore', '.env\npaqvilo.config.local.yml\n');
+  write('mirage/docs/baseline/rerun.md', '[Input](./scenario%20inputs.md#fields)');
+  assert.throws(() => checkDocumentation(root), /Broken documentation link.*rerun\.md/);
+  write('mirage/docs/baseline/scenario inputs.md', '# Fields\n');
+  write('examples/project/deployment/README.md', '[Site](../../../missing.md)');
+  assert.throws(() => checkDocumentation(root), /Broken documentation link.*README\.md/);
+  write('missing.md', '# Site\n');
+  write('mirage/docs/node_modules/private/README.md', '[Ignore](absent.md)');
+  assert.doesNotThrow(() => checkDocumentation(root));
+});
 
 test('release allowlist includes Mirage runtime and excludes tests, state, profiles and live evidence', () => {
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
