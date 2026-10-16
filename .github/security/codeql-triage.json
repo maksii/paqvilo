@@ -2047,6 +2047,8 @@
   },
   "releaseReadinessReview": {
     "reviewedAt": "2026-10-16",
+    "analysisId": 1965260616,
+    "sourceHead": "5c86950379238cc1c69a525fcd1e458c1865889a",
     "entries": [
       {
         "number": 168,
@@ -2061,6 +2063,34 @@
         "evidence": "Intentional fixture import into the disposable simulator started by startIsolatedMirage: port 0 and createSimulator's loopback host determine owned.url. The user-selected reference origin controls modeled portal URLs, never this destination. Only declared matrix identity fields and exported local state are imported through the fixed admin path with that runtime's CSRF token. Redirects are refused. There is no remote upload destination or implicit credential-file read.",
         "verification": "mirage/test/parity-suite.test.mjs: isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin; complete staged validation and PR security analysis",
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/168"
+      },
+      {
+        "number": 169,
+        "rule": "js/xss-through-dom",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/lib/platform-app-compat.js",
+          "start_line": 349,
+          "end_line": 349
+        },
+        "disposition": "false-positive",
+        "evidence": "After fixing raw DOM query interpolation, the two remaining SARIF paths are URL.searchParams.toString() and URL.hash from the frame's data-page. The parsed address must be HTTP(S), same-origin and have no double-leading-slash pathname before a path-relative src is built. URLSearchParams encodes the option keys/values, reserved record/form/language options are replaced, generated values use encodeURIComponent, and the hash remains after the fixed query as a URL fragment. setAttribute assigns the iframe URL without parsing HTML. Neither path can choose an executable scheme/external origin or turn option text into markup; preserving native frame URLs is intentional.",
+        "verification": "mirage/test-browser/frame-url-safety.test.mjs: hostile query keys/values and custom fragments, executable/external/invalid targets, malformed values isolated from later valid quick views, preserved native authored markup; existing form-create-related and quick-view-first-navigation browser tests",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/169"
+      },
+      {
+        "number": 170,
+        "rule": "js/file-access-to-http",
+        "securitySeverity": "medium",
+        "originalLocation": {
+          "path": "mirage/baseline-suite.mjs",
+          "start_line": 312,
+          "end_line": 312
+        },
+        "disposition": "false-positive",
+        "evidence": "Re-reports alert 168 after its sink changed to refuse redirects. The reviewed source-to-sink constraint is unchanged: explicitly declared fixture identity fields go to the disposable owned loopback runtime, never the reference origin or a destination selected by file content. The fixed import endpoint carries the owned runtime's CSRF token and cannot follow redirects.",
+        "verification": "mirage/test/parity-suite.test.mjs: isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin; complete staged validation",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/170"
       }
     ]
   }

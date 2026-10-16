@@ -64,7 +64,11 @@ test('quick views and related-form frames keep DOM values in query components an
   assert.match(await page.locator('#quick-good').getAttribute('src'), /formname=Parent Quick View %26 details/);
   for (let index = 0; index < 9; index++) assert.equal(await page.locator('#quick-' + index).getAttribute('src'), 'about:blank');
   const modal = page.locator('section.modal-form-createrecord');
-  await modal.locator('iframe').evaluate(frame => frame.dataset.page = '/modal?mode=compact&id=wrong&entityformid=wrong&languagecode=wrong');
+  const optionName = '<img src=x onerror="parent.injected=1">';
+  const optionValue = '<svg onload="parent.injected=1">&other=option#fragment';
+  const targetOptions = new URLSearchParams({ mode: 'compact', [optionName]: optionValue, id: 'wrong', entityformid: 'wrong', languagecode: 'wrong' });
+  const fragment = '#tab=one&details=%3Cimg%20src=x%20onerror=parent.injected=1%3E';
+  await modal.locator('iframe').evaluate((frame, target) => { frame.dataset.page = target; }, `/modal?${targetOptions}${fragment}`);
   await page.locator('button.create-related-record-link').click();
   await modal.locator('iframe').contentFrame().locator('#frame-ready em').waitFor();
   const related = requests.find(url => url.pathname === '/modal');
@@ -72,10 +76,14 @@ test('quick views and related-form frames keep DOM values in query components an
   assert.deepEqual(related.searchParams.getAll('entityformid'), [payload]);
   assert.deepEqual(related.searchParams.getAll('languagecode'), ['1033&other=bad#fragment']);
   assert.equal(related.searchParams.get('mode'), 'compact');
+  assert.equal(related.searchParams.get(optionName), optionValue, 'target option names and values remain URL data');
   assert.equal(related.searchParams.has('other'), false);
   assert.equal(await modal.locator('.modal-title em').textContent(), 'related', 'authored heading markup remains markup');
   assert.equal(await modal.getAttribute('aria-label'), 'New related record');
   const safeSrc = await modal.locator('iframe').getAttribute('src');
+  assert.equal(new URL(safeSrc, origin).origin, origin);
+  assert.ok(safeSrc.endsWith(fragment), 'custom fragment syntax is preserved without becoming document markup');
+  assert.equal(await modal.locator('iframe').contentFrame().locator('img,svg').count(), 0);
   for (const target of ['javascript:window.injected=1', 'data:text/html,test', 'https://external.invalid/modal', origin + '//external.invalid/modal', 'http://[', '/modal/%zz', '/modal/%E0%A4%A', '']) {
     await modal.locator('iframe').evaluate((frame, target) => { frame.dataset.page = target; }, target);
     await page.locator('button.create-related-record-link').click();
