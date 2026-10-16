@@ -882,7 +882,7 @@ test("FetchXML nested links and existential link types preserve multiplicity cor
   });
   const store = new DataStore({ state: initial });
   const link = (type) =>
-    `<fetch><entity name="contact"><attribute name="firstname"/><link-entity name="audit" from="contactid" to="contactid" link-type="${type}" alias="log"><attribute name="subject"/></link-entity></entity></fetch>`;
+    `<fetch><entity name="contact"><attribute name="firstname"/><link-entity name="audit" from="contactid" to="contactid" link-type="${type}" alias="log">${type === 'inner' ? '<attribute name="subject"/>' : ''}</link-entity></entity></fetch>`;
   assert.equal(store.fetchXml(link("inner"), user).entities.length, 2);
   assert.equal(store.fetchXml(link("exists"), user).entities.length, 1);
   assert.equal(store.fetchXml(link("not any"), user).entities.length, 2);

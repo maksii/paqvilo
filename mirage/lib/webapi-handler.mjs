@@ -7,6 +7,7 @@
 // through, the Dataverse Web API. docs/dataverse-parity.md lists the evidence
 // and the remaining open questions for each behaviour.
 import {isExactNumeric} from './exact-numeric.mjs';
+import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference, parseKeySegment } from "./data.mjs";
@@ -249,6 +250,17 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
+  if(internal==='PortalFetchTransportFailure'&&details.phase==='native-api-transport'){
+    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:details.innerMessage});
+    if(response.body.error.innererror)response.body.error.innererror.type='CDSError';
+    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+    return response;
+  }
+  if(internal==='ODataPermissionNavigationFailure'&&details.phase==='native-odata-conversion'&&[400,501].includes(status)){
+    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:error.message});
+    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+    return response;
+  }
   if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission')
     return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
   if (details.phase === "query" && QUERY_CODES.has(internal))
@@ -788,7 +800,8 @@ function fetchContext(t, mapping, info, {empty=false}={}) {
 
 function getFetch(t) {
   const { url, store, deps, mapping } = t;
-  const xml = url.searchParams.get("fetchXml");
+  const authoredXml = url.searchParams.get("fetchXml");
+  const xml = deps.identity?.admin ? authoredXml : preparePortalFetchXml(authoredXml,{linkTypes:store.observed?.webApiFetchXmlLinkTypes});
   const nativePolicy=!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic';
   const admitTables=()=>{
     if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
@@ -809,7 +822,7 @@ function getFetch(t) {
   // has no read permission for the caller, instead of silently empty joins.
   if(!nativePolicy)admitTables();
   const counted = url.searchParams.get("$count") === "true";
-  const fetched = store.fetchXml(xml, deps.identity, {
+  const fetched = store.fetchXml(authoredXml, deps.identity, {
     profile: "webapi",
     portalRequest: true,
     metadata: deps.metadata,

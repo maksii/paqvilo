@@ -26,13 +26,19 @@ async function metadata(t) {
   await fs.writeFile(path.join(root, 'customizations.xml'), xml);
   return {root, relationships: (await importSolutionData([root])).relationships};
 }
-test('Solution-resolved exported parent grants classify one-to-many joins and diagnose actual multiplied reads', async t => {
+test('Solution-resolved cardinality survives native scoped DISTINCT and raw aggregate execution', async t => {
   const {relationships} = await metadata(t), {portal, state} = fixture();
   const model = buildPermissionModel(portal, state, {relationships});
   assert.equal(model.permissions.find(p => p.id === 'organizations').relationship.many, true);
   const store = new DataStore({state: {...state, permissions: model.permissions}});
   store.setObserved({tablePermissionQueryPipeline: 'native-classic', evidence: 'Synthetic metadata join'});
-  const result = store.fetchXml('<fetch distinct="false"><entity name="organization"><attribute name="organizationid"/></entity></fetch>', {contactId: 'visitor', roles: ['Reader']}, {portalRequest: true});
+  const source='<fetch distinct="false"><entity name="organization"><attribute name="organizationid"/></entity></fetch>',identity={contactId:'visitor',roles:['Reader']};
+  const native=store.fetchXml(source,identity,{portalRequest:true});
+  assert.equal(native.entities.length,2);
+  assert.equal(native.permissionQuery.permissionLinkCount,1);
+  assert.deepEqual(store.fetchXml('<fetch aggregate="true" distinct="false"><entity name="organization"><attribute name="organizationid" aggregate="count" alias="total"/></entity></fetch>',identity,{portalRequest:true}).entities,[{total:3}]);
+  store.setObserved(null);
+  const result = store.fetchXml(source,identity,{portalRequest:true});
   assert.equal(result.entities.length, 3);
   assert.equal(store.previewPermissionFetchXml('<fetch><entity name="organization"/></fetch>', {contactId: 'visitor', roles: ['Reader']}).multiplicativePaths.length, 1);
   const diagnostic = result.permissionQuery.diagnostics.find(d => d.code === 'PERMISSION_QUERY_ROW_MULTIPLICATION');

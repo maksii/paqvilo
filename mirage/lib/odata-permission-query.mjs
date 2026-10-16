@@ -12,6 +12,12 @@ const condition = (attribute, operator, value) => node('condition', { attribute,
 const walk = function* (element) { yield element; for (const child of element.children) yield* walk(child); };
 const fail = message => { throw new DataError(message, 501, 'ODataPermissionQueryUnsupported'); };
 const binaryOr = nodes => nodes.slice(1).reduce((left, right) => node('filter', { type: 'or' }, [left, right]), nodes[0]);
+const binaryAnd = nodes => nodes.slice(1).reduce((left, right) => filter([left, right]), nodes[0]);
+const navigationFailure = (message, status, innerCode, permissionId, lookupHops) => {
+  throw new DataError(message,status,'ODataPermissionNavigationFailure',{
+    phase:'native-odata-conversion',innerCode,permissionId,lookupHops,
+  });
+};
 const braced = value => {
   if (!guid.test(key(value))) fail('A scoped OData identity must have an actual GUID.');
   return `{${key(value).toUpperCase()}}`;
@@ -74,9 +80,8 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
   };
   const expression = (ast, depth = 0) => {
     if (depth > 128) fail('OData boolean expression exceeds the bounded native conversion depth.');
-    if (ast.type === 'or') return node('filter', { type: 'or' }, ast.left.type === 'or'
-      ? [expression(ast.right, depth + 1), expression(ast.left, depth + 1)]
-      : [expression(ast.left, depth + 1), expression(ast.right, depth + 1)]);
+    if (ast.type === 'or') return node('filter', { type: 'or' }, [expression(ast.left, depth + 1), expression(ast.right, depth + 1)]
+      .sort((left,right)=>(left.name==='condition'?0:1)-(right.name==='condition'?0:1)));
     if (ast.type === 'and') return node('filter', { type: 'and' }, [expression(ast.left, depth + 1), expression(ast.right, depth + 1)]);
     if (ast.type !== 'compare' || ast.left.type !== 'path' || ast.left.segments.length !== 1 || ast.right.type !== 'literal')
       fail('This scalar OData conversion requires a direct property/literal comparison.');
@@ -100,8 +105,8 @@ export function authoredScalarODataFetch(table, params, { resolveAttribute } = {
 /** Construct the bounded, witnessed scalar OData query contract. The caller
  * supplies authored OData converted to an unexpanded Fetch AST. This compiler
  * never accepts a captured full query or a business-case response lookup.
- * Different-table Parent/identity traversal remains unsupported until its
- * native conversion and admission have independent evidence. */
+ * Lookup Parent guards retain the native any/not-any expansion. Backend
+ * navigation binding failures occur before a FetchExpression is admitted. */
 export function compileODataPermissionQuery(authoredXml, {
   permissions = [], identity = {}, mappings = {}, rules, grantOrder,
   pageInfo = {}, returnTotal = true, bypass = false, resolveAttribute, columnType,
@@ -125,9 +130,9 @@ export function compileODataPermissionQuery(authoredXml, {
   let grants = selected(table);
   const global = bypass || identity.admin || grants.some(grant => (grant.scope ?? 'global') === 'global');
   if (!global && !grants.length) throw new DataError(`Table permission denies read on ${table}`, 403, 'PermissionDenied');
-  if (grantOrder && !global) {
-    if (grantOrder.normalizedGraphHash !== permissionOrderGraphFingerprint(permissions))
-      throw new DataError('Observed OData permission order does not match the current source graph.', 501, 'PermissionGrantOrderUnqualified');
+  if(grantOrder&&grantOrder.normalizedGraphHash!==permissionOrderGraphFingerprint(permissions))
+    throw new DataError('Observed OData permission order does not match the current source graph.',501,'PermissionGrantOrderUnqualified');
+  if (grantOrder && !global && (grants.length > 1 || grantOrder.tables?.[table])) {
     const groups = grantOrder.tables?.[table];
     const ranks = new Map((groups ?? []).flatMap((group, index) => group.map(id => [key(id), index])));
     if (grants.some(grant => !ranks.has(key(grant.id))))
@@ -135,6 +140,30 @@ export function compileODataPermissionQuery(authoredXml, {
     grants = [...grants].sort((left, right) => ranks.get(key(left.id)) - ranks.get(key(right.id)));
   } else if (!global && grants.length > 1)
     throw new DataError('Multiple OData grants require their own observed source order.', 501, 'PermissionGrantOrderUnqualified');
+  // Binding traverses OR alternatives in their qualified writer order. Within
+  // each path, scalar null guards bind before its N:N collection lambda. Raw
+  // backend controls confirm reversing alternatives can change 400 into 501.
+  const navigationPaths=[];
+  for(const leaf of global?[]:grants){
+    let current=leaf,lookups=0,intersects=0,lookupAfterIntersect=false,qualified=true;
+    const seen=new Set();
+    while(current?.scope==='parent'){
+      if(seen.has(key(current.id))||seen.size>=64){qualified=false;break;}seen.add(key(current.id));
+      const parent=byId.get(key(current.parentPermissionId??current.parentId)),r=current.relationship;
+      if(current.enabled===false||current.observedOrphanParent||!parent||!selected(parent.entity).some(p=>key(p.id)===key(parent.id))||
+        r?.entity!==parent.entity||!r.from||!r.to){qualified=false;break;}
+      if(r.intersect)intersects++;
+      else if(current.entity===parent.entity||r.many===true){qualified=false;break;}
+      else {if(intersects)lookupAfterIntersect=true;else lookups++;}
+      current=parent;
+    }
+    if(qualified&&current&&!current.identityRelationship&&['contact','account','self'].includes(current.scope)&&intersects<=1&&!lookupAfterIntersect)
+      navigationPaths.push({permissionId:leaf.id,lookups,intersects,scalarDepth:intersects?Math.max(0,lookups-1):lookups});
+  }
+  for(const path of navigationPaths){
+    if(path.scalarDepth>2)navigationFailure('$filter clauses with more than 1 nested lookup are not supported.',501,'0x8006088a',path.permissionId,path.lookups);
+    if(path.lookups>0&&path.intersects>0)navigationFailure('entityRelationshipRole for given navigation property not found',400,'0x80040216',path.permissionId,path.lookups);
+  }
 
   const generated = new Set(), aliasFilters = new Set(), terminalConditions = [], paths = [], diagnostics = [];
   function render(grant, anyallalias, visiting = new Set()) {
@@ -160,21 +189,55 @@ export function compileODataPermissionQuery(authoredXml, {
         if (sameTableParentAnchor !== 'shared-root') fail('Same-table Parent OData anchor behavior requires an explicit evidenced profile.');
         return filter([condition(relation.from, 'not-null'), render(parent, anyallalias, visited)]);
       }
-      fail('Different-table Parent OData conversion and its CDS admission require native qualification.');
+      if(anyallalias)fail('Lookup traversal inside an N:N OData lambda requires separate native qualification.');
+      const chain=[],seen=new Set(visiting);
+      let current=grant;
+      while(current.scope==='parent'){
+        if(seen.has(key(current.id))||seen.size>=64)fail('Cyclic or excessive OData permission parent path.');
+        seen.add(key(current.id));
+        const target=byId.get(key(current.parentPermissionId??current.parentId)),r=current.relationship;
+        if(current.enabled===false||current.observedOrphanParent||!target||
+          !selected(target.entity).some(candidate=>key(candidate.id)===key(target.id))||
+          r?.entity!==target.entity||!r.from||!r.to)fail('OData parent permission has no complete enabled Read path for this identity.');
+        if(r.intersect)break;
+        if(current.entity===target.entity||r.many===true)fail('Mixed same-table/reverse OData parent traversal requires separate native qualification.');
+        chain.push(r);current=target;
+      }
+      if(current.scope==='parent'){
+        // Validate the complete N:N tail before classifying its provider fault.
+        // The generated scalar null guards bind before the collection lambda.
+        render(current,undefined,seen);
+        if(chain.length>3)navigationFailure('$filter clauses with more than 1 nested lookup are not supported.',501,'0x8006088a',grant.id,chain.length);
+        navigationFailure('entityRelationshipRole for given navigation property not found',400,'0x80040216',grant.id,chain.length);
+      }
+      const terminal=render(current,undefined,seen);
+      if(terminal.name!=='condition')fail('This Parent terminal requires a separately qualified OData conversion.');
+      if(chain.length>2)navigationFailure('$filter clauses with more than 1 nested lookup are not supported.',501,'0x8006088a',grant.id,chain.length);
+      const wrap=(relations,expression,type)=>{
+        let result=expression;
+        for(const r of [...relations].reverse()){
+          const link=node('link-entity',{name:r.entity,to:r.from,from:r.to,'link-type':type},[result]);
+          generated.add(link);result=filter([link]);
+        }
+        return result;
+      };
+      const guards=chain.map((r,index)=>index===0?condition(r.from,'not-null')
+        :wrap(chain.slice(0,index),filter([condition(r.from,'null')]),'not any'));
+      return binaryAnd([...guards,wrap(chain,filter([terminal]),'any')]);
     }
     if (grant.scope === 'global' || grant.identityRelationship || !['contact', 'account', 'self'].includes(grant.scope))
       fail('This terminal OData scope/direction requires a separately qualified conversion.');
     const value = grant.scope === 'account' ? identity.accountId : identity.contactId ?? identity.id;
     if (!value) fail('OData permission terminal has no applicable identity GUID.');
     const field = grant.field ?? primary(grant.entity);
-    const terminals = [condition(primary(grant.entity), 'not-null'), condition(field, 'eq', braced(value))];
+    const terminals = [...(anyallalias?[condition(primary(grant.entity), 'not-null')]:[]), condition(field, 'eq', braced(value))];
     terminalConditions.push(...terminals.map(terminal => ({ ...terminal.attrs })));
     // Only Contact scoped terminals inside N:N paths have independent native
     // conversion evidence so far. Other classic scopes need calibration.
-    if (grant.scope !== 'contact' || !anyallalias) diagnostics.push({ code: 'ODATA_TERMINAL_CONTRACT_UNQUALIFIED', permissionId: grant.id });
+    if (grant.scope !== 'contact') diagnostics.push({ code: 'ODATA_TERMINAL_CONTRACT_UNQUALIFIED', permissionId: grant.id });
     const expression = filter(terminals, anyallalias ? { anyallalias } : {});
     if (anyallalias) aliasFilters.add(expression);
-    return expression;
+    return anyallalias?expression:terminals[0];
   }
 
   const logical = attribute => resolveAttribute ? resolveAttribute(table, attribute) : attribute;
@@ -199,6 +262,10 @@ export function compileODataPermissionQuery(authoredXml, {
   });
   const permissionFilter = alternatives.length ? binaryOr(alternatives) : null;
   const rootFilter = permissionFilter ? filter([...(authoredFilter ? [authoredFilter] : []), permissionFilter]) : authoredFilter;
+  // The native OData writer emits each filter's scalar Conditions before its
+  // nested Filters/AnyAllFilterLinkEntity, retaining nesting and stable peers.
+  const orderFilterChildren=element=>{if(element.name==='filter')element.children.sort((a,b)=>(a.name==='condition'?0:a.name==='filter'?1:2)-(b.name==='condition'?0:b.name==='filter'?1:2));for(const child of element.children)orderFilterChildren(child);};
+  if(rootFilter)orderFilterChildren(rootFilter);
   const orders = root.children.filter(child => child.name === 'order').map(child => {
     const order = normalize(child); order.attrs.descending ??= 'false'; return order;
   });

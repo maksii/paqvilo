@@ -12,6 +12,45 @@ const permissions = [{ id: 'principal', entity: 'grant', scope: 'contact', field
 const authored = '<fetch><entity name="company"><attribute name="companyid"/><filter type="and"><filter type="or"><filter type="and"><condition attribute="companyid" operator="eq" value="00000000-0000-0000-0000-000000000def"/></filter><filter type="and"><condition attribute="name" operator="null"/></filter></filter></filter><order attribute="companyid"/></entity></fetch>';
 const compile = (extra = {}) => compileODataPermissionQuery(authored, { permissions, mappings, identity: actor, ...extra });
 
+function lookupPath(hops,{intersect=false,prefix=''}={}) {
+  const anchor={id:prefix+'anchor',entity:prefix+'principal',scope:'contact',field:'holderid',roleIds:['ra']};
+  const all=[anchor];
+  if(intersect)all.push({id:prefix+'base',entity:prefix+'base',scope:'parent',parentPermissionId:anchor.id,roleIds:['ra'],
+    relationship:{entity:anchor.entity,from:'baseid',to:'principalid',intersect:{entity:prefix+'edge',from:'baseid',to:'principalid'}}});
+  for(let index=1;index<=hops;index++){
+    const parent=all.at(-1);all.push({id:prefix+'level'+index,entity:prefix+'level'+index,scope:'parent',parentPermissionId:parent.id,roleIds:['ra'],
+      relationship:{entity:parent.entity,from:'parentid',to:parent.entity+'id'}});
+  }
+  return all;
+}
+
+test('native Contact and nullable lookup Parent conversions retain exact guards and all three links for two levels',()=>{
+  const all=lookupPath(2),source=table=>'<fetch><entity name="'+table+'"><attribute name="'+table+'id"/></entity></fetch>';
+  const convert=table=>compileODataPermissionQuery(source(table),{permissions:all,identity:actor});
+  assert.ok(convert('principal').xml.includes('<filter type="and"><condition attribute="holderid" operator="eq" value="{00000000-0000-0000-0000-000000000ABC}" /></filter>'));
+  assert.equal(convert('level1').permissionLinkCount,1);
+  const two=convert('level2');
+  assert.equal(two.permissionLinkCount,3);
+  assert.equal(two.xml,'<fetch distinct="false" useraworderby="true" no-lock="false" mapping="logical" page="1" count="5000" returntotalrecordcount="true"><entity name="level2"><attribute name="level2id" /><filter type="and"><filter type="and"><filter type="and"><condition attribute="parentid" operator="not-null" /><filter type="and"><link-entity name="level1" to="parentid" from="level1id" link-type="not any"><filter type="and"><condition attribute="parentid" operator="null" /></filter></link-entity></filter></filter><filter type="and"><link-entity name="level1" to="parentid" from="level1id" link-type="any"><filter type="and"><link-entity name="principal" to="parentid" from="principalid" link-type="any"><filter type="and"><condition attribute="holderid" operator="eq" value="{00000000-0000-0000-0000-000000000ABC}" /></filter></link-entity></filter></link-entity></filter></filter></filter></entity></fetch>');
+});
+
+test('native navigation binding follows qualified OR order and checks scalar guards before each collection lambda',()=>{
+  const source='<fetch><entity name="target"><attribute name="targetid"/></entity></fetch>';
+  const short=lookupPath(1,{intersect:true,prefix:'short'}),long=lookupPath(4,{intersect:true,prefix:'long'});
+  short.at(-1).entity='target';long.at(-1).entity='target';
+  const run=(all,ids)=>compileODataPermissionQuery(source,{permissions:all,identity:actor,...(ids?{grantOrder:{normalizedGraphHash:permissionOrderGraphFingerprint(all),tables:{target:ids.map(id=>[id])}}}:{})});
+  assert.throws(()=>run(short),e=>e.status===400&&e.details.innerCode==='0x80040216'&&e.details.phase==='native-odata-conversion');
+  for(const all of [[...short,...long],[...long,...short]]){
+    assert.throws(()=>run(all,['shortlevel1','longlevel4']),e=>e.status===400&&e.details.innerCode==='0x80040216');
+    assert.throws(()=>run(all,['longlevel4','shortlevel1']),e=>e.status===501&&e.details.innerCode==='0x8006088a');
+    assert.throws(()=>run(all),e=>e.code==='PermissionGrantOrderUnqualified');
+  }
+  const ordinary=lookupPath(3);ordinary.at(-1).entity='target';
+  assert.throws(()=>run(ordinary),e=>e.status===501&&e.details.innerCode==='0x8006088a');
+  const global={id:'global',entity:'target',scope:'global',roleIds:['ra']};
+  assert.equal(run([...short,...long,global]).permissionLinkCount,0);
+});
+
 test('OData compiler produces compact any/inner native-shaped paths, uppercase GUIDs and authored-then-permission filters', () => {
   const result = compile();
   assert.equal(result.xml, '<fetch distinct="false" useraworderby="true" no-lock="false" mapping="logical" page="1" count="5000" returntotalrecordcount="true"><entity name="company"><attribute name="companyid" /><filter type="and"><filter type="and"><filter type="or"><condition attribute="companyid" operator="eq" value="{00000000-0000-0000-0000-000000000DEF}" /><condition attribute="name" operator="null" /></filter></filter><filter type="and"><link-entity name="grantcompany" to="companyid" from="companyid" link-type="any"><link-entity name="grant" to="grantid" from="grantid" link-type="inner"><filter type="and" anyallalias="grantcompany1"><condition attribute="grantid" operator="not-null" /><condition attribute="holderid" operator="eq" value="{00000000-0000-0000-0000-000000000ABC}" /></filter></link-entity></link-entity></filter></filter><order attribute="companyid" descending="false" /></entity></fetch>');
@@ -51,7 +90,11 @@ test('unqualified native conversion directions and foreign memberships cannot pr
   const broken = [{ ...permissions[0], enabled: false }, permissions[1]];
   assert.throws(() => compile({ permissions: broken }), /complete enabled Read path/);
   const different = [{ ...permissions[1], relationship: { entity: 'grant', from: 'grantlookup', to: 'grantid' } }, permissions[0]];
-  assert.throws(() => compile({ permissions: different }), /Different-table Parent/);
+  const parent=compile({permissions:different});
+  assert.equal(parent.permissionLinkCount,1);
+  assert.ok(parent.xml.includes('attribute="grantlookup" operator="not-null"'));
+  assert.ok(parent.xml.includes('name="grant" to="grantlookup" from="grantid" link-type="any"'));
+  assert.throws(()=>compile({permissions:different.map(p=>p.id==='company'?{...p,relationship:{...p.relationship,many:true}}:p)}),/reverse/);
   assert.throws(() => compileODataPermissionQuery(authored.replace('<fetch>', '<fetch top="10">'), { permissions, identity: actor, mappings }), /separately qualified/);
 });
 

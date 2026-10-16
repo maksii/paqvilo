@@ -28,13 +28,19 @@ test('render sweep exposes permission row counts and paths in each persona summa
   assert.equal(summary.persona,'reader');
   assert.deepEqual(summary.permissionRowMultiplication,[diagnostic]);
 });
-test('permission joins retain multiplied rows and expose actual returned/root counts to Liquid diagnostics',async()=>{
+test('native scoped reads deduplicate while unqualified raw reads retain multiplicity diagnostics',async()=>{
   const data=state();
   // Separate column paths retain both grant alternatives rather than compiling a duplicate path.
   data.tables.child.forEach(row=>row.secondorganizationid='org');data.permissions[2].relationship.from='secondorganizationid';
   const s=store(data),diagnostics=[];
+  const native=s.fetchXml(query(false),visitor,{portalRequest:true});
+  assert.equal(native.entities.length,2);
+  assert.equal(native.permissionQuery.permissionLinkCount,2);
+  assert.equal(native.permissionQuery.diagnostics.some(d=>d.code==='PERMISSION_QUERY_ROW_MULTIPLICATION'),false);
+  s.setObserved(null);
   const result=s.fetchXml(query(false),visitor,{portalRequest:true,diagnostic:entry=>diagnostics.push(entry)});
   assert.equal(result.entities.length,6);
+  assert.equal(result.permissionQuery.permissionLinkCount,native.permissionQuery.permissionLinkCount);
   assert.equal(diagnostics[0].code,'PERMISSION_QUERY_ROW_MULTIPLICATION');
   assert.equal(diagnostics[0].uniqueRootRows,2);assert.equal(diagnostics[0].returnedRows,6);
   const clean=s.fetchXml(query(true),visitor,{portalRequest:true});
