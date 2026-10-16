@@ -26,8 +26,12 @@ test('scaffold marker inspection rejects a file replaced after its descriptor is
     }
     return stat;
   });
-  assert.throws(() => scaffoldMarkers(directory), /changed before reading/);
+  // Filesystem metadata visibility decides which check observes the swap first.
+  // Both checks must refuse the result; neither original nor replacement markers may escape.
+  assert.throws(() => scaffoldMarkers(directory), /^Error: Local file changed (?:before|during) reading$/);
   assert.equal(swapped, true);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'TODO(paqvilo-init): replacement');
+  assert.equal(fs.readFileSync(file + '.old', 'utf8'), 'TODO(paqvilo-init): original');
 });
 
 test('setup configuration inspection rejects a path swap and preserves its existing read limit', async t => {
@@ -48,8 +52,10 @@ test('setup configuration inspection rejects a path swap and preserves its exist
     }
     return handle;
   });
-  await assert.rejects(new SetupStore({ directory, processEnv: {} }).snapshot(), /changed before reading/);
+  await assert.rejects(new SetupStore({ directory, processEnv: {} }).snapshot(), /^Error: Local file changed (?:before|during) reading$/);
   assert.equal(swapped, true);
+  assert.equal(fs.readFileSync(file, 'utf8'), 'sites: { replaced: {} }\n');
+  assert.equal(fs.readFileSync(file + '.old', 'utf8'), 'sites: {}\n');
 });
 
 test('oversized scaffold documents stay ignored and oversized setup documents return 413', async t => {

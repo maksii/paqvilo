@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { createFixture, SITE } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { editSource } from '../lense/source-edit.mjs';
@@ -400,11 +401,37 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   fs.mkdirSync(path.dirname(paths.ownershipFile), { recursive: true });
   const idle = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
   const starting = idle(), unrelated = idle(), finished = idle();
-  t.after(() => {
-    for (const child of [starting, unrelated, finished]) { try { child.kill(); } catch { /* exited */ } }
+  let identityGuard;
+  t.after(async () => {
+    await Promise.all([starting, unrelated, finished, identityGuard].filter(Boolean).map(async child => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const closed = once(child, 'close');
+      child.kill();
+      await closed;
+    }));
     fs.rmSync(root, { recursive: true, force: true });
   });
   await Promise.all([starting, unrelated, finished].map((child) => once(child, 'spawn')));
+  if (process.platform === 'win32') {
+    // Windows can recycle a terminated PID into a concurrent process probe. Retaining
+    // process handles keeps these two fixture PIDs reserved until the death assertions finish.
+    const guardScript = [
+      `$fixtures = @(Get-Process -Id ${starting.pid},${finished.pid} -ErrorAction Stop)`,
+      'foreach ($fixture in $fixtures) { $null = $fixture.Handle }',
+      "[Console]::Out.WriteLine('retained')",
+      '$null = [Console]::In.ReadLine()',
+      'foreach ($fixture in $fixtures) { $fixture.Dispose() }',
+    ].join('; ');
+    identityGuard = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', guardScript], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
+    try {
+      const [ready] = await Promise.race([
+        once(reader, 'line', { signal: AbortSignal.timeout(15_000) }),
+        once(identityGuard, 'exit').then(([code]) => { throw new Error(`Fixture process-handle guard exited before readiness (${code})`); }),
+      ]);
+      assert.equal(ready, 'retained');
+    } finally { reader.close(); }
+  }
   finished.kill();
   await once(finished, 'exit');
   const sourceDir = path.join(root, 'portal');
@@ -422,8 +449,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   assert.deepEqual(report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]), [[starting.pid, false, false]]);
   assert.deepEqual(report.remaining, []);
   assert.deepEqual(report.pruned.map((item) => item.pid).sort((a, b) => a - b), [finished.pid, unrelated.pid].sort((a, b) => a - b));
-  // Windows may reuse the exited PID for one of the concurrent process probes.
-  assert.match(report.pruned.find((item) => item.pid === finished.pid).reason, /exited|another program/);
+  assert.equal(report.pruned.find((item) => item.pid === finished.pid).reason, 'process exited');
   assert.match(report.pruned.find((item) => item.pid === unrelated.pid).reason, /another program/);
   assert.equal(isAlive(starting.pid), false);
   assert.equal(isAlive(unrelated.pid), true, 'a reused PID belongs to another program and is never signalled');

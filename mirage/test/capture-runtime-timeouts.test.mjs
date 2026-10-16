@@ -57,8 +57,14 @@ test('CLI captures an endpoint taking 45 seconds, prints waiting progress and di
   let stdout = '', stderr = '';
   child.stdout.on('data', data => stdout += data); child.stderr.on('data', data => stderr += data);
   const code = await new Promise((resolve, reject) => { child.once('exit', resolve); child.once('error', reject); });
-  assert.equal(code, 0, stderr); assert.equal(JSON.parse(stdout).reports[0].applied, true);
-  assert.match(stderr, /still capturing \(15 s\)/);
-  assert.match(stderr, /still capturing \(30 s\)/);
-  assert.deepEqual(calls.filter(route => /\/live\//.test(route)), ['/_sim/api/live/connect', '/_sim/api/live/disconnect']);
+  assert.equal(code, 0, stderr);
+  const report = JSON.parse(stdout).reports[0];
+  assert.equal(report.applied, true); assert.equal(report.ready, true); assert.equal(report.complete, true);
+  // Interval callbacks can run either side of a rounded second boundary.
+  // Verify recurring, increasing progress while the real long capture waits.
+  const progress = [...stderr.matchAll(/still capturing \((\d+) s\)/g)].map(match => Number(match[1]));
+  assert.ok(progress.length >= 2, stderr);
+  assert.ok(progress.every((seconds, index) => seconds > 0 && seconds < 65 && (!index || seconds > progress[index - 1])), stderr);
+  assert.ok(progress.at(-1) >= 25, stderr);
+  assert.deepEqual(calls.filter(route => /\/(?:live\/|assets\/capture-shell$)/.test(route)), ['/_sim/api/live/connect', '/_sim/api/assets/capture-shell', '/_sim/api/live/disconnect']);
 });
