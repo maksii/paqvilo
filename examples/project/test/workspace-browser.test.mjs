@@ -9,7 +9,42 @@ import {createSimulator} from 'paqvilo/mirage/server.mjs';
 import {signInContext} from 'paqvilo/mirage/testing/session.mjs';
 
 const project=fileURLToPath(new URL('../',import.meta.url));
+
+async function observeWorkspaceMenus(page) {
+ await page.addInitScript(() => {
+  const events=[];
+  window.__workspaceMenuEvents=events;
+  const record=event=>{
+   const container=document.querySelector('#Contacts .dropdown.action.open'),toggle=container?.querySelector('button'),rect=toggle?.getBoundingClientRect();
+   events.push({at:Math.round(performance.now()),type:event.type,target:event.target?.tagName,targetId:event.target?.id,scrollX,scrollY,open:Boolean(container),baseline:container?.__ppMenuScrollPosition,button:rect?{x:rect.x,y:rect.y,width:rect.width,height:rect.height}:null,rows:document.querySelectorAll('#Contacts tbody tr[data-id]').length,...(event.type==='hide'?{stack:new Error().stack}: {})});
+   if(events.length>100)events.shift();
+  };
+  for(const type of ['scroll','resize','click'])window.addEventListener(type,record,true);
+  document.addEventListener('DOMContentLoaded',()=>{
+   window.jQuery?.(document).on('show.bs.dropdown hide.bs.dropdown',record);
+   new MutationObserver(changes=>{if(changes.some(change=>change.target?.closest?.('#Contacts')))record({type:'grid-mutation'});}).observe(document.documentElement,{childList:true,subtree:true});
+  });
+ });
+}
+
+async function reportWorkspaceFailure(page) {
+ if(!page||page.isClosed())return;
+ // Capture before cleanup. Read the real menu and scroll state without changing
+ // focus, layout or timing of the native controls under test.
+ let timer;
+ try{
+  const snapshot=await Promise.race([page.evaluate(()=>({
+   viewport:{width:innerWidth,height:innerHeight,clientWidth:document.documentElement.clientWidth,scrollHeight:document.documentElement.scrollHeight,scrollX,scrollY},
+   active:document.activeElement?{tag:document.activeElement.tagName,id:document.activeElement.id,className:document.activeElement.className}:null,
+   events:window.__workspaceMenuEvents??[],
+   rows:[...document.querySelectorAll('#Contacts tbody tr[data-id]')].map(row=>({id:row.dataset.id,text:row.innerText.slice(0,160),actions:[...row.querySelectorAll('.dropdown.action')].map(container=>({className:container.className,expanded:container.querySelector('button')?.getAttribute('aria-expanded'),baseline:container.__ppMenuScrollPosition,menu:container.querySelector('.dropdown-menu')?.outerHTML.slice(0,3000)}))})),
+  })),new Promise(resolve=>{timer=setTimeout(()=>resolve({unavailable:'Browser diagnostic read exceeded 2 seconds.'}),2000);})]);
+  console.error('Workspace browser failure diagnostics: '+JSON.stringify(snapshot));
+ }catch(error){console.error('Workspace browser diagnostics unavailable: '+error.message);}finally{clearTimeout(timer);}
+}
+
 test('custom workspaces search and page lookups, retain selections and edit related notes', {timeout:90_000},async t=>{
+ let diagnosticPage,completed=false;t.after(async()=>{if(!completed)await reportWorkspaceFailure(diagnosticPage);});
  const module=path.join(project,'pack/pack.mjs');
  const source=await fs.readFile(path.join(project,'portal/web-pages/pcf-account/PCF-account.webpage.copy.html'),'utf8');
  const id=/codecomponent name:([0-9a-f-]{36})/i.exec(source)[1];
@@ -18,6 +53,7 @@ test('custom workspaces search and page lookups, retain selections and edit rela
  const browser=await chromium.launch({headless:true,channel:process.env.PAQVILO_BROWSER||(process.platform==='win32'?'msedge':undefined)});t.after(()=>browser.close());
  const context=await browser.newContext({viewport:{width:1440,height:1000}});context.setDefaultTimeout(15_000);await signInContext(context,sim,'a4300000-0000-4000-8000-000000002001');
  const page=await context.newPage(),errors=[];page.on('pageerror',error=>errors.push(error.message));
+ diagnosticPage=page;await observeWorkspaceMenus(page);
  const account='a4300000-0000-4000-8000-000000001001';
  const ready=()=>page.waitForFunction(()=>document.querySelector('[data-account-form]')?.dataset.ready==='true').catch(async cause=>{throw new Error('Workspace did not become ready: '+(await page.locator('[data-status]').textContent())+'; browser errors: '+errors.join(', '),{cause});});
  for(const approach of ['web-api','pcf']){
@@ -61,5 +97,5 @@ test('custom workspaces search and page lookups, retain selections and edit rela
  await contact.locator('button').click();await contact.getByRole('menuitem',{name:'View',exact:true}).click();const readModal=page.locator('.modal-form-details:visible'),readFrame=page.frameLocator('.modal-form-details iframe');await readFrame.locator('#jobtitle').waitFor();assert.equal(await readFrame.locator('#jobtitle').inputValue(),'Native reviewer');assert.equal(await readFrame.locator('#parentcustomerid').inputValue(),account);assert.ok(!await readFrame.locator('#lastname').isEditable());await readModal.getByRole('button',{name:'Close',exact:true}).first().click();await readModal.waitFor({state:'hidden'});
  await contact.locator('button').click();await contact.getByRole('menuitem',{name:'Delete',exact:true}).click();const deleteModal=page.locator('.modal-delete:not(.modal-deletenote):visible');await deleteModal.getByRole('button',{name:'Delete',exact:true}).click();await deleteModal.waitFor({state:'hidden'});await contact.waitFor({state:'detached'});assert.equal(await page.locator('#Contacts tbody tr[data-id]').count(),2);
 
- assert.deepEqual(errors,[]);
+ assert.deepEqual(errors,[]);completed=true;
 });

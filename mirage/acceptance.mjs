@@ -53,10 +53,11 @@ const safeMessage = (value) =>
       "$1[redacted]",
     )
     .replace(/https?:\/\/[^\s)]+/g, (url) => safeUrl(url));
+const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]']);
 const loopback = (value) => {
   const url = new URL(value);
   if (
-    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    !LOOPBACK_HOSTS.includes(url.hostname) ||
     url.username ||
     url.password
   )
@@ -201,7 +202,7 @@ export async function runAcceptance({
       ],
       proxy: {
         server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: "127.0.0.1,localhost,[::1]",
+        bypass: LOOPBACK_HOSTS.join(","),
       },
     });
     const localContext = await ownedBrowser.newContext({
@@ -466,8 +467,9 @@ export async function runAcceptance({
           } catch {
             target = null;
           }
-          // The owned browser's proxy refused a request that would leave loopback.
-          if (target && /^(https?|wss?):$/.test(target.protocol) && target.origin !== origin)
+          // Match the proxy's exact bypass hosts. A different loopback origin can
+          // fail or be abandoned by its document without being refused by the proxy.
+          if (target && /^(https?|wss?):$/.test(target.protocol) && !LOOPBACK_HOSTS.includes(target.hostname))
             observation.blockedRequests.push({
               method: request.method(),
               url: safeUrl(request.url()),

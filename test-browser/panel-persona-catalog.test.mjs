@@ -24,6 +24,7 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   assert.ok(await groups.nth(1).locator('[data-panel-persona-row]').count()>=24);
   const other=root.locator('[data-act="persona-group"][data-group="__other"]');await other.click();
   await root.locator('[data-panel-persona-count]').filter({hasText:'of 5 personas'}).waitFor();
+  assert.deepEqual(await root.locator('[data-panel-persona-facet="groups"] option:checked').evaluateAll(options=>options.map(option=>({value:option.value,label:option.textContent}))),[{value:'__other',label:'Other contacts'}]);
   assert.equal(await root.locator('[data-panel-persona-row]').count(),5);
   await root.locator('[data-act="persona-clear"]').click();
   assert.equal(await root.locator('.pp-persona-filter-disclosure').getAttribute('open'),null);await root.locator('.pp-persona-filter-disclosure>summary').click();

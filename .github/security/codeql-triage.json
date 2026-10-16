@@ -2093,5 +2093,54 @@
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/170"
       }
     ]
+  },
+  "feedbackRuntimeReview": {
+    "reviewedAt": "2026-10-16",
+    "analysisId": 1966975103,
+    "sourceHead": "a7c849129f8a3e567e9b3f79dcd3721b86b55be9",
+    "entries": [
+      {
+        "number": 172,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/test/pack-configuration-presets.test.mjs",
+          "start_line": 62,
+          "end_line": 62
+        },
+        "disposition": "false-positive",
+        "evidence": "A fixed filename inside a unique mkdtemp fixture contains invented state only. The ENOENT assertion verifies failed startup created no file; the test then intentionally creates and closes a valid simulator before capturing baseline bytes. After another rejected startup, the second read proves those bytes are unchanged. The absence check does not authorize either read and is deliberately invalidated by fixture creation. No untrusted path, shared file or privilege boundary is involved.",
+        "verification": "Independent source-to-sink review and targeted startup atomicity regression; normal staged validation and installed-package smoke",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/172"
+      },
+      {
+        "number": 173,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/test/pack-configuration-presets.test.mjs",
+          "start_line": 64,
+          "end_line": 64
+        },
+        "disposition": "false-positive",
+        "evidence": "A fixed filename inside a unique mkdtemp fixture contains invented state only. The ENOENT assertion verifies failed startup created no file; the test then intentionally creates and closes a valid simulator before capturing baseline bytes. After another rejected startup, the second read proves those bytes are unchanged. The absence check does not authorize either read and is deliberately invalidated by fixture creation. No untrusted path, shared file or privilege boundary is involved.",
+        "verification": "Independent source-to-sink review and targeted startup atomicity regression; normal staged validation and installed-package smoke",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/173"
+      },
+      {
+        "number": 174,
+        "rule": "js/file-system-race",
+        "securitySeverity": "high",
+        "originalLocation": {
+          "path": "mirage/test/state-storage-windows.test.mjs",
+          "start_line": 43,
+          "end_line": 43
+        },
+        "disposition": "false-positive",
+        "evidence": "The fixed state.json belongs to a unique mkdtemp fixture. A constant local PowerShell script intentionally changes synthetic bytes and restores the exact NTFS timestamp. The signature assertion verifies that edit preserved checked metadata; the following read only asserts its known marker. The stat result does not authorize access or establish trust in the content. The separate production fast-path limitation is documented and exercised by JSON-replacement and journal-checksum assertions.",
+        "verification": "Independent source-to-sink review; both Windows persistence boundary regressions passed",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/174"
+      }
+    ]
   }
 }

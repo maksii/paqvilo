@@ -137,5 +137,31 @@ test('a delayed form submission keeps its hold inside the triggering click deadl
 test('cross-origin child document commits retire only their predecessor requests',{timeout:30000},async t=>{
  const flow=await navigationFixture(t,{embedded:true,crossOrigin:true,late:true});
  assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests?.length,2);
- assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));
+ assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));assert.deepEqual(flow.blockedRequests,[]);
+});
+
+
+test('acceptance distinguishes failed loopback writes from external proxy refusals', {timeout:30000}, async t=>{
+ const directory=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-acceptance-local-boundary-'));t.after(()=>fs.rm(directory,{recursive:true,force:true}));
+ const server=http.createServer((req,res)=>{
+  req.resume();const url=new URL(req.url,'http://fixture');
+  if(url.pathname.startsWith('/__sim/api/')){res.setHeader('content-type','application/json');return res.end(JSON.stringify(url.pathname.endsWith('/state')?{config:{mode:'local',pageMode:'local',endpoints:[]},status:{sourceFingerprint:'fixture',implementationFingerprint:'fixture'}}:{events:[]}));}
+  if(url.pathname==='/aborted-write')return;
+  if(url.pathname==='/failed-write')return req.socket.destroy();
+  res.setHeader('content-type','text/html');
+  if(url.pathname==='/child'){
+   const action=url.searchParams.get('case')==='abort'?"const controller=new AbortController();fetch('/aborted-write',{method:'PATCH',signal:controller.signal}).catch(()=>{});setTimeout(()=>controller.abort(),200)":url.searchParams.get('case')==='fail'?"fetch('/failed-write',{method:'POST'}).catch(()=>{})":"fetch('https://outside.invalid/blocked-write',{method:'POST',mode:'no-cors',body:'invented fixture'}).catch(()=>{})";
+   return res.end(`<button id="send" onclick="${action}">Send</button>`);
+  }
+  res.end(`<iframe id="child" src="http://localhost:${server.address().port}/child?case=${url.pathname.slice(1)}"></iframe>`);
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+ for(const kind of ['abort','fail','external'])await t.test(kind,async()=>{
+  const result=await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(directory,kind),timeout:3000,flows:[{name:kind,steps:[{action:'navigate',path:'/'+kind},{action:'click',frame:'#child',selector:'#send'},{action:'settle'}]}]});
+  const flow=result.flows[0];assert.equal(flow.passed,false,JSON.stringify(flow));
+  assert.ok(flow.failedRequests.some(request=>request.method===(kind==='abort'?'PATCH':'POST')),JSON.stringify(flow));
+  assert.equal(flow.navigationCancelledRequests?.length??0,0);
+  if(kind==='external'){assert.ok(flow.blockedRequests.some(request=>request.method==='POST'&&request.url==='https://outside.invalid/blocked-write'),JSON.stringify(flow));assert.match(flow.error,/blockedRequests/);}
+  else{assert.deepEqual(flow.blockedRequests,[],JSON.stringify(flow));assert.match(flow.error,/failedRequests/);}
+ });
 });

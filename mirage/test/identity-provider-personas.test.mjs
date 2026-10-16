@@ -73,6 +73,11 @@ test('chooser pages follow groups and subgroups while the matching default remai
  assert.ok(defaults);assert.match(html,/<h2>Default<\/h2>[\s\S]*?value="subject-499"/);
  for(const group of report.groups.slice(2))assert.ok(all.some(n=>n.tagName==='a'&&attr(n,'data-chooser-group-link')!==undefined&&new URL(attr(n,'href'),'http://localhost').searchParams.get('group')===group.id));
  report.other=Array.from({length:9},(_,i)=>({contactId:`other-${i}`,subject:`other-${i}`,name:`A Other ${i}`}));
- const others=chooserResults({...report},new URLSearchParams({group:'__other'}),'/authorize');assert.match(others,/1–9 of 9 matching/);
+ const withOther={...report},initialPage=chooserResults(withOther,new URLSearchParams(),'/authorize');
+ const otherLink=nodes(initialPage).find(node=>node.tagName==='a'&&attr(node,'data-chooser-group-link')!==undefined&&new URL(attr(node,'href'),'http://localhost').searchParams.get('group')==='__other');assert.ok(otherLink);
+ const followed=new URL(attr(otherLink,'href'),'http://localhost').searchParams;
+ const others=chooserResults(withOther,followed,'/authorize');assert.match(others,/1–9 of 9 matching/);
+ const selectedOther=nodes(chooserSearch(withOther,followed,'/authorize','')).find(node=>node.tagName==='option'&&attr(node,'value')==='__other');assert.ok(selectedOther);assert.equal(attr(selectedOther,'selected'),'');assert.equal(selectedOther.childNodes[0].value,'Other contacts');
+ assert.equal(nodes(chooserSearch({...report,other:[]},new URLSearchParams(),'/authorize','')).some(node=>node.tagName==='option'&&attr(node,'value')==='__other'),false);
  const filtered=chooserResults(report,new URLSearchParams({group:'group-0'}),'/authorize');assert.doesNotMatch(filtered,/<h2>Default<\/h2>/);
 });
