@@ -39,7 +39,10 @@ the next locked commit removes that unfinished tail. A damaged committed checksu
 with `StateIntegrity` rather than accepting altered data.
 
 The existing exclusive sibling lock serializes writers. File identity, byte length and
-nanosecond modification/change timestamps are checked before writing. The exact-byte digest
+nanosecond modification timestamps are checked before writing. On POSIX the change timestamp
+is checked too. Windows excludes ChangeTime: NTFS can update it on an ordinary read when
+last-access updates are enabled. Reads, backup copies and first-attempt restarts therefore
+retain ownership without weakening inode, size or modification-time checks. The exact-byte digest
 is computed at load/checkpoint and advanced incrementally, avoiding a full file hash for
 each PATCH. Any changed file identity is a `StateConflict`, including an equal-size edit.
 Two stale runtimes cannot merge independent in-memory snapshots implicitly. Multiple browser
@@ -66,7 +69,7 @@ fragmented metadata/rows and legacy JSON. Run the explicit volume check with at 
 2 GiB free RAM:
 
 ```sh
-node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs
+paqvilo mirage verify-storage --json
 ```
 
 It saves/reloads 600,000 synthetic rows with a 1 KiB payload, verifies a file larger than
@@ -74,3 +77,8 @@ the engine string limit, checks digest/restart consistency and requires 20 seque
 single-row updates to complete in under five seconds. It also performs 20 real Web API
 PATCHes against 300,000 rows, exercises concurrent HTTP clients, checks the audit timings
 and verifies external conflicts.
+
+Source checkouts can also run
+`node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs`.
+The published command uses a disposable directory and removes it on completion; it does
+not inspect or modify a project's state. Run it on the filesystem used for local states.

@@ -179,6 +179,7 @@ export async function runAcceptance({
     passed: false,
     sourceFingerprint: state.status?.sourceFingerprint,
     implementationFingerprint: state.status?.implementationFingerprint,
+    activeConfigurationPreset: state.status?.activeConfigurationPreset ?? state.config?.activeExperiment ?? null,
     viewport: { width: 1440, height: 1000 },
     flows: [],
   };
@@ -289,7 +290,8 @@ export async function runAcceptance({
       }
       const pending = new Map(),
         responseObservations = [];
-      const requestRecords = new Map(), navigationCandidates = new WeakMap();
+      const requestRecords = new Map(), navigatingFrames = new WeakMap(), navigationHolds = new Set();
+      let settlementDeadline = Infinity;
       const requestFrame = request => { try { return request.frame(); } catch { return null; } };
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
@@ -306,8 +308,13 @@ export async function runAcceptance({
         return pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250;
       }), 'frame-detached'));
       page.on('framenavigated', frame => {
-        cancelRequests(navigationCandidates.get(frame) ?? [], 'document-replaced');
-        navigationCandidates.delete(frame);
+        // The old document can start more XHRs while its replacement is in
+        // flight. Use the commit boundary, not a snapshot at navigation start.
+        // A same-document hash/history change has no navigation request.
+        if (!navigatingFrames.has(frame)) return;
+        cancelRequests([...requestRecords.keys()].filter(request => requestFrame(request) === frame && request.resourceType() !== 'document' &&
+          (pending.has(request) || requestRecords.get(request).finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - requestRecords.get(request).endedAt <= 250)), 'document-replaced');
+        navigatingFrames.delete(frame);
       });
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
@@ -325,8 +332,9 @@ export async function runAcceptance({
                 .map((row) => [row.frameId, row.parentFrameId]),
             );
           // Writes of replaced documents or removed frames can no longer complete.
-          awaitWritesBeforeDocument(event.frameId, () => [...cdpRecords.values()], parents, {
-            timeout,
+          const hold = awaitWritesBeforeDocument(event.frameId, () => [...cdpRecords.values()], parents, {
+            timeout: Math.max(0, timeout - Math.min(1000, timeout / 2)),
+            deadline: () => settlementDeadline - Math.min(1000,timeout/2),
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
@@ -342,6 +350,8 @@ export async function runAcceptance({
                 .send("Fetch.continueRequest", { requestId: event.requestId })
                 .catch(() => {}),
             );
+          navigationHolds.add(hold);
+          void hold.finally(() => navigationHolds.delete(hold));
         });
         await cdp.send("Fetch.enable", { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
@@ -503,8 +513,7 @@ export async function runAcceptance({
       let lastRequestActivity = Date.now();
       page.on("request", (request) => {
         const frame = requestFrame(request);
-        if (frame && request.isNavigationRequest()) navigationCandidates.set(frame,
-          [...pending.keys()].filter(previous => requestFrame(previous) === frame && previous.resourceType() !== 'document'));
+        if (frame && request.isNavigationRequest()) navigatingFrames.set(frame,request);
         const record = {
           order: observation.resources.length + 1,
           method: request.method(),
@@ -534,6 +543,8 @@ export async function runAcceptance({
       });
       for (const event of ["requestfinished", "requestfailed"])
         page.on(event, (request) => {
+          const frame=requestFrame(request);
+          if(event==='requestfailed'&&request.isNavigationRequest()&&request.failure()?.errorText==='net::ERR_ABORTED'&&navigatingFrames.get(frame)===request)navigatingFrames.delete(frame);
           const record = pending.get(request);
           if (record) {
             if (record.type !== "eventsource") lastRequestActivity = Date.now();
@@ -580,6 +591,10 @@ export async function runAcceptance({
         (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
       };
       const settle = async () => {
+        // Document holds have their own bounded write wait. Start the settle
+        // deadline after releasing an existing hold, so it cannot expire while
+        // the runner itself prevents the replacement document from committing.
+        await Promise.allSettled([...navigationHolds]);
         const active = () =>
           [...pending.values()].filter(
             (record) =>
@@ -587,6 +602,8 @@ export async function runAcceptance({
               !simulatorBackgroundRequest(record.url, origin),
           );
         const deadline = Date.now() + timeout;
+        settlementDeadline = deadline;
+        try {
         let lastProofCheck = 0;
         // Native save callbacks can schedule a subgrid refresh after the modal
         // closes. Observe that work before initiating another navigation.
@@ -641,6 +658,7 @@ export async function runAcceptance({
                 .map((record) => record.method + " " + record.url)
                 .join(", "),
           );
+        } finally { settlementDeadline = Infinity; }
       };
       try {
         for (const [stepIndex, definition] of flow.steps.entries()) {

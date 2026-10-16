@@ -8,7 +8,12 @@ import { jsonChunks, parseJsonStream, hashStateFile, writeJsonStream } from './s
 const MAGIC = '{"$paqvilo":"mirage-state-journal-v1"}\n';
 export const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
 const conflict = () => new DataError('Local state changed outside this runtime; restart the simulator from the updated state file before writing', 409, 'StateConflict');
-const signature = info => [info.dev, info.ino, info.size, info.mtimeNs, info.ctimeNs].join(':');
+// NTFS updates ChangeTime on the first read/open when last-access updates are
+// enabled. That is not a content change. Retain inode, size and nanosecond mtime
+// checks on Windows; committed bytes remain protected by the persisted digest.
+export const stateFileSignature = (info, platform = process.platform) =>
+  [info.dev, info.ino, info.size, info.mtimeNs, ...(platform === 'win32' ? [] : [info.ctimeNs])].join(':');
+const signature = stateFileSignature;
 const identity = info => [info.dev, info.ino].join(':');
 const fileSignature = async file => signature(await stat(file, { bigint: true }));
 const put = (object, key, value) => Object.defineProperty(object, key, { value, writable: true, enumerable: true, configurable: true });

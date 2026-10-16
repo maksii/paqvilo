@@ -126,10 +126,12 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await openTab('tweaks');
   const sessionCard = panelLocator('.card').filter({ hasText: 'Browser session' });
   await sessionCard.getByText('Anonymous', { exact: true }).waitFor();
+  await panelLocator('[data-panel-persona-query]').fill('alex');
+  await panelLocator('[data-panel-persona-count]').filter({hasText:'of 1 personas'}).waitFor();
   // Local pages are not confined to loopback by default; the status card says so.
   await panelLocator('[data-policy="open"]').getByText('Not confined: pages carry only the headers their site settings define', { exact: true }).waitFor();
   const cookiesBefore = await context.cookies(app.url);
-  await panelLocator('select[data-pick="persona"]').selectOption('alex');
+  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await panelLocator('[data-act="signin"]').getByText('Sign in as Alex Local', { exact: true }).waitFor();
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panelLocator('[data-act="signin"]').click()]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
@@ -142,7 +144,7 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   assert.equal(await other.locator('#who').innerText(), 'Anonymous', 'another browser keeps its own (anonymous) session');
   await otherContext.close();
   await openTab('tweaks');
-  await sessionCard.getByText('Alex Local', { exact: true }).waitFor();
+  await sessionCard.locator('.who').getByText('Alex Local', { exact: true }).waitFor();
 
   // The restricted page is now allowed; its rule is shown as applying to this persona.
   await page.goto(`${app.url}/secure/`);
@@ -188,7 +190,7 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await page.goto(`${app.url}/secure/`);
   await page.waitForURL((url) => /\/signin$/i.test(url.pathname) && url.searchParams.get('ReturnUrl') === '/secure/');
   await openTab('tweaks');
-  await panelLocator('select[data-pick="persona"]').selectOption('alex');
+  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await Promise.all([page.waitForURL((url) => url.pathname === '/secure/'), panelLocator('[data-act="signin"]').click()]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   await openTab('tweaks');
@@ -267,7 +269,7 @@ test('Mirage panel signs this browser in and out through the site\'s identity pr
 
   // Sign in as: ExternalLogin with a login_hint, the local identity provider, its form_post to
   // the callback, then back to this page.
-  await panelLocator('select[data-pick="persona"]').selectOption('alex');
+  await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   navigations.length = 0;
   await panelLocator('[data-act="signin"]').click();
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();

@@ -25,11 +25,12 @@ test('catalogue API joins pack/state entries, native groups work without JavaScr
 });
 
 test('persona shortcuts reject unsafe redirects and require a CSRF post',async t=>{
-  const {app}=await personaFixture(t);
+  const {app,call}=await personaFixture(t);
   const unknown=await fetch(app.url+'/_sim/sign-in?persona=person-01');assert.equal(unknown.status,404);assert.match(await unknown.text(),/person-1/);
   for(const path of ['https://example.test/','//example.test/','/%2fexample.test/','/\\example.test/']){
-    const response=await fetch(app.url+'/_sim/sign-in?persona=person-1&returnUrl='+encodeURIComponent(path));assert.equal(response.status,400,path);
+    const response=await fetch(app.url+'/_sim/sign-in?persona=person-1&returnUrl='+encodeURIComponent(path));assert.equal(response.status,400,path);assert.match(await response.text(),/returnUrl must be a relative path/);
   }
+  const invalid=await call('/personas/launch','POST',{personaKey:'person-1',returnUrl:'https://other.example/'});assert.equal(invalid.response.status,400);assert.match(invalid.value.error.message,/^returnUrl must be a relative path/);
   const target=app.url+'/_sim/sign-in?persona=person-1&returnUrl=%2F%3Fwelcome%3D1';
   const get=await fetch(target);assert.equal(get.status,200);assert.match(await get.text(),/name="personaKey" value="person-1"/);
   const rejected=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1'}),redirect:'manual'});assert.equal(rejected.status,403);

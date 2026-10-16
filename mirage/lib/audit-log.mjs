@@ -113,6 +113,7 @@ export class AuditLog {
     query,
     correlationId,
     parentId,
+    activeConfigurationPreset,
   } = {}) {
     const started = performance.now();
     const id = randomUUID();
@@ -121,6 +122,7 @@ export class AuditLog {
       sequence: ++this.sequence,
       correlationId: correlationId || id,
       parentId: parentId ?? null,
+      ...(activeConfigurationPreset ? {activeConfigurationPreset:{id:limitText(activeConfigurationPreset.id,80),source:limitText(activeConfigurationPreset.source,160),digest:limitText(activeConfigurationPreset.digest,64)}} : {}),
       startedAt: new Date().toISOString(),
       kind: auditKind(kind),
       method: limitText(method || "GET", 12).toUpperCase(),

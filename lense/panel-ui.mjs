@@ -45,6 +45,7 @@ export function panelUi(data) {
       svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
       mark { background: var(--warn-bg); color: inherit; padding: 0; }
 
+      .pp-persona-picker { width:100%;min-width:0; } .pp-persona-picker input,.pp-persona-facets select {box-sizing:border-box;width:100%;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px} .pp-persona-picker [data-panel-persona-results]{max-height:320px;overflow:auto;overscroll-behavior:contain;border-block:1px solid var(--line);margin-block:8px} .pp-persona-picker input[type=checkbox]{width:auto} .pp-persona-facets{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0}.pp-persona-row{display:flex;gap:8px;border-top:1px solid var(--line);padding:7px}.pp-persona-row.selected{background:var(--tint);box-shadow:inset 3px 0 var(--primary)}.pp-persona-choice{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}.pp-persona-choice span{font-size:11px;color:var(--muted)}.pp-persona-group{margin:8px 0}.pp-persona-group>summary{font-weight:600;cursor:pointer}.pp-persona-group h4,.pp-persona-picker h4{margin:8px 0 3px;font-size:12px}
       .pill { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: var(--radius);
         max-width: calc(100vw - 16px);
         background: var(--bg); border: 1px solid var(--panel-line); box-shadow: var(--shadow);
@@ -794,6 +795,37 @@ export function panelUi(data) {
       return out + (listed || emptyState(S.q ? 'Nothing matches' : 'No dependencies in this section', S.q ? 'Clear the filter to see the page inspection.' : 'Choose another section or refresh after navigating.'));
     };
 
+    const personaFold = value => String(value??'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[øæœßđðłþ]/g,letter=>S.tweaks?.personaCatalog?.transliterations?.[letter]??letter);
+    const personaPreferences = () => {
+      try{const value=JSON.parse(localStorage.getItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`)??'{}');return {pinned:Array.isArray(value.pinned)?value.pinned.filter(v=>typeof v==='string').slice(0,100):[],recent:Array.isArray(value.recent)?value.recent.filter(v=>typeof v==='string').slice(0,5):[]};}catch{return {pinned:[],recent:[]};}
+    };
+    const savePersonaPreferences = value => {try{localStorage.setItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`,JSON.stringify(value));}catch{/* optional preference */}};
+    const personaMatches = () => {
+      const query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]},terms=personaFold(query.q).trim().split(/\s+/).filter(Boolean),people=S.tweaks?.personas??[];
+      const index=S.tweaks?.personaIndex??people.map(person=>({key:person.key??`@contact:${person.contactId}`,text:personaFold([person.name,...(person.roles??[])].join(' ')),roles:(person.roles??[]).map(personaFold),tags:[],group:'__other'}));
+      return index.map((entry,i)=>({...entry,persona:people[i]})).filter(entry=>entry.persona&&entry.persona.active!==false&&terms.every(term=>entry.text.includes(term))&&['roles','tags','accounts'].every(facet=>!query[facet]?.length||query[facet].some(value=>entry[facet].includes(personaFold(value))))&&(!query.rolesOnly||entry.roles.length>0)&&(!query.groups?.length||query.groups.map(personaFold).includes(entry.group))&&(!query.subgroups?.length||query.subgroups.some(value=>personaFold(value)===`${entry.group}:${entry.subgroup}`)));
+    };
+    const personaRowsHtml = () => {
+      const matching=personaMatches(),preferences=personaPreferences(),offset=Math.max(0,Math.min(S.personaPage??0,Math.max(0,matching.length-1))),pageRows=matching.slice(offset,offset+50);
+      const row=entry=>{const p=entry.persona,selected=S.pick.personaKey?S.pick.personaKey===entry.key:S.pick.persona===p.contactId;return `<div class="pp-persona-row${selected?' selected':''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label??p.name??p.contactId)}${p.default?' · Default':''}</strong><span>${esc(p.name??p.contactId)}${p.account?.name?` · ${esc(p.account.name)}`:""}</span>${p.description?`<span>${esc(p.description.split(/\r?\n/,1)[0])}</span>`:''}<span>${esc((p.roles??[]).join(', ')||'No web roles')}${p.tags?.length?` · ${esc(p.tags.join(', '))}`:''}${p.context?` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find(c=>c.id===p.context)?.label??p.context)} (full picker)`:''}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${preferences.pinned.includes(entry.key)}" aria-label="Pin ${esc(p.label??p.name)}">${preferences.pinned.includes(entry.key)?'★':'☆'}</button></div>`;};
+      const shortcut=(keys,label)=>{const byKey=new Map(matching.map(entry=>[entry.key,entry]));const rows=keys.map(key=>byKey.get(key)).filter(Boolean).slice(0,10);return rows.length?`<section><h4>${label}</h4>${rows.map(row).join('')}</section>`:'';};
+      const groups=[...(S.tweaks?.personaCatalog?.groups??[]),{id:'__other',label:'Other contacts'}];
+      const defaultRow=offset===0?pageRows.find(entry=>entry.persona.default):null;
+      return `<p class="dim" role="status" data-panel-persona-count>${matching.length?offset+1:0}–${Math.min(offset+50,matching.length)} of ${matching.length} personas</p>${defaultRow?`<section><h4>Default</h4>${row(defaultRow)}</section>`:''}${shortcut(preferences.pinned,'Pinned')}${shortcut(preferences.recent,'Recent')}${groups.map(group=>{const all=matching.filter(entry=>(entry.group||'__other')===group.id),rows=pageRows.filter(entry=>(entry.group||'__other')===group.id&&entry!==defaultRow);if(!all.length)return '';return `<details class="pp-persona-group"${all.length<=25||S.personaFilters?.q||S.personaFilters?.rolesOnly||['roles','tags','accounts','groups','subgroups'].some(key=>S.personaFilters?.[key]?.length)?' open':''}><summary>${esc(group.label)} · ${all.length}</summary>${rows.filter(entry=>!entry.persona.subgroup).map(row).join('')}${(group.subgroups??[]).map(sub=>{const entries=rows.filter(entry=>entry.persona.subgroup===sub.id);return entries.length?`<h4>${esc(sub.label)} · ${all.filter(entry=>entry.persona.subgroup===sub.id).length}</h4>${entries.map(row).join('')}`:''}).join('')}</details>`;}).join('')}${matching.length?'':'<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset?'<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>':''}${offset+50<matching.length?'<button class="btn" data-act="persona-page" data-direction="1">Show more</button>':''}</div>`;
+    };
+    const personaPickerHtml = (selectedId) => {
+      if(S.pick.persona===undefined&&selectedId!==undefined)S.pick.persona=selectedId;
+      const query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]},people=S.tweaks?.personas??[],groups=S.tweaks?.personaCatalog?.groups??[];
+      const facets=[['roles','Web role',[...new Set(people.flatMap(p=>p.roles??[]))].map(id=>({id,label:id}))],['tags','Tag',[...new Set(people.flatMap(p=>p.tags??[]))].map(id=>({id,label:id}))],['accounts','Account',[...new Map(people.filter(p=>p.account?.id).map(p=>[p.account.id,p.account.name??p.account.id])).entries()].map(([id,label])=>({id,label}))],['groups','Group',groups],['subgroups','Subgroup',groups.flatMap(group=>(group.subgroups??[]).map(sub=>({id:`${group.id}:${sub.id}`,label:`${group.label} / ${sub.label}`})))]];
+      const selected=people.find(p=>p.contactId===S.pick.persona),activeFilters=[query.roles,query.tags,query.groups,query.subgroups,query.accounts].reduce((total,values)=>total+(values?.length??0),0)+(query.rolesOnly?1:0);
+      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${activeFilters?' open':''}><summary>Filters${activeFilters?` · ${activeFilters} active`:''}</summary><div class="pp-persona-facets">${facets.filter(([, ,options])=>options.length).map(([name,label,options])=>`<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${options.filter((item,index)=>index<100||query[name]?.includes(item.id)).map(item=>`<option value="${esc(item.id)}"${query[name]?.includes(item.id)?' selected':''}>${esc(item.label)}</option>`).join('')}</select></label>`).join('')}</div><label><input type="checkbox" data-panel-persona-roles-only${query.rolesOnly?' checked':''}> Has web roles</label><p class="dim">All terms match. Any values within one filter match; filters combine.${facets.some(([, ,options])=>options.length>100)?' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.':''}</p><button class="btn" data-act="persona-clear">Clear filters</button></details><div data-panel-persona-results>${personaRowsHtml()}</div><p class="dim" data-panel-persona-selected>Selected: ${esc(selected?.label??selected?.name??'Choose a persona')}. ${S.tweaks?.session?.supported?'Sign-in changes this browser’s identity; runtime settings stay unchanged.':'Switch persona changes the runtime default for requests without their own sign-in session.'}</p><button class="btn" data-act="sim" data-hash="identity">Open full picker and isolated setups</button></div>`;
+    };
+    const refreshPersonaRows = () => {
+      const root=el.panel.querySelector('[data-panel-persona-results]');if(root)root.innerHTML=personaRowsHtml();
+      const query=S.personaFilters??{},count=['roles','tags','groups','subgroups','accounts'].reduce((total,key)=>total+(query[key]?.length??0),0)+(query.rolesOnly?1:0),summary=el.panel.querySelector('.pp-persona-filter-disclosure>summary');
+      if(summary)summary.textContent='Filters'+(count?` · ${count} active`:'');
+    };
+
     const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
@@ -823,17 +855,17 @@ export function panelUi(data) {
           <div class="dim">${esc((session.roles ?? []).join(', ') || 'no web roles')}${session.roleSource === 'override' ? ' (simulation override)' : ''}${session.accountId ? ` · account ${esc(session.accountId)}` : ''}</div>
           <div class="dim" data-idp="${provider ? 'external' : 'local'}">${via}</div>
           ${session.signedIn ? '<div class="tw"><button class="btn" data-act="signout">Sign out</button></div>' : ''}
-          ${t.personas.length ? `<div class="tw"><select data-pick="persona" aria-label="Persona to sign in as">${t.personas.map((item) => option(item.contactId, personaLabel(item), persona === item.contactId)).join('')}</select><button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>` : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>'}
+          ${t.personas.length ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>` : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>'}
           ${session.error ? `<div class="dim">${esc(session.error)}</div>` : ''}
           <div class="dim">This page runs the portal's own sign-in (or sign-out) and comes back here. Only this browser changes; other browsers keep their own sessions.</div></div>`;
       } else {
         const persona = S.pick.persona ?? (t.identity?.contactId ?? '');
-        out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw"><select data-pick="persona" aria-label="Persona">${option('', 'Anonymous visitor', persona === '')}${t.personas.map((item) => option(item.contactId, `${item.name ?? item.contactId}${item.roles?.length ? ` — ${item.roles.join(', ')}` : ''}${item.active === false ? ' (inactive)' : ''}`, persona === item.contactId)).join('')}</select><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
+        out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="choosepersona" data-contact="" data-key="anonymous">Anonymous visitor</button><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
       }
       out += `<div class="card"><div class="path">Table permissions</div><div class="tw"><span class="seg">${[['enforce', 'Enforce'], ['permissive', 'Permissive']].map(([value, label]) => `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${value === 'enforce' ? 'Apply table permissions, web roles and scopes' : 'Sandbox: every identity may read and write all local tables'}">${label}</button>`).join('')}</span><span class="dim">grant source ${esc(t.permissionSource ?? 'unknown')}</span></div></div>`;
       if (t.scenarios.length) {
         const pick = S.pick.scenario ?? t.activeScenario?.id ?? t.scenarios[0].id;
-        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, item.name ?? item.id, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
+        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, `${item.name ?? item.id}${item.catalogue ? ` · ${item.persona} → ${item.startPath ?? "/"}${item.context ? " · isolated setup" : ""}` : ""}`, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
       }
       if (t.presets.length) {
         const pick = S.pick.preset ?? t.presets[0].id;
@@ -1122,6 +1154,14 @@ export function panelUi(data) {
       const url = row?.dataset.url || '';
       const d = S.d;
       switch (name) {
+        case 'choosepersona': {
+          if(t.dataset.contact&&!S.tweaks?.personas?.some(p=>p.contactId===t.dataset.contact))break;
+          S.pick.persona=t.dataset.contact;S.pick.personaKey=t.dataset.key;render();break;
+        }
+        case 'pinpersona': {const value=personaPreferences();value.pinned=value.pinned.includes(t.dataset.key)?value.pinned.filter(key=>key!==t.dataset.key):[t.dataset.key,...value.pinned].slice(0,100);savePersonaPreferences(value);refreshPersonaRows();break;}
+        case 'persona-page': S.personaPage=Math.max(0,(S.personaPage??0)+Number(t.dataset.direction)*50);refreshPersonaRows();break;
+        case 'persona-clear': S.personaFilters={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaPage=0;render();break;
+
         case 'inspect-section':
           S.inspectSection = t.dataset.v;
           render();
@@ -1197,6 +1237,7 @@ export function panelUi(data) {
           const name = personas.find((item) => item.contactId === contactId)?.name ?? contactId;
           // The page posts the portal's sign-in form and navigates; it comes back signed in.
           const r = await api('signin', { contactId });
+          if(r.ok){const value=personaPreferences(),key=S.pick.personaKey??`@contact:${contactId}`;value.recent=[key,...value.recent.filter(item=>item!==key)].slice(0,5);savePersonaPreferences(value);}
           if (r.ok) toast(`Signing in as ${name} through ${r.via ?? 'the portal'} ...`);
           else toast(r.error ?? 'Could not sign in', true);
           break;
@@ -1222,7 +1263,7 @@ export function panelUi(data) {
           if (!item) break;
           S.confirm = kind === 'preset'
             ? { kind, id, label: 'Apply preset', text: `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.` }
-            : { kind, id, label: 'Apply scenario', text: `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.` };
+            : { kind, id, catalogue: item.catalogue === true, ...(item.catalogueId?{id:item.catalogueId}:{}), label: 'Apply scenario', text: item.catalogue ? `Open "${item.name}" as ${item.persona} at ${item.startPath??'/'}? ${item.context||item.preset?'Its setup opens in an isolated local runtime.':'This browser signs in through the portal.'}` : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.` };
           render();
           break;
         }
@@ -1235,7 +1276,7 @@ export function panelUi(data) {
           S.confirm = null;
           render();
           if (!pending) break;
-          const r = await api(pending.kind, { id: pending.id });
+          const r = await api(pending.kind, { id: pending.id, ...(pending.catalogue?{catalogue:true}:{}) });
           // A scenario persona signs this browser in (or out) through the portal after the reload.
           if (r.ok && r.navigating) toast(`${pending.label.replace('Apply ', '')} applied; ${r.contactId ? 'signing in as its persona' : 'signing out'} after the reload ...`);
           else if (r.ok) reloadAfterTweak(`${pending.label.replace('Apply ', '')} applied; reloading ...`);
@@ -1339,7 +1380,10 @@ export function panelUi(data) {
       const t = e.target.closest('[data-act]');
       if (t) act(t.dataset.act, t);
     });
+    el.panel.addEventListener('input',event=>{if(!event.target.matches('[data-panel-persona-query]'))return;S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters.q=event.target.value;S.personaPage=0;refreshPersonaRows();});
     el.panel.addEventListener('change', (e) => {
+      if(e.target.matches('[data-panel-persona-roles-only]')){S.personaFilters??={q:'',roles:[],tags:[]};S.personaFilters.rolesOnly=e.target.checked;S.personaPage=0;refreshPersonaRows();return;}
+      if(e.target.matches('[data-panel-persona-facet]')){S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters[e.target.dataset.panelPersonaFacet]=[...e.target.selectedOptions].map(option=>option.value);S.personaPage=0;refreshPersonaRows();return;}
       const pick = e.target.closest?.('[data-pick]');
       if (!pick) return;
       S.pick[pick.dataset.pick] = pick.value;

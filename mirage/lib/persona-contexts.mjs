@@ -11,12 +11,14 @@ export function createPersonaContexts({ snapshot, start, maxInstances = 4, direc
   personaContextSettings({maxInstances});
   const entries = new Map(); let queue = Promise.resolve(), closed = false;
   const serialize = fn => { const task = queue.then(fn); queue = task.catch(() => {}); return task; };
-  const publicEntry = entry => ({ id: entry.id, context: entry.definition.id ?? null, scenario: entry.scenario ?? null, instanceKey: entry.instanceKey, label: entry.definition.label, origin: entry.runtime.url, createdAt: entry.createdAt, lastUsedAt: entry.lastUsedAt, browser: entry.definition.browser ?? {}, isolated: true });
+  const publicEntry = entry => ({ id: entry.id, context: entry.definition.id ?? null, scenario: entry.scenario ?? null, instanceKey: entry.instanceKey, label: entry.definition.label, origin: entry.runtime.url, createdAt: entry.createdAt, lastUsedAt: entry.lastUsedAt, browser: entry.definition.browser ?? {}, isolated: true, status: entry.closing ? 'stopping' : 'running' });
   const stop = async id => {
     const entry = [...entries.values()].find(item => item.id === id);
     if (!entry) throw failure('Persona runtime not found', 404, 'PersonaContextNotFound');
-    await entry.runtime.close(); entries.delete(entry.key);
+    entry.closing = true;
+    if (!entry.stopped) { await entry.runtime.close(); entry.stopped = true; }
     await fs.rm(entry.directory, { recursive: true, force: true });
+    entries.delete(entry.key);
     return { stopped: id };
   };
   return {
@@ -27,6 +29,7 @@ export function createPersonaContexts({ snapshot, start, maxInstances = 4, direc
       const effective = { ...definition, ...(preset ? { preset } : {}) };
       const key = createHash('sha256').update(JSON.stringify([effective, definition.id ? null : scenario, instanceKey])).digest('hex');
       let entry = entries.get(key); const created = !entry;
+      if (entry?.closing) throw failure('This persona runtime is stopping. Retry stopping it before opening the setup again.', 409, 'PersonaContextStopping');
       if (!entry) {
         if (entries.size >= maxInstances) throw failure(`The limit of ${maxInstances} persona runtimes is reached. Stop an unused runtime or raise personaContexts.maxInstances.`, 409, 'PersonaContextLimit');
         await fs.mkdir(directory, { recursive:true, mode:0o700 });
@@ -44,6 +47,12 @@ export function createPersonaContexts({ snapshot, start, maxInstances = 4, direc
       return { ...publicEntry(entry), created, runtime: entry.runtime };
     }),
     stop: id => serialize(() => stop(id)),
-    close: () => serialize(async () => { closed = true; for (const entry of [...entries.values()]) await stop(entry.id); }),
+    close: () => serialize(async () => {
+      closed = true; const failures = [];
+      for (const entry of [...entries.values()]) {
+        try { await stop(entry.id); } catch (cause) { failures.push(cause); }
+      }
+      if (failures.length) throw new AggregateError(failures, 'Some persona runtimes could not be stopped; retry close to release them.');
+    }),
   };
 }

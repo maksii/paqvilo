@@ -43,6 +43,7 @@ const OBSERVED_CHOICES = {
   webApiAntiForgery: ["cookie-mismatch-403", "decryption-401"],
   webApiReferenceErrors: ["dataverse", "unexpected"],
   webApiInvalidDate: ["invalid-format", "crm-minimum"],
+  webApiDateParsing: ['iso', 'month-first'],
   // Stable reader exception/message wrappers differ by site; generated CLR stacks are not reproduced.
   webApiErrorDetails: ["diagnostic", "odata-wrapper"],
   anonymousDataAccess: ["allowed", "blocked"],
@@ -109,9 +110,14 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if (value.webApiTwoDigitYearMax != null) {
+    if (!Number.isInteger(value.webApiTwoDigitYearMax) || value.webApiTwoDigitYearMax < 99 || value.webApiTwoDigitYearMax > 9999 || value.webApiDateParsing !== 'month-first')
+      throw new Error(`${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`);
+    observed.webApiTwoDigitYearMax = value.webApiTwoDigitYearMax;
+  }
   for (const field of ['tablePermissionGrantOrder', 'odataPermissionGrantOrder']) if (value[field] != null) {
     const order = value[field];
     const object = item => item && typeof item === 'object' && !Array.isArray(item);

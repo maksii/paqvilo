@@ -139,6 +139,10 @@ test("a portal's own Sign in button signs in through the local identity provider
   assert.equal(await tab.locator("li.paqvilo-mirage-persona").count(), 0);
   // A new user meets the site's registration settings (registration is off).
   await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  assert.equal(await tab.getByLabel("Given name").count(),0,"the default chooser does not offer disabled registration");
+  // Explicitly request the negative registration flow instead of suggesting it
+  // to every operator on a site that disallows registration.
+  const registrationTest=new URL(tab.url());registrationTest.searchParams.set('prompt','create');await tab.goto(registrationTest.href);
   await tab.getByLabel("Given name").fill("Nina");
   await tab.getByLabel("Family name").fill("New");
   await tab.getByLabel("Email").fill("nina@example.test");

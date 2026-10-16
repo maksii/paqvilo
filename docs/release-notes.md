@@ -9,6 +9,44 @@ scenario matrix generator, inventories and a reference generator, and a reviewed
 model with platform-generated and live-run-variance proofs. See the
 [baseline guide](baseline.md) and the [runbook](../mirage/docs/baseline/rerun.md).
 
+Feedback follow-up (63–64, 66, 68–72): acceptance cancels requests at document commit,
+including requests started during navigation, and budgets its document holds before settling.
+Windows state ownership ignores NTFS access-only ChangeTime updates; the published
+`paqvilo mirage verify-storage` command checks streaming, journals and volume performance.
+An evidenced `observed.webApiDateParsing: month-first` option converts portal Web API
+date strings while retaining ISO-only direct datastore/query behavior.
+An isolated native CRUD comparison corrected the initial date closure: true DateOnly
+uses the Edm.Date calendar reader, while DateOnly display on UserLocal/TimeZoneIndependent
+retains instant storage. Fractional seconds truncate; independent values avoid timezone
+shifts. Month-first parsing includes English month names and a configurable two-digit
+year cutoff. Explicit evidenced timezone rules support seasonal formatted Web API values.
+The native corpus checks 170 cases and backend persistence; it does not establish universal
+date/time or native-form parity. Dataverse provisioning also retains explicit datetime
+display formats and reconciles transient metadata-read 404s after acknowledged creates.
+
+Packs can contribute validated, read-only `configurationPresets`; a data preset's
+`configurationPreset` applies only with `applyConfiguration: true`. Status, acceptance
+evidence and audit record the active configuration's ID, source and digest. The local
+identity provider and Lense gain grouped, paged persona search, facets and pinned/recent
+choices. The identity provider follows registration settings, supports explicit negative-test
+overrides, and accepts project-owned presentation and head assets. Lense catalogue scenarios
+use portal sign-in and support isolated setups. Persona validation names missing groups and
+invalid return URLs correctly; search also folds letters such as ø, æ, œ, ß, đ and ł.
+
+Additional operator audit: anonymous sign-in-page requests no longer cache their identity
+as the runtime's configured default. Concurrent visitors retain separate session reports.
+Registration uses its own form, so pressing Enter cannot select an existing persona.
+Configuration reads project only their required state sections. Failed child or bridge
+cleanup no longer prevents other owned services from shutting down; failed child stops
+remain visible and retryable. Picker filters retain selected values beyond their bounded
+menus, explain the menu limit, and open matching groups. Narrow layouts and dialog Escape
+navigation have browser regressions.
+The demo now includes curated editor/reader groups, isolated simulated Entra scenarios,
+and a branded sign-in dialog. Browser coverage exercises its callback, roles, sign-out,
+parent-session isolation and owned-runtime cleanup. Scaffold guides cover current pack,
+configuration, session and journal APIs. Picker filters start collapsed to leave room for
+choices, including on narrow screens.
+
 Security review: step announcements and JSON-transport success panels build DOM nodes
 without reinterpreting text as markup. Baseline generators escape JavaScript literals
 for HTML embedding and Markdown reports preserve literal backslashes. Changed-row

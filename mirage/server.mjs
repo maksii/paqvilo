@@ -1,5 +1,6 @@
 import http from "node:http";
 import { validatePersonaCatalog, mergePersonaCatalogs, resolvePersonaCatalog, personaContactId, personaStartPath } from './lib/persona-catalog.mjs';
+import {identityProviderSettings,identityProviderAssets} from './lib/identity-provider-settings.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
 import { createPersonaContexts } from './lib/persona-contexts.mjs';
 import { personaContextSettings } from './lib/persona-context-settings.mjs';
@@ -37,7 +38,7 @@ import { initialState } from "./lib/bootstrap.mjs";
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
 import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
-import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment } from './lib/experiment-presets.mjs';
+import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment, configurationPresetReport } from './lib/experiment-presets.mjs';
 import { inspectPage } from "./lib/page-resources.mjs";
 import { enrichReference } from "./enrich-reference.mjs";
 import { discoverSourceDependencies, runtimeDependencyPaths, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
@@ -276,6 +277,7 @@ export async function createSimulator({
   stateFile,
   persistence,
   personaContexts: personaContextsOption = {},
+  identityProvider: identityProviderOption = {},
   personaInstance = null,
   preset,
   presetMode = 'always',
@@ -315,6 +317,7 @@ export async function createSimulator({
   dataModel,
 } = {}) {
   personaContextsOption = personaContextSettings(personaContextsOption);
+  const providerSettings=identityProviderSettings(identityProviderOption),providerAssets=identityProviderAssets(providerSettings,projectRoot);
   port = runtimePort(port, 0);
   const render = renderSettings(renderOption);
   const localOverrides = overridesOption ?? resolveLocalOverrides({ compat, head }, projectRoot);
@@ -409,6 +412,7 @@ export async function createSimulator({
   // Project data packs (project.dataPacks) join the built-in pack registry.
   const projectPacks = project?.dataPacks?.length || dataPacks.length || packs.length ? await discoverPacks({ project, portal: sourcePortal, explicit: dataPacks, packs }) : undefined;
   // HTTP endpoints of the packs that serve this portal (built-in and project packs).
+  const packConfigurations = configurationPresetReport(projectPacks ?? []);
   const packEndpointList = packEndpoints(projectPacks ?? (await discoverPacks({ portal: sourcePortal })));
   const registeredOperations = operationHandlers(projectPacks ?? []);
   const registeredWebApiErrorTemplates = collectWebApiErrorTemplates(projectPacks ?? []);
@@ -588,21 +592,23 @@ export async function createSimulator({
     watcherReadyRelease = null;
     frameReadiness.close();
     closePromise = (async () => {
-      await personaRuntimes.close();
-      await watcher?.close();
+      const failures = [], attempt = async operation => { try { await operation(); } catch (cause) { failures.push(cause); } };
+      await attempt(() => personaRuntimes.close());
+      await attempt(() => watcher?.close());
       await reloadPromise?.catch(() => {});
       while(activeRequests.size)await Promise.all([...activeRequests]);
-      await mutation;
-      await store.queue;
-      await settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true});
-      for(const runtime of registeredPluginRuntimes.values())closeClrHostPool({runtime,diagnostic:recordDiagnostic});
+      await attempt(() => mutation);
+      await attempt(() => store.queue);
+      await attempt(() => settleCommittedWork(store,[triggerRunner,asyncPluginRunner],{close:true}));
+      for(const runtime of registeredPluginRuntimes.values())await attempt(() => closeClrHostPool({runtime,diagnostic:recordDiagnostic}));
       for (const event of events) event.end();
-      await live.close();
+      await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
-      await externalSignIn?.close();
+      await attempt(() => externalSignIn?.close());
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
-    })();
+      if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
+    })().catch(cause => { closePromise = null; throw cause; });
     return closePromise;
   };
   const events = new Set(),
@@ -1155,7 +1161,7 @@ export async function createSimulator({
         portalSnippets: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "snippets"),
         portalRoles: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "roles"),
         platformSettings: platformSettingEntries(state),
-        experimentPresets: experimentPresets(state, sourcePortal),
+        experimentPresets: experimentPresets(state, sourcePortal, packConfigurations.presets),
       },
       ...(!summary ? { data: state.tables } : {}),
       status: {
@@ -1195,6 +1201,7 @@ export async function createSimulator({
         project: projectStatus(), bootstrap: bootstrapStatus(), confinement: confinementStatus(),
         platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
         startupPreset,
+        activeConfigurationPreset: config().activeExperiment ?? null,
         profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
         ...implementationEvidence(implementationFingerprint, implementationFingerprint),
         format: portal.format,
@@ -1227,6 +1234,7 @@ export async function createSimulator({
       },
       diagnostics: [
         ...portal.diagnostics,
+        ...packConfigurations.diagnostics,
         ...(activeProfiles.diagnostics ?? []),
         ...(cfg.importDiagnostics ?? []),
         ...permissionModel.diagnostics,
@@ -1270,7 +1278,7 @@ export async function createSimulator({
     for (const event of events)
       event.write(`event: reload\ndata: ${revision}\n\n`);
   };
-  const applySelectedPreset = async (name, adjust) => {
+  const applySelectedPreset = async (name, adjust, { applyConfiguration = false } = {}) => {
     const state = store.snapshot(),
       preset = resolvePreset(state, name, generatedPresets);
     if (!preset) throw error("Preset not found.", 404);
@@ -1304,13 +1312,18 @@ export async function createSimulator({
       state.simulator.permissionSource = preset.permissionSource;
     // Scenarios adjust persona/permissions in the same state replacement as their preset.
     if (adjust) await adjust(state);
+    if (applyConfiguration && preset.configurationPreset) {
+      const configuration = experimentPresets(state, sourcePortal, packConfigurations.presets).find(entry=>entry.id===preset.configurationPreset);
+      if (!configuration) throw error("Configuration preset not found: "+preset.configurationPreset,404);
+      state.simulator = applyExperiment({simulator:state.simulator},configuration).simulator;
+    }
     await saveState(state);
     return exposedState();
   };
   const validateConfig = (cfg) => {
     profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
     validatePlatformOverrides(cfg.platformOverrides);
-    validateExperimentPresets(cfg.experimentPresets);
+    validateExperimentPresets(cfg.experimentPresets,packConfigurations.presets.map(p=>p.id));
     validateOperationOverrides(cfg.operations);
     validatePortalOverrides(cfg.portalOverrides);
     externalFrameOrigins(cfg.externalFrameOrigins);
@@ -1390,7 +1403,7 @@ export async function createSimulator({
     let effective;
     for (const entry of [...catalogs].reverse()) effective = mergePersonaCatalogs(effective, entry.catalog);
     const value = { ...catalog, scope: createHash('sha256').update(sourceDir).digest('hex').slice(0, 20),
-      identity: identitySummary(), roleSource: state.simulator?.identity?.roleSource ?? 'override',
+      roleSource: state.simulator?.identity?.roleSource ?? 'override',
       permissionMode: state.settings?.permissionMode ?? 'enforce', permissionSource: state.simulator?.permissionSource ?? 'configured',
       contactMapped: Boolean(state.mappings?.contact), personas: catalog.enabled ? catalog.personas : model.personas,
       webRoles: model.webRoles, memberships: model.memberships, contacts, catalog: effective ?? {version:1,groups:[],personas:[]},
@@ -1400,7 +1413,7 @@ export async function createSimulator({
       deploymentProfiles: Object.keys(profileConfig.profiles), contextRuntime: personaInstance ? {id:personaInstance.id ?? null,label: personaInstance.label, ownerOrigin:personaInstance.ownerOrigin, isolated:true} : null };
     personaCache = {key, portal, value}; return value;
   };
-  const personasPayload = () => ({ ...personaReport(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
+  const personasPayload = () => ({ ...personaReport(), identity: identitySummary(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
   const findPersona = key => {
     const report = personaReport(), persona = report.personas.find(entry => entry.key === key);
     if (!report.enabled || !persona) throw error('Unknown persona "' + key + '". Closest keys: ' + closestPersonaKeys(key, report.personas).join(', '), 404, 'PersonaNotFound');
@@ -1417,6 +1430,7 @@ export async function createSimulator({
     }),
     start: ({file, definition}) => createSimulator({ sourceDir, stateFile:file, port:0, host, watch, project, dataPacks, packs,
       solutionRoots, solutionOrder, deploymentProfiles, deploymentProfile, projectRoot, localOverrides,
+      identityProvider: identityProviderOption,
       environmentVariables, observed: observedOption, render: renderOption, platform: platformOption, dataModel,
       personaInstance: {...definition,ownerOrigin:localOrigin}, preset:definition.preset, presetMode:'always' }),
   });
@@ -1432,7 +1446,7 @@ export async function createSimulator({
     const preset = scenario?.preset ?? definition?.preset;
     if (preset && !resolvePreset(store.snapshot({sections:['presets','mappings']}),preset,generatedPresets)) throw error('Preset not found: '+preset,404,'PersonaPresetNotFound');
     if (definition?.deploymentProfile) { try { profileSelection(profileConfig,definition.deploymentProfile); } catch(cause) { throw error(cause.message,400,'PersonaContextProfile'); } }
-    const targetPath = personaStartPath(body.returnUrl ?? scenario?.startPath ?? persona.startPath ?? definition?.startPath ?? '/');
+    const targetPath = personaStartPath(body.returnUrl ?? scenario?.startPath ?? persona.startPath ?? definition?.startPath ?? '/', body.returnUrl === undefined ? 'Persona startPath' : 'returnUrl');
     if (personaInstance && (definition && (definition.id !== personaInstance.id || ['deploymentProfile','environmentVariables','portalOverrides'].some(key=>JSON.stringify(definition[key])!==JSON.stringify(personaInstance[key]))) || preset && preset !== personaInstance.preset)) throw error('Open this setup from the parent runtime: '+personaInstance.ownerOrigin,409,'PersonaContextOwnerRequired');
     if ((definition || preset) && !personaInstance) {
       const opened = await personaRuntimes.open(definition ?? {label:scenario?.label ?? persona.label}, {scenario:scenario?.id, instanceKey:body.instanceKey, preset});
@@ -1524,6 +1538,7 @@ export async function createSimulator({
     return value;
   };
   const allDiagnostics = () => [
+    ...packConfigurations.diagnostics,
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
     ...(config().importDiagnostics ?? []),
@@ -1546,6 +1561,7 @@ export async function createSimulator({
       stateFile,
       platformStyles: platformStylesStatus(config().shellProfile), localOverrides,
       startupPreset,
+      activeConfigurationPreset: config().activeExperiment ?? null,
       deploymentProfile: portal.deploymentProfile ?? null,
       profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       render,
@@ -1811,7 +1827,7 @@ export async function createSimulator({
     }
     if (method === "GET" && relative === "/diagnostics")
       return json(res, 200, {
-        diagnostics: [...portal.diagnostics, ...diagnostics],
+        diagnostics: [...packConfigurations.diagnostics, ...portal.diagnostics, ...diagnostics],
         requests,
       });
     if (method === "GET" && relative === "/audit")
@@ -2095,25 +2111,26 @@ export async function createSimulator({
         await saveState(next);
         return json(res, 200, { imported: true, revision, tableCounts: store.summary().tableCounts });
       });
-    if(relative==='/platform-settings'&&method==='GET')return json(res,200,platformSettingEntries(store.snapshot()));
+    const platformState = () => store.snapshot({sections:['simulator','settings'],tables:['organization']});
+    if(relative==='/platform-settings'&&method==='GET')return json(res,200,platformSettingEntries(platformState()));
     if(relative==='/platform-settings'&&method==='PATCH')return change(async()=>{
       const patch=validatePlatformOverrides(await jsonBody(req)),state=store.snapshot();
       state.simulator.platformOverrides={...state.simulator.platformOverrides,...patch};delete state.simulator.activeExperiment;
-      await saveState(state);return json(res,200,platformSettingEntries(store.snapshot()));
+      await saveState(state);return json(res,200,platformSettingEntries(platformState()));
     });
     if(relative.startsWith('/platform-settings/')&&method==='DELETE')return change(async()=>{
-      const key=decodeURIComponent(relative.slice('/platform-settings/'.length));if(!platformSettingEntries(store.snapshot()).some(x=>x.key===key))throw error('Unknown platform setting.',404);
+      const key=decodeURIComponent(relative.slice('/platform-settings/'.length));if(!platformSettingEntries(platformState()).some(x=>x.key===key))throw error('Unknown platform setting.',404);
       const state=store.snapshot();delete (state.simulator.platformOverrides??{})[key];delete state.simulator.activeExperiment;await saveState(state);return json(res,200,{reset:key});
     });
     const experimentRoute=/^\/experiments(?:\/([^/]+)(\/apply)?)?$/.exec(relative);
     if(experimentRoute){
       const id=experimentRoute[1]&&experimentId(decodeURIComponent(experimentRoute[1]));
-      if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot(),sourcePortal),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
+      if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot({sections:['simulator']}),sourcePortal,packConfigurations.presets),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
       return change(async()=>{
-        const state=store.snapshot(),presets=experimentPresets(state,sourcePortal),existing=presets.find(p=>p.id===id);
+        const state=store.snapshot(),presets=experimentPresets(state,sourcePortal,packConfigurations.presets),existing=presets.find(p=>p.id===id);
         if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);await saveState(applyExperiment(state,existing));return json(res,200,{applied:id});}
         if(method==='POST'&&!id){const p=validateExperiment(await jsonBody(req));if(presets.some(x=>x.id===p.id))throw error('Experiment ID already exists.',409);state.simulator.experimentPresets??={};if(Object.keys(state.simulator.experimentPresets).length>=100)throw error('Experiment preset limit reached.',413);state.simulator.experimentPresets[p.id]=structuredClone(p);await saveState(state);return json(res,201,p);}
-        if(method==='DELETE'&&id&&!experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);if(existing.builtin)throw error('Built-in experiments cannot be deleted.',403);delete state.simulator.experimentPresets[id];await saveState(state);return json(res,200,{deleted:id});}
+        if(method==='DELETE'&&id&&!experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);if(existing.builtin||existing.readOnly)throw error('Built-in and pack configuration presets cannot be deleted.',403);delete state.simulator.experimentPresets[id];await saveState(state);return json(res,200,{deleted:id});}
         throw error('Unsupported experiment operation.',405);
       });
     }
@@ -2497,7 +2514,9 @@ export async function createSimulator({
         const state = store.snapshot();
         state.simulator ??= config();
         if (action === "apply" && kind === "presets" && method === "POST") {
-          return json(res, 200, await applySelectedPreset(id));
+          const options = await jsonBody(req);
+          if (options.applyConfiguration !== undefined && typeof options.applyConfiguration !== "boolean") throw error("applyConfiguration must be boolean.",400);
+          return json(res, 200, await applySelectedPreset(id, undefined, options));
         }
         const body = method === "DELETE" ? null : await jsonBody(req);
         const key = id ?? body?.id ?? body?.logicalName ?? randomUUID();
@@ -2860,7 +2879,7 @@ export async function createSimulator({
         });
       if (form.personaKey) {
         if (form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.',403);
-        const result = await launchPersona({personaKey:form.personaKey,returnUrl:form.ReturnUrl ? personaStartPath(form.ReturnUrl) : undefined});
+        const result = await launchPersona({personaKey:form.personaKey,returnUrl:form.ReturnUrl ? personaStartPath(form.ReturnUrl, 'returnUrl') : undefined});
         res.writeHead(302,{location:result.url,'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax','cache-control':'no-store'}); return res.end();
       }
       if (personaReport().enabled && form.__RequestVerificationToken !== csrf) throw error('Missing simulator CSRF token.',403);
@@ -2884,6 +2903,7 @@ export async function createSimulator({
     sessions: authSessions,
     store,
     personas: signInPersonas,
+    personaCatalog: personaReport, identityProvider: {settings:providerSettings,assets:providerAssets},
     webRoles: () => appliedPermissionModel?.webRoles ?? [],
     identity: currentIdentity,
     audit,
@@ -3019,7 +3039,7 @@ export async function createSimulator({
       if (req.method !== 'GET') throw error('Method not allowed',405);
       const persona = findPersona(url.searchParams.get('persona'));
       const report = personaReport();
-      const returnUrl = personaStartPath(url.searchParams.get('returnUrl') ?? persona.startPath ?? report.contexts.find(context=>context.id===persona.context)?.startPath ?? '/');
+      const returnUrl = personaStartPath(url.searchParams.get('returnUrl') ?? persona.startPath ?? report.contexts.find(context=>context.id===persona.context)?.startPath ?? '/', url.searchParams.has('returnUrl') ? 'returnUrl' : 'Persona startPath');
       const { renderPersonaPicker } = await import('./lib/persona-picker-view.mjs');
       const content = '<link rel="stylesheet" href="/__sim/persona-picker.css"><h1>Local persona sign-in</h1><p>Review the persona and sign in. This changes this browser’s local session only.</p><form method="post" action="/_sim/sign-in"><input type="hidden" name="__RequestVerificationToken" value="'+csrf+'"><input type="hidden" name="ReturnUrl" value="'+escaped(returnUrl)+'">'+renderPersonaPicker({...report,personas:[persona],other:[],total:1,groups:report.groups.filter(group=>group.id===persona.group).map(group=>({...group,count:1}))},{mode:'signin'})+'</form>';
       return renderAccountPage(req,res,url,{status:200,content,route:'persona-shortcut'});
@@ -3824,6 +3844,7 @@ export async function createSimulator({
               endpoint?.mode ?? (kind === "page" ? cfg.pageMode : cfg.mode),
             identity: trace.run({ auth }, currentIdentity),
             entity: /^\/_api\/([\w]+)/.exec(url.pathname)?.[1],
+            activeConfigurationPreset: cfg.activeExperiment,
             parentId: parent?.id,
             correlationId: parent?.correlationId,
           })

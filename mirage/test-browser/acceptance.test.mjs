@@ -47,6 +47,25 @@ test('acceptance records old main-document reads as cancelled after navigation c
   assert.ok(result.flows[0].navigationCancelledRequests.every(row => row.reason === 'document-replaced'));
 });
 
+for (const [beforeNavigation,lateStart] of [[false,0],[true,0],[true,1200]]) test(`acceptance settles writes that straddle a delayed document replacement (hold=${beforeNavigation}, late=${lateStart})`, { timeout:30000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-navigation-boundary-')); t.after(()=>fs.rm(root,{recursive:true,force:true}));
+  const server = http.createServer((req,res)=>{
+    const route = new URL(req.url,'http://fixture').pathname;
+    if(route.startsWith('/__sim/api/')) {res.setHeader('content-type','application/json');return res.end(JSON.stringify(route.endsWith('/state')?{config:{mode:'local',pageMode:'local',endpoints:[]},status:{sourceFingerprint:'synthetic',implementationFingerprint:'synthetic'}}:{events:[]}));}
+    if(route.startsWith('/slow-')) return;
+    res.setHeader('content-type','text/html');
+    if(route==='/done') return setTimeout(()=>res.end('<p id="done">Saved</p>'),beforeNavigation?50:1500);
+    res.end(`<form action="/done"><button id="save">Save</button></form><script>document.querySelector('form').addEventListener('submit',event=>{${lateStart?`event.preventDefault();setTimeout(()=>location.href='/done',${lateStart});`:''}${beforeNavigation?`fetch('/slow-before',{method:'PATCH'}).catch(()=>{});`:''}setTimeout(()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{})},150)})</script>`);
+  });
+  await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+  const result=await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(root,'evidence'),timeout:3000,flows:[{name:'Late document writes',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#save'},{action:'settle'},{action:'visible',selector:'#done'}]}]});
+  assert.equal(result.passed,true,JSON.stringify(result.flows[0]));
+  const cancelled=result.flows[0].navigationCancelledRequests;
+  assert.equal(cancelled.length,beforeNavigation?3:2);
+  assert.ok(cancelled.every(row=>row.reason==='document-replaced'));
+  if(beforeNavigation) assert.ok(result.flows[0].navigationWaits.some(wait=>wait.settled===false));
+});
+
 test('acceptance opens and settles a modal without counting frame lifecycle requests as portal failures', {timeout:30000}, async t=>{
   const root=await fs.mkdtemp(path.join(os.tmpdir(),'paqvilo-modal-acceptance-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   await fs.writeFile(path.join(root,'website.yml'),'adx_websiteid: site\nadx_name: Modal fixture');

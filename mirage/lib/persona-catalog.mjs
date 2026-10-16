@@ -92,6 +92,7 @@ export function validatePersonaCatalog(value, source = 'State') {
   unique(contexts, 'id', 'contexts');
   const contextIds = new Set(contexts.map(context => context.id));
   const groupReference = (entry, at) => {
+    if (entry.group === undefined || entry.group === '') fail(`${at}.group is required`);
     if (!groupMap.has(entry.group)) fail(`${at}.group "${entry.group}" is not a declared group`);
     if (entry.subgroup !== undefined && !(groupMap.get(entry.group).subgroups ?? []).some(subgroup => subgroup.id === entry.subgroup)) fail(`${at}.subgroup "${entry.subgroup}" is not declared under group "${entry.group}"`);
   };

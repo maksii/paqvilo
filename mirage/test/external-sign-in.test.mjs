@@ -188,7 +188,7 @@ test("the local identity provider serves discovery, keys, the preset chooser, fo
   const page = await chooser.text();
   assert.match(page, /<title>Local identity provider \(simulation\)<\/title>/);
   assert.match(page, /Signing in to http:\/\/127\.0\.0\.1:9 with Local &lt;IdP&gt; \(Local\) · local simulation, no credentials are used/);
-  assert.match(page, /<li class="paqvilo-mirage-idp-user" data-subject="sub-alex" data-contact-id="alex">/);
+  assert.match(page, /<li class="paqvilo-mirage-idp-user chooser-card" data-subject="sub-alex" data-contact-id="alex"/);
   assert.match(page, /Continue as a new user/);
   assert.doesNotMatch(page, /microsoft|b2clogin|password/i);
   assert.equal(hiddenFields(page).nonce, "n-1");
@@ -318,14 +318,14 @@ function initialState({ tables = {}, mappings = {} } = {}) {
   };
 }
 
-async function simulator(t, settings = LOCAL_PROVIDER, state = initialState()) {
+async function simulator(t, settings = LOCAL_PROVIDER, state = initialState(), options = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "pp-external-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   for (const [name, body] of Object.entries(portalFiles(settings))) {
     await fs.mkdir(path.dirname(path.join(dir, name)), { recursive: true });
     await fs.writeFile(path.join(dir, name), body);
   }
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial: state });
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), port: 0, watch: false, initial: state, ...options });
   let closed = false;
   t.after(() => (closed ? undefined : app.close()));
   const { csrf } = await (await fetch(app.url + "/__sim/api/state?summary=1")).json();
@@ -561,7 +561,7 @@ test("a new user's first sign-in follows the registration settings: open registr
   // Registration turned off: the RegistrationDisabledMessage snippet; contact mapping with email links existing contacts.
   {
     const settings = [...LOCAL_PROVIDER, ["Authentication/Registration/Enabled", "false"], ["Authentication/OpenIdConnect/Local/AllowContactMappingWithEmail", "true"]];
-    const { app, idp } = await simulator(t, settings);
+    const { app, idp } = await simulator(t, settings, initialState(), {identityProvider:{newUser:"always"}});
     const refused = await signInThrough(client(app), idp, { newUser: { given_name: "Eve", family_name: "Outside", email: "eve@example.test" } });
     assert.equal(refused.status, 403);
     assert.match(await text(refused), /id="loginValidationSummary" tabindex="0" role="alert"><ul><li>New accounts are closed\.<\/li><\/ul><\/div>/);
@@ -582,7 +582,7 @@ test("a new user's first sign-in follows the registration settings: open registr
       tables: { adx_externalidentity: [{ adx_externalidentityid: "identity-carol", adx_username: subject, adx_identityprovidername: AUTHORITY, adx_contactid: { id: "carol", logical_name: "contact" }, statecode: 0 }] },
       mappings: { adx_externalidentity: { entitySet: "adx_externalidentities", idColumn: "adx_externalidentityid", nameColumn: "adx_username" } },
     });
-    const { app, idp } = await simulator(t, settings, state);
+    const { app, idp } = await simulator(t, settings, state, {identityProvider:{newUser:"always"}});
     const refused = await signInThrough(client(app), idp, { newUser: { given_name: "Fay", family_name: "New", email: "fay@example.test" } });
     assert.equal(refused.status, 403);
     assert.match(await text(refused), /New accounts are closed\./);

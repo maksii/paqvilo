@@ -1,5 +1,6 @@
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import {setTimeout as delay} from 'node:timers/promises';
 import { compileManifest, digest, validateManifest } from './manifest.mjs';
 import { metadataId } from './client.mjs';
 import { privateJson, pacExecutable, runProcess } from './connection.mjs';
@@ -45,6 +46,19 @@ async function one(client, route) {
   const rows=await client.list(route);
   if(rows.length>1) throw new Error('Metadata identity resolved to multiple components.');
   return rows[0]??null;
+}
+
+// An acknowledged metadata create can precede visibility in the read endpoint.
+// Retry only these required reads, never an uncertain mutation or an optional
+// preflight lookup. Persistent absence leaves the apply journal interrupted.
+async function requiredMetadata(client, route) {
+  for (let attempt=0;;attempt++) {
+    try { return await client.get(route); }
+    catch (error) {
+      if (error.status !== 404 || attempt >= 5) throw error;
+      await delay(Math.min(250 * 2 ** attempt,2000));
+    }
+  }
 }
 
 export async function existingComponent(client, action) {
@@ -143,11 +157,11 @@ export async function applyManifest(input, {client, journalFile, expectedOrganis
         await include(componentId,TYPES[planned.kind],planned.solution,['table','table-reference'].includes(planned.kind));
         if(planned.kind==='table') {
           const primaryName=planned.body.PrimaryNameAttribute;
-          const primary=await client.get(`EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${primaryName}')`);
+          const primary=await requiredMetadata(client,`EntityDefinitions(LogicalName='${planned.table}')/Attributes(LogicalName='${primaryName}')`);
           if(!guid.test(primary.MetadataId??'')) throw new Error('Primary-name metadata identity is unavailable; reconcile before exporting.');
           await include(primary.MetadataId,2,planned.solution);
         }
-        if(planned.kind==='relationship'&&planned.body.Lookup){const lookup=await client.get(`EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`);if(!guid.test(lookup.MetadataId??''))throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');await include(lookup.MetadataId,2,planned.solution);}
+        if(planned.kind==='relationship'&&planned.body.Lookup){const lookup=await requiredMetadata(client,`EntityDefinitions(LogicalName='${planned.body.ReferencingEntity}')/Attributes(LogicalName='${planned.body.Lookup.SchemaName.toLowerCase()}')`);if(!guid.test(lookup.MetadataId??''))throw new Error('Lookup metadata identity is unavailable; reconcile before exporting.');await include(lookup.MetadataId,2,planned.solution);}
       }
       const entry={key:planned.key,status,componentId,bodyHash:digest(planned.body),finishedAt:new Date().toISOString()};
       journal.entries.push(entry);
@@ -201,7 +215,7 @@ export async function scopeSolutionRoots(input,client,{onProgress=()=>{}}={}){
 }
 
 async function completeLookupAudit(client,table,column,solution){
-  const attribute=await client.get(`EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')/Microsoft.Dynamics.CRM.LookupAttributeMetadata`);
+  const attribute=await requiredMetadata(client,`EntityDefinitions(LogicalName='${table}')/Attributes(LogicalName='${column}')/Microsoft.Dynamics.CRM.LookupAttributeMetadata`);
   if(attribute.IsAuditEnabled?.Value===true)return false;
   if(attribute.IsAuditEnabled?.CanBeChanged===false||!guid.test(attribute.MetadataId??''))throw new Error('Declared lookup audit setting cannot be completed.');
   const body=structuredClone(attribute);for(const key of Object.keys(body))if(key.startsWith('@odata.')&&key!=='@odata.type')delete body[key];

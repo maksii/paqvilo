@@ -7,6 +7,8 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { panelUi, removePanelUi } from './panel-ui.mjs';
+import {indexPersonaCatalog,PERSONA_TRANSLITERATIONS} from '../mirage/lib/persona-search.mjs';
+import {personaStartPath} from '../mirage/lib/persona-catalog.mjs';
 import { diffLines } from './line-diff.mjs';
 import { pageKey, INLINE_PREFIX } from './html-rewriter.mjs';
 import { urlKey, sourceText } from './portal-model.mjs';
@@ -461,8 +463,8 @@ export function enablePanel(context, session, opts = {}) {
    * This browser's Mirage sign-in session. The request goes through the page's own browser
    * context, whose cookie jar (HttpOnly cookies included) is the one the page uses.
    */
-  const readSession = async (page) => {
-    const response = await mirageGet('/session', 4000, page.context().request);
+  const readSession = async (page, origin = cfg.origin) => {
+    const response = origin === cfg.origin ? await mirageGet('/session', 4000, page.context().request) : await page.context().request.get(origin+'/_sim/api/session',{timeout:4000});
     if (response.status() === 404) return { supported: false };
     if (!response.ok()) return { supported: true, signedIn: false, roles: [], error: `The session endpoint answered HTTP ${response.status()}.` };
     const data = await response.json();
@@ -723,11 +725,11 @@ export function enablePanel(context, session, opts = {}) {
    * the sign-in form, or goes to /Account/Login/LogOff, which ends the session through the
    * provider's end-session. The page then navigates and comes back to the return path.
    */
-  const startSessionFlow = async (page, contactId) => {
-    const session = await readSession(page);
+  const startSessionFlow = async (page, contactId, {origin=cfg.origin,returnPath} = {}) => {
+    const session = await readSession(page,origin);
     if (!session.supported) return { ok: false, error: 'This Mirage has no browser sessions.' };
     if (!contactId && !session.signedIn) return { ok: true, navigating: false, session };
-    const returnUrl = localReturnPath(page, session);
+    const returnUrl = returnPath === undefined ? localReturnPath(page, session) : personaStartPath(returnPath,'returnUrl');
     const flow = contactId ? signInFlow(session, contactId, returnUrl) : { navigate: `/Account/Login/LogOff?returnUrl=${encodeURIComponent(returnUrl)}` };
     let started;
     try {
@@ -1163,6 +1165,13 @@ export function enablePanel(context, session, opts = {}) {
       if (!status) return { ok: false, error: 'The Mirage status endpoint is unavailable.' };
       lastMirageStatus = status;
       const personas = personasResponse.ok() ? await personasResponse.json() : null;
+      const report = personas?.enabled ? {groups:personas.groups??[],personas:personas.personas??[],other:personas.other??[]} : {groups:[],personas:[],other:personas?.other??personas?.contacts??personas?.personas??[]};
+      const entries = indexPersonaCatalog(report);
+      const publicPersonas=entries.map(({persona})=>{
+        const visible=Object.fromEntries(['contactId','name','roles','active','key','label','summary','description','group','subgroup','tags','default','context','source','startPath'].filter(key=>Object.hasOwn(persona,key)).map(key=>[key,persona[key]]));
+        if(persona.account)visible.account={id:persona.account.id??null,name:persona.account.name??null};
+        return visible;
+      });
       const summary = runtimeByPage.get(page)?.summary;
       return {
         ok: true,
@@ -1170,12 +1179,14 @@ export function enablePanel(context, session, opts = {}) {
         // This browser's session; `identity` is the Mirage default (the sign-in page persona).
         session,
         identity: personas?.identity ?? status.identity ?? null,
-        personas: Array.isArray(personas?.personas) ? personas.personas.map(({ contactId, name, roles, active }) => ({ contactId, name, roles, active })) : [],
+        personas: publicPersonas,
+        personaCatalog: {scope:personas?.scope,groups:report.groups,contexts:(personas?.contexts??[]).map(({id,label})=>({id,label})),transliterations:PERSONA_TRANSLITERATIONS},
+        personaIndex: entries.map(entry=>({key:entry.key,text:entry.text,roles:[...entry.roles],tags:[...entry.tags],accounts:[...entry.accounts],group:entry.group,subgroup:entry.subgroup})),
         personasAvailable: Boolean(personas),
         permissionMode: status.permissionMode ?? personas?.permissionMode ?? null,
         permissionSource: status.permissionSource ?? personas?.permissionSource ?? null,
         presets: Array.isArray(status.presets) ? status.presets.filter((preset) => !preset.unavailable).map(({ id, name, description, source }) => ({ id, name, description, source })) : [],
-        scenarios: Array.isArray(status.scenarios) ? status.scenarios.map(({ id, name, description }) => ({ id, name, description })) : [],
+        scenarios: [...(personas?.scenarios??[]).map(({id,label,description,persona,startPath,context,preset})=>({id:'@catalogue/'+id,catalogueId:id,name:label,description,persona,startPath,context,preset,catalogue:true})),...(Array.isArray(status.scenarios) ? status.scenarios.map(({ id, name, description }) => ({ id, name, description })) : [])],
         activeScenario: status.activeScenario ?? null,
         tables: Array.isArray(summary?.tables) ? summary.tables : [],
         status: publicStatus(status),
@@ -1214,6 +1225,20 @@ export function enablePanel(context, session, opts = {}) {
     scenario: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Scenarios change the local Mirage runtime only.' };
       if (typeof body.id !== 'string' || !/^[\w.-]+$/.test(body.id)) return { ok: false, error: 'choose a scenario' };
+      if(body.catalogue===true){
+        const response=await mirageGet('/personas',4000),report=response.ok()?await response.json():null;
+        const selected=report?.scenarios?.find(item=>item.id===body.id);
+        if(!selected)return {ok:false,error:'Catalogue scenario not found.'};
+        const result=await mirageWrite('/personas/launch','POST',{scenario:selected.id});
+        if(!result.ok)return result;
+        const opened=result.result,destination=new URL(opened.origin);
+        if(!['127.0.0.1','localhost','[::1]'].includes(destination.hostname)||destination.protocol!=='http:'||destination.username||destination.password||destination.pathname!=='/'||destination.search||destination.hash)return {ok:false,error:'The scenario returned an invalid local runtime origin.'};
+        const returnPath=personaStartPath(opened.path,'returnUrl');
+        if(opened.origin===cfg.origin)return startSessionFlow(page,opened.contactId,{returnPath});
+        // Answer the panel request before navigating away from its document.
+        setTimeout(async()=>{if(disposed||page.isClosed())return;try{await page.goto(destination.origin+'/',{waitUntil:'domcontentloaded'});if(!disposed&&!page.isClosed())await startSessionFlow(page,opened.contactId,{origin:destination.origin,returnPath});}catch(error){log({type:'switch',text:'Scenario sign-in failed: '+error.message.split('\n')[0]});}},100);
+        return {ok:true,navigating:true,origin:destination.origin,returnUrl:returnPath};
+      }
       const status = lastMirageStatus ?? (await readMirageStatus());
       const scenario = (Array.isArray(status?.scenarios) ? status.scenarios : []).find((item) => item.id === body.id);
       // A scenario persona (null = anonymous) also applies to this browser, through the portal's

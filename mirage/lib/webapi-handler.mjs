@@ -529,6 +529,7 @@ function requestContext(req, res, url, deps, target, method) {
     metadata: deps.metadata,
     formatting: {
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
+      formattedValueTimeZone: settings.formattedValueTimeZone,
       dateFormat: settings.dateFormat,
       timeFormat: settings.timeFormat,
       dateTimeFormat: settings.dateTimeFormat,

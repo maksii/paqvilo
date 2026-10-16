@@ -92,12 +92,12 @@ export function inflightWrites(records, frameId, parents, frames = NO_FRAMES) {
  * Network records, `parents()` the frame parent map and `frames()` the frameState(). Returns
  * null when none were in flight, else { writes, waitedMs, settled }.
  */
-export async function awaitWritesBeforeDocument(frameId, records, parents, { timeout, poll = 50, frames = () => NO_FRAMES }) {
+export async function awaitWritesBeforeDocument(frameId, records, parents, { timeout, poll = 50, frames = () => NO_FRAMES, deadline = () => Infinity }) {
   const pending = () => inflightWrites(records(), frameId, parents(), frames());
   const writes = pending();
   if (!writes.length) return null;
   const started = Date.now();
-  while (pending().length && Date.now() - started < timeout)
+  while (pending().length && Date.now() - started < timeout && Date.now() < deadline())
     await new Promise((resolve) => setTimeout(resolve, poll));
   return {
     writes: writes.map((row) => `${row.method} ${row.path}`),

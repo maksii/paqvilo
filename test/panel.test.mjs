@@ -284,7 +284,8 @@ test('Mirage tweaks read personas lazily and write through the CSRF-protected ad
   await tick(80);
   const tweaks = await call('tweaks');
   assert.equal(tweaks.ok, true);
-  assert.deepEqual(tweaks.personas, [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true }]);
+  assert.deepEqual(tweaks.personas, [{ contactId: 'alex', name: 'Alex Local', roles: ['Member'], active: true, group:'__other' }]);
+  assert.equal(tweaks.personas[0].accountId,undefined,'unstructured legacy internals stay out of the picker payload');
   assert.deepEqual(tweaks.presets.map((preset) => preset.id), ['demo']);
   assert.deepEqual(tweaks.scenarios.map((scenario) => scenario.id), ['reviewer']);
   assert.deepEqual(tweaks.tables, ['contact']);

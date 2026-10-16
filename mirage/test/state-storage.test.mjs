@@ -4,10 +4,35 @@ import fs from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DataStore } from '../lib/data.mjs';
-import { readStateFile } from '../lib/state-storage.mjs';
+import { readStateFile, stateFileSignature } from '../lib/state-storage.mjs';
 import { jsonChunks, parseJsonStream, hashStateFile } from '../lib/state-stream.mjs';
 
 const seed = () => ({ settings: { permissionMode: 'permissive' }, mappings: { item: { idColumn: 'itemid', entitySet: 'items' } }, tables: { item: [{ itemid: 'one', name: 'original' }] } });
+test('NTFS access-only ChangeTime updates are distinct from content and identity changes', () => {
+  const original = { dev: 1n, ino: 2n, size: 3n, mtimeNs: 4n, ctimeNs: 5n };
+  assert.equal(stateFileSignature(original, 'win32'), stateFileSignature({ ...original, ctimeNs: 6n }, 'win32'));
+  assert.notEqual(stateFileSignature(original, 'linux'), stateFileSignature({ ...original, ctimeNs: 6n }, 'linux'));
+  for (const key of ['dev', 'ino', 'size', 'mtimeNs']) assert.notEqual(stateFileSignature(original, 'win32'), stateFileSignature({ ...original, [key]: 99n }, 'win32'));
+});
+
+for (const journalThresholdBytes of [0, Number.MAX_SAFE_INTEGER]) test(`reads, copies and first-attempt restart retain write ownership (threshold ${journalThresholdBytes})`, async t => {
+  const { file, store } = await workspace(t, seed(), { journalThresholdBytes });
+  const modes = []; store.onSave = timing => modes.push(timing.mode);
+  for (let index = 0; index < 20; index++) {
+    await store.update('items', 'one', { name: `write-${index}` });
+    assert.deepEqual(await readStateFile(file), store.snapshot());
+    await fs.copyFile(file, `${file}.copy`);
+  }
+  const restarted = await new DataStore({ file, persistence: { journalThresholdBytes } }).init();
+  assert.deepEqual(restarted.snapshot(), store.snapshot());
+  await restarted.update('items', 'one', { name: 'restart' });
+  assert.ok(modes.every(mode => mode === (journalThresholdBytes === 0 ? 'journal' : 'checkpoint')));
+  const text = await fs.readFile(file, 'utf8');
+  await fs.writeFile(file, text.replace('restart', 'outside'));
+  // Force a distinct mtime even on filesystems with coarse timestamp precision.
+  const modified = new Date(Date.now() + 2000); await fs.utimes(file, modified, modified);
+  await assert.rejects(restarted.update('items', 'one', { name: 'lost' }), { code: 'StateConflict' });
+});
 async function workspace(t, state = seed(), persistence = { journalThresholdBytes: 0 }) {
   const root = await fs.mkdtemp(join(tmpdir(), 'mirage-stream-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
