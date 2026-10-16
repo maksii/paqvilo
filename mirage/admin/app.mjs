@@ -1755,7 +1755,7 @@ document.addEventListener("click", async (event) => {
         else if(action==='delete')await request('/experiments/'+encodeURIComponent(id),{method:'DELETE'});
         else if(action==='save')await request('/experiments',{method:'POST',body:JSON.stringify({id:$('#experiment-id').value,name:$('#experiment-name').value,platformOverrides:config().platformOverrides??{},portalOverrides:{settings:config().portalOverrides?.settings??{},snippets:config().portalOverrides?.snippets??{}}})});
         else if(action==='import')await request('/experiments',{method:'POST',body:JSON.stringify(JSON.parse($('#experiment-import').value))});
-        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,source,readOnly,shadowed,diagnostics,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,source,readOnly,shadowed,diagnostics,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Configuration preset exported.');return;}
       }
       await refresh();notify('Local configuration updated.');
     }catch(error){notify(error.message,true);}finally{control.disabled=false;}return;

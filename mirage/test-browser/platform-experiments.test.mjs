@@ -34,10 +34,15 @@ test('a shadowed saved configuration stays exportable and deletable without appl
  await page.goto(app.url+'/_sim/#access');await page.locator('#available-preset option[value="sample"]').waitFor({state:'attached'});assert.match(await page.locator('#available-preset option[value="sample"]').textContent(),/configuration: feature/);
  await page.goto(app.url+'/_sim/#overrides');await page.getByLabel('Configuration preset').selectOption({label:'Saved feature · saved collision (pack takes precedence)'});
  assert.equal(await page.getByRole('button',{name:'Apply preset',exact:true}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Delete saved preset'}).isEnabled(),true);
+ let exportStateReads=0;const rejectExportRefresh=route=>{exportStateReads++;return route.abort('blockedbyclient');};
+ await page.route('**/__sim/api/state?summary=1',rejectExportRefresh);
  const [download]=await Promise.all([page.waitForEvent('download'),page.getByRole('button',{name:'Export selected JSON'}).click()]);
+ await page.waitForFunction(()=>!document.querySelector('[data-experiment="export"]').disabled,undefined,{timeout:5000});
+ await page.unroute('**/__sim/api/state?summary=1',rejectExportRefresh);
+ assert.equal(exportStateReads,0,'Export must not refresh or replace the configuration form');
+ assert.equal(await page.locator('#experiment-select option:checked').textContent(),'Saved feature · saved collision (pack takes precedence)');
  assert.equal(download.suggestedFilename(),'feature.json');const exported=JSON.parse(await fs.readFile(await download.path(),'utf8'));
  assert.deepEqual(exported,state.simulator.experimentPresets.feature);
- await page.getByLabel('Configuration preset').selectOption({label:'Saved feature · saved collision (pack takes precedence)'});
 
  await page.getByRole('button',{name:'Delete saved preset'}).click();await page.locator('#experiment-select option').filter({hasText:'Saved feature'}).waitFor({state:'detached'});
  await page.getByLabel('Configuration preset').selectOption('feature');assert.equal(await page.getByRole('button',{name:'Delete saved preset'}).isDisabled(),true);assert.equal(await page.getByRole('button',{name:'Apply preset',exact:true}).isEnabled(),true);
