@@ -1586,12 +1586,13 @@ function renderView(view) {
 function render() {
   const focused = document.activeElement;
   const focusKey =
-    focused?.id === "record-search"
-      ? "#record-search"
+    focused?.id && $("#content").contains(focused)
+      ? `#${CSS.escape(focused.id)}`
       : focused?.dataset?.tableSearch
         ? `[data-table-search="${CSS.escape(focused.dataset.tableSearch)}"]`
         : null;
-  const selection = focused?.selectionStart;
+  const selection = { start: focused?.selectionStart, end: focused?.selectionEnd, direction: focused?.selectionDirection };
+  const scroll = { top: focused?.scrollTop, left: focused?.scrollLeft };
   lazyValues.clear();
   $("#navigation").innerHTML = views
     .map(
@@ -1614,11 +1615,17 @@ function render() {
   restoreDrafts();
   syncConfinement();
   if (focusKey) {
-    const replacement = document.querySelector(focusKey);
-    replacement?.focus();
-    try {
-      replacement?.setSelectionRange(selection, selection);
-    } catch {}
+    const replacement = $("#content").querySelector(focusKey);
+    // Lazy data can arrive between focus and the next keystroke, before an input event saves a
+    // draft. Keep editing in the replacement control without moving the operator's viewport.
+    replacement?.focus({ preventScroll: true });
+    if (typeof replacement?.setSelectionRange === "function" && typeof replacement.selectionStart === "number"
+      && typeof selection.start === "number" && typeof selection.end === "number") {
+      try { replacement.setSelectionRange(selection.start, selection.end, selection.direction); }
+      catch { /* A changed control type may no longer support text selection. */ }
+      replacement.scrollTop = scroll.top;
+      replacement.scrollLeft = scroll.left;
+    }
   }
 }
 

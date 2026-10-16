@@ -46,6 +46,7 @@ use an exact preview version until the stable release is published.
   browser identities remain isolated; Windows state reads do not invalidate writer ownership.
 - Staged attachments belong to their browser and persona, survive failed saves and are
   consumed once. Editor refresh preserves project scripts and validates debugger settings.
+- Administration preserves active inputs, selections and drafts while background data loads.
 
 ### Upgrade notes
 
