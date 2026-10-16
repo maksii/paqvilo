@@ -2660,7 +2660,7 @@ async function renderForm(kind, name, context, options) {
   const runtime = kind === "webform" ? "" : ENTITY_FORM_CLIENT_VALIDATE;
   if (options.onNativePostbackDescriptor) {
     const writable = fields.filter((field) => renderedFields.has(field.name) && !field.readOnly && !field.ownerHidden && !field.disabled && !["file", "image"].includes(field.control));
-    const descriptor = nativeFormPostbackDescriptor({ kind, formId: definition?.id ?? name, fields: writable, actions: renderedActions, modal, pageControl });
+    const descriptor = nativeFormPostbackDescriptor({ kind, formId: definition?.id ?? name, fields: writable.map(field => ({ ...field, control: controlForSubmit(field) })), actions: renderedActions, modal, pageControl });
     Object.freeze(descriptor.ids);
     for (const field of descriptor.fields) Object.freeze(field);
     for (const action of descriptor.actions) Object.freeze(action);
@@ -2689,6 +2689,7 @@ function controlForSubmit(field) {
       return field.lookupStyle === "dropdown" ? "lookup" : "lookup";
     case "boolean": {
       const classId = canonicalId(field.controlClassId);
+      if (field.controlStyle === 100000007) return 'checkbox';
       return classId === DROPDOWN_CLASS ? "boolean-dropdown" : classId === RADIO_CLASS ? "boolean-radio" : "checkbox";
     }
     case "picklist":

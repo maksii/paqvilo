@@ -1,7 +1,7 @@
 import { parseFetchXml, DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
 import { planFetch } from "./fetchxml-engine.mjs";
-import { fieldKind, GUID_PATTERN, isDateOnlyField, portalDateOnly, portalMonthFirstDate } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, isDateOnlyField, portalDateOnly, portalMonthFirstDate, parseDateValue, dateTimeRangeError } from "./dataverse-values.mjs";
 import {isExactNumeric} from './exact-numeric.mjs';
 import {attachODataReaderDetails, odataConversionDetails} from './webapi-error-details.mjs';
 import {
@@ -15,6 +15,14 @@ import {
 
 const denied = (message, code = "WebApiFieldNotEnabled", status = 403, details) => {
   throw new DataError(message, status, code, details);
+};
+
+const monthFirstWriteValue = (value, twoDigitYearMax) => {
+  const normalized = portalMonthFirstDate(value, { twoDigitYearMax });
+  if (normalized === null) return value;
+  const parsed = parseDateValue(normalized), year = new Date(parsed.ms).getUTCFullYear();
+  if (year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
+  return normalized;
 };
 // Power Pages Web API error text (web-api-http-requests-handle-errors):
 // 90040101 AttributePermissionIsMissing and 9004010C ResourceDoesNotExists.
@@ -510,7 +518,7 @@ export function webApiPolicy(portal, store, entity) {
           : value != null && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime' && isDateOnlyField(definition ?? store.fieldDefinition(mapping.logicalName, physical))
             ? portalDateOnly(value)
           : portal.observed?.webApiDateParsing === 'month-first' && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
-            ? portalMonthFirstDate(value, {twoDigitYearMax: portal.observed.webApiTwoDigitYearMax ?? 2049}) ?? value
+            ? monthFirstWriteValue(value, portal.observed.webApiTwoDigitYearMax ?? 2049)
             : value;
     }
     return result;

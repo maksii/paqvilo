@@ -8,7 +8,7 @@ import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider'];
+const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider'];
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
 
@@ -110,6 +110,7 @@ export function mirageSettings(value, name) {
   if (value.solutionOrder != null && !['derived', 'explicit'].includes(value.solutionOrder)) throw new Error(`${name}.solutionOrder must be derived (Solution dependency order, the default) or explicit (the listed solutionRoots order)`);
   if (value.port != null && (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) throw new Error(`${name}.port must be an integer from 0 to 65535 (0 chooses a free port)`);
   if (value.preset != null && (typeof value.preset !== 'string' || !PRESET_ID.test(value.preset))) throw new Error(`${name}.preset must be a preset ID (letters, numbers, underscores, dots or hyphens)`);
+  if (value.presetConfiguration != null && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error(`${name}.presetConfiguration must be data-only or apply`);
   if (value.presetMode != null && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error(`${name}.presetMode must be bootstrap or always`);
   if (value.render !== undefined) renderSettings(value.render);
   if (value.identityProvider !== undefined) identityProviderSettings(value.identityProvider);

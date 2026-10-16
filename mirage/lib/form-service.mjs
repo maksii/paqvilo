@@ -764,6 +764,8 @@ export async function submitPortalForm(
         if ((minimum != null || maximum != null) && (!valid || (minimum != null && (exact ? compareNumeric(value, minimum) < 0 : number < Number(minimum))) || (maximum != null && (exact ? compareNumeric(value, maximum) > 0 : number > Number(maximum)))))
           invalid(field, "FormFieldOutOfRange", field.rangeMessage || nativeRangeMessage(field));
       }
+      if (control === 'boolean' && typeof value !== 'boolean')
+        invalid(field, 'FormFieldInvalid', field.validationMessage || `${field.label} must be a valid Boolean value.`);
       if (control === "datetime") {
         // Native DateFormatValidator consumes the round-trip hidden control,
         // not the Web API's ISO date/date-time literals. Server-assigned on-save

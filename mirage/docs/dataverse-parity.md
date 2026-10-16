@@ -90,6 +90,12 @@ the platform's stored second precision without rounding into the next second.
 
 These rules cover a bounded Web API input contract. They do not establish every .NET culture, native datepicker/form submission, full error text or Liquid/query timezone semantics. Compare those separately for your site.
 
+Solution XML's `Format: date` and `DateOnly` both select date-only presentation;
+explicit UserLocal/TimeZoneIndependent behavior still controls instant storage. Failed
+month-first conversions retain the submitted literal in the default diagnostic. The
+evidenced `webApiInvalidDate: crm-minimum` profile distinguishes a failed conversion
+(minimum .NET date) from a successfully parsed date below Dataverse's 1753 minimum.
+
 UserLocal formatted annotations can use project-owned
 `settings.formattedValueTimeZone: { evidence, rules }`, where `rules` contains the
 Dataverse `timezonerule` bias, transition and effective-date fields. This explicitly

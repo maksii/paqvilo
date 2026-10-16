@@ -8,10 +8,11 @@ const ordered = (a, b) => (a.order ?? 1000) - (b.order ?? 1000) || String(a.labe
 export const personaCatalogError = message => Object.assign(new Error(message), { code: 'InvalidPersonaCatalog', status: 400 });
 
 export function personaStartPath(value, source = 'Persona startPath') {
-  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) throw personaCatalogError(`${source} must be a relative path starting with "/"`);
+  const fail = message => { throw Object.assign(personaCatalogError(message), source === 'returnUrl' ? { invalidParameter: 'returnUrl' } : {}); };
+  if (typeof value !== 'string' || !value.startsWith('/') || value.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(value)) fail(`${source} must be a relative path starting with "/"`);
   let decoded;
-  try { decoded = decodeURIComponent(value.split(/[?#]/, 1)[0]); } catch { throw personaCatalogError(`${source} has invalid path encoding`); }
-  if (decoded.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(decoded)) throw personaCatalogError(`${source} must be a relative path starting with "/"`);
+  try { decoded = decodeURIComponent(value.split(/[?#]/, 1)[0]); } catch { fail(`${source} has invalid path encoding`); }
+  if (decoded.startsWith('//') || /[\\\u0000-\u001f\u007f]/.test(decoded)) fail(`${source} must be a relative path starting with "/"`);
   return value;
 }
 

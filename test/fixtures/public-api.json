@@ -73,6 +73,7 @@
     "paqvilo/mirage/packs": [
       "validatePersonaCatalog", "mergePersonaCatalogs",
       "validatePack",
+      "configurationPresetDiagnostics",
       "discoverPacks",
       "loadPack",
       "presetLibrary",

@@ -38,7 +38,7 @@ import { initialState } from "./lib/bootstrap.mjs";
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
 import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
-import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment, configurationPresetReport } from './lib/experiment-presets.mjs';
+import { experimentPresets, experimentId, validateExperiment, validateExperimentPresets, applyExperiment, configurationPresetReport, configurationPresetCollisions } from './lib/experiment-presets.mjs';
 import { inspectPage } from "./lib/page-resources.mjs";
 import { enrichReference } from "./enrich-reference.mjs";
 import { discoverSourceDependencies, runtimeDependencyPaths, injectRuntimeDependencies, injectRuntimeCompatibility, isHtmlDocument } from "./lib/source-dependencies.mjs";
@@ -51,7 +51,7 @@ import { serverLogicName, serverLogicUnsupported } from "./lib/server-logic.mjs"
 import { operationHandlers, assertOperationRole, runExportedServerLogic, runExportedCloudFlow, importOperationWorkflows } from './lib/exported-operations.mjs';
 import {createFlowTriggerRunner} from './lib/flow-triggers.mjs';
 import { operationCatalogue, validateOperationOverrides, operationPlaceholder, importSolutionOperationSources, withSolutionOperations } from './lib/operation-catalogue.mjs';
-import { pluginHandlers, pluginCatalogue, runPluginPhase, pluginStepMatchesEntity } from './lib/exported-plugins.mjs';
+import { pluginHandlers, pluginCatalogue, runPluginPhase, pluginStepMatchesEntity, pluginPhaseRequiresCheckpoint } from './lib/exported-plugins.mjs';
 import {pluginRuntimeDescriptors,prepareClrRuntime,closeClrHostPool} from './lib/plugin-clr.mjs';
 import {createAsyncPluginRunner} from './lib/plugin-async.mjs';
 import {settleCommittedWork} from './lib/committed-work.mjs';
@@ -281,6 +281,7 @@ export async function createSimulator({
   personaInstance = null,
   preset,
   presetMode = 'always',
+  presetConfiguration = 'data-only',
   port = 0,
   host = "127.0.0.1",
   origin,
@@ -468,16 +469,29 @@ export async function createSimulator({
     await store.replaceState(candidate.state);
     appliedPermissionModel = candidate.model;
   };
+  if (!['data-only', 'apply'].includes(presetConfiguration)) throw new Error('presetConfiguration must be data-only or apply');
   if (!['always', 'bootstrap'].includes(presetMode)) throw new Error('presetMode must be bootstrap or always');
   const stateExisted = stateFile ? await fs.stat(stateFile).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }) : false;
   const startupPreset = { name: preset ?? null, mode: presetMode, applied: Boolean(preset && (presetMode === 'always' || !stateExisted)) };
-  const store = await new DataStore({
+  const store = new DataStore({
     file: stateFile,
     persistence,
     presetLibrary: generatedPresets,
     platform: platformOption,
     state: applySolutions(initial ?? initialState(portal, bootstrapOptions())),
-  }).init();
+  });
+  const validateStartupConfiguration = () => {
+    if (!startupPreset.applied || presetConfiguration !== 'apply') return;
+    const state = store.snapshot({sections:['presets','mappings','simulator']});
+    const selected = resolvePreset(state,preset,generatedPresets);
+    if (!selected) throw error('Preset not found.',404);
+    if (selected.configurationPreset && !experimentPresets(state,sourcePortal,packConfigurations.presets).some(entry=>entry.id===selected.configurationPreset))
+      throw error('Configuration preset not found: '+selected.configurationPreset,404);
+  };
+  // Validate new state before init writes it, and loaded state before any enrichment saves.
+  if (!stateExisted) validateStartupConfiguration();
+  await store.init();
+  if (stateExisted) validateStartupConfiguration();
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
@@ -782,7 +796,7 @@ export async function createSimulator({
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
   };
-  store.setPluginPipeline(context => runPluginPhase({ ...context,store,runtimes:registeredPluginRuntimes, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => pluginSteps().some(step => step.enabled && pluginStepMatchesEntity(step, entity) && String(step.message).toLowerCase() === operation && (!['retrieve','retrievemultiple'].includes(operation)||!['placeholder','disabled'].includes(step.mode))));
+  store.setPluginPipeline(context => runPluginPhase({ ...context,store,runtimes:registeredPluginRuntimes, items: pluginSteps(), handlers: registeredPluginSteps, diagnostic: recordDiagnostic }), ({ entity, operation }) => pluginSteps().some(step => step.enabled && pluginStepMatchesEntity(step, entity) && String(step.message).toLowerCase() === operation && (!['retrieve','retrievemultiple'].includes(operation)||!['placeholder','disabled'].includes(step.mode))), context => pluginPhaseRequiresCheckpoint(pluginSteps(), context));
   for(const item of pluginSteps().filter(item=>item.mode==='clr'))try{if(!item.clrAvailable)throw new Error('No exact trusted descriptor');registeredPluginRuntimes.set(item.id,await prepareClrRuntime(registeredPluginDescriptors.get(item.id)));}catch(error){recordDiagnostic({code:'PLUGIN_CLR_PREPARATION_FAILED',stepId:item.id,message:error.message});}
   const acceptedChains=new Set();
   triggerRunner=createFlowTriggerRunner({store,items:operations,workflows:()=>operationWorkflows,identities:()=>registeredOperations.flowIdentities,diagnostic:recordDiagnostic,acceptedChains});
@@ -1171,10 +1185,7 @@ export async function createSimulator({
         ),
         plugins: state.plugins ?? [],
         permissions: state.permissions ?? [],
-        presets: Object.entries(state.presets ?? {}).map(([id, p]) => ({
-          id,
-          ...p,
-        })),
+        presets: listPresets({ state, library: generatedPresets }),
         endpoints: cfg.endpoints ?? [],
         operations: operations(),
         portalSettings: portalOverrideEntries(sourcePortal, cfg.portalOverrides, "settings"),
@@ -1255,6 +1266,7 @@ export async function createSimulator({
       diagnostics: [
         ...portal.diagnostics,
         ...packConfigurations.diagnostics,
+    ...configurationPresetCollisions(store.state,packConfigurations.presets),
         ...(activeProfiles.diagnostics ?? []),
         ...(cfg.importDiagnostics ?? []),
         ...permissionModel.diagnostics,
@@ -1343,7 +1355,7 @@ export async function createSimulator({
   const validateConfig = (cfg) => {
     profileSelection(profileConfig, cfg.deploymentProfilePin ?? null);
     validatePlatformOverrides(cfg.platformOverrides);
-    validateExperimentPresets(cfg.experimentPresets,packConfigurations.presets.map(p=>p.id));
+    validateExperimentPresets(cfg.experimentPresets);
     validateOperationOverrides(cfg.operations);
     validatePortalOverrides(cfg.portalOverrides);
     externalFrameOrigins(cfg.externalFrameOrigins);
@@ -1559,6 +1571,7 @@ export async function createSimulator({
   };
   const allDiagnostics = () => [
     ...packConfigurations.diagnostics,
+    ...configurationPresetCollisions(store.state,packConfigurations.presets),
     ...(activeProfiles.diagnostics ?? []),
     ...portal.diagnostics,
     ...(config().importDiagnostics ?? []),
@@ -1847,7 +1860,8 @@ export async function createSimulator({
     }
     if (method === "GET" && relative === "/diagnostics")
       return json(res, 200, {
-        diagnostics: [...packConfigurations.diagnostics, ...portal.diagnostics, ...diagnostics],
+        diagnostics: [...packConfigurations.diagnostics,
+        ...configurationPresetCollisions(store.state,packConfigurations.presets), ...portal.diagnostics, ...diagnostics],
         requests,
       });
     if (method === "GET" && relative === "/audit")
@@ -2150,7 +2164,15 @@ export async function createSimulator({
         const state=store.snapshot(),presets=experimentPresets(state,sourcePortal,packConfigurations.presets),existing=presets.find(p=>p.id===id);
         if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);await saveState(applyExperiment(state,existing));return json(res,200,{applied:id});}
         if(method==='POST'&&!id){const p=validateExperiment(await jsonBody(req));if(presets.some(x=>x.id===p.id))throw error('Experiment ID already exists.',409);state.simulator.experimentPresets??={};if(Object.keys(state.simulator.experimentPresets).length>=100)throw error('Experiment preset limit reached.',413);state.simulator.experimentPresets[p.id]=structuredClone(p);await saveState(state);return json(res,201,p);}
-        if(method==='DELETE'&&id&&!experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);if(existing.builtin||existing.readOnly)throw error('Built-in and pack configuration presets cannot be deleted.',403);delete state.simulator.experimentPresets[id];await saveState(state);return json(res,200,{deleted:id});}
+        if(method==='DELETE'&&id&&!experimentRoute[2]){
+          const saved=Object.hasOwn(state.simulator.experimentPresets??{},id);
+          if(!saved){
+            if(!existing)throw error('Experiment not found.',404);
+            if(existing.builtin||existing.readOnly)throw error('Built-in and pack configuration presets cannot be deleted.',403);
+          }
+          delete state.simulator.experimentPresets[id];
+          await saveState(state);return json(res,200,{deleted:id});
+        }
         throw error('Unsupported experiment operation.',405);
       });
     }
@@ -3965,14 +3987,15 @@ export async function createSimulator({
             return res.end(presentation.body);
           }
           res.writeHead(status, { "content-type": "text/html; charset=utf-8",...(err.code==='REDIRECT_SITE_MARKER_NULL_REFERENCE'&&observed.siteMarkerRedirect==='null-reference'?{'cache-control':PAGE_CACHE_CONTROL}:{}) });
+          const invalidReturnUrl = err.code === 'InvalidPersonaCatalog' && err.invalidParameter === 'returnUrl';
           res.end(
-            `<!doctype html><title>Portal simulation diagnostic</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>Portal rendering needs attention</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
+            `<!doctype html><title>${invalidReturnUrl ? 'Invalid returnUrl' : 'Portal simulation diagnostic'}</title><main style="font:16px system-ui;max-width:900px;margin:50px auto"><h1>${invalidReturnUrl ? 'Invalid returnUrl' : 'Portal rendering needs attention'}</h1><p>${escaped(err.message)}</p><p><a href="/__sim/">Open simulator admin</a></p></main>`,
           );
         }
       }).finally(()=>activeRequests.delete(invocation));
     activeRequests.add(invocation);
   });
-  if (startupPreset.applied) await applySelectedPreset(preset);
+  if (startupPreset.applied) await applySelectedPreset(preset,undefined,{applyConfiguration:presetConfiguration==='apply'});
   if (personaInstance) {
     const state = store.snapshot(); state.simulator ??= {};
     if (personaInstance.deploymentProfile !== undefined) state.simulator.deploymentProfilePin = personaInstance.deploymentProfile;

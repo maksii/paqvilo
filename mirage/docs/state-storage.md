@@ -44,11 +44,18 @@ is checked too. Windows excludes ChangeTime: NTFS can update it on an ordinary r
 last-access updates are enabled. Reads, backup copies and first-attempt restarts therefore
 retain ownership without weakening inode, size or modification-time checks. The exact-byte digest
 is computed at load/checkpoint and advanced incrementally, avoiding a full file hash for
-each PATCH. Any changed file identity is a `StateConflict`, including an equal-size edit.
+each PATCH. A changed file identity, size or modification timestamp is a `StateConflict`,
+including an equal-size edit whose modification timestamp changes.
 Two stale runtimes cannot merge independent in-memory snapshots implicitly. Multiple browser
 sessions should share one runtime; independent scenarios should use different state paths.
 These checks assume a normal local filesystem, not a remote filesystem that fails to report
-changes or an editor deliberately preserving filesystem identity and timestamps.
+changes. In particular, Windows cannot detect an in-place edit that keeps the same file
+identity and byte length and restores the exact previous modification timestamp. A following
+write can be acknowledged: plain JSON checkpoints overwrite that external edit, while a journal
+append retains the altered bytes and the next reload rejects their checksum with `StateIntegrity`.
+The digest is not re-hashed before each write. Do not edit the active state file with tools that
+preserve these metadata values. Stop the runtime before replacing or restoring state, keep backups,
+and use the administration API or a `DataStore` transaction for normal record edits.
 
 The HTTP audit ledger includes `saveMs` and `saveMode` (`journal` or `checkpoint`) for
 successful persisted writes. `DataStore.lastSave` and `onSave(timing)` expose the same timing

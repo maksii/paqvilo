@@ -10,6 +10,7 @@ import {browserLaunchOptions} from '../mirage/lib/browser-launch.mjs';
 
 test('Lense picker searches 500 personas, combines facets and opens a catalogue setup through portal sign-in',{timeout:60000},async t=>{
   const fixture=await personaFixture(t,{count:500,curated:490,groupCount:20});const {app,sourceDir}=fixture;
+  const identityUpdate=await fixture.call('/personas/select','POST',{contactId:contactId(499)});assert.equal(identityUpdate.response.status,200,JSON.stringify(identityUpdate.value));
   const browser=await chromium.launch(browserLaunchOptions({headless:true})),context=await browser.newContext({viewport:{width:1400,height:1000}});
   const session=new OverlaySession({sourceDir,origin:app.url,site:structuredClone(SITE),sourceMaps:false,siteName:'Synthetic catalogue',envName:'local',stateDir:fixture.root,browser:{},mirage:true,mirageSourceRoots:[sourceDir]});
   const detach=await attachSession(context,session),panel=enablePanel(context,session,{open:async()=>null});
@@ -17,6 +18,14 @@ test('Lense picker searches 500 personas, combines facets and opens a catalogue 
   const page=await context.newPage(),errors=[];page.on('pageerror',e=>{errors.push(e.message);t.diagnostic(e.message);});await page.goto(app.url);
   const root=page.locator('#paqvilo-panel');await root.locator('.pill').click();await root.locator('[data-act="tab"][data-v="tweaks"]').click();
   await root.locator('[data-panel-persona-count]').filter({hasText:'of 500 personas'}).waitFor();assert.ok(await root.locator('[data-panel-persona-row]').count()<100);
+  const defaultSection=root.locator('[data-panel-persona-results]>section').first();assert.equal(await defaultSection.locator('[data-contact]').first().getAttribute('data-contact'),contactId(499));
+  const groups=root.locator('.pp-persona-group');
+  assert.ok(await groups.nth(0).locator('[data-panel-persona-row]').count()>=23);
+  assert.ok(await groups.nth(1).locator('[data-panel-persona-row]').count()>=24);
+  const other=root.locator('[data-act="persona-group"][data-group="__other"]');await other.click();
+  await root.locator('[data-panel-persona-count]').filter({hasText:'of 5 personas'}).waitFor();
+  assert.equal(await root.locator('[data-panel-persona-row]').count(),5);
+  await root.locator('[data-act="persona-clear"]').click();
   assert.equal(await root.locator('.pp-persona-filter-disclosure').getAttribute('open'),null);await root.locator('.pp-persona-filter-disclosure>summary').click();
   await root.locator('[data-panel-persona-query]').fill('requester');await root.locator('[data-panel-persona-count]').filter({hasText:'of 1 personas'}).waitFor();await root.locator('[data-panel-persona-facet="roles"]').selectOption('Reviewer');assert.equal(await root.locator('.pp-persona-filter-disclosure>summary').textContent(),'Filters · 1 active');
   await root.locator('[data-act="choosepersona"][data-contact="'+contactId(1)+'"]').first().click();await Promise.all([page.waitForNavigation({waitUntil:'load'}),root.locator('[data-act="signin"]').click()]);await page.waitForURL(app.url+'/');await root.locator('.pill').waitFor({state:'attached'});

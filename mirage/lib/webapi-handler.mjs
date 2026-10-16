@@ -320,8 +320,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? "0x80040203");
   const response = respond(status, "9004010D", cdsErrorMessage, {
     code: innerCode,
-    message: internal === "InvalidDateTime" && details.failedDateConversion && invalidDate === "crm-minimum"
-      ? "DateTime is less than minumum value supported by CrmDateTime. Actual value: 01/01/0001 00:00:00, Minimum value supported: 01/01/1753 00:00:00"
+    message: internal === "InvalidDateTime" && (details.failedDateConversion || details.dateTimeBelowMinimum) && invalidDate === "crm-minimum"
+      ? `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`
       : (() => {
         const observed = observedODataInnerMessage(error, errorDetails);
         return observed === null ? error?.message ?? "" : appendObservedWebApiErrorTemplate(error, observed, { mode: errorStacks, templates: errorTemplates, method: errorMethod });

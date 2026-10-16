@@ -28,7 +28,8 @@ test('persona shortcuts reject unsafe redirects and require a CSRF post',async t
   const {app,call}=await personaFixture(t);
   const unknown=await fetch(app.url+'/_sim/sign-in?persona=person-01');assert.equal(unknown.status,404);assert.match(await unknown.text(),/person-1/);
   for(const path of ['https://example.test/','//example.test/','/%2fexample.test/','/\\example.test/']){
-    const response=await fetch(app.url+'/_sim/sign-in?persona=person-1&returnUrl='+encodeURIComponent(path));assert.equal(response.status,400,path);assert.match(await response.text(),/returnUrl must be a relative path/);
+    const response=await fetch(app.url+'/_sim/sign-in?persona=person-1&returnUrl='+encodeURIComponent(path));assert.equal(response.status,400,path);
+    const html=await response.text();assert.match(html,/returnUrl must be a relative path/);assert.match(html,/<title>Invalid returnUrl<\/title>/);assert.match(html,/<h1>Invalid returnUrl<\/h1>/);assert.doesNotMatch(html,/Portal rendering needs attention/);
   }
   const invalid=await call('/personas/launch','POST',{personaKey:'person-1',returnUrl:'https://other.example/'});assert.equal(invalid.response.status,400);assert.match(invalid.value.error.message,/^returnUrl must be a relative path/);
   const target=app.url+'/_sim/sign-in?persona=person-1&returnUrl=%2F%3Fwelcome%3D1';

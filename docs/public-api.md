@@ -180,6 +180,11 @@ for project request listeners; supply the runtime origin to keep the rule origin
 `runAcceptance` records abandoned requests in `navigationCancelledRequests` with request
 key, method, sanitized URL, cancellation reason and time. Detached frames and committed
 document replacements release their pending work; unrelated failures remain failures.
+Fragment and History API changes leave the current document's requests pending. A 204
+navigation response also preserves its document. Requests started by a replacement document
+remain subject to settling. Local document navigation shares one bounded write-wait budget
+across its redirect hops, reserving time within the triggering action's timeout for commit;
+`navigationWaits` records the observed waits and whether the writes completed.
 A cancelled write is an observation of browser lifecycle, not proof that the server saved it.
 
 Set evidenced `observed.formSubmissionErrorMarkup: paragraph` when a site's recorded host
@@ -191,3 +196,12 @@ that every hosted form uses paragraph markup.
 the state file does not exist. The default mode is `always`. Runtime status and startup JSON
 include `startupPreset: { name, mode, applied }`. Existing state is never silently reseeded in
 bootstrap mode; a requested manual preset application remains an explicit reset.
+
+Use `createSimulator({ preset, presetConfiguration: 'apply' })` to apply the data preset's
+linked configuration in the same state replacement. The default is `data-only`; bootstrap
+mode keeps both data and configuration when state already exists. The catalogue equivalent is
+`mirage.presetConfiguration: apply`, or pass `--apply-configuration` to `mirage start/dev`.
+`configurationPresetDiagnostics(pack, { portal, metadata, options })`, exported from
+`paqvilo/mirage/packs`, returns value-free errors for invalid configuration bodies and
+unknown or malformed links. It inspects lazy descriptors without generating their data;
+put `configurationPreset` on the descriptor alongside `name` and `load`.

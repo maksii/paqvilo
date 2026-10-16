@@ -237,6 +237,7 @@ export function isExtract(dir) {
  */
 export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
+  if (value.presetConfiguration !== undefined && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error('mirage.presetConfiguration must be data-only or apply');
   if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
   if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
@@ -252,6 +253,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
       : { id: entry.id ?? null, module: path.resolve(configDir, entry.module) })),
     port: Number.isInteger(value.port) ? value.port : null,
     preset: value.preset ?? null,
+    ...(value.presetConfiguration ? {presetConfiguration:value.presetConfiguration} : {}),
     ...(value.presetMode ? { presetMode: value.presetMode } : {}),
     ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
     ...(value.personaContexts !== undefined ? { personaContexts: personaContextSettings(value.personaContexts) } : {}),

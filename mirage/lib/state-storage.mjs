@@ -10,7 +10,8 @@ export const DEFAULT_JOURNAL_THRESHOLD = 16 * 1024 * 1024;
 const conflict = () => new DataError('Local state changed outside this runtime; restart the simulator from the updated state file before writing', 409, 'StateConflict');
 // NTFS updates ChangeTime on the first read/open when last-access updates are
 // enabled. That is not a content change. Retain inode, size and nanosecond mtime
-// checks on Windows; committed bytes remain protected by the persisted digest.
+// checks on Windows. Reload verifies journal checksums; the signature does not
+// detect an in-place equal-size edit that deliberately restores the exact mtime.
 export const stateFileSignature = (info, platform = process.platform) =>
   [info.dev, info.ino, info.size, info.mtimeNs, ...(platform === 'win32' ? [] : [info.ctimeNs])].join(':');
 const signature = stateFileSignature;

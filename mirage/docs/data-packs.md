@@ -96,3 +96,14 @@ uses `POST /__sim/api/experiments/sample-feature-on/apply`; applying `source-def
 resets its overrides. Status exposes `activeConfigurationPreset` (ID, source and digest);
 portal audit entries and acceptance evidence retain that identity without copying snippet
 values into the ledger. Manual override edits clear the active-preset designation.
+
+Run `configurationPresetDiagnostics(pack, { portal, metadata })` from
+`paqvilo/mirage/packs` in project tests before launching a runtime. Diagnostics contain IDs
+and validation messages, never override values. Lazy data presets declare their
+`configurationPreset` on the descriptor so listings and preflight remain inexpensive.
+At startup, `--apply-configuration` (catalogue `mirage.presetConfiguration: apply`) opts into
+applying the linked configuration with the data preset. The default applies data only.
+
+When a pack adopts a saved local preset ID, the pack takes precedence for application.
+The saved preset stays visible with a collision warning and can be exported or deleted in
+the administration UI. Deleting it removes only the saved copy; the pack entry remains.

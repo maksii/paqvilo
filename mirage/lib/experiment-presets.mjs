@@ -30,7 +30,7 @@ export function experimentPresets(state,portal,packPresets=[]){
   {id:'expanded-query-budget',name:'Simulated support increase (30)',platformOverrides:{QueryLinkEntityLimit:30},portalOverrides:{settings:{},snippets:{}},builtin:true},
   {id:'webapi-disabled',name:'Disable exported Web API tables',platformOverrides:{},portalOverrides:{settings:disabled,snippets:{}},builtin:true},
   ...packPresets,
-  ...Object.values(validateExperimentPresets(state.simulator?.experimentPresets,packPresets.map(p=>p.id))).map(p=>({...p,builtin:false,source:'user'})),
+  ...Object.values(validateExperimentPresets(state.simulator?.experimentPresets)).map(p=>({...p,builtin:false,source:'user',...(packPresets.some(pack=>pack.id===p.id)?{shadowed:true,diagnostics:[{code:'CONFIGURATION_PRESET_COLLISION',severity:'warning',message:`Saved configuration preset ${p.id} is shadowed by a data pack. Delete the saved entry to resolve the collision.`}]}:{})})),
  ];
 }
 export function applyExperiment(state,p){
@@ -62,4 +62,9 @@ export function configurationPresetReport(packs=[]){
   }
  }
  return {presets,diagnostics};
+}
+
+/** Saved collisions never prevent reading state or removing the saved entry. */
+export function configurationPresetCollisions(state, packPresets=[]){
+ return Object.keys(state.simulator?.experimentPresets??{}).filter(id=>packPresets.some(p=>p.id===id)).map(id=>({code:'CONFIGURATION_PRESET_COLLISION',severity:'warning',id,message:`Saved configuration preset ${id} is shadowed by a data pack. Delete the saved entry to resolve the collision.`}));
 }

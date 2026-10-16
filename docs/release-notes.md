@@ -47,6 +47,14 @@ use an exact preview version until the stable release is published.
 - Staged attachments belong to their browser and persona, survive failed saves and are
   consumed once. Editor refresh preserves project scripts and validates debugger settings.
 - Administration preserves active inputs, selections and drafts while background data loads.
+- Inactive plugin steps preserve scoped-create behavior and efficient row persistence.
+  Executing trusted handlers retain authorization and transaction safeguards.
+- Persona pages follow group order and keep the default reachable. Saved configuration
+  collisions remain manageable; linked configuration can be applied explicitly at startup.
+- Acceptance and parity settling distinguish hash/history changes from document commits,
+  and redirects share one bounded navigation wait.
+- Native checkboxes save Boolean values using the platform's posted-control semantics.
+  Solution date-only display and configured minimum-date errors retain their source meaning.
 
 ### Upgrade notes
 

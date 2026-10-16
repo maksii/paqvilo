@@ -326,9 +326,17 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
   let loaded = false;
   const get = () => {
     if (!loaded) {
-      const value = load();
+      let value = load();
       if (!value || typeof value !== "object" || Array.isArray(value))
         throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ""} did not load an object`);
+      // A lazy descriptor's configuration link is also part of its hydrated preset.
+      // Reject contradictory metadata rather than listing one scenario and applying another.
+      if (entry.configurationPreset !== undefined) {
+        experimentId(entry.configurationPreset);
+        if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset)
+          throw new Error(`Preset ${id} configurationPreset does not match its lazy descriptor`);
+        if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
+      }
       if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
       if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
       body = finish ? finish(value) : value;
@@ -385,4 +393,24 @@ export function presetLibrary({ portal, metadata, packs = [], options } = {}) {
     }
   }
   return library;
+}
+
+/** Value-free preflight for configuration bodies and links declared in preset descriptors.
+ * Lazy preset loaders are not evaluated; put configurationPreset on their descriptor. */
+export function configurationPresetDiagnostics(packOrPacks, options = {}) {
+  const packs = Array.isArray(packOrPacks) ? packOrPacks : [packOrPacks];
+  const report = configurationPresetReport(packs);
+  const diagnostics = [...report.diagnostics], ids = new Set(['source-defaults', 'expanded-query-budget', 'webapi-disabled', ...report.presets.map(p => p.id)]);
+  for (const pack of packs) {
+    let entries;
+    try { entries = packPresetEntries(pack, options); }
+    catch { diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_INVALID', severity:'error', pack:pack.id, message:`Data pack ${pack.id} preset descriptors could not be inspected.`}); continue; }
+    for (const [id, entry] of entries) {
+      if (entry?.configurationPreset === undefined) continue;
+      try { experimentId(entry.configurationPreset); }
+      catch { diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_INVALID',severity:'error',pack:pack.id,preset:id,message:`Data preset ${id} must name a valid configuration preset ID.`}); continue; }
+      if (!ids.has(entry.configurationPreset)) diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_UNKNOWN',severity:'error',pack:pack.id,preset:id,configurationPreset:entry.configurationPreset,message:`Data preset ${id} names unavailable configuration preset ${entry.configurationPreset}.`});
+    }
+  }
+  return diagnostics;
 }

@@ -62,6 +62,7 @@ import {
   GUID_PATTERN,
   isoUtc,
   parseDateValue,
+  dateTimeRangeError,
   valuesEqual,
 } from "./dataverse-values.mjs";
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
@@ -768,6 +769,9 @@ export class DataStore {
           name: preset.name,
           description: preset.description,
           userConfigured: preset.userConfigured,
+          builtin: preset.builtin,
+          builtinVersion: preset.builtinVersion,
+          configurationPreset: preset.configurationPreset,
         },
       ]),
     );
@@ -1015,15 +1019,16 @@ export class DataStore {
     this.observed = observed ?? null;
   }
   /** Exported registrations use the explicitly selected trusted execution mode. */
-  setPluginPipeline(provider, active = () => true) {
+  setPluginPipeline(provider, active = () => true, requiresCheckpoint = () => true) {
     if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
     this.pluginPipeline = provider;
     this.pluginPipelineActive = active;
+    this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
   exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
     if(stage!==10)this.pluginInTransaction=true;
     if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
-    if (this.rowTransaction) {
+    if (this.rowTransaction && this.pluginPipelineRequiresCheckpoint({ entity: mapping.logicalName, operation, stage, changedAttributes })) {
       // Trusted external handlers may mutate arbitrary state, including nested
       // SDK transactions. Promote only when one actually executes, preserving
       // their independent PreValidation commit/rollback semantics.
@@ -2654,10 +2659,10 @@ export class DataStore {
     row.createdon ??= isoUtc(Date.now());
     row.modifiedon ??= row.createdon;
     this.applyAutoNumbers(m, row, options);
-    // Authorization precedes all local handlers, including PreValidation. Every
+    // The table-level Create gate above precedes all handlers. Row scope is
+    // checked after trusted declarative effects establish any membership links.
     // Top-level stage10 SDK requests commit independently; stages20/40 and
     // nested stage10 requests participate in their caller transaction.
-    if (this.pluginPipeline && this.pluginPipelineActive({ entity: m.logicalName, operation: 'create' })) this.assertAllowed(m.logicalName, 'create', row, identity);
     this.exportedPluginPhase(m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
@@ -3492,12 +3497,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
           +timestamp[4] > 23 || +timestamp[5] > 59 || +(timestamp[6] ?? 0) > 59)) throw conversion("Edm.DateTimeOffset");
       const year = parsed ? new Date(parsed.ms).getUTCFullYear() : NaN;
       if (!parsed || year < 1753 || year > 9999)
-        throw new DataError(
-          `The date-time format for ${value} is invalid, or value is outside the supported range.`,
-          400,
-          "InvalidDateTime",
-          { innerCode: "0x80040239", failedDateConversion: !parsed },
-        );
+        throw dateTimeRangeError(value, parsed);
       return isDateOnlyField(definition)
         ? isoUtc(parsed.ms, { dateOnly: true })
         : isoUtc(parsed.ms);

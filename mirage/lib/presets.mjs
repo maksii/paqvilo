@@ -33,9 +33,10 @@ const lazyMeta = (library, id) =>
   hasOwn(library, id)
     ? Object.getOwnPropertyDescriptor(library, id).get?.[LAZY_PRESET] ?? null
     : null;
-const compactDescriptor = (name, description) => ({
+const compactDescriptor = (name, description, configurationPreset) => ({
   builtin: true,
   builtinVersion: 1,
+  ...(configurationPreset ? {configurationPreset} : {}),
   name,
   description,
 });
@@ -111,7 +112,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
       // Lazy library entries (bootstrap/pack presets) compact without
       // generating their bodies.
       const lazy = lazyMeta(presets, id);
-      if (lazy) return [id, compactDescriptor(lazy.name, lazy.description)];
+      if (lazy) return [id, compactDescriptor(lazy.name, lazy.description, lazy.configurationPreset)];
       const preset = presets[id];
       if (
         hasOwn(library, id) &&
@@ -125,6 +126,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
           compactDescriptor(
             preset?.name ?? meta.name,
             preset?.description ?? meta.description,
+            preset?.configurationPreset ?? meta.configurationPreset,
           ),
         ];
       }

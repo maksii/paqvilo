@@ -85,11 +85,12 @@ Restart running previews after configuration changes.
 | Setting | Purpose and reference |
 | --- | --- |
 | `dataPacks`, `preset` | Explicit project modules and seed data; [data packs](../mirage/docs/data-packs.md) |
+| `presetConfiguration` | `data-only` (default) leaves configuration overrides intact. `apply` also applies the selected data preset’s linked configuration when it is seeded. |
 | `presetMode` | `bootstrap` keeps an existing state; `always` reapplies the selected preset at startup. Status reports the decision. |
 | `render.timeLimitMs` | Local Liquid budget, default 60,000 ms; [render limits](public-api.md#render-local-pages-within-a-budget) |
 | `deploymentProfiles` | Select exported environment settings; [deployment profiles](../mirage/docs/deployment-profiles.md) |
 | `personaContexts` | Bound isolated scenario copies; [persona setups](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios) |
-| `identityProvider` | Local chooser text, layout and project assets; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
+| `identityProvider` | Local chooser text, layout and project assets; `newUser: auto \| always \| never` controls registration choices. `auto` follows site registration, open-registration/invitation and provider registration settings; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
 | `platform` | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md) |
 | `compat`, `head` | Local adapters and assets, described below |
 | `observed` | Evidenced platform conventions absent from exports, described below |

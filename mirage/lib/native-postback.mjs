@@ -86,7 +86,7 @@ export function nativeFormPostbackDescriptor({ kind, formId, fields = [], action
     // A column placed on the form more than once renders (and posts) only its first cell.
     if (names.has(wireName)) continue;
     names.add(wireName);
-    boundFields.push({ name: field.name, wireName, multiple: field.multiple === true });
+    boundFields.push({ name: field.name, wireName, multiple: field.multiple === true, ...(field.control === 'checkbox' || field.type === 'checkbox' ? { checkbox: true } : {}) });
   }
   const targets = new Set();
   const boundActions = declaredActions.map((action) => {
@@ -104,7 +104,8 @@ export function nativeFormPostbackDescriptor({ kind, formId, fields = [], action
 /**
  * Decode textual successful controls without choosing a transport or response.
  * Text, empty values and declared repeated values are retained for the service's
- * typed validation. Unposted fields are omitted; no checkbox value is invented.
+ * typed validation. Only server-described editable checkboxes default to false
+ * when absent; other unposted fields remain omitted.
  * Opaque state/token fields and controls belonging to other forms are not copied.
  */
 export function parseNativePostback(entries, descriptors) {
@@ -150,10 +151,15 @@ export function parseNativePostback(entries, descriptors) {
   let consumed = targets.length + argumentsPosted.length + (posted.has(targets[0]) ? posted.get(targets[0]).length : 0);
   for (const field of descriptor.fields) {
     const found = posted.get(field.wireName);
-    if (!found) continue;
+    if (!found) {
+      if (field.checkbox === true) values[field.name] = 'false';
+      continue;
+    }
     if (!field.multiple && found.length !== 1) invalid("Ambiguous scalar native form value");
     if (dangerous.has(field.name)) invalid("Invalid native form field");
-    values[field.name] = field.multiple ? [...found] : found[0];
+    // ASP.NET checkbox post data is a presence flag, not a Boolean text parser.
+    // A custom non-empty value still means checked; radio/select values stay textual.
+    values[field.name] = field.checkbox === true ? (found[0] ? 'true' : 'false') : field.multiple ? [...found] : found[0];
     consumed += found.length;
   }
   return {

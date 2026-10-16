@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
+import { observeDocumentCommits } from './lib/document-commits.mjs';
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -290,8 +291,8 @@ export async function runAcceptance({
       }
       const pending = new Map(),
         responseObservations = [];
-      const requestRecords = new Map(), navigatingFrames = new WeakMap(), navigationHolds = new Set();
-      let settlementDeadline = Infinity;
+      const requestRecords = new Map(), frameDocuments = new WeakMap(), navigationHolds = new Set(), navigationBudgets = new Map();
+      let settlementDeadline = Infinity, actionDeadline = Infinity;
       const requestFrame = request => { try { return request.frame(); } catch { return null; } };
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
@@ -307,20 +308,20 @@ export async function runAcceptance({
         // Keep unrelated/older failures; recognize only the same detach event's aborts.
         return pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250;
       }), 'frame-detached'));
-      page.on('framenavigated', frame => {
-        // The old document can start more XHRs while its replacement is in
-        // flight. Use the commit boundary, not a snapshot at navigation start.
-        // A same-document hash/history change has no navigation request.
-        if (!navigatingFrames.has(frame)) return;
-        cancelRequests([...requestRecords.keys()].filter(request => requestFrame(request) === frame && request.resourceType() !== 'document' &&
-          (pending.has(request) || requestRecords.get(request).finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - requestRecords.get(request).endedAt <= 250)), 'document-replaced');
-        navigatingFrames.delete(frame);
-      });
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
         frameEvents = [];
       await cdp.send("Network.enable");
       await cdp.send("Page.enable");
+      await observeDocumentCommits(page, cdp, {
+        document: (frame, token) => frameDocuments.set(frame, token),
+        commit: (frame, token) => cancelRequests([...requestRecords.keys()].filter(request => {
+          const record = requestRecords.get(request);
+          return requestFrame(request) === frame && record.documentToken === token && request.resourceType() !== 'document' &&
+            (pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250);
+        }), 'document-replaced'),
+      });
+
       // A local navigation waits (bounded) for the script writes of the document it replaces;
       // only document requests are paused (lib/navigation-settle.mjs).
       if (!isLive) {
@@ -331,10 +332,20 @@ export async function runAcceptance({
                 .filter((row) => row.parentFrameId)
                 .map((row) => [row.frameId, row.parentFrameId]),
             );
-          // Writes of replaced documents or removed frames can no longer complete.
+          // Chromium reuses the network id across redirects; all hops share the first
+          // hold's budget and leave time for the action's navigation to commit.
+          const reserve = Math.min(1000, timeout / 2);
+          const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
+            deadline: Math.min(Date.now() + timeout - reserve, actionDeadline - reserve), ids: new Set(),
+          };
+          for (const id of [event.networkId, event.requestId].filter(Boolean)) {
+            budget.ids.add(id);
+            navigationBudgets.set(id, budget);
+          }
+          const budgetDeadline = budget.deadline;
           const hold = awaitWritesBeforeDocument(event.frameId, () => [...cdpRecords.values()], parents, {
-            timeout: Math.max(0, timeout - Math.min(1000, timeout / 2)),
-            deadline: () => settlementDeadline - Math.min(1000,timeout/2),
+            timeout: Math.max(0, budgetDeadline - Date.now()),
+            deadline: () => Math.min(budgetDeadline, settlementDeadline - reserve, actionDeadline - reserve),
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
@@ -405,12 +416,18 @@ export async function runAcceptance({
           ).find(([name]) => name.toLowerCase() === "x-sim-trace-id")?.[1];
         }
       });
+      const releaseNavigationBudget = requestId => {
+        const budget = navigationBudgets.get(requestId);
+        if (budget) for (const id of budget.ids) navigationBudgets.delete(id);
+      };
       cdp.on("Network.loadingFinished", (event) => {
         const record = cdpRecords.get(event.requestId);
         if (record) record.finishedTimestamp = event.timestamp;
+        releaseNavigationBudget(event.requestId);
       });
       cdp.on("Network.loadingFailed", (event) => {
         const record = cdpRecords.get(event.requestId);
+        releaseNavigationBudget(event.requestId);
         if (record) {
           record.failure = event.errorText;
           record.failedTimestamp = event.timestamp;
@@ -513,7 +530,6 @@ export async function runAcceptance({
       let lastRequestActivity = Date.now();
       page.on("request", (request) => {
         const frame = requestFrame(request);
-        if (frame && request.isNavigationRequest()) navigatingFrames.set(frame,request);
         const record = {
           order: observation.resources.length + 1,
           method: request.method(),
@@ -521,6 +537,7 @@ export async function runAcceptance({
           type: request.resourceType(),
           started: Date.now(),
         };
+        Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
         pending.set(request, record);
         requestRecords.set(request, record);
         if (record.type !== "eventsource") lastRequestActivity = Date.now();
@@ -543,8 +560,6 @@ export async function runAcceptance({
       });
       for (const event of ["requestfinished", "requestfailed"])
         page.on(event, (request) => {
-          const frame=requestFrame(request);
-          if(event==='requestfailed'&&request.isNavigationRequest()&&request.failure()?.errorText==='net::ERR_ABORTED'&&navigatingFrames.get(frame)===request)navigatingFrames.delete(frame);
           const record = pending.get(request);
           if (record) {
             if (record.type !== "eventsource") lastRequestActivity = Date.now();
@@ -690,6 +705,7 @@ export async function runAcceptance({
             throw new Error(
               "A local mutation/state assertion cannot execute in a live observation flow.",
             );
+          actionDeadline = Date.now() + timeout;
           const surface = step.frame
             ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
                 (surface, selector) => surface.frameLocator(selector),
@@ -712,6 +728,7 @@ export async function runAcceptance({
               throw new Error(
                 "Navigation readiness must be load or domcontentloaded.",
               );
+            actionDeadline = Date.now() + timeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -719,6 +736,7 @@ export async function runAcceptance({
               // continue to report unfinished or failed requests separately.
               waitUntil: step.waitUntil ?? "domcontentloaded",
             });
+            actionDeadline = Infinity;
             entry.status = response?.status();
             if (entry.status !== (step.status ?? 200))
               throw new Error(
@@ -732,8 +750,10 @@ export async function runAcceptance({
             const control = surface.locator(step.selector);
             await control.waitFor({ state: "attached" });
             entry.alreadyVisible = await control.isVisible();
-            if (!entry.alreadyVisible)
+            if (!entry.alreadyVisible) {
+              actionDeadline = Date.now() + timeout;
               await locate(surface, step.trigger).click();
+            }
             await control.waitFor({ state: "visible" });
           } else if (step.action === "click") await target().click();
           else if (step.action === "fill") await target().fill(step.value);
@@ -902,6 +922,7 @@ export async function runAcceptance({
           } else if (step.action === "screenshot")
             await capture(step.name ?? String(stepIndex + 1));
           else throw new Error(`Unsupported acceptance action ${step.action}`);
+          actionDeadline = Infinity;
           entry.passed = true;
         }
         await page.waitForTimeout(300);

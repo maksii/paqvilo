@@ -11,7 +11,7 @@ import {tmpdir} from 'node:os';
 import path from 'node:path';
 import {loadConfig} from '../../lense/config.mjs';
 import {identityProviderAssets} from '../lib/identity-provider-settings.mjs';
-import {chooserSearch} from '../lib/persona-chooser.mjs';
+import {chooserSearch,chooserSelection,chooserResults} from '../lib/persona-chooser.mjs';
 const nodes=html=>{const all=[];const visit=node=>{all.push(node);for(const child of node.childNodes??[])visit(child);};visit(parse(html));return all;};
 const attr=(node,name)=>node.attrs?.find(a=>a.name===name)?.value;
 
@@ -60,4 +60,19 @@ test('catalogue/default chooser settings and project-local head assets are valid
   const cfg=await loadConfig({config:file,site:'demo'},{},{checkSource:false});assert.equal(cfg.mirageConfig.identityProvider.presentation,'dialog');assert.equal(cfg.mirageConfig.identityProvider.newUser,'never');
   assert.throws(()=>identityProviderAssets(identityProviderSettings({head:{stylesheets:['../outside.css']}}),root),/inside the project/);
   await fs.symlink(parent,path.join(root,'escape'),process.platform==='win32'?'junction':'dir');assert.throws(()=>identityProviderAssets(identityProviderSettings({head:{stylesheets:['escape/outside.css']}}),root),/inside the project/);
+});
+
+test('chooser pages follow groups and subgroups while the matching default remains discoverable',()=>{
+ const {report}=identityChooserFixture(500);
+ report.personas.forEach((p,i)=>{p.label=`Label ${String(499-i).padStart(3,'0')}`;p.default=i===499;});
+ const selected=chooserSelection(report);
+ assert.deepEqual([...new Set(selected.rows.map(row=>row.persona.group))],['group-0','group-1']);
+ assert.equal(selected.rows.filter(row=>row.persona.group==='group-0').length,25);
+ const html=chooserResults(report,new URLSearchParams(),'/authorize');
+ const all=nodes(html),defaults=all.filter(n=>n.tagName==='section').find(n=>n.childNodes?.some(c=>c.tagName==='h2'&&c.childNodes?.[0]?.value==='Default'));
+ assert.ok(defaults);assert.match(html,/<h2>Default<\/h2>[\s\S]*?value="subject-499"/);
+ for(const group of report.groups.slice(2))assert.ok(all.some(n=>n.tagName==='a'&&attr(n,'data-chooser-group-link')!==undefined&&new URL(attr(n,'href'),'http://localhost').searchParams.get('group')===group.id));
+ report.other=Array.from({length:9},(_,i)=>({contactId:`other-${i}`,subject:`other-${i}`,name:`A Other ${i}`}));
+ const others=chooserResults({...report},new URLSearchParams({group:'__other'}),'/authorize');assert.match(others,/1–9 of 9 matching/);
+ const filtered=chooserResults(report,new URLSearchParams({group:'group-0'}),'/authorize');assert.doesNotMatch(filtered,/<h2>Default<\/h2>/);
 });

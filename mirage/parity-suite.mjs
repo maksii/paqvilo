@@ -7,6 +7,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -1888,8 +1889,24 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
           return route.continue();
         });
         const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        const documentTokens = new WeakMap(), requestDocuments = new WeakMap();
+        const requestFrame = request => { try { return request.frame(); } catch { return null; } };
+        await cdp.send('Page.enable');
+        await observeDocumentCommits(page, cdp, {
+          document: (frame, token) => documentTokens.set(frame, token),
+          commit: (frame, token) => {
+            for (const request of state.inflight)
+              if (request.resourceType() !== 'document' && requestFrame(request) === frame && requestDocuments.get(request) === token)
+                state.inflight.delete(request);
+            state.lastActivity = Date.now();
+          },
+        });
+        page.on('framedetached', frame => {
+          for (const request of state.inflight) if (requestFrame(request) === frame) state.inflight.delete(request);
+          state.lastActivity = Date.now();
+        });
         if (guard === "script") {
-          const cdp = await context.newCDPSession(page);
           const fail = (requestId) => cdp.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
           cdp.on("Fetch.requestPaused", (event) => {
             const { request, requestId, resourceType } = event;
@@ -1918,12 +1935,8 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
           await cdp.send("Fetch.enable", { patterns: ["Document", "Fetch", "Ping", "Other"].map((resourceType) => ({ urlPattern: "*", resourceType, requestStage: "Request" })) });
         }
         page.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
-        // Requests of a replaced document can end without final events; only the current
-        // document's requests count towards settling.
-        page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) state.inflight.clear();
-        });
         page.on("request", (request) => {
+          requestDocuments.set(request, documentTokens.get(requestFrame(request)));
           state.lastActivity = Date.now();
           if (request.resourceType() !== "eventsource" && !request.url().endsWith("/__sim/events")) state.inflight.add(request);
           if (["script", "stylesheet"].includes(request.resourceType())) assetPath(request.url(), base.origin, state.assets);

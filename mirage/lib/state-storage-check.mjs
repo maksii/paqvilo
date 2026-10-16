@@ -57,7 +57,14 @@ try {
   await fs.writeFile(join(sourceDir, 'website.yml'), 'adx_websiteid: site\nadx_name: Synthetic volume\n');
   await fs.writeFile(join(sourceDir, 'sitesetting.yml'), '- adx_name: Webapi/item/enabled\n  adx_value: true\n- adx_name: Webapi/item/fields\n  adx_value: name\n');
   const guid = n => `00000000-0000-0000-0000-${String(n).padStart(12, '0')}`;
-  let app = await createSimulator({ sourceDir, stateFile: join(root, 'http-state.json'), watch: false, initial: {
+  const solution = join(root, 'solution');
+  await fs.mkdir(join(solution, 'Other'), { recursive: true });
+  await fs.mkdir(join(solution, 'PluginAssemblies'), { recursive: true });
+  await fs.mkdir(join(solution, 'SdkMessageProcessingSteps'), { recursive: true });
+  await fs.writeFile(join(solution, 'Other', 'Solution.xml'), '<ImportExportXml><SolutionManifest><UniqueName>InventedStorage</UniqueName></SolutionManifest></ImportExportXml>');
+  await fs.writeFile(join(solution, 'PluginAssemblies', 'storage.xml'), `<PluginAssembly PluginAssemblyId="${guid(2)}"><Name>Invented.Storage</Name><PluginTypes><PluginType PluginTypeId="${guid(3)}"><TypeName>Invented.Storage.Update</TypeName></PluginType></PluginTypes></PluginAssembly>`);
+  await fs.writeFile(join(solution, 'SdkMessageProcessingSteps', 'update.xml'), `<SdkMessageProcessingStep SdkMessageProcessingStepId="${guid(1)}"><Name>Storage update placeholder</Name><PluginTypeId>${guid(3)}</PluginTypeId><SdkMessageName>Update</SdkMessageName><PrimaryEntity>item</PrimaryEntity><Stage>20</Stage><Rank>1</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment><StateCode>0</StateCode></SdkMessageProcessingStep>`);
+  let app = await createSimulator({ sourceDir, solutionRoots: [solution], stateFile: join(root, 'http-state.json'), watch: false, initial: {
     settings: { permissionMode: 'permissive' }, mappings: { item: { idColumn: 'itemid', entitySet: 'items', fields: { name: { type: 'string' } } } },
     tables: { item: Array.from({ length: 300000 }, (_, i) => ({ itemid: guid(i), payload: 'v'.repeat(128) })) },
   } });
@@ -75,11 +82,12 @@ try {
     await Promise.all([patch(21), patch(22)]);
     const audit = await (await fetch(app.url + '/__sim/api/audit?method=PATCH')).json();
     assert.ok(audit.items.every(entry => entry.saveMode === 'journal' && entry.saveMs >= 0));
+    assert.ok(app.state().diagnostics.some(entry => entry.code === 'PLUGIN_STEP_PLACEHOLDER' && entry.operation === 'update'));
   } finally { await app.close(); app = null; global.gc?.(); }
   const persisted = await new DataStore({ file: join(root, 'http-state.json') }).init();
   for (let n = 0; n < 20; n++) assert.equal(persisted.state.tables.item[299999 - n].name, `http-${299999 - n}`);
   assert.equal(persisted.state.tables.item[21].name, 'http-21'); assert.equal(persisted.state.tables.item[22].name, 'http-22');
-  return { rows, bytes, saveMs: Math.round(savedMs), loadMs: Math.round(loadMs), twentyPatchMs: Math.round(patchMs), httpRows: 300000, twentyHttpPatchMs: Math.round(httpPatchMs), digestVerified: true, externalConflictVerified: true, concurrentClientsVerified: true };
+  return { rows, bytes, saveMs: Math.round(savedMs), loadMs: Math.round(loadMs), twentyPatchMs: Math.round(patchMs), httpRows: 300000, twentyHttpPatchMs: Math.round(httpPatchMs), digestVerified: true, externalConflictVerified: true, concurrentClientsVerified: true, placeholderJournalVerified: true };
 } finally { await stateHandle?.close(); await fs.rm(root, { recursive: true, force: true }); }
 
 }

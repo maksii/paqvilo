@@ -186,14 +186,24 @@ export function pluginCatalogue({ plugins, handlers = new Map(), runtimes = new 
   });
 }
 
+function matchingPluginSteps(items, { entity, operation, stage, changedAttributes = [], asyncExecution = false }) {
+  const attributes = new Set(changedAttributes.map(canonical));
+  return items.filter(item => item.enabled && (item.contract?.mode === 1) === asyncExecution && pluginStepMatchesEntity(item, entity) && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update', 'updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name))));
+}
+
+/** Handlers and CLR can make arbitrary backend writes. Mocks only change the tracked target or response. */
+export function pluginPhaseRequiresCheckpoint(items, context) {
+  return matchingPluginSteps(items, context).some(item => ['handler', 'clr'].includes(item.mode) && !item.unsupported);
+}
+
 /** A deliberately small synchronous contract. PostOperation can reject, but cannot silently persist target changes. */
 export function runPluginPhase({ items, handlers, runtimes=new Map(),store, entity, operation, stage, target, targets, previousRecords, records, associationParameters, record, previous, identity, changedAttributes=[],query,collection,columns,holder,portalRequest=false,asyncExecution=false,initialFrame, diagnostic = () => {} }) {
   // A saved row can be reused by a later Delete; its previous request frame
   // must not supply shared variables, correlation or parent context to this one.
   if(stage===10&&!asyncExecution&&!['retrieve','retrievemultiple'].includes(operation))executionFrames.set(record,{});
   if(initialFrame)executionFrames.set(record,structuredClone(initialFrame));
-  const attributes = new Set(changedAttributes.map(canonical)),read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
-  const matched = items.filter(item => item.enabled && (item.contract?.mode===1)===asyncExecution && pluginStepMatchesEntity(item,entity) && String(item.message).toLowerCase() === operation && item.stage === stage && (!['update','updatemultiple'].includes(operation) || !item.filteringAttributes.length || item.filteringAttributes.some(name => attributes.has(name)))).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
+  const read=['retrieve','retrievemultiple'].includes(operation),multiple=operation==='retrievemultiple',bulk=['createmultiple','updatemultiple'].includes(operation),association=['associate','disassociate'].includes(operation);
+  const matched = matchingPluginSteps(items, { entity, operation, stage, changedAttributes, asyncExecution }).sort((a, b) => a.rank - b.rank || a.id.localeCompare(b.id));
   // Mock/handler read outputs also belong to the SDK response frame. Keep ordinary
   // reads without an executing observer on their existing projection path.
   if(stage===40&&read&&!asyncExecution&&!executionFrames.has(record)&&matched.some(item=>['clr','handler','mock'].includes(item.mode)&&(!item.unsupported||item.mode==='mock')))executionFrames.set(record,{});

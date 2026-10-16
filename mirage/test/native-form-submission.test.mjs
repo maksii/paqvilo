@@ -101,7 +101,7 @@ test('source numeric fields decode URLencoded tokens exactly and reject malforme
   assert.deepEqual(await options.store.get('sample', 'first-row', options.identity), before);
 });
 
-test('declared textarea and boolean values use native successful-control semantics while unposted checkbox remains untouched', async () => {
+test('declared textarea and Boolean list values decode while an unposted list remains untouched', async () => {
   const options = await fixture();
   const fields = [{ name: 'title', type: 'textarea' }, { name: 'enabled', type: 'boolean' }];
   options.schemas.first.fields = fields;
@@ -112,6 +112,32 @@ test('declared textarea and boolean values use native successful-control semanti
   assert.equal(row.enabled, false);
   await submitNativePostback([['__EVENTTARGET', item.descriptor.actions[0].target], [item.descriptor.fields[0].wireName, 'Title']], [item], options);
   assert.equal((await options.store.get('sample', 'first-row', options.identity)).enabled, false);
+});
+
+test('editable rendered checkbox uses native presence semantics and clears only an editable rendered field', async () => {
+  const options = await fixture();
+  const fields = [{name:'title',type:'text'}, {name:'enabled',type:'boolean',control:'checkbox'}, {name:'locked',type:'boolean',control:'checkbox',readOnly:true}];
+  options.schemas.first.fields = fields;
+  const item = rendered('first', 'first-row', {descriptor:{fields}}), wire = item.descriptor.fields.find(field=>field.name==='enabled').wireName;
+  await options.store.update('sample','first-row',{locked:true},options.identity);
+  await submitNativePostback(post(item,'Checked',[[wire,'on']]),[item],options);
+  const checked = await options.store.get('sample','first-row',options.identity);
+  assert.equal(checked.enabled,true);assert.equal(checked.locked,true);
+  for (const value of ['maybe', 'custom', '0', 'false']) {
+    await submitNativePostback(post(item,'Custom checkbox',[[wire,value]]),[item],options);
+    assert.equal((await options.store.get('sample','first-row',options.identity)).enabled,true);
+  }
+  await submitNativePostback(post(item,'Unchecked'),[item],options);
+  const unchecked = await options.store.get('sample','first-row',options.identity);
+  assert.equal(unchecked.enabled,false);assert.equal(unchecked.locked,true);
+});
+
+test('Boolean lists reject non-Boolean postback text before committing other fields', async () => {
+  const options = await fixture(), fields=[{name:'title'}, {name:'enabled',type:'boolean'}];
+  options.schemas.first.fields=fields;
+  const item=rendered('first','first-row',{descriptor:{fields}}),wire=item.descriptor.fields[1].wireName,before=options.store.snapshot();
+  await assert.rejects(submitNativePostback(post(item,'Invalid',[[wire,'maybe']]),[item],options),{code:'FormFieldInvalid'});
+  assert.deepEqual(options.store.snapshot(),before);
 });
 
 test('state-action postbacks ignore page field controls and preserve the declared action index', () => {

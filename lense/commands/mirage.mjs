@@ -375,6 +375,7 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
   if (!effective.project && !effective['solution-root']?.length && configured.solutionRoots?.length) effective['solution-root'] = [...configured.solutionRoots];
   if (effective.port === undefined && Number.isInteger(configured.port)) effective.port = String(configured.port);
   if (effective.preset === undefined && configured.preset) effective.preset = configured.preset;
+  if (effective['apply-configuration'] === undefined && configured.presetConfiguration === 'apply') effective['apply-configuration'] = true;
   if (effective['preset-mode'] === undefined && configured.presetMode) effective['preset-mode'] = configured.presetMode;
   return effective;
 }
@@ -384,6 +385,7 @@ export function cliArgs(cfg, action, args, project = null) {
   const common = [
     '--state-dir', path.dirname(miragePaths(cfg, args).discoveryRoot),
     ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
+    ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
     ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
     // Live writes stay impossible unless this runtime is started with the flag (off by default).
     ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
@@ -462,7 +464,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   return {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
-      stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', allowLiveWrites: args['allow-live-writes'] === true,
+      stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only', allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
       solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
@@ -484,6 +486,7 @@ function identityMatches(left, right) {
     && (left.project ?? null) === (right.project ?? null)
     && (left.portal ?? null) === (right.portal ?? null)
     && (left.preset ?? null) === (right.preset ?? null)
+    && (left.presetConfiguration ?? 'data-only') === (right.presetConfiguration ?? 'data-only')
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
     && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
     && JSON.stringify(left.platform ?? null) === JSON.stringify(right.platform ?? null)

@@ -14,8 +14,10 @@ import {identityProviderSettings,newUserPolicy} from './identity-provider-settin
  * for the authorization code flow (Learn, "Set up an OpenID Connect provider"),
  * oauth2/token (client_secret_post or private_key_jwt, with PKCE) and openid/userinfo.
  *
- * The authorize page lists the local preset users (active local contacts) and a "New user"
- * form for first-time registration. Its answer follows the response type: an RS256 id_token,
+ * The authorize page lists active local contacts. Its optional "New user" form follows
+ * identityProvider.newUser (auto | always | never); auto checks site registration,
+ * open-registration/invitation and provider registration settings. prompt=create can
+ * expose a forced registration test unless newUser is never. Its answer follows the response type: an RS256 id_token,
  * an authorization code and an access token as requested, posted back with
  * response_mode=form_post or appended to the redirect URI with response_mode=query.
  * prompt=none answers without a page (login_hint or the provider's session) or with

@@ -13,7 +13,12 @@ export function personaFilters(parameters) {
 
 export function indexPersonaCatalog(report) {
   const groups = new Map((report.groups ?? []).map(group => [group.id, group]));
-  return [...(report.personas ?? []), ...(report.other ?? []).map(persona => ({ ...persona, group: '__other' }))].map(persona => {
+  const groupOrder = new Map([...groups.keys()].map((id, index) => [id, index]));
+  const subgroupOrder = new Map([...groups].map(([id, group]) => [id, new Map((group.subgroups ?? []).map((sub, index) => [sub.id, index]))]));
+  const displayOrder = (a, b) => (groupOrder.get(a.group) ?? groups.size) - (groupOrder.get(b.group) ?? groups.size) ||
+    (a.subgroup ? subgroupOrder.get(a.group)?.get(a.subgroup) ?? 1000 : -1) - (b.subgroup ? subgroupOrder.get(b.group)?.get(b.subgroup) ?? 1000 : -1) ||
+    (a.order ?? 1000) - (b.order ?? 1000) || String(a.label ?? a.name ?? a.key).localeCompare(String(b.label ?? b.name ?? b.key), 'en', {sensitivity:'base'}) || personaRowKey(a).localeCompare(personaRowKey(b));
+  return [...(report.personas ?? []), ...(report.other ?? []).map(persona => ({ ...persona, group: '__other' }))].sort(displayOrder).map(persona => {
     const group = groups.get(persona.group), subgroup = group?.subgroups?.find(entry => entry.id === persona.subgroup);
     return { persona, key: personaRowKey(persona), text: foldPersonaText([
       persona.label, persona.name, persona.key, persona.email, persona.account?.name,

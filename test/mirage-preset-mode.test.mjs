@@ -13,12 +13,13 @@ test('catalogue bootstrap presets preserve state and print their startup decisio
  const fixture=createFixture(),root=fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-preset-mode-'))),config=path.join(root,'catalogue.json');
  const portal=path.join(root,'portal');fs.cpSync(fixture.dir,portal,{recursive:true});fixture.cleanup();
  const run=(...args)=>spawnSync(process.execPath,[cli,'mirage',...args,'--config',config],{cwd:root,env:Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')&&!key.startsWith('GIT_'))),encoding:'utf8',windowsHide:true,timeout:120000});
- const catalog={defaults:{mirage:{presetMode:'bootstrap'}},sites:{fixture:{source:portal,environments:{dev:'https://invented.example.test'},mirage:{port:0,preset:'tiny',solutionRoots:[],dataPacks:['./pack.mjs']}}}};
+ const catalog={defaults:{mirage:{presetMode:'bootstrap',presetConfiguration:'apply'}},sites:{fixture:{source:portal,environments:{dev:'https://invented.example.test'},mirage:{port:0,preset:'tiny',solutionRoots:[],dataPacks:['./pack.mjs']}}}};
  fs.writeFileSync(config,JSON.stringify(catalog));
- fs.writeFileSync(path.join(root,'pack.mjs'),'export default {id:"tiny",name:"Tiny",description:"Synthetic preset",matches:()=>true,presets:()=>({tiny:{name:"Tiny",mappings:{widget:{idColumn:"widgetid",entitySet:"widgets"}},tables:{widget:[{widgetid:"seed",name:"Seed"}]},settings:{permissionMode:"permissive"}}})};');
+ fs.writeFileSync(path.join(root,'pack.mjs'),'export default {id:"tiny",name:"Tiny",description:"Synthetic preset",matches:()=>true,configurationPresets:[{id:"tiny-config",name:"Tiny configuration",portalOverrides:{snippets:{Synthetic:"Startup override"}}}],presets:()=>({tiny:{name:"Tiny",configurationPreset:"tiny-config",mappings:{widget:{idColumn:"widgetid",entitySet:"widgets"}},tables:{widget:[{widgetid:"seed",name:"Seed"}]},settings:{permissionMode:"permissive"}}})};');
  try{
   assert.equal((await loadConfig({config,site:'fixture'})).mirageConfig.presetMode,'bootstrap');
   const first=run('start','--site','fixture','--json');assert.equal(first.status,0,first.stdout+first.stderr);const started=JSON.parse(first.stdout);assert.equal(started.runtime.startupPreset.applied,true);
+  const firstState=JSON.parse(fs.readFileSync(started.stateFile,'utf8'));assert.equal(firstState.simulator.activeExperiment.id,'tiny-config');assert.equal(firstState.simulator.portalOverrides.snippets.Synthetic,'Startup override');
   assert.equal(run('stop','--site','fixture','--json').status,0);
   const state=JSON.parse(fs.readFileSync(started.stateFile,'utf8'));state.tables.widget.push({widgetid:'local',name:'Local'});fs.writeFileSync(started.stateFile,JSON.stringify(state));
   catalog.defaults.mirage.presetMode='always';catalog.sites.fixture.mirage.presetMode='bootstrap';fs.writeFileSync(config,JSON.stringify(catalog));assert.equal((await loadConfig({config,site:'fixture'})).mirageConfig.presetMode,'bootstrap');

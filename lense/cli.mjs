@@ -88,6 +88,7 @@ Agent session access
   --port <n>        mirage: local Mirage port (0 chooses a free port; default:
                     mirage.port of the catalogue, else 8787)
   --state <file>    mirage: simulation state file
+  --apply-configuration          mirage: also apply the selected preset’s linked configuration
   --preset-mode bootstrap|always  mirage: seed new state only, or reset on every start
   --preset <name>   mirage: apply a scenario preset when starting (default: mirage.preset)
   --solution-root <dir> mirage: add a solution source root (repeatable; default:
@@ -156,6 +157,7 @@ try {
       state: { type: 'string' },
       preset: { type: 'string' },
       'preset-mode': { type: 'string' },
+      'apply-configuration': { type: 'boolean' },
       'solution-root': { type: 'string', multiple: true },
       'startup-timeout': { type: 'string' },
       'allow-live-writes': { type: 'boolean' },

@@ -20,6 +20,13 @@ closes owned blockers. `FRAME_LOAD_ORDERING` records the release ordering. This 
 stabilizes local resource timing; it does not establish identical timing on every deployment.
 An evidenced `observed.modalLoadOrdering: immediate` opts out.
 
+Native checkbox postbacks follow ASP.NET's successful-control semantics: a non-empty
+posted value (including a project script's custom value) saves Boolean `true`; an empty
+or omitted value saves `false`. Only editable checkboxes rendered by the selected form
+participate. Read-only, disabled and off-tab controls are not cleared. Boolean radio/select
+controls decode their `1`/`0` values and reject invalid text; the JSON form API requires
+typed Boolean values. These rules do not coerce arbitrary direct DataStore writes.
+
 Permission failures use the existing portal access-denied wording. Other write failures use
 the toolkit fallback "An error occurred while processing your request. Please try again."
 until the site supplies `observed.formSubmissionErrorMessage` with `evidence`. This is plain

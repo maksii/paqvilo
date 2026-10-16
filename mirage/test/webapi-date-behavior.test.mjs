@@ -24,3 +24,28 @@ test('portal round trips preserve five date behaviors and per-request formatted 
   const patched=await fetch(url,{method:'PATCH',headers,body:JSON.stringify({local:'1/7/2025 10:30:45.9999999'})});assert.equal(patched.status,204,await patched.text());
   const winter=await fetch(url).then(r=>r.json());assert.equal(winter.local,'2025-01-07T10:30:45Z');assert.equal(winter['local'+annotation],'1/7/2025 2:30 PM');
 });
+
+test('month-first range errors preserve submitted text and the configured native minimum-date message',async t=>{
+  const source=await fs.mkdtemp(join(tmpdir(),'invented-date-boundaries-'));t.after(()=>fs.rm(source,{recursive:true,force:true}));
+  await fs.writeFile(join(source,'website.yml'),'adx_name: Invented date site\nadx_websiteid: site\n');
+  await fs.writeFile(join(source,'sitesetting.yml'),'- adx_name: Webapi/event/enabled\n  adx_value: true\n- adx_name: Webapi/event/fields\n  adx_value: date\n- adx_name: Webapi/error/innererror\n  adx_value: true\n');
+  for (const invalidDate of ['invalid-format','crm-minimum']) {
+    const app=await createSimulator({sourceDir:source,port:0,watch:false,observed:{webApiDateParsing:'month-first',webApiInvalidDate:invalidDate,evidence:'Synthetic date range regression'},initial:{settings:{permissionMode:'permissive'},mappings:{event:{entitySet:'events',idColumn:'eventid',fields:{date:{type:'datetime',behavior:3,format:'date'}}}},tables:{event:[]}}});t.after(()=>app.close());
+    const headers={'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
+    const good=await fetch(app.url+'/_api/events',{method:'POST',headers,body:JSON.stringify({date:'2/7/2025'})});assert.equal(good.status,204,await good.text());
+    const rowUrl=app.url+`/_api/events(${good.headers.get('entityid')})`,before=await fetch(rowUrl).then(r=>r.json());
+    assert.equal(before.date,'2025-02-07T00:00:00Z');assert.equal(before['date@OData.Community.Display.V1.FormattedValue'],'2/7/2025');
+    for (const value of ['2/7/0000','2/7/0001','2/7/1752']) for (const method of ['POST','PATCH']) {
+      const response=await fetch(method==='POST'?app.url+'/_api/events':rowUrl,{method,headers,body:JSON.stringify({date:value})});
+      assert.equal(response.status,400);const body=await response.json(),message=body.error.innererror.message;
+      assert.equal(body.error.innererror.code,'0x80040239');
+      if(invalidDate==='invalid-format') assert.ok(message.includes(value),message);
+      else {
+        assert.match(message,/less than minumum value supported by CrmDateTime/);
+        assert.ok(message.includes(value==='2/7/0000'?'Actual value: 01/01/0001':'Actual value: 02/07/'+value.slice(-4)));
+      }
+      assert.deepEqual(await fetch(rowUrl).then(r=>r.json()),before);
+    }
+    const records=await fetch(app.url+'/_api/events?$select=date').then(r=>r.json());assert.equal(records.value.length,1);
+  }
+});

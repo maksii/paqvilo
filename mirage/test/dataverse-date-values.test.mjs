@@ -41,3 +41,12 @@ test('calendar validation uses the literal Gregorian year for leap dates', () =>
     assert.equal(parseDateValue(value + 'T12:00:00Z'), null, value);
   }
 });
+
+test('Solution date format controls display independently of instant behavior', () => {
+  for (const behavior of [1, 3]) {
+    const definition = { type: 'datetime', behavior, format: 'date' };
+    assert.equal(isDateOnlyField(definition), false);
+    assert.equal(formattedValue('2025-02-07T00:00:00Z', definition), '2/7/2025');
+    assert.equal(formattedValue('2025-02-07T00:00:00Z', {...definition, format:'datetime'}), '2/7/2025 12:00 AM');
+  }
+});

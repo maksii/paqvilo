@@ -1174,7 +1174,7 @@ export function enablePanel(context, session, opts = {}) {
       const report = personas?.enabled ? {groups:personas.groups??[],personas:personas.personas??[],other:personas.other??[]} : {groups:[],personas:[],other:personas?.other??personas?.contacts??personas?.personas??[]};
       const entries = indexPersonaCatalog(report);
       const publicPersonas=entries.map(({persona})=>{
-        const visible=Object.fromEntries(['contactId','name','roles','active','key','label','summary','description','group','subgroup','tags','default','context','source','startPath'].filter(key=>Object.hasOwn(persona,key)).map(key=>[key,persona[key]]));
+        const visible=Object.fromEntries(['contactId','name','roles','active','key','label','summary','description','order','group','subgroup','tags','default','context','source','startPath'].filter(key=>Object.hasOwn(persona,key)).map(key=>[key,persona[key]]));
         if(persona.account)visible.account={id:persona.account.id??null,name:persona.account.name??null};
         return visible;
       });

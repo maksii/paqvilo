@@ -136,12 +136,23 @@ export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
   if (!Number.isInteger(twoDigitYearMax) || twoDigitYearMax < 99 || twoDigitYearMax > 9999) return null;
   let year = +match[3];
   if (match[3].length === 2) { year += Math.floor(twoDigitYearMax / 100) * 100; if (year > twoDigitYearMax) year -= 100; }
+  if (year === 0) return null;
   let hour = +(match[4] ?? 0);
   if (match[8]) { if (hour < 1 || hour > 12) return null; hour = hour % 12 + (match[8].toUpperCase() === 'PM' ? 12 : 0); }
   const pad = text => String(text).padStart(2, '0');
   const date = `${String(year).padStart(4,'0')}-${pad(match[1])}-${pad(match[2])}`;
   const result = match[4] === undefined ? date : `${date}T${pad(hour)}:${match[5]}:${match[6] ?? '00'}${match[7] ?? ''}Z`;
   return parseDateValue(result) ? result : null;
+}
+
+/** Preserve the posted literal separately from the parsed value used in CrmDateTime errors. */
+export function dateTimeRangeError(value, parsed = parseDateValue(value)) {
+  const year = parsed ? new Date(parsed.ms).getUTCFullYear() : null;
+  const belowMinimum = parsed && year < 1753;
+  return new DataError(`The date-time format for ${value} is invalid, or value is outside the supported range.`, 400, 'InvalidDateTime', {
+    innerCode: '0x80040239', failedDateConversion: !parsed,
+    ...(belowMinimum ? { dateTimeBelowMinimum: true, dateTimeActual: year < 1 ? '01/01/0001 00:00:00' : formatDotNetDate(parsed.ms, 'MM/dd/yyyy HH:mm:ss', 0) } : {}),
+  });
 }
 const ISO_DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?(Z|[+-]\d{2}:?\d{2})?$/i;
@@ -763,7 +774,7 @@ export function formattedValue(value, definition, settings = {}) {
       const parsed = parseDateValue(value);
       if (!parsed) return undefined;
       const behavior = dateTimeBehavior(definition);
-      const dateOnly = isDateOnlyField(definition) || String(definition?.format ?? '').toLowerCase() === 'dateonly';
+      const dateOnly = isDateOnlyField(definition) || /^(date|dateonly)$/i.test(String(definition?.format ?? ''));
       const offsetAt = settings.timeZoneOffsetAt ?? compileFormattedTimeZone(settings.formattedValueTimeZone);
       const offset = isDateOnlyField(definition) || behavior === 'timezoneindependent' ? 0 :
         offsetAt ? offsetAt(parsed.ms) : Number(settings.timeZoneOffsetMinutes ?? 0);

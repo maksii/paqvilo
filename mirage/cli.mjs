@@ -34,6 +34,7 @@ try {
       cdp: { type: "string" },
       preset: { type: "string" },
       "preset-mode": { type: "string" },
+      'apply-configuration': { type: 'boolean' },
       path: { type: "string", default: "/" },
       "managed-control-path": { type: "string" },
       stylesheet: { type: "string", multiple: true },
@@ -91,7 +92,7 @@ if (args.help || command === "help") {
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH]
 
-Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
@@ -204,7 +205,7 @@ try {
             setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
             sourceDir: portal.sourceDir,
             stateFile,
-            preset: args.preset, presetMode: args['preset-mode'] ?? 'always',
+            preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
@@ -305,6 +306,7 @@ try {
     if (command === 'serve') {
       args.preset ??= siteMirage?.preset;
       args['preset-mode'] ??= siteMirage?.presetMode;
+      if(args['apply-configuration']===undefined && siteMirage?.presetConfiguration==='apply')args['apply-configuration']=true;
     }
     const deploymentProfile = args["deployment-profile"] ?? configuredPortal?.deploymentProfile;
     // The data model of a YAML source: --data-model, else the project portal's or catalogue
@@ -420,7 +422,7 @@ try {
         platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
         stateFile,
-        preset: args.preset, presetMode: args['preset-mode'] ?? 'always',
+        preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
         port,
         origin,
         solutionRoots,

@@ -10,6 +10,7 @@ import {
 } from "../lib/solution-metadata.mjs";
 import { formCells } from "../lib/native-services.mjs";
 import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
+import { formattedValue, isDateOnlyField } from '../lib/dataverse-values.mjs';
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-metadata-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -24,6 +25,14 @@ const form = (title) =>
   `<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="tab_1" id="tab-id"><labels><label description="General" languagecode="1033"/></labels><columns><column width="100%"><sections><section name="general" showlabel="true"><labels><label description="General &gt; label" languagecode="1033"/></labels><rows><row><cell showlabel="true"><labels><label description="${title}" languagecode="1033"/></labels><control id="name-control" datafieldname="fullname" disabled="false"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>`;
 const entity =
   '<Entity><Name>contact</Name><EntityInfo><entity><attributes><attribute PhysicalName="fullname"><Name>fullname</Name><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><MaxLength>120</MaxLength><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>';
+
+test('imported Solution date display preserves TimeZoneIndependent instant storage', async t => {
+  const root=await fixture(t, {'Entities/Contact/Entity.xml':entity.replace('</attributes>', '<attribute PhysicalName="scheduled"><Name>scheduled</Name><Type>datetime</Type><Format>date</Format><Behavior>3</Behavior></attribute></attributes>')});
+  const metadata=await importSolutionMetadata(root),field=metadata.entities.contact.fields.scheduled;
+  assert.equal(field.format,'date');
+  assert.equal(isDateOnlyField(field),false);
+  assert.equal(formattedValue('2025-02-07T00:00:00Z',field),'2/7/2025');
+});
 const view =
   '<savedqueries><savedquery><savedqueryid>{view-id}</savedqueryid><layoutxml><grid><row><cell name="fullname" width="200"/></row></grid></layoutxml><fetchxml><fetch><entity name="contact"><attribute name="fullname"/></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Portal contacts" languagecode="1033"/></LocalizedNames></savedquery></savedqueries>';
 const portal = () => ({
