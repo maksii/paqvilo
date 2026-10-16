@@ -198,7 +198,7 @@ export function compilePermissionFetchXml(xml, {
   const byId = new Map(permissions.map(grant => [key(grant.id), grant]));
   const aliases = new Set([...walk(tree)].map(element => element.attrs.alias).filter(Boolean));
   const sequence = new Map();
-  if(seedAliasesFromAuthoredLinks)for(const link of authoredLinks)
+  if(seedAliasesFromAuthoredLinks)for(const link of authoredLinks.filter(link=>link.attrs.alias))
     sequence.set(link.attrs.name,(sequence.get(link.attrs.name)??0)+1);
   const alias = entity => {
     let index = sequence.get(entity) ?? 0, result;

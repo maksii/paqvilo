@@ -34,6 +34,7 @@ import {odataToSdkQuery} from './plugin-query.mjs';
 import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
 import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import {compileODataPermissionQuery,authoredScalarODataFetch} from './odata-permission-query.mjs';
+import {assertPortalFetchXmlTransport} from './portal-fetch-transport.mjs';
 import {recordToSdkEntity,sdkQueryParameters,executeSdkFetch} from './plugin-clr.mjs';
 import {queryExpressionToFetch,fetchResultToSdkCollection} from './plugin-sdk-query.mjs';
 import {sdkValueToRecord} from './local-organization-service.mjs';
@@ -1416,7 +1417,7 @@ export class DataStore {
       ...this.fiscalSettings(settings),
       // Local bound on intermediate FetchXML join rows (FETCH_LIMITS.joinRows by default).
       fetchJoinRowLimit: this.state.simulator?.platformOverrides?.FetchJoinRowLimit ?? settings.fetchJoinRowLimit,
-      fetchLimits: { links: platform.QueryLinkEntityLimit, conditionsAndLinks: platform.FetchConditionLimit, aggregateRecords: platform.AggregateQueryRecordLimit, linkDepth: platform.FetchLinkDepth },
+      fetchLimits: { links: platform.QueryLinkEntityLimit,linksAndFilters:platform.FetchLinkAndFilterLimit, conditionsAndLinks: platform.FetchConditionLimit, aggregateRecords: platform.AggregateQueryRecordLimit, linkDepth: platform.FetchLinkDepth },
       // "strict" rejects FetchXML columns that complete Solution metadata lacks.
       fetchColumnValidation: settings.fetchColumnValidation,
       fetchAllWithoutFilter: this.observed?.fetchAllWithoutFilter,
@@ -3146,7 +3147,10 @@ export class DataStore {
     return {operation,unscopedCreate:operation==='create'};
   }
   previewPermissionFetchXml(xml,identity={},options={}) {
-    return compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,...this.liquidFetchPermissionOptions(options)});
+    const authoredXml=xml,native=!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
+    if(!identity.admin)xml=preparePortalFetchXml(xml,{linkTypes:this.observed?.liquidFetchXmlLinkTypes,profile:'liquid'});
+    const preview=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,forceScopedDistinct:native,seedAliasesFromAuthoredLinks:native,...this.liquidFetchPermissionOptions(options)});
+    preview.authoredXml=authoredXml;return preview;
   }
   fetchXml(xml, identity = {}, options = {}) {
     const authoredXml = xml;
@@ -3167,7 +3171,7 @@ export class DataStore {
       // before admitting RetrieveMultiple. Liquid admits its expanded query and
       // encounters backend budgets after PreOperation instead.
       let authored;
-      try {authored=planFetch(parseFetchXml(xml),{profile:'webapi',limits:this.querySettings().fetchLimits});}
+      try {authored=planFetch(parseFetchXml(xml),{profile:'webapi',limits:this.querySettings().fetchLimits,linkBudgetError:this.observed?.fetchLinkBudgetError});}
       catch(cause) {
         if(cause.details?.innerCode==='0x8004430d')throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
         throw cause;
@@ -3185,10 +3189,11 @@ export class DataStore {
     try { result=this.executePermissionFetchXml(xml,identity,options,permissionQuery); }
     catch(cause) {
       if (options.portalRequest && permissionQuery.permissionLinkCount > 0 && cause.details?.innerCode === '0x8004430d') {
+        const limit=cause.details.limit??this.querySettings().fetchLimits.links;
         const diagnostic={code:'PERMISSION_LINK_BUDGET_EXCEEDED',severity:'warning',table:entity,
           authoredLinks:permissionQuery.authoredLinkCount,generatedLinks:permissionQuery.permissionLinkCount,
-          totalLinks:permissionQuery.totalLinkCount,limit:this.querySettings().fetchLimits.links,grantPaths:permissionQuery.grantPaths,
-          message:`Table permissions expanded ${permissionQuery.authoredLinkCount} authored links to ${permissionQuery.totalLinkCount} total links; QueryLinkEntityLimit is ${this.querySettings().fetchLimits.links}.`};
+          totalLinks:permissionQuery.totalLinkCount,limit,ordinaryLinks:cause.details.ordinaryLinks,filterLinks:cause.details.filterLinks,grantPaths:permissionQuery.grantPaths,
+          message:`Table permissions expanded ${permissionQuery.authoredLinkCount} authored links to ${permissionQuery.totalLinkCount} total links; the applicable join/filter budget is ${limit}.`};
         cause.details={...cause.details,permissionDiagnostic:diagnostic};
         options.diagnostic?.(diagnostic);
       }
@@ -3209,7 +3214,9 @@ export class DataStore {
     const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
     const nativeAdmission=options.portalRequest===true&&!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
     const executionOptions={...options,permissionQuery};
-    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')planFetch(parseFetchXml(permissionQuery.xml),{profile:'webapi',limits:this.querySettings().fetchLimits});
+    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')
+      assertPortalFetchXmlTransport(permissionQuery.xml,this.observed?.webApiFetchXmlTransport);
+    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')planFetch(parseFetchXml(permissionQuery.xml),{profile:'webapi',limits:this.querySettings().fetchLimits,linkBudgetError:this.observed?.fetchLinkBudgetError});
     if(nativeAdmission&&options.profile!=='webapi'&&!permissionQuery.permissionGranted){
       // A denied Liquid root returns its normalized authored XML and an empty
       // result, without a Dataverse invocation or a generated DISTINCT default.
@@ -3228,8 +3235,9 @@ export class DataStore {
   fetchXmlCore(xml, identity = {}, options = {}) {
     const planOptions = {
       profile: options.sdkResult===true&&options.portalRequest!==true ? "sdk" : options.profile === "webapi" ? "webapi" : "portal",
-      limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
+      limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,linksAndFilters:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
       generatedAnyAllAliases: options.permissionQuery?.generatedAnyAllAliases ?? [],
+      linkBudgetError:this.observed?.fetchLinkBudgetError,
     };
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
     const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();

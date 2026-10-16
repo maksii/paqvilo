@@ -16,8 +16,10 @@ export function preparePortalFetchXml(xml, {linkTypes, profile='webapi'} = {}) {
         delete node.attrs['link-type'];
         changed = true;
       }
-      if (profile === 'webapi' && parent?.name === 'filter' && ['not any','all','not all'].includes(type))
-        throw new DataError('Invalid link type in a FetchXML filter.', 400, 'InvalidFetchXml', {innerCode:'0x8004111c'});
+      if (parent?.name === 'filter' && ['not any','all','not all'].includes(type)) {
+        if(profile==='webapi')throw new DataError('Invalid link type in a FetchXML filter.', 400, 'InvalidFetchXml', {innerCode:'0x8004111c'});
+        delete node.attrs['link-type'];changed=true;
+      }
     }
     for (const child of node.children) visit(child, node);
   };

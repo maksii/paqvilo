@@ -29,7 +29,7 @@ test('native scalar OData executes source NN predicates and preserves compact by
   assert.ok(events.every(event=>event.xml===events[0].xml));assert.equal(result.permissionQuery.permissionLinkCount,2);
 });
 test('native scalar OData expanded execution budgets fail after admitted pre-operation observers',()=>{
-  const store=fixture({links:3,second:true}),stages=[];store.setPluginPipeline(event=>stages.push(event.stage),()=>true);
+  const store=fixture({links:1,second:true}),stages=[];store.setPluginPipeline(event=>stages.push(event.stage),()=>true);
   assert.throws(()=>store.query('companies',{$select:'companyid'},identity,undefined,{portalRequest:true}),error=>error.details?.innerCode==='0x8004430d');
   assert.deepEqual(stages,[10,20]);
 });

@@ -250,6 +250,12 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
+  if(internal==='PortalFetchTransportFailure'&&details.phase==='native-api-transport'){
+    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:details.innerMessage});
+    if(response.body.error.innererror)response.body.error.innererror.type='CDSError';
+    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+    return response;
+  }
   if(internal==='ODataPermissionNavigationFailure'&&details.phase==='native-odata-conversion'&&[400,501].includes(status)){
     const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:error.message});
     if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;

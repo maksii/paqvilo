@@ -91,6 +91,8 @@ test('native generated aliases reserve authored occurrences of the same linked t
     assert.equal(result.permissionQuery.totalLinkCount,count+3);
     assert.deepEqual(result.entities.map(row=>row.itemid),['i0','i1']);
   }
+  const unaliased=store.fetchXml(xml('false','<link-entity name="folder" from="folderid" to="folderid"/>'),identity,{portalRequest:true});
+  assert.match(unaliased.xml,/alias="generated_alias_folder_0"/);
 });
 
 test('a Global union and backend reads retain authored DISTINCT instead of adopting scoped portal semantics',()=>{

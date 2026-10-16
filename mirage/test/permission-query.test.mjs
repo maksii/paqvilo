@@ -147,7 +147,7 @@ test('every combination of eight roles matches an independent deep-path CRUD gra
     }
   }
   const store = new DataStore({ state: { tables, mappings: modelMappings, permissions, settings: { permissionMode: 'enforce' },
-    simulator: { platformOverrides: { QueryLinkEntityLimit: 128 } } } });
+    simulator: { platformOverrides: { QueryLinkEntityLimit: 128,FetchLinkAndFilterLimit:128 } } } });
   const source = '<fetch distinct="true"><entity name="level8"><attribute name="level8id"/></entity></fetch>';
   for (let mask = 0; mask < 256; mask++) {
     const visitor = { contactId: 'person', roles: Array.from({ length: 8 }, (_, index) => index).filter(index => mask & (1 << index)).map(index => `role${index}`) };

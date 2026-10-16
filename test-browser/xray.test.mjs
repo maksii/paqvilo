@@ -71,7 +71,8 @@ test('X-ray inspects fields and sources without activating portal controls acros
   await page.locator('#shadow-control').scrollIntoViewIfNeeded();await pick('#shadow-button');assert.match(await xray.locator('.element-label').textContent(),/shadow-button/);
   await page.evaluate(()=>{document.querySelector('#shadow-control').shadowRoot.querySelector('button').remove();});await page.waitForTimeout(400);assert.equal(await xray.locator('.title').count(),0);
   await page.evaluate(()=>window.scrollTo(0,0));await page.setViewportSize({width:540,height:900});await xray.getByRole('button',{name:'Details',exact:true}).click();await page.locator('#fx_title').scrollIntoViewIfNeeded();await pick('#fx_title');await evidence('04-narrow-viewport');
-  const cr=await xray.locator('.card').boundingBox();assert.ok(cr.x>=0&&cr.y>=0&&cr.x+cr.width<=540&&cr.y+cr.height<=900);
+  await xray.locator('.card').waitFor({state:'visible'});
+  const cr=await xray.locator('.card').boundingBox();assert.ok(cr&&cr.x>=0&&cr.y>=0&&cr.x+cr.width<=540&&cr.y+cr.height<=900);
   await xray.getByRole('button',{name:'Turn off X-ray'}).click();await page.locator('#save').click();assert.ok(await page.evaluate(()=>window.actions)>0);
   await page.keyboard.press('Alt+Shift+L');await page.waitForTimeout(300);await page.keyboard.press('Alt+Shift+X');await xray.getByRole('toolbar').waitFor();await panel.draw(page);await xray.getByRole('toolbar').waitFor();
   await panel.dispose();assert.equal(await page.locator('#paqvilo-xray').count(),0);assert.deepEqual(errors,[]);

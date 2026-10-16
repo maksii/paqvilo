@@ -25,6 +25,7 @@ import {
 
 export const FETCH_LIMITS = Object.freeze({
   links: 15,
+  linksAndFilters: 27,
   conditionsAndLinks: 500,
   pageSize: 5000,
   top: 5000,
@@ -235,7 +236,7 @@ function* xmlTokens(source) {
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [] } = {}) {
+export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [],linkBudgetError='documented' } = {}) {
   const limits = { ...FETCH_LIMITS, ...overrides };
   if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
   const strict = profile === "webapi" || profile === "sdk";
@@ -261,7 +262,7 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
     qualifiedFilters.add(filter);
   }
   const links = [];
-  let conditions = 0,
+  let conditions = 0, ordinaryLinks = 0,
     unionHints = 0;
   // Filter nesting: the entity's (or link-entity's) own filter is level 1.
   const filterLevels = new Map();
@@ -319,10 +320,15 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
             fail(`${label} doesn't allow attribute or order clause in child linkentity.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
         }
         links.push(node);
+        if(parent?.name!=='filter')ordinaryLinks++;
         nextLinkDepth++;
-        if (links.length > limits.links)
-          fail("Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
-            innerCode: "0x8004430d",
+        if (ordinaryLinks > limits.links || links.length > limits.linksAndFilters)
+          fail(linkBudgetError==='reported-counts'?(ordinaryLinks>limits.links
+            ?`Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`
+            :`Number of link entity: ${ordinaryLinks}, Number of link filter: ${links.length-ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`)
+            :"Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
+            innerCode: "0x8004430d",ordinaryLinks,filterLinks:links.length-ordinaryLinks,totalLinks:links.length,
+            limit:ordinaryLinks>limits.links?limits.links:limits.linksAndFilters,
           });
         if (nextLinkDepth > limits.linkDepth)
           fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, "UnsupportedQuery");

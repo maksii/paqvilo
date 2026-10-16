@@ -54,6 +54,7 @@ const OBSERVED_CHOICES = {
   webApiFetchXmlLinkTypes: ["dataverse", "portal-classic"],
   liquidFetchXmlLinkTypes: ["dataverse", "portal-classic"],
   fetchAllWithoutFilter: ["modeled", "sql-error"],
+  fetchLinkBudgetError: ["documented", "reported-counts"],
   odataPermissionQueryPipeline: ["modeled", "native-classic"],
   odataSameTableParentAnchor: ["shared-root"],
   liquidFetchExecution: ["eager", "lazy-query-drop"],
@@ -113,9 +114,18 @@ export function observedConfig(value, label = "observed") {
   if (value == null) return null;
   if (typeof value !== "object" || Array.isArray(value)) throw new Error(`${label} must be an object`);
   for (const key of Object.keys(value))
-    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
+    if (!["evidence", "loginPath", "portalApplicationUser", "portalApplicationUserId", "headers", "azureAdAuthority", "codeComponents", "sdkMessages", "pluginSources", "formSubmissionErrorMessage", "fetchPreOperationSerialization", "webApiGlobalMetadataVersion", "tablePermissionGrantOrder", "odataPermissionGrantOrder", "webApiTwoDigitYearMax", "webApiFetchXmlTransport"].includes(key) && !Object.hasOwn(OBSERVED_CHOICES, key))
       throw new Error(`Unknown ${label} key '${key}'`);
   const observed = {};
+  if(value.webApiFetchXmlTransport!=null){
+    const transport=value.webApiFetchXmlTransport,limits=['maxHeaderXmlBytes','maxUrlXmlBytes','maxConstructedXmlBytes'];
+    if(!transport||typeof transport!=='object'||Array.isArray(transport)||transport.encoding!=='double-rfc3986'||
+      Object.keys(transport).some(key=>!['encoding',...limits].includes(key))||
+      limits.some(key=>!Number.isSafeInteger(transport[key])||transport[key]<1||transport[key]>4000000)||
+      transport.maxHeaderXmlBytes>transport.maxUrlXmlBytes||transport.maxUrlXmlBytes>transport.maxConstructedXmlBytes)
+      throw new Error(`${label}.webApiFetchXmlTransport requires double-rfc3986 encoding and ordered bounded integer XML byte budgets`);
+    observed.webApiFetchXmlTransport={...transport};
+  }
   if (value.webApiTwoDigitYearMax != null) {
     if (!Number.isInteger(value.webApiTwoDigitYearMax) || value.webApiTwoDigitYearMax < 99 || value.webApiTwoDigitYearMax > 9999 || value.webApiDateParsing !== 'month-first')
       throw new Error(`${label}.webApiTwoDigitYearMax requires month-first parsing and an integer from 99 through 9999`);
