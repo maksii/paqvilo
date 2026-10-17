@@ -104,7 +104,12 @@ function membershipModel(portal, state) {
       seen.add(key);
     }
   }
-  return { webRoles, roles, contacts, memberships, diagnostics };
+  const membershipsByContact = new Map();
+  for (const assignment of memberships) {
+    if (!membershipsByContact.has(assignment.contactId)) membershipsByContact.set(assignment.contactId, []);
+    membershipsByContact.get(assignment.contactId).push(assignment.roleId);
+  }
+  return { webRoles, roles, contacts, memberships, membershipsByContact, diagnostics };
 }
 
 /** Local contact membership resolution; browser live permissions are independent. */
@@ -112,9 +117,10 @@ export function resolvePortalIdentity(
   portal,
   state,
   selected = state.simulator?.identity ?? {},
+  suppliedModel,
 ) {
   selected ??= {};
-  const model = membershipModel(portal, state),
+  const model = suppliedModel ?? membershipModel(portal, state),
     contactId = id(selected.contactId ?? selected.id),
     contact = model.contacts.get(contactId);
   if (selected.roleSource !== "memberships") {
@@ -149,8 +155,7 @@ export function resolvePortalIdentity(
       .map((role) => role.id),
   );
   if (authenticated)
-    for (const assignment of model.memberships)
-      if (assignment.contactId === contactId) roleIds.add(assignment.roleId);
+    for (const roleId of model.membershipsByContact.get(contactId) ?? []) roleIds.add(roleId);
   const parent = contact?.parentcustomerid ?? contact?._parentcustomerid_value;
   const parentType =
     parent?.logical_name ??
@@ -210,7 +215,7 @@ export function resolvePortalIdentity(
   };
 }
 
-function exportedPermissions(portal) {
+function exportedPermissions(portal, { includeInactive = false } = {}) {
   const byRole = new Map(
     portalWebRoles(portal).map((role) => [role.id, role.name]),
   );
@@ -218,7 +223,7 @@ function exportedPermissions(portal) {
     .filter(
       (record) =>
         record.kind === "tablepermission" &&
-        Number(portalField(record, "statecode", 0)) !== 1,
+        (includeInactive || Number(scalar(portalField(record, "statecode", 0))) !== 1),
     )
     .map((record) => {
       const roleValues =
@@ -232,25 +237,22 @@ function exportedPermissions(portal) {
             : value,
         ),
       );
+      const scopeValue = scalar(portalField(record, "scope"));
+      const scope = scopes[scopeValue] ?? "unresolved";
       return {
         id: id(record.id),
         name: record.name || portalField(record, "entityname") || record.id,
         entity: portalField(record, "entitylogicalname"),
-        scope: scopes[scalar(portalField(record, "scope"))] ?? "unresolved",
+        scope,
+        sourceScope: scopeValue,
         operations: operations
           .filter(([field]) => truth(portalField(record, field)))
           .map(([, operation]) => operation),
         roles: roleIds.map((roleId) => byRole.get(roleId) ?? roleId),
         roleIds,
-        relationshipName: portalField(
-          record,
-          "contactrelationship",
-          portalField(
-            record,
-            "accountrelationship",
-            portalField(record, "parentrelationship"),
-          ),
-        ),
+        relationshipName: ["contact", "account", "parent"].includes(scope)
+          ? portalField(record, `${scope}relationship`)
+          : undefined,
         parentPermissionId:
           id(portalField(record, "parententitypermission")) || null,
         imported: true,
@@ -259,7 +261,7 @@ function exportedPermissions(portal) {
           file: record.file ?? record._file ?? record.source?.path ?? null,
           recordId: record.id,
         },
-        enabled: true,
+        enabled: Number(scalar(portalField(record, "statecode", 0))) !== 1,
       };
     });
 }
@@ -291,6 +293,7 @@ export function resolveScopedRelationship(rel, permission, target, mappings = {}
           entity: target,
           from: rel.referencedAttribute ?? mappings[permission.entity]?.idColumn,
           to: rel.referencingAttribute,
+          many: true,
         },
       };
   }
@@ -321,6 +324,7 @@ export function buildPermissionModel(
   {
     relationships = {},
     source = state.simulator?.permissionSource ?? "configured",
+    observed = portal.observed ?? {},
   } = {},
 ) {
   if (!["configured", "exported", "combined"].includes(source))
@@ -356,6 +360,9 @@ export function buildPermissionModel(
         })),
     );
   const byId = new Map(permissions.map((rule) => [id(rule.id), rule])),
+    sourceDefinitions = new Map(exportedPermissions(portal, { includeInactive: true }).map(rule => [rule.id, rule])),
+    inactiveSourceParents = new Map([...sourceDefinitions.values()]
+      .filter(rule => rule.enabled === false).map(rule => [rule.id, rule])),
     diagnostics = [...identityModel.diagnostics],
     visiting = new Set(),
     visited = new Set();
@@ -414,6 +421,7 @@ export function buildPermissionModel(
     }
     visiting.add(key);
     rule.id = key;
+    delete rule.observedOrphanParent;
     if (rule.imported && !Array.isArray(rule.roleIds))
       rule.roleIds = (rule.roles ?? []).flatMap((name) => {
         const matches = identityModel.webRoles.filter(
@@ -459,7 +467,9 @@ export function buildPermissionModel(
         disable(
           rule,
           "PERMISSION_UNRESOLVED",
-          "The source permission has no supported scope or table.",
+          rule.scope === "unresolved"
+            ? `The exported scope '${rule.sourceScope ?? "missing"}' is not supported by the local permission evaluator. Version-specific Custom Access and other unknown scopes require qualification.`
+            : "The source permission has no supported table.",
         );
       // Web-role associations are alternative grants. An unavailable role
       // cannot authorize anyone, but must not revoke another exact source ID.
@@ -492,9 +502,27 @@ export function buildPermissionModel(
           "PERMISSION_ROLE_ID_UNRESOLVED",
           "The imported grant does not resolve to exact active exported web-role IDs.",
         );
-      const parent =
+      let parent =
         rule.scope === "parent" ? byId.get(id(rule.parentPermissionId)) : null;
       if (rule.scope === "parent") {
+        // This explicit, evidence-backed profile reproduces a recorded unsafe
+        // native configuration. Only an exact inactive exported parent qualifies;
+        // missing exports, unknown relationships and cycles remain closed.
+        if (!parent && observed?.tablePermissionOrphans === "unrestricted") {
+          parent = inactiveSourceParents.get(id(rule.parentPermissionId));
+          const ownSourceRoles = (sourceDefinitions.get(rule.id)?.roleIds ?? [])
+            .filter(roleId => identityModel.roles.has(roleId));
+          if (parent && ownSourceRoles.length) {
+            // A configured state may already contain inherited role IDs. Only
+            // exact associations on this surviving exported child qualify.
+            rule.roleIds = ownSourceRoles;
+            rule.roles = ownSourceRoles.map(roleId => identityModel.roles.get(roleId).name);
+            rule.observedOrphanParent = { parentPermissionId: parent.id, source: "inactive-exported-parent" };
+            diagnostics.push({ code: "PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED", id: rule.id,
+              entity: rule.entity, parentPermissionId: parent.id,
+              message: "The evidence-backed orphan profile reproduces native access broadening: the inactive parent stops identity restriction and the surviving child's parent lookup is tested only for not-null." });
+          } else parent = null;
+        }
         if (!parent)
           disable(
             rule,
@@ -503,7 +531,7 @@ export function buildPermissionModel(
               ? "The parent permission is inactive or was not exported into this portal; a child of an ineffective parent permission does not take effect."
               : "The parent-scope permission names no parent permission.",
           );
-        else {
+        else if (!rule.observedOrphanParent) {
           compile(parent);
           if (parent.enabled === false)
             disable(
@@ -587,7 +615,12 @@ export function buildPermissionModel(
             rule.field = rel.referencingAttribute;
           else rule.identityRelationship = resolved;
           rule.metadataSource = rel.source;
+          if (rule.observedOrphanParent) rule.observedOrphanParent.field = resolved.from;
         }
+        if (rule.observedOrphanParent &&
+            !(rel?.type === "one-to-many" && rel.referencingEntity === rule.entity && rel.referencedEntity === parent.entity))
+          disable(rule, "PERMISSION_ORPHAN_PROFILE_UNQUALIFIED",
+            "The observed inactive-parent replay qualifies a child lookup to its parent; reverse or many-to-many orphan paths are not qualified and remain disabled.");
         const identityRelationship = rule.identityRelationship;
         if (
           rule.scope === "parent"
@@ -630,6 +663,7 @@ export function buildPermissionModel(
     operations: rule.operations ?? [],
     enabled: rule.enabled !== false,
     inheritedRoles: Boolean(rule.inheritedRoles),
+    ...(rule.observedOrphanParent ? { observedOrphanParent: clone(rule.observedOrphanParent) } : {}),
     ...(rule.ownRoleIds?.length ? { ownRoleIds: rule.ownRoleIds } : {}),
     relationshipName: rule.relationshipName,
     disabledReason: rule.disabledReason,
@@ -645,7 +679,7 @@ export function buildPermissionModel(
     const effective = resolvePortalIdentity(portal, state, {
       contactId: contact.contactid,
       roleSource: "memberships",
-    });
+    }, identityModel);
     return {
       contactId: id(contact.contactid),
       name: effective.name,

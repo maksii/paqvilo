@@ -2,6 +2,10 @@
 
 Install Paqvilo, try the included example, then connect your own Power Pages export. The toolkit runs on your computer; you do not need to clone its repository.
 
+For an existing consumer project, install with `npm install --save-dev paqvilo@^0.9.4`, then run `npx paqvilo doctor --setup --json`. A normal npm install supplies both Lense and Mirage dependencies; no install inside `node_modules/paqvilo/mirage` is needed. Commit the lockfile and use `npm ci` for repeatable setup.
+
+After configuring your export/catalogue, run `npx paqvilo lense doctor --config ./paqvilo.config.yml --site my-site`, then `npx paqvilo mirage dev --config ./paqvilo.config.yml --site my-site`. Capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`. See [platform resources](../mirage/docs/platform-resources.md), [public APIs](public-api.md) and [release notes](release-notes.md).
+
 ## 1. Install
 
 ### Prepare your computer
@@ -70,7 +74,20 @@ For Chrome, add `--browser chrome`. To choose a different copy, add `--dir ./ano
 
 `mirage serve` is a server-only command. It neither opens the development browser nor loads a project's data pack when given only `--source`. Use `demo` for the first trial and `dev` for your own configured project.
 
-## 2. Connect your site
+## 2. Scaffold your project
+
+Create the empty consumer layout before connecting your exports:
+
+```sh
+npx paqvilo@^0.9.4 init ./my-portal-project --name my-portal-project --site portal
+cd my-portal-project
+npm run setup
+npx paqvilo init --check
+```
+
+The generated catalogue has inert placeholder URLs and marked source paths. It also supplies npm scripts, VS Code tasks/debugger launches, a project pack, agent instructions and local tests. Run `npm run configure` to connect sources and environments in the [local setup workspace](setup.md), then resolve remaining `init --check` findings. Empty browser fixtures skip with an explicit reason. Generation itself installs nothing and starts no browser. See [scaffold options and editor refresh](project-scaffold.md) for multiple sites/packs, external checkouts, no-pack mode and adding missing files to an existing project.
+
+### Connect exports (or assemble the layout manually)
 
 You need a local Power Pages export. If you do not have one, follow Microsoft's [download website content guide](https://learn.microsoft.com/en-us/power-pages/configure/power-platform-cli-tutorial#download-website-content). Paqvilo reads exported files; it does not download or deploy the site.
 

@@ -59,6 +59,23 @@ test("audit correlates nested calls, records outcomes, bounds retention and pagi
   assert.equal(audit.list().latestSequence, 4);
 });
 
+test("audit isolates concurrent actors and freezes sequence windows without hiding retention loss", () => {
+  const audit = new AuditLog({limit: 3});
+  const add = contactId => audit.begin({kind: "api", identity: {contactId}}).finish();
+  add("{ABC}"); add("other"); add("abc");
+  const upper = audit.list().latestSequence;
+  add("abc");
+  const filters = {contactId: "ABC", afterSequence: 1, throughSequence: upper};
+  const page = audit.list(new URLSearchParams(filters));
+  assert.deepEqual(page.items.map(item => item.sequence), [3]);
+  assert.equal(page.dropped, 1); assert.equal(page.oldestSequence, 2); assert.equal(page.latestSequence, 4);
+  assert.deepEqual(audit.export(filters).items, page.items);
+  assert.equal(audit.export().latestSequence, 4);
+  for (const invalid of [-1, 1.5, "1suffix", Number.MAX_SAFE_INTEGER + 1])
+    assert.throws(() => audit.list({afterSequence: invalid}), error => error.code === "InvalidAuditSequence" && error.status === 400);
+  audit.clear(); assert.equal(audit.list().oldestSequence, null); assert.equal(audit.list().latestSequence, 4);
+});
+
 test("audit does not retain headers, payloads or credential query/error values", () => {
   const audit = new AuditLog();
   audit

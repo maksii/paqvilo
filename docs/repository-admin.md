@@ -1,18 +1,12 @@
-# Repository administration and promotion
+# Repository maintenance
 
-## Readiness decisions
+This guide is for maintainers of the Paqvilo repository. Portal developers should start
+with [getting started](getting-started.md); contributors should use [CONTRIBUTING](../CONTRIBUTING.md).
 
-The readiness audit found existing Node 22/24 browser tests, Windows unit tests, locked runtime dependencies, provenance publishing and an explicit package allowlist. Both root and Mirage npm audits reported zero vulnerabilities on 2026-10-10. The 0.9.3 tarball is approximately 5.2 MB compressed / 10.5 MB unpacked, mostly the deliberately shipped demo and runtime assets. Keep that usable offline demo; marketing site sources, CI tooling, tests and local evidence stay outside the tarball. Runtime dependencies are all used and no hook/lint framework is added.
+## Repository settings
 
-Implemented additions: staged-index commit hooks; Conventional Commit PR titles; conservative change-scoped CI; npm and action Dependabot updates; CodeQL and dependency review; bug/feature issue forms; private-reporting guidance; CODEOWNERS; badges; a two-page static marketing site and Pages workflow. Release checks now validate the selected tag and require it to belong to main.
-
-Repository settings use PR-only, linear main with `CI gate` and `Security gate`, strict up-to-date checks, resolved conversations, admin enforcement, no force pushes/deletions, squash titles from PR titles, deleted merged branches, read-only default workflow tokens, restricted action publishers, Discussions, dependency alerts/fixes, secret scanning/push protection and private vulnerability reporting. Version tags cannot be changed or deleted. Code scanning merge protection blocks high/critical CodeQL security findings and error-level alerts when GitHub supports it.
-
-There is currently one maintainer. Required approving reviews are zero because authors cannot approve their own PRs. Once a second maintainer joins, set required approving reviews to one and enable code-owner review. Keep checks required for admins; do not bypass failed checks to ship.
-
-## Apply or reapply GitHub settings
-
-Install and authenticate `gh` as a repository admin, then run from this checkout:
+`scripts/github-admin.mjs` describes the repository settings. Preview its plan before
+applying it with an authenticated repository administrator account:
 
 ```sh
 gh auth status
@@ -20,26 +14,46 @@ node scripts/github-admin.mjs
 node scripts/github-admin.mjs --apply
 ```
 
-The first script invocation previews its plan. Apply uses GitHub APIs through `gh`, updates named rulesets without duplicating them, and preserves unrelated rulesets. It does not commit sources, change visibility, publish npm versions or send messages. Review the returned settings and run URLs. Merge workflow changes before expecting their required check names to appear. Reapply after the first main Security run to enable the checked-in CodeQL merge-protection ruleset; initial setup waits for that baseline.
+The script updates named rulesets and preserves unrelated ones. It does not publish a
+package, commit source or post announcements. Review its output against the repository's
+actual settings after applying it.
 
-## Existing npm trusted publisher
+Main uses pull requests, squash merges, resolved conversations and the required `CI gate`
+and `Security gate` checks. Version tags are immutable. Review requirements should reflect
+the active maintainer team: a sole author cannot approve their own pull request. Keep
+security checks required for administrators.
 
-The [paqvilo package](https://www.npmjs.com/package/paqvilo) already releases through its configured GitHub Actions trusted publisher: owner `maksii`, repository `paqvilo`, workflow filename `release.yml`, environment `npm`. The maintainer confirmed the existing release process and npm's **Valid** publisher status on 2026-10-10. No publisher setup or token migration is needed for repository readiness. Keep this workflow filename and environment aligned with npm's configuration; trusted publishing provides provenance. GitHub CLI cannot administer npm package access or trusted publishers; future changes to those settings belong on npmjs.com.
+## Validation and security
 
-The `npm` GitHub environment restricts releases to `v*` tags. Consider a required reviewer once another maintainer can approve; requiring the sole author's review blocks releases. No npm version is published by repository setup.
+CI runs static/release checks, supported Node versions, Windows/CLR regressions, loopback
+browser acceptance and installed-package smoke tests. Documentation-only changes use the
+workflow's narrower checks. The security workflow performs dependency review and CodeQL
+analysis. Inspect findings as well as job conclusions; a successful scan can report alerts.
 
-## Discussions and Pages
+Report vulnerabilities through [private reporting](../SECURITY.md). Historical alert
+decisions live in the [CodeQL ledger](../.github/security/codeql-triage.json). New triage
+must record the actual source-to-sink constraint, a focused regression where applicable,
+and validation on the affected revision. Do not dismiss an alert merely because code
+runs locally or appears in a test.
 
-Discussions can be enabled with `gh`; creating/reorganizing discussion categories has no supported public API. In **Repository → Discussions → Edit categories**, keep a Q&A category with answer marking, Ideas, Show and tell, and Announcements. No announcement is posted by setup.
+## Packages
 
-Pages uses GitHub Actions and the `github-pages` environment, restricted to `main`. The site is built with `npm run site:build`, without installing extra frontend packages. URL: [maksii.github.io/paqvilo](https://maksii.github.io/paqvilo/). Preview PR builds never deploy. A required `Pages / build` check is intentionally omitted because its workflow is path-filtered; CI/security gates always report.
+The [Release workflow](../.github/workflows/release.yml) resolves an immutable tag, runs
+all release gates and publishes the tested archive. Stable tags must match package
+metadata and belong to main. Use [branch previews](branch-packages.md) for pre-merge tests.
 
-## Before promotion
+The npm trusted publisher must match the repository, workflow `release.yml` and GitHub
+environment `npm`. The environment's tag policy must admit the intended release tags.
+Review these settings on GitHub and npm before changing the workflow identity. A dry run
+checks packaging but does not prove permission for a registry write.
 
-1. Run `npm run setup:repo` in each contributor checkout. This activates local hooks; Git cannot distribute local configuration automatically. Run `npm run validate` and `npm run release:smoke` with a supported browser installed.
-2. Confirm main and the readiness PR are green across CI, security and Pages; review/dismiss CodeQL alerts only with a documented reason. Do not treat a successful scan job alone as absence of findings.
-3. Validate the updated Release gates with `dry_run=true` and a tag containing the updated workflows; create a new matching version tag only when an actual release is intended. The npm trusted publisher is already configured and used for releases.
-4. Open the deployed marketing site on mobile and desktop; verify demo commands and coverage against the release. The npm README/homepage update reaches npm on the next version publish.
-5. Add another maintainer and required review before expanding write access. Set up a release/support cadence when you can commit to it; avoid promising service levels in the security policy.
+Before publishing, inspect CI/security findings, install the packed package into a separate
+project, and check the release notes and upgrade instructions. After publication, verify
+the exact npm version and channel. Preview builds must leave `latest` unchanged.
 
-References: [Conventional Commits 1.0.0](https://www.conventionalcommits.org/en/v1.0.0/), [GitHub path filters and pending checks](https://docs.github.com/en/actions/how-tos/write-workflows/choose-when-workflows-run/trigger-a-workflow), [CodeQL](https://docs.github.com/en/code-security/concepts/code-scanning/codeql/codeql-code-scanning), [npm trusted publishing](https://docs.npmjs.com/trusted-publishers/), [custom Pages workflows](https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages).
+## Website
+
+`npm run site:build` builds the static website and checks its local links. Pages builds
+pull requests without deployment; deployment uses main and the `github-pages` environment.
+Check the demo instructions and coverage links on desktop and narrow screens when changing
+the site. Discussion categories and npm access settings are maintained in their respective UIs.

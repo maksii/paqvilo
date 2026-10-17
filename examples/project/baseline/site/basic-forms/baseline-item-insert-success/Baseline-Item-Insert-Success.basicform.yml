@@ -1,0 +1,18 @@
+adx_captcharequired: false
+adx_entityformid: 6252a787-8e51-42b1-87b9-22d58121dacf
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: true
+adx_mode: 100000000
+adx_name: Baseline Item Insert Success
+adx_onsuccess: 756150000
+adx_showunsupportedfields: false
+adx_successmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline item saved; the form is hidden."
+    }
+  ]
+adx_validationsummarylinksenabled: true

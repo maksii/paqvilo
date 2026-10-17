@@ -1,0 +1,10 @@
+adx_captcharequired: false
+adx_entityformid: 859637e0-149a-4b46-824d-16f2fa08063c
+adx_entityname: contact
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150002
+adx_formname: Contact
+adx_mode: 100000002
+adx_name: Baseline Contact Read Current User
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

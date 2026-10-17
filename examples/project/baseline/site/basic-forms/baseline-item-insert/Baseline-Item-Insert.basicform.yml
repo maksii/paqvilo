@@ -1,0 +1,18 @@
+adx_captcharequired: false
+adx_entityformid: ac7c9ab4-d5b2-4cc7-8e57-5fb22e802a6e
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert
+adx_onsuccess: 756150000
+adx_showunsupportedfields: false
+adx_successmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline item created."
+    }
+  ]
+adx_validationsummarylinksenabled: true

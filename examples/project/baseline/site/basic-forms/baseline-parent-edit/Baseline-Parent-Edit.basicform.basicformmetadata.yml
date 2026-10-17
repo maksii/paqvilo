@@ -1,0 +1,215 @@
+- adx_entityform: 13d9dbd4-5ac9-4091-84ab-9e70afdafe69
+  adx_entityformmetadataid: 89a69987-a6b0-4b6e-84a5-793e93e27b0b
+  adx_name: Baseline Parent Edit subgrid_items
+  adx_subgrid_name: subgrid_items
+  adx_subgrid_settings: >-
+    {
+      "Type": "CrmEntityFormView-GridMetadata",
+      "ViewFormats": [],
+      "ViewActions": [
+        {
+          "Type": "CrmEntityFormView-AssociateAction",
+          "ViewId": "62b3ced1-b09b-4335-833a-138dbbb64555",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Add existing items"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Associate baseline items"
+            }
+          ]
+        }
+      ],
+      "ItemActions": [
+        {
+          "Type": "CrmEntityFormView-DisassociateAction",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Remove item"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Disassociate the baseline item"
+            }
+          ]
+        }
+      ],
+      "ExtendedViewActions": [],
+      "ExtendedItemActions": [],
+      "ColumnOverrides": [],
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading baseline items..."
+        }
+      ],
+      "ErrorMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Could not load baseline items."
+        }
+      ],
+      "AccessDeniedMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "You do not have access to baseline items."
+        }
+      ],
+      "EmptyMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "No baseline items."
+        }
+      ],
+      "CssClass": "baseline-grid",
+      "GridCssClass": "table-striped",
+      "GridColumnWidthStyle": 1,
+      "LookupDialog": {
+        "Type": "CrmEntityFormView-LookupModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading associate baseline items..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Associate baseline items"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 1,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default",
+        "SelectRecordsTitle": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Select baseline items"
+          }
+        ],
+        "DefaultErrorMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "The items could not be associated."
+          }
+        ],
+        "GridOptions": {
+          "LoadingMessage": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Loading candidate items..."
+            }
+          ],
+          "ErrorMessage": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Could not load candidate items."
+            }
+          ],
+          "AccessDeniedMessage": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "You do not have access to candidate items."
+            }
+          ],
+          "EmptyMessage": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "No candidate items."
+            }
+          ],
+          "CssClass": "baseline-grid",
+          "GridCssClass": "table-striped"
+        }
+      },
+      "ErrorDialog": {
+        "Type": "CrmEntityFormView-ErrorModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading baseline item error..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline item error"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      }
+    }
+  adx_type: 100000003

@@ -1,0 +1,19 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import { fileURLToPath } from 'node:url';
+{{binding}}
+
+// TODO(paqvilo-init): add exported loopback fixtures and meaningful page assertions
+for (const site of {{sites}}) {
+  const sourceDir = fileURLToPath(new URL(`./fixtures/${site}/`, import.meta.url));
+  // The importer decides the export format. Only truly empty fixture folders skip.
+  const present = fs.existsSync(sourceDir) && fs.readdirSync(sourceDir).some(name => name !== '.gitkeep');
+  test(`${site}: local portal smoke`, { skip: present ? false : 'Add this site export fixture before claiming page coverage' }, async () => {
+    const simulator = await {{factory}}({ sourceDir, port: 0, watch: false });
+    try {
+      const response = await fetch(simulator.url, { redirect: 'manual' });
+      assert.equal(response.status, 200);
+    } finally { await simulator.close(); }
+  });
+}

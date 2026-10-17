@@ -55,7 +55,7 @@ export async function commitMigration({
       throw new Error("State changed during preparation; migration refused.");
     if (beforeReplace) await beforeReplace();
     await store.replaceState(nextState, {
-      expectedSnapshot: JSON.stringify(store.snapshot()),
+      expectedDigest: store.snapshotDigest(),
     });
     return {
       backup,

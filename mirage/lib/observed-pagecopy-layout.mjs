@@ -90,16 +90,41 @@ function renderSpec(spec, depth = 0) {
   layoutSpec(node);
   return serialize({ childNodes: [node] });
 }
+// Match the supported lowercase {% comment %} syntax lexically. An open block
+// ends at the first endcomment tag; unmatched and whitespace-control tags remain
+// in the source and prevent capture. Each candidate and whitespace run is visited
+// once instead of retrying an unterminated block from every opening tag.
+function withoutLiquidComments(source) {
+  const parts = [];
+  let cursor = 0, copiedThrough = 0, opening = -1;
+  const tagEnd = (start, name) => {
+    let end = start + 2;
+    while (end < source.length && /\s/.test(source[end])) end++;
+    if (!source.startsWith(name, end)) return -1;
+    end += name.length;
+    while (end < source.length && /\s/.test(source[end])) end++;
+    return source.startsWith('%}', end) ? end + 2 : -1;
+  };
+  for (;;) {
+    const start = source.indexOf('{%', cursor);
+    if (start < 0) break;
+    const end = tagEnd(start, opening < 0 ? 'comment' : 'endcomment');
+    if (end >= 0) {
+      if (opening < 0) opening = start;
+      else { parts.push(source.slice(copiedThrough, opening)); copiedThrough = end; opening = -1; }
+      cursor = end;
+    } else cursor = start + 2;
+  }
+  parts.push(source.slice(copiedThrough));
+  return parts.join('');
+}
 /** Capture only a source-bound empty Studio layout beyond the exported page copy. */
 export function observedPageCopyLayout(html, { portal, path, origin }) {
   const page = portal?.pages?.find(
     (p) => normalizePortalPath(p.url) === normalizePortalPath(path),
   );
   if (!page || !page.html) return undefined;
-  const source = page.html.replace(
-    /\{%\s*comment\s*%\}[\s\S]*?\{%\s*endcomment\s*%\}/g,
-    "",
-  );
+  const source = withoutLiquidComments(page.html);
   if (/\{%|\{\{/.test(source)) return undefined;
   const copies = [];
   function visit(n) {

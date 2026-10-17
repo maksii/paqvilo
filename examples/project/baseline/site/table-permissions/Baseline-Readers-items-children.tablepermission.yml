@@ -1,0 +1,14 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: pqvd_baselinechild
+adx_entityname: Baseline Readers items children
+adx_entitypermission_webrole:
+- df58c547-3567-4627-8dcb-ce3755db2f44
+adx_entitypermissionid: e162b022-7c2b-47df-867d-b1ef09b179e2
+adx_parententitypermission: e293df2d-f825-46c0-867f-cfdbd1c1066c
+adx_parentrelationship: pqvd_baselineitem_baselinechild
+adx_read: true
+adx_scope: 756150003
+adx_write: false

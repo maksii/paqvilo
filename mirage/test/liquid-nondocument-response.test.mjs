@@ -115,7 +115,7 @@ test("documents report local compatibility adapters in a response header, not as
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.equal(response.headers.get("x-sim-compatibility"), null);
-  assert.match(html, /<script src="\/resource\/powerappsportal\/dist\/app\.bundle-[0-9a-f]+\.js"/);
+  assert.match(html, /<script\b[^>]*\bsrc="\/resource\/powerappsportal\/dist\/app\.bundle-[0-9a-f]+\.js"/);
   assert.doesNotMatch(/<html\b[^>]*>/.exec(html)[0], /data-sim-/);
   assert.doesNotMatch(/<body\b[^>]*>/.exec(html)[0], /data-sim-/);
   // A template document without the platform bundles gets the adapters it needs, reported in the header.

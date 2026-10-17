@@ -15,8 +15,11 @@
   }
   const jq = () => window.jQuery;
   const instances = new WeakMap();
-  const trigger = (root, name, detail) =>
+  const trigger = (root, name, detail) => {
+    // Native bindings survive later source includes replacing window.jQuery.
+    if (name === 'change' && root.__simDateTarget) root.dispatchEvent(new CustomEvent('sim:datechange', { detail }));
     jq()(root).trigger(jq().Event(`dp.${name}`, detail));
+  };
   const parse = (value, format) => {
     if (moment.isMoment(value)) return value.clone();
     if (value instanceof Date) return moment(value);
@@ -31,17 +34,25 @@
       logicalId = display?.id?.replace(/_datepicker_description$/, ""),
       linked = logicalId && document.getElementById(logicalId),
       canonical = linked && linked !== display ? linked : display,
+      nativeBinding = Boolean(root.__simDateTarget),
       format = options.format || display?.dataset.dateFormat || "DD/MM/YYYY",
       hasTime = /[Hhms]/.test(format),
       chooser = document.createElement("input");
     if (!display) return;
     chooser.type = hasTime ? "datetime-local" : "date";
     chooser.className = "paqvilo-mirage-date-chooser";
+    // Local-only controls are marked so parity comparisons can tell them from platform markup.
+    chooser.setAttribute("data-paqvilo-local", "");
     chooser.setAttribute("aria-label", display.getAttribute("aria-label") || "Choose date");
     chooser.style.cssText = "position:absolute;width:1px;height:1px;opacity:0;pointer-events:none;left:0;bottom:0";
-    root.append(chooser);
+    // The platform's picker group holds only the box and the calendar button until it opens:
+    // the native chooser joins the DOM while a choice is pending, the action buttons only
+    // while a source script shows one (DOM parity with the live group).
+    const detachChooser = () => { if (chooser.isConnected) chooser.remove(); };
+    chooser.addEventListener("blur", detachChooser);
     const buttons = document.createElement("span");
     buttons.className = "paqvilo-mirage-date-actions";
+    buttons.setAttribute("data-paqvilo-local", "");
     buttons.setAttribute("role", "group");
     buttons.setAttribute("aria-label", "Date actions");
     const makeButton = (label, action) => {
@@ -56,37 +67,41 @@
       return button;
     };
     const todayButton = makeButton("Today", () => setDate(moment(), true)),
-      clearButton = makeButton("Clear date", () => setDate(null, true));
-    root.append(buttons);
+      clearButton = makeButton("Clear date", () => setDate(null, true)),
+      syncButtons = () => { if (todayButton.hidden && clearButton.hidden) buttons.remove(); else if (!buttons.isConnected) root.append(buttons); };
+    let lastGoodValue = '';
     const parseCurrent = () =>
         parse(canonical.value || display.value, format),
       isoValue = (value) =>
         value.format(hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD"),
-      notify = (oldDate) => {
-        const current = parseCurrent();
+      notify = (oldDate, date) => {
+        const current = date === undefined ? parseCurrent() : date;
         trigger(root, "update", { date: current?.isValid() ? current : null });
         trigger(root, "change", {
           date: current?.isValid() ? current : null,
           oldDate: oldDate?.isValid?.() ? oldDate : null,
         });
       },
-      setDate = (value, announce = false) => {
+      // userInput: only the user's own choice dispatches the visible box's DOM change (the
+      // plugin's date()/clear() fire dp.* events without touching the box's change handlers).
+      setDate = (value, announce = false, userInput = announce) => {
         const oldDate = parseCurrent(),
           next = value == null ? null : parse(value, format);
         if (next && !next.isValid()) return;
         const formatted = next ? next.format(format) : "";
-        if (canonical !== display) canonical.value = next ? isoValue(next) : "";
+        if (canonical !== display && !nativeBinding) canonical.value = next ? isoValue(next) : "";
         display.value = formatted;
         chooser.value = next ? isoValue(next) : "";
         if (announce) {
-          canonical.dispatchEvent(new Event("change", { bubbles: true }));
-          if (canonical !== display)
+          if (!nativeBinding) canonical.dispatchEvent(new Event("change", { bubbles: true }));
+          if (userInput && canonical !== display)
             display.dispatchEvent(new Event("change", { bubbles: true }));
-          notify(oldDate);
+          notify(oldDate, next);
         }
       },
       show = () => {
         trigger(root, "show", { date: parseCurrent() });
+        if (!chooser.isConnected) root.append(chooser);
         try {
           if (typeof chooser.showPicker === "function") chooser.showPicker();
           else chooser.focus();
@@ -94,16 +109,25 @@
           chooser.focus();
         }
       };
-    chooser.addEventListener("change", () =>
-      setDate(chooser.value ? moment(chooser.value, hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD", true) : null, true),
-    );
+    chooser.addEventListener("change", () => {
+      setDate(chooser.value ? moment(chooser.value, hasTime ? "YYYY-MM-DDTHH:mm" : "YYYY-MM-DD", true) : null, true);
+      detachChooser();
+    });
     display.addEventListener("change", () => {
       const value = parse(display.value, format);
       if (value?.isValid()) {
+        if (nativeBinding) lastGoodValue = display.value;
         const oldDate = parseCurrent();
-        if (canonical !== display) canonical.value = isoValue(value);
+        if (canonical !== display && !nativeBinding) canonical.value = isoValue(value);
         chooser.value = isoValue(value);
-        notify(oldDate);
+        notify(oldDate, value);
+      } else if (nativeBinding) {
+        const previous = parseCurrent();
+        if (!display.value.trim()) lastGoodValue = '';
+        const restored = lastGoodValue ? parse(lastGoodValue, format) : null;
+        display.value = restored?.isValid() ? lastGoodValue : '';
+        chooser.value = restored?.isValid() ? isoValue(restored) : '';
+        notify(previous, restored?.isValid() ? restored : null);
       }
     });
     root.addEventListener("click", (event) => {
@@ -120,7 +144,7 @@
           const current = parseCurrent();
           return current?.isValid() ? current : null;
         }
-        setDate(value, true);
+        setDate(value, true, false);
         return api;
       },
       getMoment() { return api.date() || moment(); },
@@ -133,16 +157,18 @@
       showTodayButton(value) {
         if (!arguments.length) return !todayButton.hidden;
         todayButton.hidden = !value;
+        syncButtons();
         return api;
       },
       showClear(value) {
         if (!arguments.length) return !clearButton.hidden;
         clearButton.hidden = !value;
+        syncButtons();
         return api;
       },
       show,
-      hide() { chooser.blur(); return api; },
-      clear() { setDate(null, true); return api; },
+      hide() { chooser.blur(); detachChooser(); return api; },
+      clear() { setDate(null, true, false); return api; },
       enable() { display.disabled = false; chooser.disabled = false; return api; },
       disable() { display.disabled = true; chooser.disabled = true; return api; },
       destroy() { chooser.remove(); buttons.remove(); instances.delete(root); return api; },

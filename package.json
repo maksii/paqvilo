@@ -1,6 +1,6 @@
 {
   "name": "paqvilo",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
   "keywords": [
     "power-pages",
@@ -43,6 +43,7 @@
     "NOTICE",
     "docs/",
     "examples/",
+    "templates/",
     "npm-shrinkwrap.json"
   ],
   "type": "module",
@@ -68,12 +69,16 @@
     "audit:resources": "node bin/paqvilo.mjs lense audit",
     "resources": "node bin/paqvilo.mjs lense resources",
     "mirage": "node bin/paqvilo.mjs mirage",
+    "dataverse": "node bin/paqvilo.mjs dataverse",
     "agent": "node bin/paqvilo.mjs lense agent",
     "benchmark": "node scripts/benchmark.mjs",
     "test": "node --test --test-concurrency=4 test/*.test.mjs",
     "test:browser": "node --test --test-concurrency=2 test-browser/*.test.mjs",
+    "test:example": "npm install --prefix examples/project --offline --ignore-scripts --no-audit --no-fund --package-lock=false && node --test examples/project/test/baseline-*.test.mjs",
+    "test:company": "npm ci --prefix examples/company-operations --offline --ignore-scripts --no-audit --no-fund && npm --prefix examples/company-operations test",
+    "test:company:browser": "npm --prefix examples/company-operations run test:browser",
     "check": "node scripts/check.mjs && npm run check:boundary",
-    "validate": "npm run check && npm test && npm run test:browser && npm --prefix mirage run validate && npm run release:check",
+    "validate": "npm run check && npm test && npm run test:example && npm run test:company && npm run test:browser && npm run test:company:browser && npm --prefix mirage run validate && npm run release:check",
     "release:check": "node scripts/release-check.mjs",
     "release:smoke": "node scripts/package-smoke.mjs",
     "ci:evidence": "node scripts/collect-evidence.mjs",
@@ -98,6 +103,13 @@
   },
   "license": "AGPL-3.0-only",
   "exports": {
+    "./mirage": "./mirage/api.mjs",
+    "./mirage/acceptance": "./mirage/acceptance-api.mjs",
+    "./mirage/testing": "./mirage/testing.mjs",
+    "./mirage/packs": "./mirage/packs.mjs",
+    "./mirage/fixtures": "./mirage/fixtures.mjs",
+    "./lense": "./lense/api.mjs",
+    "./dataverse": "./lense/dataverse/index.mjs",
     "./package.json": "./package.json",
     "./lense/*": "./lense/*",
     "./mirage/*": "./mirage/*"

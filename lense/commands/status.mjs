@@ -29,7 +29,7 @@ export default async function status(cfg, args) {
   const exitCode = comparisonExitCode(results);
 
   if (args.json) {
-    console.log(JSON.stringify(results, null, 2));
+    console.log(JSON.stringify({ ok: exitCode === 0, offline: false, results, errors: results.filter(row => !['same', 'different', 'not online (local only)'].includes(row.state)).map(row => ({ code: 'COMPARISON_FAILED', message: row.detail ?? row.state, path: row.url })) }, null, 2));
     return exitCode;
   }
   const groups = Map.groupBy(results, (r) => r.state);

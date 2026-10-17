@@ -104,6 +104,14 @@ test('HTTP native grid services enforce CSRF, declared actions and relationship 
   const data=await response.json();
   assert.deepEqual(Object.keys(data),['MoreRecords','Records','ItemCount','PageCount','PageNumber','PageSize','NextPagePagingCookie','ViewConfiguration','CompleteViewLayout','CreateActionMetadata','DisabledItemActionLinks']);
   assert.deepEqual([data.ItemCount,data.PageCount,data.PageNumber,data.PageSize,data.MoreRecords],[2,1,1,10,false]);
+  // Without read on the subgrid table the service answers AccessDenied with the page no-cache policy (live subgrid service; list grids answer private).
+  const before=app.store.snapshot();
+  const revoked=structuredClone(before);revoked.permissions=revoked.permissions.filter(rule=>rule.entity!=='child');
+  await app.store.replaceState(revoked);
+  const denied=await call('entity-subgrid-data.json',request);
+  assert.deepEqual([denied.status,denied.headers.get('cache-control'),denied.headers.get('pragma'),denied.headers.get('expires')],[200,'no-cache, no-store, must-revalidate','no-cache','-1']);
+  assert.deepEqual(await denied.json(),{AccessDenied:true});
+  await app.store.replaceState(before);
   // The configuration is opaque and signed; a tampered blob or another endpoint kind is refused.
   response=await call('entity-subgrid-data.json',{...request,base64SecureConfiguration:Buffer.from('{"t":"subgrid","w":"site"}.forged').toString('base64')});
   assert.equal(response.status,403);
@@ -146,4 +154,16 @@ test('native grid action filters use the current exported website context',async
   const store=await new DataStore({state}).init();
   await deletePortalSubgridRecord('entityform','parent','Children',pendingId,{parentId},{portal,store,schemas,identity:state.simulator.identity});
   assert.equal(store.snapshot().tables.child.length,2);
+});
+
+test('a subgrid without a relationship lists its whole view with no parent filter', async () => {
+  const {portal,schemas,state}=model();
+  const cell=formCells(schemas.parent).find(cell=>cell.id==='Children');
+  cell.relationship='';
+  const store=await new DataStore({state}).init(),identity=state.simulator.identity;
+  const grid=subgridModel({portal,schemas,metadata:{},store,kind:'entityform',formId:'parent',gridId:'Children'});
+  assert.equal(grid.relationship,null);
+  const data=await gridData(grid,{page:1,pageSize:10,search:''},{portal,store,readProvider:store,identity,metadata:{},config:{mode:'local'},secure:{t:'subgrid',parent:parentId,view:grid.views[0].id}});
+  // The foreign child (another parent) is listed too: no parent filter applies.
+  assert.ok(data.Records.some(record=>record.Id===foreignId), JSON.stringify(data.Records.map(record=>record.Id)));
 });

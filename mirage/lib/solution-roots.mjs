@@ -1,14 +1,8 @@
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { discoverSolutionTrees, scanSolutionSources } from "./solution-schema.mjs";
 
-// Parsed table definitions used for ordering are cached under the ignored toolkit .paqvilo.
-const DEFAULT_DISCOVERY_CACHE = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "../../.paqvilo/simulator/cache/solution-discovery.json",
-);
 
 /**
  * Discover unpacked Dataverse solution repositories next to a portal source.
@@ -52,7 +46,8 @@ export async function discoverSolutionRoots(sourceDir, { cacheFile, diagnostics 
     if ((await discoverSolutionTrees(candidate)).length) roots.push(candidate);
   }
   if (roots.length < 2) return roots;
-  const scan = await scanSolutionSources(roots, { cacheFile: cacheFile ?? DEFAULT_DISCOVERY_CACHE, order: "derived" });
+  // Programmatic discovery without an explicit project cache stays read-only.
+  const scan = await scanSolutionSources(roots, { cacheFile, order: "derived" });
   await scan.cache.save({ prune: false });
   diagnostics?.push(...scan.diagnostics.filter((d) => d.code === "SOLUTION_ORDER_CYCLE"));
   const ordered = [];

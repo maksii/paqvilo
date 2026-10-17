@@ -43,6 +43,42 @@ async function run(args, cwd) {
   }
 }
 
+test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 30_000 }, async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'first', path: './portal' }, { id: 'second', path: './portal' }], solutions: [], references: [] }),
+  });
+  const state = path.join(directory, 'invalid-state.json');
+  for (const selection of [['--source', path.join(directory, 'portal')], ['--project', path.join(directory, 'project.json')]]) {
+    for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536']) {
+      const result = await run(['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory);
+      assert.equal(result.code, 1, `${JSON.stringify(port)}: ${result.stderr}`);
+      assert.match(result.stderr, /--port must be an integer/);
+      assert.equal(result.stdout, '');
+    }
+  }
+  await assert.rejects(fs.stat(state), { code: 'ENOENT' });
+  await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
+});
+
+test('CLI: multi-portal serve closes its runtime after browser attachment fails', { timeout: 30_000 }, async (t) => {
+  const directory = await fixture(t, {
+    'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
+    'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
+    'project.json': JSON.stringify({ version: 1, portals: [{ id: 'first', path: './portal' }, { id: 'second', path: './portal' }], solutions: [], references: [] }),
+  });
+  const rejectedCdp = http.createServer((_req, res) => { res.writeHead(404); res.end('No browser'); });
+  rejectedCdp.listen(0, '127.0.0.1');
+  await once(rejectedCdp, 'listening');
+  t.after(() => new Promise(resolve => rejectedCdp.close(resolve)));
+  const result = await run(['serve', '--project', path.join(directory, 'project.json'), '--port', '0', '--no-watch', '--cdp', `http://127.0.0.1:${rejectedCdp.address().port}`], directory);
+  assert.equal(result.code, 1, result.stderr);
+  assert.equal(result.signal, null, 'failure exits on its own after closing portal and identity provider');
+  assert.match(result.stderr, /404|browser|CDP/i);
+  assert.equal(result.stdout, '');
+});
+
 test(
   "CLI: standard/enhanced inspect, local render, controlled argument errors and no absolute render traffic",
   { timeout: 60_000 },
@@ -67,6 +103,9 @@ test(
     assert.equal(inspected.format, "standard");
     assert.equal(inspected.pages[0].url, "/");
     assert.equal(inspected.pages[0].name, "CLI standard");
+    assert.equal(inspected.liquidSyntax.sourceCount, 1);
+    assert.equal(inspected.liquidSyntax.sourceParsePassed, 1);
+    assert.deepEqual(inspected.liquidSyntax.diagnostics, []);
     result = await run(
       [
         "inspect",
@@ -210,6 +249,11 @@ test(
         "<h1>Form fixture</h1>{% entityform name: 'Edit contact' %}",
       "portal/Edit.basicform.yml":
         "adx_entityformid: basic-form\nadx_name: Edit contact\nadx_entityname: contact\nadx_formname: Portal edit\nadx_mode: 100000000\n",
+      // An insert form renders only for an identity with a Create permission.
+      "portal/webrole.yml":
+        "- adx_webroleid: anonymous\n  adx_name: Anonymous Users\n  adx_anonymoususersrole: true\n",
+      "portal/contact.tablepermission.yml":
+        "adx_entitypermissionid: contact-create\nadx_entitylogicalname: contact\nadx_entityname: Contacts\nadx_scope: 756150000\nadx_create: true\nadx_entitypermission_webrole:\n- anonymous\n",
       "solutions/Package/Entities/contact/Entity.xml":
         '<Entity><Name>contact</Name><EntityInfo><entity Name="contact"><PrimaryIdAttribute>contactid</PrimaryIdAttribute><EntitySetName>contacts</EntitySetName><attributes><attribute PhysicalName="fullname"><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel></attribute></attributes></entity></EntityInfo></Entity>',
       "solutions/Package/Entities/contact/FormXml/main/{form-id}.xml":

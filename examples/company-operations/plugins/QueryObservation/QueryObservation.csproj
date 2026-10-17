@@ -1,0 +1,4 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup><TargetFramework>net462</TargetFramework><AssemblyName>Paqvilo.Demo.QueryObservation</AssemblyName><AssemblyVersion>1.0.0.0</AssemblyVersion><FileVersion>1.0.0.0</FileVersion><SignAssembly>true</SignAssembly><AssemblyOriginatorKeyFile>../LabPublicSigning.snk</AssemblyOriginatorKeyFile><Deterministic>true</Deterministic><LangVersion>latest</LangVersion><RestorePackagesWithLockFile>true</RestorePackagesWithLockFile></PropertyGroup>
+  <ItemGroup><PackageReference Include="Microsoft.CrmSdk.CoreAssemblies" Version="9.0.2.60" PrivateAssets="All"/><PackageReference Include="Microsoft.NETFramework.ReferenceAssemblies" Version="1.0.3" PrivateAssets="All"/><Reference Include="System.Web.Extensions"/><Reference Include="System.Net.Http"/><Compile Include="../Shared/*.cs" Link="Shared/%(Filename)%(Extension)"/></ItemGroup>
+</Project>

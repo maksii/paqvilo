@@ -1,7 +1,9 @@
 // Dataverse value semantics shared by the FetchXML and OData evaluators.
 // Evidence for each rule is recorded in docs/dataverse-parity.md.
 import { DataError } from "./data-error.mjs";
+import {isExactNumeric,numericPair,compareNumeric,formatExactNumeric,decimalParts,parseNumericLiteral} from './exact-numeric.mjs';
 import { FISCAL_OPERATORS, fiscalCalendar, fiscalOperatorPredicate, fiscalPeriodOf } from "./fiscal-calendar.mjs";
+import { compileFormattedTimeZone } from './formatted-time-zone.mjs';
 
 export const own = (obj, key) =>
   obj != null && Object.prototype.hasOwnProperty.call(obj, key);
@@ -96,22 +98,79 @@ export function fieldKind(definition) {
   if (kind === "number" && Array.isArray(definition.options)) return "choice";
   return kind;
 }
+export function dateTimeBehavior(definition) {
+  const value = definition?.dateTimeBehavior ?? definition?.behavior;
+  const behavior = String(value?.Value ?? value ?? '').toLowerCase();
+  return ({1:'userlocal',2:'dateonly',3:'timezoneindependent'})[behavior] ?? behavior;
+}
 export function isDateOnlyField(definition) {
-  if (!definition) return false;
-  const behavior = String(
-    definition.dateTimeBehavior ?? definition.behavior ?? "",
-  ).toLowerCase();
-  const format = String(definition.format ?? "").toLowerCase();
-  return (
-    behavior === "dateonly" ||
-    behavior === "2" ||
-    (format === "dateonly" && behavior !== "userlocal")
-  );
+  const behavior = dateTimeBehavior(definition);
+  // Format controls presentation, not storage. Keep the legacy format-only
+  // schema usable when no behavior metadata was supplied.
+  return behavior === 'dateonly' || (!behavior && String(definition?.format ?? '').toLowerCase() === 'dateonly');
 }
 
 const ISO_DATE = /^(\d{4})-(\d{2})-(\d{2})$/;
+/** Edm.Date's ISO calendar reader accepts unpadded month/day, not surrounding whitespace. */
+export function portalDateOnly(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^(\d{4})-(\d{1,2})-(\d{1,2})$/.exec(value);
+  if (!match || +match[1] === 0) return null;
+  const canonical = `${match[1]}-${match[2].padStart(2,'0')}-${match[3].padStart(2,'0')}`;
+  return parseDateValue(canonical) ? canonical : null;
+}
+/** Opt-in portal conversion; direct data/query date parsing remains ISO-only. */
+const MONTH_FIRST_DATE = /^(\d{1,2})\/(\d{1,2})\/(\d{2}|\d{4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2})(\.\d{1,7})?)?\s*(AM|PM)?)?$/i;
+const ENGLISH_MONTHS = new Map(['january','february','march','april','may','june','july','august','september','october','november','december'].flatMap((name,index) => [[name,index+1],[name.slice(0,3),index+1]]));
+export function portalMonthFirstDate(value, { twoDigitYearMax = 2049 } = {}) {
+  if (typeof value !== 'string') return null;
+  let text = value.trim();
+  const named = /^([a-z]+)\s+(\d{1,2}),?\s+(\d{4})(.*)$/i.exec(text);
+  if (named) {
+    const month = ENGLISH_MONTHS.get(named[1].toLowerCase());
+    if (!month) return null;
+    text = `${month}/${named[2]}/${named[3]}${named[4]}`;
+  }
+  const match = MONTH_FIRST_DATE.exec(text);
+  if (!match) return null;
+  if (!Number.isInteger(twoDigitYearMax) || twoDigitYearMax < 99 || twoDigitYearMax > 9999) return null;
+  let year = +match[3];
+  if (match[3].length === 2) { year += Math.floor(twoDigitYearMax / 100) * 100; if (year > twoDigitYearMax) year -= 100; }
+  if (year === 0) return null;
+  let hour = +(match[4] ?? 0);
+  if (match[8]) { if (hour < 1 || hour > 12) return null; hour = hour % 12 + (match[8].toUpperCase() === 'PM' ? 12 : 0); }
+  const pad = text => String(text).padStart(2, '0');
+  const date = `${String(year).padStart(4,'0')}-${pad(match[1])}-${pad(match[2])}`;
+  const result = match[4] === undefined ? date : `${date}T${pad(hour)}:${match[5]}:${match[6] ?? '00'}${match[7] ?? ''}Z`;
+  return parseDateValue(result) ? result : null;
+}
+
+/** Preserve the posted literal separately from the parsed value used in CrmDateTime errors. */
+export function dateTimeRangeError(value, parsed = parseDateValue(value)) {
+  const year = parsed ? new Date(parsed.ms).getUTCFullYear() : null;
+  const belowMinimum = parsed && year < 1753;
+  return new DataError(`The date-time format for ${value} is invalid, or value is outside the supported range.`, 400, 'InvalidDateTime', {
+    innerCode: '0x80040239', failedDateConversion: !parsed,
+    ...(belowMinimum ? { dateTimeBelowMinimum: true, dateTimeActual: year < 1 ? '01/01/0001 00:00:00' : formatDotNetDate(parsed.ms, 'MM/dd/yyyy HH:mm:ss', 0) } : {}),
+  });
+}
 const ISO_DATETIME =
   /^(\d{4})-(\d{2})-(\d{2})[T ](\d{2}):(\d{2})(?::(\d{2})(?:\.(\d{1,7}))?)?(Z|[+-]\d{2}:?\d{2})?$/i;
+
+// Date.UTC treats years 0–99 as 1900–1999. Date text must retain its literal
+// year so the caller can enforce the source/platform supported date range.
+function calendarUtc(year, month, day, hour = 0, minute = 0, second = 0, millisecond = 0) {
+  const date = new Date(0);
+  date.setUTCFullYear(year, month, day);
+  date.setUTCHours(hour, minute, second, millisecond);
+  return date.getTime();
+}
+
+const matchesCalendar = (ms, match) => {
+  const date = new Date(ms);
+  return date.getUTCFullYear() === +match[1] &&
+    date.getUTCMonth() === +match[2] - 1 && date.getUTCDate() === +match[3];
+};
 
 /**
  * Parse stored or literal date/time values. Values without a zone are UTC,
@@ -126,24 +185,34 @@ export function parseDateValue(value, { timeZoneOffsetMinutes = 0 } = {}) {
   const text = String(scalar(value)).trim();
   let match = ISO_DATE.exec(text);
   if (match) {
-    const ms = Date.UTC(+match[1], +match[2] - 1, +match[3]);
-    if (Number.isNaN(ms) || new Date(ms).getUTCDate() !== +match[3]) return null;
+    if (+match[2] < 1 || +match[2] > 12 || +match[3] < 1 || +match[3] > 31) return null;
+    const ms = calendarUtc(+match[1], +match[2] - 1, +match[3]);
+    if (!matchesCalendar(ms, match)) return null;
     return { ms: ms - timeZoneOffsetMinutes * 60000, dateOnly: true };
   }
   match = ISO_DATETIME.exec(text);
   if (!match) return null;
+  // Date.UTC normalizes overflowing calendar/clock components. Dataverse's
+  // payload reader rejects them instead of silently moving to another instant.
+  if (+match[2] < 1 || +match[2] > 12 || +match[3] < 1 || +match[3] > 31 ||
+      +match[4] > 23 || +match[5] > 59 || +(match[6] ?? 0) > 59) return null;
+  const zone = match[8];
+  if (zone && zone.toUpperCase() !== "Z") {
+    const digits = zone.slice(1).replace(":", "");
+    const hours = Number(digits.slice(0, 2)), minutes = Number(digits.slice(2));
+    if (hours > 14 || minutes > 59 || (hours === 14 && minutes !== 0)) return null;
+  }
   const fraction = Number(`0.${match[7] ?? "0"}`) * 1000;
-  let ms = Date.UTC(
+  let ms = calendarUtc(
     +match[1],
     +match[2] - 1,
     +match[3],
     +match[4],
     +match[5],
     +(match[6] ?? 0),
-    Math.round(fraction),
+    Math.trunc(fraction),
   );
-  if (Number.isNaN(ms) || new Date(ms).getUTCDate() !== +match[3]) return null;
-  const zone = match[8];
+  if (!matchesCalendar(ms, match)) return null;
   if (zone && zone.toUpperCase() !== "Z") {
     const sign = zone[0] === "-" ? -1 : 1;
     const digits = zone.slice(1).replace(":", "");
@@ -203,6 +272,9 @@ export function coercePair(stored, literal, { kind, collation, timeZoneOffsetMin
         b = booleanLiteral(y);
       return a == null || b == null ? null : { kind: "number", x: Number(a), y: Number(b) };
     }
+    if(['decimal','money'].includes(kind)||kind!=='double'&&(isExactNumeric(stored)||isExactNumeric(literal))){
+      const pair=numericPair(x,y);return pair?{kind:'exact-number',...pair}:null;
+    }
     const a = Number(x),
       b = Number(y);
     return Number.isFinite(a) && Number.isFinite(b) && String(x).trim() !== "" && String(y).trim() !== ""
@@ -248,6 +320,7 @@ export function coercePair(stored, literal, { kind, collation, timeZoneOffsetMin
     case "string":
       return text();
     default:
+      if (isExactNumeric(stored)||isExactNumeric(literal)) return numeric();
       if (typeof x === "boolean") return boolean();
       if (typeof x === "number") return numeric() ?? text();
       if (isGuid(x) && isGuid(y)) return guid();
@@ -283,6 +356,8 @@ const choiceLabelOf = (definition, value) =>
 export function makeSortKey(value, { definition, rawChoice = false, lookupName, timeZoneOffsetMinutes = 0 } = {}) {
   if (value == null) return null;
   const kind = fieldKind(definition);
+  if(isExactNumeric(value))return {t:'n',v:value};
+  if(['integer','decimal','money','double','number'].includes(kind)&&typeof value==='string'&&decimalParts(value))return {t:'n',v:parseNumericLiteral(value)};
   if (typeof value === "object" && !Array.isArray(value)) {
     if (own(value, "id")) {
       const name = lookupName ? lookupName(value) : value.name;
@@ -321,6 +396,7 @@ export function compareSortKeys(a, b, collation = "CI_AI") {
   if (a == null || b == null) return a == null ? (b == null ? 0 : -1) : 1;
   if (a.t === b.t) {
     if (a.t === "s") return textCollator(collation).compare(a.v, b.v);
+    if (a.t==='n'&&(isExactNumeric(a.v)||isExactNumeric(b.v))) return compareNumeric(a.v,b.v);
     return a.v < b.v ? -1 : a.v > b.v ? 1 : 0;
   }
   return a.t < b.t ? -1 : 1;
@@ -335,13 +411,16 @@ export function likeMatcher(pattern, collation = "CI_AI") {
     if (c === "%") out += "[\\s\\S]*";
     else if (c === "_") out += "[\\s\\S]";
     else if (c === "[") {
-      const close = source.indexOf("]", i + 2);
+      const close = source.indexOf("]", i + 1);
       if (close < 0) {
         out += "\\[";
         continue;
       }
       let body = source.slice(i + 1, close),
         negate = false;
+      // SQL LIKE treats ']' literally outside a set. '[]]' contains an
+      // empty set and cannot match; it is not a regex-style escape for ']'.
+      if (!body || body === "^") return () => false;
       if (body.length > 1 && body[0] === "^") {
         negate = true;
         body = body.slice(1);
@@ -656,13 +735,16 @@ const optionLabel = (definition, value) =>
  */
 export function formattedValue(value, definition, settings = {}) {
   if (value == null) return undefined;
+  if(isExactNumeric(value)){
+    const kind=fieldKind(definition),digits=kind==='integer'?0:Number.isInteger(definition?.precision)?definition.precision:2;
+    return (kind==='money'?settings.currencySymbol??definition?.currencySymbol??'':'')+formatExactNumeric(value,digits);
+  }
   if (typeof value === "object" && !Array.isArray(value)) {
     if (own(value, "label") && value.label != null) return String(value.label);
     if (own(value, "name") && own(value, "id")) return value.name ?? undefined;
     value = scalar(value);
   }
   const kind = fieldKind(definition);
-  const offset = Number(settings.timeZoneOffsetMinutes ?? 0);
   switch (kind) {
     case "choice":
       return optionLabel(definition, value);
@@ -689,9 +771,13 @@ export function formattedValue(value, definition, settings = {}) {
         ? `${settings.currencySymbol ?? definition?.currencySymbol ?? ""}${formatNumber(value, Number.isInteger(definition?.precision) ? definition.precision : 2)}`
         : undefined;
     case "datetime": {
-      const parsed = parseDateValue(value, { timeZoneOffsetMinutes: offset });
+      const parsed = parseDateValue(value);
       if (!parsed) return undefined;
-      const dateOnly = parsed.dateOnly || isDateOnlyField(definition);
+      const behavior = dateTimeBehavior(definition);
+      const dateOnly = isDateOnlyField(definition) || /^(date|dateonly)$/i.test(String(definition?.format ?? ''));
+      const offsetAt = settings.timeZoneOffsetAt ?? compileFormattedTimeZone(settings.formattedValueTimeZone);
+      const offset = isDateOnlyField(definition) || behavior === 'timezoneindependent' ? 0 :
+        offsetAt ? offsetAt(parsed.ms) : Number(settings.timeZoneOffsetMinutes ?? 0);
       return formatDotNetDate(
         parsed.ms,
         dateOnly

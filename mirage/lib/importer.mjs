@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
+import { duplicateYamlDiagnostics } from '../../lense/yaml-diagnostics.mjs';
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { portalLanguage } from "./portal-languages.mjs";
@@ -262,7 +263,7 @@ const localized = (value, lcid = 1033) => {
  */
 export async function importPortal(
   sourceDir,
-  { languageId, lcid = 1033, deploymentProfile, dataModel: requestedDataModel, cache = null, git = gitQueries } = {},
+  { languageId, lcid = 1033, deploymentProfile, deploymentProfileFile, dataModel: requestedDataModel, cache = null, git = gitQueries } = {},
 ) {
   if (requestedDataModel != null && !DATA_MODELS.includes(requestedDataModel))
     throw new Error(`dataModel must be standard or enhanced, not ${JSON.stringify(requestedDataModel)}`);
@@ -331,6 +332,9 @@ export async function importPortal(
         );
         const attachment =
           /<filecontent\b([^>]*)>([\s\S]*?)<\/filecontent>/.exec(xml);
+        // Component lifecycle status belongs to the outer envelope. A content
+        // statuscode can instead be the HTTP status of a redirect.
+        const componentStatus = /<statuscode\b[^>]*(?:\/>|>([\s\S]*?)<\/statuscode>)/.exec(xml);
         // The component's site language is the <powerpagesitelanguageid> element outside
         // <content>; it selects language copies as adx_webpagelanguageid and
         // adx_contentsnippetlanguageid do in standard exports.
@@ -355,6 +359,9 @@ export async function importPortal(
           ...content,
           ...languageFields,
           statecode: Number(/<statecode>\s*(\d+)\s*</.exec(xml)?.[1] ?? 0),
+          ...(componentStatus
+            ? { _componentEnvelope: { statuscode: componentStatus[1]?.trim() ? Number(componentStatus[1].trim()) : null } }
+            : {}),
           _file: file,
           _attachment: attachment
             ? {
@@ -441,12 +448,7 @@ export async function importPortal(
           rows = YAML.parse(text);
         } catch (error) {
           if (!/Map keys must be unique/.test(error.message)) throw error;
-          diagnostics.push({
-            code: "duplicate-yaml-key",
-            file,
-            message: error.message,
-            recovered: true,
-          });
+          diagnostics.push(...duplicateYamlDiagnostics(text,file));
           rows = YAML.parse(text, { uniqueKeys: false });
         }
         if (!Array.isArray(rows)) rows = [rows];
@@ -462,8 +464,9 @@ export async function importPortal(
               ) ?? (shortKey ? row.id : undefined),
             ),
             name: field(row, "name", ""),
-            // Short-key records of an enhanced data model site are powerpagecomponent rows.
-            ...(shortKey && dataModel === "enhanced" && COMPONENT_TYPE_OF_KIND[kind] ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] } : {}),
+            // PAC can export enhanced sites with adx_ keys. The selected data model,
+            // rather than the YAML key dialect, determines their component tables.
+            ...(dataModel === "enhanced" && COMPONENT_TYPE_OF_KIND[kind] ? { powerpagecomponenttype: COMPONENT_TYPE_OF_KIND[kind] } : {}),
             _file: file,
           };
           records.push(record);
@@ -536,7 +539,7 @@ export async function importPortal(
     if (!/^[\w.-]+$/.test(deploymentProfile))
       throw new Error("Select a deployment profile by its exported name");
     const profileName = deploymentProfile.replace(/\.deployment\.ya?ml$/i, "");
-    const profile = files.find(
+    const profile = deploymentProfileFile ?? files.find(
       (f) =>
         /[\\/]deployment-profiles[\\/]/i.test(f) &&
         path
@@ -548,7 +551,9 @@ export async function importPortal(
       throw new Error(
         `Deployment profile '${deploymentProfile}' is absent in the export`,
       );
-    const values = YAML.parse(await read(profile, contents));
+    const profileSource = await fs.readFile(profile, 'utf8');
+    const values = /\.json$/i.test(profile) ? JSON.parse(profileSource) : YAML.parse(profileSource);
+    if (!values || typeof values !== 'object' || Array.isArray(values)) throw new Error('Deployment profile must map tables to record patches');
     for (const [entity, rows] of Object.entries(values ?? {})) {
       const raw = entity.replace(/^(?:adx|mspp)_/, "");
       const kind =
@@ -591,6 +596,10 @@ export async function importPortal(
           ),
         };
         record._deploymentProfile = profileName;
+        record._profileSourceFiles = {
+          ...record._profileSourceFiles,
+          ...Object.fromEntries(fields.map(k => [k.replace(/^(?:adx|mspp)_/, ''), profile])),
+        };
         profileChanges.push({
           recordId: record.id,
           kind,
@@ -789,7 +798,7 @@ export async function importPortal(
       name: r.name,
       url: `${parent.replace(/\/$/, "")}/${partial}`,
       file,
-      mimeType: r.mimetype ?? r._attachment?.mimeType ?? null,
+      mimeType: field(r, 'mimetype', r._attachment?.mimeType ?? null),
       metadata: r,
     });
   }
@@ -860,11 +869,17 @@ export async function importPortal(
   // Web link sets: every active set stays reachable by ID (weblinkSets, export order); the
   // name map holds the FIRST active set per exact name, as the platform's name lookup
   // (first active set in retrieval order). Shared names are reported.
-  const weblinkSets = byKind("weblinkset").map((r) => ({
-    id: r.id,
-    name: r.name,
-    weblinks: links.filter((c) => c.setId === r.id && !c.parentId),
-  }));
+  const weblinkSets = await mapLimit(byKind("weblinkset"), IO_CONCURRENCY, async (r) => {
+    const copy = await source(r, "copy.html", "copy");
+    return {
+      id: r.id,
+      name: r.name,
+      title: field(r, "title") == null ? null : localized(field(r, "title"), lcid),
+      copy: copy || (field(r, "copy") == null ? null : copy),
+      metadata: r,
+      weblinks: links.filter((c) => c.setId === r.id && !c.parentId),
+    };
+  });
   const weblinks = {};
   for (const set of weblinkSets) {
     if (!Object.hasOwn(weblinks, set.name)) {
@@ -1191,3 +1206,12 @@ export async function importPortal(
 }
 
 export { field as portalField };
+
+/** Explicit page-template choices select the active source even when both references exist. */
+export function pageTemplateKind(template) {
+  const value = field(template?.metadata ?? {}, "type");
+  if (Number(value) === 756150000) return "rewrite";
+  if (Number(value) === 756150001) return "web-template";
+  // Older or partial exports omit the choice; retain their existing source inference.
+  return template?.webTemplateId ? "web-template" : template?.rewriteUrl ? "rewrite" : null;
+}

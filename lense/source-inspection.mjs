@@ -1,5 +1,6 @@
 // Source-only inspection for a live Lense tab. No runtime, data pack or live request is started.
 import fs from 'node:fs/promises';
+import {existsSync} from 'node:fs';
 import path from 'node:path';
 import { readLocalFile } from './local-file.mjs';
 import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/importer.mjs';
@@ -9,10 +10,28 @@ import { inspectPage } from '../mirage/lib/page-resources.mjs';
 import { stripLiquidLiteralBlocks } from '../mirage/lib/liquid-source.mjs';
 import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
 import { importCodeComponents } from '../mirage/lib/code-components.mjs';
+import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
+import {assetKind} from '../mirage/lib/asset-type.mjs';
+import {SolutionFileCache} from '../mirage/lib/solution-cache.mjs';
 
 const norm = (value) => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const unique = (rows, key) => [...new Map(rows.map((row) => [key(row), row])).values()];
 const inside = (root, file) => { const rel = path.relative(root, file); return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
+const exportIndexes=new WeakMap();
+const bodyFile=(record,suffix)=>{const file=record?._file;if(!file)return null;if(/powerpagecomponent\.xml$/i.test(file))return file;const sidecar=file.replace(/\.ya?ml$/i,'.'+suffix);return existsSync(sidecar)?sidecar:file;};
+function exportIndex(portal,metadata){
+  let index=exportIndexes.get(portal);if(index?.metadata===metadata)return index;
+  const language=norm(portal.language?.id??portalField(portal.website,'defaultlanguage'));
+  const snippets=new Map();
+  for(const row of (portal.records??[]).filter(row=>row.kind==='contentsnippet'&&Number(portalField(row,'statecode',0))!==1).sort((a,b)=>Number(norm(portalField(a,'contentsnippetlanguageid'))===language)-Number(norm(portalField(b,'contentsnippetlanguageid'))===language)))snippets.set(row.name,row);
+  const sources=[...(portal.pages??[]).map(page=>({body:page.html,id:page.id,sourceFile:bodyFile(page.metadata,'copy.html'),kind:'page',name:page.name})),...[...new Set(Object.values(portal.templates??{}))].map(template=>({body:template.source,id:template.id,sourceFile:bodyFile(template.metadata,'source.html'),kind:'template',name:template.name})),...[...snippets.values()].map(row=>({body:portal.snippets?.[row.name],id:row.id,sourceFile:bodyFile(row,'value.html'),kind:'snippet',name:row.name}))];
+  const frequencies=new Map();
+  const markup=[];
+  for(const {body,...source}of sources)for(const hint of elementSourceHints(body,source)){if(source.kind!=='page')markup.push(hint);if(hint.matchKind==='class'){let files=frequencies.get(hint.selector);if(!files)frequencies.set(hint.selector,files=new Set());files.add(source.sourceFile+'#'+source.id);}}
+  const forms=[...(portal.forms??[]),...(portal.advancedForms??[])].map(form=>{const schema=metadata.componentSchemas?.[form.id]??metadata.componentSchemas?.[form.name],advanced=form.metadata?.kind==='advancedform';return {id:form.id,name:form.name,kind:advanced?'advanced-form':'basic-form',entity:form.entityName??schema?.entity,sourceFile:form.metadata?._file,formXml:!advanced&&schema?.sourceFile?{id:schema.formId,name:schema.formName,sourceFile:schema.sourceFile}:null,pageReferenced:false};});
+  const lists=(portal.lists??[]).map(list=>({id:list.id,recordId:list.id,name:list.name,kind:'list',entity:list.entityName,sourceFile:list.metadata?._file,pageReferenced:false,evidenceLabel:'Exported list; not referenced by this page’s sources'}));
+  index={metadata,markup,classFrequencies:Object.fromEntries([...frequencies].map(([selector,files])=>[selector,files.size])),forms,lists};exportIndexes.set(portal,index);return index;
+}
 
 // Resolve declared browser resources against their browser URL, never a source directory.
 function assetPaths(text, basePath) {
@@ -66,18 +85,19 @@ export async function inspectionSources(cfg) {
 
 /** Fixed, bounded DOM read. Do not collect text, values, credentials or query parameters. */
 export function inspectRenderedPage() {
-  const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle');
+  const own = (node) => !node.closest('#paqvilo-panel, #paqvilo-handle, #paqvilo-xray');
   const pathname = (value) => {
     try { const url = new URL(value, location.href); return url.origin === location.origin ? url.pathname : null; } catch { return null; }
   };
   const assets = [...document.querySelectorAll('script[src],link[href],img[src]')].filter(own).slice(0, 300).map((node) => ({ kind: node.tagName.toLowerCase(), path: pathname(node.getAttribute('src') ?? node.getAttribute('href')) })).filter((row) => row.path);
-  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],.entity-grid[data-selected-view],iframe.quickform[data-controlid]')].filter(own).slice(0, 300).map((node) => {
+  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe')].filter(own).slice(0, 300).map((node) => {
     let layout = {};
     try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch {}
+    let frameForm='';if(node.localName==='iframe')try{const url=new URL(node.getAttribute('src'),location.href);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}
     return {
     tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), type: (node.getAttribute('type') ?? '').slice(0, 40),
     entity: String(node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '').slice(0, 160),
-    formId: String(node.getAttribute('data-formid') ?? layout.Id ?? '').slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? '').slice(0, 160),
+    formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameForm).slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? /^EntityList(?:Control_)?([0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:$|_)/i.exec(node.id)?.[1] ?? '').slice(0, 160),
     gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '', controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
     schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160), nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
   }; });
@@ -86,7 +106,8 @@ export function inspectRenderedPage() {
     const match = route && /^\/_api\/([a-z][\w]*)(?:\(|\/|$)/i.exec(route);
     return match ? [match[1]] : [];
   }))];
-  return { assets, controls, apiSets, truncated: document.querySelectorAll('input,select,textarea').length > 300 };
+  const ids=[...document.querySelectorAll('[id]')].filter(own).slice(0,2000).map(node=>node.id).filter(id=>id.length<=160&&!/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
+  return { assets, controls, apiSets, ids, truncated: document.querySelectorAll('input,select,textarea').length > 300 };
 }
 
 const pageSources = (portal, page) => {
@@ -170,12 +191,13 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
       }
       for (const cell of cells) {
         if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
+          if(cell.lookupViewId)report.nativeComponents.push({kind:'lookup',id:cell.id??cell.name,name:cell.label??cell.name,formId:form.id,owner:form.name+'.'+(cell.name??cell.id),sourceFile:current.sourceFile,viewId:cell.lookupViewId});
           if (cell.lookupViewId) addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
           continue;
         }
         const owner = `${form.name}.${cell.id}`;
         const observed = (rendered.controls ?? []).find((row) => row.gridId === cell.id || row.controlId === cell.id);
-        const component = { kind: cell.type, id: cell.id, name: cell.label ?? cell.id, entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null), relationship: cell.relationship ?? null, lookup: cell.lookup ?? null, owner, sourceFile: current.sourceFile, evidence: observed ? 'rendered-control-id' : 'form-source', viewId: cell.viewId ?? null, hidden: Boolean(cell.hidden), actions: [], metadataSources: [] };
+        const component = { formId:form.id, kind: cell.type, id: cell.id, name: cell.label ?? cell.id, entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null), relationship: cell.relationship ?? null, lookup: cell.lookup ?? null, owner, sourceFile: current.sourceFile, evidence: observed ? 'rendered-control-id' : 'form-source', viewId: cell.viewId ?? null, hidden: Boolean(cell.hidden), actions: [], metadataSources: [] };
         report.nativeComponents.push(component);
         addEntity(component.entity);
         if (cell.type === 'quickform') {
@@ -284,6 +306,7 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
 
 /** Enrich a shared report with source provenance and observed DOM, never a live access verdict. */
 export async function enrichInspection(report, portal, { metadata = {}, rendered = {}, live = false, observed = null, codeCatalogue = null } = {}) {
+  if(!report||typeof report!=='object'||Array.isArray(report))throw new TypeError('Source inspection requires a page report object.');
   report.evidence = {
     mode: live ? 'live-sources' : 'local-runtime',
     source: 'Static references from the selected local export. Conditional branches may not be rendered.',
@@ -292,13 +315,15 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     solutions: (metadata.roots ?? []).length,
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
+  const whole=exportIndex(portal,metadata);report.elementSourceFrequencies=whole.classFrequencies;report.componentIndex={forms:whole.forms.map(form=>({...form,formXml:form.formXml?{...form.formXml}:null})),lists:whole.lists.map(list=>({...list}))};
+  if(report.page&&page){report.page.entityFormId=page.formId??portalField(page.metadata??{},'entityform')??null;report.page.listId=page.listId??portalField(page.metadata??{},'entitylist')??null;}
   report.pageSources = [];
   for (const source of pageSources(portal, page)) {
     try { if ((await fs.stat(source.sourceFile)).isFile()) report.pageSources.push(source); } catch {}
   }
   if (page?.metadata?._file) {
     const root = portal.records.find((record) => record.kind === 'webpage' && norm(record.id) === norm(page.id));
-    if (root?._file && root._file !== page.metadata._file) report.pageSources.unshift({ name: 'Root page metadata', sourceFile: root._file });
+    if (root?._file && root._file !== page.metadata._file){for(const source of report.pageSources)source.name=source.name.replace(/^Page /,'Language page ');report.pageSources.unshift({ name: 'Root page metadata', sourceFile: root._file });}
   }
   // Runtime component IDs can resolve a dynamic Liquid reference without guessing its value.
   for (const control of rendered.controls ?? []) {
@@ -310,7 +335,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       (report.forms ??= []).push({ id: form.id, name: form.name, kind: 'basic-form', entity: form.entityName, mode: form.mode, formName: form.formName, sourceFile: form.metadata?._file, formXml: schema?.sourceFile ? { name: schema.formName, sourceFile: schema.sourceFile } : null, evidence: 'rendered-component-id' });
       for (const field of schema?.fields ?? []) if (field.name && !(report.columns ?? []).some((row) => row.entity === form.entityName && row.name === field.name)) (report.columns ??= []).push({ entity: form.entityName, name: field.name, sourceFile: field.source ?? metadata.entities?.[form.entityName]?.sources?.[0], resolved: true, type: field.type, label: field.label });
     }
-    const list = control.listId && portal.lists.find((row) => norm(row.id) === norm(control.listId));
+    const list = control.listId && portal.lists.find((row) => norm(row.id).replace(/-/g,'') === norm(control.listId).replace(/-/g,''));
     if (list && !(report.components ?? []).some((row) => norm(row.recordId) === norm(list.id))) (report.components ??= []).push({ kind: 'list', recordId: list.id, name: list.name, entity: list.entityName, sourceFile: list.metadata?._file, evidence: 'rendered-component-id' });
     const view = control.viewId && metadata.views?.find((row) => norm(row.id) === norm(control.viewId));
     if (view && !(report.views ?? []).some((row) => norm(row.id) === norm(view.id))) (report.views ??= []).push({ id: view.id, name: view.name, entity: view.entity, sourceFile: view.file, fields: view.fields, evidence: 'rendered-component-id' });
@@ -321,8 +346,40 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       }
     }
   }
+  for(const component of report.components??[])if(component.kind==='list'){
+    const definition=portal.lists.find(row=>norm(row.id)===norm(component.recordId??component.id));
+    if(!definition)continue;
+    if(component.sourceFile&&component.sourceFile!==definition.metadata?._file)component.customization={name:'List custom JavaScript',sourceFile:component.sourceFile};
+    component.sourceFile=definition.metadata?._file??component.sourceFile;component.fieldPath=null;
+    const viewIds=[];
+    for(let value of [portalField(definition.metadata??{},'view'),portalField(definition.metadata??{},'views')]){
+      if(typeof value==='string'){try{value=JSON.parse(value);}catch{value=value.split(',').map(item=>item.trim()).filter(Boolean);}}
+      const values=value?.Views??value?.views??value;
+      for(const view of Array.isArray(values)?values:values?[values]:[]){const id=typeof view==='object'?view.ViewId??view.viewId??view.id??view.value:view;if(id)viewIds.push(String(id));}
+    }
+    component.viewIds=[...new Set(viewIds)];
+    for(const viewId of component.viewIds){
+      const view=metadata.views?.find(row=>norm(row.id)===norm(viewId)&&(!component.entity||row.entity===component.entity));
+      if(!view)continue;
+      if(!(report.views??[]).some(row=>norm(row.id)===norm(view.id)))(report.views??=[]).push({id:view.id,name:view.name,entity:view.entity,sourceFile:view.file,fields:view.fields??[],evidence:'list-view'});
+      for(const column of view.fields??[])if(column.name&&!(report.columns??[]).some(row=>row.entity===view.entity&&row.name===column.name)){
+        const field=metadata.entities?.[view.entity]?.fields?.[column.name];
+        (report.columns??=[]).push({entity:view.entity,name:column.name,sourceFile:field?.source??metadata.entities?.[view.entity]?.sources?.[0],resolved:Boolean(field),label:field?.label,type:field?.dataverseType??field?.type,evidence:'list-view'});
+      }
+    }
+  }
   inspectFormDependencies(report, portal, metadata, rendered);
   const sourceBodies = [page?.html, page?.js, page?.css, ...(report.webTemplates ?? []).map((row) => portal.templates?.[row.name]?.source), ...(report.snippets ?? []).map((row) => portal.snippets?.[row.name])].filter(Boolean);
+  const markup = [
+    ...report.pageSources.filter(row => row.fieldPath === 'copy').map(row => ({ body: page?.html, ...row, recordId:page?.id, kind: 'page' })),
+    ...(report.webTemplates ?? []).map(row => ({ ...row, body: portal.templates?.[row.name]?.source, kind: 'template' })),
+    ...(report.snippets ?? []).map(row => ({ ...row, body: portal.snippets?.[row.name], kind: 'snippet' })),
+  ];
+  report.elementSources = markup.flatMap(({ body, ...source }) => elementSourceHints(body, source));
+  const referenced=new Set(report.elementSources.map(item=>item.sourceFile+'#'+item.selector));
+  report.elementSources.push(...structuredClone(whole.markup.filter(item=>!referenced.has(item.sourceFile+'#'+item.selector))));
+  let scriptTruncated=false;const scriptTruncatedSources=[];const appendScriptHints=(body,source)=>{const hints=scriptSourceHints(body,source,{ids:rendered.ids??[]});if(hints.truncated){scriptTruncated=true;scriptTruncatedSources.push(source.sourceFile??source.name);}report.elementSources.push(...hints);};
+  for (const source of report.pageSources.filter(row => row.fieldPath === 'customjavascript')) appendScriptHints(page?.js, { ...source, kind: 'script' });
   const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
   const observedPaths = new Set((rendered.assets ?? []).map((row) => row.path));
@@ -333,11 +390,12 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     if (!pending.length) break;
     for (const file of pending) {
       matchedFiles.set(file.url, file);
-      if (!/\.(?:m?js|css)$/i.test(file.file ?? '') || matchedFiles.size > 100) continue;
+      if (!['script','stylesheet'].includes(assetKind(file.mimeType,file.file)) || matchedFiles.size > 100) continue;
       try {
         const real = await fs.realpath(file.file);
         if (inside(portal.sourceDir, real) && (await fs.stat(real)).size <= 1024 * 1024) {
           const text = await readLocalFile(real, { root: portal.sourceDir, maxBytes: 1024 * 1024, encoding: 'utf8' });
+          if (assetKind(file.mimeType,file.file)==='script') appendScriptHints(text, { name: file.name ?? file.url, sourceFile: real, kind: 'script' });
           sourceBodies.push(text);
           for (const route of assetPaths(text, file.url)) referencedPaths.add(route);
         }
@@ -345,7 +403,8 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     }
   }
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
-  report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
+  report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, kind:assetKind(file.mimeType,file.file),mimeType:file.mimeType??null,sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
+  report.elementSourceLimits={sourceBytes:1024*1024,total:report.elementSources.length,scriptHintsPerSource:120,scriptTruncated,scriptTruncatedSources,truncated:scriptTruncated||markup.some(item=>String(item.body??'').length>1024*1024)};
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
   const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z][\w]*$/i.test(value)));
@@ -403,11 +462,14 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     })),
   ];
   report.pluginInventory = { assemblies: metadata.plugins?.assemblies?.length ?? 0, types: metadata.plugins?.types?.length ?? 0, steps: metadata.plugins?.steps?.length ?? 0, applicable: report.logic.filter(item => item.kind === 'plugin-step').length, effective: 'unknown' };
+  report.unresolved=unique(report.unresolved??[],row=>JSON.stringify(row));
   return report;
 }
 
 export function createSourceInspector(cfg) {
   let loading = null;
+  const fileCache=new SolutionFileCache();
+  let reports=new Map(),reportBytes=0;
   const load = () => loading ??= (async () => {
     const sources = await inspectionSources(cfg);
     const variants = new Map();
@@ -415,14 +477,14 @@ export function createSourceInspector(cfg) {
       const key = language?.id ?? '';
       if (!variants.has(key)) variants.set(key, (async () => {
         const lcid = language?.lcid ?? sources.lcid;
-        const imported = await importPortal(sources.sourceDir, { lcid, ...(language ? { languageId: language.id } : {}), ...(sources.dataModel ? { dataModel: sources.dataModel } : {}) });
+        const imported = await importPortal(sources.sourceDir, { cache:fileCache, lcid, ...(language ? { languageId: language.id } : {}), ...(sources.dataModel ? { dataModel: sources.dataModel } : {}) });
         // The importer chooses the last selected-language snippet. The shared resource
         // graph chooses the first matching record, so expose that same winner first.
         const selectedLanguage = norm(language?.id ?? portalField(imported.website, 'defaultlanguage'));
         const chosenSnippets = new Map();
         for (const record of imported.records.filter((row) => row.kind === 'contentsnippet' && Number(portalField(row, 'statecode', 0)) !== 1).sort((a, b) => Number(norm(portalField(a, 'contentsnippetlanguageid')) === selectedLanguage) - Number(norm(portalField(b, 'contentsnippetlanguageid')) === selectedLanguage))) chosenSnippets.set(record.name?.toLowerCase(), record);
         const portal = { ...imported, records: [...chosenSnippets.values(), ...imported.records.filter((row) => row.kind !== 'contentsnippet')] };
-        const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { portal, lcid, order: sources.order, observed: sources.observed }) : {};
+        const metadata = sources.roots.length ? await importSolutionMetadata(sources.roots, { cache:fileCache, portal, lcid, order: sources.order, observed: sources.observed }) : {};
         const codeCatalogue = await importCodeComponents(metadata.layers ?? []);
         return { portal, metadata, codeCatalogue };
       })());
@@ -439,25 +501,41 @@ export function createSourceInspector(cfg) {
     return { sources, select };
   })().catch((error) => { loading = null; throw error; });
   return {
-    invalidate() { loading = null; },
+    invalidate() { loading = null; reports=new Map();reportBytes=0; },
     async pluginSourceRoots(route) {
       const { select } = await load();
       return (await select(route)).metadata.plugins?.sourceRoots ?? [];
     },
     async enrich(report, rendered = {}) {
+      if(!report||typeof report!=='object'||Array.isArray(report))throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
       return enrichInspection(report, portal, { metadata, rendered, observed: sources.observed, codeCatalogue });
     },
     async inspect(route, rendered = {}) {
-      const { sources, select } = await load();
-      const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = await select(route);
-      const report = inspectPage(portal, sourceRoute, { solutionMetadata: metadata });
-      report.requestPath = requestPath;
-      if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };
-      await enrichInspection(report, portal, { metadata, rendered, live: true, observed: sources.observed, codeCatalogue });
-      report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
-      return { report, roots: [sources.sourceDir, ...sources.roots, ...(metadata.plugins?.sourceRoots ?? [])], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };
+      const key=JSON.stringify([route,rendered]),generation=reports;
+      const cached=reports.get(key);
+      if(cached){reports.delete(key);reports.set(key,cached);return structuredClone(await cached.result);}
+      const entry={bytes:0};
+      entry.result=(async()=>{
+        const { sources, select } = await load();
+        const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = await select(route);
+        const report = inspectPage(portal, sourceRoute, { solutionMetadata: metadata });
+        report.requestPath = requestPath;
+        if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };
+        await enrichInspection(report, portal, { metadata, rendered, live: true, observed: sources.observed, codeCatalogue });
+        report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
+        return { report, roots: [sources.sourceDir, ...sources.roots, ...(metadata.plugins?.sourceRoots ?? [])], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };
+      })();
+      reports.set(key,entry);
+      try{
+        const result=await entry.result;
+        if(generation===reports&&reports.get(key)===entry){
+          entry.bytes=JSON.stringify(result).length*2;reportBytes+=entry.bytes;
+          while(reports.size>16||reportBytes>32*1024*1024){const oldest=reports.keys().next().value;reportBytes-=reports.get(oldest).bytes;reports.delete(oldest);}
+        }
+        return structuredClone(result);
+      }catch(error){if(generation===reports)reports.delete(key);throw error;}
     },
   };
 }

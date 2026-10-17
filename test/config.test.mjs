@@ -298,9 +298,9 @@ test('portal mode defaults to selected and follows CLI, shell and .env precedenc
   assert.deepEqual(selected.targets, [selected.initial]);
   write('.env', 'PAQVILO_PORTALS=all\n');
   assert.equal((await load()).portals, 'all');
-  assert.equal((await targets()).targets.length, 4);
+  assert.equal((await targets()).targets.length, 3);
   assert.equal((await targets({}, { PAQVILO_PORTALS: 'selected' })).targets.length, 1);
-  assert.equal((await targets({ portals: 'all' }, { PAQVILO_PORTALS: 'selected' })).targets.length, 4);
+  assert.equal((await targets({ portals: 'all' }, { PAQVILO_PORTALS: 'selected' })).targets.length, 3);
   assert.equal((await targets({ portals: 'selected' }, { PAQVILO_PORTALS: 'all' })).targets.length, 1);
   for (const portals of ['', 'ALL', 'every']) await assert.rejects(targets({ portals }), /portals must be/);
 });
@@ -316,7 +316,8 @@ test('all portal targets retain environment defaults, isolated settings and init
   assert.equal(testEnv.site.scope, 'changed');
   assert.equal(testEnv.site.markup.baseline, 'origin/release/test');
   assert.equal(result.initial.site.markup.baseline, 'origin/beta');
-  assert.equal(result.targets.find((cfg) => cfg.envName === 'prod').caution, true);
+  assert.equal(result.targets.some((cfg)=>cfg.caution),false);
+  write('paqvilo.config.local.yml','includeCaution: true\n');assert.ok((await targets({portals:'all'})).targets.some(cfg=>cfg.envName==='prod'&&cfg.caution));
   testEnv.site.inline.enabled = false;
   testEnv.site.routes.push({ url: '/only-test', passthrough: true });
   const devEnv = result.targets.find((cfg) => cfg.siteName === 'alpha' && cfg.envName === 'dev');
@@ -335,7 +336,7 @@ test('all portal coverage includes .env site/source/environment additions with o
   t.mock.method(fs, 'readFileSync', (file, ...args) => { reads.push(String(file)); return read(file, ...args); });
   t.mock.method(globalThis, 'fetch', () => assert.fail('target discovery must remain offline'));
   const result = await targets();
-  assert.equal(result.targets.length, 6);
+  assert.equal(result.targets.length, 5);
   assert.ok(result.targets.filter((cfg) => cfg.siteName === 'alpha').every((cfg) => cfg.sourceDir === path.join(dir, 'portals', 'gamma')));
   assert.equal(result.targets.find((cfg) => cfg.siteName === 'gamma').origin, 'https://gamma-extra.example.com');
   assert.equal(reads.filter((file) => file === config).length, 1);
@@ -372,7 +373,7 @@ test('all portal mode rejects duplicate origins but defers unvisited source vali
   await assert.rejects(targets({ portals: 'all' }), (error) => /Duplicate portal origin https:\/\/alpha-dev.example.com/.test(error.message) && /alpha @ dev/.test(error.message) && /beta @ uat/.test(error.message));
   assert.equal((await targets()).targets.length, 1, 'selected mode does not arm other origins');
   write('paqvilo.config.local.yml', 'sites:\n  beta:\n    source: nonexistent-extract\n');
-  assert.equal((await targets({ portals: 'all' })).targets.length, 4, 'unused extracts do not prevent the working-day session');
+  assert.equal((await targets({ portals: 'all' })).targets.length, 3, 'unused extracts do not prevent the working-day session');
   await assert.rejects(targets({ portals: 'all', site: 'beta' }), /source of site "beta".*does not look like a portal extract/);
   write('paqvilo.config.local.yml', 'sites:\n  empty:\n    source: portals/gamma\n');
   await assert.rejects(targets({ portals: 'all' }), /Site "empty" has no environments/);
@@ -455,7 +456,7 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
     write('paqvilo.config.local.yml', JSON.stringify({ browser }));
     await assert.rejects(load(), /browser\./);
   }
-  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9000" }');
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9000", debugPort: null }');
   write('.env', 'PAQVILO_CDP_URL=http://127.0.0.1:9001\n');
   assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9001');
   assert.equal((await load({}, { PAQVILO_CDP_URL: 'http://127.0.0.1:9002' })).browser.cdpUrl, 'http://127.0.0.1:9002');
@@ -464,6 +465,19 @@ test('profile fields are schema checked and CDP attachment cannot ignore a resol
     await assert.rejects(load(selector), /browser.cdpUrl.*cannot be combined/);
   }
   await assert.rejects(load({ 'cdp-url': 'https://user:secret@example.com' }), /credentials/);
+});
+
+test('CDP selection cannot silently ignore an inherited or explicit launch debugger port', async () => {
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9222" }');
+  await assert.rejects(load(), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  assert.equal((await load({ 'debug-port': '0' })).browser.debugPort, null);
+  assert.equal((await load({}, { PAQVILO_DEBUG_PORT: '0' })).browser.debugPort, null);
+  for (const cdpUrl of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
+    await assert.rejects(load({ 'cdp-url': cdpUrl, 'debug-port': '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+  }
+  write('paqvilo.config.local.yml', 'browser: { cdpUrl: "http://127.0.0.1:9333", debugPort: null }');
+  assert.equal((await load()).browser.cdpUrl, 'http://127.0.0.1:9333');
+  await assert.rejects(load({}, { PAQVILO_DEBUG_PORT: '9222' }), /browser.debugPort.*cannot be combined with browser.cdpUrl/);
 });
 
 test('all portal targets share resolved browser choices without sharing mutable settings', async () => {

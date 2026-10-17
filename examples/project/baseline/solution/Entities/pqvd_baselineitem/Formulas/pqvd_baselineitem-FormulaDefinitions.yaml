@@ -1,0 +1,1 @@
+pqvd_formula: =Concatenate(pqvd_name, " / ", pqvd_code)

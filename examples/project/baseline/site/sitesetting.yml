@@ -1,0 +1,43 @@
+- adx_description: 'Baseline fixture: Web API enabled.'
+  adx_name: Webapi/pqvd_baselineitem/enabled
+  adx_sitesettingid: e587df1f-c854-4350-8caa-cf9ce83b28c2
+  adx_value: 'true'
+- adx_description: 'Baseline fixture: Web API listed fields.'
+  adx_name: Webapi/pqvd_baselineitem/fields
+  adx_sitesettingid: c879d186-b154-4128-8c05-f554d3375bd2
+  adx_value: pqvd_name,pqvd_code,pqvd_text,pqvd_textarea,pqvd_email,pqvd_url,pqvd_phone,pqvd_ticker,pqvd_memo,pqvd_wholenumber,pqvd_decimal,pqvd_float,pqvd_amount,pqvd_datetime,pqvd_dateonly,pqvd_globalchoice,pqvd_multichoice,pqvd_flag,pqvd_parentid,pqvd_contactid,pqvd_accountid,statecode,statuscode
+- adx_description: 'Baseline fixture: Web API enabled for parents.'
+  adx_name: Webapi/pqvd_baselineparent/enabled
+  adx_sitesettingid: 78c36676-d7dc-4cc2-858a-d0fe2098e0ae
+  adx_value: 'true'
+- adx_description: 'Baseline fixture: Web API listed fields.'
+  adx_name: Webapi/pqvd_baselineparent/fields
+  adx_sitesettingid: cfec77e4-cdc3-48b6-83d2-5876c63a0142
+  adx_value: pqvd_name,pqvd_code,pqvd_rank
+- adx_description: 'Baseline fixture: Web API disabled for children.'
+  adx_name: Webapi/pqvd_baselinechild/enabled
+  adx_sitesettingid: 5937381f-67c7-4fc1-8b98-7c1a6db60a9f
+  adx_value: 'false'
+- adx_description: 'Baseline fixture: Web API fields not taken from a view.'
+  adx_name: Webapi/pqvd_baselinechild/UseFieldsFromView
+  adx_sitesettingid: 73a5400b-d001-4025-8aac-e1bfbed60740
+  adx_value: 'false'
+- adx_description: 'Baseline fixture: invented Bing Maps key, so the map and geolocation pages render with a key the service rejects (O9).'
+  adx_name: Bingmaps/credentials
+  adx_sitesettingid: 43db54fa-8ebc-4603-88cf-0f3599e2c2da
+  adx_value: baseline-fake-bing-key
+- adx_description: 'Baseline fixture: Bing Maps REST URL (Learn''s default).'
+  adx_name: Bingmaps/restURL
+  adx_sitesettingid: 51b1783e-4bf1-4a95-817a-32043e350a66
+  adx_value: https://dev.virtualearth.net/REST/v1/Locations
+- adx_description: 'Baseline fixture: value from the Value column (Source = Table).'
+  adx_name: Baseline/Source Table
+  adx_sitesettingid: e418a2ee-b553-45d4-87aa-8bcb6bc5576b
+  adx_source: 0
+  adx_value: baseline
+- adx_description: 'Baseline fixture: deactivated setting.'
+  adx_name: Baseline/Inactive
+  adx_sitesettingid: fe3acbeb-d0d7-460b-89af-a0560257be90
+  adx_value: baseline
+  statecode: 1
+  statuscode: 2

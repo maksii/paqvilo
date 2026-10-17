@@ -38,7 +38,7 @@ test('admin edits, removes and resets snippets through controls, rendering and r
   assert.doesNotMatch(await (await fetch(app.url)).text(), /Local greeting|Exported greeting/);
   await row.getByRole('button', { name: 'Reset', exact: true }).click();
   await page.locator('#confirm-submit').click();
-  await row.getByText('Exported greeting', { exact: true }).waitFor();
+  await row.locator('td').nth(1).getByText('Exported greeting', { exact: true }).waitFor();
   assert.match(await (await fetch(app.url)).text(), /Exported greeting/);
   assert.deepEqual(errors, []);
 });

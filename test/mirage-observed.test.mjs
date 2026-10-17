@@ -76,9 +76,9 @@ test('mirage.observed passes through the catalogue to list and doctor; a malform
   write({ site: { observed: { loginPath: '/SignIn' } }, other: { observed: { webApiInnerError: 'sometimes', evidence: 'notes/x.json' } } });
   const missing = mirageOf(run('doctor', '--config', config, '--site', 'site', '--json'), 'site');
   assert.equal(missing.ready, false);
-  assert.match(missing.errors.join('\n'), /sites\.site\.mirage\.observed\.evidence must name the observation behind loginPath/);
+  assert.match(missing.errors.map(error=>error.message).join('\n'), /sites\.site\.mirage\.observed\.evidence must name the observation behind loginPath/);
   const unknown = mirageOf(run('doctor', '--config', config, '--site', 'other', '--json'), 'other');
-  assert.match(unknown.errors.join('\n'), /sites\.other\.mirage\.observed\.webApiInnerError must be all-errors or dataverse-errors/);
+  assert.match(unknown.errors.map(error=>error.message).join('\n'), /sites\.other\.mirage\.observed\.webApiInnerError must be all-errors or dataverse-errors/);
   write({ site: { observed: '/SignIn' } });
   await assert.rejects(loadConfig({ config, site: 'site', env: 'dev' }), /sites\.site\.mirage\.observed must be an object/);
 });

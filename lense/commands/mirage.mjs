@@ -2,6 +2,7 @@
 // It only stops loopback Mirage processes it started itself (recorded with their process start
 // identity), and it never contacts a portal environment.
 import fs from 'node:fs/promises';
+import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
@@ -9,6 +10,7 @@ import { spawn, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets } from '../config.mjs';
+import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -28,13 +30,19 @@ export const DEFAULT_PORT = 8787;
 const DEFAULT_STARTUP_TIMEOUT = 120_000;
 const STOP_DEADLINE = 5000;
 const ACTIONS = ['init', 'start', 'dev', 'status', 'inspect', 'stop'];
+export function validateMirageAction(action) {
+  if (!ACTIONS.includes(action)) throw new Error(`Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}. Run paqvilo lense --help for options.`);
+}
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const resolved = (value) => value ? path.resolve(value) : null;
 export const samePath = (a, b) => {
   if (!a || !b) return false;
-  const left = path.resolve(a), right = path.resolve(b);
+  // Node and Windows temp directories may spell the same source through a
+  // short path or junction. Compare existing filesystem identities first.
+  const canonical = value => { try { return fsSync.realpathSync.native(value); } catch { return path.resolve(value); } };
+  const left = canonical(a), right = canonical(b);
   return process.platform === 'win32'
     ? left.toLowerCase() === right.toLowerCase()
     : left === right;
@@ -204,6 +212,9 @@ async function readRuntime(url, fallbackSite = null) {
         site: status.site ?? fallbackSite, pageCount: status.pageCount ?? 0, sourceFingerprint: status.sourceFingerprint ?? null, revision: status.revision ?? null,
         // "disabled" unless the runtime was started with --allow-live-writes; then "off" or "enabled".
         liveWrites: typeof status.liveWrites === 'string' ? status.liveWrites : null,
+        platformStyles: status.platformStyles ?? { mode: 'placeholder' },
+        startupPreset: status.startupPreset ?? null,
+        observed: status.observed ?? null,
       };
     } catch { return null; }
   }
@@ -215,6 +226,7 @@ export async function discoveries(paths = DEFAULT_PATHS, { probe = true } = {}) 
   const sessions = [];
   for (const { record, file } of await discoveryRecords(paths)) {
     const processAlive = isAlive(record.pid);
+    if (!processAlive && !isAlive(record.pid)) { await fs.rm(file,{force:true}).catch(()=>{}); continue; }
     const { portals, ...base } = record;
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
@@ -322,6 +334,7 @@ export async function stopOwnedSessions({ paths = DEFAULT_PATHS, sourceDir = nul
     pruned: stale.map(({ entry, reason }) => ({ ...describe(entry), reason })),
     unverified: unverified.map(({ entry, reason }) => ({ ...describe(entry), reason })),
     removedDiscoveries,
+    writesFiles: [paths.ownershipFile],
   };
 }
 
@@ -366,6 +379,8 @@ export function catalogueArgs(cfg, args = {}, { requireProject = true } = {}) {
   if (!effective.project && !effective['solution-root']?.length && configured.solutionRoots?.length) effective['solution-root'] = [...configured.solutionRoots];
   if (effective.port === undefined && Number.isInteger(configured.port)) effective.port = String(configured.port);
   if (effective.preset === undefined && configured.preset) effective.preset = configured.preset;
+  if (effective['apply-configuration'] === undefined && configured.presetConfiguration === 'apply') effective['apply-configuration'] = true;
+  if (effective['preset-mode'] === undefined && configured.presetMode) effective['preset-mode'] = configured.presetMode;
   return effective;
 }
 
@@ -373,19 +388,23 @@ export function cliArgs(cfg, action, args, project = null) {
   const cli = path.join(MIRAGE_ROOT, 'cli.mjs');
   const common = [
     '--state-dir', path.dirname(miragePaths(cfg, args).discoveryRoot),
-    ...(args.port ? ['--port', String(args.port)] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
+    ...(args.port !== undefined ? ['--port', String(runtimePort(args.port, DEFAULT_PORT))] : []), ...(args.state ? ['--state', path.resolve(args.state)] : []), ...(args.preset ? ['--preset', args.preset] : []),
+    ...(args['apply-configuration'] === true ? ['--apply-configuration'] : []),
+    ...(args['preset-mode'] ? ['--preset-mode', args['preset-mode']] : []),
     // Live writes stay impossible unless this runtime is started with the flag (off by default).
     ...(args['allow-live-writes'] === true ? ['--allow-live-writes'] : []),
   ];
   if (project) {
     const portal = args.portal ?? (action === 'serve' ? project.defaultPortal : null);
-    return { cli, values: [action, '--project', project.configFile, ...(portal ? ['--portal', portal] : []), ...common] };
+    return { cli, values: [action, '--project', project.configFile, ...(portal ? ['--portal', portal] : []),
+      ...(cfg?.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, project.configFile) ? ['--site', cfg.catalogueSite ?? cfg.siteName, '--env', cfg.envName] : []),
+      ...((args.config || !args.project) && cfg?.configFile ? ['--config', cfg.configFile] : []), ...common] };
   }
   const origin = httpsOrigin(cfg.origin);
   const values = [action, '--site', cfg.siteName, '--env', cfg.envName, '--source', cfg.sourceDir, ...(origin ? ['--origin', origin] : []), ...common];
   // The Mirage reads the site's mirage settings (such as observed behaviour) from the
   // catalogue: the same catalogue file and portal checkout the toolkit resolved.
-  if (args.config) values.push('--config', path.resolve(args.config));
+  if (cfg.configFile || args.config) values.push('--config', cfg.configFile ?? path.resolve(args.config));
   if (args.repo) values.push('--repo', path.resolve(args.repo));
   for (const root of args['solution-root'] ?? []) values.push('--solution-root', path.resolve(root));
   // The Mirage layers --solution-root values in their dependency order unless told otherwise.
@@ -430,7 +449,7 @@ export function observedText(observed) {
 
 /** Solution roots in load order, as the Mirage CLI will apply them. */
 async function launchSolutionRoots(sourceDir, args, projectInfo) {
-  if (projectInfo) return projectInfo.solutionRoots ?? [];
+  if (projectInfo) return projectInfo.portals.find((portal) => portal.id === (args.portal ?? projectInfo.defaultPortal))?.solutionRoots ?? [];
   if (args['solution-root']?.length) return args['solution-root'].map((root) => path.resolve(root));
   return (await import('../../mirage/lib/solution-roots.mjs')).discoverSolutionRoots(sourceDir);
 }
@@ -449,10 +468,17 @@ async function launchIdentity(cfg, args, projectInfo = null) {
   return {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
-      stateFile: resolved(stateFile), preset: args.preset ?? null, allowLiveWrites: args['allow-live-writes'] === true,
-      // Sorted only for matching records written by earlier toolkit versions; the CLI keeps load order.
-      solutionRoots: [...solutionRoots].sort(),
+      stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only', allowLiveWrites: args['allow-live-writes'] === true,
+      // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
+      solutionRoots: [...solutionRoots], solutionOrder: projectInfo?.solutionOrder ?? solutionOrderOf(cfg),
       requestedPort: String(args.port ?? DEFAULT_PORT),
+      render: renderSettings(cfg.mirageConfig?.render),
+      personaContexts: cfg.mirageConfig?.personaContexts ?? {maxInstances:4},
+      identityProvider: cfg.mirageConfig?.identityProvider ?? {},
+      platform: cfg.mirageConfig?.platform ?? projectInfo?.portals.find(item=>item.id===portalId)?.platform ?? null,
+      deploymentProfiles: cfg.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, projectInfo?.configFile)
+        ? cfg.mirageConfig.deploymentProfiles
+        : projectInfo?.portals.find(item => item.id === portalId)?.deploymentProfiles ?? cfg.mirageConfig?.deploymentProfiles ?? null,
     },
     solutionRoots,
   };
@@ -464,15 +490,20 @@ function identityMatches(left, right) {
     && (left.project ?? null) === (right.project ?? null)
     && (left.portal ?? null) === (right.portal ?? null)
     && (left.preset ?? null) === (right.preset ?? null)
+    && (left.presetConfiguration ?? 'data-only') === (right.presetConfiguration ?? 'data-only')
+    && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
+    && JSON.stringify(left.render ?? renderSettings()) === JSON.stringify(right.render ?? renderSettings())
+    && JSON.stringify(left.platform ?? null) === JSON.stringify(right.platform ?? null)
+    && JSON.stringify(left.deploymentProfiles ?? null) === JSON.stringify(right.deploymentProfiles ?? null)
     && Boolean(left.allowLiveWrites) === Boolean(right.allowLiveWrites)
+    && left.solutionOrder === right.solutionOrder
     && JSON.stringify(left.solutionRoots ?? []) === JSON.stringify(right.solutionRoots ?? [])
     && String(left.requestedPort ?? '') === String(right.requestedPort ?? ''));
 }
 
 // ------------------------------------------------------------------------------ start
 async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
-  const port = args.port === undefined ? String(DEFAULT_PORT) : String(args.port);
-  if (!/^\d+$/.test(port) || Number(port) > 65535) throw new Error('--port must be an integer from 0 to 65535');
+  const port = String(runtimePort(args.port, DEFAULT_PORT));
   const timeout = args['startup-timeout'] === undefined ? DEFAULT_STARTUP_TIMEOUT : Number(args['startup-timeout']);
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600_000) throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
   let projectInfo = null;
@@ -496,7 +527,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
     && owned.some((item) => item.pid === session.pid && item.discovery === session.discovery
       && item.processIdentity && item.processIdentity === processIdentity(session.pid)
       && identityMatches(item.identity, identity)));
-  if (existing) return { ...existing, owned: true, started: false, launch };
+  if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
   if (port !== '0' && !(await portAvailable(Number(port)))) throw new Error(`Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`);
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
   let child;
@@ -543,7 +574,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
             pid: session.pid, processIdentity: childIdentity, sourceDir: session.sourceDir, project: identity.project, portal: session.id ?? identity.portal,
             discovery, url: session.url, stateFile: session.stateFile, identity, log, ready: true, startedAt: new Date(started).toISOString(),
           }]);
-          return { ...session, owned: true, started: true, launch };
+          return { ...session, owned: true, started: true, launch, writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(file => file && fsSync.existsSync(file)) };
         }
       } catch { /* server has not written its discovery file yet */ }
       if (!isAlive(child.pid)) {
@@ -557,6 +588,9 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
     await abandon();
     if (interrupted) throw new Error('Mirage startup was interrupted; the starting process was stopped.');
     throw new Error(`Mirage did not become ready within ${timeout}ms${port === '0' ? '' : ` on port ${port}`}. See startup log: ${log}`);
+  } catch (error) {
+    error.writesFiles = [log, paths.ownershipFile].filter(file => fsSync.existsSync(file));
+    throw error;
   } finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', interrupt);
@@ -643,9 +677,17 @@ export async function initProject(cfg, args = {}) {
     defaultPortal: cfg.siteName,
     // dataModel: the catalogue site's data model for a source that does not record it (.powerpages-site).
     portals: [{ id: cfg.siteName, path: yamlPath(base, cfg.sourceDir), ...(origin ? { origin } : {}), ...(observed ? { observed } : {}), ...(configured.dataModel ? { dataModel: configured.dataModel } : {}) }],
+    ...Object.fromEntries(['confinePortalPages','externalAssets','externalFrameOrigins'].filter(key=>configured[key]!==undefined).map(key=>[key,configured[key]])),
+    ...(configured.platform ? {platform:configured.platform} : {}),
     solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
     solutionOrder,
     references,
+    ...(configured.deploymentProfiles ? { deploymentProfiles: {
+      ...configured.deploymentProfiles,
+      profiles: Object.fromEntries(Object.entries(configured.deploymentProfiles.profiles).map(([id, sources]) => [id,
+        Object.fromEntries(Object.entries(sources).map(([section, source]) => [section, Array.isArray(source) ? source.map(file=>yamlPath(base,file)) : yamlPath(base, source)])),
+      ])),
+    } } : {}),
     ...(configured.dataPacks?.length ? { dataPacks: configured.dataPacks.map(({ id, module }) => ({ ...(id ? { id } : {}), module: yamlPath(base, module) })) } : {}),
   };
   const header = [
@@ -680,7 +722,7 @@ export async function initProject(cfg, args = {}) {
   const packs = await matchingPacks(cfg, configured.dataPacks ?? []);
   const catalogued = Boolean(configured.project && samePath(configured.project, file));
   return {
-    action: 'init', file, site: cfg.siteName, env: cfg.envName, version: loaded.version,
+    action: 'init', file, writesFiles: [file], site: cfg.siteName, env: cfg.envName, version: loaded.version,
     portal: { id: cfg.siteName, sourceDir: loaded.portals[0].sourceDir, origin: loaded.portals[0].origin ?? null, observed: loaded.portals[0].observed ?? null },
     solutions: loaded.solutions.map((solution) => ({ id: solution.id, root: solution.root })),
     solutionOrder,
@@ -792,16 +834,29 @@ export async function mirageReadiness(cfg, { dependencies, stateRoot = miragePat
   const portNumber = Number.isInteger(configured.port) ? configured.port : DEFAULT_PORT;
   const port = { port: portNumber, available: portNumber === 0 ? true : await checkPort(portNumber) };
   if (!port.available) warnings.push(`Port ${portNumber} is in use. mirage dev/start reuse a matching toolkit-owned Mirage there; otherwise pass --port 0 (any free port) or another port.`);
-  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, errors, warnings };
+  let platformStyles = { mode: 'placeholder' };
+  try {
+    const { platformStylesStatus } = await import('../../mirage/lib/platform-styles.mjs');
+    const file = projectPortal && loaded ? (await import('../../mirage/lib/project-config.mjs')).projectStateFile(loaded, projectPortal.id, path.join(miragePaths(cfg).discoveryRoot, 'projects')) : path.join(miragePaths(cfg).discoveryRoot, cfg.siteName, 'state.json');
+    const { readStateFile } = await import('../../mirage/lib/state-storage.mjs');
+    platformStyles = platformStylesStatus((await readStateFile(file, { sections: ['simulator'] })).simulator?.shellProfile);
+  } catch { /* Missing state uses the structural fallback. */ }
+  const {deploymentProfilesStatus,resolveDeploymentProfiles}=await import('../../mirage/lib/deployment-profiles.mjs');
+  const deploymentProfiles=await deploymentProfilesStatus(configured.deploymentProfiles ?? projectPortal?.deploymentProfiles ?? resolveDeploymentProfiles());
+  for(const profile of deploymentProfiles.profiles)if(!profile.valid) {
+    const message=`Deployment profile '${profile.id}': ${profile.error.message}`;
+    (profile.id===deploymentProfiles.default?errors:warnings).push(message);
+  }
+  return { ready: errors.length === 0, catalogue: configured, dependencies: dependencyReport, project, solutionRoots, observed, observedSource, dataPacks, stateDir, port, platformStyles, deploymentProfiles, platform: configured.platform ?? projectPortal?.platform ?? null, localOverrides: configured.localOverrides, errors, warnings };
 }
 
 // ------------------------------------------------------------------------------ output
 // ------------------------------------------------------------------------------ several portals
 // One Mirage per catalogue site (each with its own project or source, state, port, references
 // and session cookie); `dev` switches between them, and the live targets, in one browser.
-const PER_PORTAL_OPTIONS = ['project', 'portal', 'port', 'state', 'preset', 'solution-root', 'source', 'url', 'out'];
+const PER_PORTAL_OPTIONS = ['project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'solution-root', 'source', 'url', 'out'];
 /** With several portals, dev and start apply these options to the selected site's runtime only. */
-const SELECTED_SITE_OPTIONS = ['port', 'state', 'preset', 'solution-root'];
+const SELECTED_SITE_OPTIONS = ['port', 'state', 'preset', 'preset-mode', 'solution-root'];
 const given = (args, option) => args[option] !== undefined && !(Array.isArray(args[option]) && !args[option].length);
 const pick = (args, options) => Object.fromEntries(options.filter((option) => given(args, option)).map((option) => [option, args[option]]));
 
@@ -855,7 +910,7 @@ async function portalConfigs(cfg, args, action) {
 function portClashes(plans) {
   const sitesByPort = new Map();
   for (const plan of plans) {
-    const port = String(plan.args.port ?? DEFAULT_PORT);
+    const port = String(runtimePort(plan.args.port, DEFAULT_PORT));
     if (port !== '0') sitesByPort.set(port, [...(sitesByPort.get(port) ?? []), plan.site]);
   }
   return [...sitesByPort].filter(([, sites]) => sites.length > 1).map(([port, sites]) => `port ${port}: ${sites.join(', ')}`);
@@ -885,10 +940,11 @@ export function catalogueStartPlans(entries, args, selected = null) {
  */
 function projectStartPlans(cfg, effective, portals) {
   if (effective.state !== undefined) throw new Error('--state names one runtime; a project with several portals keeps a state file per portal. Pass --portal to start one of them with --state.');
-  const base = effective.port === undefined ? DEFAULT_PORT : Number(effective.port);
+  const base = runtimePort(effective.port, DEFAULT_PORT);
+  if (base && base + portals.length - 1 > 65535) throw new Error('The configured portal count exceeds the available port range.');
   return portals.map((portal, index) => ({
     site: portal.id,
-    cfg: { ...cfg, siteName: portal.id, sourceDir: portal.sourceDir },
+    cfg: { ...cfg, catalogueSite: cfg.catalogueSite ?? cfg.siteName, siteName: portal.id, sourceDir: portal.sourceDir },
     args: { ...effective, portal: portal.id, port: String(base === 0 ? 0 : base + index) },
   }));
 }
@@ -951,8 +1007,8 @@ async function runPortals({ cfg, args, action, plans, paths, stop, initialSite }
   const portals = await startPlans(plans, paths);
   const running = portals.filter((portal) => portal.session);
   const summary = portals.map((portal) => portal.session
-    ? { site: portal.site, url: portal.session.url, adminUrl: adminUrlOf(portal.session.url), stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null, sourceDir: portal.session.sourceDir, pid: portal.session.pid, started: portal.session.started, liveWrites: portal.session.runtime?.liveWrites ?? null }
-    : { site: portal.site, error: portal.error?.message ?? String(portal.error) });
+    ? { site: portal.site, url: portal.session.url, adminUrl: adminUrlOf(portal.session.url), stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null, sourceDir: portal.session.sourceDir, pid: portal.session.pid, started: portal.session.started, writesFiles: portal.session.writesFiles ?? [], liveWrites: portal.session.runtime?.liveWrites ?? null }
+    : { site: portal.site, error: portal.error?.message ?? String(portal.error), writesFiles: portal.error?.writesFiles ?? [] });
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
     return running.length === portals.length ? 0 : 1;
@@ -1016,9 +1072,35 @@ function stopHint(cfg, args) {
   return parts.join(' ');
 }
 
+/** A diagnostic inspection can legitimately return a report with exit status 1. */
+export function inspectProcessResult(result) {
+  if (result.error) throw result.error;
+  const failed = () => new Error(String(result.stderr ?? '').trim() ||
+    `Mirage inspect ${result.signal ? `was terminated by ${result.signal}` : `exited with ${result.status}`}`);
+  let report;
+  try { report = JSON.parse(result.stdout); }
+  catch { throw result.status !== 0 ? failed() : new Error('Mirage inspect returned invalid JSON'); }
+  const valid = report && typeof report === 'object' && !Array.isArray(report) && (
+    Array.isArray(report.pages) && Array.isArray(report.diagnostics) && typeof report.sourceDir === 'string' ||
+    Array.isArray(report.portals) && typeof report.configFile === 'string' &&
+      report.portals.every(portal => portal && Array.isArray(portal.pages) && Array.isArray(portal.diagnostics))
+  );
+  if (!valid) throw result.status !== 0 ? failed() : new Error('Mirage inspect returned an invalid inspection report');
+  if (result.status !== 0 && result.status !== 1) throw failed();
+  const diagnostics = report.diagnostics ?? report.portals.flatMap(portal => portal.diagnostics);
+  const errors = result.status === 0 ? [] : diagnostics
+    .filter(item => typeof item?.code === 'string' && item.code.startsWith('invalid'))
+    .map(item => ({ ...item, message: item.message ?? item.reason ?? `Source inspection reported ${item.code}` }));
+  if (result.status !== 0 && !errors.length) throw failed();
+  return { report, exitCode: result.status, errors };
+}
+
 function print(value, json) {
   if (json) {
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'mirage', ok: true, ...value }, null, 2));
+    const entries = value.projects ?? value.portals ?? [];
+    const errors = entries.filter(item => item.error).map(item => ({code:'MIRAGE_PORTAL_FAILED',message:String(item.error),site:item.site}));
+    const writesFiles = [...new Set(value.writesFiles ?? entries.flatMap(item => item.writesFiles ?? []))];
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'mirage', ok: errors.length === 0, offline: ['init','inspect'].includes(value.action), errors, ...value, writesFiles, ...('started' in value || value.action === 'start' ? {runtimeWrites: value.started !== false} : {}) }, null, 2));
     return;
   }
   if (value.sessions) {
@@ -1028,6 +1110,12 @@ function print(value, json) {
       console.log(`${state}${session.owned ? ' · toolkit managed' : ''}${session.site ? `  [${session.site}]` : ''}  ${session.url ?? '(no URL yet)'}  ${session.sourceDir ?? ''}${session.runtime?.site ? `  (${session.runtime.site}, ${session.runtime.pageCount} pages)` : ''}`);
       const details = [session.adminUrl && `admin ${session.adminUrl}`, session.identityProvider?.origin && `idp ${session.identityProvider.origin}`, session.runtime?.liveWrites && `live writes ${session.runtime.liveWrites}`, session.project && `project ${session.project}`, session.portal && `portal ${session.portal}`, session.stateFile && `state ${session.stateFile}`, `pid ${session.pid}`].filter(Boolean);
       console.log(`    ${details.join(' · ')}`);
+      if (session.runtime?.startupPreset?.name) console.log(`    preset ${session.runtime.startupPreset.name}: ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'} (${session.runtime.startupPreset.mode})`);
+      if (session.runtime?.platformStyles) {
+        const styles = session.runtime.platformStyles;
+        console.log(`    platform stylesheets: ${styles.mode === 'captured' ? `captured ${styles.capturedAt} from ${styles.origin}` : 'placeholder (local structural form rules)'}`);
+        if (styles.missingHeadStylesheets?.length) console.log(`    missing head stylesheets: ${styles.missingHeadStylesheets.join(', ')}`);
+      }
     }
     return;
   }
@@ -1072,6 +1160,7 @@ function print(value, json) {
   }
   if (value.url) {
     console.log(`Mirage: ${value.url}${value.started === false ? '  (already running)' : ''}\nAdmin:     ${value.adminUrl}\nState:     ${value.stateFile}\nSource:    ${value.sourceDir}\nLive writes: ${liveWritesText(value.runtime?.liveWrites)}`);
+    if (value.runtime?.startupPreset?.name) console.log(`Preset:    ${value.runtime.startupPreset.name} (${value.runtime.startupPreset.mode}; ${value.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`);
     if (value.launch?.project) console.log(`Project:   ${value.launch.project}${value.launch.portal ? ` (portal ${value.launch.portal})` : ''}`);
     if (value.stop) console.log(`Stop:      ${value.stop}`);
     return;
@@ -1081,7 +1170,8 @@ function print(value, json) {
 
 export default async function mirage(cfg, args, positionals = []) {
   const action = positionals[0] ?? 'status';
-  if (!ACTIONS.includes(action)) throw new Error(`Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}`);
+  validateMirageAction(action);
+  if (action === 'dev' && args.json) throw new Error('mirage dev is interactive; use mirage start --json and agent commands for structured session access');
   if (action !== 'init' && (args.out !== undefined || args.force)) throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action)) throw new Error('--allow-live-writes applies only to mirage dev and start');
   const paths = miragePaths(cfg, args);
@@ -1122,10 +1212,10 @@ export default async function mirage(cfg, args, positionals = []) {
     }
     const { cli, values } = cliArgs(cfg, 'inspect', effective, project);
     const result = spawnSync(process.execPath, [cli, ...values, '--json'], { cwd: TOOL_ROOT, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(result.stderr.trim() || `Mirage inspect exited with ${result.status}`);
-    process.stdout.write(result.stdout);
-    return 0;
+    const { report, exitCode, errors } = inspectProcessResult(result);
+    if (args.json) print({ ...report, action: 'inspect', ok: exitCode === 0, errors, writesFiles: [] }, true);
+    else process.stdout.write(result.stdout);
+    return exitCode;
   }
   const session = await start(cfg, effective, { paths });
   const { launch } = session;
@@ -1140,6 +1230,7 @@ export default async function mirage(cfg, args, positionals = []) {
     console.log(`state       ${stateFile}`);
     console.log(`source      ${session.sourceDir}`);
     console.log(`live writes ${liveWritesText(session.runtime?.liveWrites)}`);
+    if (session.runtime?.startupPreset?.name) console.log(`preset      ${session.runtime.startupPreset.name} (${session.runtime.startupPreset.mode}; ${session.runtime.startupPreset.applied ? 'applied at startup' : 'kept existing state'})`);
     if (launch.project) console.log(`project     ${launch.project}${launch.portal ? ` (portal ${launch.portal})` : ''}`);
     console.log(`solutions   ${launch.solutionRoots.length ? launch.solutionRoots.join(', ') : 'none (no Solution roots configured or discovered)'}`);
     console.log(`stop        ${session.started ? 'Ctrl+C here or close the browser: the browser and this Mirage stop' : 'Ctrl+C here or close the browser ends the browser session; the Mirage keeps running'}. Stop it any time with: ${stop}`);

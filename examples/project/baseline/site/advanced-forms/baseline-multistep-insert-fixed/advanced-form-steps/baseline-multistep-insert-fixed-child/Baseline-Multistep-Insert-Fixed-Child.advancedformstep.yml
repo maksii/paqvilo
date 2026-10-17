@@ -1,0 +1,46 @@
+adx_allowmultiplefiles: false
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_attachfilerequired: false
+adx_attachfilerestrictaccept: false
+adx_autogeneratesteps: false
+adx_captcharequired: false
+adx_createautonumber: false
+adx_editexistingrecordpermitted: false
+adx_entitypermissionsenabled: true
+adx_forceallfieldsrequired: false
+adx_formname: Baseline Child
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_hideformonsuccess: true
+adx_loguser: false
+adx_mode: 100000000
+adx_movepreviouspermitted: true
+adx_multiplerecordsperuserpermitted: false
+adx_name: Baseline Multistep Insert Fixed Child
+adx_nextstep: 94718495-6c0f-4a59-8db8-c573bdc0082d
+adx_populatereferenceentitylookupfield: true
+adx_portaluserlookupattributeisactivityparty: false
+adx_recommendedfieldsrequired: false
+adx_redirecturlappendentityidquerystring: false
+adx_referenceentitylogicalname: pqvd_baselineitem
+adx_referenceentityrelationshipname: pqvd_baselineitem_baselinechild
+adx_referenceentityshowreadonlyform: false
+adx_referenceentitysourcetype: 100000001
+adx_referenceentitystep: 8e9c5a3a-b7f8-4aad-849e-355bbf6b5c85
+adx_referencequerystringisprimarykey: true
+adx_referencetargetlookupattributelogicalname: pqvd_itemid
+adx_renderwebresourcesinline: false
+adx_setentityreference: true
+adx_showcaptchaforauthenticatedusers: false
+adx_showownerfields: false
+adx_showunsupportedfields: false
+adx_targetentitylogicalname: pqvd_baselinechild
+adx_title: Baseline Multistep Insert Fixed Child
+adx_tooltipenabled: false
+adx_type: 100000001
+adx_validationsummarylinksenabled: true
+adx_webform: 33b4a554-bc6b-4ea3-8fec-ec3ffa3f4144
+adx_webformstepid: 52faafa9-a9ee-4a5a-86ee-2cca0c803c08

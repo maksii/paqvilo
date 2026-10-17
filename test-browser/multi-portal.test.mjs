@@ -148,7 +148,7 @@ test('one catalogue browser isolates lazy portal sessions, environments, panels,
   const switcher = main.getByLabel('Portal / environment');
   assert.equal(await switcher.locator('option').count(), 4);
   assert.ok((await switcher.locator('option').allTextContents()).includes('beta @ extra'), 'the .env-added environment is selectable in the panel');
-  await Promise.all([main.waitForNavigation({ waitUntil: 'load' }), switcher.selectOption({ label: 'beta @ dev' })]);
+  await Promise.all([main.waitForNavigation({ waitUntil: 'load' }), switcher.selectOption({ label: 'beta @ dev' }).then(()=>main.locator('[data-target-go]').click())]);
   await assertPortal(main, betaDev, 'beta-v1', 'rgb(40, 50, 60)');
   assert.equal(runtime.active.size, 2, 'navigation in an existing tab activates its matching source');
   await main.goto(alphaDev.origin, { waitUntil: 'load' });

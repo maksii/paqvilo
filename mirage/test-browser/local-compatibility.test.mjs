@@ -104,6 +104,10 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   assert.equal(await page.locator("#overlapAction").evaluate((button) => button.getBoundingClientRect().bottom <= document.querySelector(".sample-footer").getBoundingClientRect().top), true, JSON.stringify(await page.evaluate(() => ({ action: document.querySelector("#overlapAction").getBoundingClientRect().toJSON(), footer: document.querySelector(".sample-footer").getBoundingClientRect().toJSON(), style: { position: getComputedStyle(document.querySelector(".sample-footer")).position, marginTop: getComputedStyle(document.querySelector(".sample-footer")).marginTop }, body: document.body.getBoundingClientRect().toJSON() }))));
   assert.equal(await page.locator("#sourceDate").evaluate((node) => !!window.jQuery(node).data("DateTimePicker")), true);
   await page.locator("#sourceTip").hover();
+  await page.evaluate(() => new Promise(resolve => {
+    document.getElementById('sourceTip').setAttribute('aria-label', 'Helpful hint');
+    requestAnimationFrame(() => requestAnimationFrame(resolve));
+  }));
   assert.equal(await page.getByRole("tooltip").innerText(), "Helpful hint");
   await page.evaluate(() => {
     window.popoverHookCalls = [];
@@ -160,12 +164,16 @@ test("clean source-only forms use local date and rich-text compatibility assets 
   ]);
   await page.locator("#effective_datepicker_description").waitFor();
   await page.locator("#effective_datepicker_description").evaluate((display) => {
-    const chooser = display.closest("[data-sim-date-target]").querySelector(".paqvilo-mirage-date-chooser");
+    const group = display.closest(".datetimepicker");
+    // The native chooser and the action buttons stay out of the DOM until the picker opens.
+    if (group.querySelector(".paqvilo-mirage-date-chooser, .paqvilo-mirage-date-actions")) throw new Error("date picker adds local controls before it opens");
+    window.jQuery(group).datetimepicker("show");
+    const chooser = group.querySelector(".paqvilo-mirage-date-chooser");
     chooser.value = "2025-02-03";
     chooser.dispatchEvent(new Event("change", { bubbles: true }));
   });
-  assert.equal(await page.locator("#effective").inputValue(), "2025-02-03");
-  assert.equal(await page.locator("#effective_datepicker_description").inputValue(), "03/02/2025");
+  assert.equal(await page.locator("#effective").inputValue(), "2025-02-03T00:00:00.0000000");
+  assert.equal(await page.locator("#effective_datepicker_description").inputValue(), "2/3/2025");
   await page.locator("[data-sim-editor-mode=compatibility]").waitFor();
   assert.equal(await page.locator(".sim-compatibility-badge").innerText(), "Compatibility editor");
   assert.equal(

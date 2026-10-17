@@ -71,6 +71,74 @@ test('Liquid comment and capture bodies cannot patch unrelated matching rendered
   assert.ok(rewriter.unsupported.every((item) => /comment\/capture body/.test(item.reason)));
 });
 
+test('same-line literal edits preserve rendered conditional and output values', () => {
+  for (const logic of ['AUTH:{% if user %}true{% else %}false{% endif %}', '<span>{{ user.name }}</span>{% if user %}AUTH:true{% endif %}']) {
+    sources = [];
+    versions.clear();
+    const before = `<p>Original owned paragraph.</p>${logic}`;
+    source('template.html', before, before.replace('Original owned', 'Edited owned'));
+    const suffix = logic.startsWith('AUTH:') ? 'AUTH:true' : '<span>Rendered name</span>AUTH:true';
+    const body = `<main><p>Original owned paragraph.</p>${suffix}</main>`;
+    const rewriter = makeRewriter();
+    const result = rewriter.rewrite(body, '/');
+    assert.equal(result.html, body.replace('Original owned', 'Edited owned'));
+    assert.deepEqual(rewriter.unsupported, []);
+    assert.equal(result.applied.length, 1);
+    assert.ok(!result.html.includes('{%'));
+  }
+});
+
+test('same-line fallback protects capture/comment bodies and changed or newly introduced tokens', () => {
+  const cases = [
+    ['{% capture value %}<p>Original owned paragraph.</p>{% endcapture %}', 'Original owned', 'Edited owned'],
+    ['{% comment %}<p>Original owned paragraph.</p>{% endcomment %}', 'Original owned', 'Edited owned'],
+    ['<p>Original owned paragraph.</p>{% if user %}true{% endif %}', 'if user', 'if account'],
+    ['<p>Original owned paragraph.</p>{{ user.name }}{% if user %}true{% endif %}', 'user.name', 'account.name'],
+    ['<p>Original owned paragraph.</p>{% if user %}true{% endif %}', 'Original owned', '{{ newValue }}'],
+    ['<p>Original owned paragraph.</p>{%- if user -%}true{% endif %}', 'Original owned', 'Edited owned'],
+    ['<p>Original owned paragraph.</p>{{- user.name -}}{% if user %}true{% endif %}', 'Original owned', 'Edited owned'],
+    ['{% assign value = "Original owned paragraph." %}<p>Other unchanged paragraph.</p>', 'Original owned', 'Edited owned'],
+  ];
+  for (const [before, from, to] of cases) {
+    sources = [];
+    versions.clear();
+    source('template.html', before, before.replace(from, to));
+    const body = '<p>Original owned paragraph.</p><p>Other unchanged paragraph.</p>AUTH:true';
+    const rewriter = makeRewriter();
+    assert.equal(rewriter.rewrite(body, '/').html, body, before);
+    assert.equal(rewriter.unsupported.length, 1, before);
+  }
+});
+
+test('literal segment outside an unchanged capture remains patchable and preserves its rendered use', () => {
+  const before = '<p>Original owned paragraph.</p>{% capture value %}Captured text{% endcapture %}{{ value | upcase }}';
+  source('template.html', before, before.replace('Original owned', 'Edited owned'));
+  const body = '<p>Original owned paragraph.</p>CAPTURED TEXT';
+  assert.equal(rewrite(body).html, body.replace('Original owned', 'Edited owned'));
+});
+
+test('same-line literal fallback refuses ambiguous source/runtime and localized anchors', () => {
+  const before = '<p>Original owned paragraph.</p>{% if user %}true{% endif %}';
+  source('template.html', before, before.replace('Original owned', 'Edited owned'));
+  const body = '<p>Original owned paragraph.</p>true';
+  const result = rewrite(body + body);
+  assert.equal(result.html, body + body);
+  assert.match(result.notes[0].reason, /occurs 2 times/);
+  sources = [];
+  versions.clear();
+  source('template.html', before + before, (before + before).replace('Original owned', 'Edited owned'));
+  const ambiguous = makeRewriter();
+  assert.equal(ambiguous.rewrite(body, '/').html, body);
+  assert.equal(ambiguous.unsupported.length, 1);
+  sources = [];
+  versions.clear();
+  source('Value.en-US.contentsnippet.value.html', before, before.replace('Original owned', 'Edited owned'), { kind: 'content-snippet', snippetName: 'Actions' });
+  source('Value.pl-PL.contentsnippet.value.html', before, before, { kind: 'content-snippet', snippetName: 'Actions' });
+  const localized = makeRewriter();
+  assert.equal(localized.rewrite(body, '/').html, body);
+  assert.equal(localized.unsupported.length, 1);
+});
+
 test('Liquid raw bodies patch literal output markers without trying to evaluate them', () => {
   source('raw.html', '{% raw %}\n<p>{{ original }}</p>\n{% endraw %}', '{% raw %}\n<b>{{ changed }}</b>\n{% endraw %}');
   const result = rewrite('<p>{{ original }}</p>\n');

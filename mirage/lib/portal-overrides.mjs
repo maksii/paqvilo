@@ -34,6 +34,11 @@ export function applyPortalOverrides(source, overrides = {}) {
       else Object.defineProperty(portal[section], name, { value, enumerable: true, writable: true, configurable: true });
     }
   }
+  // A name-level override intentionally applies to every request language in
+  // this instance. Otherwise a localized value would silently win over it.
+  if(source.snippetTranslations)portal.snippetTranslations=Object.fromEntries(Object.entries(source.snippetTranslations).map(([language,values])=>{
+    const copy={...values};for(const [name,value]of Object.entries(overrides.snippets??{})){if(value===null)delete copy[name];else copy[name]=value;}return [language,copy];
+  }));
   portal.records = [...source.records ?? []];
   for (const [roleId, value] of Object.entries(overrides.roles ?? {})) {
     const index = portal.records.findIndex(record => record.kind === 'webrole' && record.id === roleId);

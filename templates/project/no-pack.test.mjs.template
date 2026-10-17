@@ -1,0 +1,9 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { loadCatalogue } from 'paqvilo/lense';
+import { fileURLToPath } from 'node:url';
+
+test('shared catalogue has configured sites', () => {
+  const catalogue = loadCatalogue({ config: fileURLToPath(new URL('../paqvilo.config.yml', import.meta.url)) }, {});
+  assert.ok(Object.keys(catalogue.sites).length > 0);
+});

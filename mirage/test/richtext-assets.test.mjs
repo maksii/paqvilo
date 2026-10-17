@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import {extractManagedRichTextControls} from '../acceptance-api.mjs';
 import { officeFontPath } from "../lib/asset-cache.mjs";
 import {
   captureRichTextAssets,
-  extractManagedRichTextControls,
   observeManagedResources,
 } from "../lib/richtext-assets.mjs";
 
@@ -17,6 +17,21 @@ const live = {
   origin: "https://portal.example.test",
   status: () => ({ connected: true }),
 };
+
+test('large, deep and cyclic schema discovery is bounded and never aborts shell capture', async () => {
+  const schemas = { fields: Array.from({ length: 25000 }, () => ({ name: 'synthetic' })) };
+  schemas.self = schemas;
+  const result = await captureRichTextAssets(null, live, { schemas });
+  assert.equal(result.complete, false);
+  assert.equal(result.skipped, 'SCHEMA_TRUNCATED');
+  assert.equal(result.failures[0].code, 'RICHTEXT_SCHEMA_TRUNCATED');
+  assert.equal(result.failures[0].blocking, false);
+  let deep = {};
+  for (let i = 0; i < 25000; i++) deep = { child: deep };
+  assert.equal((await captureRichTextAssets(null, live, { schemas: deep })).skipped, 'SCHEMA_TRUNCATED');
+  const cycle = {}; cycle.self = cycle;
+  assert.equal((await captureRichTextAssets(null, live, { schemas: cycle })).complete, true);
+});
 function cacheFixture({
   failure,
   config = {
@@ -123,7 +138,7 @@ test("capture derives bounded plugins and exact timestamp sprite URLs without ex
   assert.ok(cache.calls.includes(editor + "plugins/icons.png?t=O7L9"));
   assert.ok(!cache.calls.includes(editor + "lang/en.js"));
   assert.ok(
-    !cache.calls.includes(editor + "lang/editor-language-resources.js"),
+    cache.calls.includes(editor + "lang/editor-language-resources.js"),
   );
   assert.equal(result.nativeReady, false);
   assert.equal(result.complete, false);

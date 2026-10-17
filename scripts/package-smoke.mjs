@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReleaseFiles } from './release-check.mjs';
+import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const npm = process.env.npm_execpath;
@@ -24,6 +25,15 @@ const bootstrap = path.join(work, 'bootstrap');
 fs.mkdirSync(bootstrap);
 fs.writeFileSync(path.join(bootstrap, 'package.json'), JSON.stringify({ name: 'paqvilo-smoke-bootstrap', private: true, dependencies: { paqvilo: archive } }));
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
+// Exercise empty consumer templates from the actual archive, independently of the demo.
+for (const options of [[], ['--no-pack', '--no-vscode'], ['--pack', 'alpha', '--pack', 'beta', '--site', 'one', '--site', 'two']]) {
+  const consumer = path.join(work, `consumer-${options.length}`);
+  const init = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'init', consumer, '--name', 'smoke', '--toolkit', archive, '--json', ...options], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 30000 });
+  if (init.status !== 0 || !JSON.parse(init.stdout).ok) throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
+  run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
+  console.log(run(['test'], consumer).trim());
+  console.log(run(['run', 'test:browser'], consumer).trim());
+}
 const project = path.join(work, 'project');
 const scaffold = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'mirage', 'demo', '--scaffold', '--dir', project], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 120_000 });
 if (scaffold.status !== 0 || !scaffold.stdout.includes('No runtime was started.')) throw new Error(`Installed scaffold failed: ${scaffold.stdout}\n${scaffold.stderr}`);
@@ -33,12 +43,16 @@ manifest.devDependencies.paqvilo = archive;
 fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2) + '\n');
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], project);
 const installed = path.join(project, 'node_modules/paqvilo/bin/paqvilo.mjs');
+verifyConsumerToolOwnership(installed, project);
 const cli = (...args) => {
   const result = spawnSync(process.execPath, [installed, ...args], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
   if (result.status !== 0) throw new Error(`Installed command failed: ${args.join(' ')}\n${result.stdout}\n${result.stderr}`);
   return JSON.parse(result.stdout);
 };
-for (const product of ['lense', 'mirage']) {
+const readiness = cli('doctor', '--setup', '--json');
+if (!readiness.ready) throw new Error('Plain packed npm installation must be ready before any package-local setup.');
+if (fs.existsSync(path.join(project, 'node_modules/paqvilo/mirage/node_modules'))) throw new Error('Packed consumer unexpectedly needs a duplicate Mirage dependency installation.');
+for (const product of ['lense', 'mirage', 'dataverse']) {
   const help = spawnSync(process.execPath, [installed, product, '--help'], { cwd: project, encoding: 'utf8', windowsHide: true, timeout: 30_000 });
   if (help.status !== 0 || !help.stdout.toLowerCase().includes(product)) throw new Error(`Installed ${product} help failed: ${help.stderr}`);
 }
@@ -54,6 +68,9 @@ try {
   if (!cli('mirage', 'status', '--json').sessions.some((item) => item.pid === session.pid && item.ready)) throw new Error('Project-scoped status did not discover its runtime.');
   const response = await fetch(session.url);
   if (!response.ok || !(await response.text()).includes('Build it three ways')) throw new Error('Installed lifecycle did not render the project.');
+  const setupStatus = await fetch(session.url + '/_setup/api/status').then(response => response.json());
+  if (setupStatus.kind !== 'catalogue' || setupStatus.layers.shared.file !== path.join(project, 'paqvilo.config.yml') || setupStatus.sites[0]?.id !== 'example') throw new Error('Installed setup did not use the consumer catalogue.');
+  for (const asset of ['', 'app.mjs', 'style.css']) if (!(await fetch(session.url + '/_setup/' + asset)).ok) throw new Error(`Installed setup asset is missing: ${asset}`);
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }

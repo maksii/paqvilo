@@ -1,0 +1,60 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_entityform: aaf9944e-975d-4210-8119-2040b47e279d
+  adx_entityformmetadataid: c92efada-bf2f-4077-8464-3c5a93ec4d39
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank No Ties pqvd_wholenumber
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_entityform: aaf9944e-975d-4210-8119-2040b47e279d
+  adx_entityformmetadataid: ad090d0f-c379-4c76-8f11-839a740732c7
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank No Ties pqvd_ruleerror
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_defaulted
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_entityform: aaf9944e-975d-4210-8119-2040b47e279d
+  adx_entityformmetadataid: f59c65c4-65a3-407a-830f-eead15607c51
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit Rank No Ties pqvd_defaulted
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false

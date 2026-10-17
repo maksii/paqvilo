@@ -12,6 +12,7 @@
  *   Options: --deployment-profile NAME, --data-model standard|enhanced, --no-cache, --all-fields, --lcid N
  */
 import fs from "node:fs/promises";
+import { platformSettingEntries } from './lib/platform-settings.mjs';
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
@@ -24,11 +25,12 @@ import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
 import { buildPermissionModel, portalWebRoles } from "./lib/permissions.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { loadProjectConfig, projectOrigin, observedConfig } from "./lib/project-config.mjs";
+import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import { STANDARD_LOOKUP_TARGETS } from "./lib/solution-standard.mjs";
 import { applyObserved, signInPath } from "./lib/redirects.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
+import { assertProjectOutput } from './lib/project-output.mjs';
 
-const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const countBy = (items, key) =>
   items.reduce((counts, item) => {
     const value = typeof key === "function" ? key(item) : item[key];
@@ -51,18 +53,22 @@ export async function resolveReportInputs(args) {
       solutionRoots: portal.solutionRoots,
       order: project.solutionOrder,
       deploymentProfile: args["deployment-profile"] ?? portal.deploymentProfile ?? undefined,
+      deploymentProfiles: portal.deploymentProfiles,
       dataModel: args["data-model"] ?? portal.dataModel ?? undefined,
       origin: projectOrigin(project, portal),
       observed: portal.observed,
+      platform: portal.platform,
       environmentVariables: project.environmentVariables,
       lcid: project.lcid,
-      cacheFile: path.join(project.stateDirectory ?? path.join(ROOT, ".paqvilo/simulator/projects", project.stateNamespace), portal.id, "cache", "solution-sources.json"),
+      cacheFile: path.join(project.stateDirectory ?? path.join(path.dirname(project.configFile), ".paqvilo/simulator/projects", project.stateNamespace), portal.id, "cache", "solution-sources.json"),
     };
   }
   let sourceDir = args.source,
     origin = null,
     label = args.source ? path.basename(args.source) : null,
-    siteMirage = null;
+    siteMirage = null,
+    stateDir = path.join(process.cwd(), ".paqvilo"),
+    siteName = args.site ?? "default";
   if (!sourceDir) {
     const { loadConfig } = await import("../lense/config.mjs");
     const cfg = await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
@@ -70,13 +76,18 @@ export async function resolveReportInputs(args) {
     origin = cfg.origin ?? null;
     label = `${args.site ?? "default"}/${args.env ?? "default"}`;
     siteMirage = cfg.mirageConfig ?? null;
+    stateDir = cfg.stateDir;
+    siteName = cfg.siteName;
   } else if (args.site) {
     // --source with a catalogued --site: the site's mirage settings still apply.
     const { loadConfig } = await import("../lense/config.mjs");
-    siteMirage = (await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) })).mirageConfig ?? null;
+    const cfg = await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) });
+    siteMirage = cfg.mirageConfig ?? null;
+    stateDir = cfg.stateDir;
+    siteName = cfg.siteName;
   }
   // The same cache as `cli.mjs serve` for this site (next to its state; "default" without --site).
-  const cacheFile = path.join(ROOT, ".paqvilo/simulator", args.site ?? "default", "cache", "solution-sources.json");
+  const cacheFile = path.join(stateDir, "simulator", siteName, "cache", "solution-sources.json");
   // The same resolution as `cli.mjs serve`: --solution-root, else the catalogue site's
   // mirage solutionRoots, else discovery; derived order unless explicitly requested.
   const resolved = await resolveSolutionRoots({
@@ -93,8 +104,10 @@ export async function resolveReportInputs(args) {
     order: resolved.order,
     rootSource: resolved.source,
     observed: siteMirage?.observed ?? null,
+    platform: siteMirage?.platform,
     discovered: resolved.source === "discovered",
     deploymentProfile: args["deployment-profile"],
+    deploymentProfiles: siteMirage?.deploymentProfiles,
     // The data model of a YAML source: --data-model, else the catalogue site's (lib/importer.mjs).
     dataModel: args["data-model"] ?? siteMirage?.dataModel ?? undefined,
     origin,
@@ -107,11 +120,14 @@ export async function resolveReportInputs(args) {
 /** Collect the bootstrap report for one portal and its solution layers. */
 export async function bootstrapReport(inputs, { noCache = false, allFields = false } = {}) {
   const timings = {};
+  const profileConfig = resolveDeploymentProfiles(inputs.deploymentProfiles,process.cwd(),{sourceDir:inputs.sourceDir,sourceRoot:inputs.sourceDir});
+  if (inputs.deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+  const activeProfiles = await loadDeploymentProfiles(profileConfig);
   let started = performance.now();
   // Duplicate-copy commit lookups are cached beside the solution cache.
   const portalCache = await SolutionFileCache.open(noCache || !inputs.cacheFile ? null : path.join(path.dirname(inputs.cacheFile), "portal-sources.json"));
   // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
-  const portal = assertPortalSource(applyObserved(await importPortal(inputs.sourceDir, { lcid: inputs.lcid, cache: portalCache, ...(inputs.deploymentProfile ? { deploymentProfile: inputs.deploymentProfile } : {}), ...(inputs.dataModel ? { dataModel: inputs.dataModel } : {}) }), observedConfig(inputs.observed)));
+  const portal = assertPortalSource(applyObserved(await importPortal(inputs.sourceDir, { lcid: inputs.lcid, cache: portalCache, deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : inputs.deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, ...(inputs.dataModel ? { dataModel: inputs.dataModel } : {}) }), observedConfig(inputs.observed)));
   await portalCache.save();
   timings.portalMs = Math.round(performance.now() - started);
   started = performance.now();
@@ -127,9 +143,10 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
   const webApiTables = Object.entries(portal.settings)
     .filter(([name, value]) => /^Webapi\/[^/]+\/enabled$/i.test(name) && String(value).toLowerCase() === "true")
     .map(([name]) => name.split("/")[1].toLowerCase());
-  const state = applySolutionData(initialState(portal, { metadata: data }), data, {
+  const state = applySolutionData(initialState(portal, { metadata: data, platform: inputs.platform }), data, {
     webApiTables,
-    environmentVariables: inputs.environmentVariables,
+    environmentVariables: Object.fromEntries(Object.entries({ ...activeProfiles.environmentVariables, ...inputs.environmentVariables }).map(([name, value]) => [name.toLowerCase(), value])),
+    connectionReferences: activeProfiles.connectionReferences,
   });
   const configured = buildPermissionModel(portal, state, { relationships: data.relationships, source: "configured" });
   const exported = buildPermissionModel(portal, state, { relationships: data.relationships, source: "exported" });
@@ -291,6 +308,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
     ...(state.simulator.importDiagnostics ?? []).map((d) => ({ ...d, origin: "bootstrap" })),
   ];
   const report = {
+    platformSettings: platformSettingEntries(state),
     generatedAt: new Date().toISOString(),
     inputs: {
       label: inputs.label,
@@ -300,6 +318,7 @@ export async function bootstrapReport(inputs, { noCache = false, allFields = fal
       dataModel: portal.dataModel,
       dataModelSource: portal.dataModelSource,
       deploymentProfile: inputs.deploymentProfile ?? null,
+      profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
       origin: inputs.origin ?? null,
       solutionRoots: inputs.solutionRoots,
       rootOrder: inputs.order ?? "derived",
@@ -432,6 +451,7 @@ if (isMain) {
     const report = await bootstrapReport(inputs, { noCache: args["no-cache"], allFields: args["all-fields"] });
     if (args.output) {
       const output = path.resolve(args.output);
+      assertProjectOutput(output);
       await fs.mkdir(path.dirname(output), { recursive: true });
       await fs.writeFile(output, JSON.stringify(report, null, 2) + "\n");
     }

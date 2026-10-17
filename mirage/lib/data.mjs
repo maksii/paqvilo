@@ -1,6 +1,5 @@
 import {
   readFile,
-  writeFile,
   mkdir,
   rename,
   open,
@@ -22,10 +21,29 @@ import { expressionOperator } from "./extensions.mjs";
 import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
+import { StateStorage } from './state-storage.mjs';
+import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
+import { stateDigest } from './state-stream.mjs';
+import { validatePersonaCatalog } from './persona-catalog.mjs';
+import { platformValues, validatePlatformOverrides, assertAttachmentPolicy } from './platform-settings.mjs';
+import { platformConfig, applyPlatformConfig } from './platform-config.mjs';
+import { validateExperimentPresets } from './experiment-presets.mjs';
+import { attachODataReaderDetails, odataConversionDetails } from "./webapi-error-details.mjs";
+import {isExactNumeric,exactNumeric,decimalParts,compareNumeric,roundNumeric,sumNumeric,multiplyNumeric} from './exact-numeric.mjs';
+import {odataToSdkQuery} from './plugin-query.mjs';
+import {compilePermissionFetchXml,serializePermissionFetchXml} from './permission-query.mjs';
+import {preparePortalFetchXml} from './portal-fetchxml.mjs';
+import {compileODataPermissionQuery,authoredScalarODataFetch} from './odata-permission-query.mjs';
+import {assertPortalFetchXmlTransport} from './portal-fetch-transport.mjs';
+import {recordToSdkEntity,sdkQueryParameters,executeSdkFetch} from './plugin-clr.mjs';
+import {queryExpressionToFetch,fetchResultToSdkCollection} from './plugin-sdk-query.mjs';
+import {sdkValueToRecord} from './local-organization-service.mjs';
+import {handoffPluginResponse} from './plugin-response.mjs';
 import {
   executeFetch,
   parseXmlDocument,
   planFetch,
+  structuralIntersects,
 } from "./fetchxml-engine.mjs";
 import {
   columnValue,
@@ -43,8 +61,10 @@ import {
   formatDotNetDate,
   primaryNameValue,
   isDateOnlyField,
+  GUID_PATTERN,
   isoUtc,
   parseDateValue,
+  dateTimeRangeError,
   valuesEqual,
 } from "./dataverse-values.mjs";
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
@@ -462,16 +482,19 @@ export function reconcilePermissionDiagnostics(state) {
   state.simulator.importDiagnostics = existing;
   return state;
 }
-function normalizeState(state, presetLibrary = builtinPresets) {
+function normalizeState(state, presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, owned = false) {
   const result = {
     ...emptyState(),
-    ...clone(
+    ...(owned ? value => value : clone)(
       state
         ? { ...state, presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary) }
         : state,
     ),
     settings: { ...emptyState().settings, ...state?.settings },
   };
+  validatePlatformOverrides(result.simulator?.platformOverrides);
+  validateExperimentPresets(result.simulator?.experimentPresets);
+  if (result.personaCatalog !== undefined) result.personaCatalog = validatePersonaCatalog(result.personaCatalog, 'State');
   for (const key of ["mappings", "tables", "presets"])
     if (
       !result[key] ||
@@ -655,15 +678,18 @@ function normalizeState(state, presetLibrary = builtinPresets) {
         }
     }
   }
-  return reconcilePermissionDiagnostics(result);
+  return reconcilePermissionDiagnostics(applyPlatformConfig(result, platform));
 }
 
 export class DataStore {
-  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets } = {}) {
+  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence } = {}) {
     this.file = file;
     this.presetLibrary = presetLibrary;
-    this.state = normalizeState(state, this.presetLibrary);
+    this.platformConfig = platformConfig(platform);
+    this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
     this.persistedDigest = null;
+    this.persistenceOptions = persistence;
+    this.storage = file ? new StateStorage(file, persistence) : null;
     this.queue = Promise.resolve();
     // Advances with every committed change (transact), so consumers such as OData
     // paging can bind to the data without digesting the whole state per request.
@@ -683,10 +709,10 @@ export class DataStore {
   }
   async init() {
     if (this.file) {
+      this.ensureStorage();
       try {
-        const raw = await readFile(this.file, "utf8");
-        this.state = normalizeState(JSON.parse(raw), this.presetLibrary);
-        this.persistedDigest = this.digest(raw);
+        this.state = normalizeState(await this.storage.load(), this.presetLibrary, this.platformConfig, true);
+        this.persistedDigest = this.storage.digest;
       } catch (error) {
         if (error.code !== "ENOENT") throw error;
         this.persistedDigest = null;
@@ -725,6 +751,7 @@ export class DataStore {
     }
     return clone(selected);
   }
+  snapshotDigest() { return stateDigest(this.state); }
   summary() {
     const selected = this.snapshot({
       sections: [
@@ -744,6 +771,9 @@ export class DataStore {
           name: preset.name,
           description: preset.description,
           userConfigured: preset.userConfigured,
+          builtin: preset.builtin,
+          builtinVersion: preset.builtinVersion,
+          configurationPreset: preset.configurationPreset,
         },
       ]),
     );
@@ -757,6 +787,8 @@ export class DataStore {
   }
   async save() {
     if (!this.file) return;
+    this.ensureStorage();
+    const saveStarted = performance.now();
     await mkdir(dirname(this.file), { recursive: true });
     const lockPath = `${this.file}.lock`,
       lockToken = `${process.pid}:${randomUUID()}`,
@@ -778,26 +810,21 @@ export class DataStore {
       await lockHandle.close();
       lockHandle = null;
 
-      const current = await this.readPersistedDigest();
-      if (current !== this.persistedDigest)
-        throw new DataError(
-          "Local state changed outside this runtime; restart the simulator from the updated state file before writing",
-          409,
-          "StateConflict",
-        );
-
-      const serialized = JSON.stringify(this.state, null, 2) + "\n";
-      await writeFile(temp, serialized, { flag: "wx" });
+      await this.storage.assertUnchanged();
+      if (this.storage.journal && this.rowTransaction) {
+        await this.storage.appendChanges(this.rowTransaction.changes());
+        this.persistedDigest = this.storage.digest;
+        this.recordSave(performance.now() - saveStarted, 'journal');
+        return;
+      }
+      const prepared = await this.storage.prepareCheckpoint(temp, this.state);
       // Recheck immediately before replacement to catch non-cooperating edits
       // made while the temporary snapshot was being prepared.
-      if ((await this.readPersistedDigest()) !== this.persistedDigest)
-        throw new DataError(
-          "Local state changed outside this runtime; restart the simulator from the updated state file before writing",
-          409,
-          "StateConflict",
-        );
+      await this.storage.assertUnchanged();
       await rename(temp, this.file);
-      this.persistedDigest = this.digest(serialized);
+      await this.storage.checkpointCommitted(prepared);
+      this.persistedDigest = this.storage.digest;
+      this.recordSave(performance.now() - saveStarted, 'checkpoint');
     } finally {
       if (lockHandle) await lockHandle.close().catch(() => {});
       await rm(temp, { force: true }).catch(() => {});
@@ -811,38 +838,170 @@ export class DataStore {
       }
     }
   }
+  recordSave(durationMs, mode) {
+    this.lastSave = { durationMs: Math.round(durationMs * 100) / 100, mode };
+    // Observers cannot turn a durable commit into a rolled-back request.
+    try { this.onSave?.({ ...this.lastSave }); } catch { /* observer only */ }
+  }
+  ensureStorage() {
+    // Embedded stores historically bind a file after creating an in-memory
+    // fixture. Preserve that workflow without retaining another file's CAS.
+    if (!this.storage || this.storage.file !== this.file) {
+      this.storage = new StateStorage(this.file, this.persistenceOptions);
+      this.persistedDigest = null;
+    }
+  }
   digest(raw) {
     return createHash("sha256").update(raw).digest("hex");
   }
   async readPersistedDigest() {
-    try {
-      return this.digest(await readFile(this.file, "utf8"));
-    } catch (error) {
-      if (error.code === "ENOENT") return null;
-      throw error;
-    }
+    this.ensureStorage();
+    return this.storage.persistedDigest();
   }
-  transact(fn) {
+  /** Serialize reads that may invoke backend plugin writes. Pure reads do not
+   * change the persisted state or its revision. Invoke this only at a request
+   * boundary; nested SDK reads already use their caller's synchronous frame. */
+  readOperation(fn) {
+    return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
+  }
+  ensureReadSnapshot() {
+    this.promoteRowTransaction();
+    this.pluginRollbackBoundary?.ensureSnapshot?.();
+  }
+  promoteRowTransaction() {
+    if (!this.rowTransaction) return;
+    const transaction = this.rowTransaction;
+    this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
+    transaction.promoted = true; this.rowTransaction = null;
+  }
+  transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false, incremental = false } = {}) {
     const run = this.queue.then(async () => {
-      const backup = clone(this.state);
+      // Arbitrary extension callbacks retain the established full rollback
+      // boundary. Core CRUD/declarative handlers use the bounded undo journal.
+      const rowTransaction = incremental ? new RowTransaction(this) : null;
+      const previousRows = this.rowTransaction; this.rowTransaction = rowTransaction;
+      const boundary = { backup: lazyReadSnapshot || rowTransaction ? null : clone(this.state), independentCommit: false,eventCount:0 };
+      if (lazyReadSnapshot) boundary.ensureSnapshot = () => {
+        if (boundary.backup !== null) return;
+        boundary.backup = clone(this.state);
+      };
+      const previousBoundary=this.pluginRollbackBoundary,previousTransaction=this.pluginInTransaction;
+      const previousEvents=this.committedEventCandidates;this.committedEventCandidates=[];
+      this.pluginRollbackBoundary=boundary;this.pluginInTransaction=false;
       try {
         const result = await fn();
-        await this.save();
-        this.revision++;
-        return clone(result);
+        if (!skipSaveIfUnchanged || boundary.independentCommit || boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup)) {
+          await this.save();
+          this.revision++;
+        }
+        this.dispatchCommittedEvents(this.committedEventCandidates);
+        // Read query results own their projection and may carry nonenumerable
+        // SDK/paging/column metadata required by the transport adapter.
+        return cloneResult ? clone(result) : result;
       } catch (error) {
-        this.state = backup;
+        if (!rowTransaction?.promoted) rowTransaction?.rollback();
+        this.rowIndexes = null;
+        if (boundary.backup !== null) this.state = boundary.backup;
+        if(boundary.independentCommit){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
         throw error;
+      } finally {
+        if (rowTransaction?.promoted || !rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)) this.rowIndexes = null;
+        this.rowTransaction = previousRows;
+        this.pluginRollbackBoundary=previousBoundary;this.pluginInTransaction=previousTransaction;
+        this.committedEventCandidates=previousEvents;
       }
     });
     this.queue = run.catch(() => {});
     return run;
   }
-  async replaceState(state, { expectedSnapshot } = {}) {
+  /** Rewrite a streamed checkpoint without copying the in-memory state. Queued
+   * with writes; call during an idle period to bound append-journal disk usage. */
+  compact() {
+    const run = this.queue.then(() => this.save());
+    this.queue = run.catch(() => {}); return run;
+  }
+  writeRow(table, rows, index, row) {
+    validateRowIndex(rows, index);
+    const cached = this.rowIndexes?.get(rows);
+    if (cached && !equal(rows[index]?.[cached.column], row[cached.column])) this.rowIndexes.delete(rows);
+    if (this.rowTransaction) this.rowTransaction.set(table, rows, index, row);
+    else Object.defineProperty(rows, index, { value: row, enumerable: true, configurable: true, writable: true });
+  }
+  mutateRow(table, rows, index, values) {
+    validateRowIndex(rows, index);
+    const cached = this.rowIndexes?.get(rows);
+    if (cached && own(values, cached.column) && !equal(rows[index][cached.column], values[cached.column])) this.rowIndexes.delete(rows);
+    if (this.rowTransaction) this.rowTransaction.mutate(table, rows, index, values);
+    else assignRowValues(rows.at(index), values);
+  }
+  insertRow(table, rows, row) {
+    if (this.rowTransaction) this.rowTransaction.insert(table, rows, rows.length, row);
+    else rows.push(row);
+    const cached = this.rowIndexes?.get(rows);
+    if (cached) {
+      const id = row[cached.column];
+      if (typeof id !== 'string') this.rowIndexes.delete(rows);
+      else { const key = comparable(id); if (!cached.indexes.has(key)) cached.indexes.set(key, rows.length - 1); cached.length = rows.length; }
+    }
+  }
+  removeRow(table, rows, index) {
+    validateRowIndex(rows, index);
+    if (this.rowTransaction) this.rowTransaction.remove(table, rows, index);
+    else rows.splice(index, 1);
+    this.rowIndexes?.delete(rows);
+  }
+  rowIndex(mapping, rows, id) {
+    // Preserve the existing coercive comparison for non-string identifiers.
+    if (typeof id !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
+    this.rowIndexes ??= new WeakMap();
+    let cached = this.rowIndexes.get(rows);
+    if (!cached || cached.column !== mapping.idColumn || cached.length !== rows.length) {
+      const indexes = new Map();
+      for (let index = 0; index < rows.length; index++) {
+        const value = rows[index][mapping.idColumn];
+        if (typeof value !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
+        const key = comparable(value); if (!indexes.has(key)) indexes.set(key, index);
+      }
+      cached = { column: mapping.idColumn, length: rows.length, indexes }; this.rowIndexes.set(rows, cached);
+    }
+    return cached.indexes.get(comparable(id)) ?? -1;
+  }
+  /** A synchronous SDK request has its own atomic write, unless its caller
+   * already participates in the plugin transaction. Independent PreValidation
+   * requests commit before a later primary-operation rejection. */
+  sdkMutation(fn) {
+    this.ensureReadSnapshot();
+    const joined=this.pluginInTransaction===true,previousBoundary=this.pluginRollbackBoundary;
+    const boundary={backup:clone(this.state),independentCommit:false,eventCount:this.committedEventCandidates?.length??0};
+    this.pluginRollbackBoundary=boundary;
+    try {
+      const result=fn();
+      if(!joined&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=this.committedEventCandidates?.length??0;}
+      return result;
+    } catch(error) {
+      // Keep table/row references held by an enclosing synchronous pipeline
+      // intact while removing every failed request's transactional write.
+      const restore=(current,saved)=>{if(Array.isArray(current)&&Array.isArray(saved)){for(let i=0;i<saved.length;i++)current[i]=restore(current[i],saved[i]);current.length=saved.length;return current;}if(current&&saved&&typeof current==='object'&&typeof saved==='object'&&!Array.isArray(current)&&!Array.isArray(saved)){for(const key of Object.keys(current))if(!own(saved,key))delete current[key];for(const[key,value]of Object.entries(saved))current[key]=restore(current[key],value);return current;}return clone(saved);};
+      restore(this.state,boundary.backup);if(this.committedEventCandidates)this.committedEventCandidates.length=boundary.eventCount;if(!joined&&boundary.independentCommit&&previousBoundary){previousBoundary.backup=clone(this.state);previousBoundary.independentCommit=true;previousBoundary.eventCount=boundary.eventCount;}
+      throw error;
+    } finally {this.pluginRollbackBoundary=previousBoundary;}
+  }
+  setCommittedEvents(provider){this.committedEvents=typeof provider==='function'?provider:null;}
+  addCommittedEvents(provider){if(typeof provider!=='function')throw new DataError('Committed event consumer must be a function.');this.committedEventConsumers??=new Set();this.committedEventConsumers.add(provider);return()=>this.committedEventConsumers.delete(provider);}
+  recordCommittedEvent(entity,operation,row,attributes,details={}){if((this.committedEvents||this.committedEventConsumers?.size)&&this.committedEventCandidates)this.committedEventCandidates.push({entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null});}
+  dispatchCommittedEvents(events){
+    if(!events.length)return;const captured=clone(events),providers=[this.committedEvents,...(this.committedEventConsumers??[])].filter(Boolean),sequence=this.committedEventSequence=(this.committedEventSequence??0)+1;
+    this.committedEventDispatches??=new Set();let delivery;
+    delivery=new Promise(resolve=>queueMicrotask(()=>{for(const provider of providers)try{provider(clone(captured),{sequence});}catch(error){this.committedEventErrors??=[];this.committedEventErrors.push({code:error.code??'CommittedEventConsumerError',message:error.message,sequence});if(this.committedEventErrors.length>50)this.committedEventErrors.shift();}resolve();})).finally(()=>this.committedEventDispatches.delete(delivery));this.committedEventDispatches.add(delivery);
+  }
+  async flushCommittedEvents(){while(this.committedEventDispatches?.size)await Promise.all([...this.committedEventDispatches]);}
+  async replaceState(state, { expectedSnapshot, expectedDigest } = {}) {
     return this.transact(() => {
+      if (expectedDigest !== undefined && this.snapshotDigest() !== expectedDigest)
+        throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
-      this.state = normalizeState(state, this.presetLibrary);
+      this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
       return this.snapshot();
     });
   }
@@ -861,16 +1020,26 @@ export class DataStore {
   setObserved(observed) {
     this.observed = observed ?? null;
   }
-  /** Exported registrations use an explicit local adapter, never compiled .NET. */
-  setPluginPipeline(provider, active = () => true) {
+  /** Exported registrations use the explicitly selected trusted execution mode. */
+  setPluginPipeline(provider, active = () => true, requiresCheckpoint = () => true) {
     if (typeof provider !== 'function') throw new DataError('Plugin pipeline must be a function.');
     this.pluginPipeline = provider;
     this.pluginPipelineActive = active;
+    this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
   exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
+    if(stage!==10)this.pluginInTransaction=true;
     if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
+    if (this.rowTransaction && this.pluginPipelineRequiresCheckpoint({ entity: mapping.logicalName, operation, stage, changedAttributes })) {
+      // Trusted external handlers may mutate arbitrary state, including nested
+      // SDK transactions. Promote only when one actually executes, preserving
+      // their independent PreValidation commit/rollback semantics.
+      this.promoteRowTransaction();
+    }
     const id = row[mapping.idColumn];
-    this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes });
+    const frame=this.pluginPipeline?.({ entity: mapping.logicalName, operation, stage, target, record: row, previous, identity, changedAttributes, portalRequest:options.portalRequest===true });
+    if(frame){this.pluginFrames??=new WeakMap();this.pluginFrames.set(row,frame);}
+    if(stage===40)handoffPluginResponse(this,operation,mapping.logicalName,frame,options.sdkResponseToken);
     if (!equal(row[mapping.idColumn], id)) throw new DataError('Plugin target cannot replace the primary key.', 400, 'LocalPluginInvalid');
     if (stage !== 40 && operation !== 'delete') {
       const normalized = this.normalizeRecord(mapping, target);
@@ -984,6 +1153,7 @@ export class DataStore {
   grantsWithoutContact(rule, seen = new Set()) {
     const scope = rule.scope ?? "global";
     if (scope === "global") return true;
+    if (rule.observedOrphanParent?.field) return true;
     if (scope !== "parent" || seen.has(rule.id)) return false;
     seen.add(rule.id);
     const parentId = rule.parentPermissionId ?? rule.parentId;
@@ -1075,6 +1245,7 @@ export class DataStore {
         const scope = rule.scope ?? "global";
         if (scope === "global") return true;
         if (!row) return false;
+        if (rule.observedOrphanParent?.field) return field(row,rule.observedOrphanParent.field)!=null;
         if (rule.identityRelationship) {
           const rel = rule.identityRelationship;
           const im = this.resolveMapping(rel.entity);
@@ -1122,7 +1293,7 @@ export class DataStore {
               parent,
               identity,
               nextChain,
-              rule.parentPermissionId,
+              rule.parentPermissionId ?? rule.parentId,
               memo,
             ),
           );
@@ -1133,13 +1304,31 @@ export class DataStore {
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity))
+    if (!this.allowed(entity, operation, row, identity)) {
+      const permissions = this.rules(entity, operation, identity).map(grant => {
+        const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
+        for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
+          if (grant[key]) permission[key] = grant[key];
+        if (permission.scope === 'parent' && grant.relationship) permission.parentLink = {
+          childColumn: grant.relationship.from ?? null, value: scalar(row?.[grant.relationship.from]) ?? null,
+          parentTable: grant.relationship.entity ?? null, parentColumn: grant.relationship.to ?? null,
+          ...(grant.relationship.intersect ? { intersect: grant.relationship.intersect } : {}),
+        };
+        return permission;
+      });
+      const descriptions = permissions.map(grant => {
+        const relationship = grant.relationshipName ?? (typeof grant.relationship === 'string' ? grant.relationship :
+          grant.relationship ? `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}` : null);
+        return `${grant.name} (${grant.scope})${relationship ? ' relationship ' + relationship : ''}`;
+      });
+      const message = `Table permission denies ${operation} on ${entity}` + (descriptions.length ? ': ' + descriptions.join('; ') : '');
       throw new DataError(
-        `Table permission denies ${operation} on ${entity}`,
+        message,
         403,
         "PermissionDenied",
-        { operation, table: entity, ...(related ? { related } : {}) },
+        { operation, table: entity, permissions, permissionDiagnostic:{code:'TABLE_PERMISSION_DENIED',severity:'warning',operation,table:entity,permissions,message}, ...(related ? { related } : {}) },
       );
+    }
   }
   rows(entity, identity = {}) {
     const m = this.resolveMapping(entity);
@@ -1163,13 +1352,27 @@ export class DataStore {
         equal(field(target, rel.to), field(edge, rel.intersect.to)),
     );
   }
-  get(entity, id, identity = {}) {
+  get(entity, id, identity = {},options={}) {
     const m = this.resolveMapping(entity);
     const row = this.tableRows(m.logicalName).find((r) =>
       equal(r[m.idColumn], id),
     );
     if (!row) return null;
     this.assertAllowed(m.logicalName, "read", row, identity);
+    if(!options.skipPluginRead&&this.pluginPipeline&&this.pluginPipelineActive({entity:m.logicalName,operation:'retrieve'})){
+      this.ensureReadSnapshot();
+      const record=clone(row),columns=options.sdkColumns??{allColumns:true},holder={entity:recordToSdkEntity(this,m.logicalName,record,columns)},previousReadOnly=this.pluginReadOnly;
+      this.pluginReadOnly=!this.pluginRollbackBoundary;
+      try{
+        this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:10,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
+        this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:20,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
+        const responseFrame=this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:40,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
+        handoffPluginResponse(this,'retrieve',m.logicalName,responseFrame,options.sdkResponseToken);
+        if(holder.entity?.$type!=='Entity'||holder.entity.logicalName!==m.logicalName||!equal(holder.entity.id,id))throw new DataError('Retrieve output must preserve record identity.',501,'LocalPluginQueryUnsupported');
+        return {...sdkValueToRecord(holder.entity),[m.idColumn]:row[m.idColumn]};
+      }finally{this.pluginReadOnly=previousReadOnly;}
+    }
+    if(options.sdkColumns)return {...sdkValueToRecord(recordToSdkEntity(this,m.logicalName,row,options.sdkColumns)),[m.idColumn]:row[m.idColumn]};
     return clone(row);
   }
   /** Field metadata from explicit mappings or a caller-supplied solution metadata resolver. */
@@ -1222,6 +1425,7 @@ export class DataStore {
   /** Query evaluation settings: collation, local time zone and fiscal calendar. */
   querySettings() {
     const settings = this.state.settings ?? {};
+    const platform = platformValues(this.state);
     return {
       collation: settings.collation ?? "CI_AI",
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
@@ -1230,9 +1434,11 @@ export class DataStore {
       // the FiscalCalendarStart and FiscalPeriodType of a single local organization row.
       ...this.fiscalSettings(settings),
       // Local bound on intermediate FetchXML join rows (FETCH_LIMITS.joinRows by default).
-      fetchJoinRowLimit: settings.fetchJoinRowLimit,
+      fetchJoinRowLimit: this.state.simulator?.platformOverrides?.FetchJoinRowLimit ?? settings.fetchJoinRowLimit,
+      fetchLimits: { links: platform.QueryLinkEntityLimit,linksAndFilters:platform.FetchLinkAndFilterLimit, conditionsAndLinks: platform.FetchConditionLimit, aggregateRecords: platform.AggregateQueryRecordLimit, linkDepth: platform.FetchLinkDepth },
       // "strict" rejects FetchXML columns that complete Solution metadata lacks.
       fetchColumnValidation: settings.fetchColumnValidation,
+      fetchAllWithoutFilter: this.observed?.fetchAllWithoutFilter,
     };
   }
   /**
@@ -1240,10 +1446,14 @@ export class DataStore {
    * relationship indexes. Never share them across requests or mutations.
    */
   queryContext(identity = {}, options = {}) {
-    const readable = new Map();
-    const readRows = (logical) => {
+    const readable = options.fetchCache && !options.backendRowsFilter ? options.fetchCache.readable(this, identity) : new Map();
+    const readRows = (logical, node) => {
       const name = this.resolveMapping(logical).logicalName;
-      if (!readable.has(name)) readable.set(name, this.rows(name, identity));
+      if (options.permissionLinkNodes?.has(node) || options.rawQueryNodes?.has(node)) {
+        const rows=this.tableRows(name);
+        return options.backendRowsFilter?rows.filter(row=>options.backendRowsFilter(name,clone(row))===true):rows;
+      }
+      if (!readable.has(name)) readable.set(name, options.backendRowsFilter?this.rows(name, identity).filter(row=>options.backendRowsFilter(name,clone(row))===true):this.rows(name, identity));
       return readable.get(name);
     };
     const key = (value) => {
@@ -1492,6 +1702,77 @@ export class DataStore {
    * Web API grammar; the default "extended" dialect serves internal reads.
    */
   query(entity, params = {}, identity = {}, paging, options = {}) {
+    const p=params instanceof URLSearchParams?Object.fromEntries(params):params;
+    if(p.fetchXml||p.fetchxml)return this.queryCore(entity,params,identity,paging,options);
+    const mapping=this.resolveMapping(entity);
+    if(options.portalRequest===true&&!identity.admin&&this.observed?.odataPermissionQueryPipeline==='native-classic') {
+      if(paging&&(paging.offset!==0||paging.pageSize!==5000||paging.preferenceApplied)||options.id!=null||options.ids||Object.keys(p).some(key=>!['$select','$filter','$orderby','$count'].includes(key))||
+        p.$count!==undefined&&!['true','false'].includes(p.$count)||Object.values(p).some(value=>String(value).includes('/')))
+        throw new DataError('This OData navigation, paging or option conversion requires a qualified native adapter.',501,'ODataPermissionQueryUnsupported');
+      const scalarParams={...p};delete scalarParams.$count;
+      const resolveAttribute=(table,attribute)=>{
+        const lookup=/^_(.+)_value$/.exec(attribute);
+        return lookup&&fieldKind(this.fieldDefinition(table,attribute,options.metadata))==='lookup'?lookup[1]:attribute;
+      };
+      const permissionQuery=compileODataPermissionQuery(authoredScalarODataFetch(mapping.logicalName,scalarParams,{resolveAttribute}),{
+        permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),
+        bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed.odataPermissionGrantOrder,
+        sameTableParentAnchor:this.observed.odataSameTableParentAnchor,
+        resolveAttribute,
+        columnType:(table,attribute)=>fieldKind(this.fieldDefinition(table,attribute,options.metadata)),
+      });
+      const answer=this.executePermissionFetchXml(permissionQuery.xml,identity,{...options,profile:'webapi'},permissionQuery);
+      const result={value:answer.entities};if(p.$count==='true')result['@odata.count']=answer.total_record_count;
+      if(paging)result.paging={nextOffset:answer.entities.length,moreRecords:answer.more_records,totalCount:answer.total_record_count};
+      Object.defineProperty(result,'permissionQuery',{value:permissionQuery,configurable:true});
+      return result;
+    }
+    // This explicit portal transport uses the supported scalar OData adapter to
+    // expose modeled permission-expanded input to observers. Proprietary native
+    // OData-to-QueryBase conversion, navigation and aggregation are not inferred.
+    if(options.portalRequest===true&&!identity.admin&&this.state.settings.permissionMode!=='permissive'&&!paging&&options.id==null&&!options.ids&&
+       this.pluginPipeline&&this.pluginPipelineActive({entity:mapping.logicalName,operation:'retrievemultiple'})&&
+       Object.keys(p).every(key=>['$select','$filter','$orderby','$top','$count'].includes(key))&&String(p.$top??'')!=='0'&&
+       (p.$count===undefined||['true','false'].includes(p.$count))&&
+       !Object.values(p).some(value=>String(value).includes('/'))){
+      const scalarParams={...p};delete scalarParams.$count;
+      const sdkQuery=odataToSdkQuery(mapping.logicalName,scalarParams);
+      const answer=this.fetchXml(queryExpressionToFetch(sdkQuery,this),identity,{...options,profile:'webapi',returnTotal:p.$count==='true'});
+      const result={value:answer.entities};
+      if(p.$count==='true')result['@odata.count']=answer.total_record_count;
+      Object.defineProperty(result,'permissionQuery',{value:{...answer.permissionQuery,transport:'modeled-scalar-odata-adapter'},configurable:true});
+      return result;
+    }
+    if(!this.pluginPipeline||!this.pluginPipelineActive({entity:mapping.logicalName,operation:'retrievemultiple'}))return this.queryCore(entity,params,identity,paging,options);
+    const original=options.sdkQuery??odataToSdkQuery(mapping.logicalName,params);
+    return this.retrieveMultipleOperation(mapping.logicalName,original,identity,query=>{
+      if(!['QueryExpression','QueryByAttribute'].includes(query.$type)||query.entityName!==mapping.logicalName)throw new DataError('A RetrieveMultiple plugin cannot change the bound query table or query language.',501,'LocalPluginQueryUnsupported');
+      const converted=sdkQueryParameters(query);if(!query.columnSet?.allColumns&&!query.columnSet?.columns?.length)converted.$select=mapping.idColumn;if(converted.$select&&!converted.$select.split(',').includes(mapping.idColumn))converted.$select+=','+mapping.idColumn;
+      return this.queryCore(entity,converted,identity,paging,options);
+    },'value',options.sdkResponseToken,options);
+  }
+  retrieveMultipleOperation(entity,original,identity,execute,key,responseToken,options={}) {
+    const mapping=this.resolveMapping(entity),query=clone(original),record={[mapping.idColumn]:'00000000-0000-0000-0000-000000000000'},previousReadOnly=this.pluginReadOnly;
+    if(!identity.admin&&this.state.settings.permissionMode!=='permissive'&&!this.rules(entity,'read',identity).length)throw new DataError('Table permission denies read on '+entity,403,'PermissionDenied');
+    this.ensureReadSnapshot();
+    this.pluginReadOnly=!this.pluginRollbackBoundary;
+    try {
+      this.pluginPipeline({entity,operation:'retrievemultiple',stage:10,query,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
+      if(options.portalRequest===true&&options.queryTransport!=='source-derived-scalar-odata'&&query.$type==='FetchExpression'&&this.observed?.fetchPreOperationSerialization?.[entity]==='compact')
+        query.query=serializePermissionFetchXml(parseFetchXml(query.query),0,false);
+      this.pluginPipeline({entity,operation:'retrievemultiple',stage:20,query,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
+      const answer=execute(query),collection=key==='entities'?fetchResultToSdkCollection(this,entity,answer,recordToSdkEntity,{hiddenId:answer.sdkHiddenId,rootColumns:query.columnSet}):{$type:'EntityCollection',entities:(answer[key]??[]).map(row=>recordToSdkEntity(this,entity,row,query.columnSet??{allColumns:true})),entityName:entity,minActiveRowVersion:'-1',moreRecords:Boolean(answer['@odata.nextLink']??answer.more_records),pagingCookie:answer.paging_cookie??null,totalRecordCount:answer['@odata.count']??answer.total_record_count??-1};
+      const responseFrame=this.pluginPipeline({entity,operation:'retrievemultiple',stage:40,query,collection,record,identity,changedAttributes:[],portalRequest:options.portalRequest===true});
+      handoffPluginResponse(this,'retrievemultiple',mapping.logicalName,responseFrame,responseToken);
+      if(collection.$type!=='EntityCollection'||!Array.isArray(collection.entities)||collection.entities.some(e=>e.$type!=='Entity'||e.logicalName!==entity))throw new DataError('RetrieveMultiple output must preserve the bound EntityCollection.',501,'LocalPluginQueryUnsupported');
+      answer[key]=collection.entities.map(e=>sdkValueToRecord(e));
+      Object.defineProperty(answer,'sdkCollection',{value:clone(collection),configurable:true});
+      if(key==='value'){if(Object.hasOwn(answer,'@odata.count'))answer['@odata.count']=collection.totalRecordCount;if(collection.moreRecords!==Boolean(answer['@odata.nextLink']))throw new DataError('Changing OData continuation requires an explicit paging adapter.',501,'LocalPluginQueryUnsupported');}
+      else{answer.more_records=collection.moreRecords;answer.paging_cookie=collection.pagingCookie;answer.total_record_count=collection.totalRecordCount;}
+      return answer;
+    } finally {this.pluginReadOnly=previousReadOnly;}
+  }
+  queryCore(entity, params = {}, identity = {}, paging, options = {}) {
     const m = this.resolveMapping(entity);
     const p =
       params instanceof URLSearchParams
@@ -1540,6 +1821,7 @@ export class DataStore {
     const queryOptions = { dialect, aliases };
     const ctx = this.queryContext(identity, { ...options, dialect });
     let rows = ctx.readRows(m.logicalName);
+    if(options.backendRowFilter)rows=rows.filter(row=>options.backendRowFilter(clone(row))===true);
     // Single-record and navigation routes restrict the readable rows first.
     if (options.id != null)
       rows = rows.filter((row) => equal(row[m.idColumn], options.id));
@@ -1707,7 +1989,7 @@ export class DataStore {
   findByKey(mapping, key) {
     const rows = this.tableRows(mapping.logicalName);
     const parts = parseKeySegment(key);
-    if (!parts) return rows.find((r) => equal(r[mapping.idColumn], key));
+    if (!parts) return rows[this.rowIndex(mapping, rows, key)];
     const names = Object.keys(parts).sort();
     const declared = (mapping.alternateKeys ?? []).some((alternate) => {
       const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
@@ -1748,9 +2030,9 @@ export class DataStore {
       case "upper":
         return String(args[0] ?? "").toUpperCase();
       case "sum":
-        return args.reduce((n, a) => n + Number(a ?? 0), 0);
+        return args.some(isExactNumeric)?sumNumeric(args.map(a=>a??0)):args.reduce((n, a) => n + Number(a ?? 0), 0);
       case "multiply":
-        return args.reduce((n, a) => n * Number(a ?? 0), 1);
+        return args.some(isExactNumeric)?multiplyNumeric(args.map(a=>a??0)):args.reduce((n, a) => n * Number(a ?? 0), 1);
       case "uuid":
         return randomUUID();
       case "sequence": {
@@ -1806,7 +2088,7 @@ export class DataStore {
         const record = this.get(
           safeName(String(args[0])),
           scalar(args[1]),
-          context.identity,
+          context.identity,{skipPluginRead:true},
         );
         if (!record)
           throw new DataError(
@@ -1846,7 +2128,7 @@ export class DataStore {
           const parent = this.get(
             mapping.logicalName,
             scalar(id),
-            context.identity,
+            context.identity,{skipPluginRead:true},
           );
           if (!parent)
             throw new DataError(
@@ -1937,7 +2219,7 @@ export class DataStore {
           mapping.logicalName === context.entity &&
           equal(id, context.record[mapping.idColumn])
             ? context.record
-            : this.get(mapping.logicalName, id, context.identity);
+            : this.get(mapping.logicalName, id, context.identity,{skipPluginRead:true});
         if (!record)
           throw new DataError(
             "Plugin reference target does not exist",
@@ -2022,7 +2304,9 @@ export class DataStore {
               `Plugin ${p.id ?? "validation"} rejected ${v.field ?? "record"}`,
             400,
             "PluginValidation",
-            { innerCode: String(v.innerCode ?? "0x80040265").toLowerCase() },
+            { innerCode: String(v.innerCode ?? "0x80040265").toLowerCase(),
+              ...(typeof v.message === "string" && v.message.trim() ? {declaredValidationMessage: true} : {}),
+            },
           );
       }
       secondary.push(
@@ -2075,7 +2359,7 @@ export class DataStore {
           )
             continue;
         }
-        targets.push({ [m.idColumn]: randomUUID(), ...values });
+        this.insertRow(m.logicalName, targets, { [m.idColumn]: randomUUID(), ...values });
       } else if (
         action.operation === "update" ||
         action.operation === "delete"
@@ -2107,8 +2391,8 @@ export class DataStore {
               equal(field(targets[i], k), v),
             )
           ) {
-            if (action.operation === "delete") targets.splice(i, 1);
-            else Object.assign(targets[i], values);
+            if (action.operation === "delete") this.removeRow(m.logicalName, targets, i);
+            else this.mutateRow(m.logicalName, targets, i, values);
           }
       } else
         throw new DataError(
@@ -2305,8 +2589,11 @@ export class DataStore {
     for (const [key, value] of Object.entries(row)) {
       if (key.includes("@") || value == null) continue;
       const definition = this.fieldDefinition(mapping.logicalName, key, options.metadata);
-      if (!definition) continue;
-      row[key] = coerceValue(mapping.logicalName, key, value, definition);
+      if (!definition) {
+        if(isExactNumeric(value))throw new DataError('Exact numeric storage requires imported numeric column metadata for '+mapping.logicalName+'.'+key,501,'NumericMetadataRequired');
+        continue;
+      }
+      row[key] = coerceValue(mapping.logicalName, key, value, definition, { ...options, numericLexeme: options.odataNumberLexemes?.[key] });
     }
     return row;
   }
@@ -2347,6 +2634,9 @@ export class DataStore {
     return { input, nested, collectionBinds };
   }
   createRecord(entity, data, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return this.createRecordCore(entity, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  createRecordCore(entity, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
@@ -2364,6 +2654,10 @@ export class DataStore {
       if (status !== undefined) row.statuscode = clone(status);
     }
     if (options.coerce) this.assertStateStatus(m, row, options);
+    // The portal writes as the site's application user: rows it creates carry that user as createdby
+    // (observed.portalApplicationUser; live notes and inserted records). Its id is not exported.
+    const appUser = this.observed?.portalApplicationUser;
+    if (appUser && !own(row, "createdby")) row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: "systemuser", name: appUser };
     row[m.idColumn] ??= randomUUID();
     if (rows.some((r) => equal(r[m.idColumn], row[m.idColumn])))
       throw new DataError(
@@ -2377,18 +2671,21 @@ export class DataStore {
       this.state.settings.permissionMode !== "permissive" &&
       !this.rules(m.logicalName, "create", identity).length
     )
-      throw new DataError(
-        "Table permission denied create",
-        403,
-        "PermissionDenied",
-        { operation: "create", table: m.logicalName },
-      );
+      this.assertAllowed(m.logicalName, 'create', row, identity);
     row.createdon ??= isoUtc(Date.now());
     row.modifiedon ??= row.createdon;
     this.applyAutoNumbers(m, row, options);
-    // Authorization precedes all local handlers, including PreValidation. Every
-    // phase participates in the same local rollback transaction.
-    if (this.pluginPipeline && this.pluginPipelineActive({ entity: m.logicalName, operation: 'create' })) this.assertAllowed(m.logicalName, 'create', row, identity);
+    // The table-level Create gate above precedes all handlers. Row scope is
+    // checked after trusted declarative effects establish any membership links.
+    // Top-level stage10 SDK requests commit independently; stages20/40 and
+    // nested stage10 requests participate in their caller transaction.
+    // Preserve the request's original rollback boundary for portal row-scope denials.
+    // SDK PreValidation writes otherwise advance that boundary independently.
+    let deniedCreateBoundary;
+    if (!identity.admin && this.state.settings.permissionMode !== 'permissive' && this.pluginPipeline && this.pluginPipelineActive({entity:m.logicalName,operation:'create'}) && this.pluginPipelineRequiresCheckpoint({entity:m.logicalName,operation:'create',stage:10,changedAttributes})) {
+      this.promoteRowTransaction(); this.ensureReadSnapshot();
+      if(this.pluginRollbackBoundary)deniedCreateBoundary={...this.pluginRollbackBoundary};
+    }
     this.exportedPluginPhase(m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
@@ -2414,11 +2711,14 @@ export class DataStore {
       null,
       identity,
     );
+    assertAttachmentPolicy(this.state, m.logicalName, row);
     this.assertAlternateKeys(m, row, rows, -1);
-    rows.push(row);
+    this.insertRow(m.logicalName, rows, row);
     this.applySecondary(effects);
-    this.assertAllowed(m.logicalName, "create", row, identity);
-    this.validateBindings(m, pluginTarget, row, identity);
+    try { this.assertAllowed(m.logicalName, "create", row, identity); }
+    catch (cause) { if(deniedCreateBoundary)Object.assign(this.pluginRollbackBoundary,deniedCreateBoundary); throw cause; }
+    // Normalization drops raw navigation names; retain them for relationship validation.
+    this.validateBindings(m, { ...input, ...pluginTarget }, row, identity);
     // Deep insert/bind into collection-valued navigation properties.
     for (const item of nested.filter((entry) => entry.rel.many !== false)) {
       const target = this.resolveMapping(item.rel.entity);
@@ -2457,16 +2757,20 @@ export class DataStore {
         this.changeAssociationRecord(m.logicalName, row[m.idColumn], bind.navigation, reference.id, identity, true);
       }
     this.exportedPluginPhase(m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options);
+    this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
     return row;
   }
   async create(entity, data, identity = {}, options = {}) {
-    return this.transact(() => this.createRecord(entity, data, identity, options));
+    return this.transact(() => this.createRecord(entity, data, identity, options), { incremental: true });
   }
   updateRecord(entity, id, data, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return this.updateRecordCore(entity, id, data, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  updateRecordCore(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
-    const index = rows.findIndex((r) => equal(r[m.idColumn], id));
+    const index = this.rowIndex(m, rows, id);
     if (index < 0) throw new DataError("Record not found", 404, "NotFound");
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, "update", rows[index], identity);
@@ -2484,7 +2788,7 @@ export class DataStore {
     if (options.coerce) this.assertStateStatus(m, row, options);
     this.assertAllowed(m.logicalName, "update", row, identity);
     this.validateBindings(m, data, row, identity, rows[index]);
-    return this.commitUpdate(m, rows, index, row, identity, changes, options);
+    return this.commitUpdate(m, rows, index, row, identity, changes, options, data);
   }
   /**
    * Concurrency metadata that every Dataverse update sets: modifiedon is now and a
@@ -2493,13 +2797,18 @@ export class DataStore {
    */
   touchRow(previous, row) {
     row.modifiedon = isoUtc(Date.now());
+    if(isExactNumeric(previous.versionnumber)){
+      const version=sumNumeric([previous.versionnumber,1],'Int64');
+      if(compareNumeric(version,'9223372036854775807')>0)throw new DataError('Stored row version exceeds Int64.',500,'NumericVersionOverflow');
+      row.versionnumber=version;return row;
+    }
     const version = Number(scalar(previous.versionnumber));
     if (previous.versionnumber != null && Number.isSafeInteger(version))
       row.versionnumber = version + 1;
     return row;
   }
   /** Commit an updated row: update plugins, unique alternate keys, secondary effects. */
-  commitUpdate(mapping, rows, index, row, identity, target, options = {}) {
+  commitUpdate(mapping, rows, index, row, identity, target, options = {}, rawInput = {}) {
     const previous = rows[index];
     const authorizedWrite = target !== undefined;
     target ??= Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
@@ -2508,13 +2817,18 @@ export class DataStore {
     this.exportedPluginPhase(mapping, 'update', 20, target, row, previous, identity, changedAttributes, options);
     if (authorizedWrite && this.pluginPipeline) {
       this.assertAllowed(mapping.logicalName, 'update', row, identity);
-      this.validateBindings(mapping, target, row, identity, previous);
+      this.validateBindings(mapping, { ...rawInput, ...target }, row, identity, previous);
     }
     const effects = this.applyPlugins(mapping.logicalName, "update", row, rows[index], identity);
+    // Declarative plugins mutate the row directly, independently of Target.
+    // Include their final changes without revalidating untouched legacy files.
+    const effectiveChanges = Object.fromEntries(Object.entries(row).filter(([key, value]) => !isDeepStrictEqual(value, previous[key])));
+    assertAttachmentPolicy(this.state, mapping.logicalName, row, { ...target, ...effectiveChanges });
     this.assertAlternateKeys(mapping, row, rows, index);
-    rows[index] = row;
+    this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
     this.exportedPluginPhase(mapping, 'update', 40, target, row, previous, identity, changedAttributes, options);
+    this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
     return row;
   }
   /**
@@ -2538,20 +2852,19 @@ export class DataStore {
       );
   }
   async update(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.updateRecord(entity, id, data, identity, options));
+    return this.transact(() => this.updateRecord(entity, id, data, identity, options), { incremental: true });
   }
   /**
    * PATCH semantics: update an existing record, or create it with the
    * supplied key. If-Match prevents creation; If-None-Match: * prevents update.
    */
   async upsert(entity, id, data, identity = {}, options = {}) {
-    return this.transact(() => this.upsertRecord(entity, id, data, identity, options));
+    return this.transact(() => this.upsertRecord(entity, id, data, identity, options), { incremental: true });
   }
   upsertRecord(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
-    const existing = (this.state.tables[m.logicalName] ?? []).find((r) =>
-      equal(r[m.idColumn], id),
-    );
+    const rows = this.state.tables[m.logicalName] ?? [];
+    const existing = rows[this.rowIndex(m, rows, id)];
     this.assertPrecondition(m, existing ?? null, options);
     if (existing || options.ifMatch != null)
       return {
@@ -2564,7 +2877,13 @@ export class DataStore {
     };
   }
   async remove(entity, id, identity = {}, options = {}) {
-    return this.transact(() => {
+    return this.transact(() => this.removeRecord(entity, id, identity, options), { incremental: true });
+  }
+  /** Synchronous only inside a caller-owned transaction, including backend SDK RPC. */
+  removeRecord(entity, id, identity = {}, options = {}) {
+    const inherited=this.pluginInTransaction;try{return this.removeRecordCore(entity, id, identity, options);}finally{this.pluginInTransaction=inherited;}
+  }
+  removeRecordCore(entity, id, identity = {}, options = {}) {
       const m = this.resolveMapping(entity);
       this.assertWritable(m.logicalName);
       const rows = (this.state.tables[m.logicalName] ??= []);
@@ -2572,8 +2891,7 @@ export class DataStore {
       if (index < 0) throw new DataError("Record not found", 404, "NotFound");
       this.assertPrecondition(m, rows[index], options);
       this.assertAllowed(m.logicalName, "delete", rows[index], identity);
-      return this.deleteRow(m, rows[index], identity, new Set());
-    });
+      return this.deleteRow(m, rows[index], identity, new Set(),options);
   }
   /**
    * Delete a row with the delete behaviour of every one-to-many relationship that
@@ -2587,13 +2905,13 @@ export class DataStore {
    * many-to-many relationships go with the row. Cascaded changes are the platform's
    * own, so table permissions aren't checked for them; delete and update plugins run.
    */
-  deleteRow(mapping, row, identity, deleting) {
+  deleteRow(mapping, row, identity, deleting,options={}) {
     const key = `${mapping.logicalName}\u0000${comparable(row[mapping.idColumn])}`;
     if (deleting.has(key)) return row;
     deleting.add(key);
     const target = { [mapping.idColumn]: row[mapping.idColumn] }, attributes = Object.keys(target);
-    this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes);
-    this.exportedPluginPhase(mapping, 'delete', 20, target, row, row, identity, attributes);
+    this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes,options);
+    this.exportedPluginPhase(mapping, 'delete', 20, target, row, row, identity, attributes,options);
     const effects = this.applyPlugins(mapping.logicalName, "delete", clone(row), row, identity);
     for (const reference of this.referencesTo(mapping.logicalName)) {
       const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
@@ -2634,16 +2952,18 @@ export class DataStore {
         if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
         if (rel.entity === mapping.logicalName) sides.push([rel.intersect.to, scalar(field(row, rel.to))]);
         for (const [column, value] of sides)
-          if (value != null)
-            this.state.tables[rel.intersect.entity] = this.state.tables[rel.intersect.entity].filter(
-              (edge) => !equal(scalar(field(edge, column)), value),
-            );
+          if (value != null) {
+            const edges = this.state.tables[rel.intersect.entity];
+            for (let index = edges.length - 1; index >= 0; index--)
+              if (equal(scalar(field(edges[index], column)), value)) this.removeRow(rel.intersect.entity, edges, index);
+          }
       }
     const rows = this.state.tables[mapping.logicalName] ?? [];
     const index = rows.findIndex((item) => equal(item[mapping.idColumn], row[mapping.idColumn]));
-    if (index >= 0) rows.splice(index, 1);
+    if (index >= 0) this.removeRow(mapping.logicalName, rows, index);
     this.applySecondary(effects);
-    this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes);
+    this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes,options);
+    this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
     return row;
   }
   /**
@@ -2715,6 +3035,7 @@ export class DataStore {
   ) {
     return this.transact(() =>
       this.changeAssociationRecord(entity, id, navigation, targetId, identity, associate),
+      { incremental: true },
     );
   }
   changeAssociationRecord(entity, id, navigation, targetId, identity, associate) {
@@ -2770,7 +3091,7 @@ export class DataStore {
       if (associate) {
         const edge = { [edgeMapping.idColumn]: randomUUID(), ...values };
         this.assertAllowed(edgeMapping.logicalName, "create", edge, identity);
-        if (!existing.length) edges.push(edge);
+        if (!existing.length) this.insertRow(edgeMapping.logicalName, edges, edge);
       } else {
         if (!existing.length)
           this.assertAllowed(
@@ -2786,9 +3107,9 @@ export class DataStore {
             edge,
             identity,
           );
-        this.state.tables[edgeMapping.logicalName] = edges.filter(
-          (edge) => !existing.includes(edge),
-        );
+        const removed = new Set(existing);
+        for (let index = edges.length - 1; index >= 0; index--)
+          if (removed.has(edges[index])) this.removeRow(edgeMapping.logicalName, edges, index);
       }
     } else {
       if (relationship.to === targetMapping.idColumn)
@@ -2828,9 +3149,10 @@ export class DataStore {
   async applyPreset(name, { generatedPresets = this.presetLibrary } = {}) {
     const preset = resolvePreset(this.state, name, generatedPresets);
     if (!preset) throw new DataError(`Unknown preset ${name}`, 404);
+    if (preset.personaCatalog !== undefined) validatePersonaCatalog(preset.personaCatalog, `Preset ${name}`);
     return this.transact(() => {
       applyPresetSections(this.state, preset);
-      this.state = normalizeState(this.state, this.presetLibrary);
+      this.state = normalizeState(this.state, this.presetLibrary, this.platformConfig);
       return this.snapshot();
     });
   }
@@ -2839,25 +3161,138 @@ export class DataStore {
    * Dataverse schema strictly (public /_api?fetchXml=); the default "portal"
    * profile models Liquid/list/lookup execution through the portal.
    */
+  liquidFetchPermissionOptions(options={}) {
+    if(this.observed?.liquidFetchRights!=='native-classic'||options.profile==='webapi')return {};
+    const right=String(options.right??'read').toLowerCase();
+    const operation=right==='write'?'update':right==='create'?'create':right==='delete'?'delete':right==='append'?'append':right==='appendto'?'appendTo':'read';
+    return {operation,unscopedCreate:operation==='create'};
+  }
+  previewPermissionFetchXml(xml,identity={},options={}) {
+    const authoredXml=xml,native=!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
+    if(!identity.admin)xml=preparePortalFetchXml(xml,{linkTypes:this.observed?.liquidFetchXmlLinkTypes,profile:'liquid'});
+    const preview=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',grantOrder:this.observed?.tablePermissionGrantOrder,forceScopedDistinct:native,seedAliasesFromAuthoredLinks:native,...this.liquidFetchPermissionOptions(options)});
+    preview.authoredXml=authoredXml;return preview;
+  }
   fetchXml(xml, identity = {}, options = {}) {
-    const plan = planFetch(parseFetchXml(xml), {
-      profile: options.profile === "webapi" ? "webapi" : "portal",
-    });
+    const authoredXml = xml;
+    if (options.portalRequest === true && !identity.admin)
+      xml = preparePortalFetchXml(xml, {linkTypes:options.profile === 'webapi'?this.observed?.webApiFetchXmlLinkTypes:this.observed?.liquidFetchXmlLinkTypes,profile:options.profile==='webapi'?'webapi':'liquid'});
+    const authoredFetch=parseFetchXml(xml);
+    const entity=authoredFetch.children.find(node=>node.name==='entity')?.attrs.name;
+    // Observers may mutate data inside a read transaction before its revision advances.
+    // Keep every plugin invocation and discard cached row inputs at that boundary.
+    if (options.fetchCache && this.pluginPipeline && this.pluginPipelineActive({entity, operation:'retrievemultiple'})) {
+      options.fetchCache.invalidate(this);
+      options = { ...options, fetchCache: undefined };
+    }
+    const nativeAdmission=options.portalRequest===true&&!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
+    let linkedPermissionOrdinals=[];
+    if(nativeAdmission&&options.profile==='webapi'){
+      // The native API checks authored tables and the expanded execution budget
+      // before admitting RetrieveMultiple. Liquid admits its expanded query and
+      // encounters backend budgets after PreOperation instead.
+      let authored;
+      try {authored=planFetch(parseFetchXml(xml),{profile:'webapi',limits:this.querySettings().fetchLimits,linkBudgetError:this.observed?.fetchLinkBudgetError});}
+      catch(cause) {
+        if(cause.details?.innerCode==='0x8004430d')throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+        throw cause;
+      }
+      const mappingOf=new Map([authored.root,...authored.links].map(node=>[node,this.resolveMapping(node.attrs.name)]));
+      const intersects=structuralIntersects(authored,mappingOf);
+      linkedPermissionOrdinals=authored.links.flatMap((link,index)=>intersects.has(link)?[]:[index]);
+      const names=new Set([authored.root.attrs.name,...linkedPermissionOrdinals.map(index=>authored.links[index].attrs.name)]);
+      if(this.state.settings.permissionMode!=='permissive')for(const name of names)if(!this.rules(name,'read',identity).length)
+        throw new DataError('Table permission denies read on '+name,403,'PermissionDenied',{operation:'read',table:name});
+    }
+    // Scoped portal paths default to unique projected tuples in both lanes.
+    // Global Web API reads retain authored multiplicity; the qualified native
+    // profile additionally forces scoped DISTINCT when explicitly disabled.
+    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,defaultDistinct:true,defaultGlobalDistinct:options.profile!=='webapi',forceScopedDistinct:nativeAdmission,seedAliasesFromAuthoredLinks:nativeAdmission,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
+    permissionQuery.authoredXml = authoredXml;
+    let result;
+    try { result=this.executePermissionFetchXml(xml,identity,options,permissionQuery); }
+    catch(cause) {
+      if (options.portalRequest && permissionQuery.permissionLinkCount > 0 && cause.details?.innerCode === '0x8004430d') {
+        const limit=cause.details.limit??this.querySettings().fetchLimits.links;
+        const diagnostic={code:'PERMISSION_LINK_BUDGET_EXCEEDED',severity:'warning',table:entity,
+          authoredLinks:permissionQuery.authoredLinkCount,generatedLinks:permissionQuery.permissionLinkCount,
+          totalLinks:permissionQuery.totalLinkCount,limit,ordinaryLinks:cause.details.ordinaryLinks,filterLinks:cause.details.filterLinks,grantPaths:permissionQuery.grantPaths,
+          message:`Table permissions expanded ${permissionQuery.authoredLinkCount} authored links to ${permissionQuery.totalLinkCount} total links; the applicable join/filter budget is ${limit}.`};
+        cause.details={...cause.details,permissionDiagnostic:diagnostic};
+        options.diagnostic?.(diagnostic);
+      }
+      throw cause;
+    }
+    if (options.portalRequest && ['false','0'].includes(parseFetchXml(permissionQuery.xml).attrs.distinct?.toLowerCase()) && permissionQuery.multiplicativePaths.length && !result.columns?.aggregate) {
+      const mapping=this.resolveMapping(entity);
+      const returnedRows=result.entities.length,uniqueRootRows=new Set(result.entities.map(row=>row[mapping.idColumn])).size;
+      const diagnostic={code:'PERMISSION_QUERY_ROW_MULTIPLICATION',severity:'info',table:entity,returnedRows,uniqueRootRows,additionalRows:returnedRows-uniqueRootRows,
+        generatedLinks:permissionQuery.permissionLinkCount,grantPaths:permissionQuery.multiplicativePaths,
+        message:`Permission joins with distinct=false returned ${returnedRows} rows for ${uniqueRootRows} unique ${entity} roots.`};
+      permissionQuery.diagnostics.push(diagnostic);
+      options.diagnostic?.(diagnostic);
+    }
+    return options.portalRequest===true&&options.profile!=='webapi'?Object.assign(result,{permission_granted:permissionQuery.permissionGranted,global_permission_granted:permissionQuery.globalPermissionGranted,rules_exist:true}):result;
+  }
+  executePermissionFetchXml(xml,identity,options,permissionQuery) {
+    const entity=parseFetchXml(xml).children.find(node=>node.name==='entity')?.attrs.name;
+    const nativeAdmission=options.portalRequest===true&&!identity.admin&&this.observed?.tablePermissionQueryPipeline==='native-classic';
+    const executionOptions={...options,permissionQuery};
+    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')
+      assertPortalFetchXmlTransport(permissionQuery.xml,this.observed?.webApiFetchXmlTransport);
+    if(nativeAdmission&&options.profile==='webapi'&&permissionQuery.transport!=='source-derived-scalar-odata')planFetch(parseFetchXml(permissionQuery.xml),{profile:'webapi',limits:this.querySettings().fetchLimits,linkBudgetError:this.observed?.fetchLinkBudgetError});
+    if(nativeAdmission&&options.profile!=='webapi'&&!permissionQuery.permissionGranted){
+      // A denied Liquid root returns its normalized authored XML and an empty
+      // result, without a Dataverse invocation or a generated DISTINCT default.
+      executionOptions.noBackendAdmission=true;
+      return Object.assign(this.fetchXmlCore(permissionQuery.xml,identity,executionOptions),{entities:[],more_records:false,paging_cookie:null,total_record_count:0,total_record_count_limit_exceeded:false,xml:permissionQuery.xml,permissionQuery:{qualification:permissionQuery.qualification,authoredLinkCount:permissionQuery.authoredLinkCount,permissionLinkCount:0,totalLinkCount:permissionQuery.authoredLinkCount,diagnostics:permissionQuery.diagnostics},backendAdmission:'denied-before-dataverse'});
+    }
+    // Generated-link privileges belong to the compiler's exact structural tree.
+    // Never reuse traversal ordinals after an observer inserts, replaces or
+    // rearranges authored links. Query value filters at the root can still vary.
+    const linkStructure=source=>{const root=parseFetchXml(source);const links=[];const structural=node=>({...node,text:node.name==='value'?node.text:node.text.trim(),children:node.children.map(structural)});const visit=node=>{if(node.name==='link-entity')links.push(structural(node));else for(const child of node.children??[])visit(child);};visit(root);return JSON.stringify(links);};
+    const compiledLinkStructure=permissionQuery.permissionLinkCount?linkStructure(permissionQuery.xml):null;
+    const execute=source=>{if(compiledLinkStructure!==null&&linkStructure(source)!==compiledLinkStructure)throw new DataError('Changing permission-expanded query link structure requires a source-qualified mutation adapter.',501,'LocalPluginQueryUnsupported');const result=executeSdkFetch(this,source,prepared=>this.fetchXmlCore(prepared,identity,executionOptions));return Object.assign(result,{xml:nativeAdmission&&options.profile!=='webapi'?permissionQuery.xml:source,executedXml:source,permissionQuery:{qualification:permissionQuery.qualification,authoredLinkCount:permissionQuery.authoredLinkCount,permissionLinkCount:permissionQuery.permissionLinkCount,totalLinkCount:permissionQuery.totalLinkCount,diagnostics:permissionQuery.diagnostics}});};
+    if(!entity||!this.pluginPipeline||!this.pluginPipelineActive({entity,operation:'retrievemultiple'}))return options.sdkResult?execute(permissionQuery.xml):Object.assign(this.fetchXmlCore(permissionQuery.xml,identity,executionOptions),{xml:permissionQuery.xml,permissionQuery:{qualification:permissionQuery.qualification,authoredLinkCount:permissionQuery.authoredLinkCount,permissionLinkCount:permissionQuery.permissionLinkCount,totalLinkCount:permissionQuery.totalLinkCount,diagnostics:permissionQuery.diagnostics}});
+    return this.retrieveMultipleOperation(entity,identity.admin&&options.sdkQuery?options.sdkQuery:{$type:'FetchExpression',query:permissionQuery.xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken,{...options,queryTransport:permissionQuery.transport});
+  }
+  fetchXmlCore(xml, identity = {}, options = {}) {
+    const planOptions = {
+      profile: options.sdkResult===true&&options.portalRequest!==true ? "sdk" : options.profile === "webapi" ? "webapi" : "portal",
+      limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,linksAndFilters:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
+      generatedAnyAllAliases: options.permissionQuery?.generatedAnyAllAliases ?? [],
+      linkBudgetError:this.observed?.fetchLinkBudgetError,
+    };
+    const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
+    const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();
+    // Native Liquid preserves omission of returntotalrecordcount in its
+    // exposed query and returns -1. The generic portal planner's historical
+    // injected count is not part of this independently observed transport.
+    if(options.portalRequest===true&&options.profile!=='webapi'&&options.permissionQuery&&
+      this.observed?.tablePermissionQueryPipeline==='native-classic'&&plan.fetch.attrs.returntotalrecordcount==null)
+      plan.returnTotal=false;
     // Web API $count=true counts the matching rows like returntotalrecordcount.
     if (options.returnTotal === true && plan.top == null && !plan.aggregate)
       plan.returnTotal = true;
-    const ctx = this.queryContext(identity, options);
+    const permissionLinkNodes=new Set((options.permissionQuery?.generatedLinkOrdinals??[]).map(index=>plan.links[index]).filter(Boolean));
+    const nativeBackend=options.portalRequest===true&&this.observed?.tablePermissionQueryPipeline==='native-classic'&&options.permissionQuery?.permissionGranted;
+    const rawQueryNodes=nativeBackend?new Set([plan.root,...plan.links]):undefined;
+    const ctx = this.queryContext(identity, {...options,permissionLinkNodes,rawQueryNodes});
     return executeFetch(plan, {
       mapping: (name) => this.resolveMapping(name),
-      readableRows: ctx.readRows,
+      readableRows: options.noBackendAdmission ? () => [] : ctx.readRows,
+      permissionLink: node => permissionLinkNodes.has(node),
+      permissionTerminalConditions: options.permissionQuery?.generatedTerminalConditions ?? [],
+      nativePagingCookies: options.portalRequest===true&&this.observed?.tablePermissionQueryPipeline==='native-classic',
       tableRows: (logical) => this.tableRows(logical),
       definition: ctx.definition,
       column: ctx.column,
       lookupName: ctx.lookupName,
       identity,
-      settings: ctx.settings,
+      settings: options.noBackendAdmission ? {...ctx.settings,fetchAllWithoutFilter:undefined} : ctx.settings,
       now: ctx.now,
       platformLanguageCode: options.platformLanguageCode,
+      equalRows: options.fetchCache ? (rows, column, value) => options.fetchCache.equalRows(rows, column, value) : undefined,
     });
   }
 }
@@ -2918,46 +3353,86 @@ export function parseKeySegment(key) {
   const text = String(key ?? "").trim();
   if (!text.includes("=")) return null;
   const parts = {};
-  const pattern = /\s*([A-Za-z_]\w*)\s*=\s*('(?:[^']|'')*'|[^,]+)\s*(?:,|$)/y;
   let index = 0;
+  const whitespace = () => { while (index < text.length && /\s/.test(text[index])) index++; };
+  const invalid = () => { throw new DataError("Invalid alternate key segment", 400, "InvalidKey"); };
   while (index < text.length) {
-    pattern.lastIndex = index;
-    const match = pattern.exec(text);
-    if (!match) throw new DataError(`Invalid key segment (${text})`, 400, "InvalidKey");
-    const raw = match[2].trim();
-    parts[match[1].toLowerCase()] = raw.startsWith("'")
+    whitespace();
+    const nameStart = index;
+    if (!/[A-Za-z_]/.test(text[index] ?? "")) invalid();
+    index++;
+    while (index < text.length && /\w/.test(text[index])) index++;
+    const name = text.slice(nameStart, index).toLowerCase();
+    if (["__proto__", "prototype", "constructor"].includes(name) || own(parts, name)) invalid();
+    whitespace();
+    if (text[index++] !== "=") invalid();
+    whitespace();
+    const valueStart = index;
+    if (text[index] === "'") {
+      index++;
+      let closed = false;
+      while (index < text.length) {
+        if (text[index++] !== "'") continue;
+        if (text[index] === "'") { index++; continue; }
+        closed = true;
+        break;
+      }
+      if (!closed) invalid();
+    } else {
+      while (index < text.length && text[index] !== ",") index++;
+    }
+    const raw = text.slice(valueStart, index).trim();
+    if (!raw) invalid();
+    whitespace();
+    if (index < text.length && text[index++] !== ",") invalid();
+    parts[name] = raw.startsWith("'")
       ? raw.slice(1, -1).replace(/''/g, "'")
       : /^-?\d+(?:\.\d+)?$/.test(raw)
         ? Number(raw)
         : raw.replace(/^\{(.*)\}$/, "$1");
-    index = pattern.lastIndex;
   }
   return parts;
 }
 /** The column's imported MinValue/MaxValue bound a numeric write (Dataverse validation). */
-function assertBounds(value, definition, code, innerCode, message) {
+function assertBounds(value, definition, code, innerCode, { entity, attribute, kind }) {
   const min = Number(definition.minValue),
     max = Number(definition.maxValue);
-  if ((definition.minValue != null && Number.isFinite(min) && value < min) || (definition.maxValue != null && Number.isFinite(max) && value > max))
-    throw new DataError(`A validation error occurred. ${message}`, 400, code, { innerCode, minValue: definition.minValue ?? null, maxValue: definition.maxValue ?? null });
+  if ((definition.minValue != null && Number.isFinite(min) && compareNumeric(value, definition.minValue) < 0) || (definition.maxValue != null && Number.isFinite(max) && compareNumeric(value, definition.maxValue) > 0)) {
+    const text=isExactNumeric(value)?value.value:value;
+    const message = kind === "integer"
+      ? `A validation error occurred. The value ${text} of '${attribute}' on record of type '${entity}' is outside the valid range. Minimum Value: ${definition.minValue ?? ""}, Maximum value: ${definition.maxValue ?? ""}`
+      : `A validation error occurred for ${entity}.${attribute}. The value ${text} of type ${kind === "money" ? "Microsoft.Xrm.Sdk.Money" : kind === "double" ? "System.Double" : "System.Decimal"} is outside the valid range(${definition.minValue ?? ""} to ${definition.maxValue ?? ""}).`;
+    throw new DataError(message, 400, code, { innerCode, minValue: definition.minValue ?? null, maxValue: definition.maxValue ?? null });
+  }
 }
 /** A choice write must be one of the column's exported options (PicklistValueOutOfRange). */
-function assertOption(value, definition) {
+function assertOption(value, definition, { entity, attribute }) {
   const options = Array.isArray(definition.options) ? definition.options : [];
-  if (options.length && !options.some((option) => Number(option?.value) === value))
-    throw new DataError("The picklist value is out of the range.", 400, "PicklistValueOutOfRange", { innerCode: "0x8004431a", value });
+  if (definition.optionSetOpen !== true && options.length && !options.some((option) => Number(option?.value) === value)) {
+    if (["state", "status"].includes(String(definition.dataverseType ?? definition.type ?? "").toLowerCase()))
+      throw new DataError(
+        "State code is invalid or state code is valid but status code is invalid for a specified state code.",
+        400,
+        "InvalidStateCodeStatusCode",
+        { innerCode: "0x80048408" },
+      );
+    throw new DataError(`A validation error occurred. The value ${value} of '${attribute}' on record of type '${entity}' is outside the valid range. Accepted Values: ${options.map((option) => option.value).join(",")}`, 400, "PicklistValueOutOfRange", { innerCode: "0x8004431a", value });
+  }
 }
 /** Validate and normalise one Web API column value from its Dataverse type. */
-function coerceValue(entity, attribute, value, definition) {
+function coerceValue(entity, attribute, value, definition, options = {}) {
   const kind = fieldKind(definition);
+  if(isExactNumeric(value)&&!['integer','decimal','money','double'].includes(kind))
+    throw new DataError('An exact numeric value cannot be stored in nonnumeric column '+entity+'.'+attribute,400,'InvalidValue',{innerCode:'0x80048d19'});
   const literal = typeof value === "object" ? JSON.stringify(value) : String(value);
+  const originalValue = value;
   const conversion = (type) =>
-    new DataError(
+    attachODataReaderDetails(new DataError(
       `Cannot convert the literal '${literal}' to the expected type '${type}'.`,
       400,
       "InvalidValue",
       { innerCode: "0x80048d19" },
-    );
+    ), options.odataErrorDetails ? odataConversionDetails(originalValue, type, attribute, options) : null);
   switch (kind) {
     case "string": {
       if (typeof value !== "string") throw conversion("Edm.String");
@@ -2970,21 +3445,42 @@ function coerceValue(entity, attribute, value, definition) {
           "StringLengthExceeded",
           { innerCode: "0x80044331" },
         );
-      return value;
+      // Email is a schema format, independent of the column/table name. Length
+      // validation applies to the submitted value before normalization.
+      const email = String(definition.format ?? "").toLowerCase() === "email" ||
+        String(definition.dataverseType ?? definition.type ?? "").toLowerCase() === "email";
+      return email ? value.trim().toLowerCase() || null : value;
     }
     case "integer": {
       const int64 = String(definition.dataverseType ?? "").toLowerCase() === "bigint";
       const type = int64 ? "Edm.Int64" : "Edm.Int32";
+      if(int64&&(isExactNumeric(value)||typeof value==='string'&&/^[+-]?\d+$/.test(value.trim()))){
+        const parts=decimalParts(typeof value==='string'?value.trim():value);
+        if(!parts||parts.scale!==0||compareNumeric(value,'-9223372036854775808')<0||compareNumeric(value,'9223372036854775807')>0||isExactNumeric(value)&&!['Literal','Int64'].includes(value.numericType))throw conversion(type);
+        value=exactNumeric(parts.coefficient.toString(),'Int64');
+        assertBounds(value,definition,'IntegerValueOutOfRange','0x8004432f',{entity,attribute,kind});return value;
+      }
+      if (typeof value === "string" && /^[+-]?\d+$/.test(value.trim())) value = Number(value.trim());
       if (typeof value !== "number" || !Number.isInteger(value)) throw conversion(type);
       // A literal outside Edm.Int32 doesn't convert; MinValue/MaxValue narrow the column.
       if (int64 ? !Number.isSafeInteger(value) : value < -2147483648 || value > 2147483647)
         throw conversion(type);
-      assertBounds(value, definition, "IntegerValueOutOfRange", "0x8004432f", "An integer provided is outside of the allowed values for this attribute.");
+      assertBounds(value, definition, "IntegerValueOutOfRange", "0x8004432f", { entity, attribute, kind });
       return value;
     }
     case "decimal":
     case "money":
     case "double": {
+      if(isExactNumeric(value)&&kind!=='double'){
+        if(!['Literal',kind==='money'?'Money':'Decimal'].includes(value.numericType))throw conversion('Edm.Decimal');
+        const parts=decimalParts(value);
+        if(!parts||parts.scale>28||compareNumeric(value,'-79228162514264337593543950335')<0||compareNumeric(value,'79228162514264337593543950335')>0)throw conversion('Edm.Decimal');
+        const result=roundNumeric(value,Number.isInteger(definition.precision)?definition.precision:2,kind==='money'?'Money':'Decimal');
+        assertBounds(result,definition,'DecimalValueOutOfRange','0x80044330',{entity,attribute,kind});return result;
+      }
+      if(isExactNumeric(value)&&kind==='double'&&value.numericType==='Literal')value=Number(value.value);
+      if (kind === "double" && typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()))
+        value = Number(value.trim());
       if (typeof value !== "number" || !Number.isFinite(value))
         throw conversion(kind === "double" ? "Edm.Double" : "Edm.Decimal");
       const precision = Number.isInteger(definition.precision)
@@ -3005,44 +3501,54 @@ function coerceValue(entity, attribute, value, definition) {
       }
       // The documented DecimalValueOutOfRange covers money and float columns too; their
       // own codes aren't documented.
-      assertBounds(result, definition, "DecimalValueOutOfRange", "0x80044330", "A decimal value provided is outside of the allowed values for this attribute.");
+      assertBounds(result, definition, "DecimalValueOutOfRange", "0x80044330", { entity, attribute, kind });
       return result;
     }
     case "boolean":
+      if (typeof value === "string" && /^(true|false)$/i.test(value.trim())) value = value.trim().toLowerCase() === "true";
       if (typeof value !== "boolean") throw conversion("Edm.Boolean");
       return value;
     case "choice": {
-      const raw = value && typeof value === "object" ? value.value : value;
+      let raw = value && typeof value === "object" ? value.value : value;
+      if (typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
       if (typeof raw !== "number" || !Number.isInteger(raw))
         throw conversion("Edm.Int32");
-      assertOption(raw, definition);
+      assertOption(raw, definition, { entity, attribute });
       return raw;
     }
     case "multichoice": {
+      // The native form posts the MultiSelectPicklist control's JSON array of option metadata.
+      if (typeof value === "string" && /^\s*\[/.test(value)) {
+        try { value = JSON.parse(value).map((item) => item && typeof item === "object" ? item.Value : item).join(","); } catch { throw conversion("Edm.String"); }
+      }
       const parts = Array.isArray(value) ? value : typeof value === "string" ? value.split(",").filter((part) => part.trim() !== "") : null;
       if (!parts) throw conversion("Edm.String");
       for (const part of parts) {
         const number = Number(typeof part === "string" ? part.trim() : part);
         if (!Number.isInteger(number)) throw conversion("Edm.Int32");
-        assertOption(number, definition);
+        assertOption(number, definition, { entity, attribute });
       }
       return value;
     }
     case "datetime": {
       if (typeof value !== "string") throw conversion("Edm.DateTimeOffset");
       const parsed = parseDateValue(value);
+      // Timestamp calendar/clock errors fail the OData primitive reader. Failed
+      // date-text/zone conversion reaches Dataverse's CrmDateTime validation.
+      const timestamp = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,7})?)?(?:Z|[+-]\d{2}:?\d{2})?$/i.exec(value.trim());
+      if (!parsed && timestamp && (+timestamp[2] < 1 || +timestamp[2] > 12 || +timestamp[3] < 1 || +timestamp[3] > 31 ||
+          new Date(Date.UTC(+timestamp[1], +timestamp[2] - 1, +timestamp[3])).getUTCDate() !== +timestamp[3] ||
+          +timestamp[4] > 23 || +timestamp[5] > 59 || +(timestamp[6] ?? 0) > 59)) throw conversion("Edm.DateTimeOffset");
       const year = parsed ? new Date(parsed.ms).getUTCFullYear() : NaN;
       if (!parsed || year < 1753 || year > 9999)
-        throw new DataError(
-          `The date-time format for ${value} is invalid, or value is outside the supported range.`,
-          400,
-          "InvalidDateTime",
-          { innerCode: "0x80040239" },
-        );
-      return parsed.dateOnly || isDateOnlyField(definition)
+        throw dateTimeRangeError(value, parsed);
+      return isDateOnlyField(definition)
         ? isoUtc(parsed.ms, { dateOnly: true })
         : isoUtc(parsed.ms);
     }
+    case "guid":
+      if (typeof value !== "string" || !GUID_PATTERN.test(value)) throw conversion("Edm.Guid");
+      return value.toLowerCase();
     default:
       return value;
   }

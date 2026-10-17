@@ -316,9 +316,9 @@ test("@odata.bind accepts only the exact navigation property name", async (t) =>
   const policyModule = await import("../lib/webapi-policy.mjs");
   const policy = policyModule.webApiPolicy({ settings: { "Webapi/account/enabled": "true", "Webapi/account/fields": "name,new_producttype" } }, app.store, "account");
   assert.throws(() => policy.assertWrite({ "new_producttype@odata.bind": `/new_producttypes(${G(21)})` }), (error) => /did you mean new_ProductType\?/.test(error.message) && error.details.phase === "payload");
-  // A name the table doesn't have at all stays InvalidAttribute (90040100).
+  // An unknown write property is refused by the exported field allow-list.
   const unknown = await json("/_api/accounts", { method: "POST", body: { name: "Unknown", "new_widget@odata.bind": `/new_producttypes(${G(21)})` } });
-  assert.deepEqual([unknown.status, unknown.body.error.code], [400, "90040100"]);
+  assert.deepEqual([unknown.status, unknown.body.error.code], [403, "90040101"]);
   // Learn's example: contact.parentcustomerid binds through parentcustomerid_account.
   const customer = await json("/_api/contacts", { method: "POST", body: { fullname: "Bea", "parentcustomerid_account@odata.bind": `/accounts(${G(1)})` } });
   assert.equal(customer.status, 204);

@@ -1,0 +1,89 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{15c3f6a8-774a-4b19-8ead-e64e6505a72e}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="card" id="{43C6C15F-D46D-43E1-8CDD-E48D05C26DC5}" IsUserDefined="1" showlabel="false" expanded="true">
+          <labels>
+            <label description="Card" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="card:pqvd_baselineitem:ColorStrip" id="{10E64CD0-0D86-47D6-8271-154B45521665}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="ColorStrip" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{34EE782B-ED19-4447-86AC-24A95EF816FB}" showlabel="true">
+                        <labels>
+                          <label description="Status reason" languagecode="1033" />
+                        </labels>
+                        <control id="statuscode" classid="{5D68B988-0661-4DB2-BC3E-17598AD3BE6C}" datafieldname="statuscode" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineitem:CardHeader" id="{2217B9AF-0A55-4C9A-8B36-7A4DBD73ADF9}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardHeader" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{AE61A5BC-56DE-4917-8373-06FB5C7B4885}" showlabel="true">
+                        <labels>
+                          <label description="Name" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_name" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineitem:CardDetails" id="{DC422DEF-4C7C-4F26-8598-E1D5F3A979F5}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardDetails" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{EE5BE937-6073-4723-8610-34D0BF75EF74}" showlabel="true">
+                        <labels>
+                          <label description="Code" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_code" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_code" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+                <section name="card:pqvd_baselineitem:CardFooter" id="{B28E2E76-7D41-4F0A-84BD-EC3034C94E14}" showlabel="false" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="CardFooter" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{B09D147C-039C-4374-8C3F-3B33FCA0A506}" showlabel="true">
+                        <labels>
+                          <label description="Text" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_text" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_text" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Item Card" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

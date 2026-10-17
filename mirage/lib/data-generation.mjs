@@ -10,6 +10,7 @@ import { assertOfflineState } from "./offline-state.mjs";
 import { discoverPacks, presetLibrary } from "./preset-registry.mjs";
 import { resolvePreset } from "./presets.mjs";
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from "./schema-validation.mjs";
+import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 
 const clone = (value) => structuredClone(value);
 const idColumnOf = (state, table) => state.mappings?.[table]?.idColumn ?? `${table}id`;
@@ -83,6 +84,10 @@ export function mergeDataset(state, fragment, { basePreset, packId } = {}) {
   }
   mergeMappings(result.mappings, fragment.mappings);
   mergeRows(result, fragment.tables, report.generated);
+  let catalog = result.personaCatalog;
+  if (basePreset?.personaCatalog !== undefined) catalog = mergePersonaCatalogs(catalog, validatePersonaCatalog(basePreset.personaCatalog, `Preset ${basePreset.id ?? basePreset.name ?? 'base'}`));
+  if (fragment.personaCatalog !== undefined) catalog = mergePersonaCatalogs(catalog, validatePersonaCatalog(fragment.personaCatalog, `Dataset ${packId ?? 'pack'}`));
+  if (catalog !== undefined) result.personaCatalog = validatePersonaCatalog(catalog, 'Merged state');
   const permissionIds = new Set(result.permissions.map((permission) => permission.id));
   let addedPermissions = 0;
   for (const permission of [...(basePreset?.permissions ?? []), ...(fragment.permissions ?? [])])
@@ -189,7 +194,7 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
   // digest checks (docs/state-write-integrity.md).
   await assertOfflineState(outputPath);
   const destination = outputPath === inputPath ? source : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedSnapshot: JSON.stringify(destination.snapshot()) });
+  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
   return {
     written: outputPath,
     pack: packId,
@@ -281,7 +286,7 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
   const destination = outputPath === inputPath && !bootstrapped
     ? await new DataStore({ file: inputPath }).init()
     : await new DataStore({ file: outputPath, state: output }).init();
-  await destination.replaceState(output, { expectedSnapshot: JSON.stringify(destination.snapshot()) });
+  await destination.replaceState(output, { expectedDigest: destination.snapshotDigest() });
   return {
     written: outputPath,
     bootstrapped,

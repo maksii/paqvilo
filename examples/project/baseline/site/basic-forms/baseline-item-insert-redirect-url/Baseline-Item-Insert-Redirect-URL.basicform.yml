@@ -1,0 +1,18 @@
+adx_appendquerystring: true
+adx_captcharequired: false
+adx_entityformid: ee3c9ebe-cb67-4c1b-8ff7-9b8142963316
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Redirect URL
+adx_onsuccess: 756150001
+adx_redirecturl: https://example.com/
+adx_redirecturlappendentityidquerystring: true
+adx_redirecturlcustomquerystring: 'source=baseline'
+adx_redirecturlquerystringattribute: pqvd_code
+adx_redirecturlquerystringattributeparamname: code
+adx_redirecturlquerystringname: id
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

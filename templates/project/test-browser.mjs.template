@@ -1,0 +1,30 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawn } from 'node:child_process';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const files = [];
+function collect(directory) {
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (entry.isSymbolicLink() || entry.name.startsWith('.') || ['fixtures', 'node_modules'].includes(entry.name)) continue;
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) collect(file);
+    else if (/\.test\.[cm]?js$/.test(entry.name)) files.push(file);
+  }
+}
+for (const folder of {{testRoots}}) {
+  const directory = path.join(root, folder);
+  if (fs.existsSync(directory)) collect(directory);
+}
+if (!files.length) {
+  console.log('No browser tests found. Add loopback acceptance tests before claiming coverage.');
+} else {
+  const env = { ...process.env };
+  delete env.NODE_TEST_CONTEXT;
+  const child = spawn(process.execPath, ['--test', '--test-concurrency=1', '--test-timeout=300000', ...process.argv.slice(2), ...files.sort()], { cwd: root, env, stdio: 'inherit', windowsHide: true });
+  child.on('error', error => { console.error(error.message); process.exitCode = 1; });
+  child.on('exit', code => { process.exitCode = code ?? 1; });
+  process.on('SIGINT', () => child.kill('SIGINT'));
+  process.on('SIGTERM', () => child.kill('SIGTERM'));
+}

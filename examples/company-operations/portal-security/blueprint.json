@@ -1,0 +1,5138 @@
+{
+  "schemaVersion": 1,
+  "datasetVersion": "company-operations-v1",
+  "roles": [
+    {
+      "code": "COMPANYMANAGER",
+      "name": "CO Company manager",
+      "id": "54b21c9c-acb9-5792-8982-df49c8ab9e13",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "BRANCHMANAGER",
+      "name": "CO Branch manager",
+      "id": "234da42c-e554-589b-8257-ce60ef17b8d3",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "TEAMLEADER",
+      "name": "CO Team leader",
+      "id": "52e66d2a-d0f3-5c2a-8c15-ad9f81963f8a",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "EMPLOYEE",
+      "name": "CO Employee",
+      "id": "9a3e4fff-538c-5c33-8b5a-53fd79eea945",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "CONTRACTOR",
+      "name": "CO External contractor",
+      "id": "2c2e4f54-5f1f-59ce-87f2-b7081549d82a",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "HR",
+      "name": "CO HR officer",
+      "id": "d9ec9d9f-d1a7-5de2-8363-57ebf4d3abbd",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "IT",
+      "name": "CO IT asset administrator",
+      "id": "c000dfe1-1f4f-509f-818f-38f3bf76374c",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "FACILITIES",
+      "name": "CO Facilities coordinator",
+      "id": "56e10673-a9ee-5c1f-8813-83a1893c1ca7",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "PROCUREMENT",
+      "name": "CO Procurement officer",
+      "id": "06acebcd-528a-5e33-8b72-6245a1161639",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "AUDITOR",
+      "name": "CO Operations auditor",
+      "id": "245ff925-ef73-523d-8ed5-4b7373f16d55",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "ORGADMIN",
+      "name": "CO Organisation administrator",
+      "id": "6ce6aa12-fe7c-5067-89dd-3a3171f37f79",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "CTO",
+      "name": "CO CTO",
+      "id": "b2818ea1-77db-5c68-8065-b62a4d7b33a7",
+      "anonymous": false,
+      "authenticatedDefault": false
+    },
+    {
+      "code": "TESTRUNNER",
+      "name": "CO Test Runner",
+      "id": "4a4e6823-5352-5506-802e-c6f92deffcd9",
+      "anonymous": false,
+      "authenticatedDefault": false
+    }
+  ],
+  "nodes": [
+    {
+      "key": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "id": "e378b52e-6c0d-5b85-88c9-dfa55bd8aafd",
+      "name": "CO COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_companymanager",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "id": "af0c937f-d98b-5f73-8f5d-05b9a1c25cad",
+      "name": "CO BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_branchmanager",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "id": "351154a1-2833-5be6-8fb2-f34db952445b",
+      "name": "CO TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "role": "TEAMLEADER",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_teamleader",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "id": "44724087-1239-5488-8ac0-c6240ded4d95",
+      "name": "CO EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "role": "EMPLOYEE",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_employee",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "id": "c5217a06-3e53-5bfb-8c26-3bb2e8d85ea5",
+      "name": "CO CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "role": "CONTRACTOR",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_contractor",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-GRANTS-ACCESSPERMISSION",
+      "id": "b817e55f-eb32-5a42-8b83-fd3b6410aef7",
+      "name": "CO HR-GRANTS-ACCESSPERMISSION",
+      "role": "HR",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_hr",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-GRANTS-ACCESSPERMISSION",
+      "id": "4bb324c7-7b4c-5e79-8c20-130b15a61991",
+      "name": "CO IT-GRANTS-ACCESSPERMISSION",
+      "role": "IT",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_it",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "FACILITIES-GRANTS-ACCESSPERMISSION",
+      "id": "678900d6-7f9b-5c5b-8421-c4cd767d8556",
+      "name": "CO FACILITIES-GRANTS-ACCESSPERMISSION",
+      "role": "FACILITIES",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_facilities",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "id": "698fce53-de54-54ab-8a59-7dea41671cd8",
+      "name": "CO PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "role": "PROCUREMENT",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_procurement",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "id": "0b341977-f316-5575-8fd7-4f1c4a68fffe",
+      "name": "CO AUDITOR-GRANTS-ACCESSPERMISSION",
+      "role": "AUDITOR",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_auditor",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-GRANTS-ACCESSPERMISSION",
+      "id": "dd205750-e0fe-5b9b-8f66-383563dca29a",
+      "name": "CO ORGADMIN-GRANTS-ACCESSPERMISSION",
+      "role": "ORGADMIN",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_orgadmin",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-GRANTS-ACCESSPERMISSION",
+      "id": "5c388fb2-05be-54f6-837d-433b2beb363f",
+      "name": "CO CTO-GRANTS-ACCESSPERMISSION",
+      "role": "CTO",
+      "table": "pqvd_accesspermission",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_access_cto",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "id": "a5993004-56d5-596d-8a3b-2d0043bfb356",
+      "name": "CO COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "role": "COMPANYMANAGER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-ORGCONTACT",
+      "id": "20366870-612a-5c46-8b19-833796dade34",
+      "name": "CO COMPANYMANAGER-WORKFORCE-ORGCONTACT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-EMPLOYMENT",
+      "id": "5acf4b44-4386-5f82-8da2-d2b26e1654a0",
+      "name": "CO COMPANYMANAGER-WORKFORCE-EMPLOYMENT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-DEPARTMENT-DEPARTMENT",
+      "id": "a661d442-fa73-5bd4-8e14-73b3554c5c8f",
+      "name": "CO COMPANYMANAGER-DEPARTMENT-DEPARTMENT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-EQUIPMENT",
+      "id": "8d00fc30-fe60-579d-8fca-5bc58cce79c3",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-EQUIPMENT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-FINANCE-EQUIPMENTFINANCE",
+      "id": "88d13ecd-22d5-5175-86a3-aaec06f0c36c",
+      "name": "CO COMPANYMANAGER-FINANCE-EQUIPMENTFINANCE",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_equipmentfinance",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_finance",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-LOCATIONS-SITE",
+      "id": "83e1e560-14cf-58dc-8d66-2ab991b7b433",
+      "name": "CO COMPANYMANAGER-LOCATIONS-SITE",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-LOCATIONS-BUILDING",
+      "id": "ba0d180f-e61c-5412-8483-59a6c368acd5",
+      "name": "CO COMPANYMANAGER-LOCATIONS-BUILDING",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-LOCATIONS-ROOM",
+      "id": "9cacdf82-d775-5992-8b64-5ebf97172efc",
+      "name": "CO COMPANYMANAGER-LOCATIONS-ROOM",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-ASSIGNMENT",
+      "id": "b004e393-0fd2-5cd2-837a-8a24959fa96f",
+      "name": "CO COMPANYMANAGER-WORKFORCE-ASSIGNMENT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-SERVICEREQUEST",
+      "id": "39a06099-48c3-5c41-8e25-89a6f8a5df66",
+      "name": "CO COMPANYMANAGER-WORKFORCE-SERVICEREQUEST",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-WORKORDER",
+      "id": "a8906417-3b88-54cd-882b-12712c87618a",
+      "name": "CO COMPANYMANAGER-WORKFORCE-WORKORDER",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-WORKTASK",
+      "id": "5ec025cf-c3b8-51e8-8230-ce0e5d0b2710",
+      "name": "CO COMPANYMANAGER-WORKFORCE-WORKTASK",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-CHECKLISTITEM",
+      "id": "feaa8418-f0e2-5268-8234-26672be37331",
+      "name": "CO COMPANYMANAGER-WORKFORCE-CHECKLISTITEM",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-INSPECTION",
+      "id": "ab8ba341-d83d-5f83-85aa-af34e33f70cf",
+      "name": "CO COMPANYMANAGER-WORKFORCE-INSPECTION",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-WORKFORCE-FINDING",
+      "id": "7745e6ad-35b0-5dc4-8a23-6f60774f3e9e",
+      "name": "CO COMPANYMANAGER-WORKFORCE-FINDING",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-ASSIGNMENT",
+      "id": "9a397eaa-e89a-5100-8f33-a130026f712f",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-ASSIGNMENT",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "id": "ac18cb64-cc23-56db-8c12-c8582d321a9a",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-WORKORDER",
+      "id": "9ed05f3e-5277-507d-89d7-5123d4822230",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-WORKORDER",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-WORKTASK",
+      "id": "aa0ff523-81d9-5e93-8d7c-7a13b89ea69d",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-WORKTASK",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "id": "a4d7e91d-8dce-5a42-84ed-0b54baa9a37b",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-INSPECTION",
+      "id": "ce97dc40-84df-540f-810d-5788148b1935",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-INSPECTION",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-EQUIPMENT-FINDING",
+      "id": "60dea7b6-6838-5439-8b16-7f188da3c997",
+      "name": "CO COMPANYMANAGER-EQUIPMENT-FINDING",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "id": "3564d158-8c03-5839-8594-dd09aa04b569",
+      "name": "CO BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "role": "BRANCHMANAGER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-UNITS-ACCOUNT",
+      "id": "c94f12c3-8fea-59a6-86de-7ee01b197a2a",
+      "name": "CO BRANCHMANAGER-UNITS-ACCOUNT",
+      "role": "BRANCHMANAGER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "account_parent_account",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-ORGCONTACT",
+      "id": "a6c09a90-08e4-5013-8cbc-281c9581167b",
+      "name": "CO BRANCHMANAGER-WORKFORCE-ORGCONTACT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-EMPLOYMENT",
+      "id": "45e14aa6-e63f-53cb-8b23-4c58a71d7d93",
+      "name": "CO BRANCHMANAGER-WORKFORCE-EMPLOYMENT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-DEPARTMENT-DEPARTMENT",
+      "id": "1ec2a4ca-a704-5632-8f53-c0c2c52883da",
+      "name": "CO BRANCHMANAGER-DEPARTMENT-DEPARTMENT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-EQUIPMENT",
+      "id": "a9274d01-ec7b-5a4e-8a65-13e8e3a55d62",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-EQUIPMENT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-FINANCE-EQUIPMENTFINANCE",
+      "id": "be07b0bf-5a5d-5d27-8788-0a5eba939605",
+      "name": "CO BRANCHMANAGER-FINANCE-EQUIPMENTFINANCE",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_equipmentfinance",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_finance",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-LOCATIONS-SITE",
+      "id": "2de91dcc-c842-553a-8c18-2e844fcbec4b",
+      "name": "CO BRANCHMANAGER-LOCATIONS-SITE",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-LOCATIONS-BUILDING",
+      "id": "9bead136-e9f8-54f7-85b7-0cbe0ff9bae9",
+      "name": "CO BRANCHMANAGER-LOCATIONS-BUILDING",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-LOCATIONS-ROOM",
+      "id": "c1949e23-6346-5eb2-84dc-163b7f77e60e",
+      "name": "CO BRANCHMANAGER-LOCATIONS-ROOM",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-ASSIGNMENT",
+      "id": "2bdd6f99-862d-528a-8823-7e5eb49ec657",
+      "name": "CO BRANCHMANAGER-WORKFORCE-ASSIGNMENT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-SERVICEREQUEST",
+      "id": "81df7729-b884-5583-8db4-2e1526eac0d0",
+      "name": "CO BRANCHMANAGER-WORKFORCE-SERVICEREQUEST",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-WORKORDER",
+      "id": "f85ae7f5-d2ac-5af9-866a-21d6a142c9bc",
+      "name": "CO BRANCHMANAGER-WORKFORCE-WORKORDER",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-WORKTASK",
+      "id": "f9abcd9b-7b8f-5573-8b53-39e718fbb5d0",
+      "name": "CO BRANCHMANAGER-WORKFORCE-WORKTASK",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-CHECKLISTITEM",
+      "id": "ecf54083-df65-52e4-8f4d-57d9751991a9",
+      "name": "CO BRANCHMANAGER-WORKFORCE-CHECKLISTITEM",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-INSPECTION",
+      "id": "397e026f-582a-5dc6-8b4d-93dd75f28e75",
+      "name": "CO BRANCHMANAGER-WORKFORCE-INSPECTION",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-WORKFORCE-FINDING",
+      "id": "d4eafa2c-740b-580d-85a6-6993d0e2da92",
+      "name": "CO BRANCHMANAGER-WORKFORCE-FINDING",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-ASSIGNMENT",
+      "id": "343d8c47-0b1a-58c2-885a-fa6915733a77",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-ASSIGNMENT",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "id": "33506c78-7065-5435-86a7-a1beb2c95155",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-WORKORDER",
+      "id": "166352f3-5f7a-5558-8b68-4942fd94fd67",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-WORKORDER",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-WORKTASK",
+      "id": "b03ac574-48e1-50f2-8794-e2cd81fae1fe",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-WORKTASK",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "id": "f82c3ede-5763-513d-8b01-59f6518bf7e0",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-INSPECTION",
+      "id": "4379481f-240f-5cc6-8fff-6074d3905af5",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-INSPECTION",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-EQUIPMENT-FINDING",
+      "id": "8030719b-2bbb-5376-810a-4645991b6f3c",
+      "name": "CO BRANCHMANAGER-EQUIPMENT-FINDING",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-WORKFORCE-ACCOUNT",
+      "id": "ffa07a1a-4a44-5f0b-8ce8-5a4cb5305d77",
+      "name": "CO HR-WORKFORCE-ACCOUNT",
+      "role": "HR",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "HR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "HR-WORKFORCE-ORGCONTACT",
+      "id": "e4f65636-3215-57e5-8bf7-0e2ef23dc1ba",
+      "name": "CO HR-WORKFORCE-ORGCONTACT",
+      "role": "HR",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "HR-WORKFORCE-EMPLOYMENT",
+      "id": "64148f71-fcaa-5115-88bf-79450823ce67",
+      "name": "CO HR-WORKFORCE-EMPLOYMENT",
+      "role": "HR",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "HR-DEPARTMENT-DEPARTMENT",
+      "id": "ec91b0f0-9de8-5a2b-8a3d-2549b794b164",
+      "name": "CO HR-DEPARTMENT-DEPARTMENT",
+      "role": "HR",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-TERMS-EMPLOYMENTTERMS",
+      "id": "75a47062-5919-5b33-869e-c62c2b701576",
+      "name": "CO HR-TERMS-EMPLOYMENTTERMS",
+      "role": "HR",
+      "table": "pqvd_employmentterms",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_terms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-EQUIPMENT-EQUIPMENT",
+      "id": "f41ec9f7-dd93-581f-8ca7-36db710aa6d5",
+      "name": "CO HR-EQUIPMENT-EQUIPMENT",
+      "role": "HR",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-WORKFORCE-ASSIGNMENT",
+      "id": "e443650f-0cdd-5d0e-82a3-edd6dac64f18",
+      "name": "CO HR-WORKFORCE-ASSIGNMENT",
+      "role": "HR",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "HR-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-EQUIPMENT-ASSIGNMENT",
+      "id": "cc569fd8-85f4-5ffe-8bbe-f9f0f7ab9843",
+      "name": "CO HR-EQUIPMENT-ASSIGNMENT",
+      "role": "HR",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "HR-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-ACCOUNT",
+      "id": "d841139b-0c9a-582a-8fc1-dbecba000415",
+      "name": "CO IT-WORKFORCE-ACCOUNT",
+      "role": "IT",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "IT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-ORGCONTACT",
+      "id": "71b93e23-fa8f-5b3a-802b-ccd4c0a7d3c6",
+      "name": "CO IT-WORKFORCE-ORGCONTACT",
+      "role": "IT",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-EMPLOYMENT",
+      "id": "e06b09d8-3539-5576-86f6-0354da2b3bad",
+      "name": "CO IT-WORKFORCE-EMPLOYMENT",
+      "role": "IT",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-DEPARTMENT-DEPARTMENT",
+      "id": "d6608171-7e4b-55e5-8daf-9fac3c4d7f75",
+      "name": "CO IT-DEPARTMENT-DEPARTMENT",
+      "role": "IT",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-EQUIPMENT",
+      "id": "72e6f60e-d40f-5f98-8818-f1b7b8abbc72",
+      "name": "CO IT-EQUIPMENT-EQUIPMENT",
+      "role": "IT",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-LOCATIONS-SITE",
+      "id": "a00d136d-35ce-5fb7-85c3-7a8ef3780182",
+      "name": "CO IT-LOCATIONS-SITE",
+      "role": "IT",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-LOCATIONS-BUILDING",
+      "id": "d7b91fd7-d078-53e2-8f50-af0b55e11d48",
+      "name": "CO IT-LOCATIONS-BUILDING",
+      "role": "IT",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "IT-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-LOCATIONS-ROOM",
+      "id": "b1e1908b-8b46-536d-8303-4840530ebff0",
+      "name": "CO IT-LOCATIONS-ROOM",
+      "role": "IT",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "IT-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-ASSIGNMENT",
+      "id": "f42cee52-b02a-54fa-874a-5589242c0fcf",
+      "name": "CO IT-WORKFORCE-ASSIGNMENT",
+      "role": "IT",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-SERVICEREQUEST",
+      "id": "80e250b5-2cbd-5513-8cf7-023537e456b0",
+      "name": "CO IT-WORKFORCE-SERVICEREQUEST",
+      "role": "IT",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-WORKORDER",
+      "id": "ef4b75f2-55a5-527c-8b43-8fb231433437",
+      "name": "CO IT-WORKFORCE-WORKORDER",
+      "role": "IT",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-WORKTASK",
+      "id": "f057a782-43a3-534a-8028-9e0b1a31a39c",
+      "name": "CO IT-WORKFORCE-WORKTASK",
+      "role": "IT",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-CHECKLISTITEM",
+      "id": "fef51aa2-3712-5f3b-80e3-87d94bf2a27a",
+      "name": "CO IT-WORKFORCE-CHECKLISTITEM",
+      "role": "IT",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-INSPECTION",
+      "id": "04991dfd-1694-50b5-8c42-47f123be3dc2",
+      "name": "CO IT-WORKFORCE-INSPECTION",
+      "role": "IT",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-WORKFORCE-FINDING",
+      "id": "e48591de-9ab9-57e7-8716-3e414836140f",
+      "name": "CO IT-WORKFORCE-FINDING",
+      "role": "IT",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "IT-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-ASSIGNMENT",
+      "id": "96b4b211-68d1-5158-8c5f-e3a60ccabf51",
+      "name": "CO IT-EQUIPMENT-ASSIGNMENT",
+      "role": "IT",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-SERVICEREQUEST",
+      "id": "23580293-83bc-5aaf-89b8-6e01df707f84",
+      "name": "CO IT-EQUIPMENT-SERVICEREQUEST",
+      "role": "IT",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-WORKORDER",
+      "id": "41525e14-2b5a-55ff-82f1-7e3b761ae361",
+      "name": "CO IT-EQUIPMENT-WORKORDER",
+      "role": "IT",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-WORKTASK",
+      "id": "56df6e09-532a-5238-89cd-935c62191782",
+      "name": "CO IT-EQUIPMENT-WORKTASK",
+      "role": "IT",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-CHECKLISTITEM",
+      "id": "591189a2-2e76-5037-8414-38dc6b42ba26",
+      "name": "CO IT-EQUIPMENT-CHECKLISTITEM",
+      "role": "IT",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-INSPECTION",
+      "id": "9e62e002-632c-5e47-859b-becf2a82938e",
+      "name": "CO IT-EQUIPMENT-INSPECTION",
+      "role": "IT",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "IT-EQUIPMENT-FINDING",
+      "id": "dd508104-36a4-54cf-86f7-ecf37bea78f4",
+      "name": "CO IT-EQUIPMENT-FINDING",
+      "role": "IT",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "IT-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "FACILITIES-WORKFORCE-ACCOUNT",
+      "id": "871f6e6b-e844-5794-8f49-9b6d0536fbdf",
+      "name": "CO FACILITIES-WORKFORCE-ACCOUNT",
+      "role": "FACILITIES",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "FACILITIES-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-WORKFORCE-ORGCONTACT",
+      "id": "48b9033e-a56a-547e-8b21-8b1f88e5d33f",
+      "name": "CO FACILITIES-WORKFORCE-ORGCONTACT",
+      "role": "FACILITIES",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "FACILITIES-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "FACILITIES-DEPARTMENT-DEPARTMENT",
+      "id": "93a21d7e-88dd-50c6-88bd-4ccf47f2cb1a",
+      "name": "CO FACILITIES-DEPARTMENT-DEPARTMENT",
+      "role": "FACILITIES",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "FACILITIES-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-EQUIPMENT",
+      "id": "f65232f1-c671-541d-8714-98a1d7569436",
+      "name": "CO FACILITIES-EQUIPMENT-EQUIPMENT",
+      "role": "FACILITIES",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "FACILITIES-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-LOCATIONS-SITE",
+      "id": "aa419ad0-f5e1-503c-875d-9c680a1fc816",
+      "name": "CO FACILITIES-LOCATIONS-SITE",
+      "role": "FACILITIES",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "FACILITIES-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-LOCATIONS-BUILDING",
+      "id": "5f450c11-3809-5907-861b-4d95963671dd",
+      "name": "CO FACILITIES-LOCATIONS-BUILDING",
+      "role": "FACILITIES",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "FACILITIES-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-LOCATIONS-ROOM",
+      "id": "0dfafdf0-0140-5d28-8ba5-e8f45d242bce",
+      "name": "CO FACILITIES-LOCATIONS-ROOM",
+      "role": "FACILITIES",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "FACILITIES-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-SERVICEREQUEST",
+      "id": "376dd243-2221-5ebe-89cd-85b475d659b6",
+      "name": "CO FACILITIES-EQUIPMENT-SERVICEREQUEST",
+      "role": "FACILITIES",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-WORKORDER",
+      "id": "beec3039-1dcf-5b4f-833e-7f0cc7171f93",
+      "name": "CO FACILITIES-EQUIPMENT-WORKORDER",
+      "role": "FACILITIES",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-WORKTASK",
+      "id": "7f827448-42bc-5a0a-85bd-442d2f2c9871",
+      "name": "CO FACILITIES-EQUIPMENT-WORKTASK",
+      "role": "FACILITIES",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-CHECKLISTITEM",
+      "id": "bfc15456-32a9-5153-8cad-3fd6ed663aa9",
+      "name": "CO FACILITIES-EQUIPMENT-CHECKLISTITEM",
+      "role": "FACILITIES",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-INSPECTION",
+      "id": "b7ce94d1-0dae-57b8-89a7-9e09af4a800a",
+      "name": "CO FACILITIES-EQUIPMENT-INSPECTION",
+      "role": "FACILITIES",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "FACILITIES-EQUIPMENT-FINDING",
+      "id": "59304a82-f72b-5217-891c-759516272775",
+      "name": "CO FACILITIES-EQUIPMENT-FINDING",
+      "role": "FACILITIES",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "FACILITIES-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "PROCUREMENT-WORKFORCE-ACCOUNT",
+      "id": "db5a9d43-183d-501f-83b5-364fa4330828",
+      "name": "CO PROCUREMENT-WORKFORCE-ACCOUNT",
+      "role": "PROCUREMENT",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "PROCUREMENT-EQUIPMENT-EQUIPMENT",
+      "id": "7bc363f7-8716-5b42-856b-b41b8756b5b1",
+      "name": "CO PROCUREMENT-EQUIPMENT-EQUIPMENT",
+      "role": "PROCUREMENT",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "PROCUREMENT-FINANCE-EQUIPMENTFINANCE",
+      "id": "d2e3228f-a9af-5daf-8902-ad3c591e5215",
+      "name": "CO PROCUREMENT-FINANCE-EQUIPMENTFINANCE",
+      "role": "PROCUREMENT",
+      "table": "pqvd_equipmentfinance",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_finance",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-ACCOUNT",
+      "id": "394e3716-1a2c-560f-8ba2-e83a71b90a9d",
+      "name": "CO AUDITOR-WORKFORCE-ACCOUNT",
+      "role": "AUDITOR",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-ORGCONTACT",
+      "id": "88b1b2f3-407d-5c5f-820a-ab2055a2c28b",
+      "name": "CO AUDITOR-WORKFORCE-ORGCONTACT",
+      "role": "AUDITOR",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-EMPLOYMENT",
+      "id": "0463c3a8-cf46-515c-82ba-33a1c00629e2",
+      "name": "CO AUDITOR-WORKFORCE-EMPLOYMENT",
+      "role": "AUDITOR",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-DEPARTMENT-DEPARTMENT",
+      "id": "1f5ac953-c12b-57e0-8eb2-410e9c0b404b",
+      "name": "CO AUDITOR-DEPARTMENT-DEPARTMENT",
+      "role": "AUDITOR",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-EQUIPMENT",
+      "id": "7f001178-30eb-5529-83b4-10fbea405b98",
+      "name": "CO AUDITOR-EQUIPMENT-EQUIPMENT",
+      "role": "AUDITOR",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-FINANCE-EQUIPMENTFINANCE",
+      "id": "ca3c1d28-d889-577d-8bc8-63002b767617",
+      "name": "CO AUDITOR-FINANCE-EQUIPMENTFINANCE",
+      "role": "AUDITOR",
+      "table": "pqvd_equipmentfinance",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_finance",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-LOCATIONS-SITE",
+      "id": "17a7dce6-89d6-527a-8c11-af816e28a60e",
+      "name": "CO AUDITOR-LOCATIONS-SITE",
+      "role": "AUDITOR",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-LOCATIONS-BUILDING",
+      "id": "4630f4f4-a928-558a-8885-f5abd5587ce8",
+      "name": "CO AUDITOR-LOCATIONS-BUILDING",
+      "role": "AUDITOR",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "AUDITOR-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-LOCATIONS-ROOM",
+      "id": "bfe60b1e-09d6-5f06-8253-bdeaf3d8b202",
+      "name": "CO AUDITOR-LOCATIONS-ROOM",
+      "role": "AUDITOR",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "AUDITOR-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-ASSIGNMENT",
+      "id": "bddf3041-855d-52ed-8535-82f81e4099b6",
+      "name": "CO AUDITOR-WORKFORCE-ASSIGNMENT",
+      "role": "AUDITOR",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-SERVICEREQUEST",
+      "id": "07e8e5ac-9914-53cd-84be-66ecd18edeb7",
+      "name": "CO AUDITOR-WORKFORCE-SERVICEREQUEST",
+      "role": "AUDITOR",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-WORKORDER",
+      "id": "4a151e3d-30b0-5604-8c2b-5ba2d8dc24d7",
+      "name": "CO AUDITOR-WORKFORCE-WORKORDER",
+      "role": "AUDITOR",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-WORKTASK",
+      "id": "aecbbf04-a840-5b31-84c7-f2942b6169df",
+      "name": "CO AUDITOR-WORKFORCE-WORKTASK",
+      "role": "AUDITOR",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-CHECKLISTITEM",
+      "id": "b222316d-b1a1-5a47-8880-6b8d1dcfbf68",
+      "name": "CO AUDITOR-WORKFORCE-CHECKLISTITEM",
+      "role": "AUDITOR",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-INSPECTION",
+      "id": "81563d0d-8d98-5c9d-894c-0a92390fce0e",
+      "name": "CO AUDITOR-WORKFORCE-INSPECTION",
+      "role": "AUDITOR",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-WORKFORCE-FINDING",
+      "id": "15e2261f-d142-5e7a-8ebb-3f5a8bfec4fe",
+      "name": "CO AUDITOR-WORKFORCE-FINDING",
+      "role": "AUDITOR",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "AUDITOR-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-ASSIGNMENT",
+      "id": "f94f06f0-def1-515d-883d-5bca43ace171",
+      "name": "CO AUDITOR-EQUIPMENT-ASSIGNMENT",
+      "role": "AUDITOR",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-SERVICEREQUEST",
+      "id": "261f44a4-023f-5f44-879d-e49e57faea4e",
+      "name": "CO AUDITOR-EQUIPMENT-SERVICEREQUEST",
+      "role": "AUDITOR",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-WORKORDER",
+      "id": "169f32bd-f410-55bc-8745-ccd721f860e1",
+      "name": "CO AUDITOR-EQUIPMENT-WORKORDER",
+      "role": "AUDITOR",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-WORKTASK",
+      "id": "31c6af66-4565-5647-8b2e-35d22a07ac0d",
+      "name": "CO AUDITOR-EQUIPMENT-WORKTASK",
+      "role": "AUDITOR",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-CHECKLISTITEM",
+      "id": "f47ea5e6-33cc-5880-855a-e993cf207c16",
+      "name": "CO AUDITOR-EQUIPMENT-CHECKLISTITEM",
+      "role": "AUDITOR",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-INSPECTION",
+      "id": "8fc7961f-7c39-5778-8ca6-40b68e2328a2",
+      "name": "CO AUDITOR-EQUIPMENT-INSPECTION",
+      "role": "AUDITOR",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-EQUIPMENT-FINDING",
+      "id": "2a70d0f3-1106-5677-8d3b-df5069539c52",
+      "name": "CO AUDITOR-EQUIPMENT-FINDING",
+      "role": "AUDITOR",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "AUDITOR-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-ACCOUNT",
+      "id": "4407da06-9639-5a89-8f26-393b2c64f332",
+      "name": "CO ORGADMIN-WORKFORCE-ACCOUNT",
+      "role": "ORGADMIN",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "ORGADMIN-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-ORGCONTACT",
+      "id": "92053008-98d0-5fed-801c-aa189fefbd65",
+      "name": "CO ORGADMIN-WORKFORCE-ORGCONTACT",
+      "role": "ORGADMIN",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-EMPLOYMENT",
+      "id": "c5525beb-b47d-5f20-84d3-6ba0df0802f5",
+      "name": "CO ORGADMIN-WORKFORCE-EMPLOYMENT",
+      "role": "ORGADMIN",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-DEPARTMENT-DEPARTMENT",
+      "id": "6b5ca822-b5e8-57d2-8b03-d24d2cf8dbec",
+      "name": "CO ORGADMIN-DEPARTMENT-DEPARTMENT",
+      "role": "ORGADMIN",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-EQUIPMENT",
+      "id": "1ab90e04-9698-5754-8fdd-2f5591934edd",
+      "name": "CO ORGADMIN-EQUIPMENT-EQUIPMENT",
+      "role": "ORGADMIN",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-LOCATIONS-SITE",
+      "id": "5db2e1b3-1fc7-50af-8fb0-e786facc452f",
+      "name": "CO ORGADMIN-LOCATIONS-SITE",
+      "role": "ORGADMIN",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "ORGADMIN-LOCATIONS-BUILDING",
+      "id": "ec4131be-c8da-53ca-8671-3fc917e19566",
+      "name": "CO ORGADMIN-LOCATIONS-BUILDING",
+      "role": "ORGADMIN",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "ORGADMIN-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "ORGADMIN-LOCATIONS-ROOM",
+      "id": "524f19ba-dc66-5db4-8c9f-db7292c0527c",
+      "name": "CO ORGADMIN-LOCATIONS-ROOM",
+      "role": "ORGADMIN",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "ORGADMIN-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-ASSIGNMENT",
+      "id": "13d97371-bc8f-514c-84ad-c035e05ad895",
+      "name": "CO ORGADMIN-WORKFORCE-ASSIGNMENT",
+      "role": "ORGADMIN",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-SERVICEREQUEST",
+      "id": "3c8ee879-68c9-5649-8d38-067b01c938aa",
+      "name": "CO ORGADMIN-WORKFORCE-SERVICEREQUEST",
+      "role": "ORGADMIN",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-WORKORDER",
+      "id": "013e1577-2c7e-51cf-8127-648e95f1ae7a",
+      "name": "CO ORGADMIN-WORKFORCE-WORKORDER",
+      "role": "ORGADMIN",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-WORKTASK",
+      "id": "e70f51b6-356d-567c-8768-5cd180edbfed",
+      "name": "CO ORGADMIN-WORKFORCE-WORKTASK",
+      "role": "ORGADMIN",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-CHECKLISTITEM",
+      "id": "79d15e9e-b3ac-55c4-8c68-b91f92386abe",
+      "name": "CO ORGADMIN-WORKFORCE-CHECKLISTITEM",
+      "role": "ORGADMIN",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-INSPECTION",
+      "id": "23a57eac-e077-5bc8-8299-a093f6b0e4b0",
+      "name": "CO ORGADMIN-WORKFORCE-INSPECTION",
+      "role": "ORGADMIN",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-WORKFORCE-FINDING",
+      "id": "e63f32ca-06c0-5cf1-8f51-f215bf7df101",
+      "name": "CO ORGADMIN-WORKFORCE-FINDING",
+      "role": "ORGADMIN",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "ORGADMIN-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-ASSIGNMENT",
+      "id": "f8bfed10-e957-5e1e-8e78-bd3d9d03a499",
+      "name": "CO ORGADMIN-EQUIPMENT-ASSIGNMENT",
+      "role": "ORGADMIN",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-SERVICEREQUEST",
+      "id": "9958979b-ed1b-5e96-8844-2414e695171b",
+      "name": "CO ORGADMIN-EQUIPMENT-SERVICEREQUEST",
+      "role": "ORGADMIN",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-WORKORDER",
+      "id": "9da2503d-2385-54b6-8824-b843564b5ad0",
+      "name": "CO ORGADMIN-EQUIPMENT-WORKORDER",
+      "role": "ORGADMIN",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-WORKTASK",
+      "id": "c1a63b65-2108-5831-8e6d-fad5b00ece31",
+      "name": "CO ORGADMIN-EQUIPMENT-WORKTASK",
+      "role": "ORGADMIN",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-CHECKLISTITEM",
+      "id": "5e4e7696-9695-5464-8bc2-6299e241885b",
+      "name": "CO ORGADMIN-EQUIPMENT-CHECKLISTITEM",
+      "role": "ORGADMIN",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-INSPECTION",
+      "id": "f46a1a6b-d612-5c60-880e-6bc5b60ae352",
+      "name": "CO ORGADMIN-EQUIPMENT-INSPECTION",
+      "role": "ORGADMIN",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "ORGADMIN-EQUIPMENT-FINDING",
+      "id": "83a6a310-b967-5733-8f54-724b05ccf420",
+      "name": "CO ORGADMIN-EQUIPMENT-FINDING",
+      "role": "ORGADMIN",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "ORGADMIN-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-ACCOUNT",
+      "id": "451ec34e-c7d4-539a-8c41-e5956aa70ab2",
+      "name": "CO CTO-WORKFORCE-ACCOUNT",
+      "role": "CTO",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "CTO-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-ORGCONTACT",
+      "id": "c0c0c63e-83f2-52fa-876e-02db37bc3dd4",
+      "name": "CO CTO-WORKFORCE-ORGCONTACT",
+      "role": "CTO",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-EMPLOYMENT",
+      "id": "601626fc-9a76-56b9-8f8b-22a7e403066c",
+      "name": "CO CTO-WORKFORCE-EMPLOYMENT",
+      "role": "CTO",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ORGCONTACT",
+      "relationship": "pqvd_orgcontact_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-DEPARTMENT-DEPARTMENT",
+      "id": "0c7e3a0d-3b83-5f99-83a5-8027103c9c9c",
+      "name": "CO CTO-DEPARTMENT-DEPARTMENT",
+      "role": "CTO",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-EQUIPMENT",
+      "id": "0a5ec0fb-6f17-5870-8118-b69b16084267",
+      "name": "CO CTO-EQUIPMENT-EQUIPMENT",
+      "role": "CTO",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-FINANCE-EQUIPMENTFINANCE",
+      "id": "d258f992-7b7f-5c09-8a65-7a28eb2db099",
+      "name": "CO CTO-FINANCE-EQUIPMENTFINANCE",
+      "role": "CTO",
+      "table": "pqvd_equipmentfinance",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_finance",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-LOCATIONS-SITE",
+      "id": "59c3496f-b022-5754-879a-2d02bcafad10",
+      "name": "CO CTO-LOCATIONS-SITE",
+      "role": "CTO",
+      "table": "pqvd_site",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ACCOUNT",
+      "relationship": "pqvd_account_sites",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-LOCATIONS-BUILDING",
+      "id": "98c3f847-37de-56d2-800d-b102bbbe2d7c",
+      "name": "CO CTO-LOCATIONS-BUILDING",
+      "role": "CTO",
+      "table": "pqvd_building",
+      "scope": "Parent",
+      "parent": "CTO-LOCATIONS-SITE",
+      "relationship": "pqvd_site_buildings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-LOCATIONS-ROOM",
+      "id": "0598e8c7-70ea-5431-87ca-701fa38cfe2e",
+      "name": "CO CTO-LOCATIONS-ROOM",
+      "role": "CTO",
+      "table": "pqvd_room",
+      "scope": "Parent",
+      "parent": "CTO-LOCATIONS-BUILDING",
+      "relationship": "pqvd_building_rooms",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-ASSIGNMENT",
+      "id": "9e92f769-39df-5772-8ef3-29c0435013ca",
+      "name": "CO CTO-WORKFORCE-ASSIGNMENT",
+      "role": "CTO",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-SERVICEREQUEST",
+      "id": "862b3740-8d3b-5c97-8108-aa4f9774d7a9",
+      "name": "CO CTO-WORKFORCE-SERVICEREQUEST",
+      "role": "CTO",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-WORKORDER",
+      "id": "1ed4acdf-1a64-5b52-8994-f4497fb87a06",
+      "name": "CO CTO-WORKFORCE-WORKORDER",
+      "role": "CTO",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-WORKTASK",
+      "id": "ab6b6663-1d64-5d70-8ea9-ff66b8dc6ec4",
+      "name": "CO CTO-WORKFORCE-WORKTASK",
+      "role": "CTO",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-CHECKLISTITEM",
+      "id": "b3cf5989-9280-5b2a-8e28-5430f21192bd",
+      "name": "CO CTO-WORKFORCE-CHECKLISTITEM",
+      "role": "CTO",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-INSPECTION",
+      "id": "9015ece1-d7f2-5b08-8712-3b6c8fe6691a",
+      "name": "CO CTO-WORKFORCE-INSPECTION",
+      "role": "CTO",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-WORKFORCE-FINDING",
+      "id": "8a387176-d0b4-5c85-8c61-bf6d51e6c675",
+      "name": "CO CTO-WORKFORCE-FINDING",
+      "role": "CTO",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "CTO-WORKFORCE-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-ASSIGNMENT",
+      "id": "6fabc387-242b-5bc4-8d04-cf230988c0bf",
+      "name": "CO CTO-EQUIPMENT-ASSIGNMENT",
+      "role": "CTO",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-SERVICEREQUEST",
+      "id": "a3abff45-ec0d-5a40-8a97-f067a8823977",
+      "name": "CO CTO-EQUIPMENT-SERVICEREQUEST",
+      "role": "CTO",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-WORKORDER",
+      "id": "aacfe5e0-2008-5b67-887f-730322093495",
+      "name": "CO CTO-EQUIPMENT-WORKORDER",
+      "role": "CTO",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-WORKTASK",
+      "id": "ff79772f-fa5b-5fa6-84f8-cb8a0e944bda",
+      "name": "CO CTO-EQUIPMENT-WORKTASK",
+      "role": "CTO",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-CHECKLISTITEM",
+      "id": "fb3e1d13-961f-5d13-8a7c-7c49557287eb",
+      "name": "CO CTO-EQUIPMENT-CHECKLISTITEM",
+      "role": "CTO",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-INSPECTION",
+      "id": "c6c9f64f-c9b7-515e-8c57-89387f91bcd4",
+      "name": "CO CTO-EQUIPMENT-INSPECTION",
+      "role": "CTO",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CTO-EQUIPMENT-FINDING",
+      "id": "d605bba2-cb87-57fb-8178-67c2c18a0831",
+      "name": "CO CTO-EQUIPMENT-FINDING",
+      "role": "CTO",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "CTO-EQUIPMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-PROFILE-ACCOUNT",
+      "id": "42288f21-303d-5d35-8260-70b7a8f66cbe",
+      "name": "CO EMPLOYEE-PROFILE-ACCOUNT",
+      "role": "EMPLOYEE",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-DIRECTORY-ORGCONTACT",
+      "id": "5b94b451-c882-50ab-8d28-41defdf1ef04",
+      "name": "CO EMPLOYEE-DIRECTORY-ORGCONTACT",
+      "role": "EMPLOYEE",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-EMPLOYMENT",
+      "id": "8a4c2653-e7bc-5fba-8576-8125ca3b0c33",
+      "name": "CO EMPLOYEE-ENGAGEMENT-EMPLOYMENT",
+      "role": "EMPLOYEE",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-ASSIGNMENT",
+      "id": "442bdcb1-f1d7-5e27-8e18-6804a76ec997",
+      "name": "CO EMPLOYEE-ENGAGEMENT-ASSIGNMENT",
+      "role": "EMPLOYEE",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-EQUIPMENT",
+      "id": "f6034f34-69bf-51be-837f-da5ba66e10a0",
+      "name": "CO EMPLOYEE-CURRENT-EQUIPMENT",
+      "role": "EMPLOYEE",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-SERVICEREQUEST",
+      "id": "bb5cbe53-4597-553f-8425-05727f44ef40",
+      "name": "CO EMPLOYEE-ENGAGEMENT-SERVICEREQUEST",
+      "role": "EMPLOYEE",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-WORKORDER",
+      "id": "dfec129b-8428-5d53-8d0f-a87b245ca3f7",
+      "name": "CO EMPLOYEE-ENGAGEMENT-WORKORDER",
+      "role": "EMPLOYEE",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-WORKTASK",
+      "id": "b27a0d34-6265-566f-89f7-665a866ecbd3",
+      "name": "CO EMPLOYEE-ENGAGEMENT-WORKTASK",
+      "role": "EMPLOYEE",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-CHECKLISTITEM",
+      "id": "db70d4bc-c565-5456-8499-67748eebf82b",
+      "name": "CO EMPLOYEE-ENGAGEMENT-CHECKLISTITEM",
+      "role": "EMPLOYEE",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-INSPECTION",
+      "id": "8df6e7d3-6e9a-5cd5-8467-48a1c9052b5e",
+      "name": "CO EMPLOYEE-ENGAGEMENT-INSPECTION",
+      "role": "EMPLOYEE",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-ENGAGEMENT-FINDING",
+      "id": "00f9fd5e-fb64-5747-8963-6f5825ec9896",
+      "name": "CO EMPLOYEE-ENGAGEMENT-FINDING",
+      "role": "EMPLOYEE",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-SERVICEREQUEST",
+      "id": "f194dbed-1e9e-5110-8112-8d850fcc6f5d",
+      "name": "CO EMPLOYEE-CURRENT-SERVICEREQUEST",
+      "role": "EMPLOYEE",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-WORKORDER",
+      "id": "23517405-3519-5b71-8a39-b6ea273efb0c",
+      "name": "CO EMPLOYEE-CURRENT-WORKORDER",
+      "role": "EMPLOYEE",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-WORKTASK",
+      "id": "a64a44ea-8765-5992-898d-280c85fd893c",
+      "name": "CO EMPLOYEE-CURRENT-WORKTASK",
+      "role": "EMPLOYEE",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-CHECKLISTITEM",
+      "id": "5e9622f0-014a-5847-87cd-c69a51c08529",
+      "name": "CO EMPLOYEE-CURRENT-CHECKLISTITEM",
+      "role": "EMPLOYEE",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-INSPECTION",
+      "id": "8bea78a0-d190-517d-89f8-b80d11fca683",
+      "name": "CO EMPLOYEE-CURRENT-INSPECTION",
+      "role": "EMPLOYEE",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-CURRENT-FINDING",
+      "id": "fc0d631e-3da1-5121-8448-80a6989cc195",
+      "name": "CO EMPLOYEE-CURRENT-FINDING",
+      "role": "EMPLOYEE",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-CURRENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "EMPLOYEE-REQUESTCREATE-SERVICEREQUEST",
+      "id": "db1ef569-ef47-5a7f-8de0-ed8a367ee58e",
+      "name": "CO EMPLOYEE-REQUESTCREATE-SERVICEREQUEST",
+      "role": "EMPLOYEE",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "EMPLOYEE-ENGAGEMENT-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": false,
+        "create": true,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-PROFILE-ACCOUNT",
+      "id": "67afc837-9fff-5fee-8a07-62e8fd5491b6",
+      "name": "CO CONTRACTOR-PROFILE-ACCOUNT",
+      "role": "CONTRACTOR",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-DIRECTORY-ORGCONTACT",
+      "id": "0d73e343-8d56-52af-819e-342dce9dcda3",
+      "name": "CO CONTRACTOR-DIRECTORY-ORGCONTACT",
+      "role": "CONTRACTOR",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-EMPLOYMENT",
+      "id": "8b4fd5af-2308-537a-8aeb-f3de3574ca11",
+      "name": "CO CONTRACTOR-ENGAGEMENT-EMPLOYMENT",
+      "role": "CONTRACTOR",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-ASSIGNMENT",
+      "id": "30a10b94-45ac-5f08-8525-ad733b88836f",
+      "name": "CO CONTRACTOR-ENGAGEMENT-ASSIGNMENT",
+      "role": "CONTRACTOR",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-EQUIPMENT",
+      "id": "fc41ff2a-15b8-5588-830f-bb16ab620b2b",
+      "name": "CO CONTRACTOR-CURRENT-EQUIPMENT",
+      "role": "CONTRACTOR",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-SERVICEREQUEST",
+      "id": "853b3dc8-0ed9-5dae-8bcf-9fdc7304e420",
+      "name": "CO CONTRACTOR-ENGAGEMENT-SERVICEREQUEST",
+      "role": "CONTRACTOR",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-WORKORDER",
+      "id": "d73b90a3-3de8-5089-8765-9d9e7ddc8f69",
+      "name": "CO CONTRACTOR-ENGAGEMENT-WORKORDER",
+      "role": "CONTRACTOR",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-WORKTASK",
+      "id": "75cd6a11-1536-5f7f-8039-b5d1d612c962",
+      "name": "CO CONTRACTOR-ENGAGEMENT-WORKTASK",
+      "role": "CONTRACTOR",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-CHECKLISTITEM",
+      "id": "fe3eabc6-a4f5-5e92-8a40-bb58d3ac60c5",
+      "name": "CO CONTRACTOR-ENGAGEMENT-CHECKLISTITEM",
+      "role": "CONTRACTOR",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-INSPECTION",
+      "id": "508fd13e-d943-500c-8202-4fa7f58a2d06",
+      "name": "CO CONTRACTOR-ENGAGEMENT-INSPECTION",
+      "role": "CONTRACTOR",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-ENGAGEMENT-FINDING",
+      "id": "2317e617-6233-5fc6-8b6d-235dabcdfd9f",
+      "name": "CO CONTRACTOR-ENGAGEMENT-FINDING",
+      "role": "CONTRACTOR",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-SERVICEREQUEST",
+      "id": "f41606ec-149e-5ed5-8870-db851368d0a5",
+      "name": "CO CONTRACTOR-CURRENT-SERVICEREQUEST",
+      "role": "CONTRACTOR",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-WORKORDER",
+      "id": "a0bfd8b5-aa07-522a-82e4-6f915871b8e7",
+      "name": "CO CONTRACTOR-CURRENT-WORKORDER",
+      "role": "CONTRACTOR",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-WORKTASK",
+      "id": "c68272ea-f1dc-54ae-866e-df4d0a6c3fce",
+      "name": "CO CONTRACTOR-CURRENT-WORKTASK",
+      "role": "CONTRACTOR",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-CHECKLISTITEM",
+      "id": "d1ab4916-035d-549c-8f60-90c28af0c7cf",
+      "name": "CO CONTRACTOR-CURRENT-CHECKLISTITEM",
+      "role": "CONTRACTOR",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-INSPECTION",
+      "id": "2902c139-db01-5861-837f-253966b0f926",
+      "name": "CO CONTRACTOR-CURRENT-INSPECTION",
+      "role": "CONTRACTOR",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-CURRENT-FINDING",
+      "id": "97307f96-1776-5a57-896c-c2a9b4f5ad30",
+      "name": "CO CONTRACTOR-CURRENT-FINDING",
+      "role": "CONTRACTOR",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-CURRENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CONTRACTOR-REQUESTCREATE-SERVICEREQUEST",
+      "id": "faf1d4d7-d7a0-55fa-81a5-df223df96c50",
+      "name": "CO CONTRACTOR-REQUESTCREATE-SERVICEREQUEST",
+      "role": "CONTRACTOR",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "CONTRACTOR-ENGAGEMENT-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": false,
+        "create": true,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-PROFILE-ACCOUNT",
+      "id": "78b47b40-3130-5891-833f-fcfafbbcba3e",
+      "name": "CO TEAMLEADER-PROFILE-ACCOUNT",
+      "role": "TEAMLEADER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_accounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-DIRECTORY-ORGCONTACT",
+      "id": "99a3b503-2a46-5205-832e-dddf5d1383e0",
+      "name": "CO TEAMLEADER-DIRECTORY-ORGCONTACT",
+      "role": "TEAMLEADER",
+      "table": "pqvd_orgcontact",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_orgcontacts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-EMPLOYMENT",
+      "id": "2d633311-4f11-5e67-8df7-4d72a5226108",
+      "name": "CO TEAMLEADER-ENGAGEMENT-EMPLOYMENT",
+      "role": "TEAMLEADER",
+      "table": "pqvd_employment",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_employments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-ASSIGNMENT",
+      "id": "1ddf9bff-fc47-56af-89ac-e4354cda36bc",
+      "name": "CO TEAMLEADER-ENGAGEMENT-ASSIGNMENT",
+      "role": "TEAMLEADER",
+      "table": "pqvd_assignment",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-EMPLOYMENT",
+      "relationship": "pqvd_employment_assignments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-EQUIPMENT",
+      "id": "2016e61d-9104-504b-8912-ced3bf54c79d",
+      "name": "CO TEAMLEADER-CURRENT-EQUIPMENT",
+      "role": "TEAMLEADER",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_equipments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-DEPARTMENT-DEPARTMENT",
+      "id": "b3f46d70-e507-57ff-828f-f8ec2472c77b",
+      "name": "CO TEAMLEADER-DEPARTMENT-DEPARTMENT",
+      "role": "TEAMLEADER",
+      "table": "pqvd_department",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_departments",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-SERVICEREQUEST",
+      "id": "378d2b9a-386d-5df1-8d04-27a30fb51604",
+      "name": "CO TEAMLEADER-ENGAGEMENT-SERVICEREQUEST",
+      "role": "TEAMLEADER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-ASSIGNMENT",
+      "relationship": "pqvd_assignment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-WORKORDER",
+      "id": "22ffb624-6bcc-52a7-8fed-05575fa89cb1",
+      "name": "CO TEAMLEADER-ENGAGEMENT-WORKORDER",
+      "role": "TEAMLEADER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-WORKTASK",
+      "id": "28cfaa48-e3ea-5bc7-8830-1900194f454f",
+      "name": "CO TEAMLEADER-ENGAGEMENT-WORKTASK",
+      "role": "TEAMLEADER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-CHECKLISTITEM",
+      "id": "0fb1551e-7f21-5ab9-863a-6c3abd1d0dd6",
+      "name": "CO TEAMLEADER-ENGAGEMENT-CHECKLISTITEM",
+      "role": "TEAMLEADER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-INSPECTION",
+      "id": "e3ea5e1e-aa49-54be-88b2-c6b9df60b29a",
+      "name": "CO TEAMLEADER-ENGAGEMENT-INSPECTION",
+      "role": "TEAMLEADER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TEAMLEADER-ENGAGEMENT-FINDING",
+      "id": "d1e1ae96-ca75-57e6-8d1a-dc8d203fc21a",
+      "name": "CO TEAMLEADER-ENGAGEMENT-FINDING",
+      "role": "TEAMLEADER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-ENGAGEMENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-SERVICEREQUEST",
+      "id": "04fc0208-9680-5c91-8142-bdd2aee95412",
+      "name": "CO TEAMLEADER-CURRENT-SERVICEREQUEST",
+      "role": "TEAMLEADER",
+      "table": "pqvd_servicerequest",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-EQUIPMENT",
+      "relationship": "pqvd_equipment_requests",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-WORKORDER",
+      "id": "196c4373-90bc-5d4b-8578-83491acfb1b6",
+      "name": "CO TEAMLEADER-CURRENT-WORKORDER",
+      "role": "TEAMLEADER",
+      "table": "pqvd_workorder",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-SERVICEREQUEST",
+      "relationship": "pqvd_request_workorders",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-WORKTASK",
+      "id": "7de279c9-075b-521d-80a6-312f091977a1",
+      "name": "CO TEAMLEADER-CURRENT-WORKTASK",
+      "role": "TEAMLEADER",
+      "table": "pqvd_worktask",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-WORKORDER",
+      "relationship": "pqvd_workorder_tasks",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-CHECKLISTITEM",
+      "id": "1a6935ba-b3a1-570c-806b-606824d3932e",
+      "name": "CO TEAMLEADER-CURRENT-CHECKLISTITEM",
+      "role": "TEAMLEADER",
+      "table": "pqvd_checklistitem",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-WORKTASK",
+      "relationship": "pqvd_task_checklistitems",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-INSPECTION",
+      "id": "0cb1c3f1-5250-5210-8a61-5b89fefe78a3",
+      "name": "CO TEAMLEADER-CURRENT-INSPECTION",
+      "role": "TEAMLEADER",
+      "table": "pqvd_inspection",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-CHECKLISTITEM",
+      "relationship": "pqvd_checklistitem_inspections",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TEAMLEADER-CURRENT-FINDING",
+      "id": "be27f0f8-e098-5f9a-8981-1f36cccc7c04",
+      "name": "CO TEAMLEADER-CURRENT-FINDING",
+      "role": "TEAMLEADER",
+      "table": "pqvd_finding",
+      "scope": "Parent",
+      "parent": "TEAMLEADER-CURRENT-INSPECTION",
+      "relationship": "pqvd_inspection_findings",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "40cd0cd3-84b6-52de-8bcb-5d82cef6be40",
+      "name": "CO COMPANYMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "COMPANYMANAGER",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "d7cdaaae-dc8c-5a10-8fe4-4a2b7e5d54d6",
+      "name": "CO COMPANYMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "COMPANYMANAGER",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "COMPANYMANAGER-VENDORREFERENCE-ACCOUNT",
+      "id": "14d3d049-597a-50fc-8068-a7a0616f814e",
+      "name": "CO COMPANYMANAGER-VENDORREFERENCE-ACCOUNT",
+      "role": "COMPANYMANAGER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "COMPANYMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "18bb0b1e-c16b-5d9d-87b9-d4c729d7007e",
+      "name": "CO BRANCHMANAGER-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "BRANCHMANAGER",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "5de8cedc-6577-5e5f-80f4-5a6335ea7b0d",
+      "name": "CO BRANCHMANAGER-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "BRANCHMANAGER",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "BRANCHMANAGER-VENDORREFERENCE-ACCOUNT",
+      "id": "c6bbd5be-1591-54b1-8d49-430ec79911a4",
+      "name": "CO BRANCHMANAGER-VENDORREFERENCE-ACCOUNT",
+      "role": "BRANCHMANAGER",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "BRANCHMANAGER-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "7e9f65a1-24af-516d-839d-9037b4d090e4",
+      "name": "CO HR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "HR",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "HR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "HR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "4264e9c5-a512-5dac-87bc-7fbf9328b001",
+      "name": "CO HR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "HR",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "HR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "HR-VENDORREFERENCE-ACCOUNT",
+      "id": "06c3597a-556d-53da-8d28-bb7ba4f14b18",
+      "name": "CO HR-VENDORREFERENCE-ACCOUNT",
+      "role": "HR",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "HR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "PROCUREMENT-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "9db1a3fd-fa60-5d4c-8435-3adcfa55c838",
+      "name": "CO PROCUREMENT-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "PROCUREMENT",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "PROCUREMENT-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "78f3e031-5f75-56db-8d75-20336d933851",
+      "name": "CO PROCUREMENT-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "PROCUREMENT",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "PROCUREMENT-VENDORREFERENCE-ACCOUNT",
+      "id": "c3e58960-c704-505a-8ffc-3463fa3e185c",
+      "name": "CO PROCUREMENT-VENDORREFERENCE-ACCOUNT",
+      "role": "PROCUREMENT",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "PROCUREMENT-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "AUDITOR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "64408470-9655-5533-841f-6259b4bc3eb7",
+      "name": "CO AUDITOR-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "AUDITOR",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "45553204-f148-57b0-87c1-70b7f744d1f5",
+      "name": "CO AUDITOR-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "AUDITOR",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "AUDITOR-VENDORREFERENCE-ACCOUNT",
+      "id": "7e5d40a2-886e-5dc3-8c03-1360759b96c0",
+      "name": "CO AUDITOR-VENDORREFERENCE-ACCOUNT",
+      "role": "AUDITOR",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "AUDITOR-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "id": "8b21be2f-91df-5002-8b69-1bdf9f59f6c8",
+      "name": "CO CTO-CURRENCYREFERENCE-CURRENCYREFERENCE",
+      "role": "CTO",
+      "table": "pqvd_currencyreference",
+      "scope": "Parent",
+      "parent": "CTO-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencyreferences",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "id": "7b3d08c1-f929-5ddc-8d52-d7307c9aceae",
+      "name": "CO CTO-CURRENCYREFERENCE-TRANSACTIONCURRENCY",
+      "role": "CTO",
+      "table": "transactioncurrency",
+      "scope": "Parent",
+      "parent": "CTO-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_currencies",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "CTO-VENDORREFERENCE-ACCOUNT",
+      "id": "906ad5b3-4f2b-59ad-8559-f2f8fa3d20a4",
+      "name": "CO CTO-VENDORREFERENCE-ACCOUNT",
+      "role": "CTO",
+      "table": "account",
+      "scope": "Parent",
+      "parent": "CTO-GRANTS-ACCESSPERMISSION",
+      "relationship": "pqvd_access_referenceaccounts",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TESTRUNNER-SELF-CONTACT",
+      "id": "d075d4d2-209f-5493-874f-ae3cb96370a4",
+      "name": "CO TESTRUNNER-SELF-CONTACT",
+      "role": "TESTRUNNER",
+      "table": "contact",
+      "scope": "Self",
+      "parent": null,
+      "relationship": null,
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TESTRUNNER-RUNS-TESTRUN",
+      "id": "8bbe990d-1771-5263-8b55-4bba3658c803",
+      "name": "CO TESTRUNNER-RUNS-TESTRUN",
+      "role": "TESTRUNNER",
+      "table": "pqvd_testrun",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_testruns",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TESTRUNNER-CANARYCLEANUP-EQUIPMENT",
+      "id": "3596c6f1-bcc2-55a1-8928-d7a4bbe7efdd",
+      "name": "CO TESTRUNNER-CANARYCLEANUP-EQUIPMENT",
+      "role": "TESTRUNNER",
+      "table": "pqvd_equipment",
+      "scope": "Parent",
+      "parent": "TESTRUNNER-RUNS-TESTRUN",
+      "relationship": "pqvd_testrun_canaryequipments",
+      "active": true,
+      "privileges": {
+        "read": false,
+        "create": false,
+        "write": false,
+        "delete": true,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TESTRUNNER-RESULTS-TESTRESULT",
+      "id": "03ee80d9-00b0-538c-8bd8-b848a9d52fd1",
+      "name": "CO TESTRUNNER-RESULTS-TESTRESULT",
+      "role": "TESTRUNNER",
+      "table": "pqvd_testresult",
+      "scope": "Parent",
+      "parent": "TESTRUNNER-RUNS-TESTRUN",
+      "relationship": "pqvd_testrun_results",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TESTRUNNER-PROBES-CRUDPROBE",
+      "id": "05b1ec4c-4495-547e-8dcd-40096bc7531c",
+      "name": "CO TESTRUNNER-PROBES-CRUDPROBE",
+      "role": "TESTRUNNER",
+      "table": "pqvd_crudprobe",
+      "scope": "Contact",
+      "parent": null,
+      "relationship": "pqvd_contact_crudprobes",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": true,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TESTRUNNER-OPERATIONS-TESTOPERATION",
+      "id": "4fbaf760-c862-5907-8e65-1fbba0ee27c6",
+      "name": "CO TESTRUNNER-OPERATIONS-TESTOPERATION",
+      "role": "TESTRUNNER",
+      "table": "pqvd_testoperation",
+      "scope": "Parent",
+      "parent": "TESTRUNNER-RUNS-TESTRUN",
+      "relationship": "pqvd_testrun_operations",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": true,
+        "write": true,
+        "delete": false,
+        "append": true,
+        "appendTo": true
+      }
+    },
+    {
+      "key": "TESTRUNNER-EVENTS-PLUGINEVENT",
+      "id": "b9a981b2-b7a6-5a46-8f51-7ec64fd318cc",
+      "name": "CO TESTRUNNER-EVENTS-PLUGINEVENT",
+      "role": "TESTRUNNER",
+      "table": "pqvd_pluginevent",
+      "scope": "Parent",
+      "parent": "TESTRUNNER-OPERATIONS-TESTOPERATION",
+      "relationship": "pqvd_testoperation_events",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    },
+    {
+      "key": "TESTRUNNER-NODES-CHAINNODE",
+      "id": "a478e74a-c37c-5f4d-8fda-f4a19c42dceb",
+      "name": "CO TESTRUNNER-NODES-CHAINNODE",
+      "role": "TESTRUNNER",
+      "table": "pqvd_chainnode",
+      "scope": "Parent",
+      "parent": "TESTRUNNER-OPERATIONS-TESTOPERATION",
+      "relationship": "pqvd_testoperation_chainnodes",
+      "active": true,
+      "privileges": {
+        "read": true,
+        "create": false,
+        "write": false,
+        "delete": false,
+        "append": false,
+        "appendTo": false
+      }
+    }
+  ],
+  "assignments": [
+    {
+      "persona": "P01",
+      "contactId": "5a0c6c9a-399f-5437-9d58-930fd6a41c7c",
+      "roles": [
+        "COMPANYMANAGER",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P02",
+      "contactId": "fcabab5f-4361-5355-8cd0-f2c92a318fdf",
+      "roles": [
+        "BRANCHMANAGER",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P03",
+      "contactId": "6d72d7c1-7b22-59eb-b860-f61a2d0d0d97",
+      "roles": [
+        "TEAMLEADER",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P04",
+      "contactId": "b52e749e-7d5c-5814-88f6-76331d290eae",
+      "roles": [
+        "EMPLOYEE",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P05",
+      "contactId": "8126c085-7c95-51e6-845b-831e85bdf743",
+      "roles": [
+        "CONTRACTOR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P06",
+      "contactId": "d98a8229-c4c0-506f-985d-6bcecf9739be",
+      "roles": [
+        "HR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P07",
+      "contactId": "d793f290-19a6-5ce6-a287-7284ae5c4c89",
+      "roles": [
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P08",
+      "contactId": "ae99e667-dc01-504b-99a6-1b4df0a3a22b",
+      "roles": [
+        "FACILITIES",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P09",
+      "contactId": "7c25aa20-5277-5ed2-a0ea-b9a641af2cb9",
+      "roles": [
+        "PROCUREMENT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P10",
+      "contactId": "7e35f83a-60a0-50be-b555-4e5d65791cc3",
+      "roles": [
+        "AUDITOR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P11",
+      "contactId": "5682c3cd-c824-5bb3-be4c-5f7b5643dd1e",
+      "roles": [
+        "ORGADMIN",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P12",
+      "contactId": "8fc5d0c5-c06b-59e3-a3f4-dcaae6ee13c7",
+      "roles": [
+        "CTO",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P13",
+      "contactId": "c09c3427-4b94-5dbd-ade3-6706e227c880",
+      "roles": [
+        "EMPLOYEE",
+        "CONTRACTOR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P14",
+      "contactId": "0b345dea-13ce-578c-8355-2d6b71adfd68",
+      "roles": [
+        "HR",
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P15",
+      "contactId": "0107ca5e-fae8-5514-8742-9c99c118f13c",
+      "roles": [
+        "HR",
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P16",
+      "contactId": "081d257e-a43c-51cc-a849-8a2355dfb5fe",
+      "roles": [
+        "CONTRACTOR",
+        "HR",
+        "IT",
+        "ORGADMIN",
+        "CTO",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P17",
+      "contactId": "eddb27ad-674b-5e4f-a7e7-19df4fa90596",
+      "roles": [
+        "AUDITOR",
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P18",
+      "contactId": "5262ecd5-845c-5547-80d6-07de2ae2a077",
+      "roles": [
+        "BRANCHMANAGER",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P19",
+      "contactId": "f97fcc0d-8afb-557b-a496-e5d7634df0a3",
+      "roles": [
+        "COMPANYMANAGER",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P20",
+      "contactId": "0a7800c1-9a23-5a9a-aae0-7cb8362ef905",
+      "roles": [
+        "BRANCHMANAGER",
+        "EMPLOYEE",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P21",
+      "contactId": "cf8ea724-1220-5694-9ab8-56f41d4573b6",
+      "roles": [
+        "TEAMLEADER",
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P22",
+      "contactId": "17c1ec99-120d-54cd-860c-e0b9fa19d7f2",
+      "roles": [
+        "AUDITOR",
+        "CTO",
+        "IT",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P23",
+      "contactId": "5861a3bb-97f6-5397-aff9-abc2896fa19b",
+      "roles": [
+        "HR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P24",
+      "contactId": "fce8bac9-4488-5fed-9862-684f2043fc90",
+      "roles": [
+        "EMPLOYEE",
+        "CONTRACTOR",
+        "TESTRUNNER"
+      ]
+    },
+    {
+      "persona": "P-STRESS",
+      "contactId": "fe6aafb5-7794-534e-9486-fdce8baa5cda",
+      "roles": [
+        "COMPANYMANAGER",
+        "BRANCHMANAGER",
+        "TEAMLEADER",
+        "EMPLOYEE",
+        "CONTRACTOR",
+        "HR",
+        "IT",
+        "FACILITIES",
+        "PROCUREMENT",
+        "AUDITOR",
+        "ORGADMIN",
+        "CTO",
+        "TESTRUNNER"
+      ]
+    }
+  ],
+  "limitations": [
+    "Traditional authorization only. Enhanced data model is supported; enhanced authorization is not enabled.",
+    "Shared Contact is a Self leaf only. HR membership creation needs separately qualified Contact binding; blocked until supplied.",
+    "Creation requiring maintained scope projections/business invariants stays blocked until enforcing services are installed.",
+    "Backend metadata verification is not signed-in portal runtime verification."
+  ]
+}

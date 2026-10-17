@@ -1,0 +1,30 @@
+adx_appendquerystring: false
+adx_attachfile: true
+adx_attachfileaccept: image/*
+adx_attachfileallowmultiple: false
+adx_attachfilelabel: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline attachment"
+    }
+  ]
+adx_attachfilemaxsize: 1024
+adx_attachfilerequired: false
+adx_attachfilerestrictaccept: true
+adx_attachfilesaveoption: 756150000
+adx_attachfilestoragelocation: 756150000
+adx_captcharequired: false
+adx_entityformid: 2e4059ff-339a-40b1-85e7-5181f5d75f2e
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Attach
+adx_onsuccess: 756150001
+adx_redirecturlappendentityidquerystring: true
+adx_redirecturlquerystringname: id
+adx_redirectwebpage: bd56474e-c9a6-4328-8388-308e263956d0
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

@@ -1,0 +1,60 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: c6ae7889-fd1b-4243-837f-39bb703a3c57
+  adx_webformstep: e4566cc6-ffe4-4cee-8a6a-cc6deabcbea1
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_ruleerror
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: b612cda5-5281-4270-8c48-95d8f38a6844
+  adx_webformstep: e4566cc6-ffe4-4cee-8a6a-cc6deabcbea1
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_defaulted
+  adx_controlstyle: 100000004
+  adx_descriptionposition: 100000000
+  adx_fieldisrequired: false
+  adx_groupname: baseline-rank-no-ties
+  adx_ignoredefaultvalue: false
+  adx_randomizeoptionsetvalues: false
+  adx_rankordernotiesvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Rank each baseline number once."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_webformmetadataid: 2bda72c5-a17e-48bc-8284-753c53e4f353
+  adx_webformstep: e4566cc6-ffe4-4cee-8a6a-cc6deabcbea1

@@ -174,18 +174,26 @@ export async function observeManagedResources(live) {
 }
 const fieldsIn = (schemas) => {
   const fields = [],
-    seen = new Set();
-  let nodes = 0;
-  const visit = (value) => {
-    if (!value || typeof value !== "object" || seen.has(value)) return;
+    seen = new Set(), pending = [schemas];
+  let properties = 0;
+  // Keep parser work bounded without recursion or turning an optional editor
+  // discovery into a failed shell capture. Cycles and shared nodes count once.
+  while (pending.length && seen.size < 20000) {
+    const value = pending.pop();
+    if (!value || typeof value !== "object" || seen.has(value)) continue;
     seen.add(value);
-    if (++nodes > 20000)
-      throw new Error("Rich text schema traversal exceeded its bound.");
     if (value.richText) fields.push(value);
-    for (const child of Object.values(value)) visit(child);
-  };
-  visit(schemas);
-  return fields;
+    for (const key in value) {
+      if (!Object.hasOwn(value, key)) continue;
+      if (++properties > 100000) return { fields, truncated: true };
+      const child = value[key];
+      if (child && typeof child === 'object' && !seen.has(child)) {
+        if (pending.length >= 20000) return { fields, truncated: true };
+        pending.push(child);
+      }
+    }
+  }
+  return { fields, truncated: pending.some(value => value && typeof value === 'object' && !seen.has(value)) };
 };
 
 /** Extract static PCF definitions only; controlcontext and record values are never copied. */
@@ -291,7 +299,8 @@ export async function captureRichTextAssets(
   const captured = [],
     failures = [],
     diagnostics = [],
-    fields = fieldsIn(schemas),
+    discovery = fieldsIn(schemas),
+    fields = discovery.fields,
     result = {
       required: fields.length > 0,
       complete: false,
@@ -304,13 +313,17 @@ export async function captureRichTextAssets(
       assetFallbacks: [],
       managedControls: {},
     };
+  if (discovery.truncated) failures.push({
+    ...error('RICHTEXT_SCHEMA_TRUNCATED', 'Rich text discovery reached its work bound (20,000 objects or 100,000 properties); remaining fields are unverified. The captured shell remains usable.'),
+    blocking: false,
+  });
   if (!fields.length)
     return {
       ...result,
-      complete: true,
-      assetsComplete: true,
-      nativeReady: true,
-      skipped: "NO_RICH_TEXT_FIELDS",
+      complete: !discovery.truncated,
+      assetsComplete: !discovery.truncated,
+      nativeReady: !discovery.truncated,
+      skipped: discovery.truncated ? 'SCHEMA_TRUNCATED' : "NO_RICH_TEXT_FIELDS",
     };
   if (!cache)
     return {
@@ -684,6 +697,7 @@ export async function captureRichTextAssets(
   // A supported-language list in the core library is not a separate language file.
   const languageScripts = [
     editor + "ckeditor.js",
+    editor + "lang/editor-language-resources.js",
     ...Object.values(result.managedControls).flatMap(
       (definition) => definition.scripts ?? [],
     ),
@@ -696,6 +710,7 @@ export async function captureRichTextAssets(
     ))
       bundledLanguages.add((match[1] ?? match[2]).toLowerCase());
   }
+  if (!bundledLanguages.size && library) await capture([editor + 'lang/editor-language-resources.js']);
   result.bundledLanguages = [...bundledLanguages].sort();
   if (observed.fonts.length) {
     try {
@@ -752,6 +767,7 @@ export async function captureRichTextAssets(
   const definitions = Object.values(result.managedControls);
   result.nativeReady =
     result.assetsComplete &&
+    (bundledLanguages.size > 0 || available.includes(editor + 'lang/editor-language-resources.js')) &&
     result.assetFallbacks.length === 0 &&
     !diagnostics.some((diagnostic) =>
       [
@@ -796,6 +812,6 @@ export async function captureRichTextAssets(
         "Native rich text requires the observed static manifest, captured telemetry/framework/vendor resources, and captured font/icon bases. Asset capture alone does not establish native readiness.",
       ),
     );
-  result.complete = result.nativeReady;
+  result.complete = result.nativeReady && !discovery.truncated;
   return result;
 }

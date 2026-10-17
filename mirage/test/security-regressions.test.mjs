@@ -14,6 +14,25 @@ import { clientPortalObjectRuntime } from '../lib/portal-client-object.mjs';
 import { DataStore } from '../lib/data.mjs';
 import { csvCell } from '../lib/csv.mjs';
 import { derivePersona, __testing, HOSTED_RESOURCES, loadSourceCorpus } from '../parity-suite.mjs';
+import { businessRuleClientData } from '../../examples/project/baseline/business-rules.mjs';
+
+test('generated business rule strings survive script embedding without becoming HTML or code', () => {
+  const hostile = '</script><img src=x onerror="globalThis.injected=true">\\\'\n]]>';
+  const rule = { id: '00000000-0000-0000-0000-000000000001', when: { field: hostile, equals: hostile },
+    actions: [{ type: 'setValue', field: 'target', value: hostile }, { type: 'error', field: 'target', message: hostile }] };
+  const code = businessRuleClientData(rule).match(/CDATA\[([\s\S]*)\]\]>/)[1];
+  const fragment = parseFragment(`<script>${code}</script>`);
+  assert.deepEqual(fragment.childNodes.map(node => node.tagName), ['script']);
+  const calls = [];
+  const attribute = { getValue: () => hostile, setValue: value => calls.push(value), controls: [{ setNotification: value => calls.push(value) }] };
+  const sandbox = { Mscrm: { BusinessRules: { Utility: { isNull: value => value == null } } },
+    context: { getFormContext: () => ({ data: { entity: { attributes: { get: field => {
+      assert.ok([hostile, 'target'].includes(field)); return attribute;
+    } } } } }) } };
+  vm.runInNewContext(`${code};pbl_00000000000000000000000000000001(context);`, sandbox);
+  assert.deepEqual(calls, [hostile, hostile]);
+  assert.equal(sandbox.injected, undefined);
+});
 
 test('HTML safe escape preserves formatting and removes malformed, encoded, and foreign-content executable markup', () => {
   const sanitize = createFilters().html_safe_escape;

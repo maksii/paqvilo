@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
-import { normalizePortalPath, portalField } from "./importer.mjs";
+import { normalizePortalPath, portalField, pageTemplateKind } from "./importer.mjs";
 import { stripLiquidLiteralBlocks } from "./liquid-source.mjs";
 
 const id = (value) =>
@@ -144,10 +144,11 @@ function extractReferences(source, exportedTemplateNames = new Set()) {
 /** Resolve the static imported runtime graph for a portal route without rendering or writing. */
 export function resolvePageResources(portal, route, { solutionMetadata = {} } = {}) {
   const normalized = normalizePortalPath(route);
-  const page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === normalized);
-  if (!page) return { path: normalized, page: null, pageTemplate: null, webTemplates: [], snippets: [], siteSettings: [], forms: [], views: [], tables: [], columns: [], components: [], usages: [], dependencies: [], unresolved: [{ kind: "page", expression: normalized, reason: "No imported page matches this route." }] };
+  let page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === normalized);
+  const missingPage=!page;
+  page ??= {id:null,url:normalized,html:'',js:'',css:''};
 
-  const dependencies = [], unresolved = [], webTemplates = [], snippets = [], siteSettings = [], forms = [], views = [], tables = [], columns = [], components = [], usages = [];
+  const dependencies = [], unresolved = missingPage?[{kind:"page",expression:normalized,reason:"No imported page matches this route."}]:[], webTemplates = [], snippets = [], siteSettings = [], forms = [], views = [], tables = [], columns = [], components = [], usages = [];
   const add = (collection, descriptor) => {
     if (!descriptor) return;
     collection.push(descriptor);
@@ -161,7 +162,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     sourceFile: sourceFile(pageRecord, "copy.html") ?? pageRecord?._file ?? null,
     file: sourceFile(pageRecord, "copy.html") ?? pageRecord?._file ?? null,
   };
-  add(components, pageDescriptor);
+  if(!missingPage)add(components, pageDescriptor);
 
   const pageTemplate = lookup(portal.pageTemplates ?? [], page.pageTemplateId);
   if (page.pageTemplateId && !pageTemplate)
@@ -187,8 +188,10 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     add(webTemplates, descriptor);
     queue.push({ text: found.source ?? "", owner: `web-template:${id(found.id)}` });
   };
-  if (pageTemplate?.webTemplateId) addTemplate(pageTemplate.webTemplateId, "page-template", `page-template:${id(pageTemplate.id)}`);
-  else if (pageTemplate) unresolved.push({ kind: "web-template", expression: pageTemplate.name, via: "page-template", reason: "Page template has no resolved web-template ID." });
+  if (pageTemplateKind(pageTemplate) !== "rewrite") {
+    if (pageTemplate?.webTemplateId) addTemplate(pageTemplate.webTemplateId, "page-template", `page-template:${id(pageTemplate.id)}`);
+    else if (pageTemplate) unresolved.push({ kind: "web-template", expression: pageTemplate.name, via: "page-template", reason: "Page template has no resolved web-template ID." });
+  }
 
   const sources = [{ text: page.html ?? "", owner: "page" }, { text: page.js ?? "", owner: "page" }, { text: page.css ?? "", owner: "page" }];
   const seenSources = new Set();
@@ -211,7 +214,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     add(snippets, descriptor);
     sources.push({ text: portal.snippets?.[record.name] ?? "", owner: `content-snippet:${record.name}` });
   };
-  if (pageTemplate?.useHeaderFooter !== false) {
+  if (pageTemplateKind(pageTemplate) === "rewrite" || pageTemplate?.useHeaderFooter !== false) {
     const headerId = field(portal.website, "headerwebtemplateid");
     const footerId = field(portal.website, "footerwebtemplateid");
     if (headerId) addTemplate(headerId, "website header", "website-header");
@@ -355,7 +358,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
   return {
     path: normalized,
     sourceRoots: [...new Set([portal.sourceDir, ...(solutionMetadata.roots ?? [])].filter(Boolean))],
-    page: pageDescriptor,
+    page: missingPage?null:pageDescriptor,
     pageTemplate: resolvedPageTemplate,
     webTemplates,
     snippets,

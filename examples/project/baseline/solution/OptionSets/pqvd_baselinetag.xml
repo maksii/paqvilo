@@ -1,0 +1,32 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<optionset Name="pqvd_baselinetag" localizedName="Baseline tag" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <OptionSetType>picklist</OptionSetType>
+  <IsGlobal>1</IsGlobal>
+  <IntroducedVersion>1.0.0.0</IntroducedVersion>
+  <IsCustomizable>1</IsCustomizable>
+  <displaynames>
+    <displayname description="Baseline tag" languagecode="1033" />
+  </displaynames>
+  <options>
+    <option value="18327010" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="North" languagecode="1033" />
+      </labels>
+    </option>
+    <option value="18327011" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="East" languagecode="1033" />
+      </labels>
+    </option>
+    <option value="18327012" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="South" languagecode="1033" />
+      </labels>
+    </option>
+    <option value="18327013" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="West" languagecode="1033" />
+      </labels>
+    </option>
+  </options>
+</optionset>

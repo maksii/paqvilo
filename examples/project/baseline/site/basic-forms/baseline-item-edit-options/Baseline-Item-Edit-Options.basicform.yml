@@ -1,0 +1,61 @@
+adx_captcharequired: false
+adx_entityformid: a2f14099-a579-4854-892c-d06cfc445d70
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_instructions: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Edit the baseline item and save."
+    }
+  ]
+adx_mode: 100000001
+adx_name: Baseline Item Edit Options
+adx_onsuccess: 756150000
+adx_recordidquerystringparametername: id
+adx_recordnotfoundmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "The baseline item was not found."
+    }
+  ]
+adx_renderwebresourcesinline: true
+adx_showownerfields: true
+adx_showunsupportedfields: true
+adx_submitbuttonbusytext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Saving baseline item..."
+    }
+  ]
+adx_submitbuttoncssclass: btn btn-success baseline-submit
+adx_submitbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Update baseline item"
+    }
+  ]
+adx_tooltipenabled: true
+adx_validationgroup: baseline
+adx_validationsummarycssclass: alert alert-danger baseline-summary
+adx_validationsummaryheadertext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "The baseline item has errors:"
+    }
+  ]
+adx_validationsummarylinksenabled: true
+adx_validationsummarylinktext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Go to the field"
+    }
+  ]

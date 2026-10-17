@@ -124,52 +124,93 @@ export function authRoute(pathname, method, { loginPath = "/signin" } = {}) {
   if (SIGN_OUT_PATH.test(pathname)) return { kind: "sign-out" };
   // The site's configured LoginPath (Authentication/ApplicationCookie/LoginPath) is a
   // sign-in path as well; paths compare case-insensitively without a trailing "/".
-  const trimmed = (value) => String(value).replace(/\/+$/, "").toLowerCase() || "/";
+  const trimmed = (value) => {
+    const text = String(value);
+    let end = text.length;
+    while (end > 0 && text.charCodeAt(end - 1) === 47) end--;
+    return text.slice(0, end).toLowerCase() || "/";
+  };
   const login = trimmed(pathname) === trimmed(loginPath);
   if (!login && !SIGN_IN_PATHS.test(pathname)) return null;
   if (method === "POST" && (login || /^\/signin\/?$/i.test(pathname))) return { kind: "sign-in-post" };
   return { kind: "sign-in-page" };
 }
 
+import { renderPersonaPicker } from './persona-picker-view.mjs';
+
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
 
 /**
- * Content of the platform's sign-in page (rendered inside the site's header and footer).
- * - External providers: one form per provider, as the platform's /SignIn renders it (POST
- *   /Account/Login/ExternalLogin?ReturnUrl=..., __RequestVerificationToken, a submit
- *   button named "provider" whose value is the provider's AuthenticationType and whose
- *   text is its Caption; capture: docs/runtime-evidence.md).
- *   `invitationCode` travels with them after a valid code was redeemed.
+ * The account tabs' keyboard behaviour (platform account layout): the active tab is the focusable
+ * one (tabindex 0, aria-selected true) and takes focus on ready; arrows, Home and End move the
+ * focus between tabs and Space opens the focused tab.
+ */
+const ACCOUNT_TABS_SCRIPT = `<script type="text/javascript">(function () {
+  var keys = { END: 35, HOME: 36, LEFT: 37, RIGHT: 39, SPACE: 32 };
+  var tabs = function () { return Array.prototype.slice.call(document.querySelectorAll(".nav.nav-tabs.nav-account > li > a")); };
+  var ready = function () {
+    tabs().forEach(function (tab) { var active = tab.classList.contains("active"); tab.setAttribute("tabindex", active ? "0" : "-1"); tab.setAttribute("aria-selected", active ? "true" : "false"); if (active) tab.focus(); });
+  };
+  window.navigation = function (event) {
+    var list = tabs(), index = list.indexOf(document.activeElement);
+    if (index >= 0 && [keys.END, keys.HOME, keys.LEFT, keys.RIGHT].indexOf(event.keyCode) >= 0) {
+      var next = event.keyCode === keys.HOME ? 0 : event.keyCode === keys.END ? list.length - 1 : event.keyCode === keys.LEFT ? (index + list.length - 1) % list.length : (index + 1) % list.length;
+      list[next].focus();
+    }
+    if (event.keyCode === keys.SPACE) { event.preventDefault(); document.activeElement.click(); list.forEach(function (tab) { tab.setAttribute("tabindex", "-1"); tab.setAttribute("aria-selected", "false"); }); }
+  };
+  if (window.jQuery) window.jQuery(ready); else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready); else ready();
+})();</script>`;
+
+/**
+ * Content region of the platform's sign-in page (rendered inside the site's header and footer;
+ * live evidence: the platform account layout). #content-container > #content holds the account
+ * tabs (Sign in, Register when open registration is on, Redeem invitation when invitations are
+ * on) and #mainContent: the page copy, then the external sign-in form.
+ * - External providers: one form (POST /Account/Login/ExternalLogin?ReturnUrl=...,
+ *   __RequestVerificationToken) with the login heading, the validation summary and one submit
+ *   button named "provider" per provider: value and id the provider's AuthenticationType, text
+ *   its Caption. `invitationCode` travels with them after a valid code was redeemed.
  * - Local personas: the simulator's stand-in for local accounts, listed when local sign-in
  *   is enabled or the site configures no external provider; visibly a local simulation.
  */
 export function signInContent({
   personas = [],
+  personaCatalog = null,
   providers = [],
   showPersonas = true,
   csrf = "",
   defaultContactId = null,
   returnUrl = "/",
+  personaReturnUrl = returnUrl,
   anonymousUrl = "/",
   invitationCode = null,
   redeemInvitation = false,
   error = null,
   title = "Sign in",
+  copy = "",
+  registerTab = false,
+  redeemTab = false,
 }) {
   const ordered = [...personas].sort(
     (a, b) => Number(b.contactId === defaultContactId) - Number(a.contactId === defaultContactId) || String(a.name ?? "").localeCompare(String(b.name ?? "")),
   );
   const action = `/Account/Login/ExternalLogin?ReturnUrl=${encodeURIComponent(returnUrl)}`;
+  const summary = error
+    ? `<div aria-describedby="loginValidationSummary" aria-label="Sign in failed." class="validation-summary-errors listStyleTypeNone alert alert-block alert-danger" data-valmsg-summary="true" id="loginValidationSummary" tabindex="0" role="alert"><ul><li>${escapeHtml(error)}</li></ul></div>`
+    : `<div aria-describedby="loginValidationSummary" aria-label="Sign in failed." class="validation-summary-valid listStyleTypeNone alert alert-block alert-danger" data-valmsg-summary="true" id="loginValidationSummary" tabindex="0"><ul><li style="display:none"></li></ul></div>`;
   const external = providers.length
     ? [
-        `<div class="paqvilo-mirage-external-providers">`,
-        `<h2 class="h4">Sign in with an external account</h2>`,
-        ...providers.map(
-          (provider) =>
-            `<form action="${escapeHtml(action)}" method="post" class="paqvilo-mirage-provider"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">${invitationCode ? `<input name="InvitationCode" type="hidden" value="${escapeHtml(invitationCode)}">` : ""}<button name="provider" type="submit" class="btn btn-primary" value="${escapeHtml(provider.id)}" title="${escapeHtml(provider.caption ?? provider.name)}">${escapeHtml(provider.caption ?? provider.name)}</button></form>`,
-        ),
-        `</div>`,
+        `<form action="${escapeHtml(action)}" method="post"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">${invitationCode ? `<input name="InvitationCode" type="hidden" value="${escapeHtml(invitationCode)}">` : ""}<div class="">`,
+        `<h2 class="login-heading-section" id="external-login-heading"><span class="xrm-editable-text xrm-attribute"><span class="xrm-attribute-value-encoded xrm-attribute-value">Sign in with an external account</span></span></h2>`,
+        summary,
+        `<div id="6_ctl00_AzureADRebrandDisclaimer"></div>`,
+        ...providers.map((provider) => {
+          const caption = provider.caption ?? provider.name;
+          return `<button name="provider" type="submit" class="btn btn-primary btn-line" id="${escapeHtml(provider.id)}" title="Sign in with your ${escapeHtml(caption)} account." value="${escapeHtml(provider.id)}">${escapeHtml(caption)}</button>`;
+        }),
+        `</div></form>`,
       ].join("")
     : "";
   const rows = ordered
@@ -187,21 +228,32 @@ export function signInContent({
         providers.length
           ? `<p>Local accounts: choose a local persona (a contact in the simulator's data) instead of a username and password.</p>`
           : `<p>This site configures no external identity provider. Choose a local persona (a contact in the simulator's data) to continue as that user, or continue anonymously.</p>`,
-        `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
-        ordered.length ? `<ul class="list-group">${rows}</ul>` : `<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>`,
+        `<form method="post" action="/SignIn"><input type="hidden" name="ReturnUrl" value="${escapeHtml(personaCatalog?.enabled ? personaReturnUrl ?? '' : returnUrl)}"><input name="__RequestVerificationToken" type="hidden" value="${escapeHtml(csrf)}">`,
+        personaCatalog?.enabled ? renderPersonaPicker(personaCatalog, { mode: 'signin' }) : ordered.length ? `<ul class="list-group">${rows}</ul>` : `<p>No local contacts are available. Create personas under <a href="/_sim/">Identity &amp; permissions</a>.</p>`,
         `</form>`,
         `<p><a class="paqvilo-mirage-continue-anonymously" href="${escapeHtml(anonymousUrl)}">Continue anonymously</a></p>`,
         `</div>`,
       ].join("")
     : "";
+  const query = encodeURIComponent(returnUrl);
+  // The platform's tab classes: "nav-link active", "nav-link " (Register), "nav-link  " (Redeem invitation).
+  const tab = (label, href, active = false, icon = "", suffix = " ") => `<li role="none" class="nav-item"><a class="nav-link${active ? " active" : suffix}" role="tab" aria-selected="${active ? "True" : "False"}" href="${escapeHtml(href)}" aria-label="${label}" title="${label}">${icon}${label}</a></li>`;
+  const tabs = `<ul class="nav nav-tabs nav-account" role="tablist" onkeydown="navigation(event)">${[
+    tab("Sign in", "javascript:void(0)", true, '<span class="fa fa-sign-in" aria-hidden="true"></span> '),
+    registerTab ? tab("Register", `/Account/Login/Register?returnUrl=${query}`) : "",
+    redeemTab ? tab("Redeem invitation", `/Register?returnUrl=${query}`, false, "", "  ") : "",
+  ].join("")}</ul>${ACCOUNT_TABS_SCRIPT}`;
   return [
-    `<section class="container paqvilo-mirage-sign-in" aria-labelledby="paqvilo-mirage-sign-in-title" style="margin:24px auto;max-width:760px">`,
-    `<h1 id="paqvilo-mirage-sign-in-title">${escapeHtml(title)}</h1>`,
-    error ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : "",
-    external,
-    local,
-    redeemInvitation ? `<p><a class="paqvilo-mirage-redeem-invitation" href="/Account/Login/RedeemInvitation?ReturnUrl=${escapeHtml(encodeURIComponent(returnUrl))}">Redeem invitation</a></p>` : "",
+    personaCatalog?.enabled ? '<link rel="stylesheet" href="/__sim/persona-picker.css"><script type="module" src="/__sim/persona-picker.mjs"></script>' : '',
+    `<div id="content-container" class="container wrapper-body" role="main"><div id="content">${tabs}<div class="page-content" id="mainContent">`,
+    `<div class="xrm-editable-html xrm-attribute${copy ? "" : " no-value"} page-copy"><div class="xrm-attribute-value">${copy}</div></div>`,
+    external ? `<div class="row"><div class="col-md-6">${external}</div></div>` : "",
+    // On ready the page takes the active tab's text as its title and refreshes the anti-forgery token (live sign-in).
+    `<script type="text/javascript">(function () { var run = function () { var active = document.querySelector(".nav-tabs > li > a.active"); document.querySelector("title").textContent = active ? active.textContent : ""; if (window.shell && typeof window.shell.refreshToken === "function") window.shell.refreshToken(); }; if (window.jQuery) window.jQuery(run); else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", run); else run(); })();</script>`,
+    // The local persona sign-in is the simulator's stand-in for local accounts (visibly marked).
+    local ? `<section class="paqvilo-mirage-sign-in" aria-label="${escapeHtml(title)}">${error && !external ? `<div class="alert alert-danger" role="alert">${escapeHtml(error)}</div>` : ""}${local}</section>` : "",
+    redeemInvitation && !redeemTab ? `<p><a class="paqvilo-mirage-redeem-invitation" href="/Account/Login/RedeemInvitation?ReturnUrl=${escapeHtml(query)}">Redeem invitation</a></p>` : "",
     !external && !local ? `<p>No sign-in method is available: external sign-in has no configured provider and local sign-in is turned off.</p>` : "",
-    `</section>`,
+    `</div></div></div>`,
   ].join("");
 }

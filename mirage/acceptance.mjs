@@ -1,4 +1,7 @@
 import fs from "node:fs/promises";
+import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
+import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
+import { observeDocumentCommits } from './lib/document-commits.mjs';
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -50,10 +53,11 @@ const safeMessage = (value) =>
       "$1[redacted]",
     )
     .replace(/https?:\/\/[^\s)]+/g, (url) => safeUrl(url));
+const LOOPBACK_HOSTS = Object.freeze(['127.0.0.1', 'localhost', '[::1]']);
 const loopback = (value) => {
   const url = new URL(value);
   if (
-    !["127.0.0.1", "localhost", "[::1]"].includes(url.hostname) ||
+    !LOOPBACK_HOSTS.includes(url.hostname) ||
     url.username ||
     url.password
   )
@@ -118,10 +122,13 @@ export async function runAcceptance({
   channel = process.env.PAQVILO_BROWSER ||
     (process.platform === "win32" ? "msedge" : "chromium"),
   timeout = 15000,
+  navigationCommitReserveMs,
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
 }) {
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
+  if (navigationCommitReserveMs !== undefined && (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout)) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
   const local = loopback(localUrl);
   if (!["http:", "https:"].includes(local.protocol))
     throw new Error("Local simulator requires HTTP(S).");
@@ -177,6 +184,7 @@ export async function runAcceptance({
     passed: false,
     sourceFingerprint: state.status?.sourceFingerprint,
     implementationFingerprint: state.status?.implementationFingerprint,
+    activeConfigurationPreset: state.status?.activeConfigurationPreset ?? state.config?.activeExperiment ?? null,
     viewport: { width: 1440, height: 1000 },
     flows: [],
   };
@@ -197,7 +205,7 @@ export async function runAcceptance({
       ],
       proxy: {
         server: `http://127.0.0.1:${blockingProxy.address().port}`,
-        bypass: "127.0.0.1,localhost,[::1]",
+        bypass: LOOPBACK_HOSTS.join(","),
       },
     });
     const localContext = await ownedBrowser.newContext({
@@ -259,6 +267,7 @@ export async function runAcceptance({
         steps: [],
         consoleErrors: [],
         pageErrors: [],
+        pageErrorDetails: [],
         failedRequests: [],
         failedResponses: [],
         blockedRequests: [],
@@ -286,11 +295,37 @@ export async function runAcceptance({
       }
       const pending = new Map(),
         responseObservations = [];
+      const requestRecords = new Map(), frameDocuments = new WeakMap(), navigationHolds = new Set(), navigationBudgets = new Map();
+      let settlementDeadline = Infinity, actionDeadline = Infinity, documentResponseMs = null;
+      const requestFrame = request => { try { return request.frame(); } catch { return null; } };
+      const cancelRequests = (requests, reason) => {
+        const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
+        if (cancelled.length) {
+          (observation.navigationCancelledRequests ??= []).push(...cancelled);
+          lastRequestActivity = Date.now();
+        }
+      };
+      page.on('framedetached', frame => cancelRequests([...requestRecords.keys()].filter(request => {
+        if (requestFrame(request) !== frame) return false;
+        const record = requestRecords.get(request);
+        // Chromium can emit ERR_ABORTED just before Playwright emits framedetached.
+        // Keep unrelated/older failures; recognize only the same detach event's aborts.
+        return pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250;
+      }), 'frame-detached'));
       const cdp = await context.newCDPSession(page),
         cdpRecords = new Map(),
         frameEvents = [];
       await cdp.send("Network.enable");
       await cdp.send("Page.enable");
+      await observeDocumentCommits(page, cdp, {
+        document: (frame, token) => frameDocuments.set(frame, token),
+        commit: (frame, token) => cancelRequests([...requestRecords.keys()].filter(request => {
+          const record = requestRecords.get(request);
+          return requestFrame(request) === frame && record.documentToken === token && request.resourceType() !== 'document' &&
+            (pending.has(request) || record.finished === false && request.failure()?.errorText === 'net::ERR_ABORTED' && Date.now() - record.endedAt <= 250);
+        }), 'document-replaced'),
+      });
+
       // A local navigation waits (bounded) for the script writes of the document it replaces;
       // only document requests are paused (lib/navigation-settle.mjs).
       if (!isLive) {
@@ -301,9 +336,29 @@ export async function runAcceptance({
                 .filter((row) => row.parentFrameId)
                 .map((row) => [row.frameId, row.parentFrameId]),
             );
-          // Writes of replaced documents or removed frames can no longer complete.
-          awaitWritesBeforeDocument(event.frameId, () => [...cdpRecords.values()], parents, {
-            timeout,
+          // Chromium reuses the network id across redirects; all hops share the first
+          // hold's budget and leave time for the action's navigation to commit.
+          const now = Date.now();
+          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
+          // Reserve the slowest observed document response plus a commit margin.
+          // A 3 s floor tolerates a new slower document, capped at the previous
+          // half-budget reserve so short actions never lose write-hold time.
+          // Before any measurement, use half. Redirect hops share the reserve.
+          const reserveMs = navigationCommitReserveMs ?? (documentResponseMs === null ? remaining / 2 : Math.min(remaining / 2, Math.max(3000, documentResponseMs + 1000)));
+          const reservePolicy = navigationCommitReserveMs !== undefined ? 'explicit' : documentResponseMs === null ? 'half-remaining-action' : 'measured-document-response';
+          const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
+            deadline: now + Math.max(0, remaining - reserveMs),
+            reserve: reserveMs, policy: reservePolicy, ids: new Set(),
+          };
+          const reserve = budget.reserve;
+          for (const id of [event.networkId, event.requestId].filter(Boolean)) {
+            budget.ids.add(id);
+            navigationBudgets.set(id, budget);
+          }
+          const budgetDeadline = budget.deadline;
+          const hold = awaitWritesBeforeDocument(event.frameId, () => [...cdpRecords.values()], parents, {
+            timeout: Math.max(0, budgetDeadline - Date.now()),
+            deadline: () => Math.min(budgetDeadline, settlementDeadline - reserve, actionDeadline - reserve),
             frames: () => frameState(frameEvents),
           })
             .then((wait) => {
@@ -311,6 +366,9 @@ export async function runAcceptance({
                 (observation.navigationWaits ??= []).push({
                   navigation: safeUrl(event.request.url),
                   ...wait,
+                  commitReserveMs: reserve,
+                  commitReservePolicy: budget.policy,
+                  actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
             })
             .catch(() => {})
@@ -319,6 +377,8 @@ export async function runAcceptance({
                 .send("Fetch.continueRequest", { requestId: event.requestId })
                 .catch(() => {}),
             );
+          navigationHolds.add(hold);
+          void hold.finally(() => navigationHolds.delete(hold));
         });
         await cdp.send("Fetch.enable", { patterns: [DOCUMENT_REQUEST_PATTERN] });
       }
@@ -364,6 +424,11 @@ export async function runAcceptance({
       });
       cdp.on("Network.responseReceived", (event) => {
         const record = cdpRecords.get(event.requestId);
+        const timing = event.response.timing;
+        if (event.type === 'Document' && timing?.sendStart >= 0 && timing.receiveHeadersEnd >= timing.sendStart) {
+          const duration = timing.receiveHeadersEnd - timing.sendStart;
+          documentResponseMs = Math.max(documentResponseMs ?? 0, duration);
+        }
         if (record) {
           record.status = event.response.status;
           record.mimeType = event.response.mimeType;
@@ -372,12 +437,18 @@ export async function runAcceptance({
           ).find(([name]) => name.toLowerCase() === "x-sim-trace-id")?.[1];
         }
       });
+      const releaseNavigationBudget = requestId => {
+        const budget = navigationBudgets.get(requestId);
+        if (budget) for (const id of budget.ids) navigationBudgets.delete(id);
+      };
       cdp.on("Network.loadingFinished", (event) => {
         const record = cdpRecords.get(event.requestId);
         if (record) record.finishedTimestamp = event.timestamp;
+        releaseNavigationBudget(event.requestId);
       });
       cdp.on("Network.loadingFailed", (event) => {
         const record = cdpRecords.get(event.requestId);
+        releaseNavigationBudget(event.requestId);
         if (record) {
           record.failure = event.errorText;
           record.failedTimestamp = event.timestamp;
@@ -398,11 +469,16 @@ export async function runAcceptance({
           });
         }
       });
-      page.on("pageerror", (error) =>
-        observation.pageErrors.push(safeMessage(error.stack ?? error.message)),
-      );
+      page.on("pageerror", (error) => {
+        observation.pageErrors.push(safeMessage(error.stack || error.message));
+        observation.pageErrorDetails.push({
+          name: safeMessage(error.name),
+          message: safeMessage(error.message),
+          stack: safeMessage(error.stack || ""),
+        });
+      });
       page.on("requestfailed", (request) => {
-        const record = pending.get(request),
+        const record = requestRecords.get(request),
           requestKey = String(record?.order ?? "");
         if (!isLive) {
           let target = null;
@@ -411,8 +487,9 @@ export async function runAcceptance({
           } catch {
             target = null;
           }
-          // The owned browser's proxy refused a request that would leave loopback.
-          if (target && /^(https?|wss?):$/.test(target.protocol) && target.origin !== origin)
+          // Match the proxy's exact bypass hosts. A different loopback origin can
+          // fail or be abandoned by its document without being refused by the proxy.
+          if (target && /^(https?|wss?):$/.test(target.protocol) && !LOOPBACK_HOSTS.includes(target.hostname))
             observation.blockedRequests.push({
               method: request.method(),
               url: safeUrl(request.url()),
@@ -421,6 +498,10 @@ export async function runAcceptance({
         const response = observation.failedResponses.find(
           (item) => item.requestKey === requestKey,
         );
+        if (request.isNavigationRequest() && [204,205].includes(record?.status) && request.failure()?.errorText === 'net::ERR_ABORTED') {
+          (observation.noContentNavigations ??= []).push({method:request.method(),url:failureUrl(request.url()),status:record.status});
+          return;
+        }
         observation.failedRequests.push({
           kind: "network",
           requestKey,
@@ -474,6 +555,7 @@ export async function runAcceptance({
       const proofInputs = new Map();
       let lastRequestActivity = Date.now();
       page.on("request", (request) => {
+        const frame = requestFrame(request);
         const record = {
           order: observation.resources.length + 1,
           method: request.method(),
@@ -481,7 +563,9 @@ export async function runAcceptance({
           type: request.resourceType(),
           started: Date.now(),
         };
+        Object.defineProperty(record, 'documentToken', { value: frameDocuments.get(frame) });
         pending.set(request, record);
+        requestRecords.set(request, record);
         if (record.type !== "eventsource") lastRequestActivity = Date.now();
         const url = new URL(request.url());
         proofInputs.set(request, {
@@ -506,6 +590,7 @@ export async function runAcceptance({
           if (record) {
             if (record.type !== "eventsource") lastRequestActivity = Date.now();
             record.durationMs = Date.now() - record.started;
+            record.endedAt = Date.now();
             record.finished = event === "requestfinished";
             pending.delete(request);
           }
@@ -542,18 +627,24 @@ export async function runAcceptance({
         const quiet = await awaitNetworkQuiet(() => [...cdpRecords.values()], {
           frames: () => frameState(frameEvents),
           timeout,
-          ignore: (row) => row.path.startsWith("/__sim/events"),
+          ignore: (row) => simulatorBackgroundRequest(row.url ?? row.path, origin),
         });
         (observation.loadWaits ??= []).push({ url: safeUrl(page.url()), ...quiet });
       };
       const settle = async () => {
+        // Document holds have their own bounded write wait. Start the settle
+        // deadline after releasing an existing hold, so it cannot expire while
+        // the runner itself prevents the replacement document from committing.
+        await Promise.allSettled([...navigationHolds]);
         const active = () =>
           [...pending.values()].filter(
             (record) =>
               record.type !== "eventsource" &&
-              !record.url.endsWith("/__sim/events"),
+              !simulatorBackgroundRequest(record.url, origin),
           );
         const deadline = Date.now() + timeout;
+        settlementDeadline = deadline;
+        try {
         let lastProofCheck = 0;
         // Native save callbacks can schedule a subgrid refresh after the modal
         // closes. Observe that work before initiating another navigation.
@@ -608,6 +699,7 @@ export async function runAcceptance({
                 .map((record) => record.method + " " + record.url)
                 .join(", "),
           );
+        } finally { settlementDeadline = Infinity; }
       };
       try {
         for (const [stepIndex, definition] of flow.steps.entries()) {
@@ -639,6 +731,7 @@ export async function runAcceptance({
             throw new Error(
               "A local mutation/state assertion cannot execute in a live observation flow.",
             );
+          actionDeadline = Date.now() + timeout;
           const surface = step.frame
             ? (Array.isArray(step.frame) ? step.frame : [step.frame]).reduce(
                 (surface, selector) => surface.frameLocator(selector),
@@ -661,6 +754,7 @@ export async function runAcceptance({
               throw new Error(
                 "Navigation readiness must be load or domcontentloaded.",
               );
+            actionDeadline = Date.now() + timeout;
             const response = await page.goto(origin + step.path, {
               // Exported pages may leave asynchronous data requests open while
               // their document and controls are already usable. Navigation
@@ -668,6 +762,7 @@ export async function runAcceptance({
               // continue to report unfinished or failed requests separately.
               waitUntil: step.waitUntil ?? "domcontentloaded",
             });
+            actionDeadline = Infinity;
             entry.status = response?.status();
             if (entry.status !== (step.status ?? 200))
               throw new Error(
@@ -681,8 +776,10 @@ export async function runAcceptance({
             const control = surface.locator(step.selector);
             await control.waitFor({ state: "attached" });
             entry.alreadyVisible = await control.isVisible();
-            if (!entry.alreadyVisible)
+            if (!entry.alreadyVisible) {
+              actionDeadline = Date.now() + timeout;
               await locate(surface, step.trigger).click();
+            }
             await control.waitFor({ state: "visible" });
           } else if (step.action === "click") await target().click();
           else if (step.action === "fill") await target().fill(step.value);
@@ -851,6 +948,7 @@ export async function runAcceptance({
           } else if (step.action === "screenshot")
             await capture(step.name ?? String(stepIndex + 1));
           else throw new Error(`Unsupported acceptance action ${step.action}`);
+          actionDeadline = Infinity;
           entry.passed = true;
         }
         await page.waitForTimeout(300);
@@ -862,7 +960,8 @@ export async function runAcceptance({
           (await page.locator("input[type=password]:visible").count())
         )
           throw new Error("Sign-in or origin redirect was observed.");
-        let unexpectedRequests = observation.failedRequests,
+        let unexpectedRequests = observation.failedRequests.filter(failure => !simulatorBackgroundRequest(failure.url, origin) &&
+          !(failure.errorText === 'net::ERR_ABORTED' && (observation.navigationCancelledRequests ?? []).some(cancelled => cancelled.requestKey === failure.requestKey))),
           unexpectedResponses = observation.failedResponses;
         observation.sourceAborts = sourceAborts;
         observation.sourceCancelledReads = [];

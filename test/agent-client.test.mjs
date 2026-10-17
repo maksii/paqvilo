@@ -56,7 +56,7 @@ test('session discovery probes identity, labels invalid files, and never prints 
 test('client enforces operation-specific arguments and writes PNG evidence without overwriting existing files', async (t) => {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const fx = await fixture(t, (req, res) => {
-    assert.equal(req.url, '/v1/pages/page1/screenshot');
+    assert.equal(req.url, '/v1/pages/1/screenshot');
     assert.equal(req.method, 'POST');
     res.writeHead(200, { 'content-type': 'image/png' }).end(png);
   });
@@ -66,19 +66,43 @@ test('client enforces operation-specific arguments and writes PNG evidence witho
   const log = console.log;
   let result;
   console.log = (line) => { result = JSON.parse(line); };
-  try { assert.equal(await agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), 0); }
+  try { assert.equal(await agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), 0); }
   finally { console.log = log; }
   assert.equal(result.path, output);
+  assert.deepEqual(result.writesFiles,[output]);
   assert.deepEqual(await fs.readFile(output), png);
-  await assert.rejects(agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), /EEXIST/);
+  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), error=>{
+    const reported=/already exists: (.+)\. Existing files/.exec(error.message)?.[1];
+    const relative=path.relative(process.cwd(),output);
+    return error.code==='invalid_argument'&&reported===(path.isAbsolute(relative)?path.basename(output):relative).replaceAll('\\','/')&&!path.isAbsolute(reported);
+  });
 });
 
 test('agent request times out and removes reserved screenshot after invalid server output', async (t) => {
   const fx = await fixture(t, (req, res) => {
     if (req.url.endsWith('screenshot')) res.writeHead(200, { 'content-type': 'text/plain' }).end('not a png');
   });
-  await assert.rejects(agentRequest(fx.discovery, '/v1/session', { timeout: 100 }), /timed out/);
+  await assert.rejects(agentRequest(fx.discovery, '/v1/session', { timeout: 100 }),error=>error.code==='request_timeout'&&error.status===504);
   const output = path.join(fx.dir, 'bad.png');
-  await assert.rejects(agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), /invalid PNG/);
+  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /invalid PNG/);
   await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+});
+
+test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code',async t=>{
+  const fx=await fixture(t,(req,res)=>{
+    let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{const value=JSON.parse(body);assert.equal(value.timeoutMs,1000);setTimeout(()=>res.writeHead(504,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'action_timeout',message:'The browser navigation timed out'}})),1050);});
+  });
+  await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'2000'},['navigate']),error=>error.code==='action_timeout'&&error.status===504);
+  await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'150'},['navigate']),error=>error.code==='invalid_argument');
+  await fs.rm(fx.file);
+  await assert.rejects(agent(null,{session:fx.file},['status']),error=>error.code==='session_not_found'&&error.status===404);
+});
+
+test('agent rejects JSON scalars and arrays instead of leaking client TypeErrors',async t=>{
+  let payload='null';
+  const fx=await fixture(t,(_req,res)=>res.writeHead(200,{'content-type':'application/json'}).end(payload));
+  for(const body of ['null','[]','"unexpected"','false']){
+    payload=body;
+    await assert.rejects(agentRequest(fx.discovery,'/v1/session'),/invalid JSON: expected an object/);
+  }
 });

@@ -1,0 +1,38 @@
+adx_entitylistid: 1c75fe08-398d-4ee1-8c6b-5dd3f85008e1
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_filter_definition: >-
+  {
+    "xmlns.adx": "http://schemas.adxstudio.com/fetch/",
+    "distinct": true,
+    "entity": {
+      "name": "pqvd_baselineitem",
+      "all-attributes": true,
+      "filters": [
+        {
+          "adx.filtertype": "textfilter",
+          "adx.id": 0,
+          "adx.uiorder": 0,
+          "adx.attribute": "pqvd_name",
+          "adx.uiname": "Name",
+          "type": "or",
+          "conditions": [
+            {
+              "adx.id": 0,
+              "adx.uiinputtype": "text",
+              "attribute": "pqvd_name",
+              "operator": "like",
+              "value": "%"
+            }
+          ]
+        }
+      ],
+      "links": []
+    }
+  }
+adx_filter_enabled: true
+adx_filter_orientation: 756150000
+adx_idquerystringparametername: id
+adx_name: Baseline Item List Filters Horizontal
+adx_pagesize: 5
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

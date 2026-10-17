@@ -1,3 +1,5 @@
+import { personaSessionPanel, personaManagementPanel, mountPersonaAdministration } from './persona-manager.mjs';
+let personaCatalogue, selectedPersonaKey;
 const API = "/__sim/api";
 const $ = (selector, root = document) => root.querySelector(selector);
 const escape = (value) =>
@@ -15,6 +17,8 @@ const views = [
   ["overview", "Overview", "◈"],
   ["records", "Data records", "▤"],
   ["portal", "Portal configuration", "✎"],
+  ["platform", "Platform rules", "⚙"],
+  ["overrides", "Settings & snippet overrides", "✎"],
   ["endpoints", "Endpoints", "⇄"],
   ["operations", "Backend operations", ""],
   ["mappings", "Entity mappings", "◇"],
@@ -33,7 +37,7 @@ let state;
 // portal items (kind, name), access (contact) and logs (type).
 const parseHash = () => {
   const [view = "", query = ""] = location.hash.slice(1).split("?");
-  return { view, params: new URLSearchParams(query) };
+  return { view: view === "identity" ? "access" : view, params: new URLSearchParams(query) };
 };
 let activeView = views.some(([id]) => id === parseHash().view)
   ? parseHash().view
@@ -221,7 +225,11 @@ async function loadView() {
   if (activeView !== "logs") disconnectLogs();
   if (activeView === "audit") await loadAudit();
   if (activeView === "records") await loadRecords();
-  if (["access", "scenarios"].includes(activeView)) await loadContacts();
+  if (["access", "scenarios"].includes(activeView)) {
+    personaCatalogue = await request('/personas');
+    if (personaCatalogue.version !== 1) personaCatalogue = undefined;
+    await loadContacts(); render();
+  }
   if (activeView === "access") {
     await loadExternalIdentities();
     if (activeView === "access") render();
@@ -571,6 +579,7 @@ const contactLabel = (record) =>
       record.contactid
     : "";
 function sessionPanel() {
+  if (personaCatalogue?.enabled) return personaSessionPanel(personaCatalogue, browserSession, selectedPersonaKey);
   const session = browserSession || { signedIn: false, roles: [] };
   const contacts = state.data?.contact || [];
   const wanted = personaId(
@@ -599,6 +608,7 @@ async function refresh({ announce = false } = {}) {
     state = await request("/state?summary=1");
     state.summaryMode = !state.data;
     await loadSession();
+    personaCatalogue = undefined;
     recordResult = undefined;
     $("#connection-dot").className = "status-dot ready";
     $("#connection-label").textContent = "Simulator connected";
@@ -666,6 +676,7 @@ function overview() {
       <div class="row"><div><div class="row-title">Data provider</div><div class="row-detail">${config().mode === "live" ? escape(config().live?.origin || "Live environment selected") : "Persistent mock data and configurable plugin rules"}</div></div><button class="button small" data-view="connection">Configure</button></div>
       <div class="row"><div><div class="row-title">This browser</div><div class="row-detail">${escape(sessionSummary())} · ${escape((browserSession?.roles || []).join(", ") || "No roles")}</div></div>${badge(browserSession?.signedIn ? "Signed in" : "Anonymous", browserSession?.signedIn ? "green" : "")}<button class="button small" data-view="access">Manage</button></div>
       <div class="row"><div><div class="row-title">Sign-in route</div><div class="row-detail">${escape(signInRoute().map(([title, value]) => `${title}: ${value}`).join(" · "))}</div></div></div>
+      <div class="row"><div><div class="row-title">Platform stylesheets</div><div class="row-detail">${escape(status.platformStyles?.mode === 'captured' ? `Captured ${status.platformStyles.capturedAt} from ${status.platformStyles.origin}` : 'Placeholder · local structural form rules')}${status.platformStyles?.missingHeadStylesheets?.length ? ` · Missing: ${escape(status.platformStyles.missingHeadStylesheets.join(', '))}` : ''}</div></div></div>
       <div class="row"><div><div class="row-title">Sign-in page default</div><div class="row-detail">${escape(config().identity?.name || config().identity?.contactId || config().identity?.id || "No default persona")}</div></div></div>
       <div class="row"><div><div class="row-title">Source checkout</div><div class="row-detail source-path">${escape(status.repo || status.source || status.sourceDir || state.repo || "See simulator launch configuration")}</div></div></div>
       <div class="row"><div><div class="row-title">Runtime</div><div class="row-detail">Revision ${escape(status.revision ?? "not reported")} · source ${escape(String(status.sourceFingerprint ?? "").slice(0, 12) || "not reported")}${config().activeScenario ? ` · scenario ${escape(config().activeScenario.name || config().activeScenario.id)}` : ""}</div></div><button class="button small" data-view="runtime">Details</button></div>
@@ -758,30 +769,33 @@ function records() {
 
 function pluginOperation(item, index) {
   const value = item.configuration ?? { mode: item.mode, status: 200, body: {} };
+  const unsupportedBehavior = !item.enabled ? 'This registration is inactive in the export and does not execute.' : value.mode === 'disabled' ? 'Disabled mode does not execute this registration.' : value.mode === 'mock' ? 'Configured mock status controls local acceptance; original logic is not executed.' : value.mode === 'placeholder' ? 'Placeholder mode skips this registration with a diagnostic.' : 'The selected execution mode rejects this unsupported registration with LocalPluginUnsupported.';
   const disabled = item.configurable ? '' : ' disabled';
-  const modes = [['placeholder', 'Placeholder (skip with diagnostic)'], ['mock', 'Configured target changes or rejection'], ['handler', 'Trusted project handler']];
+  const modes = [['placeholder', 'Placeholder (skip with diagnostic)'], ['disabled','Disabled locally'],['mock', 'Configured target changes or rejection'], ['handler', 'Trusted project JavaScript model'],['clr','Execute trusted original CLR assembly']];
+  const message=String(item.message??'').toLowerCase(),pre=[10,20].includes(item.stage);
+  const mockHelp=message==='retrievemultiple'?item.stage===20?'Use {"query":{...}} with a typed QueryExpression, QueryByAttribute or FetchExpression for this source table.': 'Use {"collection":{"$type":"EntityCollection","entities":[],"moreRecords":false,"totalRecordCount":-1,"pagingCookie":null}} to replace the read result.':message==='retrieve'&&item.stage===40?'Use {"entityResult":{...}} with a typed Entity retaining this table and record identity.':['createmultiple','updatemultiple'].includes(message)&&pre?'Use {"targets":[...]} with typed Entity values retaining the submitted table, count and existing identities.':['create','update'].includes(message)&&pre?'Use {"target":{"column":"value"}} to change submitted fields.':'This stage supports an explicit error; it cannot persist target changes.';
   return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge('plugin-step')}${badge(item.mode)}</div>
     <p class="muted">${escape(item.entity ?? 'Unresolved table')} ${escape(item.message ?? 'Unknown message')} · ${escape(item.stageName)} · rank ${escape(item.rank ?? 'unknown')}${item.filteringAttributes.length ? ` · input attributes: ${escape(item.filteringAttributes.join(', '))}` : ''}</p>
     <p class="field-help">${escape(item.typeName ?? 'Unresolved type')} · ${escape(item.assemblyName ?? 'Unresolved assembly')}</p>
-    ${item.unsupported ? `<p class="notice">${escape(item.unsupported)} This registration is skipped with a diagnostic.</p>` : !item.enabled ? '<p class="notice">This registration is disabled in the export.</p>' : ''}
+    ${item.unsupported ? `<p class="notice">${escape(item.unsupported)} ${escape(unsupportedBehavior)}</p>` : !item.enabled ? '<p class="notice">This registration is disabled in the export.</p>' : ''}
     ${[item.sourceFile, item.typeSourceFile, item.assemblySourceFile].filter(Boolean).map(file => `<p class="field-help">Metadata: ${escape(file)}</p>`).join('')}${item.codeSourceFile ? `<p class="field-help">Mapped C# source: ${escape(item.codeSourceFile)}</p>` : item.codeSourceDiagnostic ? `<p class="notice">${escape(item.codeSourceDiagnostic)}</p>` : ''}
     <form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid">
-      <div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${modes.map(([mode, label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${mode === 'handler' && !item.registered ? ' disabled' : ''}>${label}</option>`).join('')}</select></div>
+      <div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${modes.map(([mode, label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${mode === 'handler' && !item.registered || mode==='clr'&&!item.clrAvailable ? ' disabled' : ''}>${label}</option>`).join('')}</select></div>
       <div><label for="operation-status-${index}">Mock result status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="field-help">400 or above rejects the write and rolls back the local transaction.</p></div>
-      <div><label for="operation-body-${index}">Mock result (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(value.body ?? {}))}</textarea><p class="field-help">Use {"target":{"column":"value"}} for stages 10/20 or {"error":{"message":"Rejected"}}. PostOperation can reject; target edits there are unsupported.</p></div>
+      <div><label for="operation-body-${index}">Mock result (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(value.body ?? {}))}</textarea><p class="field-help">${escape(mockHelp)} Use {"error":{"message":"Rejected"}} to reject explicitly.</p></div>
       <div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div>
-    </form><p class="field-help">Compiled .NET is never executed. Local mocks and trusted handlers run after portal authorization in one rollback transaction, including PreValidation. Filtering attributes match submitted columns even when values are unchanged. Placeholder mode allows the write and records skipped business logic in Diagnostics.</p></section>`;
+    </form>${item.clrProvenance?lazyJson('Original CLR assembly and SDK provenance',item.clrProvenance):''}<p class="field-help">CLR mode executes the explicitly trusted original DLL in a separate local process. JavaScript handlers and mocks remain models. Top-level PreValidation SDK writes commit independently; PreOperation/PostOperation and nested PreValidation join their caller transaction. Read observers cannot write through the SDK bridge; backend calls require a separate project security profile. Traces, skips and failures appear in Diagnostics. This is trusted code execution, not a security sandbox.</p></section>`;
 }
 
 function operations() {
   const items = config().operations ?? [];
   return heading('Backend operations', 'Server logic, flows and plugin registrations discovered from the selected portal and solution exports. Local choices stay in simulator state.') +
-    '<div class="notice section-gap">Supported Request/Response flows run locally. Server logic and other flows start as explicit placeholders. Plugin registrations start as skipped placeholders with diagnostics, unless a trusted project handler is registered. Configure target changes or rejection to simulate synchronous plugin behavior. Compiled .NET and external connectors are never executed by these adapters.</div>' +
+    '<div class="notice section-gap">Supported imported flow actions execute locally. Unknown external actions require an explicit per-action mock or disabled choice. Plugin steps can use an opt-in trusted original CLR assembly, a JavaScript model, a mock, or a disabled choice. Portal roles and backend execution identities are independent.</div>' +
     (items.length ? items.map((item, index) => {
       if (item.kind === 'plugin-step') return pluginOperation(item, index);
       const value = item.configuration ?? { mode: item.mode, status: 200, body: {} };
       const disabled = !item.configurable ? ' disabled' : '';
-      return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge(item.kind)}${badge(item.mode)}</div><p class="muted">${item.path ? escape(item.path) : 'No exported portal consumer. Add a consumer with its web-role grants before invoking this workflow.'}</p>${item.sourceFile ? `<p class="field-help">Source: ${escape(item.sourceFile)}</p>` : '<p class="field-help">No executable definition in the selected sources.</p>'}${item.contract ? lazyJson('Input schema and exported actions', item.contract) : ''}<form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid"><div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${[['placeholder','Placeholder (501)'],['mock','Configured response'],['exported','Execute exported definition'],['handler','Trusted project handler']].map(([mode,label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${mode === 'handler' && !item.registered || mode === 'exported' && !item.definitionAvailable ? ' disabled' : ''}>${label}</option>`).join('')}</select></div><div><label for="operation-status-${index}">Mock response status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="field-help">Server logic uses its native success envelope; status 400 or above simulates failure.</p></div><div><label for="operation-body-${index}">Mock response body (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(Object.hasOwn(value, 'body') ? value.body : {}))}</textarea></div><div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div></form><p class="field-help">Exported web-role grants still apply. A mock response does not test the flow's business logic or connector behavior.</p></section>`;
+      return `<section class="panel section-gap"><div class="panel-heading"><h2>${escape(item.name)}</h2>${badge(item.kind)}${badge(item.mode)}</div><p class="muted">${item.path ? escape(item.path) : item.contract?.trigger?.kind === 'dataverse' ? 'Automatic imported Dataverse row trigger: ' + escape(item.contract.trigger.table ?? 'unresolved table') + '. No portal consumer is required.' : 'No exported portal consumer. Add a consumer with its web-role grants before invoking this request workflow.'}</p>${item.sourceFile ? `<p class="field-help">Source: ${escape(item.sourceFile)}</p>` : '<p class="field-help">No executable definition in the selected sources.</p>'}${item.contract ? lazyJson('Input schema and exported actions', item.contract) : ''}<form id="operation-form-${index}" data-operation-key="${escape(item.key)}" class="form-grid"><div><label for="operation-mode-${index}">Local behavior</label><select id="operation-mode-${index}" name="mode"${disabled}>${[['placeholder','Placeholder (501)'],['disabled','Disabled locally'],['mock','Configured response'],['exported','Execute exported definition'],['handler','Trusted project handler']].map(([mode,label]) => `<option value="${mode}"${value.mode === mode ? ' selected' : ''}${mode === 'handler' && !item.registered || mode === 'exported' && !item.definitionAvailable ? ' disabled' : ''}>${label}</option>`).join('')}</select></div><div><label for="operation-status-${index}">Mock response status</label><input id="operation-status-${index}" name="status" type="number" min="200" max="599" value="${escape(value.status ?? 200)}"${disabled}><p class="field-help">Server logic uses its native success envelope; status 400 or above simulates failure.</p></div><div><label for="operation-body-${index}">Mock response body (JSON)</label><textarea id="operation-body-${index}" name="body" class="code-editor" rows="6" spellcheck="false"${disabled}>${escape(json(Object.hasOwn(value, 'body') ? value.body : {}))}</textarea></div>${item.kind === 'cloud-flow' ? `<div><label class="checkbox-label"><input type="checkbox" name="localActivation"${value.activation === 'local-enabled' ? ' checked' : ''}${disabled}> Explicitly activate this source locally</label><p class="field-help">Draft or unknown exported activation stays unchanged. This choice only enables the local trigger and is recorded in traces.</p></div><div><label for="operation-steps-${index}">Per-action choices (JSON)</label><textarea id="operation-steps-${index}" name="steps" class="code-editor" rows="6"${disabled}>${escape(json(value.steps ?? {}))}</textarea><p class="field-help">Use exact action keys from the contract: {"Action":{"mode":"mock","outputs":{"body":{}}}} or mode disabled. Unknown actions are rejected; external calls do not execute implicitly.</p></div>` : ''}<div class="toolbar"><button class="button primary" type="submit"${disabled}>Save local behavior</button>${item.configuration ? `<button class="button" type="button" data-operation-reset="${escape(item.key)}">Use source default</button>` : ''}</div></form><p class="field-help">Exported web-role grants still apply. A mock response does not test the flow's business logic or connector behavior.</p></section>`;
     }).join('') : empty('No exported operations', 'Include server logic, cloud-flow consumers, solution Workflows or plugin registrations in the selected sources.'));
 }
 
@@ -1003,7 +1017,7 @@ function solutionMetadataPanel() {
 function presetPicker() {
   const presets = state.status?.availablePresets || collection("presets");
   if (!presets.length) return "";
-  return `<section class="panel section-gap"><div class="panel-heading"><h2>Apply a simulation scenario</h2>${badge("Local state change")}</div><p class="muted">Presets can replace records, identity, roles, and backend rules. Review the selected scenario before applying it.</p><div class="toolbar"><label for="available-preset">Available preset</label><select id="available-preset">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}</option>`).join("")}</select><button class="button" data-apply-selected>Apply selected preset</button></div></section>`;
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>Apply a simulation scenario</h2>${badge("Local state change")}</div><p class="muted">Presets can replace records, identity, roles, and backend rules. Review the selected scenario before applying it.</p><div class="toolbar"><label for="available-preset">Available preset</label><select id="available-preset">${presets.map((preset) => `<option value="${escape(preset.id)}">${escape(preset.name || preset.id)}${(state.diagnostics??[]).some(d=>d.preset===preset.id&&d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK'))?' · ⚠ invalid configuration link':''}${preset.configurationPreset?` · configuration: ${escape(preset.configurationPreset)}`:""}</option>`).join("")}</select><label><input type="checkbox" id="preset-apply-configuration"> Also apply the data preset’s configuration preset (if provided)</label><button class="button" data-apply-selected>Apply selected preset</button></div></section>`;
 }
 
 let selectedPersona = null;
@@ -1035,7 +1049,7 @@ function personaPanel() {
   const roles = model.webRoles || state.status?.webRoles || [];
   return `<section class="panel section-gap"><div class="panel-heading"><h2>Contact personas</h2>${badge(identity.roleSource === "memberships" ? "Contact memberships" : "Role override", identity.roleSource === "memberships" ? "green" : "amber")}</div><p class="muted">Select a local contact and its exported web-role memberships. The account comes from that contact's parent customer. The default persona is the one the local sign-in page offers first; browsers sign in through that page or with "Sign in as" above. The live browser identity remains independent.</p>${
     contacts.length
-      ? `<form id="persona-form" class="form-grid"><div><label for="persona-contact">Local contact</label><select id="persona-contact">${contacts.map((record) => `<option value="${escape(record.contactid)}" ${personaId(record.contactid) === chosen ? "selected" : ""}>${escape(record.fullname || [record.firstname, record.lastname].filter(Boolean).join(" ") || record.contactid)}</option>`).join("")}</select><p class="field-help">Selected contact account: ${escape(contact?.parentcustomerid?.name || contact?.parentcustomerid?.id || contact?.parentcustomerid || "None")}</p></div><fieldset class="role-picker"><legend>Contact web-role memberships</legend><p class="field-help">Assignments use the imported role IDs. Authenticated and anonymous roles marked in the export apply automatically.</p>${roles
+      ? `<form id="persona-form" class="form-grid"><div>${personaCatalogue?.enabled ? `<label>Local contact</label><input type="hidden" id="persona-contact" value="${escape(chosen)}"><strong>${escape(contactLabel(contact))}</strong> <button type="button" class="button" data-persona-contact-chooser data-contact-id="${escape(chosen)}">Choose persona</button>` : `<label for="persona-contact">Local contact</label><select id="persona-contact">${contacts.map((record) => `<option value="${escape(record.contactid)}" ${personaId(record.contactid) === chosen ? "selected" : ""}>${escape(record.fullname || [record.firstname, record.lastname].filter(Boolean).join(" ") || record.contactid)}</option>`).join("")}</select>`}<p class="field-help">Selected contact account: ${escape(contact?.parentcustomerid?.name || contact?.parentcustomerid?.id || contact?.parentcustomerid || "None")}</p></div><fieldset class="role-picker"><legend>Contact web-role memberships</legend><p class="field-help">Assignments use the imported role IDs. Authenticated and anonymous roles marked in the export apply automatically.</p>${roles
           .filter((role) => role.id)
           .map(
             (role, index) =>
@@ -1122,6 +1136,7 @@ function access() {
     ) +
     sessionPanel() +
     personaPanel() +
+    (personaCatalogue ? personaManagementPanel(personaCatalogue) : "") +
     externalIdentitiesPanel() +
     disclosure("create-persona", "Create a persona", createPersonaForm) +
     disclosure(
@@ -1321,9 +1336,13 @@ function audit() {
   );
 }
 
-function portal() {
+function portal(overridesOnly=false) {
+  if(overridesOnly)return heading('Settings & snippet overrides','Per-instance values replace exported settings/snippets without editing source files. Reset restores the current source. False and True remain portal strings.')+experimentPanel()+portalValuePanels(true);
   return heading("Portal configuration", "Experiment with local settings, snippets and web roles. Changes persist in this simulator workspace and refresh the portal.") +
-    [ ["portal-settings", "Site settings", "portalSettings"], ["portal-snippets", "Content snippets", "portalSnippets"], ["portal-roles", "Web roles", "portalRoles"] ].map(([kind, title, key]) => {
+    portalValuePanels(false) + accessRulesPanel();
+}
+function portalValuePanels(overridesOnly) {
+  return [ ["portal-settings", "Site settings", "portalSettings"], ["portal-snippets", "Content snippets", "portalSnippets"], ...overridesOnly?[]:[["portal-roles", "Web roles", "portalRoles"]] ].map(([kind, title, key]) => {
       const rows = config()[key] ?? [];
       const page = sliceRows(kind, rows);
       const displayValue = row => {
@@ -1331,8 +1350,19 @@ function portal() {
         if (kind !== "portal-roles") return String(row.value ?? "").slice(0, 160);
         return [row.value?.authenticatedUsersRole && "Signed-in contacts", row.value?.anonymousUsersRole && "Anonymous visitors"].filter(Boolean).join(", ") || "Assigned through contact memberships";
       };
-      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Value"}</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td><button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
-    }).join("") + accessRulesPanel();
+      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Effective value"}</th><th>Source value</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+    }).join("");
+}
+
+const experimentOwnership=p=>p.readOnly?'pack':p.builtin?'builtin':'saved';
+function selectedExperiment(){const select=document.querySelector('#experiment-select'),option=select?.selectedOptions[0];return config().experimentPresets?.find(p=>p.id===select?.value&&String(p.source??'')===option?.dataset.source&&experimentOwnership(p)===option?.dataset.ownership);}
+document.addEventListener('change',event=>{if(event.target.id!=='experiment-select')return;const selected=selectedExperiment(),button=document.querySelector('[data-experiment="delete"]'),apply=document.querySelector('[data-experiment="apply"]');if(button)button.disabled=!selected||selected.builtin||selected.readOnly;if(apply)apply.disabled=!selected||selected.shadowed===true;});
+function experimentPanel(){
+ return `<section class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}" data-source="${escape(p.source??'')}" data-ownership="${experimentOwnership(p)}">${escape(p.name)}${p.shadowed ? " · saved collision (pack takes precedence)" : p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
+}
+function platformRules(){
+ const rows=config().platformSettings??[];
+ return heading('Platform rules','Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+experimentPanel()+`<section class="panel section-gap"><div class="table-wrap"><table><thead><tr><th>Setting / documentation</th><th>Real administration</th><th>Simulation coverage</th><th>Source / effective value</th><th>Instance override</th></tr></thead><tbody>${rows.map(d=>`<tr><td><strong>${escape(d.key)}</strong><p class="row-detail">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function accessRulesPanel() {
@@ -1370,6 +1400,7 @@ function scenarios() {
   const contacts = state.data?.contact || [];
   const option = (value, label) => `<option value="${escape(value)}">${escape(label)}</option>`;
   return (
+    (personaCatalogue ? personaManagementPanel(personaCatalogue) : "") +
     heading(
       "Scenarios",
       "Name a combination of preset, persona and permission enforcement, then switch between them in one step.",
@@ -1382,6 +1413,13 @@ function scenarios() {
     `<section class="panel section-gap"><div class="panel-heading"><h2>Save a scenario</h2>${badge("Saved definitions do not reload pages")}</div><p class="muted">Choose what the scenario changes. Parts left on “keep” stay as they are when it is applied. Applying a preset first replaces the data sections that preset defines; the persona must exist afterwards.</p><form id="scenario-form" class="form-grid"><div class="inline-fields"><div><label for="scenario-name">Scenario name</label><input id="scenario-name" required placeholder="Reviewer with enforced permissions"></div><div><label for="scenario-id">Scenario ID</label><input id="scenario-id" placeholder="reviewer-enforced"><p class="field-help">Letters, numbers, dots, underscores or hyphens. Derived from the name when empty.</p></div></div><div><label for="scenario-preset">Preset</label><select id="scenario-preset">${option("", "Keep current data")}${presets.filter((preset) => !preset.unavailable).map((preset) => option(preset.id, preset.name || preset.id)).join("")}</select></div><div><label for="scenario-persona">Persona</label><select id="scenario-persona">${option("__keep", "Keep current persona")}${option("", "Anonymous visitor")}${contacts.map((contact) => option(contact.contactid, contact.fullname || [contact.firstname, contact.lastname].filter(Boolean).join(" ") || contact.contactid)).join("")}</select></div><div><label for="scenario-permission-mode">Permission enforcement</label><select id="scenario-permission-mode">${option("", "Keep current")}${option("enforce", "Enforce table permissions")}${option("permissive", "Permissive sandbox")}</select></div><div><button class="button primary" type="submit">Save scenario</button></div></form></section>` +
     `<section class="panel section-gap"><div class="panel-heading"><h2>Reset the workspace</h2>${badge("Local state change", "amber")}</div><p class="muted">Restore the imported records, configuration, identity and permissions of this workspace. Saved scenario definitions are kept.</p><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`
   );
+}
+
+function deploymentProfileControls(selection) {
+  if (!selection?.profiles?.length) return '<p class="muted">Configure <code>mirage.deploymentProfiles</code> to select and pin mapped profiles here. Legacy exported profiles use <code>--deployment-profile NAME</code>.</p>';
+  const labels = { pages: 'Pages', environmentVariables: 'Environment variables', connectionReferences: 'Connection references' };
+  const option = (value, label, selected) => `<option value="${escape(value)}" ${selected ? 'selected' : ''}>${escape(label)}</option>`;
+  return `<form id="deployment-profile-form" class="form-grid section-gap"><div><label for="deployment-profile-id">Profile</label><select id="deployment-profile-id">${option('', 'No profile', !selection.profile)}${selection.profiles.map(profile => option(profile.id, profile.id, selection.profile === profile.id)).join('')}</select></div><div>${Object.entries(labels).map(([section, label]) => `<label><input type="checkbox" data-profile-section="${section}" ${selection.enabled[section] ? 'checked' : ''} ${selection.required.includes(section) ? 'disabled' : ''}> ${label}${selection.required.includes(section) ? ' (required)' : ''}</label>`).join('')}</div><div class="toolbar"><button class="button primary" type="submit">Apply and pin locally</button><button class="button" type="submit" value="reset">Use configured defaults</button></div><p class="muted">${selection.pinned ? 'Pinned for this workspace.' : 'Following configured defaults.'} Default: ${escape(selection.default ?? 'None')}. Manual site and variable overrides take precedence. Connection references are local simulated records.</p></form>`;
 }
 
 function environment() {
@@ -1413,7 +1451,7 @@ function environment() {
         ? "Disabled for this runtime (start the Mirage with --allow-live-writes)"
         : live.allowWrites ? "Allowed" : "Blocked",
     )}</span></div></div><button class="button small section-gap" data-view="connection">Open live connection</button></section>` +
-    `<section class="panel"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.deploymentProfile ? "Applied" : "None applied", env?.deploymentProfile ? "amber" : "")}</div><div class="detail-list"><div class="row"><span class="row-title">Applied profile</span><span class="row-detail">${escape(env?.deploymentProfile || "None")}</span></div><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div><div class="row"><span class="row-title">Source</span><span class="row-detail source-path">${escape(env?.sourceDir || state.status?.sourceDir || "")}</span></div></div><p class="muted">Profiles are applied only when the runtime starts with <code>--deployment-profile NAME</code>; they do not identify the deployed commit.</p></section></div>` +
+    `<section class="panel"><div class="panel-heading"><h2>Deployment profile</h2>${badge(env?.profileSelection?.profile || env?.deploymentProfile || "None applied")}</div><div class="detail-list"><div class="row"><span class="row-title">Profile field changes</span><span class="row-detail">${escape(env?.profileChanges ?? 0)}</span></div><div class="row"><span class="row-title">Exported profiles</span><span class="row-detail">${escape((env?.deploymentProfiles || []).join(", ") || "None")}</span></div></div>${deploymentProfileControls(env?.profileSelection)}<p class="muted">Profiles apply locally and do not identify the deployed commit.</p></section></div>` +
     `<section class="panel section-gap"><div class="panel-heading"><h2>Environment variables</h2>${badge(variables?.available ? `${variables.definitions.length} definitions` : "Not imported", variables?.available ? "green" : "")}</div><p class="muted">Definitions and values are local Dataverse tables seeded from the Solution sources. A local value is kept as an override until it is reset; then the Solution value or the definition default applies.</p>${
       variables?.available
         ? `<div class="table-wrap"><table><thead><tr><th>Schema name</th><th>Display name</th><th>Default</th><th>Current value</th><th>Effective</th><th>Actions</th></tr></thead><tbody>${
@@ -1529,6 +1567,8 @@ function renderView(view) {
     case 'overview': return overview();
     case 'records': return records();
     case 'portal': return portal();
+    case 'overrides': return portal(true);
+    case 'platform': return platformRules();
     case 'endpoints': return configurationView('endpoints');
     case 'operations': return operations();
     case 'mappings': return configurationView('mappings');
@@ -1548,12 +1588,13 @@ function renderView(view) {
 function render() {
   const focused = document.activeElement;
   const focusKey =
-    focused?.id === "record-search"
-      ? "#record-search"
+    focused?.id && $("#content").contains(focused)
+      ? `#${CSS.escape(focused.id)}`
       : focused?.dataset?.tableSearch
         ? `[data-table-search="${CSS.escape(focused.dataset.tableSearch)}"]`
         : null;
-  const selection = focused?.selectionStart;
+  const selection = { start: focused?.selectionStart, end: focused?.selectionEnd, direction: focused?.selectionDirection };
+  const scroll = { top: focused?.scrollTop, left: focused?.scrollLeft };
   lazyValues.clear();
   $("#navigation").innerHTML = views
     .map(
@@ -1571,14 +1612,22 @@ function render() {
         observedStylesheetBaselines() +
         snippetCompositionControls(),
     );
+  if (personaCatalogue && ['access','scenarios'].includes(activeView)) mountPersonaAdministration($('#content'), personaCatalogue, {request, refresh, notify, session:browserSession, selectedKey:selectedPersonaKey,
+    onSelected:key=>{selectedPersonaKey=key;}, onContact:persona=>{selectedPersona=persona.contactId;render();}});
   restoreDrafts();
   syncConfinement();
   if (focusKey) {
-    const replacement = document.querySelector(focusKey);
-    replacement?.focus();
-    try {
-      replacement?.setSelectionRange(selection, selection);
-    } catch {}
+    const replacement = $("#content").querySelector(focusKey);
+    // Lazy data can arrive between focus and the next keystroke, before an input event saves a
+    // draft. Keep editing in the replacement control without moving the operator's viewport.
+    replacement?.focus({ preventScroll: true });
+    if (typeof replacement?.setSelectionRange === "function" && typeof replacement.selectionStart === "number"
+      && typeof selection.start === "number" && typeof selection.end === "number") {
+      try { replacement.setSelectionRange(selection.start, selection.end, selection.direction); }
+      catch { /* A changed control type may no longer support text selection. */ }
+      replacement.scrollTop = scroll.top;
+      replacement.scrollLeft = scroll.left;
+    }
   }
 }
 
@@ -1693,6 +1742,24 @@ async function saveConfig(patch, { form } = {}) {
 }
 
 document.addEventListener("click", async (event) => {
+  const control=event.target.closest('[data-platform-save],[data-platform-reset],[data-experiment],[data-portal-toggle]');
+  if(control){
+    event.preventDefault();control.disabled=true;
+    try{
+      if(control.dataset.portalToggle){await request('/'+control.dataset.portalKind+'/'+encodeURIComponent(control.dataset.portalToggle),{method:'PATCH',body:JSON.stringify({value:control.dataset.portalValue})});}
+      else if(control.dataset.platformSave){const key=control.dataset.platformSave,d=config().platformSettings.find(d=>d.key===key),input=document.getElementById('platform-'+key);if(d.type==='integer'&&!input.value.trim())throw new Error('Enter an integer or use source/default.');const value=d.type==='integer'?Number(input.value):d.type==='boolean'?input.value==='true':input.value;await request('/platform-settings',{method:'PATCH',body:JSON.stringify({[key]:value})});}
+      else if(control.dataset.platformReset)await request('/platform-settings/'+encodeURIComponent(control.dataset.platformReset),{method:'DELETE'});
+      else {
+        const action=control.dataset.experiment,id=$('#experiment-select').value,preset=selectedExperiment();
+        if(action==='apply')await request('/experiments/'+encodeURIComponent(id)+'/apply',{method:'POST',body:'{}'});
+        else if(action==='delete')await request('/experiments/'+encodeURIComponent(id),{method:'DELETE'});
+        else if(action==='save')await request('/experiments',{method:'POST',body:JSON.stringify({id:$('#experiment-id').value,name:$('#experiment-name').value,platformOverrides:config().platformOverrides??{},portalOverrides:{settings:config().portalOverrides?.settings??{},snippets:config().portalOverrides?.snippets??{}}})});
+        else if(action==='import')await request('/experiments',{method:'POST',body:JSON.stringify(JSON.parse($('#experiment-import').value))});
+        else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,source,readOnly,shadowed,diagnostics,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Configuration preset exported.');return;}
+      }
+      await refresh();notify('Local configuration updated.');
+    }catch(error){notify(error.message,true);}finally{control.disabled=false;}return;
+  }
   const target = event.target.closest("button");
   if (!target) return;
   if (target.dataset.operationReset) {
@@ -2008,14 +2075,24 @@ document.addEventListener("click", async (event) => {
   }
   if (target.dataset.apply || target.hasAttribute("data-apply-selected")) {
     const id = target.dataset.apply || $("#available-preset").value;
+    const applyConfiguration = $("#preset-apply-configuration")?.checked === true;
     askConfirmation(
       "Apply this preset?",
       "The preset will update simulator records and configuration according to its definition.",
       async () => {
-        await request(`/presets/${encodeURIComponent(id)}/apply`, {
-          method: "POST",
-          body: "{}",
-        });
+        try {
+          await request(`/presets/${encodeURIComponent(id)}/apply`, {
+            method: "POST",
+            body: JSON.stringify({applyConfiguration}),
+          });
+        } catch (error) {
+          if(error.details?.error?.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK')){
+            await refresh();
+            if($("#available-preset"))$("#available-preset").value=id;
+            if($("#preset-apply-configuration"))$("#preset-apply-configuration").checked=applyConfiguration;
+          }
+          throw error;
+        }
         await refresh();
         notify("Preset applied.");
       },
@@ -2033,6 +2110,13 @@ function syncConfinement() {
   options.classList.toggle("is-off", !toggle.checked);
 }
 document.addEventListener("change", (event) => {
+  if (event.target.id === 'deployment-profile-id') {
+    const sources = environmentResult?.profileSelection?.profiles.find(profile => profile.id === event.target.value)?.sources ?? {};
+    for (const control of document.querySelectorAll('[data-profile-section]')) {
+      control.checked = Boolean(sources[control.dataset.profileSection]) && (environmentResult.profileSelection.defaults[control.dataset.profileSection] ?? true);
+      control.disabled = !sources[control.dataset.profileSection] || environmentResult.profileSelection.required.includes(control.dataset.profileSection);
+    }
+  }
   if (event.target.id === "confine-portal-pages") syncConfinement();
   if (event.target.id === "session-contact") {
     sessionPick = event.target.value;
@@ -2303,6 +2387,7 @@ document.addEventListener("submit", async (event) => {
       "create-persona-form",
       "enrichment-form",
       "session-override-form",
+      "deployment-profile-form",
     ].includes(event.target.id) && !event.target.matches('form[data-operation-key]')
   )
     return;
@@ -2310,9 +2395,20 @@ document.addEventListener("submit", async (event) => {
   const button = event.submitter;
   button.disabled = true;
   try {
-    if (event.target.matches('form[data-operation-key]')) {
+    if (event.target.id === 'deployment-profile-form') {
+      const pin = button.value === 'reset' ? null : {
+        profile: $('#deployment-profile-id').value || null,
+        enabled: Object.fromEntries([...document.querySelectorAll('[data-profile-section]')].map(control => [control.dataset.profileSection, control.checked])),
+      };
+      await request('/environment/profiles', { method: 'PUT', body: JSON.stringify(pin) });
+      drafts.delete('deployment-profile-form');
+      await refresh();
+      environmentResult = await request('/environment');
+      render();
+      notify(pin ? 'Deployment profile pinned locally.' : 'Configured profile defaults restored.');
+    } else if (event.target.matches('form[data-operation-key]')) {
       const form = event.target;
-      await request(`/operations/${encodeURIComponent(form.dataset.operationKey)}`, { method: 'PATCH', body: JSON.stringify({ mode: form.elements.mode.value, status: Number(form.elements.status.value), body: JSON.parse(form.elements.body.value) }) });
+      await request(`/operations/${encodeURIComponent(form.dataset.operationKey)}`, { method: 'PATCH', body: JSON.stringify({ mode: form.elements.mode.value, status: Number(form.elements.status.value), body: JSON.parse(form.elements.body.value), ...(form.elements.steps ? {steps:JSON.parse(form.elements.steps.value)} : {}), ...(form.elements.localActivation?.checked ? {activation:'local-enabled'} : {}) }) });
       drafts.delete(form.id);
       await refresh();
       notify('Local operation saved.');

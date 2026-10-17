@@ -1,0 +1,43 @@
+adx_allowmultiplefiles: false
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_attachfilerequired: false
+adx_attachfilerestrictaccept: false
+adx_autogeneratesteps: false
+adx_captcharequired: false
+adx_createautonumber: false
+adx_editexistingrecordpermitted: false
+adx_entitypermissionsenabled: true
+adx_entitysourcestep: 915a6dab-c0dd-409a-87c4-2672d10e3a02
+adx_entitysourcetype: 100000003
+adx_forceallfieldsrequired: false
+adx_formname: Baseline Item Lookup Create
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_hideformonsuccess: true
+adx_loguser: false
+adx_mode: 100000001
+adx_movepreviouspermitted: true
+adx_multiplerecordsperuserpermitted: false
+adx_name: Baseline Multistep Step Lookup Create
+adx_populatereferenceentitylookupfield: false
+adx_portaluserlookupattributeisactivityparty: false
+adx_recommendedfieldsrequired: false
+adx_redirecturlappendentityidquerystring: false
+adx_referenceentityshowreadonlyform: false
+adx_referenceentitysourcetype: 100000001
+adx_referencequerystringisprimarykey: true
+adx_renderwebresourcesinline: false
+adx_setentityreference: false
+adx_showcaptchaforauthenticatedusers: false
+adx_showownerfields: false
+adx_showunsupportedfields: false
+adx_targetentitylogicalname: pqvd_baselineitem
+adx_title: Baseline Multistep Step Lookup Create
+adx_tooltipenabled: false
+adx_type: 100000001
+adx_validationsummarylinksenabled: true
+adx_webform: 66333f6d-30ea-41fd-801f-2cbf5c235f17
+adx_webformstepid: 2b1386f8-ba7c-4c44-8e3d-a1ad8579f939

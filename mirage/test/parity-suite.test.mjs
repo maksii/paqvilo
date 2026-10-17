@@ -34,6 +34,7 @@ import {
   runParitySuite,
   scenarioPath,
   segmentRoles,
+  startIsolatedMirage,
   summaryMarkdown,
   treeText,
   validatePlan,
@@ -48,6 +49,27 @@ const GUID_A = "3f2504e0-4f89-11d3-9a0c-0305e82c3301";
 const GUID_B = "c6d9e2d4-1c73-e811-a844-000d3a2a3148";
 const element = (tag, attributes = {}, children = [], extra = {}) => ({ g: tag, a: attributes, v: 1, ...(children.length ? { c: children } : {}), ...extra });
 const text = (value) => ({ t: value });
+
+test("isolated baseline identity imports stay on the owned loopback runtime regardless of reference origin", async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "baseline-owned-import-"));
+  let owned;
+  t.after(async () => { await owned?.app.close(); await fs.rm(root, { recursive: true, force: true }); });
+  const sourceDir = path.join(root, "source");
+  await fs.mkdir(sourceDir);
+  await fs.writeFile(path.join(sourceDir, "website.yml"), "adx_websiteid: invented\nadx_name: Invented fixture");
+  const fieldsFile = path.join(root, "persona.json");
+  await fs.writeFile(fieldsFile, JSON.stringify({ fullname: "Synthetic persona", contactid: "synthetic" }));
+  owned = await startIsolatedMirage({ sourceDir, origin: "https://reference.example.invalid", workDir: path.join(root, "runtime"), solutionRoots: [] });
+  const target = new URL(owned.url);
+  assert.equal(target.hostname, "127.0.0.1");
+  assert.equal(Number(target.port), owned.app.server.address().port);
+  const state = await fetch(owned.url + "/__sim/api/state/export").then(response => response.json());
+  state.mappings.contact = { entitySet: "contacts", idColumn: "contactid" };
+  state.tables.contact = [JSON.parse(await fs.readFile(fieldsFile, "utf8"))];
+  const response = await fetch(owned.url + "/__sim/api/state/import", { method: "POST", redirect: "error", headers: { "content-type": "application/json", "x-sim-csrf": owned.app.state().csrf }, body: JSON.stringify(state) });
+  assert.equal(response.status, 200);
+  assert.equal(owned.app.store.state.tables.contact[0].fullname, "Synthetic persona");
+});
 
 test("normalisers generalise identifiers, dates, tokens and origins", () => {
   const value = `Open ${GUID_A} on 2026-10-07T21:30:00Z (07/10/2026 21:30) by ana.local@example.test ref 1234567 at https://reference.example token ${"A".repeat(48)}`;

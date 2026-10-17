@@ -4,6 +4,33 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openInEditor, resolveEditorCommand } from '../lense/panel.mjs';
+import { DEV_PROBLEM_MATCHER, DEV_READY } from '../lense/dev-messages.mjs';
+
+test('tracked toolkit and demo debugger launches wait for CLI readiness and attach to their task port', () => {
+  const debugPorts = [];
+  for (const directory of ['../', '../examples/project/']) {
+    const tasks = JSON.parse(fs.readFileSync(new URL(directory + '.vscode/tasks.json', import.meta.url), 'utf8')).tasks;
+    const launches = JSON.parse(fs.readFileSync(new URL(directory + '.vscode/launch.json', import.meta.url), 'utf8')).configurations;
+    const labels = new Set(tasks.map(task => task.label));
+    for (const task of tasks) {
+      if (task.dependsOn) assert.ok(labels.has(task.dependsOn), task.label);
+      if (!task.isBackground) continue;
+      assert.deepEqual(task.problemMatcher, DEV_PROBLEM_MATCHER, task.label);
+      assert.ok(new RegExp(task.problemMatcher.background.endsPattern).test(DEV_READY));
+      assert.ok(!new RegExp(task.problemMatcher.pattern.regexp).test('paqvilo: terminal-only diagnostic'));
+    }
+    for (const launch of launches.filter(launch => launch.request === 'attach' && launch.preLaunchTask)) {
+      const task = tasks.find(task => task.label === launch.preLaunchTask);
+      assert.ok(task?.isBackground, launch.name);
+      assert.equal(task.type, 'process');
+      assert.equal(task.command, 'node');
+      assert.equal(task.options.cwd, '${workspaceFolder}');
+      assert.equal(Number(task.args[task.args.indexOf('--debug-port') + 1]), launch.port, launch.name);
+      if (directory === '../') debugPorts.push(launch.port);
+    }
+  }
+  assert.equal(new Set(debugPorts).size, debugPorts.length, 'toolkit Lense and Mirage can use separate debugger ports');
+});
 
 test('Windows editor discovery preserves PATH and explicit editor choices, then locates regular vendor CLIs', t => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-editor-'));

@@ -90,8 +90,13 @@ test('live Inspect works without Mirage and opens exact project Solution sources
   await scope.locator('[data-group="runtime-columns"] [data-act="inspect-locate"][data-field="fx_title"]').click();
   assert.match(await page.locator('#fx_title').evaluate((node) => node.style.outline), /3px/);
   await scope.locator('[data-act="inspect-pick"]').click();
-  await page.locator('#fx_title').click();
-  await scope.getByText('Selected: input#fx_title', { exact: true }).waitFor();
+  const fieldBox=await page.locator('#fx_title').boundingBox();await page.mouse.click(fieldBox.x+10,fieldBox.y+10);
+  await scope.locator('[data-selected-identity]').getByText('fx_widget.fx_title',{exact:true}).waitFor();
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.enabled),false,'panel picking ends inspect mode after one element');
+  const tab=scope.locator('[data-act=tab][data-v=overrides]'),tabBox=await tab.boundingBox();
+  assert.equal(await page.evaluate(({x,y})=>document.elementFromPoint(x,y)?.id,{x:tabBox.x+tabBox.width/2,y:tabBox.y+tabBox.height/2}),'paqvilo-panel');
+  await tab.click();assert.equal(await tab.getAttribute('aria-selected'),'true');
+  await scope.locator('[data-act=tab][data-v=runtime]').click();
   await scope.locator('[data-act="inspect-section"][data-v="all"]').click();
   const snapshot = JSON.stringify(await page.evaluate(async (token) => (await fetch('/__paqvilo/api/inspect', { method: 'POST', headers: { 'content-type': 'application/json', 'x-paqvilo-token': token }, body: '{}' })).json(), panel.stateFor(page).token));
   assert.doesNotMatch(snapshot, /private-value|private-password|private=excluded|record-private-id|private-filter/);

@@ -1,4 +1,6 @@
 import { isDeepStrictEqual } from "node:util";
+import { seedPresetBody } from "./solution-schema.mjs";
+import { validatePersonaCatalog } from './persona-catalog.mjs';
 import {
   LAZY_PRESET,
   defineLazyPreset,
@@ -31,9 +33,10 @@ const lazyMeta = (library, id) =>
   hasOwn(library, id)
     ? Object.getOwnPropertyDescriptor(library, id).get?.[LAZY_PRESET] ?? null
     : null;
-const compactDescriptor = (name, description) => ({
+const compactDescriptor = (name, description, configurationPreset) => ({
   builtin: true,
   builtinVersion: 1,
+  ...(configurationPreset ? {configurationPreset} : {}),
   name,
   description,
 });
@@ -47,6 +50,7 @@ const bodyKeys = [
   "endpoints",
   "personaRoles",
   "contactRoles",
+  "personaCatalog",
 ];
 const isCompactDescriptor = (preset) =>
   preset?.builtin === true && !bodyKeys.some((key) => hasOwn(preset, key));
@@ -108,7 +112,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
       // Lazy library entries (bootstrap/pack presets) compact without
       // generating their bodies.
       const lazy = lazyMeta(presets, id);
-      if (lazy) return [id, compactDescriptor(lazy.name, lazy.description)];
+      if (lazy) return [id, compactDescriptor(lazy.name, lazy.description, lazy.configurationPreset)];
       const preset = presets[id];
       if (
         hasOwn(library, id) &&
@@ -122,6 +126,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
           compactDescriptor(
             preset?.name ?? meta.name,
             preset?.description ?? meta.description,
+            preset?.configurationPreset ?? meta.configurationPreset,
           ),
         ];
       }
@@ -132,6 +137,7 @@ export function compactBuiltinPresets(presets, library = builtinPresets) {
 
 /** Apply a resolved preset's state sections in place (DataStore transaction body). */
 export function applyPresetSections(state, preset) {
+  if (preset.personaCatalog !== undefined) state.personaCatalog = validatePersonaCatalog(preset.personaCatalog, `Preset ${preset.id ?? preset.name ?? 'unnamed'}`);
   if (preset.tables)
     for (const [entity, rows] of Object.entries(preset.tables))
       state.tables[entity] = clone(rows);
@@ -178,7 +184,7 @@ export function bootstrapPresetLibrary({
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
       defineLazyPreset(library, id, entry, {
         pack: pack.id,
-        finish: (body) => ({
+        finish: (body) => seedPresetBody({
           ...clone(body),
           id,
           builtin: true,
@@ -188,7 +194,7 @@ export function bootstrapPresetLibrary({
           ...(body.tables
             ? { tables: { ...clone(importedTables), ...clone(body.tables) } }
             : {}),
-        }),
+        }, metadata?.schema),
       });
     }
   }
@@ -225,6 +231,7 @@ export function listPresets({ state = {}, library = {} } = {}) {
         "",
       source: saved?.userConfigured ? "stored" : meta ? "builtin" : "stored",
       ...(meta?.pack ? { pack: meta.pack } : {}),
+      ...((custom ? saved?.configurationPreset : meta?.configurationPreset) ? {configurationPreset:custom ? saved.configurationPreset : meta.configurationPreset} : {}),
       ...(unavailable ? { unavailable: true } : {}),
     };
   });

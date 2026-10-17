@@ -128,7 +128,7 @@
   });
   define("setIsDirty", (id) => {
     const element = id ? document.getElementById(id) : null;
-    if (element && !element.classList.contains("dirty")) element.classList.add("dirty");
+    if (element && !element.classList.contains("dirty")) element.className = `${element.className} dirty`;
   });
   define("isDirty", () => document.getElementsByClassName("dirty").length > 0);
   define("clearIsDirty", () => {
@@ -161,9 +161,9 @@
     // jQuery >= 3.7 answers a lone class selector with context.getElementsByClassName.
     const find = $.find;
     const wrapped = function (selector, context, results, seed) {
-      if (!seed && typeof selector === "string" && /^\.[\w-]+$/.test(selector) && (context == null || context === document)) {
+      if (!seed && typeof selector === "string" && /^\.[\w-]+$/.test(selector) && (context == null || context.nodeType === 9)) {
         const output = results || [];
-        Array.prototype.push.apply(output, document.querySelectorAll(selector));
+        Array.prototype.push.apply(output, (context || document).querySelectorAll(selector));
         return output;
       }
       return find.apply(this, arguments);
@@ -244,17 +244,121 @@
   }
 
   const ready = () => {
+    for (const frame of document.querySelectorAll('iframe.quickform')) {
+      let observer;
+      const loaded = () => {
+        observer?.disconnect();
+        if (frame.getAttribute('src') === 'about:blank') { frame.style.height = '0px'; return; }
+        try {
+          const body = frame.contentDocument?.body;
+          if (!body) return;
+          const resize = () => { frame.style.height = `${body.scrollHeight}px`; };
+          resize();
+          observer = new ResizeObserver(resize);
+          observer.observe(body);
+        } catch { /* Only local quick view documents can be inspected. */ }
+      };
+      frame.addEventListener('load', loaded);
+      loaded();
+    }
+    const refreshQuickViews = (input) => {
+      for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) {
+        if (frame.dataset.lookupElement !== input.id) continue;
+        const id = input.value.replace(/[{}]/g, '').trim();
+        if (!id) { frame.setAttribute('src', 'about:blank'); frame.setAttribute('tabindex', '-1'); frame.style.height = '0px'; continue; }
+        if (!frame.dataset.path?.trim()) continue;
+        let url;
+        // URL parsing accepts malformed percent escapes; validate them before deriving a frame path.
+        try { url = new URL(frame.dataset.path, location.href); decodeURI(url.href); } catch { continue; }
+        if (url.origin !== location.origin || !["http:", "https:"].includes(url.protocol) || url.pathname.startsWith('//')) continue;
+        // Bootstrap 5 frames carry no table data attributes: the lookup's entity name input and
+        // the current frame query supply them.
+        let previous = new URLSearchParams();
+        try { previous = new URL(frame.getAttribute('src') || 'about:blank', location.href).searchParams; } catch { /* Keep the lookup's own entity name when the previous URL is invalid. */ }
+        const entityname = frame.dataset.entityname || document.getElementById(`${input.id}_entityname`)?.value || previous.get('entityname') || '';
+        // The primary key name comes from the frame's data attribute only: Bootstrap 5 frames carry
+        // none and the platform client then sends it empty (live DOM).
+        const primary = frame.dataset.entityprimarykeyname || '';
+        // The platform client rebuilds the frame URL without the response's isprofilepage/lang
+        // parameters and with the primary key name parameter always present (live requests).
+        // Keep native literal spaces in the path-relative src; other query characters must
+        // stay in their value rather than becoming another parameter or a fragment.
+        const queryValue = value => encodeURIComponent(String(value ?? '')).replace(/%20/g, ' ');
+        let src;
+        try { src = `${url.pathname}?entityid=${queryValue(id)}&entityname=${queryValue(entityname)}&entityprimarykeyname=${queryValue(primary)}&formname=${queryValue(frame.dataset.formname)}&controlid=${queryValue(frame.dataset.controlid)}`; }
+        catch { continue; }
+        if (frame.getAttribute('src') !== src) frame.setAttribute('src', src);
+        frame.setAttribute('tabindex', '0');
+      }
+    };
+    // jQuery-triggered changes do not dispatch native DOM change events.
+    const quickJquery = jq();
+    if (quickJquery) quickJquery(document).on('change.mirageQuickView', 'input', function () { refreshQuickViews(this); });
+    else document.addEventListener('change', event => { if (event.target instanceof HTMLInputElement) refreshQuickViews(event.target); });
+    // Once the anti-forgery token is there the platform client replaces each bound frame's
+    // response URL; the first navigation is abandoned (see quickToken below).
+    const refreshBound = () => { for (const frame of document.querySelectorAll('iframe.quickform[data-lookup-element]')) { const bound = document.getElementById(frame.dataset.lookupElement); if (bound && bound.value) refreshQuickViews(bound); } };
+    if (quickToken.waiting) quickToken.then = refreshBound;
+    else setTimeout(refreshBound, 0);
+    // On ready the file controls' hidden size field and the image controls' hidden value and size
+    // fields (an image without a link) carry an explicit empty value (platform crmentityformview.js
+    // behaviour, live DOM); the file name field takes the shown file name.
+    for (const name of [...document.getElementsByClassName("break-file-name")]) {
+      const control = name.parentElement?.parentElement?.parentElement;
+      const link = name.querySelector(":scope > a");
+      const hiddenName = name.parentElement?.parentElement?.nextElementSibling;
+      if (link && hiddenName?.tagName === "INPUT") hiddenName.value = link.textContent;
+      const size = control?.lastElementChild;
+      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+    }
+    for (const inline of [...document.getElementsByClassName("image-inline")]) {
+      const value = inline.parentElement?.nextElementSibling;
+      if (!inline.firstElementChild?.getAttribute("href") && value?.tagName === "INPUT") value.setAttribute("value", "");
+      const size = value?.nextElementSibling;
+      if (size?.tagName === "INPUT") size.setAttribute("value", "");
+    }
+    // File and image controls are laid out by their rendered width (platform crmentityformview.js
+    // behaviour, live read-only form): a file container narrower than 250px drops its class and
+    // stacks its link block (below 120px the name and delete blocks too); an image control whose
+    // box is at least 250px wide puts its button and file name side by side.
+    for (const container of [...document.getElementsByClassName("file-control-container")]) {
+      const width = container.clientWidth;
+      const links = container.firstElementChild?.nextElementSibling;
+      if (width >= 250 || !links) continue;
+      container.removeAttribute("class");
+      if (width >= 120) links.setAttribute("class", "container-filelink-delete gap-between-vertical-element");
+      else {
+        links.removeAttribute("class");
+        links.firstElementChild?.setAttribute("class", "break-file-name gap-between-vertical-element");
+        links.lastElementChild?.setAttribute("class", "gap-between-vertical-element");
+      }
+    }
+    for (const name of [...document.getElementsByClassName("break-image-name")]) {
+      const box = name.parentElement;
+      if (!box || !(box.parentElement?.clientWidth >= 250)) continue;
+      box.setAttribute("class", "div-for-image-input");
+      box.firstElementChild?.setAttribute("class", "btn btn-default btn-for-image-input btn-for-inputofimage");
+      name.setAttribute("class", "break-image-name");
+    }
     const active = document.querySelector(".progress .list-group-item.active");
     if (active) {
       const label = active.textContent;
       const host = active.parentElement?.parentElement;
+      // The platform writes the step title as an unquoted id attribute: the first word is the id
+      // and every further word an empty attribute (live DOM). Reproduced without interpreting the
+      // title as HTML: only plain attribute-name words become attributes.
       if (host) {
         const announcer = document.createElement("div");
-        announcer.id = label;
+        const [first, ...rest] = label.trim().split(/\s+/);
+        announcer.id = first ?? "";
+        for (const word of rest) {
+          const name = word.toLowerCase();
+          if (/^[a-z_][a-z0-9_.-]*$/.test(name) && !["id", "class", "aria-live"].includes(name) && !announcer.hasAttribute(name)) announcer.setAttribute(name, "");
+        }
         announcer.className = "sr-only";
         announcer.setAttribute("aria-live", "assertive");
         announcer.textContent = label;
-        host.appendChild(announcer);
+        host.append(announcer);
       }
       document.querySelector("fieldset")?.setAttribute("aria-labelledby", label);
       setTimeout(() => document.querySelector("fieldset .control")?.firstChild?.focus?.());
@@ -269,7 +373,7 @@
       link.className = "text-primary";
       link.style.cursor = "pointer";
       link.setAttribute("href", address.href);
-      if (target) { link.setAttribute("target", target); link.setAttribute("rel", "noopener noreferrer"); }
+      if (target) link.setAttribute("target", target);
       link.setAttribute("readonly", "readonly");
       link.textContent = text;
       input.style.display = "none";
@@ -303,6 +407,21 @@
         button.click();
       });
   };
+  // Bound quick view frames wait for the shell's anti-forgery token, asked for before the page's
+  // ready handlers (live order: the token request, the replaced frame, then the other
+  // token-bound requests); without the shell the replacement follows ready.
+  const quickToken = { waiting: false, then: null };
+  const askQuickToken = () => {
+    // Only frames bound to a record are replaced (an insert form's frame stays blank: no token request).
+    const bound = [...document.querySelectorAll('iframe.quickform[data-lookup-element]')].some((frame) => document.getElementById(frame.dataset.lookupElement)?.value);
+    if (!bound || typeof w.shell?.getTokenDeferred !== 'function') return;
+    const deferred = w.shell.getTokenDeferred();
+    if (typeof deferred?.always !== 'function') return;
+    quickToken.waiting = true;
+    deferred.always(() => { quickToken.waiting = false; const then = quickToken.then; quickToken.then = null; then?.(); });
+  };
+  if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", askQuickToken, { once: true });
+  else askQuickToken();
   const $ = jq();
   if ($) $(ready);
   else if (document.readyState === "loading") document.addEventListener("DOMContentLoaded", ready, { once: true });

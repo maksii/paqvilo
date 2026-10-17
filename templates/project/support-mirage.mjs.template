@@ -1,0 +1,5 @@
+import { createMirageContext } from 'paqvilo/mirage';
+
+// Omitted site binds all explicitly configured packs without importing portal sources.
+export const mirage = await createMirageContext({ config: new URL('../paqvilo.config.yml', import.meta.url) });
+export const { DataStore, createSimulator, initialState, activatePackDeniedRoutes, presetLibrary } = mirage;

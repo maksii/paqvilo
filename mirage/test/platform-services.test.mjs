@@ -137,7 +137,8 @@ test("entity list OData feeds publish the list view with the legacy property mod
     },
   }).init();
   const list = { id: "1d000000-0000-4000-8000-000000000001", name: "Organisation Contacts", entityName: "orgcontact", metadata: { adx_odata_enabled: true, adx_odata_entitysetname: "OrgContactSet", adx_odata_entitytypename: "orgcontact", adx_odata_view: "{2E000000-0000-4000-8000-000000000001}" } };
-  const portal = { lists: [list, { id: "x", name: "Hidden", entityName: "orgcontact", metadata: { adx_odata_enabled: false, adx_odata_entitysetname: "HiddenSet" } }], website: { id: SITE } };
+  // A site whose platform still serves list OData feeds (observed); by default they are removed.
+  const portal = { lists: [list, { id: "x", name: "Hidden", entityName: "orgcontact", metadata: { adx_odata_enabled: false, adx_odata_entitysetname: "HiddenSet" } }], website: { id: SITE }, observed: { listODataFeeds: "served" } };
   const metadata = {
     views: [{ id: "2e000000-0000-4000-8000-000000000001", entity: "orgcontact", fetchXml: '<fetch><entity name="orgcontact"><attribute name="orgcontactid"/><attribute name="name"/><attribute name="role"/><attribute name="organisationid"/><attribute name="contactid"/></entity></fetch>', fields: [{ name: "name" }, { name: "role" }, { name: "organisationid" }, { name: "contactid" }] }],
     entities: { orgcontact: { fields: { name: { dataverseType: "nvarchar" }, role: { dataverseType: "picklist", options: [{ value: 1, label: "Primary" }, { value: 2, label: "Deputy" }] }, organisationid: { dataverseType: "lookup" }, contactid: { dataverseType: "lookup" } } } },
@@ -237,4 +238,12 @@ test("native grid actions activate, deactivate, associate, disassociate and down
     // A download key is served once.
     assert.equal((await fetch(`${app.url}/_services/${action}/site?key=${encodeURIComponent(sessionKey)}`, { headers: session })).status, 204);
   }
+});
+
+test("list OData feeds are removed by default: /_odata falls through to the site's page-not-found handling", async () => {
+  // Learn: Power Pages removed list OData feeds by June 2026 (live list/item-list-odata/feed: 404 page).
+  const list = { id: "1d000000-0000-4000-8000-000000000002", name: "Feed", entityName: "orgcontact", metadata: { adx_odata_enabled: true, adx_odata_entitysetname: "FeedSet" } };
+  const res = fakeResponse();
+  assert.equal(await handleODataFeed({ method: "GET", headers: {} }, res, new URL("http://localhost:3000/_odata/FeedSet"), { portal: { lists: [list], website: { id: SITE } } }), false);
+  assert.equal(await handleODataFeed({ method: "GET", headers: {} }, res, new URL("http://localhost:3000/_odata"), { portal: { lists: [list], website: { id: SITE } } }), false);
 });

@@ -1,0 +1,90 @@
+adx_accept: image/*
+adx_allowmultiplefiles: true
+adx_appendquerystring: false
+adx_associatecurrentportaluser: true
+adx_attachfile: true
+adx_attachfilelabel: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline images"
+    }
+  ]
+adx_attachfilemaxsize: 1024
+adx_attachfilerequired: true
+adx_attachfilerequirederrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Attach a baseline image."
+    }
+  ]
+adx_attachfilerestrictaccept: true
+adx_attachfilesizeerrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline images must be 1 MB or smaller."
+    }
+  ]
+adx_attachfilestoragelocation: 756150000
+adx_attachfiletypeerrormessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Baseline attachments must be images."
+    }
+  ]
+adx_autogeneratesteps: false
+adx_captcharequired: false
+adx_createautonumber: false
+adx_editexistingrecordpermitted: false
+adx_entitypermissionsenabled: true
+adx_forceallfieldsrequired: false
+adx_formname: Baseline Item Lookup Create
+adx_geolocation_addresslinefieldname: pqvd_text
+adx_geolocation_cityfieldname: pqvd_wide
+adx_geolocation_countryfieldname: pqvd_recommended
+adx_geolocation_countyfieldname: pqvd_nolabel
+adx_geolocation_displaymap: true
+adx_geolocation_enabled: true
+adx_geolocation_formattedaddressfieldname: pqvd_textarea
+adx_geolocation_latitudefieldname: pqvd_float
+adx_geolocation_longitudefieldname: pqvd_decimal
+adx_geolocation_maptype: 756150001
+adx_geolocation_neighborhoodfieldname: pqvd_memo
+adx_geolocation_postalcodefieldname: pqvd_ticker
+adx_geolocation_statefieldname: pqvd_relabelled
+adx_hideformonsuccess: true
+adx_loguser: false
+adx_maximumnooffiles: 3
+adx_mode: 100000000
+adx_movepreviouspermitted: true
+adx_multiplerecordsperuserpermitted: false
+adx_name: Baseline Multistep Insert Item
+adx_nextstep: 5b78d6e2-7423-4cd7-8b4c-efc899497182
+adx_populatereferenceentitylookupfield: true
+adx_portaluserlookupattributeisactivityparty: false
+adx_recommendedfieldsrequired: false
+adx_redirecturlappendentityidquerystring: false
+adx_referenceentitylogicalname: pqvd_baselineparent
+adx_referenceentityreadonlyformname: Baseline Parent
+adx_referenceentityrelationshipname: pqvd_baselineparent_baselineitem
+adx_referenceentityshowreadonlyform: true
+adx_referenceentitysourcetype: 100000000
+adx_referencequerystringisprimarykey: true
+adx_referencequerystringname: parentid
+adx_referencetargetlookupattributelogicalname: pqvd_parentid
+adx_renderwebresourcesinline: false
+adx_setentityreference: true
+adx_showcaptchaforauthenticatedusers: false
+adx_showownerfields: false
+adx_showunsupportedfields: false
+adx_targetentitylogicalname: pqvd_baselineitem
+adx_targetentityportaluserlookupattribute: pqvd_contactid
+adx_title: Baseline Multistep Insert Item
+adx_tooltipenabled: false
+adx_type: 100000001
+adx_validationsummarylinksenabled: true
+adx_webform: 7bb270b5-0c1b-466d-8230-2e3cbbc776b1
+adx_webformstepid: 0b4ddba7-b12a-46dd-8865-30f67d37af05

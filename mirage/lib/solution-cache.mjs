@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { assertProjectOutput } from './project-output.mjs';
 
 const FORMAT = 2;
 
@@ -127,6 +128,7 @@ export async function fileStamp(file) {
  */
 export class SolutionFileCache {
   constructor(file = null) {
+    assertProjectOutput(file);
     this.file = file ? path.resolve(file) : null;
     this.entries = new Map();
     this.used = new Set();

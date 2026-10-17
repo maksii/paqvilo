@@ -7,16 +7,29 @@ import crypto from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 import { panelUi, removePanelUi } from './panel-ui.mjs';
+import { xrayUi } from './xray-ui.mjs';
+
+import {indexPersonaCatalog,PERSONA_TRANSLITERATIONS} from '../mirage/lib/persona-search.mjs';
+import {personaStartPath} from '../mirage/lib/persona-catalog.mjs';
 import { diffLines } from './line-diff.mjs';
 import { pageKey, INLINE_PREFIX } from './html-rewriter.mjs';
+import { redactText } from './agent-server.mjs';
 import { urlKey, sourceText } from './portal-model.mjs';
 import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
+import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
+import { observeHttpErrors } from './http-errors.mjs';
+import { consoleLocation } from './console-location.mjs';
+
+// Compose the two self-contained browser functions on the Node side. A redraw remains one
+// bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
+const drawPanelUi = new Function('data', `(${xrayUi.toString()})(data); (${panelUi.toString()})(data);`);
 
 /** Alt+Shift+<key>, by key position so they work on any keyboard layout. */
 const KEYS = { hide: 'KeyL', panel: 'KeyP', mode: 'KeyO' };
 const keyName = (code) => `Alt+Shift+${code.replace(/^Key/, '')}`;
+export const panelVisibilityNotice = panel => panel.hidden ? `dev panel   hidden; ${panel.keys.hide} shows it` : null;
 
 /** what the panel remembers between pages and sessions */
 function cleanUi(input) {
@@ -35,6 +48,7 @@ function cleanUi(input) {
   return ui;
 }
 
+const contextUi=new WeakMap();
 const MAX_PROBLEMS = 200;
 const MAX_ACTIVITY = 100;
 const MAX_DIFF_LINES = 3000;
@@ -231,17 +245,26 @@ export function enablePanel(context, session, opts = {}) {
   // A per-session token rejects unrelated requests. Scripts executing on the portal itself
   // share its privileges; this is not an isolation boundary against a compromised portal.
   const token = crypto.randomBytes(16).toString('hex');
-  const uiFile = cfg.stateDir ? path.join(cfg.stateDir, 'panel.json') : null;
-  let ui = {};
+  const browser = cfg.browser ?? {};
+  const profileInfo=!browser.cdpUrl&&(browser.profile||browser.userDataDir||browser.profileDir||opts.profileDir)?browserProfileInfo({...cfg,configDir:cfg.configDir??cfg.stateDir??process.cwd(),browser:{...browser,channel:browser.channel??'msedge',profileDir:browser.profileDir??'profiles'}},opts.profileDir):null;
+  const profile=profileInfo?JSON.stringify([profileInfo.channel,process.platform==='win32'?profileInfo.userDataDir.toLowerCase():profileInfo.userDataDir,profileInfo.profileDirectory]):token;
+  const namespace=crypto.createHash('sha256').update(String(profile)).digest('hex').slice(0,20);
+  // An attached browser without a known profile has no durable identity. Keep
+  // its UI in this context instead of leaving an unreadable random file per run.
+  const uiFile = cfg.stateDir && profileInfo ? path.join(cfg.stateDir, 'panels', namespace+'.json') : null;
+  let ui = contextUi.get(context) ?? {};
   try {
     const saved = JSON.parse(fs.readFileSync(uiFile, 'utf8'));
-    ui = cleanUi(saved);
+    if(!contextUi.has(context))ui = cleanUi(saved);
   } catch {
     /* first run */
   }
+  if(!contextUi.has(context)&&(opts.headless??cfg.browser?.headless))ui.open=false;
+  contextUi.set(context,ui);
   /** @type {WeakMap<object, Array<object>>} errors and failed requests per tab since its last navigation */
   const problems = new WeakMap();
   const runtimeByPage = new WeakMap();
+  const personaNames = new Map();
   const runtimeFilesByPage = new WeakMap();
   const sourceInspector = createSourceInspector(cfg);
   const activity = [];
@@ -260,6 +283,8 @@ export function enablePanel(context, session, opts = {}) {
   const timers = new Map();
   const drawings = new WeakMap();
   const dirtyDrawings = new WeakSet();
+  const errorObservers = new Set();
+  const errorsByPage = new WeakMap();
   let sourceIndex;
   const pageInfoCache = new Map();
   const indexSources = () => {
@@ -302,7 +327,7 @@ export function enablePanel(context, session, opts = {}) {
   // The Mirage administration shares the local origin; it is a tool, not a portal page.
   const adminPage = (address) => {
     if (!cfg.mirage) return false;
-    try { return /^\/_{1,2}sim(?:\/|$)/i.test(new URL(address).pathname); } catch { return false; }
+    try { return /^\/(?:_{1,2}sim|_setup)(?:\/|$)/i.test(new URL(address).pathname); } catch { return false; }
   };
   const portalPages = () => context.pages().filter((p) => !p.isClosed() && sameOrigin(p.url(), cfg.origin) && !adminPage(p.url()));
 
@@ -380,10 +405,14 @@ export function enablePanel(context, session, opts = {}) {
     if (pageInfoCache.has(key)) return pageInfoCache.get(key);
     const entry = index.pagesByKey.get(key);
     if (entry) {
-      const sources = (index.sourcesByPage.get(key) ?? []).map((s) => {
-        const lang = /\/content-pages\/[^/]*?\.([a-z]{2}-[A-Z]{2})\./.exec(s.rel)?.[1];
+      const pageSources = index.sourcesByPage.get(key) ?? [];
+      const layerOf=s=>s.pageLayer??/\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1]??'root';
+      const layers = new Set(pageSources.filter(s=>s.kind.startsWith('page-')).map(layerOf));
+      const sources = pageSources.map((s) => {
+        const lang = /\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1];
         const text = sourceText(s);
-        return { rel: s.rel, label: `${SOURCE_LABEL[s.kind] ?? s.kind}${lang ? ` (${lang})` : ''}`, empty: !text || !text.trim() };
+        const layer=layers.size>1&&s.kind.startsWith('page-')?layerOf(s):lang;
+        return { rel: s.rel, label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ` (${layer})` : ''}`, empty: !text || !text.trim() };
       });
       const info = { path: entry.url, name: entry.page.name ?? '', dir: session.rel(entry.page.dir), sources };
       pageInfoCache.set(key, info);
@@ -407,8 +436,8 @@ export function enablePanel(context, session, opts = {}) {
   const realNative = (value) => {
     try { return fs.realpathSync.native(value); } catch { return path.resolve(value); }
   };
-  const trustedRoots = (reported = []) => {
-    const configured = Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length ? cfg.mirageSourceRoots : reported;
+  const trustedRoots = () => {
+    const configured = Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length ? cfg.mirageSourceRoots : Array.isArray(cfg.mirageConfig?.solutionRoots)?cfg.mirageConfig.solutionRoots:[];
     return [...new Set([cfg.sourceDir, ...configured].filter((value) => typeof value === 'string' && value).map(realNative))];
   };
   /** Portal files keep their source-relative path; other roots are named after their folder. */
@@ -460,8 +489,8 @@ export function enablePanel(context, session, opts = {}) {
    * This browser's Mirage sign-in session. The request goes through the page's own browser
    * context, whose cookie jar (HttpOnly cookies included) is the one the page uses.
    */
-  const readSession = async (page) => {
-    const response = await mirageGet('/session', 4000, page.context().request);
+  const readSession = async (page, origin = cfg.origin) => {
+    const response = origin === cfg.origin ? await mirageGet('/session', 4000, page.context().request) : await page.context().request.get(origin+'/_sim/api/session',{timeout:4000});
     if (response.status() === 404) return { supported: false };
     if (!response.ok()) return { supported: true, signedIn: false, roles: [], error: `The session endpoint answered HTTP ${response.status()}.` };
     const data = await response.json();
@@ -542,6 +571,7 @@ export function enablePanel(context, session, opts = {}) {
   const pathOf = (address) => {
     try { return new URL(address).pathname; } catch { return null; }
   };
+  const validInspectionReport=value=>Boolean(value&&typeof value==='object'&&!Array.isArray(value)&&['sourceRoots','webTemplates','snippets','siteSettings','forms','views','tables','columns','components','usages','unresolved','dependencies','templateChain'].every(key=>value[key]===undefined||Array.isArray(value[key])));
   const loadRuntime = async (page, requestedPath) => {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
     // A navigation is reported before the tab commits it; its own path wins over page.url().
@@ -570,9 +600,10 @@ export function enablePanel(context, session, opts = {}) {
       } else {
         lastMirageStatus = status;
         const answer = summaryResponse.ok() ? await summaryResponse.json() : null;
+        if(summaryResponse.ok()&&!validInspectionReport(answer))throw new Error('Page inspection returned an invalid report.');
         // Mirages without summaries answer with the whole report.
         const report = answer && answer.view !== 'summary' ? answer : null;
-        const roots = trustedRoots([...(Array.isArray(answer?.sourceRoots) ? answer.sourceRoots : []), ...(Array.isArray(status.solutionRoots) ? status.solutionRoots : [])].map((entry) => typeof entry === 'string' ? entry : entry?.path ?? entry?.sourceDir));
+        const roots = trustedRoots();
         const files = report ? annotateRuntime(report, roots) : new Map();
         runtimeByPage.set(page, {
           active: true,
@@ -722,12 +753,23 @@ export function enablePanel(context, session, opts = {}) {
    * the sign-in form, or goes to /Account/Login/LogOff, which ends the session through the
    * provider's end-session. The page then navigates and comes back to the return path.
    */
-  const startSessionFlow = async (page, contactId) => {
-    const session = await readSession(page);
+  const startSessionFlow = async (page, contactId, {origin=cfg.origin,returnPath} = {}) => {
+    const session = await readSession(page,origin);
     if (!session.supported) return { ok: false, error: 'This Mirage has no browser sessions.' };
     if (!contactId && !session.signedIn) return { ok: true, navigating: false, session };
-    const returnUrl = localReturnPath(page, session);
+    const returnUrl = returnPath === undefined ? localReturnPath(page, session) : personaStartPath(returnPath,'returnUrl');
     const flow = contactId ? signInFlow(session, contactId, returnUrl) : { navigate: `/Account/Login/LogOff?returnUrl=${encodeURIComponent(returnUrl)}` };
+    let personaName = personaNames.get(origin)?.get(contactId);
+    if (contactId && !personaName) {
+      try {
+        const response = origin === cfg.origin ? await mirageGet('/personas', 4000) : await page.context().request.get(origin + '/_sim/api/personas', { timeout: 4000 });
+        if (response.ok()) {
+          const report = await response.json();
+          const person = [...(report.personas ?? []), ...(report.other ?? report.contacts ?? [])].find(person => person.contactId === contactId);
+          personaName = person?.label ?? person?.name;
+        }
+      } catch { /* A missing display name must not block the portal's sign-in flow. */ }
+    }
     let started;
     try {
       started = await page.evaluate(runSessionFlow, flow);
@@ -737,7 +779,7 @@ export function enablePanel(context, session, opts = {}) {
     if (started !== true) return { ok: false, error: typeof started === 'string' ? started : 'The portal sign-in did not start.' };
     const provider = session.identityProvider?.provider;
     const via = !contactId ? 'the portal sign-out' : flow.fields.provider ? provider?.caption ?? provider?.name ?? 'the identity provider' : 'the local sign-in page';
-    log({ type: 'switch', text: contactId ? `Signing in as ${contactId} through ${via}` : 'Signing out through the portal' });
+    log({ type: 'switch', text: contactId ? `Signing in as ${personaName ?? contactId} through ${via}` : 'Signing out through the portal' });
     return { ok: true, navigating: true, via, returnUrl, contactId: contactId ?? null };
   };
   /** The page's next load, or `ms` later when no reload comes; cancel() drops it. */
@@ -819,6 +861,7 @@ export function enablePanel(context, session, opts = {}) {
       mirage: cfg.mirage ? mirageSummary(page) : null,
       inspection: mirageSummary(page),
       site: cfg.siteName,
+      setupUrl: cfg.setupUrl ?? null,
       env: cfg.envName,
       targets: (cfg.devTargets ?? [{ siteName: cfg.siteName, envName: cfg.envName, origin: cfg.origin, startPath: cfg.site.startPath ?? '/', caution: cfg.caution }]).map(({ siteName, envName, origin, startPath, caution }) => ({ siteName, envName, origin, startPath, caution: Boolean(caution) })),
       caution: Boolean(cfg.caution),
@@ -851,7 +894,7 @@ export function enablePanel(context, session, opts = {}) {
   const draw = async (page) => {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin) || adminPage(page.url())) return;
     if (drawings.has(page)) { dirtyDrawings.add(page); return drawings.get(page); }
-    const drawing = Promise.resolve().then(() => disposed ? undefined : page.evaluate(panelUi, stateFor(page))).catch(() => {}).finally(() => {
+    const drawing = Promise.resolve().then(() => disposed ? undefined : page.evaluate(drawPanelUi, stateFor(page))).catch(() => {}).finally(() => {
       drawings.delete(page);
       if (dirtyDrawings.delete(page)) schedule(page);
     });
@@ -876,7 +919,7 @@ export function enablePanel(context, session, opts = {}) {
     if (disposed || page.isClosed() || !sameOrigin(page.url(), cfg.origin)) return;
     const list = problems.get(page) ?? [];
     problems.set(page, list);
-    const same = list.find((p) => p.type === entry.type && p.text === entry.text && p.rel === entry.rel && p.line === entry.line && p.where === entry.where);
+    const same = list.find((p) => p.type === entry.type && p.status === entry.status && p.text === entry.text && p.rel === entry.rel && p.line === entry.line && p.where === entry.where);
     if (same) {
       same.count++;
       same.at = Date.now();
@@ -899,23 +942,28 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
+    const errors = observeHttpErrors(context, page, { origin: cfg.origin, response: entry => {
+      const documentProblems=problems.get(page)??[];problems.set(page,documentProblems);
+      return body => {
+        if(problems.get(page)!==documentProblems)return;
+        const detail=[body?.error?.message,body?.error?.innererror?.message].map(value=>typeof value==='object'?value?.value:value).filter(value=>typeof value==='string').map(value=>redactText(value,2000).replace(/(\/[^\s?]+)\?[^\s]+/g,'$1?[redacted]')).join(' · ');
+        problem(page,{type:'http',status:entry.status,text:`${entry.method} ${entry.path}`,where:detail});
+      };
+    } });
+    errorObservers.add(errors);errorsByPage.set(page,errors);errors.ready.catch(()=>{});
+    listen('response',res=>{if(errors.failed&&res.status()>=400&&sameOrigin(res.url(),cfg.origin))problem(page,{type:'http',status:res.status(),text:`${res.request().method()} ${new URL(res.url()).pathname}`,where:''});});
     listen('pageerror', (err) => {
       if (!sameOrigin(page.url(), cfg.origin)) return;
       const at = /(https?:\/\/[^\s)]+?):(\d+):(\d+)/.exec(err.stack ?? '');
-      problem(page, { type: 'error', text: err.message || String(err), ...(at ? place(at[1], Number(at[2]), Number(at[3])) : {}) });
+      problem(page, { type: 'error', text: err.message || String(err), ...(at ? place(at[1], Number(at[2]), Number(at[3])) : place(page.url())) });
     });
     listen('console', (msg) => {
       if (!sameOrigin(page.url(), cfg.origin) || msg.type() !== 'error') return;
       const text = msg.text();
       // the browser's own line about a failed request; the request itself is listed
       if (/^Failed to load resource/.test(text)) return;
-      const loc = msg.location();
-      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url, loc.url ? loc.lineNumber + 1 : undefined, loc.url ? loc.columnNumber + 1 : undefined) });
-    });
-    listen('response', (res) => {
-      if (res.status() < 400 || !sameOrigin(res.url(), cfg.origin)) return;
-      const u = new URL(res.url());
-      problem(page, { type: 'http', status: res.status(), text: `${res.request().method()} ${u.pathname}`, where: u.search ? u.pathname + u.search : '' });
+      const loc = consoleLocation(msg, page.url());
+      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url, loc.line, loc.column) });
     });
     listen('requestfailed', (req) => {
       const reason = req.failure()?.errorText ?? '';
@@ -930,6 +978,7 @@ export function enablePanel(context, session, opts = {}) {
     });
     listen('load', () => schedule(page));
     listen('close', () => {
+      errorObservers.delete(errors);void errors.close();
       clearTimeout(timers.get(page));
       timers.delete(page);
       dirtyDrawings.delete(page);
@@ -955,6 +1004,11 @@ export function enablePanel(context, session, opts = {}) {
     scheduleAll();
   });
   on(session, 'online-state', scheduleAll);
+  on(session, 'dialog', ({ page, type, message, disposition }) => {
+    if (!page || !sameOrigin(page.url(), cfg.origin)) return;
+    log({ type: 'dialog', text: `${type} dialog ${disposition}${message ? ': ' + message : ''}` });
+    schedule(page);
+  });
   on(session, 'head', scheduleAll);
   on(session, 'refreshed', ({ files, how, baselineChanged = false, pageResults }) => {
     sourceInspector.invalidate();
@@ -1043,11 +1097,12 @@ export function enablePanel(context, session, opts = {}) {
   const catalog = () => {
     const entries = [];
     for (const page of session.model.pages.values()) {
-      const url = session.model.pagePath(page.id);
+      const rawUrl = session.model.pagePath(page.id);
+      const url=rawUrl?(rawUrl.endsWith('/')?rawUrl:rawUrl+'/'):null;
       if (url) entries.push({ t: 'page', title: page.name || url, url });
     }
     entries.sort((a, b) => a.url.localeCompare(b.url));
-    for (const s of session.model.inlineSources) entries.push({ t: s.kind, kind: s.kind, title: s.label ?? null, rel: s.rel, url: s.pageUrl ?? s.usedOn?.[0] ?? null });
+    for (const s of session.model.inlineSources) entries.push({ t: s.kind, kind: s.kind, title: s.label ?? (s.snippetName ? `${s.snippetName} · ${/\.([a-z]{2}(?:-[a-z]{2})?)\.contentsnippet/i.exec(s.rel)?.[1]??'default language'}` : null), rel: s.rel, url: s.pageUrl ?? s.usedOn?.[0] ?? null });
     for (const w of session.model.webFileByUrl.values()) entries.push({ t: 'web-file', kind: 'web-file', title: w.url.split('/').pop(), rel: session.rel(w.file), url: w.url });
     return entries;
   };
@@ -1119,12 +1174,14 @@ export function enablePanel(context, session, opts = {}) {
       if (body.refresh === true || !runtimeByPage.get(page)) await refreshRuntime(page);
       const runtime = runtimeByPage.get(page);
       if (!runtime?.active) return { ok: false, error: runtime?.error ?? 'Source inspection is not available on this page.' };
+      if(!runtime.report&&!runtime.summary)return {ok:false,error:runtime.error??'Source inspection is not available on this page.'};
       if (!runtime.report && runtime.summary) {
         // Loaded once per page version, when the Inspect tab asks for it.
         runtime.loading ??= (async () => {
           const response = await mirageGet(`/page-resources?path=${encodeURIComponent(runtime.path)}`, 30_000, page.context().request);
           if (!response.ok()) throw new Error(`Page inspection returned HTTP ${response.status()}.`);
           const report = await response.json();
+          if(!validInspectionReport(report)||report.view==='summary')throw new Error('Page inspection returned an invalid full report.');
           const files = annotateRuntime(report, runtime.roots);
           runtime.report = report;
           if (runtimeByPage.get(page) === runtime) runtimeFilesByPage.set(page, files);
@@ -1135,6 +1192,8 @@ export function enablePanel(context, session, opts = {}) {
           return { ok: false, error: error.message.split('\n')[0] };
         }
       }
+      const current=()=>!disposed&&!page.isClosed()&&sameOrigin(page.url(),cfg.origin)&&runtimeByPage.get(page)===runtime&&pathOf(page.url()).replace(/\/+$/,'')===String(runtime.path).replace(/\/+$/,'');
+      if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
       const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
       if (!cfg.mirage) {
         const answer = await sourceInspector.inspect(runtime.path, rendered);
@@ -1150,6 +1209,7 @@ export function enablePanel(context, session, opts = {}) {
         const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
         runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
       }
+      if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
       runtimeFilesByPage.set(page, annotateRuntime(runtime.report, runtime.roots));
       // The flat dependency list repeats the typed groups; it stays indexed here for opening files.
       const { dependencies, ...visible } = runtime.report ?? {};
@@ -1161,6 +1221,14 @@ export function enablePanel(context, session, opts = {}) {
       if (!status) return { ok: false, error: 'The Mirage status endpoint is unavailable.' };
       lastMirageStatus = status;
       const personas = personasResponse.ok() ? await personasResponse.json() : null;
+      const report = personas?.enabled ? {groups:personas.groups??[],personas:personas.personas??[],other:personas.other??[]} : {groups:[],personas:[],other:personas?.other??personas?.contacts??personas?.personas??[]};
+      const entries = indexPersonaCatalog(report);
+      const publicPersonas=entries.map(({persona})=>{
+        const visible=Object.fromEntries(['contactId','name','roles','active','key','label','summary','description','order','group','subgroup','tags','default','context','source','startPath'].filter(key=>Object.hasOwn(persona,key)).map(key=>[key,persona[key]]));
+        if(persona.account)visible.account={id:persona.account.id??null,name:persona.account.name??null};
+        return visible;
+      });
+      personaNames.set(cfg.origin, new Map(publicPersonas.map(person => [person.contactId, person.label ?? person.name])));
       const summary = runtimeByPage.get(page)?.summary;
       return {
         ok: true,
@@ -1168,12 +1236,14 @@ export function enablePanel(context, session, opts = {}) {
         // This browser's session; `identity` is the Mirage default (the sign-in page persona).
         session,
         identity: personas?.identity ?? status.identity ?? null,
-        personas: Array.isArray(personas?.personas) ? personas.personas.map(({ contactId, name, roles, active }) => ({ contactId, name, roles, active })) : [],
+        personas: publicPersonas,
+        personaCatalog: {scope:personas?.scope,groups:report.groups,contexts:(personas?.contexts??[]).map(({id,label})=>({id,label})),transliterations:PERSONA_TRANSLITERATIONS},
+        personaIndex: entries.map(entry=>({key:entry.key,text:entry.text,roles:[...entry.roles],tags:[...entry.tags],accounts:[...entry.accounts],group:entry.group,subgroup:entry.subgroup})),
         personasAvailable: Boolean(personas),
         permissionMode: status.permissionMode ?? personas?.permissionMode ?? null,
         permissionSource: status.permissionSource ?? personas?.permissionSource ?? null,
         presets: Array.isArray(status.presets) ? status.presets.filter((preset) => !preset.unavailable).map(({ id, name, description, source }) => ({ id, name, description, source })) : [],
-        scenarios: Array.isArray(status.scenarios) ? status.scenarios.map(({ id, name, description }) => ({ id, name, description })) : [],
+        scenarios: [...(personas?.scenarios??[]).map(({id,label,description,persona,startPath,context,preset})=>({id:'@catalogue/'+id,catalogueId:id,name:label,description,persona,startPath,context,preset,catalogue:true})),...(Array.isArray(status.scenarios) ? status.scenarios.map(({ id, name, description }) => ({ id, name, description })) : [])],
         activeScenario: status.activeScenario ?? null,
         tables: Array.isArray(summary?.tables) ? summary.tables : [],
         status: publicStatus(status),
@@ -1212,6 +1282,20 @@ export function enablePanel(context, session, opts = {}) {
     scenario: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Scenarios change the local Mirage runtime only.' };
       if (typeof body.id !== 'string' || !/^[\w.-]+$/.test(body.id)) return { ok: false, error: 'choose a scenario' };
+      if(body.catalogue===true){
+        const response=await mirageGet('/personas',4000),report=response.ok()?await response.json():null;
+        const selected=report?.scenarios?.find(item=>item.id===body.id);
+        if(!selected)return {ok:false,error:'Catalogue scenario not found.'};
+        const result=await mirageWrite('/personas/launch','POST',{scenario:selected.id});
+        if(!result.ok)return result;
+        const opened=result.result,destination=new URL(opened.origin);
+        if(!['127.0.0.1','localhost','[::1]'].includes(destination.hostname)||destination.protocol!=='http:'||destination.username||destination.password||destination.pathname!=='/'||destination.search||destination.hash)return {ok:false,error:'The scenario returned an invalid local runtime origin.'};
+        const returnPath=personaStartPath(opened.path,'returnUrl');
+        if(opened.origin===cfg.origin)return startSessionFlow(page,opened.contactId,{returnPath});
+        // Answer the panel request before navigating away from its document.
+        setTimeout(async()=>{if(disposed||page.isClosed())return;try{await page.goto(destination.origin+'/',{waitUntil:'domcontentloaded'});if(!disposed&&!page.isClosed())await startSessionFlow(page,opened.contactId,{origin:destination.origin,returnPath});}catch(error){log({type:'switch',text:'Scenario sign-in failed: '+error.message.split('\n')[0]});}},100);
+        return {ok:true,navigating:true,origin:destination.origin,returnUrl:returnPath};
+      }
       const status = lastMirageStatus ?? (await readMirageStatus());
       const scenario = (Array.isArray(status?.scenarios) ? status.scenarios : []).find((item) => item.id === body.id);
       // A scenario persona (null = anonymous) also applies to this browser, through the portal's
@@ -1276,9 +1360,9 @@ export function enablePanel(context, session, opts = {}) {
     let timer;
     // A paused debugger must not hold shutdown open indefinitely. The queued cleanup also
     // retires this token, so a late draw cannot recreate the panel after it resumes.
-    const cleanup = Promise.allSettled(portalPages().map((page) => page.evaluate(removePanelUi, { token })));
+    const cleanup = Promise.allSettled([...portalPages().map((page) => page.evaluate(removePanelUi, { token })),...errorObservers].map(item=>item?.close?item.close():item));
     disposal = Promise.race([cleanup, new Promise((resolve) => { timer = setTimeout(resolve, 2000); })]).finally(() => clearTimeout(timer));
     return disposal;
   };
-  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), stateFor, draw, dispose };
+  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), get hidden() { return ui.hidden === true; }, get ready(){return Promise.all([...errorObservers].map(observer=>observer.ready.catch(()=>{})));}, readyFor:page=>errorsByPage.get(page)?.ready.catch(()=>{}), stateFor, draw, dispose };
 }

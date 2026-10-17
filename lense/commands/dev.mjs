@@ -1,11 +1,13 @@
 // `paqvilo dev`: the development loop.
 import path from 'node:path';
+import { DEV_READY } from '../dev-messages.mjs';
 import chokidar from 'chokidar';
 import { openBrowser, refreshPages } from '../browser.mjs';
 import { loadDevTargets } from '../config.mjs';
 import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
+import { panelVisibilityNotice } from '../panel.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
@@ -406,12 +408,21 @@ export function watchSources(session, context, { reload = true, log = console.lo
 }
 
 export default async function dev(cfg, args) {
+  const { startSetupServer } = await import('../setup/server.mjs');
+  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir } });
+  console.log(`setup       ${setup.url}`);
+  try { return await develop(cfg, args, setup); }
+  finally { await setup.close(); }
+}
+
+async function develop(cfg, args, setup) {
   // `mirage dev` hands over a prepared selection (local Mirage origins plus live targets).
   const selection = args.devSelection
     ?? (args.mirageTarget
       ? { mode: 'selected', initial: args.mirageTarget, targets: [args.mirageTarget] }
       : await loadDevTargets(args));
   cfg = selection.initial;
+  for (const target of selection.targets) target.setupUrl = setup.url;
   const { startDevSessions } = await import('../dev-sessions.mjs');
   if (selection.mode === 'all') {
     console.log(`portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`);
@@ -433,11 +444,13 @@ export default async function dev(cfg, args) {
     if (cfg.panel) {
       const panel = runtime.active.get(cfg.origin).panel;
       const { keys } = panel;
+      const visibilityNotice = panelVisibilityNotice(panel);
+      if (visibilityNotice) console.log(visibilityNotice);
       console.log(`dev panel   on the page: ${keys.panel} opens it, ${keys.hide} hides or shows it, ${keys.mode} switches local / online`);
     }
     const startUrl = cfg.origin + (cfg.site.startPath ?? '/');
     const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
-    console.log(`\nopening ${startUrl}\nedit a file under the sources and the browser follows. Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
+    console.log(`\nopening ${startUrl}\n${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
     await Promise.race([stopped, page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch((err) => console.log(`could not open ${startUrl}: ${err.message}`))]);
 
     await stopped;

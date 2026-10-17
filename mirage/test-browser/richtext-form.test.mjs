@@ -109,8 +109,9 @@ test("rich text editor changes preserve native JSON binding, authored observers 
     button.click();
   });
   assert.equal(app.store.snapshot().tables.example.length, 0);
+  // The native form posts the page back; the response is the re-rendered page.
   const saved = page.waitForResponse((response) =>
-    response.url().includes("/__sim/forms/"),
+    response.request().isNavigationRequest() && response.request().method() === "POST",
   );
   await page
     .locator("#InsertButton")
@@ -119,7 +120,7 @@ test("rich text editor changes preserve native JSON binding, authored observers 
         new MouseEvent("click", { bubbles: true, cancelable: true }),
       ),
     );
-  assert.equal((await saved).status(), 201);
+  assert.equal((await saved).status(), 200);
   assert.equal(app.store.snapshot().tables.example[0].narrative, expected);
   assert.deepEqual(errors, []);
 });

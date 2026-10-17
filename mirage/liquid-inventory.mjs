@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { parseToolArgs, toolOptionsHelp, inventoryInputs } from './tool-options.mjs';
 /**
  * Liquid inventory for an exported Power Pages site (PAC standard YAML or enhanced data model).
  *
@@ -607,30 +608,16 @@ function summarize(report) {
   return lines.join("\n");
 }
 
-function parseArgs(argv) {
-  const options = { json: false, includeInactive: false, includeSources: false, strict: false };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    if (arg === "--portal") options.portal = argv[++i];
-    else if (arg === "--out") options.out = argv[++i];
-    else if (arg === "--json") options.json = true;
-    else if (arg === "--include-inactive") options.includeInactive = true;
-    else if (arg === "--sources") options.includeSources = true;
-    else if (arg === "--strict") options.strict = true;
-    else if (arg === "--help" || arg === "-h") options.help = true;
-    else throw new Error(`Unknown argument ${arg}`);
-  }
-  return options;
-}
 
 export async function main(argv = process.argv.slice(2)) {
-  const options = parseArgs(argv);
-  if (options.help || !options.portal) {
-    console.log("Usage: node mirage/liquid-inventory.mjs --portal <dir> [--json] [--out FILE] [--include-inactive] [--sources] [--strict]");
+  const options = parseToolArgs("liquid-inventory", argv);
+  if (options.help || !(options.portal || options.config || options.site)) {
+    console.log(`Usage: paqvilo mirage liquid-inventory ${toolOptionsHelp("liquid-inventory")}`);
     return options.help ? 0 : 2;
   }
-  const portal = await importPortal(options.portal);
-  const report = await inventoryPortal(portal, options);
+  const inputs = await inventoryInputs(options);
+  const portal = await importPortal(inputs.sourceDir);
+  const report = await inventoryPortal(portal, { ...options, includeInactive: options["include-inactive"], includeSources: options.sources });
   if (options.out) {
     await fs.mkdir(path.dirname(path.resolve(options.out)), { recursive: true });
     await fs.writeFile(options.out, JSON.stringify(report, null, 2));

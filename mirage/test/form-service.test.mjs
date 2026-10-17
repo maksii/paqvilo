@@ -666,6 +666,12 @@ test("a submission's record and notes are one unit: a refused note or a rejected
   assert.equal(tables.annotation.length, 1);
   assert.equal(tables.annotation[0].filename, "a.txt");
   assert.equal(String(tables.annotation[0].objectid?.id ?? tables.annotation[0].objectid), saved.recordId);
+  // An advanced form step names multiple files with adx_allowmultiplefiles; without either column one file only.
+  options.portal.forms.push({ id: "step-notes", mode: 100000000, metadata: { adx_attachfile: true, adx_allowmultiplefiles: true } }, { id: "single-notes", mode: 100000000, metadata: { adx_attachfile: true } });
+  options.schemas["step-notes"] = options.schemas["single-notes"] = options.schemas.notes;
+  await submitPortalForm("entityform", "step-notes", { values: { fullname: "Two notes" }, attachments: [file("a.txt", 10), file("b.txt", 10)] }, options);
+  assert.equal(options.store.snapshot().tables.annotation.length, 3);
+  await assert.rejects(submitPortalForm("entityform", "single-notes", { values: { fullname: "One note" }, attachments: [file("a.txt", 10), file("b.txt", 10)] }, options), (e) => e.code === "FormAttachmentInvalid");
 });
 
 test("a failing association rolls back the record a provider transaction created", async () => {
@@ -764,7 +770,7 @@ test("submitted steps follow the session or the page's stepid: saved steps reope
 test("Authentication Required refuses an anonymous submission before any write", async () => {
   const options = await setupUnits();
   options.portal.advancedForms.push({ id: "secure", metadata: { adx_authenticationrequired: true } });
-  options.schemas.secure = { initialStepId: "first", steps: [options.schemas.wizard.steps[0]] };
+  options.schemas.secure = { initialStepId: "first", steps: [{ ...options.schemas.wizard.steps[0], nextStepId: null }] };
   const before = options.store.snapshot();
   await assert.rejects(
     submitPortalForm("webform", "secure", { values: { fullname: "Anonymous" } }, { ...options, identity: anonymous, owner: "visitor:44444444-4444-4444-8444-444444444444" }),
@@ -824,4 +830,27 @@ test("labels and messages use the request's website language, then the default l
     submitPortalForm("entityform", "localized", { values: { fullname: "" } }, { ...options, language: { lcid: 1036, defaultLcid: 1033 } }),
     (e) => e.code === "FormFieldRequired" && e.message === "Nom is a required field.",
   );
+});
+
+test("a read-only advanced form step saves nothing and advances to its next step", async () => {
+  const options = await setup();
+  options.portal.advancedForms.push({ id: "review" });
+  options.schemas.review = {
+    initialStepId: "first",
+    steps: [
+      { stepId: "first", entity: "contact", mode: 100000000, nextStepId: "look", fields: options.schemas.wizard.steps[0].fields },
+      { stepId: "look", entity: "contact", mode: 100000002, nextStepId: "last", fields: options.schemas.wizard.steps[0].fields },
+      { stepId: "last", entity: "contact", mode: 100000001, fields: options.schemas.wizard.steps[0].fields },
+    ],
+  };
+  const saved = await submitPortalForm("webform", "review", { stepId: "first", values: { fullname: "Reviewed" } }, options);
+  const before = JSON.stringify(options.store.snapshot().tables.contact);
+  const viewed = await submitPortalForm("webform", "review", { stepId: "look", values: {} }, options);
+  assert.equal(viewed.operation, "navigate");
+  assert.equal(viewed.record, null);
+  assert.match(viewed.outcome.url, /stepid=last/);
+  assert.equal(JSON.stringify(options.store.snapshot().tables.contact), before);
+  // The next step edits the record the session saved; the read-only step counts as visited.
+  const last = await submitPortalForm("webform", "review", { stepId: "last", recordId: saved.recordId, values: { fullname: "Final" } }, options);
+  assert.equal(last.recordId, saved.recordId);
 });

@@ -7,6 +7,7 @@ import {
   scanSolutionSources,
   buildSolutionSchema,
   tableFields,
+  tableColumnDefaults,
   readSolutionZip,
 } from "./solution-schema.mjs";
 import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
@@ -47,6 +48,8 @@ function mappingFor(schema, name) {
     mapping.nameColumnSource = table.primaryNameSource;
   }
   if (table.isIntersect) mapping.intersect = true;
+  // The table's display name by language (Entity.xml LocalizedNames): services that show a table type use it.
+  if (table.labels && Object.keys(table.labels).length) mapping.labels = structuredClone(table.labels);
   // Alternate keys (Web API key addressing and uniqueness) with the defining file.
   const keys = Object.values(table.keys ?? {});
   if (keys.length)
@@ -56,13 +59,17 @@ function mappingFor(schema, name) {
       attributes: [...key.attributes],
       source: key.source,
     }));
+  // A created row receives the same column defaults as a seeded row (tableColumnDefaults):
+  // two-option/choice AppDefaultValue, then the active state with its default status reason.
+  const columnDefaults = tableColumnDefaults(table.attributes);
+  if (Object.keys(columnDefaults).length) mapping.recordDefaults = columnDefaults;
   const state = table.attributes.statecode;
   const states = state?.type === "state" ? (state.optionSet?.states ?? []) : [];
   const valid = states.filter((s) => Number.isInteger(s.value) && Number.isInteger(s.defaultStatus));
   if (valid.length) {
     mapping.stateStatusDefaults = Object.fromEntries(valid.map((s) => [s.value, s.defaultStatus]));
     const active = valid.find((s) => s.value === 0);
-    if (active) mapping.recordDefaults = { statecode: 0, statuscode: active.defaultStatus };
+    if (active) mapping.recordDefaults = { ...mapping.recordDefaults, statecode: 0, statuscode: active.defaultStatus };
   }
   return mapping;
 }
@@ -194,7 +201,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
 }
 
 /** Rows that solution layers contribute to bootstrapped tables (environment variables). */
-export function solutionSeedRows(metadata, { environmentVariables: overrides = {} } = {}) {
+export function solutionSeedRows(metadata, { environmentVariables: overrides = {}, connectionReferences = [] } = {}) {
   const definitions = [],
     values = [];
   const local = new Map(Object.entries(overrides ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
@@ -228,7 +235,14 @@ export function solutionSeedRows(metadata, { environmentVariables: overrides = {
         statuscode: 1,
       });
   }
-  return definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
+  const seeds = definitions.length ? { [ENV_DEFINITION]: definitions, [ENV_VALUE]: values } : {};
+  if (connectionReferences.length) seeds.connectionreference = connectionReferences.map(reference => ({
+    connectionreferenceid: sourceRecordId('connectionreference', reference.logicalName.toLowerCase()),
+    connectionreferencelogicalname: reference.logicalName,
+    connectionid: reference.connectionId, connectorid: reference.connectorId,
+    statecode: 0, statuscode: 1,
+  }));
+  return seeds;
 }
 
 const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { provenance: false });
@@ -241,7 +255,7 @@ const fieldsWithoutProvenance = (schema, name) => tableFields(schema, name, { pr
  * tables whose complete column metadata is stored on the mapping (`fieldMetadata`
  * and `schemaComplete`) for Web API attribute validation.
  */
-export function applySolutionData(state, metadata, { webApiTables, environmentVariables, presetLibrary } = {}) {
+export function applySolutionData(state, metadata, { webApiTables, environmentVariables, connectionReferences, presetLibrary } = {}) {
   const result = structuredClone({
     ...state,
     presets: compactBuiltinPresets(state.presets ?? {}, presetLibrary),
@@ -258,6 +272,12 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     if (!existing || imported(existing)) {
       const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
       result.mappings[name] = structuredClone(rest);
+    } else {
+      // A configured mapping keeps the Solution's relationships, primary name column, alternate keys
+      // and create defaults (column defaults, state/status pairs) when it names none (as a preset
+      // layered over the imported mappings does): a record created through it gets what Dataverse sets.
+      for (const key of ["relationships", "nameColumn", "alternateKeys", "recordDefaults", "stateStatusDefaults", "labels"])
+        if (existing[key] === undefined && mapping[key] !== undefined) existing[key] = structuredClone(mapping[key]);
     }
     result.tables[name] ??= [];
   }
@@ -298,7 +318,10 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     }
   }
   // Source-derived rows: upsert by primary key and remove rows that left the source.
-  const seeds = solutionSeedRows(metadata, { environmentVariables });
+  const seeds = solutionSeedRows(metadata, { environmentVariables, connectionReferences });
+  if (seeds.connectionreference && !result.mappings.connectionreference) result.mappings.connectionreference = {
+    entitySet: 'connectionreferences', idColumn: 'connectionreferenceid', inferred: true,
+  };
   const seeded = {};
   for (const [entity, rows] of Object.entries(seeds)) {
     const key = result.mappings[entity]?.idColumn ?? entity + "id";

@@ -16,6 +16,8 @@ import {
 } from "./solution-schema.mjs";
 import { mapLimit } from "./solution-cache.mjs";
 import { importSolutionPlugins, resolvePluginSourceFiles } from './exported-plugins.mjs';
+import { matchingSystemForms, portalFormEligible } from './system-form-selection.mjs';
+import { advancedFormGraph } from './advanced-form-graph.mjs';
 
 export { parseSolutionXml, descendants };
 
@@ -23,22 +25,39 @@ const norm = (value) =>
   String(value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
-const FORM_PARSER_ID = "metadata-form@3";
-const VIEW_PARSER_ID = "metadata-view@1";
+const FORM_PARSER_ID = "metadata-form@7";
+// Systemform control classes: web resource and subgrid (sub-grid) controls.
+const WEB_RESOURCE_CLASS = "9fdf5f91-88b1-47f4-ad53-c11efc01a01d";
+const SUBGRID_CLASS = "e7a81278-8635-4d9e-8d4d-59480b391c5b";
+const VIEW_PARSER_ID = "metadata-view@2";
 const IO_CONCURRENCY = 24;
 
 /** Systemform documents plus the tables/views they depend on (quick views, subgrids, lookups). */
 function parseFormDocument(xml, entity, file, lcid) {
   const document = parseSolutionXml(xml);
   const forms = [];
+  const sourceTypes = new Map();
+  const visit = (node, enclosingType) => {
+    const type = node.name === "forms" ? node.attrs.type : enclosingType;
+    if (node.name === "systemform" && type !== undefined) sourceTypes.set(node, type);
+    for (const nested of node.children ?? []) visit(nested, type);
+  };
+  visit(document, undefined);
+  // A solution export groups systemforms by type under FormXml/<group>/ (main, card, quick,
+  // quickcreate ...); a document without a declared type takes its group as the form type.
+  const groupType = /(?:^|[\\/])FormXml[\\/]([^\\/]+)[\\/][^\\/]+\.xml$/i.exec(String(file ?? ""))?.[1];
   for (const systemform of document.name === "systemform"
     ? [document]
     : descendants(document, "systemform")) {
     const form = child(systemform, "form");
     if (!form) continue;
+    const declaredType = text(systemform, "type");
+    const systemFormType = /^\d+$/.test(declaredType ?? '') ? Number(declaredType) : undefined;
     forms.push({
       id: norm(text(systemform, "formid") ?? path.basename(file, ".xml")),
       entity,
+      ...(sourceTypes.has(systemform) ? { formType: sourceTypes.get(systemform) } : groupType ? { formType: groupType } : {}),
+      ...(systemFormType !== undefined ? { systemFormType } : {}),
       name: label(child(systemform, "LocalizedNames"), lcid) ?? "",
       xml: serialize(form),
       file,
@@ -66,12 +85,19 @@ function parseViewDocument(xml, entity, file, lcid) {
       id: norm(text(view, "savedqueryid") ?? path.basename(file, ".xml")),
       entity,
       name: label(child(view, "LocalizedNames"), lcid) ?? "",
+      queryType: Number(text(view, "querytype")) || 0,
+      isDefault: text(view, "isdefault") === "1",
       fetchXml: fetch
         ? serialize(fetch)
         : decodeXml(child(view, "fetchxml")?.text.trim() ?? ""),
-      fields: descendants(layout, "cell").map((c) => ({
+      // Layout cells marked ishidden="1" are not grid columns (live Contacts Lookup View hides fax, address1_name, address1_fax).
+      fields: descendants(layout, "cell").filter((c) => c.attrs.ishidden !== "1").map((c) => ({
         name: c.attrs.name,
         width: Number(c.attrs.width) || undefined,
+        // A cell without a width is a zero-width column; disableSorting="1" disables its sort
+        // (live Contact form ActionCards grid: widths 0, Card Type unsortable).
+        ...(c.attrs.width == null ? { widthless: true } : {}),
+        ...(c.attrs.disableSorting === "1" ? { sortDisabled: true } : {}),
       })),
       file,
     });
@@ -340,7 +366,11 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
     for (const column of child(tab, "columns")?.children ?? []) {
       const sections = [];
       for (const section of child(column, "sections")?.children ?? []) {
-        if (section.attrs.visible === "false") continue;
+        // A hidden section keeps its (empty) place in the layout.
+        if (section.attrs.visible === "false") {
+          sections.push({ name: section.attrs.name, hidden: true, rows: [] });
+          continue;
+        }
         const rows = [];
         for (const row of child(section, "rows")?.children ?? []) {
           const cells = [];
@@ -352,13 +382,32 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 type: "notes",
                 id: control.attrs.id,
                 label: label(child(cell, "labels")) || "Notes",
+                showLabel: cell.attrs.showlabel !== "false",
                 hidden: cell.attrs.visible === "false",
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
               });
               continue;
             }
-            if (control?.attrs.indicationOfSubgrid === "true") {
+            // Web resource cells (the platform renders HTML and image web resources in an iframe).
+            if (norm(control?.attrs.classid) === WEB_RESOURCE_CLASS) {
+              cells.push({
+                type: "webresource",
+                id: control.attrs.id,
+                url: text(parameters, "Url"),
+                scrolling: text(parameters, "Scrolling") || "auto",
+                border: text(parameters, "Border") === "true",
+                label: label(child(cell, "labels")),
+                showLabel: cell.attrs.showlabel !== "false",
+                colspan: Number(cell.attrs.colspan) || 1,
+                rowspan: Number(cell.attrs.rowspan) || 1,
+              });
+              continue;
+            }
+            // A control naming a target table and a view is a dataset subgrid even without the subgrid
+            // class or flag (the platform Contact form's ActionCards control, live: a subgrid cell).
+            const datasetControl = Boolean(text(parameters, "TargetEntityType") && text(parameters, "ViewId"));
+            if (control?.attrs.indicationOfSubgrid === "true" || norm(control?.attrs.classid) === SUBGRID_CLASS || datasetControl) {
               const entity = norm(text(parameters, "TargetEntityType"));
               const viewId = norm(text(parameters, "ViewId"));
               const view = metadata.views.find(
@@ -379,6 +428,8 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 })),
                 fetchXml: view?.fetchXml,
                 label: label(child(cell, "labels")),
+                // A hidden label leaves the subgrid heading empty (live Contact form ActionCards).
+                ...(cell.attrs.showlabel === "false" ? { showLabel: false } : {}),
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
               });
@@ -431,11 +482,9 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               name,
               id: control.attrs.id ?? name,
               label: label(child(cell, "labels")) ?? known[name]?.label ?? name,
-              readOnly:
-                control.attrs.disabled === "true" ||
-                (Number(definition.mode) === 100000000
-                  ? known[name]?.validForCreate === false
-                  : known[name]?.validForUpdate === false),
+              // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
+              // applies to the mode the form renders in (an inactive record renders read-only).
+              readOnly: control.attrs.disabled === "true",
               hidden: cell.attrs.visible === "false",
               showLabel: cell.attrs.showlabel !== "false",
               controlClassId: norm(control.attrs.classid),
@@ -498,6 +547,18 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   };
 }
 
+/**
+ * The schema of the systemform a form definition selects (entity and form name, or form id), by
+ * the same selection resolve() applies: matching systemforms of an eligible type (Main), the
+ * first one. Null when none matches. Used for definitions that are not exported basic forms, such
+ * as a multistep step's reference read-only form.
+ */
+export function systemFormSchemaFor(definition, metadata) {
+  if (!definition || !Array.isArray(metadata?.forms)) return null;
+  const choices = matchingSystemForms(definition, metadata.forms).filter(portalFormEligible);
+  return choices.length ? formSchema(choices[0], definition, metadata) : null;
+}
+
 export function applySolutionMetadata(portal, metadata) {
   const componentSchemas = {};
   const diagnostics = [...metadata.diagnostics];
@@ -547,15 +608,15 @@ export function applySolutionMetadata(portal, metadata) {
     };
   };
   const resolve = (definition) => {
-    const formId = norm(field(definition.metadata, "formid"));
-    let choices = metadata.forms.filter(
-      (f) =>
-        f.entity === norm(definition.entityName) &&
-        f.active &&
-        (formId
-          ? f.id === formId
-          : norm(f.name.trim()) === norm(definition.formName?.trim())),
-    );
+    const matches = matchingSystemForms(definition, metadata.forms);
+    const choices = matches.filter(portalFormEligible);
+    if (matches.length && !choices.length) diagnostics.push({
+      code: 'SYSTEMFORM_INELIGIBLE_TYPE',
+      id: definition.id,
+      entity: definition.entityName,
+      candidates: matches.map(({ id, formType, systemFormType, file }) => ({ formId: id, formType, systemFormType, sourceFile: file })),
+      message: 'Matching exported forms have a declared non-Main type; no portal form layout is selected.',
+    });
     if (!choices.length) return null;
     // Legacy form selection (platform-internals-reference.md 6.1.3): the first systemform
     // with the name. Dataverse retrieval order is not observable locally; layer and file
@@ -639,16 +700,20 @@ export function applySolutionMetadata(portal, metadata) {
       });
   }
   for (const form of portal.advancedForms ?? []) {
-    const steps = portal.records.filter(
-      (r) =>
-        r.kind === "advancedformstep" &&
-        norm(field(r, "webform")) === form.id &&
-        Number(field(r, "statecode", 0)) !== 1,
-    );
+    const graph = advancedFormGraph(form, portal.records);
+    const steps = graph.steps;
+    diagnostics.push(...graph.diagnostics);
     const schemas = [];
     for (const step of steps) {
       try {
-        if (Number(field(step, "type")) === 100000003) {
+        const type = Number(field(step, 'type', 100000001));
+        if (type === 100000000) {
+          const schema = { stepId: step.id, type: 'condition', condition: field(step, 'condition'), nextStepId: norm(field(step, 'nextstep')), conditionDefaultNextStepId: norm(field(step, 'conditiondefaultnextstep')), js: step.customJavascript, metadata: step };
+          schemas.push(schema);
+          componentSchemas[step.id] = schema;
+          continue;
+        }
+        if (type === 100000003) {
           const target = portal.pages.find(
             (p) => p.id === norm(field(step, "redirectwebpage")),
           );
@@ -668,9 +733,12 @@ export function applySolutionMetadata(portal, metadata) {
             ),
             recordQueryName: field(step, "redirecturlquerystringname"),
             js: step.customJavascript,
+            metadata: step,
           });
+          componentSchemas[step.id] = schemas.at(-1);
           continue;
         }
+        if (![100000001, 100000002].includes(type)) throw new Error(`Exported multistep type '${type}' is unsupported; it is not a Load Form or Load Tab.`);
         const definition = {
           id: step.id,
           name: step.name,
@@ -692,7 +760,7 @@ export function applySolutionMetadata(portal, metadata) {
           schema.metadata = step;
           schemas.push(schema);
           componentSchemas[step.id] = schema;
-        }
+        } else diagnostics.push({ code: 'ADVANCEDFORM_STEP_UNRESOLVED', id: step.id, form: form.id, entity: definition.entityName, formName: definition.formName, message: 'The exported load step has no matching eligible Dataverse systemform layout.' });
       } catch (error) {
         diagnostics.push({
           code: "ADVANCEDFORM_STEP_MAPPING_ERROR",
@@ -701,8 +769,8 @@ export function applySolutionMetadata(portal, metadata) {
         });
       }
     }
-    const start = norm(field(form.metadata, "startstep"));
-    const schema = schemas.find((s) => s.stepId === start) ?? schemas[0];
+    const start = graph.initialStepId;
+    const schema = schemas.find((s) => norm(s.stepId) === start);
     if (schema)
       componentSchemas[form.id] = {
         ...schema,
@@ -713,7 +781,9 @@ export function applySolutionMetadata(portal, metadata) {
       diagnostics.push({
         code: "ADVANCEDFORM_UNRESOLVED",
         id: form.id,
-        message: "No mapped form step exists in the solution sources",
+        initialStepId: start || null,
+        mappedStepIds: schemas.map(step => step.stepId),
+        message: "The declared initial step has no mapped layout in the selected solution sources; another step is not selected instead",
       });
   }
   return {

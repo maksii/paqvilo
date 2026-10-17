@@ -470,3 +470,36 @@ test("exported account, contact (many-to-many) and parent grants resolve through
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("configured mappings keep the Solution's relationships and primary name unless they declare their own", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "pp-solution-configured-"));
+  try {
+    const file = join(root, "customizations.xml");
+    await fs.writeFile(
+      file,
+      `<ImportExportXml>${entity("sample_parent")}${entity("sample_child")}<EntityRelationships>${relationship("parent_child", "sample_child", "sample_parent", "parentid")}</EntityRelationships></ImportExportXml>`,
+    );
+    const metadata = await importSolutionData([file]);
+    const solutionChild = metadata.mappings.sample_child;
+    const resolved = applySolutionData(
+      {
+        mappings: {
+          // A data pack's mapping: entity set and id only.
+          sample_child: { entitySet: "children", idColumn: "sample_childid" },
+          // A mapping that declares its relationships keeps them.
+          sample_parent: { entitySet: "parents", idColumn: "sample_parentid", relationships: {} },
+        },
+        tables: {},
+      },
+      metadata,
+    );
+    assert.equal(resolved.mappings.sample_child.entitySet, "children");
+    assert.deepEqual(resolved.mappings.sample_child.relationships, solutionChild.relationships);
+    assert.ok(Object.keys(resolved.mappings.sample_child.relationships).length > 0);
+    assert.equal(resolved.mappings.sample_child.nameColumn, solutionChild.nameColumn);
+    assert.deepEqual(resolved.mappings.sample_parent.relationships, {});
+    assert.equal(resolved.mappings.sample_child.inferred, undefined, "the configured mapping stays configured");
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

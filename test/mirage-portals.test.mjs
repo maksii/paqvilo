@@ -72,7 +72,7 @@ test('mirage with portals=all writes one project per site, starts one runtime pe
     // one runtime of a project, or one source, do not fit several catalogue portals.
     const conflict = run('mirage', 'start', '--config', config, '--portal', 'classic', '--json');
     assert.equal(conflict.status, 1);
-    assert.match(json(conflict).error.message, /--portal applies to a single runtime\. \(--port, --state, --preset, --solution-root apply to the selected site\.\)/);
+    assert.match(json(conflict).error.message, /--portal applies to a single runtime\. \(--port, --state, --preset, --preset-mode, --solution-root apply to the selected site\.\)/);
     const misplaced = run('mirage', 'status', '--config', config, '--allow-live-writes', '--json');
     assert.equal(misplaced.status, 1);
     assert.match(json(misplaced).error.message, /--allow-live-writes applies only to mirage dev and start/);
@@ -104,6 +104,9 @@ test('mirage with portals=all writes one project per site, starts one runtime pe
     const refused = run('mirage', 'start', '--config', clash, '--json');
     assert.equal(refused.status, 1);
     assert.match(json(refused).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
+    const alternateSpelling = run('mirage', 'start', '--config', clash, '--port', '018797', '--json');
+    assert.equal(alternateSpelling.status, 1);
+    assert.match(json(alternateSpelling).error.message, /Each Mirage needs its own port \(port 18797: classic, enhanced\)/);
   } finally {
     const stopped = run('mirage', 'stop', '--config', config, '--json');
     assert.equal(stopped.status, 0, stopped.stdout + stopped.stderr);
@@ -200,6 +203,12 @@ test('a project with several portals starts one runtime per portal on consecutiv
   let started = null;
   try {
     assert.match(json(run('mirage', 'start', '--config', config, '--project', projectFile, '--state', path.join(work, 'one.json'), '--json')).error.message, /keeps a state file per portal/);
+    for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536', '65535']) {
+      const invalid = run('mirage', 'start', '--config', config, '--project', projectFile, `--port=${port}`, '--json');
+      assert.equal(invalid.status, 1, invalid.stdout + invalid.stderr);
+      assert.match(json(invalid).error.message, /--port must be an integer|exceeds the available port range/);
+      assert.deepEqual(json(run('mirage', 'status', '--config', config, '--json')).sessions, [], 'invalid project range must not start any portal');
+    }
     started = run('mirage', 'start', '--config', config, '--project', projectFile, '--port', '0', '--startup-timeout', '120000', '--json');
     assert.equal(started.status, 0, started.stdout + started.stderr);
     const portals = json(started).portals;
@@ -267,6 +276,7 @@ test('every Mirage started from the catalogue reads the catalogue file and check
   assert.ok(projected.includes('--allow-live-writes'), 'a project runtime gets the flag too');
   const plain = cliArgs(site('alpha'), 'serve', {}).values;
   assert.ok(!plain.includes('--config') && !plain.includes('--repo'), 'without --config the Mirage reads the default catalogue, as this command did');
+  assert.deepEqual(option(cliArgs(site('alpha'), 'serve', { port: 0 }).values, '--port'), ['--port', '0'], 'numeric zero still requests an ephemeral port');
   const project = cliArgs(site('alpha'), 'serve', { config: 'catalogue.yml', repo: 'checkout' }, { configFile: path.join(os.tmpdir(), 'alpha.project.yml'), defaultPortal: 'alpha' }).values;
   assert.ok(!project.includes('--config') && !project.includes('--repo'), 'a project file names everything its runtime reads');
 });

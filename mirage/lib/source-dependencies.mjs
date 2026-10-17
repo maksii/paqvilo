@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { adapterEnabled } from './local-overrides.mjs';
 import { hasPlatformBundles } from "./platform-manifest.mjs";
 
 function strings(value, output = []) {
@@ -78,7 +79,11 @@ export async function discoverSourceDependencies(portal) {
   authored.push(
     ...strings(portal.templates),
     ...strings(portal.snippets),
-    ...(portal.pages ?? []).flatMap((page) => [page.html, page.js]),
+    ...strings(portal.snippetTranslations),
+    ...(portal.pages ?? []).flatMap((page) => [
+      page.html, page.js,
+      ...Object.values(page.translations ?? {}).flatMap((variant) => [variant.html, variant.js]),
+    ]),
     ...(portal.forms ?? []).map((form) => form.js),
     ...(portal.lists ?? []).map((list) => list.js),
     ...strings((portal.records ?? [])
@@ -130,7 +135,7 @@ export function runtimeDependencyPaths(dependencies, configuredScripts = []) {
     )
       paths.push(localPath);
   }
-  return paths;
+  return paths.filter(src => adapterEnabled(src.slice(src.lastIndexOf('/') + 1), dependencies.compat));
 }
 
 /** HTML documents are the only responses that receive local runtime assets. Template
@@ -175,7 +180,7 @@ export function runtimeCompatibilityPaths(dependencies, configuredScripts = []) 
   else if (dependencies.bootstrapPlugins && !hasConfigured(BOOTSTRAP_CORE_SCRIPT)) paths.push("/__sim-static/vendor/bootstrap-plugins-compat.js");
   // A document that includes jQuery UI keeps its own dialog widget.
   if (dependencies.jqueryUiDialog && !hasConfigured(/(?:^|\/)jquery[.-]?ui(?:[.-][\w.]*)?\.js(?:[?#]|$)/i)) paths.push("/__sim-static/vendor/jqueryui-dialog-compat.js");
-  return paths;
+  return paths.filter(src => adapterEnabled(src.slice(src.lastIndexOf('/') + 1), dependencies.compat));
 }
 
 /** Add each compatibility adapter once, after the last jQuery core include.
@@ -203,6 +208,7 @@ export function injectRuntimeCompatibility(html, dependencies, configuredScripts
   // Inline page templates can contain a semantic footer even when source
   // dependency scanning only sees external files and shared metadata.
   if (
+    dependencies.compat?.footerSpacing !== false &&
     (dependencies.footerSpacing || /<footer\b|\brole\s*=\s*["']contentinfo["']/i.test(output)) &&
     !present.has("/__sim-static/vendor/footer-spacing-compat.js")
   ) {

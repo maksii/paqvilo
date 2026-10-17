@@ -4,15 +4,37 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { collectSyntheticEvidence } from '../scripts/collect-evidence.mjs';
-import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata } from '../scripts/release-check.mjs';
+import { validateReleaseFiles, REQUIRED_RELEASE_FILES, checkPackageMetadata, checkDocumentation } from '../scripts/release-check.mjs';
+
+test('release checks nested user guides and example documentation links', t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-doc-links-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const write = (name, text) => { const file = path.join(root, name); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, text); };
+  for (const name of ['README.md', 'AGENTS.md', 'CONTRIBUTING.md', 'SECURITY.md', 'mirage/README.md']) write(name, '# Guide\n');
+  write('.gitignore', '.env\npaqvilo.config.local.yml\n');
+  write('mirage/docs/baseline/rerun.md', '[Input](./scenario%20inputs.md#fields)');
+  assert.throws(() => checkDocumentation(root), /Broken documentation link.*rerun\.md/);
+  write('mirage/docs/baseline/scenario inputs.md', '# Fields\n');
+  write('examples/project/deployment/README.md', '[Site](../../../missing.md)');
+  assert.throws(() => checkDocumentation(root), /Broken documentation link.*README\.md/);
+  write('missing.md', '# Site\n');
+  write('mirage/docs/node_modules/private/README.md', '[Ignore](absent.md)');
+  assert.doesNotThrow(() => checkDocumentation(root));
+});
 
 test('release allowlist includes Mirage runtime and excludes tests, state, profiles and live evidence', () => {
   const required = REQUIRED_RELEASE_FILES.map((path) => ({ path }));
   assert.equal(validateReleaseFiles(required), required.length);
-  for (const file of ['.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'docs/assets/live.png', 'docs/assets/private.svg', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs']) {
+  assert.equal(validateReleaseFiles([...required, {path:'examples/company-operations/portal-harness/native-capture.mjs'}, {path:'examples/company-operations/plugins/mirage-runtime.mjs'}]), required.length + 2);
+  assert.equal(validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/PaqviloDemoPlugins.dll'}]),required.length+1);
+  assert.throws(()=>validateReleaseFiles([...required,{path:'examples/project/solution/PluginAssemblies/PaqviloDemoPlugins-***/Unreviewed.dll'}]),/Unexpected release file/);
+  for (const file of ['mirage/admin/unreviewed.mjs', '.env', '.paqvilo/agents/session.json', 'profiles/Default/Cookies', 'live.png', 'docs/assets/live.png', 'docs/assets/private.svg', 'lense/../../secret.mjs', 'mirage/test/server.test.mjs', 'mirage/test-browser/admin.test.mjs', 'mirage/node_modules/liquidjs/index.js', 'mirage/.paqvilo/state.json', 'mirage/packs/customer/pack.mjs','mirage/lib/arbitrary-plugin.cs','mirage/lib/plugin-clr-host.exe','mirage/lib/Microsoft.Xrm.Sdk.dll']) {
     assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);
+  for (const file of ['examples/company-operations/.paqvilo/dataverse/connection.json','examples/company-operations/.paqvilo/dataverse/remote-plan.json','lense/dataverse/private-credential.json','examples/company-operations/plugins/bin/QueryObservation.dll','examples/company-operations/plugins/obj/assets.json','examples/company-operations/forms/native-live-export.xml','examples/company-operations/portal-security/actual-tester-overlay.json','examples/company-operations/portal-harness/native-capture.json','examples/company-operations/portal-harness/native-connection.mjs','examples/company-operations/plugins/mirage-native-captures.json']) {
+    assert.throws(()=>validateReleaseFiles([...required,{path:file}]),/Unexpected release file/);
+  }
 });
 
 test('the package names its GitHub repository, which npm provenance requires', () => {

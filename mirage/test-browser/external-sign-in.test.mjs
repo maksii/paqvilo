@@ -133,12 +133,16 @@ test("a portal's own Sign in button signs in through the local identity provider
   // Sign out (external logout is off): local sign-out; the protected page asks to sign in again.
   await Promise.all([tab.waitForURL((url) => url.pathname === "/signin" && url.searchParams.get("ReturnUrl") === "/members/"), tab.locator("#sign-out").click()]);
   // The platform's sign-in page lists the site's provider with its caption, and no local personas.
-  const provider = tab.locator("form.paqvilo-mirage-provider button[name=provider]");
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
   assert.equal(await provider.innerText(), "Sign In");
   assert.equal(await provider.getAttribute("value"), TENANT);
   assert.equal(await tab.locator("li.paqvilo-mirage-persona").count(), 0);
   // A new user meets the site's registration settings (registration is off).
   await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
+  assert.equal(await tab.getByLabel("Given name").count(),0,"the default chooser does not offer disabled registration");
+  // Explicitly request the negative registration flow instead of suggesting it
+  // to every operator on a site that disallows registration.
+  const registrationTest=new URL(tab.url());registrationTest.searchParams.set('prompt','create');await tab.goto(registrationTest.href);
   await tab.getByLabel("Given name").fill("Nina");
   await tab.getByLabel("Family name").fill("New");
   await tab.getByLabel("Email").fill("nina@example.test");
@@ -162,7 +166,7 @@ test("the platform's sign-in page registers a new user through the provider, and
   await tab.goto(app.url + "/");
   // Fixture with explicit sign-in link: the header link opens the platform's sign-in page with the provider form.
   await Promise.all([tab.waitForURL((url) => url.pathname === "/SignIn"), tab.locator("#sign-in").click()]);
-  const provider = tab.locator("form.paqvilo-mirage-provider button[name=provider]");
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
   assert.equal(await provider.innerText(), "Local IdP");
   await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
   await tab.getByLabel("Given name").fill("Dana");
@@ -209,7 +213,7 @@ test("the authorization code flow runs end to end in the browser: the provider's
   });
   await tab.goto(app.url + "/");
   await Promise.all([tab.waitForURL((url) => url.pathname === "/SignIn"), tab.locator("#sign-in").click()]);
-  const provider = tab.locator("form.paqvilo-mirage-provider button[name=provider]");
+  const provider = tab.locator("form[action*='ExternalLogin'] button[name=provider]");
   assert.equal(await provider.innerText(), "Code IdP");
   await Promise.all([tab.waitForURL((url) => url.origin === idp), provider.click()]);
   const authorize = new URL(tab.url());

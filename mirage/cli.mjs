@@ -4,12 +4,16 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { importPortal } from "./lib/importer.mjs";
+import { createPortalRenderer } from "./lib/liquid.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
 import { createSimulator } from "./server.mjs";
 import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { shareSolutionParses } from "./lib/solution-cache.mjs";
+import { runtimePort } from "./lib/runtime-port.mjs";
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
+import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
+import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let parsed;
@@ -30,6 +34,8 @@ try {
       origin: { type: "string" },
       cdp: { type: "string" },
       preset: { type: "string" },
+      "preset-mode": { type: "string" },
+      'apply-configuration': { type: 'boolean' },
       path: { type: "string", default: "/" },
       "managed-control-path": { type: "string" },
       stylesheet: { type: "string", multiple: true },
@@ -70,6 +76,8 @@ const command = positionals[0] ?? "serve";
 if (args.help || command === "help") {
   console.log(`Power Pages local mirage
 
+Commands: ${MIRAGE_COMMANDS.join(', ')}
+
   node mirage/cli.mjs serve [--site SITE --env ENV] [--repo PATH]
   node mirage/cli.mjs serve --source PATH --port 8787
   node mirage/cli.mjs inspect --project mirage.project.yml --json
@@ -87,10 +95,10 @@ if (args.help || command === "help") {
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH]
 
-Options: --state FILE, --preset NAME, --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
-Default state and evidence paths are under .paqvilo. Deployment profiles require --deployment-profile.
+Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
 Presets (registry; a portal lists only packs that match it): ${Object.entries(
     Object.keys(builtinPresets).reduce((groups, id) => {
       const pack = presetDescriptor(builtinPresets, id)?.pack ?? "generic";
@@ -104,6 +112,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
   process.exit(0);
 }
 try {
+  if(!MIRAGE_CORE_COMMANDS.includes(command))throw new Error(unknownMirageCommand(command));
   if (command === "data") {
     const { runDataCommand } = await import("./lib/data-generation.mjs");
     // data scaffold resolves its portal like serve: a project file and portal,
@@ -151,9 +160,10 @@ try {
         defaultPortal: project.defaultPortal,
         lcid: project.lcid,
         solutionOrder: project.solutionOrder,
-        portals: bootstrapped.portals.map(({ id, sourceDir, origin, reference, solutions, portal, metadata, solutionData }) => ({
+        portals: bootstrapped.portals.map(({ id, sourceDir, origin, reference, solutions, portal, metadata, solutionData, deploymentProfiles, activeProfiles }) => ({
           id, sourceDir: portal.sourceDir ?? sourceDir, origin: projectOrigin(project, { origin, reference }), solutions, format: portal.format,
           layout: portal.source?.dialect ?? null, dataModel: portal.dataModel, dataModelSource: portal.dataModelSource,
+          profileSelection: deploymentProfilesSummary(deploymentProfiles, activeProfiles),
           serverLogics: (portal.serverLogics ?? []).map((item) => item.name),
           cloudFlows: (portal.cloudFlows ?? []).map((item) => item.name),
           solutionData: solutionData.stats,
@@ -163,6 +173,7 @@ try {
           assets: portal.webFiles.length,
           forms: portal.forms.length,
           lists: portal.lists.length,
+          liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
           solutionMetadata: metadata.summary,
           diagnostics: [...portal.diagnostics, ...metadata.diagnostics],
         })),
@@ -176,9 +187,7 @@ try {
         [...portal.diagnostics, ...metadata.diagnostics].some((d) => d.code?.startsWith("invalid"))) ? 1 : 0;
     }
     else if (project && command === "serve" && !args.portal) {
-      const port = Number(args.port);
-      if (!Number.isInteger(port) || port < 0 || port > 65535)
-        throw new Error("port must be 0–65535");
+      const port = runtimePort(args.port);
       if (port && port + project.portals.length - 1 > 65535)
         throw new Error("The configured portal count exceeds the available port range.");
       const sessions = [];
@@ -197,8 +206,11 @@ try {
               })()
             : projectStateFile(project, portal.id, path.join(stateDir, "simulator/projects"));
           const simulator = await createSimulator({
+            setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
             sourceDir: portal.sourceDir,
+            contentPolicyDefaults:portal,
             stateFile,
+            preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
             port: port ? port + index : 0,
             origin: projectOrigin(project, portal) ?? args.origin,
             solutionRoots: portal.solutionRoots,
@@ -206,6 +218,7 @@ try {
             environmentVariables: project.environmentVariables,
             project: projectSummary(project, portal.id),
             deploymentProfile: portal.deploymentProfile ?? undefined,
+            deploymentProfiles: portal.deploymentProfiles,
             observed: portal.observed,
             dataModel: portal.dataModel ?? undefined,
             watch: !args["no-watch"] && project.watch !== false,
@@ -214,9 +227,9 @@ try {
             requirePortalSource: true,
             allowLiveWrites: args["allow-live-writes"] === true,
           });
-          if (args.preset) await simulator.applyPreset(args.preset);
-          if (args.cdp) await simulator.live.connect(args.cdp);
           sessions.push({ portal, simulator, stateFile });
+          // Keep the runtime in the cleanup set even when browser attachment fails.
+          if (args.cdp) await simulator.live.connect(args.cdp);
         }
       } catch (error) {
         await Promise.all(sessions.map(({ simulator }) => simulator.close()));
@@ -244,6 +257,7 @@ try {
           // Portal pages carry only site-setting headers unless confinement is opted in.
           confinePortalPages: startedConfig.confinePortalPages,
           signInPath: startedStatus.bootstrap.signInPath,
+          startupPreset: startedStatus.startupPreset,
           // External sign-in's local identity provider: its own loopback port, closed with the runtime.
           identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
           // "disabled" unless started with --allow-live-writes.
@@ -272,6 +286,10 @@ try {
       configuredPortal = project.portals.find((p) => p.id === (args.portal ?? project.defaultPortal));
       sourceDir = configuredPortal.sourceDir;
       origin = projectOrigin(project, configuredPortal) ?? origin;
+      if (args.config && args.site) {
+        const { loadConfig } = await import('../lense/config.mjs');
+        siteMirage = (await loadConfig({ config: args.config, site: args.site, env: args.env })).mirageConfig;
+      }
     } else if (!sourceDir) {
       const { loadConfig } = await import("../lense/config.mjs");
       const cfg = await loadConfig({
@@ -290,17 +308,26 @@ try {
       const { loadConfig } = await import("../lense/config.mjs");
       siteMirage = (await loadConfig({ site: args.site, env: args.env, ...(args.repo ? { repo: args.repo } : {}), ...(args.config ? { config: args.config } : {}) })).mirageConfig ?? null;
     }
+    if (command === 'serve') {
+      args.preset ??= siteMirage?.preset;
+      args['preset-mode'] ??= siteMirage?.presetMode;
+      if(args['apply-configuration']===undefined && siteMirage?.presetConfiguration==='apply')args['apply-configuration']=true;
+    }
     const deploymentProfile = args["deployment-profile"] ?? configuredPortal?.deploymentProfile;
     // The data model of a YAML source: --data-model, else the project portal's or catalogue
     // site's dataModel, else the source's default (lib/importer.mjs).
     const dataModel = args["data-model"] ?? (project ? configuredPortal?.dataModel : siteMirage?.dataModel) ?? undefined;
     if (command === "inspect") {
+      const profileConfig = resolveDeploymentProfiles(siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles);
+      if (deploymentProfile && Object.keys(profileConfig.profiles).length) throw new Error('Use deploymentProfiles or legacy deploymentProfile, not both.');
+      const activeProfiles = await loadDeploymentProfiles(profileConfig);
       // A source with zero recognised pages is not a portal: fail loudly, naming its layout.
-      const portal = assertPortalSource(await importPortal(sourceDir, { deploymentProfile, dataModel }));
+      const portal = assertPortalSource(await importPortal(sourceDir, { deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile, deploymentProfileFile: activeProfiles.pagesFile, dataModel }));
       console.log(
         JSON.stringify(
           {
             sourceDir: portal.sourceDir,
+            profileSelection: deploymentProfilesSummary(profileConfig, activeProfiles),
             format: portal.format,
             layout: portal.source?.dialect ?? null,
             dataModel: portal.dataModel,
@@ -318,6 +345,7 @@ try {
             assets: portal.webFiles.length,
             forms: portal.forms.length,
             lists: portal.lists.length,
+            liquidSyntax: createPortalRenderer(portal).inspectCapabilities(),
             diagnostics: portal.diagnostics,
           },
           null,
@@ -367,9 +395,7 @@ try {
           args.path.includes("\\"))
       )
         throw new Error("Capture page path must be portal-relative.");
-      const port = command === "serve" ? Number(args.port) : 0;
-      if (!Number.isInteger(port) || port < 0 || port > 65535)
-        throw new Error("port must be 0–65535");
+      const port = command === "serve" ? runtimePort(args.port) : 0;
       const stateFile = path.resolve(
         args.state ??
         (project
@@ -390,10 +416,19 @@ try {
       const solutionRoots = resolvedRoots.roots;
       let stop;
       const simulator = await createSimulator({
+        setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : null,
               sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
+        localOverrides: siteMirage?.localOverrides,
+        contentPolicyDefaults:{...configuredPortal,...siteMirage},
+        render: siteMirage?.render,
+        personaContexts: siteMirage?.personaContexts,
+        identityProvider: siteMirage?.identityProvider,
+        projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
+        platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
         stateFile,
+        preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
         port,
         origin,
         solutionRoots,
@@ -401,6 +436,7 @@ try {
         // Observed site behaviour the export cannot express (project portal or catalogue site).
         observed: project ? configuredPortal.observed : siteMirage?.observed,
         deploymentProfile,
+        deploymentProfiles: siteMirage?.deploymentProfiles ?? configuredPortal?.deploymentProfiles,
         dataModel,
         watch: command === "serve" && !args["no-watch"] && project?.watch !== false,
         ...(command === "serve" ? { onShutdown: () => stop?.() } : {}),
@@ -409,9 +445,6 @@ try {
         allowLiveWrites: args["allow-live-writes"] === true,
       });
       try {
-        if (args.preset) {
-          await simulator.applyPreset(args.preset);
-        }
         if (args.cdp) await simulator.live.connect(args.cdp);
         if (capturing) {
           const state = simulator.state();
@@ -520,6 +553,7 @@ try {
                 // Portal pages carry only site-setting headers unless confinement is opted in.
                 confinePortalPages: startedConfig.confinePortalPages,
                 signInPath: startedStatus.bootstrap.signInPath,
+                startupPreset: startedStatus.startupPreset,
                 // External sign-in's local identity provider: its own loopback port, closed with the runtime.
                 identityProvider: { origin: simulator.identityProvider.origin, port: simulator.identityProvider.port },
                 // "disabled" unless started with --allow-live-writes.

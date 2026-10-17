@@ -98,7 +98,7 @@ test('local Mirage portals and live targets share one browser: the selector swit
   };
   const choose = async (index, origin) => {
     await openTab('overrides');
-    await Promise.all([page.waitForURL((url) => url.origin === origin), page.getByLabel('Portal / environment', { exact: true }).selectOption(String(index))]);
+    await Promise.all([page.waitForURL((url) => url.origin === origin), page.getByLabel('Portal / environment', { exact: true }).selectOption(String(index)).then(()=>page.locator('[data-target-go]').click())]);
   };
   const signedIn = async (app) => (await (await context.request.get(`${app.url}/_sim/api/session`)).json()).signedIn;
 
@@ -117,7 +117,7 @@ test('local Mirage portals and live targets share one browser: the selector swit
   await openTab('runtime');
   await panel('[data-group="runtime-chain"] .row').filter({ hasText: 'Partial' }).first().waitFor();
   await openTab('tweaks');
-  await panel('select[data-pick="persona"]').selectOption('alex');
+  await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
   await page.locator('#who').getByText('Alex Local', { exact: true }).waitFor();
   assert.deepEqual([await signedIn(enhancedApp), await signedIn(classicApp)], [true, false], 'signing in on one local portal leaves the other anonymous');
@@ -126,7 +126,7 @@ test('local Mirage portals and live targets share one browser: the selector swit
   await choose(0, classicApp.url);
   await openTab('tweaks');
   await panel('.card').filter({ hasText: 'Browser session' }).getByText('Anonymous', { exact: true }).waitFor();
-  await panel('select[data-pick="persona"]').selectOption('alex');
+  await panel('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await Promise.all([page.waitForNavigation({ waitUntil: 'load' }), panel('[data-act="signin"]').click()]);
   assert.deepEqual([await signedIn(classicApp), await signedIn(enhancedApp)], [true, true]);
   const names = (await context.cookies()).map((cookie) => cookie.name).filter((name) => name.startsWith('paqvilo-mirage-auth')).sort();

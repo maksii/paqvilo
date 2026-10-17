@@ -2,6 +2,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
+/** A launch port cannot identify a browser reached through an existing CDP endpoint. */
+export function validateDebuggerMode(cdpUrl, debugPort) {
+  if (cdpUrl && debugPort) {
+    throw new Error('browser.debugPort (--debug-port / PAQVILO_DEBUG_PORT) cannot be combined with browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL). Clear browser.debugPort or use PAQVILO_DEBUG_PORT=0 (--debug-port 0 for dev), then attach your debugger to the existing CDP endpoint. A launch port cannot select an attached browser.');
+  }
+}
+
 /** Selection metadata only: never reads cookies, browser preferences or stored account details. */
 export function browserProfileInfo(cfg, overrideDir) {
   const b = cfg.browser;

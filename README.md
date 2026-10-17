@@ -28,6 +28,8 @@
 
 Mirage also gives automated tests and coding agents a local runtime with controlled data. Keep your scenarios and acceptance tests in your own project.
 
+Use the separate [`paqvilo dataverse` workflow](docs/dataverse-provisioning.md) to register a provisioning application, prepare/reconcile project-owned schema manifests, create metadata through the API, and export/unpack solutions from Dataverse. Lense and Mirage do not provision or deploy.
+
 ## Beyond Fiddler and DevTools overrides
 
 Paqvilo is a Power Pages-specific alternative for developers who need source mapping, live reload and local portal simulation alongside resource overrides.
@@ -71,7 +73,9 @@ Prefer VS Code? Add `--scaffold`, open the generated workspace and use **F5**. T
 
 ## Use your own site
 
-Start with an existing Power Pages export. [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#2-connect-your-site) explains where to place it, how to create your configuration, and how to open the integrated browser.
+Generate an empty project with `npx paqvilo@^0.9.4 init ./my-portals --name my-portals`, then run `npm run setup` inside it and fill in the values listed by `npx paqvilo init --check`. The [project scaffold guide](docs/project-scaffold.md) covers multiple sites/packs, offline tests and editor refresh.
+
+Start with an existing Power Pages export. [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#2-scaffold-your-project) explains where to place it, how to create your configuration, and how to open the integrated browser.
 
 ```sh
 # Local rendering with Inspect and Tweaks:

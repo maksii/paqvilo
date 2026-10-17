@@ -1,0 +1,56 @@
+- adx_entityform: ea78ecf6-eb67-4a64-8a6c-3a4cb4d4758b
+  adx_entityformmetadataid: 2994ed02-62da-4b5b-8c2d-f40ed4eb869b
+  adx_name: 'Baseline Item Edit Timeline '
+  adx_timeline_settings: >-
+    {
+      "CreateEnabled": true,
+      "CreateDialogOptions": {
+        "DisplayAttachFile": true,
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading add baseline timeline entry..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Add baseline timeline entry"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "FileAttachmentLocation": 756150000,
+      "AcceptMimeTypes": "image/*,application/pdf",
+      "AcceptExtensionTypes": ".png,.pdf",
+      "RestrictMimeTypes": true,
+      "MaximumFileSize": 1024
+    }
+  adx_type: 756150000

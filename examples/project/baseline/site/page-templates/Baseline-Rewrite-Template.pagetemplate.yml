@@ -1,0 +1,7 @@
+adx_description: 'Baseline: rewrite template to FullPage.aspx (as the site''s existing rewrite templates).'
+adx_isdefault: false
+adx_name: Baseline Rewrite Template
+adx_pagetemplateid: d2999ef9-87a1-4685-8b3f-450c590d7e89
+adx_rewriteurl: '~/Pages/FullPage.aspx'
+adx_type: 756150000
+adx_usewebsiteheaderandfooter: false

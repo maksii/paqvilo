@@ -1,0 +1,1 @@
+<fetch version="1.0" output-format="xml-platform" mapping="logical" distinct="false"><entity name="pqvd_baselineitem"><attribute name="pqvd_baselineitemid" /><attribute name="pqvd_name" /><attribute name="pqvd_code" /><order attribute="pqvd_name" descending="false" /><filter type="and"><condition attribute="statecode" operator="eq" value="0" /></filter></entity></fetch>

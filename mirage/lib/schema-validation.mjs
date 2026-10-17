@@ -10,6 +10,7 @@ const OPTION_TYPES = new Set(["picklist", "multiselectpicklist", "state", "statu
 
 /** Compact index entry for one field: null, or [[value, label], ...] for option columns. */
 function fieldEntry(definition) {
+  if (definition.optionSetOpen === true) return null;
   if (!OPTION_TYPES.has(definition.dataverseType)) return null;
   return (definition.options ?? []).map((option) => [option.value, option.label]);
 }
@@ -33,7 +34,7 @@ export function fieldIndexFromMappings(mappings = {}) {
   for (const [name, mapping] of Object.entries(mappings)) {
     if (mapping?.schemaComplete !== true || !mapping.fieldMetadata) continue;
     const fields = {};
-    for (const [field, definition] of Object.entries(mapping.fieldMetadata)) fields[field] = fieldEntry({ dataverseType: definition.dataverseType, options: definition.options });
+    for (const [field, definition] of Object.entries(mapping.fieldMetadata)) fields[field] = fieldEntry({ dataverseType: definition.dataverseType, options: definition.options, optionSetOpen: definition.optionSetOpen });
     tables[name] = { schemaComplete: true, fields };
   }
   return { tables };

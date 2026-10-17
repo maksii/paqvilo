@@ -1,0 +1,44 @@
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Editors; not a default role.'
+  adx_key: baseline-baseline-editors
+  adx_name: Baseline Editors
+  adx_webroleid: 1bb50c54-0208-489d-8e45-cbcbce1ba837
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Readers; not a default role.'
+  adx_key: baseline-baseline-readers
+  adx_name: Baseline Readers
+  adx_webroleid: df58c547-3567-4627-8dcb-ce3755db2f44
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Contact Scope; not a default role.'
+  adx_key: baseline-baseline-contact-scope
+  adx_name: Baseline Contact Scope
+  adx_webroleid: 5d983ff1-320d-440d-8ac6-32d5a4d310ac
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Account Scope; not a default role.'
+  adx_key: baseline-baseline-account-scope
+  adx_name: Baseline Account Scope
+  adx_webroleid: dc6528da-1676-42da-8263-7c5a402fe418
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Parent Scope; not a default role.'
+  adx_key: baseline-baseline-parent-scope
+  adx_name: Baseline Parent Scope
+  adx_webroleid: 83b55915-2899-484c-8d57-298482ed7d81
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Privilege Combinations; not a default role.'
+  adx_key: baseline-baseline-privilege-combinations
+  adx_name: Baseline Privilege Combinations
+  adx_webroleid: 5d031fb8-a8ea-4eae-8dd5-6baf1d414731
+- adx_anonymoususersrole: false
+  adx_authenticatedusersrole: false
+  adx_description: 'Baseline fixture role Baseline Inactive Role; not a default role.'
+  adx_key: baseline-baseline-inactive-role
+  adx_name: Baseline Inactive Role
+  adx_webroleid: 53506b9a-ef3b-49cc-87f7-814fe445d49f
+  statecode: 1
+  statuscode: 2

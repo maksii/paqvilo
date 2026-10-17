@@ -1,0 +1,16 @@
+- adx_description: 'Baseline: restrict read of the restricted page to Baseline Readers.'
+  adx_name: Baseline Restricted Page Read
+  adx_right: 2
+  adx_scope: 1
+  adx_webpageaccesscontrolrule_webrole:
+  - df58c547-3567-4627-8dcb-ce3755db2f44
+  adx_webpageaccesscontrolruleid: 674fd6ac-a51a-4ebe-8fc2-74bf8c781038
+  adx_webpageid: 4f8e0a49-9401-4907-8cf9-1f100a23b070
+- adx_description: 'Baseline: grant change on the editors page to Baseline Editors, excluding its direct child web files.'
+  adx_name: Baseline Editors Page Grant Change
+  adx_right: 1
+  adx_scope: 2
+  adx_webpageaccesscontrolrule_webrole:
+  - 1bb50c54-0208-489d-8e45-cbcbce1ba837
+  adx_webpageaccesscontrolruleid: 60c1357b-3450-4644-8bb1-4d7350273097
+  adx_webpageid: ab1fcf8f-d160-47fc-892b-01e20cae2a8a

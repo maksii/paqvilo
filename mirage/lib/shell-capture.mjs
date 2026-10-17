@@ -39,7 +39,7 @@ const decode = (value) =>
     },
   );
 const safePath = (value) =>
-  typeof value === "string" && value.startsWith("/")
+  typeof value === "string" && value.startsWith("/") && !value.startsWith('//') && !value.includes('@')
     ? value.split("?")[0].slice(0, 300)
     : "<excluded shell resource>";
 
@@ -102,7 +102,7 @@ function signInDocument(html, pagePath) {
   return /^(?:sign\s*in|log\s*in|login)\b/i.test(title);
 }
 
-function resolveResource(value, base, origin) {
+function resolveResource(value, base, origin, { external = false } = {}) {
   if (typeof value !== "string" || !value)
     throw fail("Observed shell resource has no URL.");
   let url;
@@ -117,21 +117,21 @@ function resolveResource(value, base, origin) {
     url.hash ||
     !["https:"].includes(url.protocol)
   )
-    throw fail(
+    throw Object.assign(fail(
       "Shell resources must use HTTPS without credentials or fragments.",
       400,
       "SHELL_RESOURCE_ORIGIN",
-    );
+    ), { host: url.host || null, reason: url.username || url.password ? 'credentials' : url.hash ? 'fragment' : 'unsupported scheme' });
   if (
-    url.origin !== origin &&
+    !external && url.origin !== origin &&
     (url.origin !== cdn ||
       !url.pathname.startsWith("/resource/powerappsportal/"))
   )
-    throw fail(
+    throw Object.assign(fail(
       "Shell resource is outside the portal and allowed Microsoft platform CDN prefix.",
       400,
       "SHELL_RESOURCE_ORIGIN",
-    );
+    ), { host: url.host, reason: 'disallowed origin' });
   const path = url.pathname + url.search;
   validateLivePath(path);
   for (const key of url.searchParams.keys())
@@ -140,11 +140,11 @@ function resolveResource(value, base, origin) {
         key,
       )
     )
-      throw fail(
+      throw Object.assign(fail(
         "Shell resources cannot include credential query parameters.",
         400,
         "SHELL_RESOURCE_CREDENTIAL",
-      );
+      ), { host: url.host, reason: 'credential query parameters' });
   return { path, sourceOrigin: url.origin, url: url.href };
 }
 const field = (record, key) =>
@@ -191,10 +191,10 @@ const runtimeScript = (path) => {
   return (
     isAspNetResourcePath(path) ||
     isResourceManagerPath(pathname) ||
-    /^\/resource\/powerappsportal\/dist\/preform\.moment_[\w.-]+\.js$/i.test(
+    /^\/resource\/powerappsportal\/dist\/preform(?:\.BootstrapV5)?\.moment_[\w.-]+\.js$/i.test(
       pathname,
     ) ||
-    /^\/resource\/powerappsportal\/dist\/(?:postpreform\.bundle-|default-\d+\.moment_)[\w.-]+\.js$/i.test(
+    /^\/resource\/powerappsportal\/dist\/(?:postpreform(?:\.BootstrapV5)?\.bundle-|default-\d+\.moment_)[\w.-]+\.js$/i.test(
       pathname,
     ) ||
     /(?:^|\/)(?:jquery(?:[-.]|$)|bootstrap(?:[-.]|$))/i.test(pathname)
@@ -367,6 +367,7 @@ export async function capturePortalShell(
     captured = [],
     failures = [],
     diagnostics = [];
+  const unusable = new Set();
   const owned = new Map(
       (portal?.webFiles ?? []).map((f) => [f.url.split("?")[0], f]),
     ),
@@ -396,10 +397,13 @@ export async function capturePortalShell(
   let base = origin + path,
     hasJquery = false,
     hasStyles = false;
-  const issue = (resource, error) =>
+  const issue = (resource, error, optional = false) =>
     failures.push({
       path: safePath(resource),
       code: error.code ?? "SHELL_CAPTURE",
+      ...(error.host ? { host: error.host } : {}),
+      ...(error.reason ? { reason: error.reason } : {}),
+      ...(optional ? { optional: true } : {}),
       message: error.code
         ? error.message
         : "Shell resource could not be captured.",
@@ -564,7 +568,26 @@ export async function capturePortalShell(
     try {
       resource = resolveResource(ref.value, base, origin);
     } catch (error) {
-      issue(ref.value, error);
+      // Exported templates retain their own external scripts. Observe references,
+      // without fetching third-party bytes or claiming they were captured.
+      if (error.code === 'SHELL_RESOURCE_ORIGIN' && ref.kind === 'script') {
+        try {
+          const external = resolveResource(ref.value, base, origin, { external: true });
+          if (/(?:^|\/)jquery(?:[-.][\d.]+)?(?:\.min)?\.js$/i.test(new URL(external.url).pathname)) {
+            hasJquery = true;
+            diagnostics.push({ code: 'SHELL_EXTERNAL_JQUERY', origin: external.sourceOrigin, path: safePath(external.path), message: 'The shell references external jQuery; exported templates supply it directly. External bytes and load success are not captured.' });
+            continue;
+          }
+        } catch { /* Keep credential and invalid URL failures below. */ }
+      }
+      let optional = false;
+      if (error.code === 'SHELL_RESOURCE_ORIGIN') {
+        try {
+          const external = resolveResource(ref.value, base, origin, { external: true });
+          optional = external.sourceOrigin !== origin && external.sourceOrigin !== cdn;
+        } catch { /* Unsafe resources still block capture. */ }
+      }
+      issue(ref.value, error, optional);
       continue;
     }
     const exportedScript =
@@ -608,12 +631,6 @@ export async function capturePortalShell(
       continue;
     }
     if (ref.kind === "style") hasStyles = true;
-    else if (
-      /(?:^|\/)jquery(?:-[\d.]+)?(?:\.min)?\.js$/i.test(
-        new URL(resource.url).pathname,
-      )
-    )
-      hasJquery = true;
     if (seen.has(resource.path)) continue;
     seen.add(resource.path);
     if (!embedded.has(resource.path.split("?")[0])) {
@@ -625,11 +642,11 @@ export async function capturePortalShell(
           ? "stylesheets"
           : ref.position === "headScripts"
             ? "headScripts"
-            : /(?:^|\/)(?:bootstrap(?:[-.]|$)|postpreform\.bundle-|default-\d+\.moment_)/i.test(
+            : /(?:^|\/)(?:bootstrap(?:[-.]|$)|postpreform(?:\.BootstrapV5)?\.bundle-|default-\d+\.moment_)/i.test(
                   new URL(resource.url).pathname,
                 )
               ? "afterFooterScripts"
-              : /(?:^|\/)(?:jquery(?:[-.]|$)|preform\.moment_)/i.test(
+              : /(?:^|\/)(?:jquery(?:[-.]|$)|preform(?:\.BootstrapV5)?\.moment_)/i.test(
                     new URL(resource.url).pathname,
                   )
                 ? "beforeContentScripts"
@@ -705,6 +722,8 @@ export async function capturePortalShell(
       break;
     }
     let css = null;
+    let script = null;
+    let scriptSha256 = null;
     let local =
       resource.sourceOrigin === origin
         ? owned.get(resource.path.split("?")[0])
@@ -720,6 +739,13 @@ export async function capturePortalShell(
       }
     }
     if (local) {
+      if (/\.m?js$/i.test(new URL(resource.url).pathname)) {
+        try {
+          const bytes = await fs.readFile(local.file);
+          script = bytes.toString('utf8');
+          scriptSha256 = createHash('sha256').update(bytes).digest('hex');
+        } catch { issue(resource.path, fail('Local exported script could not be read.', 404, 'SHELL_LOCAL_FILE_MISSING')); }
+      }
       if (/\.css$/i.test(new URL(resource.url).pathname) && local.file)
         try {
           css = cssText(await fs.readFile(local.file));
@@ -745,13 +771,26 @@ export async function capturePortalShell(
             });
       captured.push(...result.captured);
       failures.push(
-        ...result.failures.map((failure) => ({
-          ...failure,
-          dependency: !required.has(identity),
-        })),
+        ...result.failures.map((failure) => {
+          const nativeHttp = failure.code === 'ASSET_HTTP' && failure.originStatus >= 400;
+          const nativeStyle = /\.css(?:\?|$)/i.test(resource.path) && failure.code === 'ASSET_CONTENT_TYPE' && failure.originStatus === 200;
+          if (nativeHttp || nativeStyle) unusable.add(resource.path);
+          return { ...failure, dependency: !required.has(identity),
+            ...(nativeHttp || nativeStyle ? { originalCode: failure.code, code: nativeHttp ? 'NATIVE_ASSET_HTTP' : 'NATIVE_ASSET_CONTENT_TYPE', nativeOriginFailed: true } : {}) };
+        }),
       );
+      const cachedScript = result.captured.find(item => /(?:java|ecma)script/i.test(item.contentType));
+      if (cachedScript) {
+        script = (await cache.get(resource.path, { origin })).body.toString('utf8');
+        scriptSha256 = cachedScript.sha256;
+      }
       if (result.captured.some((item) => item.contentType === "text/css"))
         css = cssText((await cache.get(resource.path, { origin })).body);
+    }
+    if (script != null && (/(?:^|\/)jquery(?:[-.][\d.]+)?(?:\.min)?\.js$/i.test(resource.path.split('?')[0]) ||
+      /\b[\w$]+\.jQuery\s*=(?!=)/.test(script))) {
+      hasJquery = true;
+      shellProfile.jquery ??= { source: resource.path.split('?')[0], sourceOrigin: resource.sourceOrigin, sha256: scriptSha256, kind: local ? 'exported' : 'captured' };
     }
     if (css != null)
       for (const value of cssDependencies(css)) {
@@ -760,6 +799,11 @@ export async function capturePortalShell(
         try {
           const target = new URL(value, resource.url);
           target.hash = "";
+          if (local && target.origin !== origin && (target.origin !== cdn || !target.pathname.startsWith('/resource/powerappsportal/'))) {
+            const external = resolveResource(target.href, resource.url, origin, { external: true });
+            diagnostics.push({ code: 'SHELL_EXTERNAL_LOCAL_DEPENDENCY', origin: external.sourceOrigin, path: safePath(external.path), stylesheet: safePath(resource.path), message: 'The exported stylesheet keeps this external dependency; no third-party bytes were captured.' });
+            continue;
+          }
           const dependency = resolveResource(target.href, resource.url, origin);
           pending.push(dependency);
         } catch (error) {
@@ -767,25 +811,39 @@ export async function capturePortalShell(
         }
       }
   }
-  if (!hasJquery)
-    issue(
-      path,
-      fail(
-        "No jQuery shell reference or verified ResourceManager jQuery library was observed.",
-        422,
-        "SHELL_JQUERY_MISSING",
-      ),
-    );
+  if (!hasJquery) {
+    let version;
+    try {
+      const target = new URL(path, origin);
+      const page = live.context.pages?.().find(page => { const url = new URL(page.url()); return url.origin === origin && url.pathname === target.pathname; });
+      version = await page?.evaluate(() => globalThis.jQuery?.fn?.jquery);
+    } catch { /* Page inspection is optional; static resource capture still works. */ }
+    const loaded = typeof version === 'string' && /^\d+\.\d+(?:\.\d+)?(?:[-.][\w]+)*$/.test(version);
+    if (loaded) {
+      hasJquery = true;
+      shellProfile.jquery = { kind: 'browser-observed', pagePath: safePath(path), version };
+      diagnostics.push({ code: 'SHELL_JQUERY_OBSERVED', path: safePath(path), version, message: 'The loaded page exposes jQuery under an exported or bundled reference.' });
+    } else issue(path, fail('No observed script provides jQuery; shell application requires a captured, exported or browser-observed provider.', 422, 'SHELL_JQUERY_MISSING'));
+  }
+  for (const failure of failures) failure.blocking = !failure.dependency && !failure.optional && !failure.nativeOriginFailed;
+  failures.sort((left, right) => Number(right.blocking) - Number(left.blocking));
+  for (const phase of ['stylesheets', 'headScripts', 'bodyScripts', 'beforeContentScripts', 'afterFooterScripts'])
+    shellProfile[phase] = shellProfile[phase].filter(entry => !unusable.has(typeof entry === 'string' ? entry : entry.href ?? entry.src));
+  shellProfile.platformStyles = {
+    mode: failures.some(failure => failure.blocking) ? 'placeholder' : 'captured',
+    capturedAt: new Date().toISOString(), origin,
+    missingHeadStylesheets: failures.filter(failure => !failure.dependency && /\.css(?:\?|$)/i.test(failure.path)).map(failure => failure.path),
+  };
   return {
     shellProfile,
     captured,
     failures,
     diagnostics,
     pagePath: path.split("?")[0],
-    complete: failures.length === 0,
+    complete: failures.every(failure => failure.nativeOriginFailed === true),
     // CSS files can name obsolete fallback fonts/images that the selected
     // browser never requests. Keep every failure visible, while permitting a
     // profile whose directly observed scripts/styles/images were all captured.
-    ready: failures.every((failure) => failure.dependency === true),
+    ready: !failures.some(failure => failure.blocking),
   };
 }

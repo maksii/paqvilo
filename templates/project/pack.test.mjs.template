@@ -1,0 +1,12 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { validatePack } from 'paqvilo/mirage/packs';
+import pack from '../pack.mjs';
+import { mirage } from '{{support}}';
+
+test('pack contract and empty preset work without portal sources', async () => {
+  assert.equal(validatePack(pack), pack);
+  const store = new mirage.DataStore();
+  await store.applyPreset('{{pack}}-empty');
+  assert.deepEqual(store.snapshot().tables, {});
+});

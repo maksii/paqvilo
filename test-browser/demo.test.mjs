@@ -87,7 +87,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   }
   await evidence('demo-anonymous');
   await page.getByRole('link', { name: 'Sign in to try CRUD', exact: true }).click();
-  await page.locator('.paqvilo-mirage-persona').filter({ hasText: 'Alex Example 01' }).getByRole('button', { name: 'Sign in', exact: true }).click();
+  await page.locator('.paqvilo-mirage-persona').filter({ hasText: 'Alex Example 01' }).getByRole('button', { name: 'Sign in', exact: true }).first().click();
   await page.getByRole('link', { name: 'Open the demo', exact: true }).click();
   await page.locator('[data-account-rows] tr').first().waitFor();
   assert.equal(await page.locator('[data-account-rows] tr').count(), 8);
@@ -160,7 +160,7 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.keyboard.press('Alt+Shift+P');
   const css = path.join(directory, 'portal/web-files/demo.css');
   await fs.appendFile(css, '\nbody{--demo-source-proof:verified;}\n');
-  await page.waitForFunction(() => getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified');
+  await page.waitForFunction(() => document.body && getComputedStyle(document.body).getPropertyValue('--demo-source-proof').trim() === 'verified');
   await page.goto(url + '/approach/out-of-the-box/');
   await page.locator('.entity-grid tbody tr[data-id]').first().waitFor();
   assert.equal(await page.locator('.entity-grid tbody tr[data-id]').count(), 10);
@@ -273,6 +273,39 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await page.setViewportSize({ width: 390, height: 844 });
   await evidence('demo-mobile');
   assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), 'mobile demo must not overflow');
+  const parentSession=await page.evaluate(()=>fetch('/_sim/api/session').then(response=>response.json()));
+  const launch=await page.evaluate(async()=>{
+    const state=await fetch('/_sim/api/state?summary=1').then(response=>response.json());
+    const response=await fetch('/_sim/api/personas/launch',{method:'POST',headers:{'content-type':'application/json','x-sim-csrf':state.csrf},body:JSON.stringify({scenario:'entra-editor',instanceKey:'demo-browser'})});
+    if(!response.ok)throw Error('Demo Entra context failed: '+response.status);
+    const {origin,id}=await response.json();return {origin,id};
+  });
+  assert.notEqual(launch.origin,url);
+  // Launching a persona establishes its cookie. Sign out before exercising the
+  // browser's provider flow, without clearing any other runtime's cookies.
+  await page.goto(launch.origin+'/Account/Login/LogOff?ReturnUrl=%2FSignIn');await page.getByRole('button',{name:'Demo Microsoft Entra',exact:true}).click();
+  await page.getByRole('heading',{name:'Choose a demo operator',exact:true}).waitFor();
+  await page.setViewportSize({width:1280,height:900});await evidence('demo-entra-desktop');
+  assert.equal(await page.locator('[data-persona-chooser]').evaluate(element=>getComputedStyle(element).getPropertyValue('--persona-accent').trim()),'#315747');
+  await page.setViewportSize({width:390,height:844});await evidence('demo-entra-mobile');
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),'mobile Entra chooser must fit');
+  await page.getByRole('button',{name:'Continue as Alex Example 01',exact:true}).first().click();await page.waitForURL(launch.origin+'/');
+  const entraSession=await page.evaluate(()=>fetch('/_sim/api/session').then(response=>response.json()));
+  assert.equal(entraSession.contactId,parentSession.contactId);assert.ok(entraSession.roles.includes('Workspace Editors'));assert.ok(entraSession.provider);
+  const parentAfter=await fetch(url+'/_sim/api/session',{headers:{cookie:await context.cookies(url).then(cookies=>cookies.map(cookie=>cookie.name+'='+cookie.value).join('; '))}}).then(response=>response.json());
+  assert.equal(parentAfter.contactId,parentSession.contactId);assert.equal(parentAfter.provider,parentSession.provider);
+  await page.setViewportSize({width:1280,height:900});await page.getByRole('link',{name:'Sign out',exact:true}).click();
+  await page.waitForURL(launch.origin+'/');assert.equal((await page.evaluate(()=>fetch('/_sim/api/session').then(response=>response.json()))).signedIn,false);
+  await page.goto(launch.origin+'/SignIn');await page.getByRole('button',{name:'Demo Microsoft Entra',exact:true}).click();
+  await page.getByRole('button',{name:'Continue as Alex Demo 01',exact:true}).first().click();await page.waitForURL(launch.origin+'/');
+  const readerResult=await page.evaluate(async()=>{
+    const session=await fetch('/_sim/api/session').then(response=>response.json());
+    const state=await fetch('/_sim/api/state?summary=1').then(response=>response.json());
+    const records=await fetch('/_api/accounts?$select=accountid').then(response=>response.json());
+    const denied=await fetch('/_api/accounts('+records.value[0].accountid+')',{method:'PATCH',headers:{'content-type':'application/json','__RequestVerificationToken':state.csrf},body:JSON.stringify({name:'Denied reader change'})});
+    return {name:session.name,roles:session.roles,rows:records.value.length,writeStatus:denied.status};
+  });
+  assert.equal(readerResult.name,'Alex Demo 01');assert.ok(!readerResult.roles.includes('Workspace Editors'));assert.equal(readerResult.rows,12);assert.equal(readerResult.writeStatus,403);
   assert.deepEqual(errors, []);
   if (process.env.PAQVILO_EVIDENCE_DIR) await fs.writeFile(path.join(process.env.PAQVILO_EVIDENCE_DIR, 'demo-browser-diagnostics.json'), JSON.stringify({ errors }, null, 2));
 
@@ -280,4 +313,5 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   const [code] = await exited;
   assert.equal(code, 0, output);
   await assert.rejects(fetch(url, { signal: AbortSignal.timeout(1000) }), /fetch failed/);
+  await assert.rejects(fetch(launch.origin,{signal:AbortSignal.timeout(1000)}),/fetch failed/);
 });

@@ -1,5 +1,7 @@
 # Paqvilo demo project
 
+The starter and scaffolded projects enforce LF line endings with `.gitattributes`. After installing your npm dependency, `npx paqvilo doctor --setup --json` checks readiness without reinstalling Mirage. Run your project tests after upgrades. `node editor-workspace.mjs` generates editor paths from your resolved catalogue. For your own site, capture deployed styles explicitly with `npx paqvilo mirage capture-shell --config ./paqvilo.config.yml --site my-site --env dev --path /`; the invented demo has no reference portal. See [consumer setup](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md) and [public APIs](https://github.com/maksii/paqvilo/blob/main/docs/public-api.md).
+
 One account workflow in three Power Pages approaches: native lists and forms, custom Web API, and PCF field editors. Includes 12 invented accounts, 24 contacts, notes, an attachment, access roles and deployable sources.
 
 From an empty working folder, run:
@@ -22,7 +24,24 @@ Open **Liquid** for parameterized partials, a manifest-backed component, custom 
 
 Press **Alt+Shift+P** for **Inspect** source links and **Tweaks** persona controls. Open **Manage data and personas** for records, presets and **Operations**. Follow the complete [demo walkthrough](https://github.com/maksii/paqvilo/blob/main/docs/demo.md).
 
-Use **Alex Example 01** for editor access and **Blair Demo 01** for reader access. Readers can view accounts, related contacts and notes; their write requests are denied. Exported web roles and table permissions provide global account access and contact access scoped through parent accounts.
+Use **Alex Example 01** for editor access and **Alex Demo 01** for reader access. Readers can view accounts, related contacts and notes; their write requests are denied. Exported web roles and table permissions provide global account access and contact access scoped through parent accounts.
+
+## Try simulated Microsoft Entra
+
+Open **Manage data and personas > Identity & permissions**, then choose **Entra · editor**
+or **Entra · reader** from the catalogue scenarios. Each opens an isolated local runtime;
+the original demo keeps its data, settings and browser session. Launch initially signs in
+the selected persona; sign out in the copy, then on its **Sign in** page choose **Demo
+Microsoft Entra** and an invented contact in the styled operator dialog.
+Search, roles, tags, accounts, pinned/recent choices and full-page presentation work there.
+No Microsoft account or credentials are used. Sign out follows the simulated provider too.
+
+To enable that flow in the current runtime instead, open **Platform rules > Configuration
+presets**, select **Simulated Microsoft Entra sign-in**, and apply it. Choose **Source defaults**
+to reset its overrides. The pack owns this configuration and the editor/reader catalogue;
+the deployable portal export stays unchanged. **Stop and discard** in the parent removes
+an isolated copy. The demo permits two copies at once; adjust `mirage.personaContexts` for
+your machine. `mirage.identityProvider` in the catalogue controls the title, accent and dialog.
 
 ## Compare the source patterns
 

@@ -11,10 +11,48 @@ import { defaultEdgeDataDirs, validateBrowserProfile } from '../lense/browser-pr
 
 const origin = 'https://portal.example.com';
 
+test('CDP attachment rejects a launch debugger port before connecting or opening any browser', async t => {
+  const connect = t.mock.method(chromium, 'connectOverCDP', async () => assert.fail('ambiguous debugger selection must not connect'));
+  const launch = t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  for (const cdpUrl of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented', 'https://remote.example.test:9222']) {
+    for (const [browserPort, overrides] of [[9222, {}], [null, { debugPort: 9222 }]]) {
+      await assert.rejects(openBrowser({ browser: { cdpUrl, debugPort: browserPort } }, overrides), error => {
+        assert.match(error.message, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+        assert.match(error.message, /--debug-port 0/);
+        assert.ok(!error.message.includes(cdpUrl), 'endpoint details are not copied into diagnostics');
+        return true;
+      });
+    }
+  }
+  assert.equal(connect.mock.callCount(), 0);
+  assert.equal(launch.mock.callCount(), 0);
+});
+
+test('ordinary CDP attachment and an explicit disabled launch port retain user-owned browser lifetime', async t => {
+  const context = { close: async () => assert.fail('the attached context belongs to the user') };
+  let detached = 0;
+  const endpoints = [];
+  t.mock.method(chromium, 'connectOverCDP', async endpoint => {
+    endpoints.push(endpoint);
+    return { contexts: () => [context], close: async () => { detached++; } };
+  });
+  t.mock.method(chromium, 'launchPersistentContext', async () => assert.fail('attachment must not launch'));
+  const cdpUrl = 'ws://127.0.0.1:9333/devtools/browser/invented';
+  for (const [debugPort, overrides] of [[null, {}], [9222, { debugPort: 0 }]]) {
+    const browser = await openBrowser({ browser: { cdpUrl, debugPort } }, overrides);
+    assert.equal(browser.context, context);
+    assert.equal(browser.attached, true);
+    assert.equal(browser.profile.kind, 'attached');
+    await browser.close();
+  }
+  assert.deepEqual(endpoints, [cdpUrl, cdpUrl]);
+  assert.equal(detached, 2, 'closing only disconnects the toolkit transport');
+});
+
 test('Edge normal storage fails early with actionable attachment options without reading profile data', () => {
   assert.ok(defaultEdgeDataDirs().length >= 3);
   for (const userDataDir of defaultEdgeDataDirs()) {
-    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 5' }), /--profile work.*--cdp-url/);
+    assert.throws(() => validateBrowserProfile({ kind: 'external', channel: 'msedge', userDataDir, profileDirectory: 'Profile 2' }), /--profile work.*--cdp-url/);
   }
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'attached', channel: 'msedge' }));
   assert.doesNotThrow(() => validateBrowserProfile({ kind: 'named', channel: 'msedge' }));

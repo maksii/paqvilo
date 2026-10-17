@@ -354,14 +354,13 @@ test("plain field lists expose only metadata-proven lookup aliases and empty pro
     }),
   );
   policy.assertWrite({ "company@odata.bind": "/accounts(company)" });
-  // A navigation the table doesn't have is an invalid attribute (400,
-  // Power Pages 90040100), not a disallowed one (403).
+  // The write allow-list is checked before unknown attributes reach Dataverse.
   assert.throws(
     () =>
       policy.assertWrite({
         "unmappedcompany@odata.bind": "/accounts(company)",
       }),
-    (error) => error.code === "InvalidAttribute" && error.status === 400,
+    (error) => error.code === "WebApiFieldNotEnabled" && error.status === 403,
   );
   assert.deepEqual(
     policy.project({
@@ -887,6 +886,34 @@ test("enabled OData lookup aliases authorize only metadata-equivalent read and e
       ),
     (e) => e.code === "WebApiFieldNotEnabled",
   );
+});
+
+test("observed explicit lookup wire fields separate OData admission from logical FetchXML and writes", () => {
+  const store = new DataStore({ state: fixture() });
+  const portal = {settings: {...settings, "Webapi/contact/fields": "fullname,companyid"},
+    observed: {webApiLookupFields: "explicit-wire", evidence: "invented explicit-wire site fixture"}};
+  const denied = error => error.code === "WebApiFieldNotEnabled" && error.status === 403;
+  const policy = webApiPolicy(portal, store, "contact");
+  for (const query of [{$select: "_companyid_value"}, {$filter: "_companyid_value eq null"}, {$orderby: "_companyid_value"}])
+    assert.throws(() => policy.assertQuery(new URLSearchParams(query)), denied);
+  policy.assertQuery(new URLSearchParams({$select: "fullname", $expand: "company($select=name)"}));
+  policy.assertWrite({"company@odata.bind": "/accounts(company)"}, "update");
+  webApiFetchPolicy(portal, store, '<fetch><entity name="contact"><attribute name="companyid"/></entity></fetch>', "contact");
+  portal.settings["Webapi/contact/fields"] += ",_companyid_value";
+  const explicit = webApiPolicy(portal, store, "contact");
+  for (const query of [{$select: "_companyid_value"}, {$filter: "_companyid_value eq null"}, {$orderby: "_companyid_value"}])
+    explicit.assertQuery(new URLSearchParams(query));
+  assert.throws(() => explicit.assertQuery(new URLSearchParams({$select: "_unproven_value"})), error => error.code === "InvalidAttribute");
+  portal.settings["Webapi/contact/fields"] = "_companyid_value";
+  assert.throws(() => webApiPolicy(portal, store, "contact").assertWrite({"company@odata.bind": "/accounts(company)"}), denied);
+  portal.settings["Webapi/contact/fields"] = "fullname,companyid";
+  delete portal.observed;
+  webApiPolicy(portal, store, "contact").assertQuery(new URLSearchParams({$select: "_companyid_value"}));
+  portal.observed = {webApiLookupFields: "explicit-wire", evidence: "invented system-view fixture"};
+  portal.settings["Webapi/contact/UseFieldsFromView"] = "true";
+  portal.webApiEntities = {contact: {fields: {companyid: {dataverseType: "lookup"}}}};
+  portal.webApiViews = [{entity: "contact", name: "Power Pages Web API Columns", fields: [{name: "companyid"}]}];
+  webApiPolicy(portal, store, "contact").assertQuery(new URLSearchParams({$select: "_companyid_value"}));
 });
 
 test("Dataverse immutable values are ignored after portal permissions, including lookup bindings and operation-specific flags", () => {

@@ -1,8 +1,15 @@
+import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
+import {identityProviderSettings} from '../mirage/lib/identity-provider-settings.mjs';
 // Validate configuration before it can become a browser URL, path, or routing rule.
+import { validateLocalOverrides } from '../mirage/lib/local-overrides.mjs';
+import { renderSettings } from '../mirage/lib/render-settings.mjs';
+import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
+import { platformConfig } from '../mirage/lib/platform-config.mjs';
+import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'observed', 'dataModel'];
+const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'confinePortalPages', 'externalAssets', 'externalFrameOrigins', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider'];
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
 
@@ -81,6 +88,8 @@ function array(value, name, allowed) {
  */
 export function mirageSettings(value, name) {
   keys(value, MIRAGE_KEYS, name);
+  if (value.deploymentProfiles !== undefined) resolveDeploymentProfiles(value.deploymentProfiles);
+  validateLocalOverrides(value);
   if (value.project != null) string(value.project, `${name}.project`);
   if (value.solutionRoots !== undefined) {
     if (!Array.isArray(value.solutionRoots)) throw new Error(`${name}.solutionRoots must be an array of folders`);
@@ -102,6 +111,13 @@ export function mirageSettings(value, name) {
   if (value.solutionOrder != null && !['derived', 'explicit'].includes(value.solutionOrder)) throw new Error(`${name}.solutionOrder must be derived (Solution dependency order, the default) or explicit (the listed solutionRoots order)`);
   if (value.port != null && (!Number.isInteger(value.port) || value.port < 0 || value.port > 65535)) throw new Error(`${name}.port must be an integer from 0 to 65535 (0 chooses a free port)`);
   if (value.preset != null && (typeof value.preset !== 'string' || !PRESET_ID.test(value.preset))) throw new Error(`${name}.preset must be a preset ID (letters, numbers, underscores, dots or hyphens)`);
+  if (value.presetConfiguration != null && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error(`${name}.presetConfiguration must be data-only or apply`);
+  if (value.presetMode != null && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error(`${name}.presetMode must be bootstrap or always`);
+  contentPolicyDefaults(value);
+  if (value.render !== undefined) renderSettings(value.render);
+  if (value.identityProvider !== undefined) identityProviderSettings(value.identityProvider);
+  if (value.personaContexts !== undefined) personaContextSettings(value.personaContexts);
+  if (value.platform !== undefined) platformConfig(value.platform, `${name}.platform`);
   // The site's data model when the source does not record it (a .powerpages-site export defaults to enhanced).
   if (value.dataModel != null && !['standard', 'enhanced'].includes(value.dataModel)) throw new Error(`${name}.dataModel must be standard or enhanced`);
 }
@@ -137,7 +153,8 @@ function siteSettings(site, name) {
 }
 
 export function validateCatalogue(root) {
-  keys(root, ['defaultSite', 'sourceRoot', 'portals', 'sites', 'defaults', 'browser', 'agent', 'liveReload', 'panel', 'editor', 'sourceMaps'], 'config');
+  keys(root, ['defaultSite', 'sourceRoot', 'portals', 'includeCaution', 'sites', 'defaults', 'browser', 'agent', 'liveReload', 'panel', 'editor', 'sourceMaps'], 'config');
+  if(root.includeCaution!==undefined)boolean(root.includeCaution,'includeCaution');
   if (!['selected', 'all'].includes(root.portals)) throw new Error("portals must be 'selected' or 'all'");
   if (root.sourceRoot !== undefined) string(root.sourceRoot, 'sourceRoot');
   keys(root.agent, ['enabled'], 'agent');

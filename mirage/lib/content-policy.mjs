@@ -34,7 +34,7 @@ export function externalFrameOrigins(value = []) {
 
 export function portalContentSecurityPolicy(config = {}) {
   const frames = externalFrameOrigins(config.externalFrameOrigins);
-  if (config.externalAssets) return null;
+  if (config.externalAssets === true) return null;
   return (
     "default-src 'self' data: blob:; script-src 'self' 'unsafe-inline' 'unsafe-eval'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'self'; frame-src 'self'" +
     (frames.length ? " " + frames.join(" ") : "")

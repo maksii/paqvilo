@@ -1,0 +1,14 @@
+adx_calendar_descriptionfieldname: pqvd_text
+adx_calendar_enabled: true
+adx_calendar_initialview: 756150001
+adx_calendar_startdatefieldname: pqvd_datetime
+adx_calendar_style: 756150000
+adx_calendar_summaryfieldname: pqvd_name
+adx_calendar_timezonemode: 756150000
+adx_entitylistid: 4e43598a-a23e-418b-86d1-6f9e340dfd01
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_idquerystringparametername: id
+adx_name: Baseline Item List Calendar
+adx_pagesize: 5
+adx_view: 62b3ced1-b09b-4335-833a-138dbbb64555

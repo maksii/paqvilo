@@ -78,6 +78,21 @@ test('default Mirage discovery has no project packs and embedded registration is
   assert.deepEqual(await discoverPacks(), [], 'loading a project does not change global discovery');
 });
 
+test('empty templates reject deployed origins, literal project identities and observations', t => {
+  const fixture = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-template-boundary-'));
+  t.after(() => fs.rmSync(fixture, { recursive: true, force: true }));
+  fs.mkdirSync(path.join(fixture, 'templates/project'), { recursive: true });
+  const file = path.join(fixture, 'templates/project/pack.mjs.template');
+  fs.writeFileSync(file, 'const url = "https://private.example.org"; const id = "11111111-1111-1111-1111-111111111111"; const settings = { observed: {} };');
+  assert.deepEqual(inspectProjectBoundary(fixture), [
+    'templates/project/pack.mjs.template: project identity in empty template',
+    'templates/project/pack.mjs.template: non-placeholder origin in empty template',
+    'templates/project/pack.mjs.template: project observation in empty template',
+  ]);
+  fs.writeFileSync(file, 'const url = "https://portal-dev.example.test";');
+  assert.deepEqual(inspectProjectBoundary(fixture), []);
+});
+
 test('an external preset library persists compactly and resolves after restart while edited bodies survive', async (t) => {
   const { DataStore } = await import('../mirage/lib/data.mjs');
   const { discoverPacks, presetLibrary } = await import('../mirage/lib/preset-registry.mjs');

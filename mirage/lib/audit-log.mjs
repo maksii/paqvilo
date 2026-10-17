@@ -113,6 +113,7 @@ export class AuditLog {
     query,
     correlationId,
     parentId,
+    activeConfigurationPreset,
   } = {}) {
     const started = performance.now();
     const id = randomUUID();
@@ -121,6 +122,7 @@ export class AuditLog {
       sequence: ++this.sequence,
       correlationId: correlationId || id,
       parentId: parentId ?? null,
+      ...(activeConfigurationPreset ? {activeConfigurationPreset:{id:limitText(activeConfigurationPreset.id,80),source:limitText(activeConfigurationPreset.source,160),digest:limitText(activeConfigurationPreset.digest,64)}} : {}),
       startedAt: new Date().toISOString(),
       kind: auditKind(kind),
       method: limitText(method || "GET", 12).toUpperCase(),
@@ -156,11 +158,15 @@ export class AuditLog {
         simulatorCode,
         provider: actualProvider,
         entity: actualEntity,
+        saveMs,
+        saveMode,
       } = {}) => {
         if (completed) return;
         completed = true;
         entry.durationMs =
           Math.round((performance.now() - started) * 100) / 100;
+        if (Number.isFinite(saveMs) && saveMs >= 0) entry.saveMs = Math.round(saveMs * 100) / 100;
+        if (['checkpoint', 'journal'].includes(saveMode)) entry.saveMode = saveMode;
         entry.status = Number.isInteger(status) ? status : 500;
         if (Number.isInteger(rowCount) && rowCount >= 0)
           entry.rowCount = rowCount;
@@ -204,10 +210,19 @@ export class AuditLog {
       status = get("status"),
       method = String(get("method") ?? "").trim().toUpperCase(),
       correlationId = String(get("correlationId") ?? "").trim(),
+      contactId = String(get("contactId") ?? "").trim().replace(/[{}]/g, "").toLowerCase(),
       lower = (key) => String(get(key) ?? "").trim().toLowerCase(),
       search = lower("search"),
       pathFilter = lower("path"),
       entity = lower("entity");
+    const sequenceBound = key => {
+      const value = get(key);
+      if (value === undefined || value === null || value === "") return null;
+      if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)))
+        throw Object.assign(new RangeError(`${key} must be a nonnegative safe integer.`), {status: 400, code: "InvalidAuditSequence"});
+      return Number(value);
+    };
+    const afterSequence = sequenceBound("afterSequence"), throughSequence = sequenceBound("throughSequence");
     return this.entries
       .filter(
         (entry) =>
@@ -217,6 +232,9 @@ export class AuditLog {
           statusMatches(entry.status, status) &&
           (!method || entry.method === method) &&
           (!correlationId || entry.correlationId === correlationId) &&
+          (!contactId || String(entry.identity.contactId ?? "").replace(/[{}]/g, "").toLowerCase() === contactId) &&
+          (afterSequence === null || entry.sequence > afterSequence) &&
+          (throughSequence === null || entry.sequence <= throughSequence) &&
           (!pathFilter || entry.path.toLowerCase().includes(pathFilter)) &&
           (!entity || String(entry.entity ?? "").toLowerCase() === entity) &&
           (!search || JSON.stringify(entry).toLowerCase().includes(search)),
@@ -249,6 +267,7 @@ export class AuditLog {
         ...new Set([...AUDIT_KINDS, ...this.entries.map((entry) => entry.kind)]),
       ],
       latestSequence: this.sequence,
+      oldestSequence: this.entries[0]?.sequence ?? null,
     };
   }
 
@@ -257,6 +276,8 @@ export class AuditLog {
       generatedAt: new Date().toISOString(),
       retained: this.entries.length,
       dropped: this.dropped,
+      latestSequence: this.sequence,
+      oldestSequence: this.entries[0]?.sequence ?? null,
       items: structuredClone(this.filtered(filters)),
     };
   }

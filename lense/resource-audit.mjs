@@ -3,7 +3,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import YAML from 'yaml';
-import { isSourceFile } from './portal-model.mjs';
+import { isSourceFile, isEnhancedSiteMetadata } from './portal-model.mjs';
 import { Resolver } from './resolver.mjs';
 import { inspectComponentJson } from './audit-json.mjs';
 
@@ -102,6 +102,11 @@ export function auditResources(model, site) {
 
   for (const file of files) {
     const rel = relative(file);
+    if (isEnhancedSiteMetadata(rel)) {
+      const raw = read(file);
+      add(file, null, { kind: 'site-metadata', empty: raw === null ? null : !raw.trim(), status: 'deployment', reason: 'Enhanced site and language configuration document; the overlay cannot apply its fields. This file classification does not attest field parsing or runtime behavior.' });
+      continue;
+    }
     if (CODE_FILE.test(file)) {
       const text = read(file);
       add(file, null, { language: /\.[cm]?js$/i.test(file) ? 'javascript' : /\.css$/i.test(file) ? 'css' : 'html', empty: text === null ? null : !text.trim() });
@@ -167,7 +172,7 @@ export function auditResources(model, site) {
   const inactiveSources = new Set((model.inactiveSources ?? []).map((source) => source.file));
   for (const item of entries.values()) {
     const file = path.join(root, item.relativePath);
-    const mirage = /\.[^.]+\.[^.]+$/.test(file) ? file.replace(/\.[^.]+\.[^.]+$/, '.yml') : null;
+    const mirage = /[\\/]web-files[\\/]/.test(file) ? `${file}.webfile.yml` : /\.[^./\\]+\.[^./\\]+$/.test(file) ? file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml') : null;
     if ((!item.field || model.format === 'enhanced') && inactiveSources.has(file) || metadata.get(mirage)?.inactive) Object.assign(item, { status: 'inactive', reason: 'Inactive portal record or inactive language root is not rendered.' });
   }
 
@@ -229,7 +234,7 @@ export function auditResources(model, site) {
   const totals = { resources: resources.length, mapped: count('mapped'), blocked: count('blocked'), inactive: count('inactive'), deployment: count('deployment'), gaps: count('gap'), disabled: resources.filter((item) => item.status === 'mapped' && !item.enabled).length };
   const active = totals.mapped + totals.blocked + totals.gaps;
   return {
-    schemaVersion: 1, offline: true, writesFiles: false, format: model.format, sourceDir: root,
+    schemaVersion: 1, offline: true, writesFiles: [], format: model.format, sourceDir: root,
     scannedFiles: files.length, totals,
     coverage: { inventoryComplete: errors.length === 0, accountedPercent: errors.length ? null : resources.length ? (resources.length - totals.gaps) / resources.length * 100 : 100, mappedPercent: errors.length ? null : active ? totals.mapped / active * 100 : 100, complete: errors.length === 0 && diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0, runtimeVerified: false },
     scope: 'All regular files under the extract, JavaScript/CSS/HTML file extensions, code-bearing YAML/component JSON fields, and all indexed web-file payloads. Inline script/style elements remain part of their containing HTML source. Mapping is independent of configured kind filters, exclusions and changed scope; enabled reports configuration only.',

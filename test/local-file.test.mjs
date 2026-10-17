@@ -61,3 +61,24 @@ test('a file growing during a descriptor read is bounded and rejected', async (t
   });
   await assert.rejects(readLocalFile(file, { maxBytes: 10 }), /changed/);
 });
+
+test('adjacent 64-bit file identities cannot collapse into one rounded Number', async t => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-inode-'));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const file = path.join(root, 'file'); fs.writeFileSync(file, 'original');
+  const openedId = 9007199254740992n, replacementId = openedId + 1n;
+  assert.equal(Number(openedId), Number(replacementId), 'the numeric stat API loses this identity difference');
+  const withIdentity = (stat, id, options) => Object.assign(stat, { dev: options?.bigint ? 1n : 1, ino: options?.bigint ? id : Number(id) });
+  const open = fs.promises.open.bind(fs.promises), stat = fs.promises.stat.bind(fs.promises);
+  t.mock.method(fs.promises, 'open', async (...args) => {
+    const handle = await open(...args), descriptorStat = handle.stat.bind(handle);
+    handle.stat = async options => withIdentity(await descriptorStat(options), openedId, options);
+    return handle;
+  });
+  t.mock.method(fs.promises, 'stat', async (target, options) => withIdentity(await stat(target, options), replacementId, options));
+  await assert.rejects(readLocalFile(file), /changed/);
+  const fstat = fs.fstatSync, statSync = fs.statSync;
+  t.mock.method(fs, 'fstatSync', (descriptor, options) => withIdentity(fstat(descriptor, options), openedId, options));
+  t.mock.method(fs, 'statSync', (target, options) => withIdentity(statSync(target, options), replacementId, options));
+  assert.throws(() => readLocalFileSync(file), /changed/);
+});

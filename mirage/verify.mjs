@@ -4,6 +4,8 @@ import { createHash } from "node:crypto";
 import { chromium } from "playwright-core";
 import { PNG } from "pngjs";
 import pixelmatch from "pixelmatch";
+import { fileURLToPath } from 'node:url';
+import { parseArgs } from 'node:util';
 
 const sha = (value) => createHash("sha256").update(value).digest("hex");
 const loopback = (hostname) =>
@@ -646,4 +648,12 @@ export async function verifyParity({
     );
   }
   return result;
+}
+
+if (process.argv[1] && pathModule.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  try {
+    const { values } = parseArgs({ options: Object.fromEntries(['local', 'origin', 'cdp', 'path', 'output'].map(name => [name, { type: 'string' }])) });
+    const report = await verifyParity({ localUrl: values.local, origin: values.origin, cdpUrl: values.cdp, path: values.path, outputDir: values.output });
+    console.log(JSON.stringify(report, null, 2)); process.exitCode = report.passed ? 0 : 1;
+  } catch (error) { console.error(safeMessage(error.message)); process.exitCode = 1; }
 }

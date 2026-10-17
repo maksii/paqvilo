@@ -1,0 +1,12 @@
+adx_captcharequired: true
+adx_entityformid: d0335b6b-fa0c-4793-8c98-92d9fb637226
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Insert Captcha All Users
+adx_onsuccess: 756150000
+adx_showcaptchaforauthenticatedusers: true
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

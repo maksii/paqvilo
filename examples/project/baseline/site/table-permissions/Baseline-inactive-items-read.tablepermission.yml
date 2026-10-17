@@ -1,0 +1,14 @@
+adx_append: false
+adx_appendto: false
+adx_create: false
+adx_delete: false
+adx_entitylogicalname: pqvd_baselineitem
+adx_entityname: Baseline inactive items read
+adx_entitypermission_webrole:
+- 5d031fb8-a8ea-4eae-8dd5-6baf1d414731
+adx_entitypermissionid: d5ba9b05-ab6e-4867-8df7-4884a2b81994
+adx_read: true
+adx_scope: 756150000
+adx_write: false
+statecode: 1
+statuscode: 2

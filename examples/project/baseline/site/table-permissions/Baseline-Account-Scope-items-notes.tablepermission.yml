@@ -1,0 +1,14 @@
+adx_append: true
+adx_appendto: true
+adx_create: true
+adx_delete: true
+adx_entitylogicalname: annotation
+adx_entityname: Baseline Account Scope items notes
+adx_entitypermission_webrole:
+- dc6528da-1676-42da-8263-7c5a402fe418
+adx_entitypermissionid: e8b635cf-8d39-4f87-8c1c-d8536a59de9b
+adx_parententitypermission: b093a5a3-308b-48f1-86f4-a70ca1a7c1cd
+adx_parentrelationship: pqvd_baselineitem_Annotations
+adx_read: true
+adx_scope: 756150003
+adx_write: true

@@ -1,3 +1,4 @@
+import { simulatorBackgroundRequest } from './simulator-background-requests.mjs';
 /** A portal page redirects its slash-less path to the trailing-slash page, so the
  * replacement read may complete under the redirected URL. */
 function comparableUrl(value) {
@@ -111,6 +112,7 @@ export function classifyNavigationObservations(report, pages = []) {
     unexpectedFailedRequests: report.failedRequests.filter(
       (request, index) =>
         !request.simulatorEventStream &&
+        !simulatorBackgroundRequest(request.url, report.origin) &&
         !sourceSupersededReads.some((item) => item.failureIndex === index) &&
         !hostedRequests.some((item) => item.failureIndex === index),
     ),

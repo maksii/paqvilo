@@ -1,6 +1,8 @@
 // Local FetchXML evaluation with Dataverse semantics. The store supplies
 // permission-filtered rows and metadata; this module never bypasses them.
 import { DataError } from "./data-error.mjs";
+import {isExactNumeric,sumNumeric,averageNumeric} from './exact-numeric.mjs';
+import {fieldKind} from './dataverse-values.mjs';
 import {
   FETCH_OPERATORS,
   UNSUPPORTED_FETCH_OPERATORS,
@@ -23,6 +25,7 @@ import {
 
 export const FETCH_LIMITS = Object.freeze({
   links: 15,
+  linksAndFilters: 27,
   conditionsAndLinks: 500,
   pageSize: 5000,
   top: 5000,
@@ -226,19 +229,40 @@ function* xmlTokens(source) {
 
 /**
  * Validate a parsed <fetch> against the documented schema and query limits.
- * profile "webapi": Dataverse validates the schema, so undeclared attributes fail.
+ * profiles "webapi" and "sdk": Dataverse validates the schema, so undeclared attributes fail.
  * profile "portal" (Liquid, lists, lookups): the portal re-serialises the query
  * through its own object model, which drops unmodelled attributes; they are
  * ignored and reported in plan.diagnostics. The documented Liquid `xml`
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal" } = {}) {
+export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [],linkBudgetError='documented' } = {}) {
+  const limits = { ...FETCH_LIMITS, ...overrides };
   if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
-  const strict = profile === "webapi";
+  const strict = profile === "webapi" || profile === "sdk";
   const diagnostics = [];
+  // The portal's OData compiler emits this private annotation. Admit only the
+  // exact compiler-owned filter positions, leaving authored strict FetchXML
+  // validation unchanged. Predicate execution comes from the any/inner links.
+  const filters = [], gatherFilters = node => {
+    if (node.name === 'filter') filters.push(node);
+    for (const child of node.children ?? []) gatherFilters(child);
+  };
+  gatherFilters(fetch);
+  const qualifiedFilters = new Set();
+  if (!Array.isArray(generatedAnyAllAliases) || generatedAnyAllAliases.length > 5000)
+    fail('Invalid generated OData filter annotations.', 501, 'LocalPluginQueryUnsupported');
+  for (const annotation of generatedAnyAllAliases) {
+    const filter = filters[annotation?.filterOrdinal];
+    if (!annotation || Object.keys(annotation).some(key => !['filterOrdinal', 'alias'].includes(key)) ||
+      !Number.isInteger(annotation.filterOrdinal) || annotation.filterOrdinal < 0 ||
+      typeof annotation.alias !== 'string' || !/^[a-z_][a-z\d_]{0,127}$/i.test(annotation.alias) ||
+      !filter || filter.attrs.anyallalias !== annotation.alias || qualifiedFilters.has(filter))
+      fail('Generated OData filter annotations do not match the execution tree.', 501, 'LocalPluginQueryUnsupported');
+    qualifiedFilters.add(filter);
+  }
   const links = [];
-  let conditions = 0,
+  let conditions = 0, ordinaryLinks = 0,
     unionHints = 0;
   // Filter nesting: the entity's (or link-entity's) own filter is level 1.
   const filterLevels = new Map();
@@ -252,7 +276,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
     for (const [key, reason] of Object.entries(FETCH_UNSUPPORTED_ATTRIBUTES[node.name] ?? {}))
       if (node.attrs[key] != null) fail(reason, 400, "UnsupportedQuery");
     for (const key of Object.keys(node.attrs))
-      if (!schema.attributes.includes(key) && !/^xmlns(?::|$)/.test(key)) {
+      if (!schema.attributes.includes(key) && !/^xmlns(?::|$)/.test(key) && !(key === 'anyallalias' && qualifiedFilters.has(node))) {
         if (strict)
           fail(`The '${key}' attribute is not declared on FetchXML ${node.name}.`, 400, "InvalidFetchXml");
         diagnostics.push({
@@ -281,14 +305,33 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
             400,
             "InvalidFetchXml",
           );
+        const restricted = ['exists','in','matchfirstrowusingcrossapply'].includes(type);
+        if (restricted) {
+          const label = {exists:'Exists',in:'In',matchfirstrowusingcrossapply:'MatchFirstRowUsingCrossApply'}[type];
+          if (children(node,'order').length)
+            fail(`${label} doesn't support order inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+          const projected = node.children.some(child => ['attribute','all-attributes'].includes(child.name));
+          if (type !== 'matchfirstrowusingcrossapply' && projected)
+            fail(`${label} doesn't support attribute inside linkentity expression.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+          const selectedDescendant = part => part.children.some(child =>
+            ['attribute','all-attributes','order'].includes(child.name) || selectedDescendant(child));
+          if (children(node,'link-entity').some(selectedDescendant) ||
+              type === 'matchfirstrowusingcrossapply' && projected && children(node,'link-entity').length)
+            fail(`${label} doesn't allow attribute or order clause in child linkentity.`,400,'InvalidFetchXml',{innerCode:'0x80041121'});
+        }
         links.push(node);
+        if(parent?.name!=='filter')ordinaryLinks++;
         nextLinkDepth++;
-        if (links.length > FETCH_LIMITS.links)
-          fail("Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
-            innerCode: "0x8004430d",
+        if (ordinaryLinks > limits.links || links.length > limits.linksAndFilters)
+          fail(linkBudgetError==='reported-counts'?(ordinaryLinks>limits.links
+            ?`Number of link entity: ${ordinaryLinks} exceed limit ${limits.links}. isReport=False.`
+            :`Number of link entity: ${ordinaryLinks}, Number of link filter: ${links.length-ordinaryLinks} exceed limit ${limits.linksAndFilters}. isReport=False.`)
+            :"Number of link entities in query exceeded maximum limit.", 400, "UnsupportedQuery", {
+            innerCode: "0x8004430d",ordinaryLinks,filterLinks:links.length-ordinaryLinks,totalLinks:links.length,
+            limit:ordinaryLinks>limits.links?limits.links:limits.linksAndFilters,
           });
-        if (nextLinkDepth > FETCH_LIMITS.linkDepth)
-          fail(`FetchXML link nesting exceeds ${FETCH_LIMITS.linkDepth} levels`, 400, "UnsupportedQuery");
+        if (nextLinkDepth > limits.linkDepth)
+          fail(`FetchXML link nesting exceeds ${limits.linkDepth} levels`, 400, "UnsupportedQuery");
         break;
       }
       case "filter": {
@@ -345,7 +388,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
           fail("A FetchXML order element requires an attribute or alias.", 400, "InvalidFetchXml");
         break;
     }
-    if (conditions + links.length > FETCH_LIMITS.conditionsAndLinks)
+    if (conditions + links.length > limits.conditionsAndLinks)
       fail("Number of conditions in query exceeded maximum limit.", 400, "UnsupportedQuery", {
         innerCode: "0x8004430c",
       });
@@ -401,6 +444,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
     !aggregate &&
     fetch.attrs.returntotalrecordcount == null;
   return {
+    limits,
     fetch,
     root,
     links,
@@ -420,7 +464,7 @@ export function planFetch(fetch, { profile = "portal" } = {}) {
     rawChoiceOrder: bool(fetch.attrs.useraworderby),
     aggregateLimit: integerAttribute(fetch, "aggregatelimit", {
       min: 1,
-      max: FETCH_LIMITS.aggregateRecords,
+      max: limits.aggregateRecords,
     }),
     retained: /^retained$/i.test(datasource ?? ""),
   };
@@ -487,12 +531,12 @@ const cookieValue = (value) => {
 
 /**
  * Structural many-to-many traversals of a planned query: link-entities to an
- * intersect that the parent table's relationships declare, selecting none of its
- * columns, whose own links lead only to the relationship's other table. They read
+ * intersect that the parent table's relationships declare, selecting only its
+ * structural endpoint keys, whose own links lead only to the other table. They read
  * the intersect without exposing it as an independently readable table, so the
  * intersect needs no table permission of its own; the tables on both sides do.
  * mappingOf maps the root and each link to its table mapping.
- * Returns Map(link -> { relation, columns }).
+ * Returns Map(link -> { relation, columns, selectable }).
  */
 export function structuralIntersects(plan, mappingOf) {
   const structural = new Map();
@@ -501,12 +545,14 @@ export function structuralIntersects(plan, mappingOf) {
     if (!parent || parent.name === "filter") continue;
     const parentMapping = mappingOf.get(parent);
     const lm = mappingOf.get(link);
-    if (children(link, "attribute").length || children(link, "all-attributes").length) continue;
+    if (children(link, "all-attributes").length) continue;
     const relation = Object.values(parentMapping.relationships ?? {}).find(
       (rel) =>
         rel.intersect?.entity === lm.logicalName &&
         rel.intersect.from === link.attrs.from &&
         rel.from === link.attrs.to &&
+        children(link, "attribute").every(attribute =>
+          [rel.intersect.from, rel.intersect.to].includes(attribute.attrs.name) && !attribute.attrs.aggregate && !attribute.attrs.groupby) &&
         children(link, "link-entity").every(
           (target) =>
             target.attrs.name === rel.entity &&
@@ -518,6 +564,7 @@ export function structuralIntersects(plan, mappingOf) {
       structural.set(link, {
         relation,
         columns: new Set([relation.intersect.from, relation.intersect.to, lm.idColumn]),
+        selectable: new Set([relation.intersect.from, relation.intersect.to]),
       });
   }
   return structural;
@@ -531,6 +578,9 @@ export function structuralIntersects(plan, mappingOf) {
  */
 export function executeFetch(plan, ctx) {
   const settings = ctx.settings ?? {};
+  if (settings.fetchAllWithoutFilter === 'sql-error' && plan.links.some(link =>
+      link.attrs['link-type'] === 'all' && !children(link,'filter').length))
+    fail('Generic SQL error while evaluating an unfiltered ALL link.',500,'FetchXmlExecutionFailure',{innerCode:'0x80044150'});
   const collation = settings.collation ?? "CI_AI";
   const now = ctx.now ?? Date.now();
   const { root } = plan;
@@ -632,7 +682,7 @@ export function executeFetch(plan, ctx) {
     const link = alias == null ? null : plan.byAlias.get(alias);
     const info = link && structural.get(link);
     if (!info) return;
-    if (kind === "attribute")
+    if (kind === "attribute" && !info.selectable.has(attribute))
       fail("FetchXML intersection columns cannot be returned without table permission", 403, "InvalidIntersectionQuery");
     if (!info.columns.has(attribute))
       fail("FetchXML intersection may only inspect mapped structural columns", 403, "InvalidIntersectionQuery");
@@ -677,6 +727,10 @@ export function executeFetch(plan, ctx) {
       rows = (ctx.tableRows(lm.logicalName) ?? [])
         .filter((row) => row.code === ctx.platformLanguageCode)
         .map((row) => ({ languagelocaleid: row.languagelocaleid, code: row.code }));
+    } else if (ctx.permissionLink?.(link)) {
+      // Only a compiler-owned sidecar can identify these links. Alias/name text
+      // from an authored query must never enable a backend permission bypass.
+      rows = pkSort(ctx.readableRows(lm.logicalName, link), lm.idColumn);
     } else if (structural.has(link)) {
       const { relation, columns } = structural.get(link);
       const endpoint = ctx.mapping(relation.entity);
@@ -688,14 +742,14 @@ export function executeFetch(plan, ctx) {
         .map((edge) =>
           Object.fromEntries([...columns].filter((key) => own(edge, key)).map((key) => [key, edge[key]])),
         );
-    } else rows = pkSort(ctx.readableRows(lm.logicalName), lm.idColumn);
+    } else rows = pkSort(ctx.readableRows(lm.logicalName, link), lm.idColumn);
     candidates.set(link, rows);
     return rows;
   };
 
   // ---- filters -----------------------------------------------------------
   const valuesOf = (condition) => {
-    const items = children(condition, "value").map((value) => (value.text ?? "").trim());
+    const items = children(condition, "value").map((value) => value.text ?? "");
     if (items.length) return items;
     return own(condition.attrs, "value") ? [condition.attrs.value] : [];
   };
@@ -758,6 +812,48 @@ export function executeFetch(plan, ctx) {
     return parts.length ? (item) => parts.every((part) => part(item)) : null;
   };
 
+  // Distinct permission unions only project authored columns. Restrict their
+  // private paths before materializing alternatives, rather than multiplying
+  // every unrelated principal row and rejecting a valid small query locally.
+  // Both the sidecar and an unchanged, sole predicate for that generated alias
+  // are required; an authored generated-looking alias supplies no authority.
+  const permissionPredicates = new Map();
+  if (plan.distinct && !plan.aggregate) {
+    const conditions = [], nodes = [];
+    const collect = node => {
+      nodes.push(node);
+      if (node.name === 'condition') conditions.push(node);
+      for (const child of node.children) collect(child);
+    };
+    collect(plan.fetch);
+    const expectedConditions = ctx.permissionTerminalConditions ?? [];
+    const sameCondition = (actual, expected) => actual.name === 'condition' &&
+      Object.keys(expected).length === Object.keys(actual.attrs).length &&
+      Object.keys(expected).every(key => expected[key] === actual.attrs[key]);
+    const generatedAliases = new Set(plan.links.filter(link => ctx.permissionLink?.(link)).map(link => plan.aliasOf.get(link)));
+    // An observer can add root conditions referring to generated ancestors.
+    // Those may require rows outside the terminal match, so retain the full
+    // join semantics whenever generated aliases have additional dependencies.
+    const referencesGenerated = name => {
+      const target = plan.byAlias.get(name) ?? plan.byName.get(name);
+      return target != null && generatedAliases.has(plan.aliasOf.get(target));
+    };
+    const additionalDependency = nodes.some(node =>
+      referencesGenerated(node.attrs.entityname) && !expectedConditions.some(expected => sameCondition(node, expected)) ||
+      node.attrs.valueof?.includes('.') && referencesGenerated(node.attrs.valueof.split('.', 1)[0]));
+    for (const expected of additionalDependency ? [] : expectedConditions) {
+      const alias = expected.entityname, link = plan.byAlias.get(alias);
+      if (!link || !ctx.permissionLink?.(link)) continue;
+      const references = conditions.filter(condition => condition.attrs.entityname === alias);
+      if (references.length !== 1) continue;
+      const actual = references[0];
+      const fields = Object.keys(expected);
+      if (fields.length !== Object.keys(actual.attrs).length || fields.some(key => expected[key] !== actual.attrs[key])) continue;
+      const predicate = compileCondition(actual, alias);
+      permissionPredicates.set(link, row => predicate({base: null, aliases: {[alias]: row}}));
+    }
+  }
+
   // ---- joins -------------------------------------------------------------
   const linkPlans = new Map();
   const linkPlan = (link) => {
@@ -775,6 +871,19 @@ export function executeFetch(plan, ctx) {
     const local = !children(link, "filter").some((f) => referencesOtherAlias(f, alias));
     let rows = candidatesFor(link);
     if (filter && local) rows = rows.filter((row) => filter({ base: null, aliases: { [alias]: row } }));
+    const permissionPredicate = permissionPredicates.get(link);
+    if (permissionPredicate) rows = rows.filter(permissionPredicate);
+    // Propagate a qualified terminal restriction up its compiler-owned path.
+    // Outer paths with no qualifying principal remain null alternatives; other
+    // permission paths can still grant the root row through the union filter.
+    if (plan.distinct && !plan.aggregate && ctx.permissionLink?.(link)) {
+      const descendants = children(link, 'link-entity');
+      if (descendants.length === 1 && ctx.permissionLink?.(descendants[0])) {
+        const child = descendants[0], childPlan = linkPlan(child);
+        if (childPlan.permissionRestricted)
+          rows = rows.filter(row => childPlan.index.has(joinKey(fieldValue(row, child.attrs.to))));
+      }
+    }
     const index = new Map();
     for (const row of rows) {
       const key = joinKey(fieldValue(row, link.attrs.from));
@@ -782,20 +891,24 @@ export function executeFetch(plan, ctx) {
       if (!index.has(key)) index.set(key, []);
       index.get(key).push(row);
     }
-    const result = { alias, index, filter: local ? null : filter, unfiltered: null };
+    const result = { alias, index, filter: local ? null : filter, unfiltered: null,
+      permissionRestricted: Boolean(permissionPredicate) || children(link, 'link-entity').some(child => linkPlans.get(child)?.permissionRestricted) };
     if (link.attrs["link-type"] === "all") {
       const all = new Map();
       for (const row of candidatesFor(link)) {
         const key = joinKey(fieldValue(row, link.attrs.from));
-        if (key != null) all.set(key, true);
+        if (key == null) continue;
+        if (!all.has(key)) all.set(key, []);
+        all.get(key).push(row);
       }
       result.unfiltered = all;
     }
     linkPlans.set(link, result);
     return result;
   };
-  const matchesFor = (row, link, parentAlias) => {
-    const { alias, index, filter } = linkPlan(link);
+  const matchesFor = (row, link, parentAlias, unfiltered = false) => {
+    const linked = linkPlan(link), { alias, filter } = linked;
+    const index = unfiltered ? linked.unfiltered : linked.index;
     const parent = parentAlias == null ? row.base : row.aliases[parentAlias];
     const key = parent == null ? null : joinKey(fieldValue(parent, link.attrs.to));
     const candidatesForRow = key == null ? [] : (index.get(key) ?? []);
@@ -803,7 +916,7 @@ export function executeFetch(plan, ctx) {
       base: row.base,
       aliases: { ...row.aliases, [alias]: candidate },
     }));
-    return filter ? items.filter(filter) : items;
+    return filter && !unfiltered ? items.filter(filter) : items;
   };
   const semiJoinTest = (link, ownerAlias) => {
     const type = link.attrs["link-type"] ?? "inner";
@@ -812,9 +925,9 @@ export function executeFetch(plan, ctx) {
       const exists = items.length > 0;
       if (type === "not any") return !exists;
       if (type === "all") {
-        const parent = ownerAlias == null ? row.base : row.aliases[ownerAlias];
-        const key = parent == null ? null : joinKey(fieldValue(parent, link.attrs.to));
-        return key != null && Boolean(linkPlan(link).unfiltered.get(key)) && !exists;
+        // Existence excludes this link's predicates but retains its descendant
+        // joins. A child removed by an inner descendant is no ALL candidate.
+        return !exists && joinTree(matchesFor(row, link, ownerAlias, true), link).length > 0;
       }
       return exists;
     };
@@ -852,15 +965,20 @@ export function executeFetch(plan, ctx) {
       for (const row of rows) {
         const matches = matchesFor(row, link, nodeAlias);
         if (type === "matchfirstrowusingcrossapply") {
-          if (matches.length) next.push(matches[0]);
-        } else if (matches.length) next.push(...matches);
-        else if (type === "outer") next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
+          const qualifying = joinTree(matches, link);
+          if (qualifying.length) { countJoined(1); next.push(qualifying[0]); }
+        } else if (matches.length) {
+          countJoined(matches.length);
+          for (const match of matches) next.push(match);
+        } else if (type === "outer") {
+          countJoined(1);
+          next.push({ base: row.base, aliases: { ...row.aliases, [alias]: null } });
+        }
       }
-      countJoined(next.length);
       // Dataverse emits flat joins: a nested link joins against every row
       // produced so far, so an inner child of an outer link removes rows
       // whose outer parent is null.
-      rows = joinTree(next, link);
+      rows = type === 'matchfirstrowusingcrossapply' ? next : joinTree(next, link);
     }
     return rows;
   }
@@ -892,7 +1010,24 @@ export function executeFetch(plan, ctx) {
   }
 
   // ---- evaluate ------------------------------------------------------------
-  let rows = plan.retained ? [] : pkSort(ctx.readableRows(rootMapping.logicalName), rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
+  let inputs = plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
+  // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
+  // Text/numeric/date comparisons retain their existing collation and coercion rules.
+  const narrow = filter => {
+    if ((filter.attrs.type ?? 'and') !== 'and') return;
+    for (const condition of filter.children) {
+      if (condition.name === 'filter') narrow(condition);
+      else if (condition.name === 'condition' && condition.attrs.operator === 'eq' &&
+        !condition.attrs.entityname && !condition.attrs.valueof && condition.attrs.value != null) {
+        const column = condition.attrs.attribute;
+        const type = definition(root, column)?.dataverseType;
+        if (column === rootMapping.idColumn || ['lookup','customer','owner','uniqueidentifier','primarykey'].includes(type))
+          inputs = ctx.equalRows(inputs, column, condition.attrs.value);
+      }
+    }
+  };
+  if (ctx.equalRows) for (const filter of children(root, 'filter')) narrow(filter);
+  let rows = pkSort(inputs, rootMapping.idColumn).map((base) => ({ base, aliases: {} }));
   const rootFilter = compileFilters(root, null);
   const pushdown = rootFilter && !children(root, "filter").some((f) => referencesOtherAlias(f, null));
   if (pushdown) rows = rows.filter(rootFilter);
@@ -925,7 +1060,7 @@ export function executeFetch(plan, ctx) {
     for (const { row } of keyed) {
       let joined = joinTree([row], root);
       if (rootFilter && !pushdown) joined = joined.filter(rootFilter);
-      collected.push(...joined);
+      for (const row of joined) collected.push(row);
       if (collected.length >= limit) break;
     }
     rows = collected;
@@ -1087,7 +1222,8 @@ export function executeFetch(plan, ctx) {
     }
     entities = projected.map((item) => item.entity);
     keys = projected.map((item) => ({ ...item.entry, specs }));
-    cookieSupported = !specs.some((spec) => spec.alias != null);
+    cookieSupported = !specs.some((spec) => spec.alias != null) &&
+      (!plan.distinct || columns.some(column => column.alias == null && column.attribute === rootMapping.idColumn && !column.aliased));
   }
   total.value = entities.length;
 
@@ -1110,6 +1246,10 @@ export function executeFetch(plan, ctx) {
   const pageEntities = entities.slice(start, end);
   if (plan.top == null && cookieSupported && pageEntities.length)
     pagingCookie = buildCookie(plan.page, keys.slice(start, end));
+  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && orderSpecs.some(spec=>spec.alias!=null))
+    pagingCookie='';
+  else if(ctx.nativePagingCookies && !plan.aggregate && plan.top==null && cookieSupported && !pageEntities.length)
+    pagingCookie='';
   const result = {
     entities: pageEntities,
     more_records: more,
@@ -1162,7 +1302,7 @@ export function executeFetch(plan, ctx) {
     let input = rows;
     const limit = plan.aggregateLimit;
     if (limit != null) input = input.slice(0, limit + 1);
-    else if (input.length > FETCH_LIMITS.aggregateRecords)
+    else if (input.length > (plan.limits?.aggregateRecords ?? FETCH_LIMITS.aggregateRecords))
       fail("AggregateQueryRecordLimit exceeded. Cannot perform this operation.", 400, "AggregateQueryRecordLimit", {
         innerCode: "0x8004e023",
       });
@@ -1206,6 +1346,7 @@ export function executeFetch(plan, ctx) {
           });
         }
         const numbers = () => values.map((value) => Number(scalar(value))).filter(Number.isFinite);
+        const exact=values.some(isExactNumeric)||['decimal','money'].includes(fieldKind(column.definition));
         let result;
         switch (column.aggregate) {
           case "count":
@@ -1215,7 +1356,7 @@ export function executeFetch(plan, ctx) {
             result = values.length;
             break;
           case "sum":
-            result = numbers().reduce((sum, value) => sum + value, 0);
+            result = exact?sumNumeric(values):numbers().reduce((sum, value) => sum + value, 0);
             break;
           case "avg": {
             const list = numbers();
@@ -1225,7 +1366,7 @@ export function executeFetch(plan, ctx) {
               const integer = ["int", "integer", "bigint"].includes(
                 String(column.definition?.dataverseType ?? "").toLowerCase(),
               );
-              result = integer ? Math.trunc(average) : average;
+              result = exact?averageNumeric(values,{integer}):integer ? Math.trunc(average) : average;
             }
             break;
           }
@@ -1308,7 +1449,7 @@ export function executeFetch(plan, ctx) {
     const pk = rootMapping.idColumn;
     const seen = new Set();
     for (const spec of first.specs) {
-      if (spec.alias != null || seen.has(spec.attribute) || spec.attribute === pk) continue;
+      if (spec.alias != null || seen.has(spec.attribute) || (spec.attribute === pk && !plan.distinct)) continue;
       seen.add(spec.attribute);
       const read = (item) => fieldValue(item.row.base, spec.attribute);
       parts.push(

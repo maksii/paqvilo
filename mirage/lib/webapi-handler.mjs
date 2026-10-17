@@ -6,6 +6,8 @@
 // web-api-http-requests-handle-errors) and, where Power Pages passes requests
 // through, the Dataverse Web API. docs/dataverse-parity.md lists the evidence
 // and the remaining open questions for each behaviour.
+import {isExactNumeric} from './exact-numeric.mjs';
+import {preparePortalFetchXml} from './portal-fetchxml.mjs';
 import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference, parseKeySegment } from "./data.mjs";
@@ -14,8 +16,10 @@ import { prepareODataPage } from "./odata-paging.mjs";
 import { parseExpand, parseSelect } from "./odata-query.mjs";
 import { createWebApiFormatter } from "./webapi-format.mjs";
 import { POWER_PAGES_TABLES, WEBAPI_UNSUPPORTED_TABLES, webApiFetchPolicy, webApiPolicy } from "./webapi-policy.mjs";
-import { fieldKind, own } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, own } from "./dataverse-values.mjs";
 import { siteHeaders } from "./response-headers.mjs";
+import { attachODataReaderDetails, odataNumberLexemes, odataRootDetails, observedODataInnerMessage } from "./webapi-error-details.mjs";
+import { appendObservedWebApiErrorTemplate } from "./webapi-error-templates.mjs";
 
 export const WEBAPI_COUNT_LIMIT = 5000;
 const KEY = String.raw`((?:'(?:[^']|'')*'|[^()'/])*)`;
@@ -38,6 +42,7 @@ const apiHeaders = (portal) => ({
   "x-content-type-options": "nosniff",
   ...siteHeaders(portal ?? {}),
   ...CACHE_HEADERS,
+  ...(portal?.observed?.headers?.webApi ?? {}),
 });
 // Errors raised while Power Pages validates OData query options answer
 // 400 9004010A with a generic message on the platform (unknown columns, invalid
@@ -53,6 +58,11 @@ const QUERY_CODES = new Set([
   "UnsupportedKeySyntax",
 ]);
 const queryPhase = (error) => {
+  // These are Dataverse execution budgets, including permission-generated
+  // joins. They must retain the CDS error envelope rather than being reported
+  // as a portal OData grammar failure.
+  if (["0x8004430c", "0x8004430d"].includes(String(error?.details?.innerCode).toLowerCase()) && error.details.phase == null)
+    error.details = { ...error.details, phase: "backend" };
   if (error && QUERY_CODES.has(error.code) && error.details?.phase == null)
     error.details = { ...(error.details ?? {}), phase: "query" };
   return error;
@@ -217,12 +227,12 @@ const ERROR_TYPES = Object.freeze({
  *   which portal scripts read for plugin messages.
  * - "all-errors" (two observed sites send innererror { code, message, type } with every
  *   error): code and message repeat the outer error, as observed; Dataverse failures,
- *   not yet observed in this mode, keep the Dataverse code and message that portal
- *   scripts read. type comes from ERROR_TYPES, or is null for a code without a name.
+ *   keep the Dataverse code and message that portal scripts read without a type.
+ *   Portal exceptions use ERROR_TYPES, or null for a code without a name.
  * The observations and their evidence are in docs/dataverse-parity.md.
  * The simulator's own classification travels in the X-Sim-Error-Code response header.
  */
-export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors" } = {}) {
+export function webApiErrorResponse(error, { innerError = false, innerErrorScope = "dataverse-errors", cdsErrorMessage = "CDS error occurred.", cdsErrorCode = "innererror", antiForgery = "cookie-mismatch-403", invalidDate = "invalid-format", errorDetails = "diagnostic", errorStacks = "diagnostic", errorTemplates, errorMethod } = {}) {
   const status = Number(error?.status ?? error?.statusCode) || 500;
   const internal = error?.code == null ? null : String(error.code);
   const details = error?.details ?? {};
@@ -230,22 +240,37 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   const everyError = innerErrorScope === "all-errors";
   const respond = (httpStatus, code, message, inner) => {
     const body = { error: { code, message } };
-    if (innerError && everyError)
+    if (innerError && everyError && !details.hideInner)
       body.error.innererror = {
         code: inner?.code ?? code,
         message: inner?.message ?? message,
-        type: ERROR_TYPES[code] ?? null,
+        ...(code === "9004010D" ? {} : { type: ERROR_TYPES[code] ?? null }),
       };
-    else if (innerError && inner) body.error.innererror = { code: inner.code, message: inner.message };
+    else if (innerError && inner && !details.hideInner) body.error.innererror = { code: inner.code, message: inner.message };
     return { status: httpStatus, body, headers };
   };
   const plain = undefined;
+  if(internal==='PortalFetchTransportFailure'&&details.phase==='native-api-transport'){
+    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:details.innerMessage});
+    if(response.body.error.innererror)response.body.error.innererror.type='CDSError';
+    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+    return response;
+  }
+  if(internal==='ODataPermissionNavigationFailure'&&details.phase==='native-odata-conversion'&&[400,501].includes(status)){
+    const response=respond(status,'9004010D',cdsErrorMessage,{code:details.innerCode,message:error.message});
+    if(cdsErrorCode==='cdscode')response.body.error.cdscode=details.innerCode;
+    return response;
+  }
+  if (internal === 'PortalQueryAdmissionFailure' && details.phase === 'native-api-admission')
+    return respond(500, '9004010A', 'An unexpected error occurred while processing the request', plain);
   if (details.phase === "query" && QUERY_CODES.has(internal))
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
   // A write payload the OData reader can't map (an @odata.bind name that isn't a navigation
   // property): the same generic 9004010A as a malformed query (decision, not observed).
   if (details.phase === "payload" && internal === "UndeclaredNavigationProperty")
     return respond(400, "9004010A", "An unexpected error occurred while processing the request", plain);
+  if (internal === "WebApiInvalidReference")
+    return respond(500, "9004010A", "An unexpected error occurred while processing the request", plain);
   if (internal === "WebApiConfigurationTable")
     return respond(404, "9004010E", `Configuration table ${details.table} is not supported.`, plain);
   if (internal === "ResourceNotFound" || internal === "WebApiTableNotEnabled" || internal === "UnknownEntity")
@@ -291,8 +316,8 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // (90040109) and gives 90040107 HttpAntiForgeryException no status; Microsoft's clients
   // treat 403 with 90040107 as an expired token and 401 as an expired session. Local tokens
   // aren't bound to a session, so no local path raises MissingPortalSessionCookie.
-  if (internal === "MissingPortalRequestVerificationToken") return respond(401, "90040107", error.message, plain);
-  if (internal === "HttpAntiForgeryException") return respond(403, "90040107", error.message, plain);
+  if (internal === "MissingPortalRequestVerificationToken") return respond(401, "90040107", antiForgery === "decryption-401" ? "Request validation failed : " + error.message : error.message, plain);
+  if (internal === "HttpAntiForgeryException") return respond(antiForgery === "decryption-401" ? 401 : 403, "90040107", antiForgery === "decryption-401" ? 'Request validation failed : The anti-forgery token could not be decrypted. If this application is hosted by a Web Farm or cluster, ensure that all machines are running the same version of ASP.NET Web Pages and that the <machineKey> configuration specifies explicit encryption and validation keys. AutoGenerate cannot be used in a cluster.' : error.message, plain);
   if (internal === "MissingPortalSessionCookie")
     return respond(401, "90040109", "An Invalid session token was passed into the throwing method.", plain);
   if (internal === "NoAttributesForTableCreate")
@@ -305,10 +330,17 @@ export function webApiErrorResponse(error, { innerError = false, innerErrorScope
   // Everything else is Dataverse rejecting the request: CDSError with the
   // platform error code and message in innererror.
   const innerCode = String(details.innerCode ?? DEFAULT_INNER_CODES[internal] ?? "0x80040203");
-  return respond(status, "9004010D", "CDS error occurred.", {
+  const response = respond(status, "9004010D", cdsErrorMessage, {
     code: innerCode,
-    message: error?.message ?? "",
+    message: internal === "InvalidDateTime" && (details.failedDateConversion || details.dateTimeBelowMinimum) && invalidDate === "crm-minimum"
+      ? `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? '01/01/0001 00:00:00'}, Minimum value supported: 01/01/1753 00:00:00`
+      : (() => {
+        const observed = observedODataInnerMessage(error, errorDetails);
+        return observed === null ? error?.message ?? "" : appendObservedWebApiErrorTemplate(error, observed, { mode: errorStacks, templates: errorTemplates, method: errorMethod });
+      })(),
   });
+  if (cdsErrorCode === 'cdscode') response.body.error.cdscode = innerCode;
+  return response;
 }
 
 /**
@@ -323,6 +355,14 @@ export async function handleWebApi(req, res, url, deps) {
     const response = webApiErrorResponse(cause, {
       innerError: settingTrue(deps.portal?.settings, "Webapi/error/innererror"),
       innerErrorScope: deps.portal?.observed?.webApiInnerError,
+      cdsErrorMessage: deps.portal?.observed?.webApiCdsErrorMessage,
+      cdsErrorCode: deps.portal?.observed?.webApiCdsErrorCode,
+      antiForgery: deps.portal?.observed?.webApiAntiForgery,
+      invalidDate: deps.portal?.observed?.webApiInvalidDate,
+      errorDetails: deps.portal?.observed?.webApiErrorDetails,
+      errorStacks: deps.portal?.observed?.webApiErrorStacks,
+      errorTemplates: deps.webApiErrorTemplates,
+      errorMethod: req.method,
     });
     deps.onError?.(cause, response);
     deps.json(res, response.status, response.body, { ...apiHeaders(deps.portal), ...response.headers });
@@ -369,13 +409,37 @@ async function route(req, res, url, deps) {
       "NotImplemented",
     );
   const t = requestContext(req, res, url, deps, target, method);
+  // A read observer can issue independently committed SDK writes. Finish the
+  // serialized read unit before sending a successful response, including text
+  // properties and conditional 304s, so persistence failures remain errors.
+  const execute = () => method === "GET" && typeof deps.store.readOperation === "function"
+    ? dispatchRead(t)
+    : dispatch(t);
   if (method === "GET" && !(target.kind === "collection" && url.searchParams.has("fetchXml")))
     try {
-      return await dispatch(t);
+      return await execute();
     } catch (error) {
       throw queryPhase(error);
     }
-  return dispatch(t);
+  return execute();
+}
+
+async function dispatchRead(t) {
+  let response;
+  const pending = {
+    writeHead(status, headers) { response = { status, headers, raw: true }; },
+    end(body) { response = { ...response, raw: true, body }; },
+  };
+  const buffered = { ...t, res: pending, deps: { ...t.deps,
+    json(_res, status, body, headers) { response = { status, body, headers }; },
+  } };
+  await t.store.readOperation(async () => { await dispatch(buffered); });
+  if (!response) throw new DataError("The read operation produced no response.", 500, "InvalidReadResponse");
+  if (response.raw) {
+    t.res.writeHead(response.status, response.headers);
+    return t.res.end(response.body);
+  }
+  return t.deps.json(t.res, response.status, response.body, response.headers);
 }
 
 function dispatch(t) {
@@ -477,6 +541,7 @@ function requestContext(req, res, url, deps, target, method) {
     metadata: deps.metadata,
     formatting: {
       timeZoneOffsetMinutes: Number(settings.timeZoneOffsetMinutes ?? 0),
+      formattedValueTimeZone: settings.formattedValueTimeZone,
       dateFormat: settings.dateFormat,
       timeFormat: settings.timeFormat,
       dateTimeFormat: settings.dateTimeFormat,
@@ -504,6 +569,7 @@ const metadataVersions = new WeakMap();
  * number derived from the table mappings (synthetic, never a live value).
  */
 function globalMetadataVersion(store) {
+  if(store.observed?.webApiGlobalMetadataVersion!=null)return store.observed.webApiGlobalMetadataVersion;
   const mappings = store.state.mappings ?? {};
   if (!metadataVersions.has(mappings)) {
     const digest = createHash("sha256").update(JSON.stringify(mappings)).digest("hex");
@@ -531,6 +597,7 @@ const pick = (params, names) => {
 };
 const queryOptions = (t, extra = {}) => ({
   dialect: "dataverse",
+  portalRequest: true,
   metadata: t.deps.metadata,
   includeKeys: true,
   ...extra,
@@ -584,7 +651,7 @@ function locate(t, mapping, key) {
 
 const readRecord = (t, mapping, id, key) => {
   if (id == null) throw recordNotFound(mapping, key);
-  const row = t.store.get(mapping.logicalName, id, t.deps.identity);
+  const row = t.store.get(mapping.logicalName, id, t.deps.identity, { portalRequest: true });
   if (!row) throw recordNotFound(mapping, key);
   return row;
 };
@@ -700,7 +767,7 @@ function getCollection(t, { mapping = t.mapping, policy = t.policy, ids } = {}) 
  * still checked, as the engine checks them.
  */
 function fetchTables(store, xml) {
-  const plan = planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi" });
+  const plan = planFetch(parseXmlDocument(xml, { root: "fetch" }), { profile: "webapi", limits: store.querySettings().fetchLimits });
   const mappingOf = new Map([[plan.root, store.resolveMapping(plan.root.attrs.name)]]);
   for (const link of plan.links) mappingOf.set(link, store.resolveMapping(link.attrs.name));
   const structural = structuralIntersects(plan, mappingOf);
@@ -713,7 +780,8 @@ function fetchTables(store, xml) {
  * lookups as _x_value,x, followed by x() for each lookup. The primary key
  * leads when the query doesn't select it.
  */
-function fetchContext(t, mapping, info) {
+function fetchContext(t, mapping, info, {empty=false}={}) {
+  if((info.aggregate||empty)&&t.store.observed?.tablePermissionQueryPipeline==='native-classic')return `${t.deps.origin}/_api/$metadata#${mapping.entitySet}`;
   const columns = info.columns.filter((column) => column.alias == null && !column.aliased && !column.aggregate);
   const parts = [],
     lookups = [];
@@ -732,29 +800,45 @@ function fetchContext(t, mapping, info) {
 
 function getFetch(t) {
   const { url, store, deps, mapping } = t;
-  const xml = url.searchParams.get("fetchXml");
-  const project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName);
+  const authoredXml = url.searchParams.get("fetchXml");
+  const xml = deps.identity?.admin ? authoredXml : preparePortalFetchXml(authoredXml,{linkTypes:store.observed?.webApiFetchXmlLinkTypes});
+  const nativePolicy=!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic';
+  const admitTables=()=>{
+    if (!deps.identity?.admin && store.state.settings?.permissionMode !== 'permissive')
+      for(const logical of fetchTables(store,xml))if(!store.rules(logical,'read',deps.identity).length)
+        throw new DataError(`Table permission denies read on ${logical}`,403,'PermissionDenied',{operation:'read',table:logical});
+  };
+  let project;
+  try {
+    if(nativePolicy)admitTables();
+    project = webApiFetchPolicy(deps.portal, store, xml, mapping.logicalName,{structuralJoinFields:nativePolicy});
+  }
+  catch(cause) {
+    if(!deps.identity?.admin&&store.observed?.tablePermissionQueryPipeline==='native-classic'&&cause.details?.innerCode==='0x8004430d')
+      throw new DataError('An unexpected error occurred while processing the request',500,'PortalQueryAdmissionFailure',{phase:'native-api-admission'});
+    throw cause;
+  }
   // Return 403 90040120 when any table the query reads (root or link-entity)
   // has no read permission for the caller, instead of silently empty joins.
-  if (!deps.identity?.admin && store.state.settings?.permissionMode !== "permissive")
-    for (const logical of fetchTables(store, xml))
-      if (!store.rules(logical, "read", deps.identity).length)
-        throw new DataError(`Table permission denies read on ${logical}`, 403, "PermissionDenied", {
-          operation: "read",
-          table: logical,
-        });
+  if(!nativePolicy)admitTables();
   const counted = url.searchParams.get("$count") === "true";
-  const fetched = store.fetchXml(xml, deps.identity, {
+  const fetched = store.fetchXml(authoredXml, deps.identity, {
     profile: "webapi",
+    portalRequest: true,
     metadata: deps.metadata,
     returnTotal: counted,
   });
   const info = fetched.columns;
-  const body = { "@odata.context": fetchContext(t, mapping, info) };
-  if (counted) body["@odata.count"] = Math.max(fetched.total_record_count, 0);
+  const body = { "@odata.context": fetchContext(t, mapping, info,{empty:fetched.entities.length===0}) };
+  if (counted || nativePolicy && fetched.total_record_count >= 0) body["@odata.count"] = Math.max(fetched.total_record_count, 0);
   body["@Microsoft.Dynamics.CRM.totalrecordcount"] = fetched.total_record_count;
   body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"] = fetched.total_record_count_limit_exceeded;
   body["@Microsoft.Dynamics.CRM.globalmetadataversion"] = globalMetadataVersion(store);
+  if(nativePolicy){
+    const executed=planFetch(parseXmlDocument(fetched.executedXml??fetched.xml??xml,{root:'fetch'}),{profile:'webapi',limits:store.querySettings().fetchLimits});
+    for(const link of executed.root.children.filter(node=>node.name==='link-entity'))
+      body[`@${executed.aliasOf.get(link)}.OData.Community.Display.V1.CurrentEntityField`]=link.attrs.to;
+  }
   // The final page carries neither morerecords nor the paging cookie
   // (fetchxml/page-results).
   if (fetched.more_records) {
@@ -847,33 +931,43 @@ function getProperty(t, raw) {
   const lookup = /^_(.+)_value$/.test(target.segment) ? target.segment : `_${target.segment}_value`;
   const value = own(formatted, target.segment) ? formatted[target.segment] : formatted[lookup];
   if (value == null) return sendNoContent(t);
-  if (raw) return sendText(t, value);
+  if (raw) return sendText(t, isExactNumeric(value)?value.value:value);
   return send(t, 200, { value });
 }
 
 // ---- writes ----------------------------------------------------------------
 
 async function readBody(t) {
-  const body = await t.deps.jsonBody(t.req);
+  const observed = t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper";
+  const body = await t.deps.jsonBody(t.req, { allowEmpty: false, odataErrorDetails: observed });
+  t.odataNumberLexemes = observed ? odataNumberLexemes(body) : undefined;
   if (!body || typeof body !== "object" || Array.isArray(body))
-    throw badRequest("The request body must be a JSON object.", "InvalidRequest", "0x0");
+    throw attachODataReaderDetails(badRequest("The request body must be a JSON object.", "InvalidRequest", "0x0"), observed ? odataRootDetails(body) : null);
   return body;
 }
 
 /** @odata.bind and @odata.id references must stay on this portal (or its live origin). */
 function checkReferenceOrigin(t, value, name) {
+  const observed = t.deps.portal?.observed?.webApiReferenceErrors === "unexpected";
+  const failure = (message) => new DataError(message, observed ? 500 : 400, observed ? "WebApiInvalidReference" : "InvalidLookup", { innerCode: "0x80040203", ...(observed ? { hideInner: true } : {}) });
   const reference = parseEntityReference(value);
-  if (!reference) throw new DataError(`Invalid entity reference in ${name}.`, 400, "InvalidLookup", { innerCode: "0x80040203" });
+  if (!reference) throw failure(`Invalid entity reference in ${name}.`);
+  if (observed && !GUID_PATTERN.test(reference.id) && !parseKeySegment(reference.id))
+    throw failure(`Invalid entity reference in ${name}.`);
   if (reference.origin && !t.deps.origins.includes(reference.origin))
-    throw new DataError(`Entity references in ${name} must use this portal origin.`, 400, "InvalidLookup", {
-      innerCode: "0x80040203",
-    });
+    throw failure(`Entity references in ${name} must use this portal origin.`);
+  if (observed) {
+    const target = t.store.resolveMapping(reference.set);
+    if (!t.store.findByKey(target, reference.id))
+      throw new DataError(`The referenced record does not exist.`, 404, "InvalidLookup", { hideInner: true });
+  }
   return reference;
 }
 function assertBindOrigins(t, body) {
   for (const [key, value] of Object.entries(body ?? {})) {
     if (key.endsWith("@odata.bind")) {
-      for (const item of Array.isArray(value) ? value : [value]) if (item != null) checkReferenceOrigin(t, item, key);
+      for (const item of Array.isArray(value) ? value : [value])
+        if (item != null || t.deps.portal?.observed?.webApiReferenceErrors === "unexpected") checkReferenceOrigin(t, item, key);
     } else if (value && typeof value === "object")
       for (const item of Array.isArray(value) ? value : [value])
         if (item && typeof item === "object" && !Array.isArray(item)) assertBindOrigins(t, item);
@@ -881,6 +975,10 @@ function assertBindOrigins(t, body) {
 }
 const writeOptions = (t, extra = {}) => ({
   coerce: true,
+  portalRequest: true,
+  odataErrorDetails: t.deps.portal?.observed?.webApiErrorDetails === "odata-wrapper",
+  odataNumberLexemes: t.odataNumberLexemes,
+  ieee754Compatible: /(?:^|;)\s*IEEE754Compatible\s*=\s*(?:true|"true")\s*(?:;|$)/i.test(String(t.req.headers["content-type"] ?? "")),
   metadata: t.deps.metadata,
   ifMatch: t.req.headers["if-match"],
   ifNoneMatch: t.req.headers["if-none-match"],
@@ -926,7 +1024,7 @@ function writeAndRepresent(t, mapping, params, write) {
       const row = outcome.row ?? outcome;
       const id = row[mapping.idColumn];
       return { outcome, id, body: params ? representationBody(t, mapping, id, params) : null };
-    }),
+    }, { incremental: true }),
   );
 }
 

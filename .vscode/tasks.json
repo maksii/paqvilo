@@ -36,13 +36,15 @@
       "problemMatcher": {
         "owner": "paqvilo",
         "pattern": {
-          "regexp": "^paqvilo: (.+)$",
-          "message": 1
+          "regexp": "^(?!)()()()$",
+          "file": 1,
+          "location": 2,
+          "message": 3
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "^(portals|browser|site)\\s",
-          "endsPattern": "^edit a file under the sources"
+          "beginsPattern": "^browser\\s+",
+          "endsPattern": "^edit a file under the sources and the browser follows\\."
         }
       },
       "dependsOn": "paqvilo: setup",
@@ -69,13 +71,15 @@
       "problemMatcher": {
         "owner": "paqvilo",
         "pattern": {
-          "regexp": "^paqvilo: (.+)$",
-          "message": 1
+          "regexp": "^(?!)()()()$",
+          "file": 1,
+          "location": 2,
+          "message": 3
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "^(portals|browser|site)\\s",
-          "endsPattern": "^edit a file under the sources"
+          "beginsPattern": "^browser\\s+",
+          "endsPattern": "^edit a file under the sources and the browser follows\\."
         }
       },
       "dependsOn": "paqvilo: setup",
@@ -109,7 +113,7 @@
         "mirage",
         "dev",
         "--debug-port",
-        "9222"
+        "9223"
       ],
       "options": {
         "cwd": "${workspaceFolder}"
@@ -121,13 +125,15 @@
       "problemMatcher": {
         "owner": "paqvilo",
         "pattern": {
-          "regexp": "^paqvilo: (.+)$",
-          "message": 1
+          "regexp": "^(?!)()()()$",
+          "file": 1,
+          "location": 2,
+          "message": 3
         },
         "background": {
           "activeOnStart": true,
-          "beginsPattern": "^(portals|browser|site)\\s",
-          "endsPattern": "^edit a file under the sources"
+          "beginsPattern": "^browser\\s+",
+          "endsPattern": "^edit a file under the sources and the browser follows\\."
         }
       },
       "dependsOn": "paqvilo: setup",

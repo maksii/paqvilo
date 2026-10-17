@@ -2,7 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { OverlaySession } from '../session.mjs';
-import { sourceText } from '../portal-model.mjs';
+import { createSourceReader } from '../portal-model.mjs';
 import { fetchOnline, mapLimit, describeStatus } from '../online.mjs';
 
 const WHERE = {
@@ -20,6 +20,7 @@ const WHERE = {
 
 export function buildMapping(session) {
   const { cfg, model } = session;
+  const textOf = createSourceReader(model);
   const inlineKinds = new Set(cfg.site.inline.enabled ? cfg.site.inline.kinds : []);
   const markupKinds = new Set(cfg.site.markup.enabled ? cfg.site.markup.kinds : []);
   return {
@@ -44,7 +45,7 @@ export function buildMapping(session) {
         page: s.pageUrl,
         usedOn: s.usedOn,
         where: WHERE[s.kind],
-        empty: !(sourceText(s) ?? '').trim(),
+        empty: !(textOf(s) ?? '').trim(),
       })),
     needsDeploy: session.rewriter.unsupported,
     warnings: model.warnings,
@@ -102,14 +103,13 @@ export default async function map(cfg, args) {
     mapping.checked = true;
   }
 
-  fs.mkdirSync(cfg.stateDir, { recursive: true });
   const base = path.join(cfg.stateDir, `mapping-${cfg.siteName}-${cfg.envName}`);
-  fs.writeFileSync(`${base}.json`, JSON.stringify(mapping, null, 2));
-  fs.writeFileSync(`${base}.md`, toMarkdown(mapping));
+  const writesFiles = args['no-write'] ? [] : [`${base}.json`,`${base}.md`];
+  if(writesFiles.length){fs.mkdirSync(cfg.stateDir,{recursive:true});fs.writeFileSync(writesFiles[0],JSON.stringify(mapping,null,2));fs.writeFileSync(writesFiles[1],toMarkdown(mapping));}
   const exitCode = mapping.checked && mapping.webFiles.some((w) => w.url && ![200, 404].includes(w.onlineStatus)) ? 1 : 0;
 
   if (args.json) {
-    console.log(JSON.stringify(mapping, null, 2));
+    console.log(JSON.stringify({...mapping,schemaVersion:1,command:'map',ok:!exitCode,offline:!args.check,writesFiles,errors:[]}, null, 2));
     return exitCode;
   }
 
@@ -136,7 +136,7 @@ export default async function map(cfg, args) {
   }
   for (const w of mapping.warnings) console.log(`note: ${w}`);
   for (const u of mapping.needsDeploy) console.log(`needs deploy: ${u.rel} - ${u.reason}`);
-  console.log(`\nfull mapping written to ${base}.md and .json`);
+  if(writesFiles.length)console.log(`\nfull mapping written to ${base}.md and .json`);
   if (exitCode) console.log('Online check incomplete: some mapped resources could not be inspected.');
   return exitCode;
 }

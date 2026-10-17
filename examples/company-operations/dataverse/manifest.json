@@ -1,0 +1,4262 @@
+{
+  "schemaVersion": 1,
+  "language": 1033,
+  "publisher": {
+    "uniqueName": "PaqviloCompanyOperations",
+    "friendlyName": "Paqvilo Company Operations",
+    "prefix": "pqvd",
+    "optionValuePrefix": 18327
+  },
+  "solutions": [
+    {
+      "uniqueName": "PaqviloCompanyOperationsCore",
+      "friendlyName": "Company Operations Core",
+      "version": "1.0.0.0"
+    },
+    {
+      "uniqueName": "PaqviloCompanyOperationsForms",
+      "friendlyName": "Company Operations Forms",
+      "version": "1.0.0.0",
+      "dependsOn": [
+        "PaqviloCompanyOperationsCore"
+      ]
+    },
+    {
+      "uniqueName": "PaqviloPermissionTestSupport",
+      "friendlyName": "Permission Test Support",
+      "version": "1.0.0.0",
+      "dependsOn": [
+        "PaqviloCompanyOperationsCore"
+      ]
+    },
+    {
+      "uniqueName": "PaqviloPluginEvidence",
+      "friendlyName": "Plugin Evidence",
+      "version": "1.0.0.0",
+      "dependsOn": [
+        "PaqviloCompanyOperationsCore",
+        "PaqviloPermissionTestSupport"
+      ]
+    },
+    {
+      "uniqueName": "PaqviloBehaviorPlugins",
+      "friendlyName": "Behaviour Plugins",
+      "version": "1.0.0.0",
+      "dependsOn": [
+        "PaqviloPluginEvidence",
+        "PaqviloPermissionTestSupport"
+      ]
+    }
+  ],
+  "choices": [
+    {
+      "name": "pqvd_orgkind",
+      "label": "Orgkind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Company"
+        },
+        {
+          "value": 183270001,
+          "label": "Subsidiary"
+        },
+        {
+          "value": 183270002,
+          "label": "Region"
+        },
+        {
+          "value": 183270003,
+          "label": "Branch"
+        },
+        {
+          "value": 183270004,
+          "label": "Operating unit"
+        },
+        {
+          "value": 183270005,
+          "label": "Vendor"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_scopekind",
+      "label": "Scopekind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Organisation"
+        },
+        {
+          "value": 183270001,
+          "label": "Department"
+        },
+        {
+          "value": 183270002,
+          "label": "Engagement"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_accessstate",
+      "label": "Accessstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Pending"
+        },
+        {
+          "value": 183270001,
+          "label": "Active"
+        },
+        {
+          "value": 183270002,
+          "label": "Suspended"
+        },
+        {
+          "value": 183270003,
+          "label": "Expired"
+        },
+        {
+          "value": 183270004,
+          "label": "Revoked"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_membershipstate",
+      "label": "Membershipstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Pending"
+        },
+        {
+          "value": 183270001,
+          "label": "Active"
+        },
+        {
+          "value": 183270002,
+          "label": "Suspended"
+        },
+        {
+          "value": 183270003,
+          "label": "Ended"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_engagementkind",
+      "label": "Engagementkind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Permanent employee"
+        },
+        {
+          "value": 183270001,
+          "label": "Fixed-term employee"
+        },
+        {
+          "value": 183270002,
+          "label": "External contractor"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_employmentstate",
+      "label": "Employmentstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Draft"
+        },
+        {
+          "value": 183270001,
+          "label": "Active"
+        },
+        {
+          "value": 183270002,
+          "label": "Suspended"
+        },
+        {
+          "value": 183270003,
+          "label": "Ended"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_sitekind",
+      "label": "Sitekind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Office"
+        },
+        {
+          "value": 183270001,
+          "label": "Workshop"
+        },
+        {
+          "value": 183270002,
+          "label": "Warehouse"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_roomkind",
+      "label": "Roomkind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Office"
+        },
+        {
+          "value": 183270001,
+          "label": "Meeting room"
+        },
+        {
+          "value": 183270002,
+          "label": "Workshop"
+        },
+        {
+          "value": 183270003,
+          "label": "Storage"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_equipmentkind",
+      "label": "Equipmentkind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Laptop"
+        },
+        {
+          "value": 183270001,
+          "label": "Phone"
+        },
+        {
+          "value": 183270002,
+          "label": "Network"
+        },
+        {
+          "value": 183270003,
+          "label": "Production equipment"
+        },
+        {
+          "value": 183270004,
+          "label": "Vehicle"
+        },
+        {
+          "value": 183270005,
+          "label": "Safety equipment"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_condition",
+      "label": "Condition",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "New"
+        },
+        {
+          "value": 183270001,
+          "label": "Good"
+        },
+        {
+          "value": 183270002,
+          "label": "Worn"
+        },
+        {
+          "value": 183270003,
+          "label": "Damaged"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_equipmentstate",
+      "label": "Equipmentstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Stock"
+        },
+        {
+          "value": 183270001,
+          "label": "Assigned"
+        },
+        {
+          "value": 183270002,
+          "label": "In repair"
+        },
+        {
+          "value": 183270003,
+          "label": "Retired"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_assignmentstate",
+      "label": "Assignmentstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Planned"
+        },
+        {
+          "value": 183270001,
+          "label": "Issued"
+        },
+        {
+          "value": 183270002,
+          "label": "Returned"
+        },
+        {
+          "value": 183270003,
+          "label": "Cancelled"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_requestkind",
+      "label": "Requestkind",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Fault"
+        },
+        {
+          "value": 183270001,
+          "label": "Inspection"
+        },
+        {
+          "value": 183270002,
+          "label": "Replacement"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_priority",
+      "label": "Priority",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Low"
+        },
+        {
+          "value": 183270001,
+          "label": "Normal"
+        },
+        {
+          "value": 183270002,
+          "label": "High"
+        },
+        {
+          "value": 183270003,
+          "label": "Critical"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_workstate",
+      "label": "Workstate",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "New"
+        },
+        {
+          "value": 183270001,
+          "label": "Planned"
+        },
+        {
+          "value": 183270002,
+          "label": "In progress"
+        },
+        {
+          "value": 183270003,
+          "label": "Blocked"
+        },
+        {
+          "value": 183270004,
+          "label": "Completed"
+        },
+        {
+          "value": 183270005,
+          "label": "Cancelled"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_checkresult",
+      "label": "Checkresult",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Not run"
+        },
+        {
+          "value": 183270001,
+          "label": "Pass"
+        },
+        {
+          "value": 183270002,
+          "label": "Fail"
+        },
+        {
+          "value": 183270003,
+          "label": "Not applicable"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_severity",
+      "label": "Severity",
+      "solution": "PaqviloCompanyOperationsCore",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Advisory"
+        },
+        {
+          "value": 183270001,
+          "label": "Minor"
+        },
+        {
+          "value": 183270002,
+          "label": "Major"
+        },
+        {
+          "value": 183270003,
+          "label": "Critical"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_runstate",
+      "label": "Runstate",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Running"
+        },
+        {
+          "value": 183270001,
+          "label": "Completed"
+        },
+        {
+          "value": 183270002,
+          "label": "Interrupted"
+        },
+        {
+          "value": 183270003,
+          "label": "Failed"
+        },
+        {
+          "value": 183270004,
+          "label": "Incomplete"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_engine",
+      "label": "Engine",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Liquid"
+        },
+        {
+          "value": 183270001,
+          "label": "WebAPI"
+        },
+        {
+          "value": 183270002,
+          "label": "Comparator"
+        },
+        {
+          "value": 183270003,
+          "label": "Recorder"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_phase",
+      "label": "Phase",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Baseline"
+        },
+        {
+          "value": 183270001,
+          "label": "CRUD"
+        },
+        {
+          "value": 183270002,
+          "label": "Verification"
+        },
+        {
+          "value": 183270003,
+          "label": "Comparison"
+        },
+        {
+          "value": 183270004,
+          "label": "Cleanup"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_operation",
+      "label": "Operation",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Read"
+        },
+        {
+          "value": 183270001,
+          "label": "Create"
+        },
+        {
+          "value": 183270002,
+          "label": "Update"
+        },
+        {
+          "value": 183270003,
+          "label": "Delete"
+        },
+        {
+          "value": 183270004,
+          "label": "Bind"
+        },
+        {
+          "value": 183270005,
+          "label": "Identity"
+        },
+        {
+          "value": 183270006,
+          "label": "Compare"
+        },
+        {
+          "value": 183270007,
+          "label": "Diagnostic"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_artifactkind",
+      "label": "Artifactkind",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Summary"
+        },
+        {
+          "value": 183270001,
+          "label": "AuthoredXml"
+        },
+        {
+          "value": 183270002,
+          "label": "EffectiveXml"
+        },
+        {
+          "value": 183270003,
+          "label": "Request"
+        },
+        {
+          "value": 183270004,
+          "label": "RawResponse"
+        },
+        {
+          "value": 183270005,
+          "label": "CanonicalResult"
+        },
+        {
+          "value": 183270006,
+          "label": "Comparison"
+        },
+        {
+          "value": 183270007,
+          "label": "Identity"
+        },
+        {
+          "value": 183270008,
+          "label": "Cleanup"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_verdict",
+      "label": "Verdict",
+      "solution": "PaqviloPermissionTestSupport",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Pass"
+        },
+        {
+          "value": 183270001,
+          "label": "Fail"
+        },
+        {
+          "value": 183270002,
+          "label": "Incomplete"
+        },
+        {
+          "value": 183270003,
+          "label": "Unsupported"
+        },
+        {
+          "value": 183270004,
+          "label": "NotApplicable"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_testlane",
+      "label": "Testlane",
+      "solution": "PaqviloPluginEvidence",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Liquid"
+        },
+        {
+          "value": 183270001,
+          "label": "WebAPI"
+        },
+        {
+          "value": 183270002,
+          "label": "SDK"
+        },
+        {
+          "value": 183270003,
+          "label": "Flow"
+        },
+        {
+          "value": 183270004,
+          "label": "LocalModel"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_capturestate",
+      "label": "Capturestate",
+      "solution": "PaqviloPluginEvidence",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "Pending"
+        },
+        {
+          "value": 183270001,
+          "label": "Partial"
+        },
+        {
+          "value": 183270002,
+          "label": "Complete"
+        },
+        {
+          "value": 183270003,
+          "label": "NoBackendInvocationObserved"
+        },
+        {
+          "value": 183270004,
+          "label": "CaptureFailed"
+        },
+        {
+          "value": 183270005,
+          "label": "Quarantined"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_eventsource",
+      "label": "Eventsource",
+      "solution": "PaqviloPluginEvidence",
+      "options": [
+        {
+          "value": 183270000,
+          "label": "DataversePlugin"
+        },
+        {
+          "value": 183270001,
+          "label": "AzureCollector"
+        },
+        {
+          "value": 183270002,
+          "label": "PowerAutomate"
+        },
+        {
+          "value": 183270003,
+          "label": "SDKClient"
+        },
+        {
+          "value": 183270004,
+          "label": "LocalModel"
+        }
+      ]
+    }
+  ],
+  "tables": [
+    {
+      "name": "account",
+      "entitySetName": "accounts",
+      "solution": "PaqviloCompanyOperationsCore",
+      "existing": true,
+      "existingColumns": [
+        "accountnumber"
+      ],
+      "columns": [
+        {
+          "name": "pqvd_orgkind",
+          "label": "Orgkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_orgkind"
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_account_number",
+          "columns": [
+            "accountnumber"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "contact",
+      "entitySetName": "contacts",
+      "solution": "PaqviloCompanyOperationsCore",
+      "existing": true,
+      "existingColumns": [],
+      "columns": [
+        {
+          "name": "pqvd_personcode",
+          "label": "Personcode",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_contact_personcode",
+          "columns": [
+            "pqvd_personcode"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "transactioncurrency",
+      "entitySetName": "transactioncurrencies",
+      "solution": "PaqviloCompanyOperationsCore",
+      "existing": true,
+      "existingColumns": [],
+      "columns": [],
+      "keys": []
+    },
+    {
+      "name": "pqvd_currencyreference",
+      "entitySetName": "pqvd_currencyreferences",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Currency Reference",
+      "pluralLabel": "Currency References",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 3
+        },
+        {
+          "name": "pqvd_symbol",
+          "label": "Symbol",
+          "required": "none",
+          "type": "string",
+          "maxLength": 10
+        },
+        {
+          "name": "pqvd_precision",
+          "label": "Precision",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 4
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_currencyreference_code",
+          "columns": [
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        },
+        {
+          "name": "pqvd_ak_currencyreference_currency",
+          "columns": [
+            "pqvd_systemcurrencyid"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_accessrole",
+      "entitySetName": "pqvd_accessroles",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Accessrole",
+      "pluralLabel": "Accessroles",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 24
+        },
+        {
+          "name": "pqvd_description",
+          "label": "Description",
+          "required": "none",
+          "type": "string",
+          "maxLength": 1000
+        },
+        {
+          "name": "pqvd_principalcolumn",
+          "label": "Principalcolumn",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_accessrole_code",
+          "columns": [
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_accesspermission",
+      "entitySetName": "pqvd_accesspermissions",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Accesspermission",
+      "pluralLabel": "Accesspermissions",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_number",
+          "label": "Number",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_scopekind",
+          "label": "Scopekind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_scopekind"
+        },
+        {
+          "name": "pqvd_scopekey",
+          "label": "Scopekey",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_includedescendants",
+          "label": "Includedescendants",
+          "required": "required",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pqvd_validfrom",
+          "label": "Validfrom",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_validuntil",
+          "label": "Validuntil",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_accessstate",
+          "label": "Accessstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_accessstate",
+          "default": 183270000
+        },
+        {
+          "name": "pqvd_reason",
+          "label": "Reason",
+          "required": "none",
+          "type": "string",
+          "maxLength": 1000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_accesspermission_number",
+          "columns": [
+            "pqvd_number"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        },
+        {
+          "name": "pqvd_ak_accesspermission_scope",
+          "columns": [
+            "pqvd_granteecontactid",
+            "pqvd_scopeaccountid",
+            "pqvd_roleid",
+            "pqvd_scopekey"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_orgcontact",
+      "entitySetName": "pqvd_orgcontacts",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Orgcontact",
+      "pluralLabel": "Orgcontacts",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_displayname",
+          "label": "Displayname",
+          "required": "required",
+          "type": "string",
+          "maxLength": 160
+        },
+        {
+          "name": "pqvd_workemail",
+          "label": "Workemail",
+          "required": "none",
+          "type": "string",
+          "maxLength": 254
+        },
+        {
+          "name": "pqvd_workphone",
+          "label": "Workphone",
+          "required": "none",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_membershipstate",
+          "label": "Membershipstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_membershipstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_orgcontact_code",
+          "columns": [
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        },
+        {
+          "name": "pqvd_ak_orgcontact_member",
+          "columns": [
+            "pqvd_accountid",
+            "pqvd_contactid"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_department",
+      "entitySetName": "pqvd_departments",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Department",
+      "pluralLabel": "Departments",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_description",
+          "label": "Description",
+          "required": "none",
+          "type": "string",
+          "maxLength": 1000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_department_code",
+          "columns": [
+            "pqvd_accountid",
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_employment",
+      "entitySetName": "pqvd_employments",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Employment",
+      "pluralLabel": "Employments",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_number",
+          "label": "Number",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_engagementkind",
+          "label": "Engagementkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_engagementkind"
+        },
+        {
+          "name": "pqvd_ftefraction",
+          "label": "Ftefraction",
+          "required": "required",
+          "type": "decimal",
+          "min": 0,
+          "max": 1,
+          "precision": 2
+        },
+        {
+          "name": "pqvd_startdate",
+          "label": "Startdate",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_enddate",
+          "label": "Enddate",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_jobtitle",
+          "label": "Jobtitle",
+          "required": "required",
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "name": "pqvd_employmentstate",
+          "label": "Employmentstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_employmentstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_employment_number",
+          "columns": [
+            "pqvd_number"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_employmentterms",
+      "entitySetName": "pqvd_employmenttermrecords",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Employmentterms",
+      "pluralLabel": "Employmenttermrecords",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_annualsalary",
+          "label": "Annualsalary",
+          "required": "none",
+          "type": "money",
+          "min": 0,
+          "max": 100000000000,
+          "precision": 2,
+          "precisionSource": 2
+        },
+        {
+          "name": "pqvd_dayrate",
+          "label": "Dayrate",
+          "required": "none",
+          "type": "money",
+          "min": 0,
+          "max": 100000000000,
+          "precision": 2,
+          "precisionSource": 2
+        },
+        {
+          "name": "pqvd_weeklyhours",
+          "label": "Weeklyhours",
+          "required": "none",
+          "type": "decimal",
+          "min": 0,
+          "max": 168,
+          "precision": 2
+        },
+        {
+          "name": "pqvd_noticeperioddays",
+          "label": "Noticeperioddays",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_contractreference",
+          "label": "Contractreference",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_employmentterms_employment",
+          "columns": [
+            "pqvd_employmentid"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_site",
+      "entitySetName": "pqvd_sites",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Site",
+      "pluralLabel": "Sites",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_address",
+          "label": "Address",
+          "required": "none",
+          "type": "string",
+          "maxLength": 500
+        },
+        {
+          "name": "pqvd_sitekind",
+          "label": "Sitekind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_sitekind"
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_site_code",
+          "columns": [
+            "pqvd_accountid",
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_building",
+      "entitySetName": "pqvd_buildings",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Building",
+      "pluralLabel": "Buildings",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_floors",
+          "label": "Floors",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_building_code",
+          "columns": [
+            "pqvd_siteid",
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_room",
+      "entitySetName": "pqvd_rooms",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Room",
+      "pluralLabel": "Rooms",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_code",
+          "label": "Code",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_floor",
+          "label": "Floor",
+          "required": "none",
+          "type": "integer",
+          "min": -2147483648,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_capacity",
+          "label": "Capacity",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_roomkind",
+          "label": "Roomkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_roomkind"
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_room_code",
+          "columns": [
+            "pqvd_buildingid",
+            "pqvd_code"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_equipment",
+      "entitySetName": "pqvd_equipments",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Equipment",
+      "pluralLabel": "Equipments",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_assettag",
+          "label": "Assettag",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_serialnumber",
+          "label": "Serialnumber",
+          "required": "none",
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "name": "pqvd_equipmentkind",
+          "label": "Equipmentkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_equipmentkind"
+        },
+        {
+          "name": "pqvd_manufacturer",
+          "label": "Manufacturer",
+          "required": "none",
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "name": "pqvd_model",
+          "label": "Model",
+          "required": "none",
+          "type": "string",
+          "maxLength": 100
+        },
+        {
+          "name": "pqvd_condition",
+          "label": "Condition",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_condition"
+        },
+        {
+          "name": "pqvd_equipmentstate",
+          "label": "Equipmentstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_equipmentstate",
+          "default": 183270000
+        },
+        {
+          "name": "pqvd_purchasedate",
+          "label": "Purchasedate",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_warrantyend",
+          "label": "Warrantyend",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_equipment_tag",
+          "columns": [
+            "pqvd_assettag"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_equipmentfinance",
+      "entitySetName": "pqvd_equipmentfinances",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Equipmentfinance",
+      "pluralLabel": "Equipmentfinances",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_purchasecost",
+          "label": "Purchasecost",
+          "required": "required",
+          "type": "money",
+          "min": 0,
+          "max": 100000000000,
+          "precision": 2,
+          "precisionSource": 2
+        },
+        {
+          "name": "pqvd_replacementvalue",
+          "label": "Replacementvalue",
+          "required": "none",
+          "type": "money",
+          "min": 0,
+          "max": 100000000000,
+          "precision": 2,
+          "precisionSource": 2
+        },
+        {
+          "name": "pqvd_invoicereference",
+          "label": "Invoicereference",
+          "required": "none",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_costcentre",
+          "label": "Costcentre",
+          "required": "none",
+          "type": "string",
+          "maxLength": 40
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_equipmentfinance_equipment",
+          "columns": [
+            "pqvd_equipmentid"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_assignment",
+      "entitySetName": "pqvd_assignments",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Assignment",
+      "pluralLabel": "Assignments",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_number",
+          "label": "Number",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_issuedat",
+          "label": "Issuedat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_returnedat",
+          "label": "Returnedat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_issuecondition",
+          "label": "Issuecondition",
+          "required": "none",
+          "type": "choice",
+          "choice": "pqvd_condition"
+        },
+        {
+          "name": "pqvd_returncondition",
+          "label": "Returncondition",
+          "required": "none",
+          "type": "choice",
+          "choice": "pqvd_condition"
+        },
+        {
+          "name": "pqvd_assignmentstate",
+          "label": "Assignmentstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_assignmentstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_assignment_number",
+          "columns": [
+            "pqvd_number"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_servicerequest",
+      "entitySetName": "pqvd_servicerequests",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Servicerequest",
+      "pluralLabel": "Servicerequests",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_number",
+          "label": "Number",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_requestkind",
+          "label": "Requestkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_requestkind"
+        },
+        {
+          "name": "pqvd_priority",
+          "label": "Priority",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_priority"
+        },
+        {
+          "name": "pqvd_description",
+          "label": "Description",
+          "required": "required",
+          "type": "memo",
+          "maxLength": 4000
+        },
+        {
+          "name": "pqvd_reportedat",
+          "label": "Reportedat",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_workstate",
+          "label": "Workstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_workstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_servicerequest_number",
+          "columns": [
+            "pqvd_number"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_workorder",
+      "entitySetName": "pqvd_workorders",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Workorder",
+      "pluralLabel": "Workorders",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_number",
+          "label": "Number",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_duedate",
+          "label": "Duedate",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_workstate",
+          "label": "Workstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_workstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_workorder_number",
+          "columns": [
+            "pqvd_number"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_worktask",
+      "entitySetName": "pqvd_worktasks",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Worktask",
+      "pluralLabel": "Worktasks",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_sequence",
+          "label": "Sequence",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_estimatedminutes",
+          "label": "Estimatedminutes",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_actualminutes",
+          "label": "Actualminutes",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_workstate",
+          "label": "Workstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_workstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_worktask_sequence",
+          "columns": [
+            "pqvd_workorderid",
+            "pqvd_sequence"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_checklistitem",
+      "entitySetName": "pqvd_checklistitems",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Checklistitem",
+      "pluralLabel": "Checklistitems",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_sequence",
+          "label": "Sequence",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_instruction",
+          "label": "Instruction",
+          "required": "required",
+          "type": "string",
+          "maxLength": 1000
+        },
+        {
+          "name": "pqvd_checkresult",
+          "label": "Checkresult",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_checkresult",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_checklistitem_sequence",
+          "columns": [
+            "pqvd_taskid",
+            "pqvd_sequence"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_inspection",
+      "entitySetName": "pqvd_inspections",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Inspection",
+      "pluralLabel": "Inspections",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_attempt",
+          "label": "Attempt",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_inspectedat",
+          "label": "Inspectedat",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_checkresult",
+          "label": "Checkresult",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_checkresult",
+          "default": 183270000
+        },
+        {
+          "name": "pqvd_measuredvalue",
+          "label": "Measuredvalue",
+          "required": "none",
+          "type": "decimal",
+          "min": -1000000,
+          "max": 1000000,
+          "precision": 4
+        },
+        {
+          "name": "pqvd_measurementunit",
+          "label": "Measurementunit",
+          "required": "none",
+          "type": "string",
+          "maxLength": 24
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_inspection_attempt",
+          "columns": [
+            "pqvd_checklistitemid",
+            "pqvd_attempt"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_finding",
+      "entitySetName": "pqvd_findings",
+      "solution": "PaqviloCompanyOperationsCore",
+      "label": "Finding",
+      "pluralLabel": "Findings",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_sequence",
+          "label": "Sequence",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_severity",
+          "label": "Severity",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_severity"
+        },
+        {
+          "name": "pqvd_description",
+          "label": "Description",
+          "required": "required",
+          "type": "memo",
+          "maxLength": 4000
+        },
+        {
+          "name": "pqvd_workstate",
+          "label": "Workstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_workstate",
+          "default": 183270000
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_finding_sequence",
+          "columns": [
+            "pqvd_inspectionid",
+            "pqvd_sequence"
+          ],
+          "solution": "PaqviloCompanyOperationsCore"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_testrun",
+      "entitySetName": "pqvd_testruns",
+      "solution": "PaqviloPermissionTestSupport",
+      "label": "Testrun",
+      "pluralLabel": "Testruns",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_runkey",
+          "label": "Runkey",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_suiteversion",
+          "label": "Suiteversion",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_manifesthash",
+          "label": "Manifesthash",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_datasetversion",
+          "label": "Datasetversion",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_sourcehash",
+          "label": "Sourcehash",
+          "required": "none",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_environment",
+          "label": "Environment",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_portalversion",
+          "label": "Portalversion",
+          "required": "none",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_startedat",
+          "label": "Startedat",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_finishedat",
+          "label": "Finishedat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_runstate",
+          "label": "Runstate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_runstate"
+        },
+        {
+          "name": "pqvd_rolesnapshot",
+          "label": "Rolesnapshot",
+          "required": "required",
+          "type": "memo",
+          "maxLength": 65536
+        },
+        {
+          "name": "pqvd_grantsnapshot",
+          "label": "Grantsnapshot",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 65536
+        },
+        {
+          "name": "pqvd_summaryjson",
+          "label": "Summaryjson",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 65536
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_testrun_key",
+          "columns": [
+            "pqvd_runkey"
+          ],
+          "solution": "PaqviloPermissionTestSupport"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_testresult",
+      "entitySetName": "pqvd_testresults",
+      "solution": "PaqviloPermissionTestSupport",
+      "label": "Testresult",
+      "pluralLabel": "Testresults",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_observationkey",
+          "label": "Observationkey",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_caseid",
+          "label": "Case",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_variant",
+          "label": "Variant",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_engine",
+          "label": "Engine",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_engine"
+        },
+        {
+          "name": "pqvd_phase",
+          "label": "Phase",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_phase"
+        },
+        {
+          "name": "pqvd_operation",
+          "label": "Operation",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_operation"
+        },
+        {
+          "name": "pqvd_artifactkind",
+          "label": "Artifactkind",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_artifactkind"
+        },
+        {
+          "name": "pqvd_attempt",
+          "label": "Attempt",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_pagenumber",
+          "label": "Pagenumber",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_partnumber",
+          "label": "Partnumber",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_partcount",
+          "label": "Partcount",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_httpstatus",
+          "label": "Httpstatus",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_verdict",
+          "label": "Verdict",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_verdict"
+        },
+        {
+          "name": "pqvd_recordcount",
+          "label": "Recordcount",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_durationms",
+          "label": "Durationms",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_capturetime",
+          "label": "Capturetime",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_contenttype",
+          "label": "Contenttype",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_payloadtext",
+          "label": "Payloadtext",
+          "required": "required",
+          "type": "memo",
+          "maxLength": 262144
+        },
+        {
+          "name": "pqvd_payloadhash",
+          "label": "Payloadhash",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_actorfingerprint",
+          "label": "Actorfingerprint",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_testresult_part",
+          "columns": [
+            "pqvd_runid",
+            "pqvd_observationkey",
+            "pqvd_artifactkind",
+            "pqvd_partnumber"
+          ],
+          "solution": "PaqviloPermissionTestSupport"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_crudprobe",
+      "entitySetName": "pqvd_crudprobes",
+      "solution": "PaqviloPermissionTestSupport",
+      "label": "Crudprobe",
+      "pluralLabel": "Crudprobes",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_token",
+          "label": "Token",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_value",
+          "label": "Value",
+          "required": "none",
+          "type": "string",
+          "maxLength": 160
+        },
+        {
+          "name": "pqvd_counter",
+          "label": "Counter",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_triggernonce",
+          "label": "Triggernonce",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36,
+          "solution": "PaqviloBehaviorPlugins"
+        },
+        {
+          "name": "pqvd_pluginscenario",
+          "label": "Pluginscenario",
+          "required": "none",
+          "type": "string",
+          "maxLength": 40,
+          "solution": "PaqviloBehaviorPlugins"
+        },
+        {
+          "name": "pqvd_hopbudget",
+          "label": "Hopbudget",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 10,
+          "solution": "PaqviloBehaviorPlugins"
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_crudprobe_token",
+          "columns": [
+            "pqvd_token"
+          ],
+          "solution": "PaqviloPermissionTestSupport"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_testoperation",
+      "entitySetName": "pqvd_testoperations",
+      "solution": "PaqviloPluginEvidence",
+      "label": "Testoperation",
+      "pluralLabel": "Testoperations",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_pairkey",
+          "label": "Pairkey",
+          "required": "required",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_caseid",
+          "label": "Case",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_lane",
+          "label": "Lane",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_testlane"
+        },
+        {
+          "name": "pqvd_variant",
+          "label": "Variant",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_phase",
+          "label": "Phase",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_phase"
+        },
+        {
+          "name": "pqvd_attempt",
+          "label": "Attempt",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_pagenumber",
+          "label": "Pagenumber",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_expectedmessage",
+          "label": "Expectedmessage",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_roottable",
+          "label": "Roottable",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_markertime",
+          "label": "Markertime",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_markerutc",
+          "label": "Markerutc",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_markeroperation",
+          "label": "Markeroperation",
+          "required": "required",
+          "type": "string",
+          "maxLength": 48
+        },
+        {
+          "name": "pqvd_logicalqueryhash",
+          "label": "Logicalqueryhash",
+          "required": "none",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_physicalqueryhash",
+          "label": "Physicalqueryhash",
+          "required": "none",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_authoredquery",
+          "label": "Authoredquery",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 262144
+        },
+        {
+          "name": "pqvd_clientsummary",
+          "label": "Clientsummary",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 65536
+        },
+        {
+          "name": "pqvd_liquidxml",
+          "label": "Liquidxml",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 262144
+        },
+        {
+          "name": "pqvd_clientfinishedat",
+          "label": "Clientfinishedat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_capturestate",
+          "label": "Capturestate",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_capturestate",
+          "default": 183270000
+        },
+        {
+          "name": "pqvd_serversummary",
+          "label": "Serversummary",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 65536
+        },
+        {
+          "name": "pqvd_receivedqueryhash",
+          "label": "Receivedqueryhash",
+          "required": "none",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_receivedlinkcount",
+          "label": "Receivedlinkcount",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_backendfirstat",
+          "label": "Backendfirstat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_backendlastat",
+          "label": "Backendlastat",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_actorprovenance",
+          "label": "Actorprovenance",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_collectorreference",
+          "label": "Collectorreference",
+          "required": "none",
+          "type": "string",
+          "maxLength": 160
+        }
+      ],
+      "keys": []
+    },
+    {
+      "name": "pqvd_pluginevent",
+      "entitySetName": "pqvd_pluginevents",
+      "solution": "PaqviloPluginEvidence",
+      "label": "Pluginevent",
+      "pluralLabel": "Pluginevents",
+      "ownership": "organization",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_eventkey",
+          "label": "Eventkey",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_partnumber",
+          "label": "Partnumber",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_partcount",
+          "label": "Partcount",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_source",
+          "label": "Source",
+          "required": "required",
+          "type": "choice",
+          "choice": "pqvd_eventsource"
+        },
+        {
+          "name": "pqvd_artifacttype",
+          "label": "Artifacttype",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_capturetime",
+          "label": "Capturetime",
+          "required": "required",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_message",
+          "label": "Message",
+          "required": "none",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_stage",
+          "label": "Stage",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_mode",
+          "label": "Mode",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_executionorder",
+          "label": "Executionorder",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_depth",
+          "label": "Depth",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_isintransaction",
+          "label": "Isintransaction",
+          "required": "none",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pqvd_backenduserid",
+          "label": "Backenduser",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_initiatinguserid",
+          "label": "Initiatinguser",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_correlationid",
+          "label": "Correlation",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_requestid",
+          "label": "Request",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_platformoperationid",
+          "label": "Platformoperation",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_spanid",
+          "label": "Span",
+          "required": "required",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_parentspanid",
+          "label": "Parentspan",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_querytype",
+          "label": "Querytype",
+          "required": "none",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_linkcount",
+          "label": "Linkcount",
+          "required": "none",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_contenttype",
+          "label": "Contenttype",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        },
+        {
+          "name": "pqvd_payloadtext",
+          "label": "Payloadtext",
+          "required": "required",
+          "type": "memo",
+          "maxLength": 262144
+        },
+        {
+          "name": "pqvd_payloadhash",
+          "label": "Payloadhash",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_provenance",
+          "label": "Provenance",
+          "required": "required",
+          "type": "string",
+          "maxLength": 80
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_pluginevent_part",
+          "columns": [
+            "pqvd_operationid",
+            "pqvd_eventkey",
+            "pqvd_partnumber"
+          ],
+          "solution": "PaqviloPluginEvidence"
+        }
+      ]
+    },
+    {
+      "name": "pqvd_chainnode",
+      "entitySetName": "pqvd_chainnodes",
+      "solution": "PaqviloPluginEvidence",
+      "label": "Chainnode",
+      "pluralLabel": "Chainnodes",
+      "ownership": "user",
+      "primaryName": {
+        "name": "pqvd_name",
+        "label": "Name",
+        "maxLength": 160,
+        "required": "required"
+      },
+      "columns": [
+        {
+          "name": "pqvd_nodecode",
+          "label": "Nodecode",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_hop",
+          "label": "Hop",
+          "required": "required",
+          "type": "string",
+          "maxLength": 16
+        },
+        {
+          "name": "pqvd_hopindex",
+          "label": "Hopindex",
+          "required": "required",
+          "type": "integer",
+          "min": 0,
+          "max": 2147483647
+        },
+        {
+          "name": "pqvd_scenario",
+          "label": "Scenario",
+          "required": "required",
+          "type": "string",
+          "maxLength": 40
+        },
+        {
+          "name": "pqvd_requestnonce",
+          "label": "Requestnonce",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_completionnonce",
+          "label": "Completionnonce",
+          "required": "none",
+          "type": "string",
+          "maxLength": 36
+        },
+        {
+          "name": "pqvd_querymarkerutc",
+          "label": "Querymarkerutc",
+          "required": "required",
+          "type": "string",
+          "maxLength": 64
+        },
+        {
+          "name": "pqvd_payloadjson",
+          "label": "Payloadjson",
+          "required": "none",
+          "type": "memo",
+          "maxLength": 16384
+        },
+        {
+          "name": "pqvd_sampletext",
+          "label": "Sampletext",
+          "required": "none",
+          "type": "string",
+          "maxLength": 160
+        },
+        {
+          "name": "pqvd_sampledecimal",
+          "label": "Sampledecimal",
+          "required": "none",
+          "type": "decimal",
+          "min": -1000000,
+          "max": 1000000,
+          "precision": 4
+        },
+        {
+          "name": "pqvd_samplemoney",
+          "label": "Samplemoney",
+          "required": "none",
+          "type": "money",
+          "min": 0,
+          "max": 100000000000,
+          "precision": 2,
+          "precisionSource": 0
+        },
+        {
+          "name": "pqvd_sampledate",
+          "label": "Sampledate",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "DateOnly"
+        },
+        {
+          "name": "pqvd_sampletime",
+          "label": "Sampletime",
+          "required": "none",
+          "type": "datetime",
+          "behavior": "UserLocal"
+        },
+        {
+          "name": "pqvd_sampleboolean",
+          "label": "Sampleboolean",
+          "required": "none",
+          "type": "boolean",
+          "default": false
+        },
+        {
+          "name": "pqvd_samplechoice",
+          "label": "Samplechoice",
+          "required": "none",
+          "type": "choice",
+          "choice": "pqvd_operation"
+        },
+        {
+          "name": "pqvd_samplemultichoice",
+          "label": "Samplemultichoice",
+          "required": "none",
+          "type": "multichoice",
+          "choice": "pqvd_engagementkind"
+        },
+        {
+          "name": "pqvd_configstatus",
+          "label": "Configstatus",
+          "required": "none",
+          "type": "string",
+          "maxLength": 80
+        }
+      ],
+      "keys": [
+        {
+          "name": "pqvd_ak_chainnode_code",
+          "columns": [
+            "pqvd_operationid",
+            "pqvd_nodecode"
+          ],
+          "solution": "PaqviloPluginEvidence"
+        }
+      ]
+    }
+  ],
+  "relationships": [
+    {
+      "name": "pqvd_account_root",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "account",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_rootaccountid",
+        "label": "Rootaccount",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_grantee",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_granteecontactid",
+        "label": "Granteecontact",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_account_access_scope",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_scopeaccountid",
+        "label": "Scopeaccount",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_accessrole_access",
+      "kind": "oneToMany",
+      "parent": "pqvd_accessrole",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_roleid",
+        "label": "Role",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_department_access",
+      "kind": "oneToMany",
+      "parent": "pqvd_department",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_departmentid",
+        "label": "Department",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_employment_access",
+      "kind": "oneToMany",
+      "parent": "pqvd_employment",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_employmentid",
+        "label": "Employment",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_account_orgcontacts",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_orgcontact",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_accountid",
+        "label": "Account",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_contact_orgcontacts",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_orgcontact",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_contactid",
+        "label": "Contact",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_account_departments",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_department",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_accountid",
+        "label": "Account",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_manageddepartments",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_department",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_managerorgcontactid",
+        "label": "Managerorgcontact",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_employments",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_employment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_orgcontactid",
+        "label": "Orgcontact",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_department_employments",
+      "kind": "oneToMany",
+      "parent": "pqvd_department",
+      "child": "pqvd_employment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_departmentid",
+        "label": "Department",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_employment_reports",
+      "kind": "oneToMany",
+      "parent": "pqvd_employment",
+      "child": "pqvd_employment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_manageremploymentid",
+        "label": "Manageremployment",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_account_suppliedemployments",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_employment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_supplieraccountid",
+        "label": "Supplieraccount",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_employment_terms",
+      "kind": "oneToMany",
+      "parent": "pqvd_employment",
+      "child": "pqvd_employmentterms",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_employmentid",
+        "label": "Employment",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_account_sites",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_site",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_accountid",
+        "label": "Account",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_site_buildings",
+      "kind": "oneToMany",
+      "parent": "pqvd_site",
+      "child": "pqvd_building",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_siteid",
+        "label": "Site",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_building_rooms",
+      "kind": "oneToMany",
+      "parent": "pqvd_building",
+      "child": "pqvd_room",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_buildingid",
+        "label": "Building",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_transactioncurrency_references",
+      "kind": "oneToMany",
+      "parent": "transactioncurrency",
+      "child": "pqvd_currencyreference",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_systemcurrencyid",
+        "label": "Systemcurrency",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_account_equipments",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_equipment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_accountid",
+        "label": "Account",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_room_equipments",
+      "kind": "oneToMany",
+      "parent": "pqvd_room",
+      "child": "pqvd_equipment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_roomid",
+        "label": "Room",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_assignment_currentequipment",
+      "kind": "oneToMany",
+      "parent": "pqvd_assignment",
+      "child": "pqvd_equipment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_currentassignmentid",
+        "label": "Currentassignment",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_equipment_finance",
+      "kind": "oneToMany",
+      "parent": "pqvd_equipment",
+      "child": "pqvd_equipmentfinance",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_equipmentid",
+        "label": "Equipment",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_account_equipmentvendors",
+      "kind": "oneToMany",
+      "parent": "account",
+      "child": "pqvd_equipmentfinance",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_supplieraccountid",
+        "label": "Supplieraccount",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_equipment_assignments",
+      "kind": "oneToMany",
+      "parent": "pqvd_equipment",
+      "child": "pqvd_assignment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_equipmentid",
+        "label": "Equipment",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_employment_assignments",
+      "kind": "oneToMany",
+      "parent": "pqvd_employment",
+      "child": "pqvd_assignment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_employmentid",
+        "label": "Employment",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_issuedassignments",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_assignment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_issuerorgcontactid",
+        "label": "Issuerorgcontact",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_assignment_requests",
+      "kind": "oneToMany",
+      "parent": "pqvd_assignment",
+      "child": "pqvd_servicerequest",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_assignmentid",
+        "label": "Assignment",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_equipment_requests",
+      "kind": "oneToMany",
+      "parent": "pqvd_equipment",
+      "child": "pqvd_servicerequest",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_equipmentid",
+        "label": "Equipment",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_requests",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_servicerequest",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_requesterorgcontactid",
+        "label": "Requesterorgcontact",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_request_workorders",
+      "kind": "oneToMany",
+      "parent": "pqvd_servicerequest",
+      "child": "pqvd_workorder",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_requestid",
+        "label": "Request",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_responsibleorders",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_workorder",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_responsibleorgcontactid",
+        "label": "Responsibleorgcontact",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_workorder_tasks",
+      "kind": "oneToMany",
+      "parent": "pqvd_workorder",
+      "child": "pqvd_worktask",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_workorderid",
+        "label": "Workorder",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_assignedtasks",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_worktask",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_assigneeorgcontactid",
+        "label": "Assigneeorgcontact",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_task_checklistitems",
+      "kind": "oneToMany",
+      "parent": "pqvd_worktask",
+      "child": "pqvd_checklistitem",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_taskid",
+        "label": "Task",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_checklistitem_inspections",
+      "kind": "oneToMany",
+      "parent": "pqvd_checklistitem",
+      "child": "pqvd_inspection",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_checklistitemid",
+        "label": "Checklistitem",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_orgcontact_inspections",
+      "kind": "oneToMany",
+      "parent": "pqvd_orgcontact",
+      "child": "pqvd_inspection",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_inspectororgcontactid",
+        "label": "Inspectororgcontact",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_inspection_findings",
+      "kind": "oneToMany",
+      "parent": "pqvd_inspection",
+      "child": "pqvd_finding",
+      "solution": "PaqviloCompanyOperationsCore",
+      "lookup": {
+        "name": "pqvd_inspectionid",
+        "label": "Inspection",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_companymanager",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_companymanagerprincipalid",
+        "label": "Companymanagerprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_branchmanager",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_branchmanagerprincipalid",
+        "label": "Branchmanagerprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_teamleader",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_teamleaderprincipalid",
+        "label": "Teamleaderprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_employee",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_employeeprincipalid",
+        "label": "Employeeprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_contractor",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_contractorprincipalid",
+        "label": "Contractorprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_hr",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_hrprincipalid",
+        "label": "Hrprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_it",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_itprincipalid",
+        "label": "Itprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_facilities",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_facilitiesprincipalid",
+        "label": "Facilitiesprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_procurement",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_procurementprincipalid",
+        "label": "Procurementprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_auditor",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_auditorprincipalid",
+        "label": "Auditorprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_orgadmin",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_orgadminprincipalid",
+        "label": "Orgadminprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_contact_access_cto",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_accesspermission",
+      "solution": "PaqviloCompanyOperationsCore",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_ctoprincipalid",
+        "label": "Ctoprincipal",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_access_accounts",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "account",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_accounts",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "accountid"
+      ]
+    },
+    {
+      "name": "pqvd_access_orgcontacts",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_orgcontact",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_orgcontacts",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_orgcontactid"
+      ]
+    },
+    {
+      "name": "pqvd_access_departments",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_department",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_departments",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_departmentid"
+      ]
+    },
+    {
+      "name": "pqvd_access_employments",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_employment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_employments",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_employmentid"
+      ]
+    },
+    {
+      "name": "pqvd_access_currencyreferences",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_currencyreference",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_currencyreferences",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_currencyreferenceid"
+      ]
+    },
+    {
+      "name": "pqvd_access_equipments",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "pqvd_equipment",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_equipments",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "pqvd_equipmentid"
+      ]
+    },
+    {
+      "name": "pqvd_contact_testruns",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_testrun",
+      "solution": "PaqviloPermissionTestSupport",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_runnercontactid",
+        "label": "Runnercontact",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_testrun_baselines",
+      "kind": "oneToMany",
+      "parent": "pqvd_testrun",
+      "child": "pqvd_testrun",
+      "solution": "PaqviloPermissionTestSupport",
+      "lookup": {
+        "name": "pqvd_baselinerunid",
+        "label": "Baselinerun",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_testrun_results",
+      "kind": "oneToMany",
+      "parent": "pqvd_testrun",
+      "child": "pqvd_testresult",
+      "solution": "PaqviloPermissionTestSupport",
+      "lookup": {
+        "name": "pqvd_runid",
+        "label": "Run",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_contact_crudprobes",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_crudprobe",
+      "solution": "PaqviloPermissionTestSupport",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_ownercontactid",
+        "label": "Ownercontact",
+        "required": "required"
+      }
+    },
+    {
+      "name": "pqvd_testrun_crudprobes",
+      "kind": "oneToMany",
+      "parent": "pqvd_testrun",
+      "child": "pqvd_crudprobe",
+      "solution": "PaqviloPermissionTestSupport",
+      "lookup": {
+        "name": "pqvd_runid",
+        "label": "Run",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_testrun_operations",
+      "kind": "oneToMany",
+      "parent": "pqvd_testrun",
+      "child": "pqvd_testoperation",
+      "solution": "PaqviloPluginEvidence",
+      "lookup": {
+        "name": "pqvd_runid",
+        "label": "Run",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_contact_testoperations",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_testoperation",
+      "solution": "PaqviloPluginEvidence",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_runnercontactid",
+        "label": "Runnercontact",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_testoperation_events",
+      "kind": "oneToMany",
+      "parent": "pqvd_testoperation",
+      "child": "pqvd_pluginevent",
+      "solution": "PaqviloPluginEvidence",
+      "lookup": {
+        "name": "pqvd_operationid",
+        "label": "Operation",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_testoperation_chainnodes",
+      "kind": "oneToMany",
+      "parent": "pqvd_testoperation",
+      "child": "pqvd_chainnode",
+      "solution": "PaqviloPluginEvidence",
+      "lookup": {
+        "name": "pqvd_operationid",
+        "label": "Operation",
+        "required": "required"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_chainnode_children",
+      "kind": "oneToMany",
+      "parent": "pqvd_chainnode",
+      "child": "pqvd_chainnode",
+      "solution": "PaqviloPluginEvidence",
+      "lookup": {
+        "name": "pqvd_parentnodeid",
+        "label": "Parentnode",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_contact_chainnodes",
+      "kind": "oneToMany",
+      "parent": "contact",
+      "child": "pqvd_chainnode",
+      "solution": "PaqviloPluginEvidence",
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "Cascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      },
+      "lookup": {
+        "name": "pqvd_samplecontactid",
+        "label": "Samplecontact",
+        "required": "none"
+      }
+    },
+    {
+      "name": "pqvd_chainnode_peers",
+      "kind": "manyToMany",
+      "parent": "pqvd_chainnode",
+      "child": "pqvd_chainnode",
+      "solution": "PaqviloPluginEvidence",
+      "intersectName": "pqvd_chainnodepeer",
+      "intersectColumns": [
+        "pqvd_chainnodeidone",
+        "pqvd_chainnodeidtwo"
+      ]
+    },
+    {
+      "name": "pqvd_testoperation_results",
+      "kind": "oneToMany",
+      "parent": "pqvd_testoperation",
+      "child": "pqvd_testresult",
+      "solution": "PaqviloBehaviorPlugins",
+      "lookup": {
+        "name": "pqvd_operationid",
+        "label": "Operation",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_testoperation_probes",
+      "kind": "oneToMany",
+      "parent": "pqvd_testoperation",
+      "child": "pqvd_crudprobe",
+      "solution": "PaqviloBehaviorPlugins",
+      "lookup": {
+        "name": "pqvd_activeoperationid",
+        "label": "Activeoperation",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_testrun_canaryequipments",
+      "kind": "oneToMany",
+      "parent": "pqvd_testrun",
+      "child": "pqvd_equipment",
+      "solution": "PaqviloBehaviorPlugins",
+      "lookup": {
+        "name": "pqvd_canaryrunid",
+        "label": "Canaryrun",
+        "required": "none"
+      },
+      "cascade": {
+        "Assign": "NoCascade",
+        "Delete": "Restrict",
+        "Merge": "NoCascade",
+        "Reparent": "NoCascade",
+        "Share": "NoCascade",
+        "Unshare": "NoCascade"
+      }
+    },
+    {
+      "name": "pqvd_access_currencies",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "transactioncurrency",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_currencies",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "transactioncurrencyid"
+      ]
+    },
+    {
+      "name": "pqvd_access_referenceaccounts",
+      "kind": "manyToMany",
+      "parent": "pqvd_accesspermission",
+      "child": "account",
+      "solution": "PaqviloCompanyOperationsCore",
+      "intersectName": "pqvd_access_referenceaccounts",
+      "intersectColumns": [
+        "pqvd_accesspermissionid",
+        "accountid"
+      ]
+    }
+  ],
+  "forms": [],
+  "views": [],
+  "scope": {
+    "prepared": "Table/column/choice/relationship/key structure from the three specifications",
+    "remaining": "Named forms/views, website components, plugin binaries/steps/images, flows, runtime invariants and seed data are subsequent implementation increments; default forms/views are platform-generated."
+  }
+}

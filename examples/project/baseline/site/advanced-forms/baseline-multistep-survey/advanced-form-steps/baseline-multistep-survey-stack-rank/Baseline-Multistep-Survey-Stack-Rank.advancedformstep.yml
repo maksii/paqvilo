@@ -1,0 +1,44 @@
+adx_allowmultiplefiles: false
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_attachfilerequired: false
+adx_attachfilerestrictaccept: false
+adx_autogeneratesteps: false
+adx_captcharequired: false
+adx_createautonumber: false
+adx_editexistingrecordpermitted: false
+adx_entitypermissionsenabled: true
+adx_entitysourcestep: 4f0898bd-99d3-4116-88d8-e20f81221f4d
+adx_entitysourcetype: 100000003
+adx_forceallfieldsrequired: false
+adx_formname: Baseline Item
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_hideformonsuccess: true
+adx_loguser: false
+adx_mode: 100000001
+adx_movepreviouspermitted: true
+adx_multiplerecordsperuserpermitted: false
+adx_name: Baseline Multistep Survey Stack Rank
+adx_nextstep: ca8e1bcf-aa18-42cd-8fec-6cb3a5eb28f7
+adx_populatereferenceentitylookupfield: false
+adx_portaluserlookupattributeisactivityparty: false
+adx_recommendedfieldsrequired: false
+adx_redirecturlappendentityidquerystring: false
+adx_referenceentityshowreadonlyform: false
+adx_referenceentitysourcetype: 100000001
+adx_referencequerystringisprimarykey: true
+adx_renderwebresourcesinline: false
+adx_setentityreference: false
+adx_showcaptchaforauthenticatedusers: false
+adx_showownerfields: false
+adx_showunsupportedfields: false
+adx_targetentitylogicalname: pqvd_baselineitem
+adx_title: Baseline Multistep Survey Stack Rank
+adx_tooltipenabled: false
+adx_type: 100000001
+adx_validationsummarylinksenabled: true
+adx_webform: 280f988a-4e25-4e29-86f8-433e30164057
+adx_webformstepid: 5cf40af0-d144-40e5-8fe2-44101a913634

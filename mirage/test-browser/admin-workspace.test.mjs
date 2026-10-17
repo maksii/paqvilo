@@ -72,7 +72,19 @@ async function fixture(t, { liveBridge, project, observed, allowLiveWrites } = {
   page.setDefaultTimeout(20_000);
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
-  const notice = (text) => page.locator("#notification").getByText(text, { exact: true }).waitFor();
+  const notice = async text => {
+    try { await page.locator("#notification").getByText(text, { exact: true }).waitFor(); }
+    catch (cause) {
+      const visible = await page.evaluate(() => ({
+        notice: document.querySelector('#notification')?.textContent,
+        noticeHidden: document.querySelector('#notification')?.hidden,
+        scenario: Object.fromEntries(['name', 'id', 'preset', 'persona', 'permission-mode'].map(key => [key, document.getElementById('scenario-' + key)?.value])),
+        invalid: [...(document.getElementById('scenario-form')?.elements ?? [])].filter(input => !input.validity.valid).map(input => input.id),
+      }));
+      cause.message += '\nAdmin state: ' + JSON.stringify({visible, errors});
+      throw cause;
+    }
+  };
   // Optional review screenshots (PAQVILO_MIRAGE_EVIDENCE_DIR); synthetic fixture data only.
   const evidence = async (name) => {
     if (!process.env.PAQVILO_MIRAGE_EVIDENCE_DIR) return;
@@ -167,6 +179,59 @@ test("deep links open records and portal items; access rules, personas and diagn
     const rows = [...document.querySelectorAll("tbody tr")];
     return rows.length >= 1 && rows.every((row) => row.textContent.includes("/missing-page/"));
   });
+  assert.deepEqual(errors, []);
+});
+
+test("scenario drafts keep focus and selection when delayed persona and contact loads render the view", async t => {
+  const gate = () => {
+    let arrive, release;
+    return { arrived: new Promise(resolve => { arrive = resolve; }), released: new Promise(resolve => { release = resolve; }), arrive: () => arrive(), release: () => release() };
+  };
+  const personas = gate(), contacts = [gate(), gate()];
+  t.after(() => { personas.release(); contacts.forEach(gate => gate.release()); });
+  const { app, context, page, errors, notice } = await fixture(t);
+  let personaRequests = 0, contactRequests = 0;
+  await context.route(`${app.url}/__sim/api/personas`, async route => {
+    if (personaRequests++ === 0) { personas.arrive(); await personas.released; }
+    await route.continue();
+  });
+  await context.route(`${app.url}/__sim/api/records/contact?*`, async route => {
+    const gate = contacts[contactRequests++];
+    if (gate) { gate.arrive(); await gate.released; }
+    await route.continue();
+  });
+  await page.goto(`${app.url}/_sim/#scenarios`, { waitUntil: 'commit' });
+  await personas.arrived;
+  const name = page.getByLabel('Scenario name', { exact: true });
+  await name.focus();
+  personas.release();
+  await contacts[0].arrived;
+  contacts[0].release();
+  await page.waitForFunction(() => [...document.getElementById('scenario-persona').options].some(option => option.value === 'alex'));
+  assert.equal(await page.evaluate(() => document.activeElement.id), 'scenario-name');
+  await page.keyboard.insertText('Alex in sandbox');
+  assert.equal(await name.inputValue(), 'Alex in sandbox', 'typing continues without refocusing the replaced control');
+  await page.getByLabel('Preset', { exact: true }).selectOption('only-alex');
+  await page.getByLabel('Persona', { exact: true }).selectOption('alex');
+  await page.getByLabel('Permission enforcement', { exact: true }).selectOption('permissive');
+  await name.focus();
+  await name.evaluate(input => input.setSelectionRange(5, 7, 'backward'));
+  await page.evaluate(() => document.getElementById('refresh').click());
+  await contacts[1].arrived;
+  const editing = () => page.evaluate(() => {
+    const input = document.getElementById('scenario-name');
+    return { focused: document.activeElement === input, value: input.value, start: input.selectionStart, end: input.selectionEnd, direction: input.selectionDirection };
+  });
+  assert.deepEqual(await editing(), { focused: true, value: 'Alex in sandbox', start: 5, end: 7, direction: 'backward' });
+  contacts[1].release();
+  await page.waitForFunction(() => !document.getElementById('refresh').disabled);
+  assert.deepEqual(await editing(), { focused: true, value: 'Alex in sandbox', start: 5, end: 7, direction: 'backward' });
+  await page.keyboard.insertText('reviewed');
+  assert.equal(await name.inputValue(), 'Alex reviewed sandbox');
+  await page.getByRole('button', { name: 'Save scenario', exact: true }).click();
+  await notice('Scenario saved.');
+  assert.deepEqual(app.state().config.scenarios, [{ id: 'alex-reviewed-sandbox', name: 'Alex reviewed sandbox', preset: 'only-alex', persona: { contactId: 'alex' }, permissionMode: 'permissive' }]);
+  assert.equal(await name.inputValue(), '', 'a successful submit clears rather than revives the draft');
   assert.deepEqual(errors, []);
 });
 

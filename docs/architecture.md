@@ -4,17 +4,24 @@ Paqvilo owns reusable Power Pages behavior. Your portal project owns its sources
 
 | Directory | Responsibility |
 | --- | --- |
-| `bin/` | Public `paqvilo lense` and `paqvilo mirage` command routing |
+| `bin/` | Public setup, Lense, Mirage and Dataverse command routing |
 | `lense/` | Source models, mapping, editing, overlays, browser sessions, panel and agent API |
 | `mirage/lib/`, `mirage/server.mjs` | Importing, Liquid, FetchXML/Web API, forms/lists, permissions, platform compatibility and simulation |
 | `mirage/admin/` | Local `/_sim/` administration |
 | `mirage/testing/` | Reusable local sign-in helpers for project-owned tests |
+| `lense/dataverse/` | Explicit project-owned Dataverse provisioning, comparison and export APIs |
 | `test/`, `test-browser/` | Synthetic Lense and integration regressions |
 | `mirage/test/`, `mirage/test-browser/` | Synthetic Mirage regressions |
-| `examples/project/` | Invented standalone portal, external pack and acceptance test starter |
+| `templates/project/` | Empty consumer scaffold used by `paqvilo init` |
+| `examples/project/` | Populated standalone demo, external pack and native component fixture |
+| `examples/company-operations/` | Separate synthetic regression project for deep permissions and plugin observations |
 | `docs/`, `mirage/docs/` | Reusable contracts, configuration and workflow guidance |
+| `scripts/`, `.github/` | Contributor checks, package validation, repository maintenance and CI |
+| `site/` | Public website sources; `dist/` contains ignored generated output |
 
 The two products share the catalogue, source model and browser integration. Lense's Mirage lifecycle wrapper starts and stops only owned processes. Mirage imports Lense's source/configuration utilities; it does not require a live portal for local rendering.
+
+The empty scaffold and populated demo serve different purposes: use `paqvilo init` for a new project and `paqvilo mirage demo` to explore working sample pages. The Company Operations [reference designs](design/company-operations-demo.md) describe its own synthetic model and qualification contracts. They do not add business behavior to the toolkit or certify a live environment.
 
 ## Runtime scope
 
@@ -23,7 +30,7 @@ The two products share the catalogue, source model and browser integration. Lens
 | Standard and enhanced portal exports | Source mapping and local import of pages, templates and configuration | Incomplete or ambiguous exports produce diagnostics. |
 | `.powerpages-site` code-site exports | Source import and supported resource handling | SPA application builds and deployment use their own tooling. |
 | Liquid, FetchXML, Web API, forms and lists | Local implementations driven by export and Solution metadata | Local behavior is a simulation; use recorded comparisons for parity claims. |
-| Dataverse business behavior | Synthetic rows, supported exported operations and registered project extensions | Dataverse plugins, external connectors and complex workflows require explicit project models. |
+| Dataverse business behavior | Synthetic rows, supported exported operations, trusted handlers and explicitly configured original CLR plugins | Unsupported SDK services, external connectors and complex workflows need explicit project models. |
 | Browser automation | Origin-confined session, page, event, snapshot and navigation APIs | Live browser actions still use the portal's backend. |
 
 The [Mirage reference](../mirage/docs/README.md) describes each runtime contract and its evidence. Microsoft's [developer tools](https://learn.microsoft.com/en-us/power-pages/configure/developer-overview) remain part of the source and release workflow.

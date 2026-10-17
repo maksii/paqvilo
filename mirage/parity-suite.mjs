@@ -7,6 +7,7 @@
  */
 import fs from "node:fs/promises";
 import path from "node:path";
+import { observeDocumentCommits } from './lib/document-commits.mjs';
 import { readLocalFile } from '../lense/local-file.mjs';
 import { createHash, createHmac, randomBytes } from "node:crypto";
 import { parseArgs } from "node:util";
@@ -1888,8 +1889,24 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
           return route.continue();
         });
         const page = await context.newPage();
+        const cdp = await context.newCDPSession(page);
+        const documentTokens = new WeakMap(), requestDocuments = new WeakMap();
+        const requestFrame = request => { try { return request.frame(); } catch { return null; } };
+        await cdp.send('Page.enable');
+        await observeDocumentCommits(page, cdp, {
+          document: (frame, token) => documentTokens.set(frame, token),
+          commit: (frame, token) => {
+            for (const request of state.inflight)
+              if (request.resourceType() !== 'document' && requestFrame(request) === frame && requestDocuments.get(request) === token)
+                state.inflight.delete(request);
+            state.lastActivity = Date.now();
+          },
+        });
+        page.on('framedetached', frame => {
+          for (const request of state.inflight) if (requestFrame(request) === frame) state.inflight.delete(request);
+          state.lastActivity = Date.now();
+        });
         if (guard === "script") {
-          const cdp = await context.newCDPSession(page);
           const fail = (requestId) => cdp.send("Fetch.failRequest", { requestId, errorReason: "BlockedByClient" }).catch(() => {});
           cdp.on("Fetch.requestPaused", (event) => {
             const { request, requestId, resourceType } = event;
@@ -1918,12 +1935,8 @@ export async function openOwnedBrowser({ channel, headless = true, fulfil = [] }
           await cdp.send("Fetch.enable", { patterns: ["Document", "Fetch", "Ping", "Other"].map((resourceType) => ({ urlPattern: "*", resourceType, requestStage: "Request" })) });
         }
         page.on("dialog", (dialog) => dialog.dismiss().catch(() => {}));
-        // Requests of a replaced document can end without final events; only the current
-        // document's requests count towards settling.
-        page.on("framenavigated", (frame) => {
-          if (frame === page.mainFrame()) state.inflight.clear();
-        });
         page.on("request", (request) => {
+          requestDocuments.set(request, documentTokens.get(requestFrame(request)));
           state.lastActivity = Date.now();
           if (request.resourceType() !== "eventsource" && !request.url().endsWith("/__sim/events")) state.inflight.add(request);
           if (["script", "stylesheet"].includes(request.resourceType())) assetPath(request.url(), base.origin, state.assets);
@@ -2280,20 +2293,21 @@ export function packScenarioFiles(pack, packDir) {
  * Select scenario sources: the core set, data-pack plans (`auto`: packs whose matches({ portal })
  * accepts the imported portal; `all`; `none`; or a list of pack ids) and explicit plan files.
  */
-export async function scenarioSources({ core = true, packs = "auto", portal = null, files = [], packsRoot, project, explicit = [] } = {}) {
+export async function scenarioSources({ core = true, packs = "auto", boundPacks = [], portal = null, files = [], packsRoot, project, explicit = [] } = {}) {
   const sources = [];
   if (core) sources.push({ source: "core", file: CORE_SCENARIOS_FILE });
   if (packs && packs !== "none") {
     if (!Array.isArray(packs) && !["auto", "all"].includes(packs)) throw new Error("Pack selection must be auto, all, none or a list of pack ids.");
-    const { packModules, loadPack, packMatches } = await import("./lib/preset-registry.mjs");
+    const { packModules, loadPack, packMatches, packDirectory } = await import("./lib/preset-registry.mjs");
     const wanted = Array.isArray(packs) ? new Set(packs) : null;
     const found = new Set();
-    for (const { module } of await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) })) {
+    for (const { module } of [...await packModules({ project, explicit, ...(packsRoot ? { root: packsRoot } : {}) }), ...boundPacks.map(module => ({ module }))]) {
       const pack = await loadPack(module);
       const selected = wanted ? wanted.has(pack.id) : packs === "all" || (portal != null && packMatches(pack, portal));
       if (!selected) continue;
       found.add(pack.id);
-      for (const file of packScenarioFiles(pack, path.dirname(module))) sources.push({ source: `pack:${pack.id}`, file });
+      if (pack.parity?.scenarios?.length && !packDirectory(pack)) throw new Error(`Loaded pack ${pack.id} needs parity.directory for relative scenario files`);
+      for (const file of packScenarioFiles(pack, packDirectory(pack) ?? process.cwd())) sources.push({ source: `pack:${pack.id}`, file });
     }
     for (const id of wanted ?? []) if (!found.has(id)) throw new Error(`Data pack ${id} was not found.`);
   }

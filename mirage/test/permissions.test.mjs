@@ -152,6 +152,41 @@ function fixture() {
   return { portal: { records }, state, relationships };
 }
 
+test('scope-specific relationship selection ignores stale columns and unknown native scopes fail explicitly', () => {
+  const { portal, state, relationships } = fixture();
+  const root = portal.records.find(record => record.id === 'company-own');
+  root.adx_contactrelationship = 'stale-contact-relationship';
+  const model = buildPermissionModel(portal, state, { source: 'exported', relationships });
+  assert.equal(model.permissions.find(rule => rule.id === root.id).relationshipName, 'account_identity');
+  assert.equal(model.permissions.find(rule => rule.id === root.id).enabled, true);
+  root.adx_scope = { value: 756150099 };
+  const unknown = buildPermissionModel(portal, state, { source: 'exported', relationships });
+  assert.equal(unknown.permissions.find(rule => rule.id === root.id).enabled, false);
+  assert.match(unknown.diagnostics.find(d => d.id === root.id).message, /756150099.*Custom Access/);
+});
+
+test('observed orphan access broadening requires an exact inactive exported parent and explicit surviving roles', () => {
+  const { portal, state, relationships } = fixture();
+  const inheritedState = buildPermissionModel(portal, state, { source: 'exported', relationships }).permissions;
+  portal.records.find(record => record.id === 'company-own').adx_statecode = { value: 1 };
+  const closed = buildPermissionModel(portal, state, { source: 'exported', relationships });
+  assert.equal(closed.permissions.find(rule => rule.id === 'application-edit').enabled, false);
+  const observed = { tablePermissionOrphans: 'unrestricted' };
+  const replay = buildPermissionModel(portal, state, { source: 'exported', relationships, observed });
+  const surviving = replay.permissions.find(rule => rule.id === 'application-edit');
+  assert.equal(surviving.enabled, true);
+  assert.deepEqual(surviving.observedOrphanParent, { parentPermissionId: 'company-own', source: 'inactive-exported-parent', field: 'companyid' });
+  assert.equal(replay.permissions.find(rule => rule.id === 'application-own').enabled, false, 'no explicit source roles cannot activate an orphan');
+  const configuredReplay = buildPermissionModel(portal, { ...state, permissions: inheritedState.filter(rule => rule.id !== 'company-own') },
+    { source: 'configured', relationships, observed });
+  assert.equal(configuredReplay.permissions.find(rule => rule.id === 'application-own').enabled, false, 'previously inherited local role IDs are not source child associations');
+  assert.ok(replay.diagnostics.some(d => d.code === 'PERMISSION_OBSERVED_ORPHAN_UNRESTRICTED'));
+  const absent = { ...portal, records: portal.records.filter(record => record.id !== 'company-own') };
+  assert.equal(buildPermissionModel(absent, state, { source: 'exported', relationships, observed }).permissions.find(rule => rule.id === 'application-edit').enabled, false);
+  const invalidRelationship = buildPermissionModel(portal, state, { source: 'exported', relationships: {}, observed });
+  assert.equal(invalidRelationship.permissions.find(rule => rule.id === 'application-edit').enabled, false);
+});
+
 test("contact memberships use exported IDs/default flags and derive each company rather than old identity account", () => {
   const { portal, state } = fixture();
   state.simulator.identity.accountId = "wrong-company";

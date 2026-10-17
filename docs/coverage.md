@@ -12,8 +12,8 @@ Paqvilo supports two local-first, pro-code workflows. **Lense** previews local r
 | PCF | Run online components; Inspect links manifests, resources, native FormXml and literal dataset bindings | Standard page controls, enabled native single-field bindings and explicit Liquid view/table dataset bindings |
 | Web API and FetchXML | Use the online backend; Inspect maps observed entity sets using Solution metadata | Supported CRUD, queries, relationships and permission checks against local tables |
 | Web roles and table permissions | Inspect exported rules; live effective access remains unknown | Evaluate configured roles and supported permission scopes for the local identity |
-| Server logic and cloud flows | Execute online; server-side edits need deployment | Inventory exported operations; supported Request/Response flows, JSON mocks, explicitly enabled local server code and trusted project providers |
-| Dataverse plugins | Execute online; Inspect links exported steps, types, assemblies and mapped C# sources | Import registrations; simulate supported write stages with mocks or trusted handlers; placeholders report skipped logic |
+| Server logic and cloud flows | Execute online; server-side edits need deployment | Supported exported request/row-trigger flows and basic actions, JSON mocks, explicitly enabled server code and trusted project providers |
+| Dataverse plugins | Execute online; Inspect links exported steps, types, assemblies and mapped C# sources | Supported read/write stages, mocks, trusted handlers and explicitly configured original CLR execution on Windows; unsupported contracts retain diagnostics |
 | Identity and data | Portal sign-in and live Dataverse | Separate local personas, generated rows or registered project data packs |
 | Deployment | Separate PAC/site deployment process | Separate PAC/site deployment process; demo includes deployable sources and archives |
 

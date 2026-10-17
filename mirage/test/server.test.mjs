@@ -4,7 +4,14 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import http from "node:http";
+import { createHash } from 'node:crypto';
 import { createSimulator } from "../server.mjs";
+
+test('embedded simulator rejects empty and malformed ports before reading sources', async () => {
+  for (const port of ['', ' ', null, true, -1, '0x10', '1.5', 65536]) {
+    await assert.rejects(createSimulator({ sourceDir: path.join(os.tmpdir(), 'invented-absent-source'), port, watch: false }), /port must be an integer from 0 to 65535/);
+  }
+});
 
 async function setup(t, { liveBridge, onShutdown, allowLiveWrites = false } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paqvilo-mirage-server-"));
@@ -818,7 +825,7 @@ test("HTTP: explicit stylesheet observation preserves profile on partial failure
   assert.deepEqual(app.store.snapshot().simulator.shellProfile, profile);
   await fs.writeFile(file, "body{color:green}");
   const edited = await call("/theme.css");
-  assert.equal(await edited.text(), "body{color:green}");
+  assert.equal((await edited.text()).split("\n/*# sourceMappingURL=")[0], "body{color:green}");
   assert.equal(edited.headers.get("x-sim-resource-provider"), null);
   assert.ok(
     requests.every(
@@ -930,7 +937,7 @@ test("HTTP: shell capture persists a complete profile and preserves it on captur
           status: 200,
           headers: { "content-type": "text/html" },
           body: Buffer.from(
-            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><script src="/jquery.min.js"></script>${broken ? '<link rel="stylesheet" href="/missing.css">' : ""}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
+            `<html><head><link rel="stylesheet" media="screen" href="/platform.css"><script src="/jquery.min.js"></script>${broken ? '<link rel="stylesheet" href="/missing.css?access_token=DO_NOT_PERSIST">' : ""}</head><body><script>const privatePageValue="not persisted";</script></body></html>`,
           ),
         };
       if (path === "/platform.css")
@@ -960,12 +967,15 @@ test("HTTP: shell capture persists a complete profile and preserves it on captur
   const report = await response.json();
   assert.equal(report.complete, true);
   assert.equal(report.captured.length, 2);
+  assert.ok(Number.isFinite(Date.parse(report.shellProfile.platformStyles.capturedAt)));
   assert.deepEqual(report.shellProfile, {
     stylesheets: [{ href: "/platform.css", media: "screen" }],
     headScripts: ["/jquery.min.js"],
     bodyScripts: [],
     beforeContentScripts: [],
     afterFooterScripts: [],
+    jquery: { source: '/jquery.min.js', sourceOrigin: liveBridge.origin, kind: 'captured', sha256: createHash('sha256').update('window.jQuery = {};').digest('hex') },
+    platformStyles: { mode: 'captured', capturedAt: report.shellProfile.platformStyles.capturedAt, origin: liveBridge.origin, missingHeadStylesheets: [] },
   });
   assert.deepEqual(
     app.store.snapshot().simulator.shellProfile,
@@ -982,7 +992,7 @@ test("HTTP: shell capture persists a complete profile and preserves it on captur
   });
   assert.equal(response.status, 409);
   assert.ok(
-    (await response.json()).failures.some((f) => f.path === "/missing.css"),
+    (await response.json()).failures.some((f) => f.path === "/missing.css" && f.code === 'SHELL_RESOURCE_CREDENTIAL' && f.blocking),
   );
   assert.deepEqual(
     app.store.snapshot().simulator.shellProfile,

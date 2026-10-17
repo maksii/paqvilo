@@ -1,0 +1,950 @@
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_relabelled
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: c924d135-dddf-4a6a-8a2c-ebb9a14ca555
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_label: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline label override"
+      }
+    ]
+  adx_name: Baseline Item Edit pqvd_relabelled
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_localchoice
+  adx_controlstyle: 100000000
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: c2391be3-915a-4554-88a0-22fb7857ac78
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_localchoice
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_globalchoice
+  adx_controlstyle: 100000001
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: b2ef7a0c-16b6-4bae-864e-5510a339f982
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_globalchoice
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_parentid
+  adx_controlstyle: 756150000
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: bf73a7ff-6b3f-4e45-8bb3-c9c07b2cd5ff
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_parentid
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_phone
+  adx_cssclass: baseline-css-class
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: c275a86e-5532-455f-8f7e-a3ecbe47e882
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_phone
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_recommended
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 5d4088db-bf48-41b8-8a59-e994bd81b108
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_recommended
+  adx_prepopulatetype: 100000000
+  adx_prepopulatevalue: baseline prepopulated
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_dateonly
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 2aeeda75-07f9-42df-8e7d-10ce74d5ea0a
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_dateonly
+  adx_prepopulatetype: 100000001
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_email
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 645df64a-7888-4df7-8f57-4ab5ed73ea8d
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_email
+  adx_prepopulatefromattribute: emailaddress1
+  adx_prepopulatetype: 100000002
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_hidden
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 50c21ab4-d7bd-4010-8ed1-ae2224d8854a
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_hidden
+  adx_onsavetype: 100000000
+  adx_onsavevalue: baseline on save
+  adx_setvalueonsave: true
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_datetimetzi
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 73845cdd-ef64-4f12-88e9-6145cc4d1405
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_datetimetzi
+  adx_onsavetype: 100000001
+  adx_setvalueonsave: true
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_contactid
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: cd699f2c-96d1-4ede-8d6f-f107ef761e4d
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_contactid
+  adx_onsavefromattribute: contactid
+  adx_onsavetype: 100000002
+  adx_setvalueonsave: true
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_defaulted
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: ad4924d0-db49-4294-8da3-c464cc0c84c0
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: true
+  adx_name: Baseline Item Edit pqvd_defaulted
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_text
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: c0feb15f-7bdc-4ca0-8650-ea2ac01852bb
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_text
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_validationregularexpression: '^[A-Za-z -]*$'
+  adx_validationregularexpressionerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline text accepts letters, spaces and hyphens only."
+      }
+    ]
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_textarea
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: e171d365-1f2e-4b98-85de-3043914f0ea1
+  adx_fieldisrequired: true
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_textarea
+  adx_requiredfieldvalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline text area is required."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_wholenumber
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 4d4997c8-7aed-44b1-89c8-54eddc449b26
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_wholenumber
+  adx_rangevalidationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline whole number must be between 0 and 1000."
+      }
+    ]
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: false
+  adx_attributelogicalname: pqvd_memo
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: cb7419a6-9316-4ddc-86fe-635d5ebbde96
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_memo
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+  adx_validationerrormessage: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline memo is not valid."
+      }
+    ]
+- adx_adddescription: true
+  adx_attributelogicalname: pqvd_amount
+  adx_descriptionposition: 100000001
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 2a874685-9711-402c-8565-47e9a8a8559f
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_amount
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: true
+- adx_adddescription: true
+  adx_attributelogicalname: pqvd_url
+  adx_description: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Above the field"
+      }
+    ]
+  adx_descriptionposition: 100000000
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 65e330c4-7a89-45c4-8523-f38a76bb6ab6
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_url
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: true
+  adx_attributelogicalname: pqvd_ticker
+  adx_description: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Below the field"
+      }
+    ]
+  adx_descriptionposition: 100000001
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: af660832-7452-4dc9-8eb0-361a22bbccf3
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_ticker
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_adddescription: true
+  adx_attributelogicalname: pqvd_json
+  adx_description: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Above the label"
+      }
+    ]
+  adx_descriptionposition: 100000002
+  adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 5fa27f9e-e493-46c4-8cdd-3bb11beaad67
+  adx_fieldisrequired: false
+  adx_ignoredefaultvalue: false
+  adx_name: Baseline Item Edit pqvd_json
+  adx_setvalueonsave: false
+  adx_type: 100000000
+  adx_useattributedescriptionproperty: false
+- adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: b63a990d-0402-450b-8ddc-833c21750bd2
+  adx_label: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline text section"
+      }
+    ]
+  adx_name: Baseline Item Edit text
+  adx_sectionname: text
+  adx_type: 100000001
+- adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: ea07561a-5dbd-4d88-8693-6ee816cbc2c4
+  adx_label: >-
+    [
+      {
+        "LCID": 1033,
+        "Value": "Baseline related tab"
+      }
+    ]
+  adx_name: Baseline Item Edit related
+  adx_tabname: related
+  adx_type: 100000002
+- adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 62a7aaa4-8be8-45fa-8324-92f0d8b865d6
+  adx_name: Baseline Item Edit subgrid_children
+  adx_subgrid_name: subgrid_children
+  adx_subgrid_settings: >-
+    {
+      "Type": "CrmEntityFormView-GridMetadata",
+      "ViewFormats": [],
+      "ViewActions": [
+        {
+          "Type": "CrmEntityFormView-CreateAction",
+          "EntityFormId": "e3e16411-3741-477d-83a1-891c50788e72",
+          "TargetType": 0,
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "New baseline child"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Create a baseline child"
+            }
+          ]
+        },
+        {
+          "Type": "CrmEntityFormView-DownloadAction",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Download children"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Download the baseline children"
+            }
+          ]
+        }
+      ],
+      "ItemActions": [
+        {
+          "Type": "CrmEntityFormView-DetailsAction",
+          "EntityFormId": "3d8a7e86-47b8-4786-821a-4bc5a78f988b",
+          "TargetType": 0,
+          "RecordIdQueryStringParameterName": "id",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "View child"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "View the baseline child"
+            }
+          ]
+        },
+        {
+          "Type": "CrmEntityFormView-EditAction",
+          "EntityFormId": "a93455bc-e941-4c52-8b7d-00c71012472b",
+          "TargetType": 0,
+          "RecordIdQueryStringParameterName": "id",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Edit child"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Edit the baseline child"
+            }
+          ]
+        },
+        {
+          "Type": "CrmEntityFormView-DeleteAction",
+          "ButtonLabel": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Delete child"
+            }
+          ],
+          "ButtonTooltip": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Delete the baseline child"
+            }
+          ],
+          "Confirmation": [
+            {
+              "Type": "LanguageResources",
+              "LCID": 1033,
+              "Value": "Delete this baseline child?"
+            }
+          ]
+        }
+      ],
+      "ExtendedViewActions": [],
+      "ExtendedItemActions": [],
+      "ColumnOverrides": [
+        {
+          "Type": "CrmEntityFormView-ViewColumn",
+          "AttributeLogicalName": "pqvd_sortorder",
+          "DisplayName": "Order",
+          "Width": 80
+        }
+      ],
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading baseline children..."
+        }
+      ],
+      "ErrorMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Could not load baseline children."
+        }
+      ],
+      "AccessDeniedMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "You do not have access to baseline children."
+        }
+      ],
+      "EmptyMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "No baseline children yet."
+        }
+      ],
+      "CssClass": "baseline-grid",
+      "GridCssClass": "table-striped",
+      "GridColumnWidthStyle": 0,
+      "CreateFormDialog": {
+        "Type": "CrmEntityFormView-CreateFormModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading create baseline child..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Create baseline child"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "DetailsFormDialog": {
+        "Type": "CrmEntityFormView-DetailsFormModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading baseline child..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline child"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 2,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "EditFormDialog": {
+        "Type": "CrmEntityFormView-EditFormModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading edit baseline child..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit baseline child"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 1,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "DeleteDialog": {
+        "Type": "CrmEntityFormView-GridDeleteModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading delete baseline child..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete baseline child"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "ErrorDialog": {
+        "Type": "CrmEntityFormView-ErrorModal",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading baseline child error..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline child error"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      }
+    }
+  adx_type: 100000003
+- adx_entityform: 54fc8e2f-0f98-4338-8521-e61ba0a7a318
+  adx_entityformmetadataid: 1ff6d87e-2640-4614-87fd-9073dfaea3d5
+  adx_name: 'Baseline Item Edit '
+  adx_notes_settings: >-
+    {
+      "CreateEnabled": true,
+      "EditEnabled": true,
+      "DeleteEnabled": true,
+      "DisplayAttachFile": true,
+      "DisplayPrivacyOptionField": true,
+      "PageSize": 10,
+      "FileAttachmentLocation": 756150000,
+      "AcceptMimeTypes": "image/*,application/pdf",
+      "RestrictMimeTypes": true,
+      "MaximumFileSize": 1024,
+      "ListTitle": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Baseline notes"
+        }
+      ],
+      "AddNoteButtonLabel": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Add baseline note"
+        }
+      ],
+      "NotePrivacyLabel": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Private"
+        }
+      ],
+      "LoadingMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Loading baseline notes..."
+        }
+      ],
+      "ErrorMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "Could not load baseline notes."
+        }
+      ],
+      "AccessDeniedMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "You do not have access to baseline notes."
+        }
+      ],
+      "EmptyMessage": [
+        {
+          "Type": "LanguageResources",
+          "LCID": 1033,
+          "Value": "No baseline notes."
+        }
+      ],
+      "CssClass": "baseline-grid",
+      "GridCssClass": "table-striped",
+      "ListOrders": [
+        {
+          "Attribute": "createdon",
+          "Direction": "Descending"
+        }
+      ],
+      "CreateDialogOptions": {
+        "DisplayPrivacyOptionsField": true,
+        "PrivacyOptionFieldDefaultValue": true,
+        "DisplayAttachFile": true,
+        "AttachFileAccept": "image/*,application/pdf",
+        "NoteFieldLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline note"
+          }
+        ],
+        "NoteFieldColumns": 20,
+        "NoteFieldRows": 6,
+        "PrivacyOptionFieldLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Private"
+          }
+        ],
+        "AttachFileLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline file"
+          }
+        ],
+        "LeftColumnCssClass": "col-sm-3",
+        "RightColumnCssClass": "col-sm-9",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading add baseline note..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Add baseline note"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "EditDialogOptions": {
+        "DisplayPrivacyOptionsField": true,
+        "PrivacyOptionFieldDefaultValue": true,
+        "DisplayAttachFile": true,
+        "AttachFileAccept": "image/*,application/pdf",
+        "NoteFieldLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline note"
+          }
+        ],
+        "NoteFieldColumns": 20,
+        "NoteFieldRows": 6,
+        "PrivacyOptionFieldLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Private"
+          }
+        ],
+        "AttachFileLabel": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Baseline file"
+          }
+        ],
+        "LeftColumnCssClass": "col-sm-3",
+        "RightColumnCssClass": "col-sm-9",
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading edit baseline note..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Edit baseline note"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      },
+      "DeleteDialogOptions": {
+        "Confirmation": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete this baseline note?"
+          }
+        ],
+        "LoadingMessage": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Loading delete baseline note..."
+          }
+        ],
+        "Title": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Delete baseline note"
+          }
+        ],
+        "PrimaryButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "OK"
+          }
+        ],
+        "CloseButtonText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close"
+          }
+        ],
+        "DismissButtonSrText": [
+          {
+            "Type": "LanguageResources",
+            "LCID": 1033,
+            "Value": "Close dialog"
+          }
+        ],
+        "Size": 0,
+        "CssClass": "baseline-dialog",
+        "TitleCssClass": "baseline-dialog-title",
+        "PrimaryButtonCssClass": "btn btn-primary",
+        "CloseButtonCssClass": "btn btn-default"
+      }
+    }
+  adx_type: 100000005

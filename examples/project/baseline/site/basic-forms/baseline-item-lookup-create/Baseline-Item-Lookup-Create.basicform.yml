@@ -1,0 +1,11 @@
+adx_captcharequired: false
+adx_entityformid: c67b55ff-055e-41c4-8d57-139239401b4b
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_formname: Baseline Item Lookup Create
+adx_hideformonsuccess: false
+adx_mode: 100000000
+adx_name: Baseline Item Lookup Create
+adx_onsuccess: 756150000
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

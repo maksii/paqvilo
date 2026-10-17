@@ -1,0 +1,125 @@
+adx_allowmultiplefiles: false
+adx_appendquerystring: false
+adx_associatecurrentportaluser: false
+adx_attachfile: false
+adx_attachfilerequired: false
+adx_attachfilerestrictaccept: false
+adx_autogeneratesteps: false
+adx_captcharequired: true
+adx_createautonumber: false
+adx_editexistingrecordpermitted: true
+adx_editexpiredmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "This baseline item can no longer be edited."
+    }
+  ]
+adx_editexpiredstatecode: 1
+adx_editexpiredstatusreason: 2
+adx_editnotpermittedmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "You cannot edit this baseline item."
+    }
+  ]
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 100000001
+adx_forceallfieldsrequired: false
+adx_formname: Baseline Item
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: false
+adx_geolocation_maptype: 756150000
+adx_hideformonsuccess: true
+adx_instructions: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Complete the baseline step."
+    }
+  ]
+adx_loguser: true
+adx_mode: 100000001
+adx_movepreviouspermitted: true
+adx_multiplerecordsperuserpermitted: true
+adx_name: Baseline Multistep Survey Groups
+adx_nextbuttoncssclass: btn btn-primary baseline-next
+adx_nextbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Continue"
+    }
+  ]
+adx_nextstep: e4566cc6-ffe4-4cee-8a6a-cc6deabcbea1
+adx_populatereferenceentitylookupfield: false
+adx_portaluserlookupattributeisactivityparty: false
+adx_previousbuttoncssclass: btn btn-default baseline-previous
+adx_previousbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Back"
+    }
+  ]
+adx_primarykeyattributelogicalname: pqvd_baselineitemid
+adx_primarykeyquerystringparametername: id
+adx_recommendedfieldsrequired: true
+adx_recordnotfoundmessage: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "The baseline item was not found."
+    }
+  ]
+adx_redirecturlappendentityidquerystring: false
+adx_referenceentityshowreadonlyform: false
+adx_referenceentitysourcetype: 100000001
+adx_referencequerystringisprimarykey: true
+adx_renderwebresourcesinline: true
+adx_setentityreference: false
+adx_showcaptchaforauthenticatedusers: true
+adx_showownerfields: true
+adx_showunsupportedfields: true
+adx_submitbuttonbusytext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Saving..."
+    }
+  ]
+adx_submitbuttoncssclass: btn btn-success baseline-submit
+adx_submitbuttontext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Finish"
+    }
+  ]
+adx_targetentitylogicalname: pqvd_baselineitem
+adx_targetentityprimarykeylogicalname: pqvd_baselineitemid
+adx_title: Baseline Multistep Survey Groups
+adx_tooltipenabled: true
+adx_type: 100000001
+adx_userhostaddressattributelogicalname: pqvd_wide
+adx_useridentitynameattributelogicalname: pqvd_nolabel
+adx_validationgroup: baseline-step
+adx_validationsummarycssclass: alert alert-danger baseline-summary
+adx_validationsummaryheadertext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "The baseline step has errors:"
+    }
+  ]
+adx_validationsummarylinksenabled: true
+adx_validationsummarylinktext: >-
+  [
+    {
+      "LCID": 1033,
+      "Value": "Go to the field"
+    }
+  ]
+adx_webform: 280f988a-4e25-4e29-86f8-433e30164057
+adx_webformstepid: 4f0898bd-99d3-4116-88d8-e20f81221f4d

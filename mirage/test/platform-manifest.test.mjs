@@ -16,15 +16,28 @@ import {
   webFormsForm,
 } from "../lib/platform-manifest.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import { injectRuntime } from "../lib/platform.mjs";
 
 const SITE = "5a1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const CONTACT = "c0000000-0000-4000-8000-000000000011";
 const VALIDATED = 'var Page_Validators = (window.Page_Validators || []).concat([document.getElementById("RequiredFieldValidatorname")].filter(Boolean));';
 
+test('runtime ViewState keys preserve authored markup and entity-like text inside the saved form state', () => {
+  const state = { v: 1, form: 'synthetic', values: { title: '<span class="label">A &amp;quot; B</span>', nested: '&amp;amp;&quot;' } };
+  const encoded = '/wE' + Buffer.from(JSON.stringify(state)).toString('base64');
+  const content = `<html><head></head><body><input type="hidden" name="__VIEWSTATE" id="__VIEWSTATE" value="${encoded}"><p><strong>Authored &amp; copy</strong></p></body></html>`;
+  const token = 'synthetic-&quot;-<token>';
+  const rendered = injectRuntime(content, token, 1);
+  const result = /name="__VIEWSTATE" id="__VIEWSTATE" value="([^"]*)"/.exec(rendered)[1];
+  assert.deepEqual(JSON.parse(Buffer.from(result.slice(3), 'base64').toString('utf8')), { ...state, k: token });
+  assert.ok(rendered.includes('<p><strong>Authored &amp; copy</strong></p>'));
+});
+
 test("page kinds follow the rendered native controls", () => {
-  assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "modal-form"]);
-  assert.equal(pageKind('<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "basic-form");
-  assert.equal(pageKind('<div id="WebFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>'), "multistep-form");
+  assert.deepEqual(Object.keys(PAGE_KINDS), ["anonymous", "authenticated", "list", "basic-form", "multistep-form", "code-component", "modal-form"]);
+  assert.equal(pageKind('<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>'), "basic-form");
+  assert.equal(pageKind('<!--pp-native-form--><div id="WebFormControl_0123456789abcdef0123456789abcdef"></div>'), "multistep-form");
+  assert.equal(pageKind('<div data-mirage-component="codecomponent" data-pcf-schema="Sample.Widget"></div>'), "code-component");
   assert.equal(pageKind('<div class="entity-grid entitylist" data-view-layouts=""></div>'), "list");
   assert.equal(pageKind("<p>Welcome</p>", { authenticated: true }), "authenticated");
   assert.equal(pageKind("<p>Welcome</p>"), "anonymous");
@@ -36,8 +49,18 @@ test("page kinds follow the rendered native controls", () => {
   }
 });
 
+test("standalone code components require a server form without native basic form scripts", () => {
+  const content = '<div data-pcf-schema="Sample.Widget"></div><form data-authored-form><input name="subject"></form>';
+  const regions = nativePageRegions({ content, action: "/components/" });
+  assert.equal(regions.kind, "code-component");
+  assert.match(regions.content, /^<form method="post" action="\/components\/" id="liquid_form">/);
+  assert.ok(regions.content.includes(content));
+  assert.match(regions.content, /__VIEWSTATE/);
+  assert.doesNotMatch(regions.content, /xrm-adx\/js\/webform\.js/);
+});
+
 test("the WebForms server form carries the native hidden fields, postback stub and form scripts in order", () => {
-  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div><script>${VALIDATED}</script>` });
+  const html = webFormsForm({ action: '/contact-us/?a=1&b="x"', content: `<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div><script>${VALIDATED}</script>` });
   // Without a form control only the ScriptManager's blockUI reference loads.
   const bare = webFormsForm({ id: "content_form", content: "<p>Copy</p>" });
   assert.match(bare, /<script src="\/js\/jquery\.blockUI\.js" type="text\/javascript"><\/script>/);
@@ -60,10 +83,12 @@ test("the WebForms server form carries the native hidden fields, postback stub a
     '<script src="/xrm-adx/js/radcaptcha.js"',
     '<script src="/xrm-adx/js/crmentityformview.js"',
     "function WebForm_OnSubmit()",
+    '<div class="container"><!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div></div>',
+    // ASP.NET renders the generator and event validation fields last in the server form.
     'name="__VIEWSTATEGENERATOR"',
     'name="__VIEWSTATEENCRYPTED"',
     'name="__EVENTVALIDATION"',
-    '<div class="container"><div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form>Body</div></div>',
+    "</div></form>",
   ];
   let at = -1;
   for (const marker of order) {
@@ -75,7 +100,7 @@ test("the WebForms server form carries the native hidden fields, postback stub a
   assert.doesNotMatch(html, /crmentityformview-datetime\.js/);
   // Read-only forms register no validators, so the form has no onsubmit handler; date
   // controls add the date-time form script; captured AXD paths replace the local runtime.
-  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<div id="EntityFormControl" data-pp-native-form><div class="input-group datetimepicker" data-date-format="DD/MM/YYYY"></div></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
+  const readOnly = webFormsForm({ id: "content_form", action: "/_portal/modal", content: '<!--pp-native-form--><div id="EntityFormControl"><input id="effective" data-ui="datetimepicker" data-type="date"></div>', aspNetScripts: '<script src="/WebResource.axd?d=a&amp;t=1"></script>' });
   assert.match(readOnly, /^<form method="post" action="\/_portal\/modal" id="content_form">/);
   assert.match(readOnly, /var theForm = document\.forms\['content_form'\];/);
   assert.match(readOnly, /<script src="\/WebResource\.axd\?d=a&amp;t=1"><\/script>/);
@@ -86,11 +111,11 @@ test("the WebForms server form carries the native hidden fields, postback stub a
 test("AXD scripts load inside the form on form pages and nowhere else; captured bundles replace local equivalents", () => {
   const scripts = ["/WebResource.axd?d=w&t=1", { src: "/ScriptResource.axd?d=s&t=2", type: "text/javascript" }, "/scripts/extra.js"];
   const render = (paths) => paths.map((entry) => `<script src="${typeof entry === "string" ? entry : entry.src}"></script>`).join("");
-  const form = nativePageRegions({ content: '<div id="EntityFormControl_0123456789abcdef0123456789abcdef" data-pp-native-form></div>', action: "/form/", bodyScripts: scripts, renderScripts: render });
+  const form = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"></div>', action: "/form/", bodyScripts: scripts, renderScripts: render });
   assert.equal(form.kind, "basic-form");
   assert.match(form.content, /^<form method="post" action="\/form\/" id="liquid_form">/);
   assert.ok(form.content.indexOf("/WebResource.axd?d=w&t=1") < form.content.indexOf("/ScriptResource.axd?d=s&t=2"));
-  assert.ok(form.content.indexOf("/ScriptResource.axd") < form.content.indexOf("data-pp-native-form"));
+  assert.ok(form.content.indexOf("/ScriptResource.axd") < form.content.indexOf("<!--pp-native-form-->"));
   assert.doesNotMatch(form.content, /webforms-compat\.js/);
   assert.equal(form.bodyScripts, '<script src="/scripts/extra.js"></script>');
   const plain = nativePageRegions({ content: "<p>Guidance</p>", action: "/guidance/", bodyScripts: scripts, renderScripts: render, authenticated: true });
@@ -99,7 +124,7 @@ test("AXD scripts load inside the form on form pages and nowhere else; captured 
   assert.equal(plain.bodyScripts, '<script src="/scripts/extra.js"></script>');
 });
 
-async function shellFixture(t, { shellProfile, settings = [] } = {}) {
+async function shellFixture(t, { shellProfile, settings = [], observed = null } = {}) {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-shell-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
   const files = {
@@ -147,7 +172,7 @@ async function shellFixture(t, { shellProfile, settings = [] } = {}) {
       },
     },
   };
-  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false });
+  const app = await createSimulator({ sourceDir: dir, stateFile: path.join(dir, "state.json"), initial, watch: false, ...(observed ? { observed } : {}) });
   t.after(() => app.close());
   const session = signInHeaders(app, CONTACT, { roles: ["Member"] });
   return { app, get: (pathname, headers = session) => fetch(app.url + pathname, { headers }) };
@@ -176,7 +201,7 @@ test("layout pages carry the native chrome around the header, content and footer
   assert.match(list, /class="entity-grid entitylist/);
   assert.doesNotMatch(list, /id="liquid_form"|\.axd/);
   const form = bodyOf(await (await get("/form/?source=1")).text());
-  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', 'name="__EVENTVALIDATION"', '<div class="page-header"><h1>Contact us</h1></div>', "data-pp-native-form", "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
+  order(form, ['<div id="antiforgerytoken" data-url="/_layout/tokenhtml"></div>', '<form method="post" action="/form/?source=1" onsubmit="javascript:return WebForm_OnSubmit();" id="liquid_form">', '<script src="/WebResource.axd?d=w&amp;t=1"', '<script src="/ScriptResource.axd?d=s&amp;t=2"', '<script src="/xrm-adx/js/crmentityformview.js"', '<div class="page-header"><h1>Contact us</h1></div>', "<!--pp-native-form-->", 'name="__EVENTVALIDATION"', "</form>", '<div id="pp-native-controls-react-root"></div>', '<footer class="site-footer">']);
   assert.equal(form.match(/WebResource\.axd/g).length, 1);
   assert.equal(form.match(/id="antiforgerytoken"/g).length, 1);
   assert.doesNotMatch(form, /<input name="__RequestVerificationToken"/);
@@ -223,6 +248,24 @@ test("native platform paths are served from local equivalents unless the export 
   assert.equal((await get(`/_portal/00000000-0000-4000-8000-000000000000/Resources/ResourceManager`)).status, 404);
 });
 
+test("local platform files are dated by their file and answer conditional requests with 304", async (t) => {
+  const { app, get } = await shellFixture(t);
+  const cases = [
+    ["/xrm-adx/js/crmentityformview.js", "lib/crmentityformview-compat.js"],
+    ["/xrm-adx/js/jquery.stackranking.js", "lib/stackranking-compat.js"],
+    ["/Areas/Account/css/account.css", "lib/account-compat.css"],
+  ];
+  for (const [pathname, file] of cases) {
+    const response = await get(pathname);
+    assert.equal(response.status, 200, pathname);
+    const { mtimeMs } = await fs.stat(new URL(`../${file}`, import.meta.url));
+    assert.equal(response.headers.get("last-modified"), new Date(Math.floor(mtimeMs / 1000) * 1000).toUTCString(), pathname);
+    const again = await fetch(app.url + pathname, { headers: { "if-none-match": response.headers.get("etag") } });
+    assert.equal(again.status, 304, pathname);
+    assert.equal(await again.text(), "", pathname);
+  }
+});
+
 test("an exported web file at a native platform path wins over the local equivalent", async (t) => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "platform-webfile-"));
   t.after(() => fs.rm(dir, { recursive: true, force: true }));
@@ -236,7 +279,7 @@ test("an exported web file at a native platform path wins over the local equival
   t.after(() => app.close());
   const response = await fetch(`${app.url}/js/jquery.blockUI.js`);
   assert.equal(response.status, 200);
-  assert.equal(await response.text(), "window.exportedBlockUI = true;");
+  assert.equal((await response.text()).split("\n//# sourceMappingURL=")[0], "window.exportedBlockUI = true;");
   assert.notEqual(response.headers.get("x-sim-resource-provider"), "local-platform-equivalent");
 });
 
@@ -301,12 +344,12 @@ test("legacy ASPX page templates render their WebForms layout with the page's at
   assert.deepEqual(layout.Columns.map((column) => column.LogicalName), ["name"]);
   // Page.aspx (WebFormsContent.master): two columns, the static EntityFormControl, sidebar.
   const profile = await body("/profile/");
-  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<div id="EntityFormControl" data-pp-native-form>', 'name="ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
+  order(profile, ['id="content_form"', '<div class="row"><div class="col-md-8">', '<!--pp-native-form--><div id="EntityFormControl">', 'name="ctl00$ctl00$ContentContainer$MainContent$EntityControls$EntityFormControl$EntityFormControl_EntityFormView$', '<div class="page-metadata clearfix">', '<div class="col-md-4"><div class="sidebar">']);
   assert.match(profile, /<script src="\/xrm-adx\/js\/crmentityformview\.js"/);
   // A page whose attached basic form is not in the export renders without it.
   const missing = await (await fetch(app.url + "/missing/", { headers: session })).text();
   assert.match(missing, /<div class="page-copy">/);
-  assert.doesNotMatch(missing, /data-pp-native-form|Liquid error/);
+  assert.doesNotMatch(missing, /pp-native-form|Liquid error/);
   // Blank.aspx (Default.master) has no server form.
   const home = await body("/");
   assert.doesNotMatch(home, /content_form|liquid_form/);
@@ -333,7 +376,7 @@ test("classic workflow execution reports its local limitation and Bootstrap glyp
   }
 });
 
-// The 17 platform bundles in the default shell order.
+// The 18 platform bundles in the default shell order (the control stylesheet last, outside the page slots).
 const BOOTSTRAP3_BUNDLES = [
   "dist/font-awesome.bundle-3d8a58a48f.css",
   "dist/preform.bundle-b72a6ea21d.css",
@@ -352,14 +395,24 @@ const BOOTSTRAP3_BUNDLES = [
   "dist/postpreform.bundle-4687dda8df.js",
   "dist/app.bundle-1e948af604.js",
   "dist/default-1033.moment_2_29_4.bundle-eda4e638fd.js",
+  "1.4.772-master/controlsAssets/msos.4774A53.css",
 ].map((name) => `/resource/powerappsportal/${name}`);
 
 test("platform bundles follow the live order per Bootstrap build; a captured shell supplies the deployed names", () => {
   const sources = (html) => [...html.matchAll(/(?:src|href)="([^"]+)"/g)].map((match) => match[1]);
   const shell = platformShell({ websiteId: `{${SITE.toUpperCase()}}`, bootstrap: '<link rel="stylesheet" href="/bootstrap.min.css">' });
-  assert.equal(PLATFORM_BUNDLES.length, 17);
-  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyStart, shell.afterContent, shell.afterFooter].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
-  assert.match(shell.afterContent, /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script src="[^"]+main\.3ee2491f78\.chunk\.js" type="text\/javascript" defer><\/script>$/);
+  assert.equal(PLATFORM_BUNDLES.length, 18);
+  // The MultiSelectPicklist stylesheet has its own slot: pages link it only with a multi-select column.
+  assert.match(shell.controlsStyle, /^<link href="\/resource\/powerappsportal\/[^/"]+\/controlsAssets\/msos\.[0-9a-f]+\.css" rel="stylesheet">$/i);
+  assert.deepEqual([shell.headStart, shell.headEnd, shell.bodyOpen, shell.bodyStart, shell.afterContent, shell.afterFooter, shell.controlsStyle].flatMap(sources), [`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`, "/bootstrap.min.css", ...BOOTSTRAP3_BUNDLES]);
+  // pcf-style opens the body; the other stylesheets stay in the head.
+  assert.match(shell.bodyOpen, /^<link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]+" rel="stylesheet">$/);
+  assert.doesNotMatch(shell.headEnd, /pcf-style/);
+  // Every dist/ bundle carries the platform's onerror fallback to /dist/<name> on the portal origin.
+  assert.ok(shell.headStart.includes(`<link href="/resource/powerappsportal/dist/font-awesome.bundle-3d8a58a48f.css" onerror="javascript: var target = event.target; var link = document.createElement('link'); link.crossOrigin = target.crossOrigin; link.href = '/dist/font-awesome.bundle-3d8a58a48f.css'; link.rel = 'stylesheet'; target.insertAdjacentElement('afterend',link);" rel="stylesheet">`));
+  assert.ok(shell.afterFooter.includes(`<script onerror="javascript: var target = event.target; var script = document.createElement('script'); script.crossOrigin = target.crossOrigin; script.src = '/dist/app.bundle-1e948af604.js'; script.type = 'text/javascript'; target.insertAdjacentElement('afterend',script);" src="/resource/powerappsportal/dist/app.bundle-1e948af604.js" type="text/javascript"></script>`));
+  // The controls host chunk (not under dist/) has no fallback and is deferred.
+  assert.match(shell.afterContent, /pcf-loader\.bundle-f4a0e619b8\.js" type="text\/javascript"><\/script><div id="pp-native-controls-react-root"><\/div><script defer="defer" src="[^"]+main\.3ee2491f78\.chunk\.js"><\/script>$/);
   assert.equal(platformShell({ controlsRoot: false }).afterContent.includes("pp-native-controls-react-root"), false);
   // Site/BootstrapV5Enabled = true (Example commondev) selects the BootstrapV5 builds.
   assert.equal(bootstrapVariant({ "Site/BootstrapV5Enabled": "True" }), "BootstrapV5");
@@ -393,7 +446,9 @@ test("platform bundles follow the live order per Bootstrap build; a captured she
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/default-1036.moment_2_29_4.bundle-0123456789.js")?.id, "moment-locale");
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/app.BootstrapV5.bundle-4299f393fc.js?v=1")?.id, "app");
   assert.equal(platformBundleFor("/resource/powerappsportal/dist/unknown.bundle-0123456789.js"), null);
-  assert.equal(platformBundleFor("/dist/app.bundle-1e948af604.js"), null);
+  // The onerror fallback path /dist/<name> names the same bundle.
+  assert.equal(platformBundleFor("/dist/app.bundle-1e948af604.js")?.id, "app");
+  assert.equal(platformBundleFor("/distribution/app.bundle-1e948af604.js"), null);
 });
 
 test("pages load the platform bundles in live order per Bootstrap build; bundle paths serve local equivalents or placeholders", async (t) => {
@@ -411,7 +466,7 @@ test("pages load the platform bundles in live order per Bootstrap build; bundle 
     const expected = platformShell({ variant }).bundles;
     const resources = [...html.matchAll(/<(?:script|link)\b[^>]*\b(?:src|href)="([^"]+)"/g)].map((match) => match[1].split("?")[0]);
     // The site has no bootstrap.min.css content style, so the platform's default is linked.
-    assert.deepEqual(resources, [`/_portal/${SITE}/Resources/ResourceManager`, "/css/bootstrap.min.css", ...expected.map((bundle) => bundle.path)], variant);
+    assert.deepEqual(resources, [`/_portal/${SITE}/Resources/ResourceManager`, "/css/bootstrap.min.css", ...expected.filter((bundle) => bundle.slot !== "controls-style").map((bundle) => bundle.path)], variant);
     assert.doesNotMatch(html, /__sim-static/);
     for (const bundle of PLATFORM_BUNDLES) {
       const pathname = expected.find((entry) => entry.id === bundle.id).path;
@@ -446,7 +501,7 @@ test("form pages load the WebForms script resources at their native paths, serve
   const body = async (pathname) => {
     const response = await get(pathname);
     assert.equal(response.status, 200, pathname);
-    assert.equal(response.headers.get("content-type"), "application/javascript; charset=utf-8", pathname);
+    assert.equal(response.headers.get("content-type"), pathname.includes(".axd") ? "application/x-javascript" : "application/javascript; charset=utf-8", pathname);
     return { provider: response.headers.get("x-sim-resource-provider"), text: await response.text() };
   };
   const webForms = await body(axd[0]);
@@ -465,4 +520,175 @@ test("form pages load the WebForms script resources at their native paths, serve
   const diagnostics = await (await fetch(`${app.url}/__sim/api/diagnostics`, { headers: { "x-sim-csrf": app.state().csrf } })).json();
   const entries = Array.isArray(diagnostics) ? diagnostics : (diagnostics.diagnostics ?? []);
   assert.ok(entries.some((entry) => entry.code === "PLATFORM_BUNDLE_PLACEHOLDER" && entry.bundle === "paqvilo-microsoftajaxwebforms"));
+});
+
+test("the layout shell matches the platform skeleton: head metas, bare content style links, pcf-style and the private banner opening the body", async (t) => {
+  const { get } = await shellFixture(t, { settings: [["Site/BootstrapV5Enabled", "true"], ["HTTP/SameSite/Default", "Lax"]] });
+  const html = await (await get("/form/")).text();
+  assert.match(html, /<html [^>]*same-site-mode="Lax"/);
+  assert.match(html, /<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><meta http-equiv="X-UA-Compatible" content="IE=edge"><title>/);
+  assert.doesNotMatch(html.slice(0, html.indexOf("</head>")), /pcf-style/);
+  assert.match(html, /<body[^>]*><link href="\/resource\/powerappsportal\/dist\/pcf-style\.bundle-[0-9a-f]+\.css" onerror="[^"]*link\.href = '\/dist\/pcf-style\.bundle-[0-9a-f]+\.css'[^"]*" rel="stylesheet"><div id="offlineNotificationBar" class="displayNone"> <img alt="web" class="col-3" id="web"/);
+  assert.doesNotMatch(html, /privateModeText/);
+  // BootstrapV5 sites load the date control script from its BootstrapV5 folder, only for forms
+  // with date controls (live: forms without date controls load none).
+  const v5 = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input id="when" data-ui="datetimepicker" data-type="date"></div>', variant: "BootstrapV5" });
+  assert.match(v5, /<script src="\/xrm-adx\/js\/BootstrapV5\/crmentityformview-datetime\.js" type="text\/javascript"><\/script>/);
+  assert.doesNotMatch(webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="input-group datetimepicker"></div></div>', variant: "BootstrapV5" }), /crmentityformview-datetime/);
+  assert.equal((await get("/xrm-adx/js/BootstrapV5/crmentityformview-datetime.js")).status, 200);
+  // Site visibility is not exported: observed.siteVisibility "private" adds the private-site banner.
+  const { get: getPrivate } = await shellFixture(t, { observed: { siteVisibility: "private", evidence: "synthetic" } });
+  const privateHome = await (await getPrivate("/")).text();
+  assert.match(privateHome, /<body[^>]*><link href="[^"]*pcf-style[^"]*"[^>]*><div id="privateModeText" class="private-mode-banner"> <div class="private-mode-text"> <img alt="lock" class="col-3" [^>]*src="\/resource\/powerappsportal\/img\/Lock\.png"> <b>This site is private:<\/b>[\s\S]*?<\/div> <\/div><div id="offlineNotificationBar"/);
+  assert.equal((await getPrivate("/resource/powerappsportal/img/Lock.png")).status, 200);
+});
+
+test("platform resources on the portal origin carry the platform's headers; /dist/ fallbacks serve the bundles", async (t) => {
+  const { get } = await shellFixture(t);
+  const headers = async (pathname) => {
+    const response = await get(pathname);
+    assert.equal(response.status, 200, pathname);
+    await response.arrayBuffer();
+    return Object.fromEntries([...response.headers].filter(([name]) => !/^(?:date|connection|keep-alive|transfer-encoding|content-length|x-sim-.*)$/.test(name)));
+  };
+  const axd = await headers("/WebResource.axd?d=paqvilo-webforms&t=0");
+  assert.deepEqual(Object.keys(axd).sort(), ["cache-control", "content-type", "expires", "last-modified", "x-frame-options"]);
+  assert.equal(axd["content-type"], "application/x-javascript");
+  assert.equal(axd["cache-control"], "public");
+  assert.ok(Date.parse(axd.expires) - Date.now() > 300 * 86400 * 1000);
+  assert.equal((await headers("/ScriptResource.axd?d=paqvilo-microsoftajax&t=0")).vary, undefined);
+  const manager = await headers(`/_portal/${SITE}/Resources/ResourceManager?lang=en-US`);
+  assert.equal(manager["cache-control"], "public, max-age=86400");
+  assert.equal(manager["content-type"], "text/javascript; charset=utf-8");
+  assert.equal(manager["x-frame-options"], "SAMEORIGIN");
+  const blockUi = await headers("/js/jquery.blockUI.js");
+  assert.equal(blockUi["cache-control"], "public,max-age=604800");
+  assert.equal(blockUi["accept-ranges"], "bytes");
+  assert.match(blockUi.etag, /^"[0-9a-f]{13}:0"$/);
+  assert.equal(blockUi.vary, "Accept-Encoding");
+  const webform = await headers("/xrm-adx/js/webform.js");
+  assert.equal(webform["cache-control"], undefined);
+  assert.ok(webform["last-modified"]);
+  // The token fragment uses the page policy: no-store with Pragma and Expires.
+  const token = await headers("/_layout/tokenhtml?_=1");
+  assert.equal(token.pragma, "no-cache");
+  assert.equal(token.expires, "-1");
+  // The platform's onerror fallback path serves the same local equivalent as the CDN path.
+  const app = platformShell().bundles.find((bundle) => bundle.id === "app").path;
+  const [cdn, fallback] = await Promise.all([get(app), get(app.replace("/resource/powerappsportal", ""))]);
+  assert.equal(fallback.status, 200);
+  assert.equal(await fallback.text(), await cdn.text());
+});
+
+test("an aborted form control writes the closing tags that follow it after the form's closing fields", () => {
+  const html = webFormsForm({ content: '<div class="page"><div id="control">partial</div><!--paqvilo-mirage-render-aborted--></div>\n</div><p>dropped</p>' });
+  assert.doesNotMatch(html, /dropped|render-aborted/);
+  assert.match(html, /partial<\/div><div class="aspNetHidden">[\s\S]*?<\/div><\/div>\n<\/div><\/form>$/);
+});
+
+test("a form showing a captcha registers the RadCaptcha script resources after the form scripts", () => {
+  const captcha = webFormsForm({ content: '<!--pp-native-form--><!--pp-captcha--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
+  assert.match(captcha, /crmentityformview\.js" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-telerik-support&amp;t=0" type="text\/javascript"><\/script>\n<script src="\/ScriptResource\.axd\?d=paqvilo-radcaptcha&amp;t=0" type="text\/javascript"><\/script>/);
+  const plain = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef">Body</div>' });
+  assert.doesNotMatch(plain, /paqvilo-radcaptcha|paqvilo-telerik-support/);
+});
+
+test("the RadCaptcha script resources answer as text/javascript", async (t) => {
+  const { get } = await shellFixture(t);
+  for (const d of ["paqvilo-telerik-support", "paqvilo-radcaptcha"]) {
+    const response = await get(`/ScriptResource.axd?d=${d}&t=0`);
+    assert.equal(response.status, 200, d);
+    assert.equal(response.headers.get("content-type"), "text/javascript", d);
+    assert.match(await response.text(), /radcaptcha-compat\.js/, d);
+  }
+});
+
+test("event validation is written for input controls only, and never on a legacy page template's form", () => {
+  const message = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><div class="alert">No access.</div></div>' });
+  assert.doesNotMatch(message, /__EVENTVALIDATION/);
+  const inputs = webFormsForm({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>' });
+  assert.match(inputs, /name="__EVENTVALIDATION"/);
+  const legacy = nativePageRegions({ content: '<!--pp-native-form--><div id="EntityFormControl_0123456789abcdef0123456789abcdef"><input type="text" id="name"></div>', serverFormId: "content_form" });
+  assert.doesNotMatch(legacy.content, /__EVENTVALIDATION/);
+});
+
+test("a missing file under the platform's static areas is a plain 404 without Vary", async (t) => {
+  const { get } = await shellFixture(t);
+  const response = await get("/Areas/EntityList/css/img/loading-bar.gif");
+  assert.equal(response.status, 404);
+  assert.equal(response.headers.get("vary"), null);
+  assert.equal(response.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  assert.equal(await response.text(), "");
+  assert.equal((await get("/Areas/EntityList/js/entitylist-calendar.js")).status, 200);
+});
+
+test("FullPage.aspx lays out div#mainContent with the page copy and the entity control holders, without a main landmark", async () => {
+  const { rewritePageLayout } = await import("../lib/platform-manifest.mjs");
+  const list = "11111111-1111-4111-8111-111111111111";
+  const layout = rewritePageLayout({ listId: list }, { rewriteUrl: "~/Pages/FullPage.aspx" });
+  assert.equal(layout.contentRegion, true);
+  assert.equal(layout.serverFormId, "content_form");
+  assert.match(layout.source, /<div class="container"><div id="mainContent">\{% editable page 'adx_copy' type: 'html', liquid: true, class: 'page-copy' %\}/);
+  assert.ok(layout.source.includes(`<div id="WebFormControl"></div><div id="EntityFormControl"></div>{% entitylist id: '${list}', pp_page_control: true %}{% endentitylist %}</div><div class="page-metadata clearfix">`));
+  assert.equal(rewritePageLayout({}, { rewriteUrl: "~/Pages/WebForm.aspx" }).contentRegion, undefined);
+});
+
+test("a map list with credentials renders the legacy map control and loads the map scripts; application-relative paths redirect", async (t) => {
+  const { renderComponent } = await import("../lib/platform.mjs");
+  const list = { id: "11111111-1111-4111-8111-111111111111", name: "Places", entityName: "place", metadata: { adx_map_enabled: true, adx_map_credentials: "invented-key", adx_map_type: 756150000, adx_map_distanceunits: 756150001, adx_map_distancevalues: "5,10", adx_map_zoom: 12, adx_map_pushpinheight: 39, adx_map_pushpinwidth: 32, adx_map_resturl: "https://maps.example.test/Locations", adx_view: "view" } };
+  const portal = { website: { id: "site" }, lists: [list], forms: [], pages: [], records: [], settings: { "Site/BootstrapV5Enabled": "true" }, websiteLanguages: [{ lcid: 1033, isDefault: true }] };
+  const metadata = { entities: { place: { fields: { name: { label: "Name" } } } }, views: [{ id: "view", entity: "place", name: "Places", fields: [{ name: "name" }], fetchXml: '<fetch><entity name="place"><attribute name="name"/></entity></fetch>' }] };
+  const { html } = await renderComponent("entitylist", "Places", { user: { id: "u" }, request: { url: "http://localhost/places/" }, key: "Places" }, { portal, metadata, store: { resolveMapping: () => ({ entitySet: "places", idColumn: "placeid", nameColumn: "name" }) }, schemas: {}, args: { key: "Places" } });
+  assert.match(html, /<!--pp-server-list--><!--pp-map-list:bing--><div id="EntityListControl_11111111111141118111111111111111"><div class="entitylist"><div class="row clearfix"><div id="entity-list-map-options"/);
+  assert.match(html, /<option value="5">5 miles<\/option><option value="10">10 miles<\/option>/);
+  assert.match(html, /data-distance-units="miles"[^>]* data-credentials="invented-key"/);
+  const form = webFormsForm({ content: html });
+  assert.match(form, /jquery\.blockUI\.js" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/json2\.min\.js" type="text\/javascript"><\/script>\n<script src="https:\/\/www\.bing\.com\/api\/maps\/mapcontrol" type="text\/javascript"><\/script>\n<script src="\/xrm-adx\/js\/entitylist-map\.js"/);
+  assert.match(form, /name="__EVENTVALIDATION"/);
+  const { get } = await shellFixture(t);
+  const moved = await get("/form/~/xrm-adx/samples/images/loader.gif");
+  assert.equal(moved.status, 200);
+  assert.equal(moved.headers.get("content-type"), "image/gif");
+  assert.ok(moved.headers.get("etag"));
+});
+
+test("the captcha challenge image and audio answer as the platform's resource handler does", async (t) => {
+  const { get } = await shellFixture(t);
+  const image = await get("/Telerik.Web.UI.WebResource.axd?type=rca&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000");
+  assert.equal(image.status, 200);
+  assert.equal(image.headers.get("content-type"), "image/jpeg");
+  assert.equal(image.headers.get("cache-control"), "private");
+  const audio = await get("/Telerik.Web.UI.WebResource.axd?type=cah&isc=cust&guid=0f0f0f0f-0000-4000-8000-000000000000", { range: "bytes=0-" });
+  assert.equal(audio.status, 206);
+  assert.equal(audio.headers.get("content-type"), "audio/wav");
+  assert.equal(audio.headers.get("content-disposition"), "attachment; filename=RadCaptcha_Audio_0f0f0f0f.wav");
+  assert.match(audio.headers.get("content-range"), /^bytes 0-\d+\/\d+$/);
+  assert.equal((await audio.arrayBuffer()).byteLength, Number(audio.headers.get("content-length")));
+});
+
+test("an HTML web resource is served as a page; other web resources keep their private caching", async (t) => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "mirage-webresource-"));
+  t.after(() => fs.rm(dir, { recursive: true, force: true }));
+  const portal = path.join(dir, "portal"), solution = path.join(dir, "solution");
+  await fs.mkdir(portal, { recursive: true });
+  await fs.writeFile(path.join(portal, "website.yml"), "adx_websiteid: site\nadx_name: Resources");
+  await fs.mkdir(path.join(solution, "WebResources"), { recursive: true });
+  await fs.writeFile(path.join(solution, "WebResources", "banner.html"), "<!DOCTYPE html><html><body><p>Banner</p></body></html>");
+  await fs.writeFile(path.join(solution, "WebResources", "icon.svg"), "<svg/>");
+  const app = await createSimulator({ sourceDir: portal, stateFile: path.join(dir, "state.json"), watch: false, solutionRoots: [solution] });
+  t.after(() => app.close());
+  const html = await fetch(`${app.url}/_webresource/banner.html`);
+  assert.equal(html.headers.get("content-type"), "text/html; charset=utf-8");
+  assert.equal(html.headers.get("cache-control"), "no-cache, no-store, must-revalidate");
+  assert.equal(html.headers.get("pragma"), "no-cache");
+  const svg = await fetch(`${app.url}/_webresource/icon.svg`);
+  assert.equal(svg.headers.get("content-type"), "text/plain; charset=utf-8");
+  assert.equal(svg.headers.get("cache-control"), "private");
+});
+
+test("the narrow-form stacking rule leaves the empty zero cell hidden (quick view frame)", async () => {
+  const css = await fs.readFile(new URL("../lib/platform-chrome.css", import.meta.url), "utf8");
+  assert.match(css, /\.crmEntityFormView \.cell\.zero-cell\{display:none\}/);
+  const narrow = /@media\(max-width:600px\)\{([^}]*)\{display:block/.exec(css)?.[1] ?? "";
+  for (const selector of narrow.split(",")) if (/td\.cell/.test(selector)) assert.match(selector, /:not\(\.zero-cell\)/);
 });

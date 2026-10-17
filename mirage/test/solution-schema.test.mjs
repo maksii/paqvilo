@@ -95,6 +95,7 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
     attribute("sample_Flag", "bit", `<AppDefaultValue>1</AppDefaultValue><optionset Name="sample_item_sample_flag"><OptionSetType>bit</OptionSetType><options><option value="0">${label("No")}</option><option value="1">${label("Yes")}</option></options></optionset>`),
     attribute("sample_Shared", "picklist", "<OptionSetName>sample_sharedchoice</OptionSetName>"),
     attribute("sample_Amount", "decimal", "<Accuracy>2</Accuracy><MinValue>0</MinValue><MaxValue>100</MaxValue>"),
+    attribute("sample_Cost", "money", "<Accuracy>4</Accuracy><AccuracySource>2</AccuracySource>"),
     attribute("sample_Due", "datetime", "<Format>date</Format><Behavior>2</Behavior>"),
     attribute("sample_Number", "nvarchar", "<AutoNumberFormat>ExampleApp-{SEQNUM:6}</AutoNumberFormat><MaxLength>20</MaxLength><IsSecured>1</IsSecured><ValidForCreateApi>0</ValidForCreateApi><ValidForUpdateApi>0</ValidForUpdateApi><ValidForReadApi>1</ValidForReadApi>"),
     attribute("sample_ParentId", "lookup"),
@@ -119,6 +120,8 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
   assert.equal(fields.sample_shared.optionSetType, "global");
   assert.match(fields.sample_shared.optionSetSource, /sample_sharedchoice\.xml$/);
   assert.deepEqual([fields.sample_amount.precision, fields.sample_amount.minValue, fields.sample_amount.maxValue], [2, 0, 100]);
+  assert.deepEqual([fields.sample_cost.precision, fields.sample_cost.precisionSource], [4, 2]);
+  assert.equal(Object.hasOwn(fields.sample_amount, "precisionSource"), false);
   assert.deepEqual([fields.sample_due.format, fields.sample_due.dateTimeBehavior, fields.sample_due.type], ["date", "DateOnly", "date"]);
   assert.equal(fields.sample_number.autoNumberFormat, "ExampleApp-{SEQNUM:6}");
   assert.deepEqual([fields.sample_number.validForCreate, fields.sample_number.validForUpdate, fields.sample_number.validForRead, fields.sample_number.isSecured], [false, false, true, true]);
@@ -130,6 +133,26 @@ test("column metadata keeps types, requirement, option sets, lookups, behaviours
   // A complete table also lists the column Dataverse never writes into solution XML.
   assert.equal(fields.versionnumber.implicit, true);
   assert.match(fields.sample_choice.source, /Entity\.xml$/);
+});
+
+test("Owner columns retain concrete user/team targets when relationships name abstract owner", async (t) => {
+  const root = await tree(t, {
+    "Entities/sample_widget/Entity.xml": entityXml("sample_widget", { attributes:
+      attribute("OwnerId", "owner", '<LookupTypes><LookupType id="00000000-0000-0000-0000-000000000000">8</LookupType><LookupType id="00000000-0000-0000-0000-000000000000">9</LookupType></LookupTypes>') +
+      attribute("sample_OwnerReference", "lookup") + attribute("sample_ConcreteOwner", "owner"),
+    }),
+    "Other/Relationships.xml": `<EntityRelationships>${
+      oneToMany("sample_widget_owner", "sample_widget", "owner", "OwnerId") +
+      oneToMany("sample_widget_owner_reference", "sample_widget", "owner", "sample_OwnerReference") +
+      oneToMany("sample_widget_concrete_owner", "sample_widget", "systemuser", "sample_ConcreteOwner")
+    }</EntityRelationships>`,
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const fields = tableFields(schema, "sample_widget");
+  assert.deepEqual(fields.ownerid.targets, ["systemuser", "team"]);
+  assert.deepEqual(fields.sample_ownerreference.targets, ["owner"]);
+  assert.deepEqual(fields.sample_concreteowner.targets, ["systemuser"]);
+  assert.equal(fields.ownerid.dataverseType, "owner");
 });
 
 test("relationships expose navigation properties, partners and intersect columns in mappings", async (t) => {
@@ -314,6 +337,80 @@ test("parsed files are cached by file identity and re-read after any change", as
   // A corrupt cache is ignored rather than trusted.
   await fs.writeFile(cacheFile, "{not json");
   assert.equal((await SolutionFileCache.open(cacheFile)).entries.size, 0);
+});
+
+test('documented system global choices fill missing exports, respect solution overrides and preserve unknown diagnostics', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { attributes:
+      attribute('sample_permission', 'picklist', '<OptionSetName>field_security_permission_type</OptionSetName>') +
+      attribute('sample_regular', 'bit', '<OptionSetName>activitypointer_isregularactivity</OptionSetName>') +
+      ['deliveryprioritycode', 'prioritycode', 'statecode', 'statuscode', 'instancetypecode'].map(name => attribute(name, 'picklist', `<OptionSetName>activitypointer_${name}</OptionSetName>`)).join('') +
+      attribute('sample_channel', 'picklist', '<OptionSetName>socialprofile_community</OptionSetName>') +
+      attribute('sample_activity', 'entityname', '<OptionSetName>activitypointer_activitytypecode</OptionSetName>') +
+      attribute('sample_unknown', 'picklist', '<OptionSetName>unknown_fixture_set</OptionSetName>') }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const diagnostics = [];
+  const fields = tableFields(schema, 'sample_item', { diagnostics });
+  assert.deepEqual(fields.sample_permission.options, [{ value: 0, label: 'Not Allowed' }, { value: 4, label: 'Allowed' }]);
+  assert.deepEqual(fields.sample_regular.options, [{ value: 0, label: 'No' }, { value: 1, label: 'Yes' }]);
+  assert.deepEqual(fields.deliveryprioritycode.options, [{ value: 0, label: 'Low' }, { value: 1, label: 'Normal' }, { value: 2, label: 'High' }]);
+  assert.deepEqual(fields.prioritycode.options, fields.deliveryprioritycode.options);
+  assert.deepEqual(fields.statecode.options.map(o => o.value), [0, 1, 2, 3]);
+  assert.deepEqual(fields.statuscode.options.map(o => o.value), [1, 2, 3, 4]);
+  assert.equal(fields.statuscode.optionSetOpen, true);
+  assert.deepEqual(fields.instancetypecode.options.map(o => o.label), ['Not Recurring', 'Recurring Master', 'Recurring Instance', 'Recurring Exception', 'Recurring Future Exception']);
+  assert.deepEqual(fields.sample_channel.options.map(o => o.label), ['Other', 'Facebook', 'Twitter']);
+  assert.equal(fields.sample_permission.optionSetSourceKind, 'dataverse-reference');
+  assert.equal(fields.sample_activity.optionSetDynamic, true);
+  assert.equal(fields.sample_activity.dataverseType, 'entityname');
+  assert.equal(fields.sample_activity.type, 'text');
+  assert.deepEqual(diagnostics.map(d => d.optionSetName), ['unknown_fixture_set']);
+  schema.optionSets.field_security_permission_type = { source: 'synthetic-solution.xml', options: [{ value: 4, labels: { 1033: 'Solution label' } }] };
+  assert.deepEqual(tableFields(schema, 'sample_item').sample_permission.options, [{ value: 4, label: 'Solution label' }]);
+});
+
+test('imported system choices render their reference labels in a synthetic basic form', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { attributes:
+      attribute('sample_permission', 'picklist', '<OptionSetName>field_security_permission_type</OptionSetName>') }),
+  });
+  const data = await importSolutionData([root]);
+  assert.ok(!data.diagnostics.some(d => d.code === 'SOLUTION_OPTIONSET_UNRESOLVED'));
+  const { renderComponent } = await import('../lib/platform.mjs');
+  const fields = Object.values(tableFields(data.schema, 'sample_item'));
+  const portal = { forms: [{ id: 'permission', name: 'Permission', mode: 100000000 }], settings: {}, records: [] };
+  const store = await new DataStore({ state: { mappings: data.mappings, tables: { sample_item: [] }, settings: { permissionMode: 'permissive' } } }).init();
+  const html = await renderComponent('entityform', 'Permission', { request: { params: {} }, user: null }, {
+    portal, schemas: { permission: { entity: 'sample_item', mode: 100000000, fields } },
+    store, readProvider: store, renderLiquid: async source => source,
+  });
+  assert.match(html, /<option value="0"[^>]*>Not Allowed<\/option>/);
+  assert.match(html, /<option value="4"[^>]*>Allowed<\/option>/);
+});
+
+test('reference social channels allow installed extensions while exported choices remain authoritative', async t => {
+  const root = await tree(t, {
+    'Entities/sample_item/Entity.xml': entityXml('sample_item', { full: true, attributes:
+      attribute('sample_channel', 'picklist', '<OptionSetName>socialprofile_community</OptionSetName>') }),
+  });
+  const schema = buildSolutionSchema(await scanSolutionSources([root]));
+  const { schemaFieldIndex, fieldIndexFromMappings, schemaViolations } = await import('../lib/schema-validation.mjs');
+  const fields = tableFields(schema, 'sample_item');
+  assert.equal(fields.sample_channel.optionSetOpen, true);
+  const mappings = { sample_item: { entitySet: 'sample_items', idColumn: 'sample_itemid', schemaComplete: true, fieldMetadata: fields } };
+  const initial = { mappings, tables: { sample_item: [] }, settings: { permissionMode: 'permissive' } };
+  const store = await new DataStore({ state: initial }).init();
+  await store.create('sample_items', { sample_name: 'Synthetic extension', sample_channel: 17 }, { id: 'fixture', roles: [] }, { coerce: true });
+  const rows = { sample_item: [{ sample_channel: 17 }] };
+  assert.deepEqual(schemaViolations(rows, schemaFieldIndex(schema, ['sample_item'])), []);
+  assert.deepEqual(schemaViolations(rows, fieldIndexFromMappings(mappings)), []);
+  schema.optionSets.socialprofile_community = { source: 'synthetic-solution.xml', options: [{ value: 0, labels: { 1033: 'Exported' } }] };
+  const closed = tableFields(schema, 'sample_item');
+  assert.equal(closed.sample_channel.optionSetOpen, undefined);
+  assert.equal(schemaViolations(rows, schemaFieldIndex(schema, ['sample_item']))[0].kind, 'option-value');
+  const closedStore = await new DataStore({ state: { ...initial, mappings: { sample_item: { ...mappings.sample_item, fieldMetadata: closed } } } }).init();
+  await assert.rejects(closedStore.create('sample_items', { sample_name: 'Synthetic', sample_channel: 17 }, { id: 'fixture', roles: [] }, { coerce: true }), error => error.code === 'PicklistValueOutOfRange');
 });
 
 test("unbalanced XML is recovered with a diagnostic instead of dropping the layer", async (t) => {
@@ -519,6 +616,8 @@ test("case relationships come from Learn and document management creates <table>
     "Entities/Incident/Entity.xml": entityXml("Incident", { attributes: attribute("sample_Extra", "nvarchar"), extra: managed }),
     "Entities/sample_shortage/Entity.xml": entityXml("sample_shortage", { set: "sample_shortages", full: true, extra: managed }),
     "Entities/sample_plain/Entity.xml": entityXml("sample_plain", { set: "sample_plains", full: true, extra: "<IsDocumentManagementEnabled>0</IsDocumentManagementEnabled>" }),
+    // Notes enabled (HasRelatedNotes as the export writes it) creates <table>_Annotations.
+    "Entities/sample_noted/Entity.xml": entityXml("sample_noted", { set: "sample_noteds", full: true, extra: "<HasRelatedNotes>True</HasRelatedNotes>" }),
     // Catalogue relationships join when one of their tables is exported (annotation here).
     "Entities/Annotation/Entity.xml": entityXml("Annotation", { attributes: attribute("sample_Note", "nvarchar") }),
     // Account keeps its documented Account_SharepointDocumentLocation relationship.
@@ -545,6 +644,10 @@ test("case relationships come from Learn and document management creates <table>
   assert.equal(schema.relationships.account_sharepointdocumentlocations, undefined);
   assert.equal(schema.relationships.account_sharepointdocumentlocation.schemaName, "Account_SharepointDocumentLocation");
   assert.equal(schema.documentLocationRelationships, 2);
+  assert.deepEqual(shape("sample_noted_annotations"), ["sample_noted_Annotations", "annotation", "sample_noted", "objectid", "objectid_sample_noted", "sample_noted_Annotations"]);
+  assert.match(schema.relationships.sample_noted_annotations.source, /sample_noted.Entity\.xml$/);
+  assert.equal(schema.relationships.sample_plain_annotations, undefined);
+  assert.equal(schema.annotationRelationships, 1);
 });
 
 test("while a share is open several caches of one process parse a Solution root once", async (t) => {

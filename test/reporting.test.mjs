@@ -38,7 +38,9 @@ test('status JSON signals incomplete network comparisons and keeps per-file diag
   t.mock.method(console, 'log', (text) => output.push(text));
   t.mock.method(globalThis, 'fetch', async () => { throw new Error('offline test failure'); });
   assert.equal(await status(cfg, { json: true }), 1);
-  const rows = JSON.parse(output[0]);
+  const report = JSON.parse(output[0]), rows = report.results;
+  assert.equal(report.ok, false); assert.equal(report.offline, false);
+  assert.equal(report.errors.length, 2);
   assert.equal(rows.length, 2);
   assert.ok(rows.every((row) => row.state === 'unreachable' && row.detail === 'offline test failure'));
 });

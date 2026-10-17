@@ -1,7 +1,7 @@
 // Offline resource discovery for editors and agents. No source bodies, browser, or output files.
 import fs from 'node:fs';
 import path from 'node:path';
-import { PortalModel, inlineKindOf, isSourceFile } from '../portal-model.mjs';
+import { PortalModel, inlineKindOf, isSourceFile, createSourceReader } from '../portal-model.mjs';
 import { GitBaseline } from '../git.mjs';
 import { Resolver } from '../resolver.mjs';
 import { pageKey } from '../html-rewriter.mjs';
@@ -9,20 +9,21 @@ import { pageKey } from '../html-rewriter.mjs';
 export const RESOURCE_KINDS = ['page', 'web-file', 'page-js', 'page-css', 'page-copy', 'page-summary', 'basic-form-js', 'advanced-form-step-js', 'list-js', 'web-template', 'content-snippet', 'metadata-markup', 'route'];
 const compare = (a, b) => a < b ? -1 : a > b ? 1 : 0;
 const byId = (a, b) => compare(a.id, b.id);
+const invalidArgument = message => Object.assign(new Error(message), {code:'invalid_argument'});
 const normalizePath = (file) => file.replace(/\\/g, '/');
 
 function integer(value, fallback, name, max = Number.MAX_SAFE_INTEGER) {
   if (value === undefined) return fallback;
-  if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) > max) throw new Error(`${name} must be an integer from 0 to ${max}`);
+  if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) > max || name === '--limit' && Number(value) < 1) throw invalidArgument(`${name} must be an integer from ${name==='--limit'?1:0} to ${max}`);
   return Number(value);
 }
 
 export function resourceFilters(args = {}) {
   const limit = integer(args.limit, 100, '--limit', 500);
-  if (!limit) throw new Error('--limit must be between 1 and 500');
+
   const kinds = args.kind === undefined ? [] : [args.kind].flat();
-  for (const kind of kinds) if (!RESOURCE_KINDS.includes(kind)) throw new Error(`Unknown resource kind "${kind}". Supported: ${RESOURCE_KINDS.join(', ')}`);
-  if (args.page !== undefined && (typeof args.page !== 'string' || !args.page.startsWith('/') || args.page.startsWith('//') || /[\\?#\x00-\x1f]/.test(args.page))) throw new Error('--page must be a same-origin URL path without a query or fragment');
+  for (const kind of kinds) if (!RESOURCE_KINDS.includes(kind)) throw invalidArgument(`Unknown resource kind "${kind}". Supported: ${RESOURCE_KINDS.join(', ')}`);
+  if (args.page !== undefined && (typeof args.page !== 'string' || !args.page.startsWith('/') || args.page.startsWith('//') || /[\\?#\x00-\x1f]/.test(args.page))) throw invalidArgument('--page must be a same-origin URL path without a query or fragment');
   return { page: args.page === undefined ? null : pageKey(args.page), kinds: [...new Set(kinds)].sort(compare), search: args.search?.trim() ?? '', changed: Boolean(args.changed), offset: integer(args.offset, 0, '--offset'), limit };
 }
 
@@ -41,6 +42,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     return changed.has(file);
   };
   const resolver = new Resolver(model, cfg.site, { changed: cfg.site.scope === 'changed' ? changed : null });
+  const textOf = createSourceReader(model);
   const resources = [];
   const relationships = [];
   const pagesByUrl = new Map();
@@ -101,6 +103,10 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     relate(resource, resource.relatedPageUrls, 'parent-page', resource.metadataPaths);
   }
   for (const source of model.inlineSources) {
+    if (filters.kinds.length && !filters.kinds.includes(source.kind)) continue;
+    const knownPages = source.pageUrl ? [source.pageUrl] : source.usedOn ?? [];
+    if (filters.page && !knownPages.some(url => pageKey(url, model) === filters.page)) continue;
+    if (filters.changed && !changedAt(source.file)) continue;
     const def = inlineKindOf(source.file);
     const metadata = source.extract ? source.file : def ? source.file.slice(0, -def.suffix.length) + def.suffix.replace(/\.[^.]+\.[^.]+$/, '.yml') : null;
     const metadataPaths = metadata && (source.extract || model.currentYaml.has(metadata)) && isSourceFile(cfg.sourceDir, metadata) ? [metadata] : [];
@@ -108,16 +114,20 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
     const configured = Boolean(kinds?.enabled && kinds.kinds.includes(source.kind));
     const pageResolved = !source.kind.startsWith('page-') || source.pageUrl !== null;
     const readable = isSourceFile(cfg.sourceDir, source.file);
-    const knownPages = source.pageUrl ? [source.pageUrl] : source.usedOn ?? [];
+    const content=readable?textOf(source):null;
+    const exists=source.exists ?? content!==null;
+    const rootShadowed=source.renders===false;
+    const renders=pageResolved&&!rootShadowed&&exists;
     const resource = {
       id: `source:${source.kind}:${source.rel}`, kind: source.kind, name: source.label ?? model.currentYaml.get(metadata)?.adx_name ?? (model.shortKey ? model.currentYaml.get(metadata)?.name : undefined) ?? path.basename(source.file),
+      exists, empty: content===null?null:!content.trim(), renders,
       path: source.file, sourceDir: cfg.sourceDir, relativePath: relative(source.file), metadataPaths, field: source.field ?? null, format: source.format ?? (source.extract ? 'xml' : 'text'),
       ...(source.fieldPath ? { fieldPath: source.fieldPath, ...(source.jsonPath ? { jsonPath: source.jsonPath } : {}) } : {}),
       ...(source.recordId ? { recordId: source.recordId, recordIdField: source.recordIdField } : {}), ...(source.lcid != null ? { lcid: source.lcid } : {}), url: null,
       relatedPageUrls: [...new Set(knownPages)].sort(compare), changed: changedAt(source.file),
       preview: {
-        strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch', supported: readable && pageResolved,
-        enabled: configured, eligible: configured && readable && pageResolved && (source.mode === 'markup' || cfg.site.scope === 'changed' ? baseline.available && changed.has(source.file) : true),
+        strategy: source.mode === 'block' ? 'inline-block' : 'baseline-patch', supported: readable && renders,
+        enabled: configured, eligible: configured && readable && renders && (source.mode === 'markup' || cfg.site.scope === 'changed' ? baseline.available && changed.has(source.file) : true),
         reason: !readable ? 'Source is missing or outside the extract' : !pageResolved ? 'The page URL cannot be resolved from metadata' : source.mode === 'markup' ? 'Only supported literal changes can be patched; runtime matching and Liquid require separate validation.' : 'Inline content is matched against the rendered page; eligibility does not prove it appears there.',
       },
     };
@@ -144,7 +154,7 @@ export function describeResources(cfg, model, baseline, changed, filters = resou
   const selected = matching.slice(filters.offset, filters.offset + filters.limit);
   const selectedIds = new Set(selected.map((resource) => resource.id));
   return {
-    schemaVersion: 1, command: 'resources', ok: true, offline: true, writesFiles: false,
+    schemaVersion: 1, command: 'resources', ok: true, offline: true, writesFiles: [],
     site: cfg.siteName, environment: cfg.envName, origin: cfg.origin, sourceDir: cfg.sourceDir, format: model.format, scope: cfg.site.scope,
     baseline: { requested: baseline.spec, commit: baseline.available ? baseline.commit : null, available: baseline.available, error: baseline.error ?? null },
     filters, pagination: { total: matching.length, offset: filters.offset, limit: filters.limit, returned: selected.length, nextOffset: filters.offset + selected.length < matching.length ? filters.offset + selected.length : null },

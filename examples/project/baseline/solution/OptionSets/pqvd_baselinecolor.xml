@@ -1,0 +1,27 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<optionset Name="pqvd_baselinecolor" localizedName="Baseline color" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <OptionSetType>picklist</OptionSetType>
+  <IsGlobal>1</IsGlobal>
+  <IntroducedVersion>1.0.0.0</IntroducedVersion>
+  <IsCustomizable>1</IsCustomizable>
+  <displaynames>
+    <displayname description="Baseline color" languagecode="1033" />
+  </displaynames>
+  <options>
+    <option value="18327000" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="Red" languagecode="1033" />
+      </labels>
+    </option>
+    <option value="18327001" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="Green" languagecode="1033" />
+      </labels>
+    </option>
+    <option value="18327002" ExternalValue="" IsHidden="0">
+      <labels>
+        <label description="Blue" languagecode="1033" />
+      </labels>
+    </option>
+  </options>
+</optionset>

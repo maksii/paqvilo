@@ -1,0 +1,26 @@
+adx_captcharequired: false
+adx_entityformid: 929522c7-0a38-4bc9-82a6-cefe6da7f796
+adx_entityname: pqvd_baselineitem
+adx_entitypermissionsenabled: true
+adx_entitysourcetype: 756150001
+adx_formname: Baseline Item
+adx_geolocation_addresslinefieldname: pqvd_text
+adx_geolocation_cityfieldname: pqvd_wide
+adx_geolocation_countryfieldname: pqvd_recommended
+adx_geolocation_countyfieldname: pqvd_nolabel
+adx_geolocation_displaymap: false
+adx_geolocation_enabled: true
+adx_geolocation_formattedaddressfieldname: pqvd_textarea
+adx_geolocation_latitudefieldname: pqvd_float
+adx_geolocation_longitudefieldname: pqvd_decimal
+adx_geolocation_maptype: 756150002
+adx_geolocation_neighborhoodfieldname: pqvd_memo
+adx_geolocation_postalcodefieldname: pqvd_ticker
+adx_geolocation_statefieldname: pqvd_relabelled
+adx_hideformonsuccess: false
+adx_mode: 100000001
+adx_name: Baseline Item Edit Geolocation Esri
+adx_onsuccess: 756150000
+adx_recordidquerystringparametername: id
+adx_showunsupportedfields: false
+adx_validationsummarylinksenabled: true

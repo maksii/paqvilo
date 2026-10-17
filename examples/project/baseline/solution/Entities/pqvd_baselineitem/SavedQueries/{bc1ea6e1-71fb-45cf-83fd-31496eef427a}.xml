@@ -1,0 +1,46 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<savedqueries xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <savedquery>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <isquickfindquery>0</isquickfindquery>
+    <isprivate>0</isprivate>
+    <isdefault>0</isdefault>
+    <savedqueryid>{bc1ea6e1-71fb-45cf-83fd-31496eef427a}</savedqueryid>
+    <layoutxml>
+      <grid name="resultset" jump="pqvd_name" select="1" icon="1" preview="1">
+        <row name="result" id="pqvd_baselineitemid">
+          <cell name="pqvd_name" width="200" />
+          <cell name="pqvd_code" width="100" />
+          <cell name="pqvd_amount" width="100" />
+          <cell name="pqvd_dateonly" width="100" />
+          <cell name="pqvd_localchoice" width="100" />
+          <cell name="statecode" width="100" />
+          <cell name="statuscode" width="100" />
+          <cell name="ownerid" width="150" />
+        </row>
+      </grid>
+    </layoutxml>
+    <querytype>0</querytype>
+    <fetchxml>
+      <fetch version="1.0" output-format="xml-platform" mapping="logical" distinct="false">
+        <entity name="pqvd_baselineitem">
+          <attribute name="pqvd_baselineitemid" />
+          <attribute name="pqvd_name" />
+          <attribute name="pqvd_code" />
+          <attribute name="pqvd_amount" />
+          <attribute name="pqvd_dateonly" />
+          <attribute name="pqvd_localchoice" />
+          <attribute name="statecode" />
+          <attribute name="statuscode" />
+          <attribute name="ownerid" />
+          <order attribute="pqvd_code" descending="true" />
+        </entity>
+      </fetch>
+    </fetchxml>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <LocalizedNames>
+      <LocalizedName description="All Baseline Items" languagecode="1033" />
+    </LocalizedNames>
+  </savedquery>
+</savedqueries>

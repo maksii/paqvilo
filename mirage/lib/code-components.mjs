@@ -3,12 +3,89 @@ import path from 'node:path';
 import { readLocalFile } from '../../lense/local-file.mjs';
 import { createHash } from 'node:crypto';
 import { parseSolutionXml, descendants, childText } from './solution-xml.mjs';
+import { portalLanguage } from './portal-languages.mjs';
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const canonical = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const json = value => JSON.stringify(value).replace(/</g, '\\u003c');
 const contained = (root, file) => { const rel = path.relative(root, file); return Boolean(rel) && rel !== '..' && !rel.startsWith('..' + path.sep) && !path.isAbsolute(rel); };
 const pcfTypes = { nvarchar: 'SingleLine.Text', ntext: 'Multiple', uniqueidentifier: 'SingleLine.Text', primarykey: 'SingleLine.Text', int: 'Whole.None', integer: 'Whole.None', bigint: 'Whole.None', decimal: 'Decimal', float: 'FP', money: 'Currency', datetime: 'DateAndTime.DateAndTime', bit: 'TwoOptions', picklist: 'OptionSet', state: 'OptionSet', status: 'OptionSet', multiselectpicklist: 'MultiSelectOptionSet', lookup: 'Lookup.Simple', owner: 'Lookup.Simple' };
+
+// Classic SDK bundles start with an optional block-comment header and a single
+// uninitialized var. Advance monotonically: repeating comments/whitespace in a
+// regular expression can revisit the same resource prefix many times.
+function classicExportGlobal(source) {
+  let offset = 0;
+  const whitespace = () => {
+    const start = offset;
+    while (offset < source.length && /\s/.test(source[offset])) offset++;
+    return offset > start;
+  };
+  for (;;) {
+    whitespace();
+    if (!source.startsWith('/*', offset)) break;
+    const end = source.indexOf('*/', offset + 2);
+    if (end < 0) return undefined;
+    offset = end + 2;
+  }
+  if (!source.startsWith('var', offset)) return undefined;
+  offset += 3;
+  if (!whitespace() || !/[A-Za-z_$]/.test(source[offset] ?? '')) return undefined;
+  const start = offset++;
+  while (offset < source.length && /[A-Za-z0-9_$]/.test(source[offset])) offset++;
+  const name = source.slice(start, offset);
+  whitespace();
+  return source[offset] === ';' ? name : undefined;
+}
+
+// Declaration eligibility is a Power Pages contract, independent of whether a
+// local facade implements the requested API. Keep source attributes untouched.
+function featureEligibility(features = []) {
+  return features.map(feature => {
+    const requiredValue = typeof feature.required === 'string' ? feature.required.trim() : feature.required;
+    const required = requiredValue === 'true' || requiredValue === '1';
+    const valid = typeof feature.name === 'string' && Boolean(feature.name.trim()) && ['true', 'false', '1', '0'].includes(requiredValue);
+    const hostApiAvailable = feature.name === 'WebAPI' ? true
+      : feature.name === 'Utility' || /^(?:Device|device)\./.test(feature.name ?? '') ? false : null;
+    return { ...feature, hostApiAvailable, eligible: valid && !required,
+      ...(!valid ? { reason: 'PCF_FEATURE_DECLARATION_INVALID' } : required ? { reason: 'PCF_PORTAL_REQUIRED_FEATURE_UNSUPPORTED' } : {}) };
+  });
+}
+
+function languageLcid(language) {
+  if (Number.isInteger(Number(language?.lcid)) && Number(language.lcid) > 0) return Number(language.lcid);
+  return portalLanguage({ name: language?.code })?.lcid ?? null;
+}
+
+function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic) {
+  if (!control.stringResources) return { strings: control.strings ?? {}, localization: null };
+  const selectedLcid = languageLcid(selectedLanguage), defaultLcid = languageLcid(defaultLanguage);
+  const strings = Object.create(null), selectedResources = [], ambiguousKeys = new Set();
+  const groups = new Map();
+  for (const resource of control.stringResources) {
+    if (!resource.lcid) continue;
+    if (!groups.has(resource.group)) groups.set(resource.group, []);
+    groups.get(resource.group).push(resource);
+  }
+  for (const [group, variants] of groups) {
+    let candidates = variants.filter(resource => resource.lcid === selectedLcid);
+    let selection = 'selected-language';
+    if (!candidates.length && defaultLcid) { candidates = variants.filter(resource => resource.lcid === defaultLcid); selection = 'website-default-language'; }
+    if (candidates.length !== 1) {
+      diagnostic?.({ code: candidates.length ? 'PCF_RESOURCE_LANGUAGE_AMBIGUOUS' : 'PCF_RESOURCE_LANGUAGE_UNRESOLVED', group, selectedLcid, defaultLcid, paths: candidates.map(resource => resource.path) });
+      continue;
+    }
+    const resource = candidates[0];
+    if (selection === 'website-default-language') diagnostic?.({ code: 'PCF_RESOURCE_LANGUAGE_FALLBACK', group, selectedLcid, selectedResourceLcid: resource.lcid, policy: 'exported-website-default', nativeQualified: false });
+    selectedResources.push({ path: resource.path, lcid: resource.lcid, selection, attributes: resource.attributes });
+    for (const [key, value] of Object.entries(resource.strings)) {
+      if (Object.hasOwn(strings, key)) ambiguousKeys.add(key);
+      else strings[key] = value;
+    }
+  }
+  for (const key of ambiguousKeys) { delete strings[key]; diagnostic?.({ code: 'PCF_RESOURCE_KEY_AMBIGUOUS', key }); }
+  return { strings, localization: { selectedLcid, defaultLcid, resources: selectedResources } };
+}
 
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
 export async function importCodeComponents(layers = []) {
@@ -33,7 +110,7 @@ export async function importCodeComponents(layers = []) {
         if (!schemaName || !/^[\w.]+$/.test(schemaName)) continue;
         const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
         const digest = createHash('sha256').update(manifest);
-        const resources = [], strings = {}, libraries = [], declaredAssets = new Map();
+        const resources = [], stringResources = [], libraries = [], declaredAssets = new Map();
         for (const resource of descendants(control, 'resources')[0]?.children ?? []) {
           if (resource.name === 'platform-library') { libraries.push({ ...resource.attrs }); continue; }
           const relative = resource.attrs.path;
@@ -45,14 +122,32 @@ export async function importCodeComponents(layers = []) {
           const body = await readLocalFile(file, { root, maxBytes: 8 * 1024 * 1024 });
           digest.update(relative).update(body);
           declaredAssets.set(url, { file, root, kind: resource.name });
-          resources.push({ kind: resource.name, path: relative, url, order: Number(resource.attrs.order) || 0 });
+          // SDK bundles can export their constructor through a classic script
+          // module rather than a namespace or registerControl call. Bind only
+          // a declaration from this exact declared resource, never scan globals.
+          const exportGlobal = resource.name === 'code' ? classicExportGlobal(body.toString('utf8')) : undefined;
+          resources.push({ kind: resource.name, path: relative, url, order: Number(resource.attrs.order) || 0, attributes: { ...resource.attrs }, ...(exportGlobal ? { exportGlobal } : {}) });
           if (resource.name === 'resx') {
-            for (const entry of descendants(parseSolutionXml(body.toString('utf8')), 'data')) strings[entry.attrs.name] = childText(entry, 'value') ?? '';
+            const document = parseSolutionXml(body.toString('utf8'));
+            const entries = descendants(document, 'data');
+            const strings = Object.create(null), duplicates = new Set();
+            for (const entry of entries) {
+              const key = entry.attrs.name;
+              if (!key) { diagnostics.push({ code: 'PCF_RESOURCE_KEY_UNRESOLVED', file, message: 'RESX data entry has no name.' }); continue; }
+              if (Object.hasOwn(strings, key)) duplicates.add(key);
+              else strings[key] = entry.children.find(node => node.name === 'value')?.text ?? '';
+            }
+            for (const key of duplicates) { delete strings[key]; diagnostics.push({ code: 'PCF_RESOURCE_KEY_AMBIGUOUS', file, key, message: 'RESX resource contains duplicate named data entries.' }); }
+            const locale = /^(.*)\.(\d+)\.resx$/i.exec(relative);
+            const lcid = locale && Number.isSafeInteger(Number(locale[2])) && Number(locale[2]) > 0 ? Number(locale[2]) : null;
+            stringResources.push({ path: relative, group: locale?.[1] ?? relative, lcid, attributes: { ...resource.attrs }, document, entries, strings });
+            if (!lcid) diagnostics.push({ code: 'PCF_RESOURCE_LANGUAGE_UNRESOLVED', file, message: 'RESX resource has no documented positive LCID filename suffix.' });
           }
         }
         if (!resources.some(resource => resource.kind === 'code')) throw new Error('PCF manifest does not declare an executable code resource');
         const typeGroups = Object.fromEntries(descendants(control, 'type-group').map(group => [group.attrs.name, group.children.filter(node => node.name === 'type').map(node => node.text.trim())]));
-        controls.set(schemaName, { schemaName, constructor: `${control.attrs.namespace}.${control.attrs.constructor}`, type: control.attrs['control-type'], dataset: descendants(control, 'data-set').length > 0, datasets: descendants(control, 'data-set').map(node => ({ ...node.attrs })), properties: descendants(control, 'property').map(property => ({ ...property.attrs, types: typeGroups[property.attrs['of-type-group']] })), libraries, resources: resources.sort((a,b) => a.order - b.order), strings, file: manifestFile, fingerprint: digest.digest('hex') });
+        const features = (control.children ?? []).filter(node => node.name === 'feature-usage').flatMap(node => node.children.filter(child => child.name === 'uses-feature').map(child => ({ ...child.attrs })));
+        controls.set(schemaName, { schemaName, constructor: `${control.attrs.namespace}.${control.attrs.constructor}`, type: control.attrs['control-type'], dataset: descendants(control, 'data-set').length > 0, datasets: descendants(control, 'data-set').map(node => ({ ...node.attrs })), properties: descendants(control, 'property').map(property => ({ ...property.attrs, types: typeGroups[property.attrs['of-type-group']] })), features, libraries, resources: resources.sort((a,b) => a.order - b.order), strings: {}, stringResources, file: manifestFile, fingerprint: digest.digest('hex') });
         for (const [url, asset] of declaredAssets) assets.set(url, asset);
       } catch (cause) {
         if (cause.code !== 'ENOENT') diagnostics.push({ code: 'PCF_IMPORT_FAILED', file: manifestFile, message: cause.message });
@@ -65,14 +160,16 @@ export async function importCodeComponents(layers = []) {
 export function renderCodeComponent({ name, args = {}, portal, catalog, identity, mappings = {}, metadata = {}, language, nativeBinding, diagnostic }) {
   const schema = [...catalog.controls.keys()].find(schema => canonical(schema) === canonical(name)) ?? portal.observed?.codeComponents?.[canonical(name)];
   const control = schema && catalog.controls.get(schema);
-  const unsupported = message => {
-    diagnostic?.({ code: 'PCF_HOST_UNSUPPORTED', name, schema, message });
+  const unsupported = (message, details = {}) => {
+    diagnostic?.({ code: 'PCF_HOST_UNSUPPORTED', name, schema, message, ...details });
     return `<div role="alert" data-mirage-component="codecomponent">${escape(message)}</div>`;
   };
   if (!schema) return unsupported(/^[{]?[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}[}]?$/i.test(String(name))
     ? `Code component ${name} requires an observed GUID-to-control mapping and solution sources.`
     : `Code component ${name} was not found in the selected solution sources.`);
   if (!control) return unsupported(`Code component ${schema} was not found in the selected solution sources.`);
+  const features = featureEligibility(control.features);
+  if (features.some(feature => !feature.eligible)) return unsupported(`Code component ${schema} has feature declarations that are not eligible for the Power Pages host.`, { reason: 'PCF_FEATURE_DECLARATIONS_UNSUPPORTED', features });
   if (control.type !== 'standard') return unsupported(`Code component ${schema} requires a React host and its declared platform libraries. The local host currently supports standard controls.`);
   if (control.libraries?.length) return unsupported(`Code component ${schema} requires platform libraries (${control.libraries.map(item => item.name + ' ' + item.version).join(', ')}). These libraries are not supplied by the local host.`);
   if (nativeBinding) {
@@ -102,7 +199,9 @@ export function renderCodeComponent({ name, args = {}, portal, catalog, identity
     datasets.push({ name: dataset.name, entity, entitySet: mapping.entitySet, idColumn: mapping.idColumn, nameColumn: mapping.nameColumn ?? table.primaryNameAttribute, viewId: view?.id ?? null, viewName: view?.name ?? entity, columns, fields: Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, { label: field.label, dataverseType: field.dataverseType, dataType: pcfTypes[field.dataverseType], targets: field.targets }])), fetchXml: view?.fetchXml || `<fetch><entity name="${escape(entity)}">${names.map(name => `<attribute name="${escape(name)}"/>`).join('')}</entity></fetch>` });
   }
   const id = `pcf-${createHash('sha256').update(schema).update(json(args)).digest('hex').slice(0, 16)}`;
-  const selectedLanguage = language ?? portal.language ?? (portal.websiteLanguages ?? []).find(language => language.isDefault);
-  const value = { ...control, datasets, file: undefined, args, nativeBinding, language: selectedLanguage ? { code: selectedLanguage.code, lcid: selectedLanguage.lcid, isRTL: /^(ar|fa|he|ur)(-|$)/i.test(selectedLanguage.code ?? '') } : null, identity: { id: identity?.id ?? identity?.contactId ?? null, roles: identity?.roles ?? [] }, mappings: Object.fromEntries(Object.entries(mappings).map(([name, mapping]) => [name, { entitySet: mapping.entitySet, idColumn: mapping.idColumn }])), id };
+  const defaultLanguage = (portal.websiteLanguages ?? []).find(language => language.isDefault);
+  const selectedLanguage = language ?? portal.language ?? defaultLanguage;
+  const localized = localizedStrings(control, selectedLanguage, defaultLanguage, entry => diagnostic?.({ ...entry, name, schema }));
+  const value = { ...control, ...localized, stringResources: undefined, datasets, file: undefined, args, nativeBinding, language: selectedLanguage ? { code: selectedLanguage.code, lcid: languageLcid(selectedLanguage), isRTL: /^(ar|fa|he|ur)(-|$)/i.test(selectedLanguage.code ?? '') } : null, identity: { id: identity?.id ?? identity?.contactId ?? null, roles: identity?.roles ?? [] }, mappings: Object.fromEntries(Object.entries(mappings).map(([name, mapping]) => [name, { entitySet: mapping.entitySet, idColumn: mapping.idColumn }])), id };
   return `<script src="/__sim-static/pcf-host.js"></script><div data-mirage-component="codecomponent" data-pcf-schema="${escape(schema)}" aria-busy="true"></div><script>window.__paqviloPcf.mount(${json(value)}, document.currentScript.previousElementSibling);</script>`;
 }

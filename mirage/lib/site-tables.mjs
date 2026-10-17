@@ -88,7 +88,9 @@ export function buildSiteTables(portal, state) {
             ...(Number.isInteger(type) ? { powerpagecomponenttype: type } : {}),
             content: JSON.stringify(content),
             statecode: Number(record.statecode ?? 0),
-            statuscode: Number(record.statecode ?? 0) === 1 ? 2 : 1,
+            statuscode: Object.hasOwn(record._componentEnvelope ?? {}, "statuscode")
+              ? record._componentEnvelope.statuscode
+              : Number(record.statecode ?? 0) === 1 ? 2 : 1,
           };
         }),
       ]

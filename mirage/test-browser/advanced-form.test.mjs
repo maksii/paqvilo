@@ -76,6 +76,8 @@ test("advanced form validates, saves a record, and advances to a persisted edit 
       pageMode: "local",
       identity: { id: "editor", roles: ["Editor"] },
       live: { origin: null },
+      // This suite asserts the JSON form endpoint; the core default is the WebForms postback.
+      observed: { nativeFormTransport: "json", evidence: "Invented loopback JSON transport fixture" },
       endpoints: [],
       componentSchemas: {
         wizard: {

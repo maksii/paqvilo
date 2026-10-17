@@ -1,7 +1,9 @@
 import { parseFetchXml, DataError } from "./data.mjs";
 import { portalField } from "./importer.mjs";
 import { planFetch } from "./fetchxml-engine.mjs";
-import { fieldKind } from "./dataverse-values.mjs";
+import { fieldKind, GUID_PATTERN, isDateOnlyField, portalDateOnly, portalMonthFirstDate, parseDateValue, dateTimeRangeError } from "./dataverse-values.mjs";
+import {isExactNumeric} from './exact-numeric.mjs';
+import {attachODataReaderDetails, odataConversionDetails} from './webapi-error-details.mjs';
 import {
   applyPaths,
   expressionPaths,
@@ -13,6 +15,14 @@ import {
 
 const denied = (message, code = "WebApiFieldNotEnabled", status = 403, details) => {
   throw new DataError(message, status, code, details);
+};
+
+const monthFirstWriteValue = (value, twoDigitYearMax) => {
+  const normalized = portalMonthFirstDate(value, { twoDigitYearMax });
+  if (normalized === null) return value;
+  const parsed = parseDateValue(normalized), year = new Date(parsed.ms).getUTCFullYear();
+  if (year < 1753 || year > 9999) throw dateTimeRangeError(value, parsed);
+  return normalized;
 };
 // Power Pages Web API error text (web-api-http-requests-handle-errors):
 // 90040101 AttributePermissionIsMissing and 9004010C ResourceDoesNotExists.
@@ -124,9 +134,9 @@ export function webApiPolicy(portal, store, entity) {
       { table: mapping.logicalName },
     );
   const writeFields = new Set(fields);
-  // Dataverse exposes enabled lookup columns as _<logical-name>_value on reads.
-  // Resolve from imported field/relationship metadata instead of allowing arbitrary aliases.
-  for (const field of fields)
+  // Some captured sites require the wire property to be explicitly enabled.
+  // Keep the usual metadata-derived aliases unless that site observation opts in.
+  for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
     if (
       ["lookup", "customer", "owner"].includes(
         portal.webApiEntities?.[mapping.logicalName]?.fields?.[field]
@@ -423,8 +433,8 @@ export function webApiPolicy(portal, store, entity) {
           "WebApiPrivateField",
         );
       if (name.endsWith("@odata.bind")) assertBindNavigation(column);
-      assertExists(column, { write: true });
       if (!enabled(column, writeFields)) notEnabled(column, mapping.logicalName);
+      assertExists(column, { write: true });
       if (!columnAllowed(column, operation))
         denied(
           `Column permission denies ${operation} on ${mapping.logicalName}.${column}.`,
@@ -433,6 +443,19 @@ export function webApiPolicy(portal, store, entity) {
           { attribute: column, table: mapping.logicalName, operation },
         );
       const rel = relation(column);
+      // The portal gates property names inside object payloads before Dataverse
+      // attempts scalar conversion. A scalar choice wrapper is not a wire value.
+      if (!rel && !name.endsWith("@odata.bind") && value && typeof value === "object" && !Array.isArray(value) && !isExactNumeric(value))
+        write(value, operation);
+      // Validate submitted GUID literals before immutable fields are omitted.
+      // Otherwise a malformed primary key could turn into a successful no-op.
+      if (value != null && (column === mapping.idColumn || fieldKind(definitionOf(column)) === "guid") &&
+          (typeof value !== "string" || !GUID_PATTERN.test(value)))
+        throw attachODataReaderDetails(new DataError(`Cannot convert the literal '${typeof value === "object" ? JSON.stringify(value) : String(value)}' to the expected type 'Edm.Guid'.`, 400, "InvalidValue", { innerCode: "0x80048d19" }), portal.observed?.webApiErrorDetails === "odata-wrapper" ? odataConversionDetails(value, "Edm.Guid", column) : null);
+      const dateDefinition = definitionOf(column) ?? store.fieldDefinition(mapping.logicalName, column);
+      if (value != null && fieldKind(dateDefinition) === 'datetime' && isDateOnlyField(dateDefinition) &&
+          portalDateOnly(value) === null)
+        throw attachODataReaderDetails(new DataError(`Cannot convert the literal to the expected type 'Edm.Date'.`, 400, 'InvalidValue', {innerCode:'0x80048d19'}), portal.observed?.webApiErrorDetails === 'odata-wrapper' ? odataConversionDetails(value, 'Edm.Date', column) : null);
       if (
         rel &&
         !name.endsWith("@odata.bind") &&
@@ -492,7 +515,11 @@ export function webApiPolicy(portal, store, entity) {
                 value,
                 operation,
               )
-          : value;
+          : value != null && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime' && isDateOnlyField(definition ?? store.fieldDefinition(mapping.logicalName, physical))
+            ? portalDateOnly(value)
+          : portal.observed?.webApiDateParsing === 'month-first' && fieldKind(definition ?? store.fieldDefinition(mapping.logicalName, physical)) === 'datetime'
+            ? monthFirstWriteValue(value, portal.observed.webApiTwoDigitYearMax ?? 2049)
+            : value;
     }
     return result;
   };
@@ -536,11 +563,11 @@ export function webApiPolicy(portal, store, entity) {
 }
 
 /** Validate every FetchXML table/column and project aliased output explicitly. */
-export function webApiFetchPolicy(portal, store, xml, rootEntity) {
+export function webApiFetchPolicy(portal, store, xml, rootEntity, {structuralJoinFields=false}={}) {
   const root = parseFetchXml(xml),
     // Aliases follow the evaluator: explicit alias, else {name}{N} where N is
     // the link's position among all link-entity elements in document order.
-    plan = planFetch(root, { profile: "webapi" }),
+    plan = planFetch(root, { profile: "webapi", limits: store.querySettings().fetchLimits }),
     aliases = new Map(),
     attributeAliases = new Set(),
     nodePolicies = new Map(),
@@ -632,8 +659,11 @@ export function webApiFetchPolicy(portal, store, xml, rootEntity) {
           "WebApiFetchEntityMismatch",
           { innerCode: "0x80040203" },
         );
-      if (node.attrs.from) policy.assert(node.attrs.from);
-      if (node.attrs.to && parent) parent.assert(node.attrs.to);
+      // The evidenced native lane permits relationship keys to join tables
+      // without enabling those keys for projected/filter/order API access.
+      // Dataverse column/type validation remains in the query executor.
+      if (!structuralJoinFields && node.attrs.from) policy.assert(node.attrs.from);
+      if (!structuralJoinFields && node.attrs.to && parent) parent.assert(node.attrs.to);
       for (const child of node.children) {
         if (child.name === "attribute") {
           policy.assert(child.attrs.name);

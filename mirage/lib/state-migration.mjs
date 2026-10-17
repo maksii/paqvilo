@@ -102,8 +102,11 @@ export function migrateScenarioState(
   }
   for (const [entity, mapping] of Object.entries(latest.mappings ?? {})) {
     result.mappings[entity] ??= structuredClone(mapping);
+    // An edited mapping may retain its original inference provenance.
     if (
       result.mappings[entity].inferred === true &&
+      result.mappings[entity].userConfigured !== true &&
+      result.mappings[entity].entitySetInferred !== false &&
       result.mappings[entity].entitySet === entity + "s" &&
       mapping.entitySet !== entity + "s"
     ) result.mappings[entity].entitySet = mapping.entitySet;

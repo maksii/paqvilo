@@ -1,3 +1,4 @@
+import {identityProviderSettings,identityProviderAssets} from '../mirage/lib/identity-provider-settings.mjs';
 // Configuration, from the most general to the most specific:
 //
 //   paqvilo.config.yml        the team's catalogue: every portal, its source folder, its
@@ -9,11 +10,18 @@
 //
 // Later ones win. Nothing in lense/ needs to change to add a portal or an environment.
 import fs from 'node:fs';
+import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
+import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseEnv } from 'node:util';
 import YAML from 'yaml';
+import { renderSettings } from '../mirage/lib/render-settings.mjs';
+import { platformConfig } from '../mirage/lib/platform-config.mjs';
+import { resolveLocalOverrides } from '../mirage/lib/local-overrides.mjs';
+import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs';
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
+import { validateDebuggerMode } from './browser-profile.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
 
 /**
@@ -177,9 +185,7 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
   const configDir = path.dirname(configFile);
   const local = readYamlFile(path.join(configDir, 'paqvilo.config.local.yml'));
   const settings = readEnvSettings(configDir, processEnv);
-  let root = deepMerge(deepMerge(ROOT_DEFAULTS, normalizeCatalogue(base, path.basename(configFile))), normalizeCatalogue(local ?? {}, 'personal config'));
-  root = deepMerge(root, { sites: sitesFromEnv(settings.values) });
-  validateCatalogue(root);
+  const root = catalogueRoot(base, local ?? {}, settings.values);
 
   const sourceRootSetting = opts.repo ?? settings.values.PAQVILO_REPO ?? root.sourceRoot ?? '.';
   if (typeof sourceRootSetting !== 'string' || !sourceRootSetting.trim() || /[\x00-\x1f\x7f]/.test(sourceRootSetting)) throw new Error('Portal repository root must be a non-empty path without control characters');
@@ -200,7 +206,23 @@ export function loadCatalogue(opts = {}, processEnv = process.env) {
     site.sourceDir = site.source ? path.resolve(personalSource ? configDir : sourceRoot, site.source) : null;
     sites[name] = site;
   }
-  return { configFile, configDir, sourceRoot, root, sites, settings };
+  const fieldOrigin = (name, field) => local?.sites?.[name]?.mirage?.[field] !== undefined || local?.defaults?.mirage?.[field] !== undefined ? 'local config' : 'catalogue';
+  const provenance = {
+    sourceRoot: opts.repo !== undefined ? 'command line' : settings.values.PAQVILO_REPO ? settings.origin.PAQVILO_REPO : local?.sourceRoot !== undefined ? 'local config' : 'catalogue',
+    sites: Object.fromEntries(Object.keys(sites).map(name => [name, {
+      sourceDir: settings.values[`PAQVILO_${name.toUpperCase()}_SOURCE`] ? settings.origin[`PAQVILO_${name.toUpperCase()}_SOURCE`] : local?.sites?.[name]?.source !== undefined ? 'local config' : 'catalogue',
+      solutionRoots: fieldOrigin(name, 'solutionRoots'), port: fieldOrigin(name, 'port'), stateFile: fieldOrigin(name, 'project'),
+    }])),
+  };
+  return { configFile, configDir, sourceRoot, root, sites, settings, provenance };
+}
+
+/** Shared parsing/validation for file loading and setup edits; never executes project modules. */
+export function catalogueRoot(base, local = {}, settings = {}) {
+  let root = deepMerge(deepMerge(ROOT_DEFAULTS, normalizeCatalogue(base, 'catalogue')), normalizeCatalogue(local, 'personal config'));
+  root = deepMerge(root, { sites: sitesFromEnv(settings) });
+  validateCatalogue(root);
+  return root;
 }
 
 export function isExtract(dir) {
@@ -214,10 +236,17 @@ export function isExtract(dir) {
  * @param {object|null|undefined} raw the site's `mirage` mapping merged over `defaults.mirage`
  * @param {{configDir: string, sourceRoot: string}} where
  */
-export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
+export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = sourceRoot }) {
   const value = isPlainObject(raw) ? raw : {};
+  if (value.presetConfiguration !== undefined && !['data-only', 'apply'].includes(value.presetConfiguration)) throw new Error('mirage.presetConfiguration must be data-only or apply');
+  if (value.presetMode !== undefined && !['bootstrap', 'always'].includes(value.presetMode)) throw new Error('mirage.presetMode must be bootstrap or always');
+  if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
+    ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
+    ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,
+    ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),
+    ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
     solutionRoots: (value.solutionRoots ?? []).map((root) => path.resolve(sourceRoot, root)),
     // Solution roots are a set layered in their dependency order; explicit keeps the listed order.
     solutionOrder: value.solutionOrder === 'explicit' ? 'explicit' : 'derived',
@@ -226,6 +255,11 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot }) {
       : { id: entry.id ?? null, module: path.resolve(configDir, entry.module) })),
     port: Number.isInteger(value.port) ? value.port : null,
     preset: value.preset ?? null,
+    ...(value.presetConfiguration ? {presetConfiguration:value.presetConfiguration} : {}),
+    ...(value.presetMode ? { presetMode: value.presetMode } : {}),
+    ...(value.render !== undefined ? { render: renderSettings(value.render) } : {}),
+    ...(value.personaContexts !== undefined ? { personaContexts: personaContextSettings(value.personaContexts) } : {}),
+    ...(value.platform !== undefined ? { platform: platformConfig(value.platform) } : {}),
     // Passed through as configured; the Mirage validates it (observedConfig).
     observed: isPlainObject(value.observed) ? { ...structuredClone(value.observed), ...(isPlainObject(value.observed.pluginSources) ? { pluginSources: Object.fromEntries(Object.entries(value.observed.pluginSources).map(([name, source]) => [name, isPlainObject(source) ? { ...structuredClone(source), root: source.root ?? sourceRoot } : source])) } : {}) } : null,
     // standard or enhanced, only when configured; otherwise the source decides (lib/importer.mjs dataModel).
@@ -253,7 +287,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   // --- which site
   const siteName = opts.site ?? s.PAQVILO_SITE ?? root.defaultSite ?? names[0];
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
-  if (!site) throw new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`);
+  if (!site) throw Object.assign(new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`), { code: initial && opts.site !== undefined ? 'invalid_argument' : 'configuration_error' });
   const siteFrom = opts.site ? 'command line' : s.PAQVILO_SITE ? settings.origin.PAQVILO_SITE : path.basename(configFile);
 
   // --- which environment
@@ -281,7 +315,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   }
   const env = url ? { url } : Object.hasOwn(site.environments, envName) ? site.environments[envName] : null;
   if (!env?.url) {
-    throw new Error(`Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`);
+    throw Object.assign(new Error(`Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`), { code: initial && opts.env !== undefined ? 'invalid_argument' : 'configuration_error' });
   }
   const origin = httpUrl(env.url, `URL for site "${siteName}", environment "${envName}"`).origin;
 
@@ -340,6 +374,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   }
   browser.debugPort = debugPort(browser.debugPort);
   if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  validateDebuggerMode(browser.cdpUrl, browser.debugPort);
 
   return {
     configFile,
@@ -361,7 +396,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
     sourceMaps: s.PAQVILO_SOURCE_MAPS ? bool(s.PAQVILO_SOURCE_MAPS, 'PAQVILO_SOURCE_MAPS') : root.sourceMaps,
     stateDir: path.join(configDir, '.paqvilo'),
     /** local Mirage runtime settings (`sites.<id>.mirage` over `defaults.mirage`), absolute */
-    mirageConfig: resolveMirageConfig(site.mirage, { configDir, sourceRoot: catalogue.sourceRoot }),
+    mirageConfig: resolveMirageConfig(site.mirage, { configDir, sourceRoot: catalogue.sourceRoot, sourceDir }),
     /** where the choice of site and environment came from, for the summary */
     chosen: { site: siteFrom, env: envFrom },
     notes,
@@ -377,7 +412,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     if (conflicts.length) throw new Error(`portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`);
   }
   const validSources = new Set();
-  const initial = resolveConfig(catalogue, opts, { validSources });
+  let initial = resolveConfig(catalogue, opts, { validSources });
   if (initial.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
   const targets = [];
   const byOrigin = new Map();
@@ -387,6 +422,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     for (const env of environments) {
       const target = site === initial.siteName && env === initial.envName ? initial
         : resolveConfig(catalogue, { ...opts, site, env }, { initial: false, validSources, checkSource: false });
+      if(target.caution && !catalogue.root.includeCaution && !(site===initial.siteName&&opts.env===env))continue;
       if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
       const previous = byOrigin.get(target.origin);
       if (previous) throw new Error(`Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`);
@@ -394,5 +430,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
       targets.push(target);
     }
   }
+  if(!targets.includes(initial))initial=targets[0];
+  if(!initial)throw new Error('No non-caution targets are configured; select an environment explicitly or set includeCaution: true.');
   return { mode: 'all', initial, targets };
 }

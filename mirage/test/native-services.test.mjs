@@ -4,8 +4,17 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSimulator } from "../server.mjs";
-import { protectConfiguration, unprotectConfiguration } from "../lib/native-services.mjs";
+import { protectConfiguration, unprotectConfiguration, portalNotes } from "../lib/native-services.mjs";
+import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import {reportCapturedBundleRequirements} from '../lib/native-services.mjs';
+
+test('a captured locale with an incomplete captured global provider is diagnosed once',async()=>{
+  const diagnostics=[],provider='/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
+  const context={recordDiagnostic:row=>diagnostics.push(row),config:{shellProfile:{afterFooterScripts:[provider]}},cache:{get:async()=>({body:Buffer.from('Date.today=function(){};')})}};
+  for(let i=0;i<2;i++)await reportCapturedBundleRequirements({id:'moment-locale'},{body:Buffer.from('jQuery.timeago.settings.strings={};')},context,'/locale.js');
+  assert.equal(diagnostics.length,1);assert.equal(diagnostics[0].code,'PLATFORM_BUNDLE_GLOBAL_UNPROVIDED');
+});
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const CONTACT = "c0000000-0000-4000-8000-000000000001";
@@ -96,7 +105,7 @@ async function fixture(t, { roles = ["Editor"] } = {}) {
   const session = signInHeaders(app, CONTACT, { roles });
   const token = app.state().csrf;
   const post = (action, body, headers = { __RequestVerificationToken: token }) =>
-    fetch(`${app.url}/_services/${action}/${SITE}`, { method: "POST", headers: { "content-type": "application/json", ...session, ...headers }, body: JSON.stringify(body) });
+    fetch(`${app.url}/_services/${action}/${SITE}`, { method: "POST", headers: { "content-type": "application/json", ...session, ...headers }, body: typeof body === "string" ? body : JSON.stringify(body) });
   const get = (pathname) => fetch(app.url + pathname, { headers: session });
   return { app, post, get };
 }
@@ -140,6 +149,8 @@ test("entity grid service returns the native paging, search and layout-only sort
   assert.equal((await post("entity-grid-data.json", gridRequest(secure), {})).status, 403);
   let response = await post("entity-grid-data.json", gridRequest(secure));
   assert.equal(response.status, 200);
+  // The service answers with the page no-cache policy and frame confinement.
+  assert.deepEqual(["cache-control", "pragma", "expires", "x-frame-options"].map((name) => response.headers.get(name)), ["no-cache, no-store, must-revalidate", "no-cache", "-1", "SAMEORIGIN"]);
   let data = await response.json();
   assert.deepEqual([data.ItemCount, data.PageCount, data.PageNumber, data.PageSize, data.MoreRecords], [3, 2, 1, 2, true]);
   const name = data.Records[0].Attributes.find((attribute) => attribute.Name === "name");
@@ -166,7 +177,7 @@ test("entity grid service returns the native paging, search and layout-only sort
 test("lookup grid service serves the editable lookup's target view on demand", async (t) => {
   const { app, post, get } = await fixture(t);
   const page = await (await get(`/?id=${CONTACT}`)).text();
-  assert.match(page, /id="parentcustomerid_name"[^>]*value="Alpha"/);
+  assert.match(page, /value="Alpha"[^>]*id="parentcustomerid_name"/);
   assert.match(page, /<button type="button" class="btn btn-default launchentitylookup"[^>]*aria-label="Organisation Launch lookup modal"/);
   const [layout] = layoutsAfter(page, 'id="parentcustomerid_lookupmodal"');
   assert.equal(layout.Configuration.EntityName, "account");
@@ -184,8 +195,10 @@ test("grid reads follow table permissions and report native access denial", asyn
   const state = app.store.snapshot();
   state.permissions = state.permissions.filter((rule) => rule.entity !== "account");
   await app.store.replaceState(state);
-  const data = await (await post("entity-grid-data.json", gridRequest(layout.Base64SecureConfiguration))).json();
-  assert.deepEqual(data, { AccessDenied: true });
+  const response = await post("entity-grid-data.json", gridRequest(layout.Base64SecureConfiguration));
+  assert.deepEqual(await response.json(), { AccessDenied: true });
+  // Live: the denial is cache-control private, without the no-cache pragma/expires of a data page.
+  assert.deepEqual([response.headers.get("cache-control"), response.headers.get("pragma"), response.headers.get("expires")], ["private", null, null]);
 });
 
 test("notes service lists portal notes and annotation downloads stream the document body", async (t) => {
@@ -196,7 +209,9 @@ test("notes service lists portal notes and annotation downloads stream the docum
   // Only *WEB* notes are portal notes; the prefix is not displayed.
   assert.deepEqual(notes.Records.map((record) => [record.Id, record.UnformattedText, record.HasAttachment]), [[NOTE, "Shared note", true]]);
   assert.equal(notes.Records[0].AttachmentUrl, `/_entity/annotation/${NOTE}/${SITE}`);
-  assert.equal(notes.Records[0].AttachmentSizeDisplay, "8 B");
+  assert.equal(notes.Records[0].AttachmentSizeDisplay, "8 bytes");
+  // Live contract: AttachmentSize serialises as {}, unset paging/view members are null.
+  assert.deepEqual([notes.Records[0].AttachmentSize, notes.Records[0].CanAppend, notes.CreateActionMetadata, notes.DisabledItemActionLinks, notes.NextPagePagingCookie], [{}, true, null, null, null]);
   const download = await get(notes.Records[0].AttachmentUrl);
   assert.equal(download.status, 200);
   assert.equal(download.headers.get("content-type"), "text/plain");
@@ -230,8 +245,8 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   const { Id: id } = await added.json();
   let mine = (await list()).find((record) => record.Id === id);
   assert.deepEqual(
-    [mine.UnformattedText, mine.IsPostedByCurrentUser, mine.CanWrite, mine.CanDelete, mine.PostedByName, mine.AttachmentFileName, mine.AttachmentSize],
-    ["Local note", true, true, true, "Ada", "local.txt", 14],
+    [mine.UnformattedText, mine.IsPostedByCurrentUser, mine.CanWrite, mine.CanDelete, mine.PostedByName, mine.AttachmentFileName, mine.AttachmentSizeDisplay],
+    ["Local note", true, true, true, "Ada", "local.txt", "14 bytes"],
   );
   assert.equal(await (await get(mine.AttachmentUrl)).text(), "local evidence");
   // Notes the contact did not post stay read-only for it.
@@ -259,8 +274,53 @@ test("notes service adds, edits and deletes the signed-in contact's own portal n
   await app.store.replaceState(polymorphic);
   const bound = await post("entity-form-addnote", { regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Bound note" });
   assert.equal(bound.status, 201);
+  // The native form transport gets the platform's empty 201, without Vary (live note-add).
+  const native = await post("entity-form-addnote", new URLSearchParams({ regardingEntityLogicalName: "contact", regardingEntityId: CONTACT, text: "Native note", __RequestVerificationToken: app.state().csrf }).toString(), { "content-type": "application/x-www-form-urlencoded" });
+  assert.equal(native.status, 201);
+  assert.equal(native.headers.get("vary"), null);
+  assert.equal(await native.text(), "");
   const boundId = (await bound.json()).Id;
   assert.deepEqual(app.store.snapshot().tables.annotation.find((row) => row.annotationid === boundId).objectid, { id: CONTACT, logical_name: "contact", name: "Ada" });
   assert.equal((await list()).find((record) => record.Id === boundId).UnformattedText, "Bound note");
   assert.equal((await post("entity-form-addnote", { regardingEntityLogicalName: "contact", regardingEntityId: "c0000000-0000-4000-8000-0000000000ff", text: "Missing" })).status, 404);
+});
+
+test("portal notes follow the KnowledgeManagement/NotesFilter site setting, *WEB* by default", () => {
+  assert.equal(notesFilter({ settings: {} }), "*WEB*");
+  assert.equal(notesFilter({ settings: { "knowledgemanagement/notesfilter": { value: "*PORTAL*" } } }), "*PORTAL*");
+  const rows = [{ notetext: "*WEB*web" }, { notetext: "*PORTAL*portal" }, { notetext: "plain" }];
+  assert.deepEqual(portalNotes(rows, {}).map((row) => row.notetext), ["*WEB*web"]);
+  assert.deepEqual(portalNotes(rows, {}, "*PORTAL*").map((row) => row.notetext), ["*PORTAL*portal"]);
+});
+
+test("notes follow the request's createdon direction and keep creation order for notes of the same instant", async (t) => {
+  const { app, post } = await fixture(t);
+  const state = app.store.snapshot();
+  const twin = "a0000000-0000-4000-8000-0000000000aa";
+  state.tables.annotation.push({ annotationid: twin, notetext: "*WEB*Twin note", subject: "Twin", objecttypecode: "contact", objectid: { id: CONTACT, logical_name: "contact" }, createdon: "2026-01-02T03:04:05Z" });
+  await app.store.replaceState(state);
+  const ids = async (Direction) => (await (await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT }, orders: [{ Attribute: "createdon", Alias: null, Direction }], page: 1, pageSize: 10 })).json()).Records.map((record) => record.Id);
+  assert.deepEqual(await ids(null), [NOTE, twin]);
+  assert.deepEqual(await ids(1), [twin, NOTE]);
+});
+
+test("note records carry their columns as Attributes and the creator as PostedByName", async (t) => {
+  const { app, post } = await fixture(t);
+  const state = app.store.snapshot();
+  Object.assign(state.tables.annotation.find((row) => row.annotationid === NOTE), { createdby: { id: "a0000000-0000-4000-8000-0000000000bb", logical_name: "systemuser", name: "Provisioning User" } });
+  await app.store.replaceState(state);
+  const [note] = (await (await post("entity-notes", { regarding: { LogicalName: "contact", Id: CONTACT }, page: 1, pageSize: 10 })).json()).Records;
+  const byName = Object.fromEntries(note.Attributes.map((entry) => [entry.Name, entry]));
+  assert.equal(note.PostedByName, "Provisioning User");
+  assert.deepEqual([byName.createdon.Value, byName.createdon.DisplayValue, byName.objecttypecode.Value, byName.createdby.Value.Name, byName.objectid.Value.Name, byName.subject.AttributeMetadata], [`/Date(${Date.parse("2026-01-02T03:04:05Z")})/`, "2026-01-02T03:04:05Z", "contact", "Provisioning User", null, null]);
+});
+
+test("view cells without a width serialise Width 0 and a NaN share; disableSorting cells cannot sort", async () => {
+  const { buildLayout } = await import("../lib/native-services.mjs");
+  const view = { id: "v", name: "Cards", fetchXml: '<fetch><entity name="sample_card"><attribute name="sample_title"/><attribute name="sample_type"/></entity></fetch>', fields: [{ name: "sample_title", widthless: true }, { name: "sample_type", widthless: true, sortDisabled: true }] };
+  const layout = buildLayout({ view, entity: "sample_card", idColumn: "sample_cardid", primaryName: "sample_title", metadata: {}, configuration: {}, secure: { t: "subgrid" } });
+  assert.equal(layout.ColumnsTotalWidth, 0);
+  assert.deepEqual(layout.Columns.map((c) => [c.LogicalName, c.Width, c.WidthAsPercent, c.SortDisabled]), [["sample_title", 0, "NaN", false], ["sample_type", 0, "NaN", true]]);
+  const sized = buildLayout({ view: { ...view, fields: [{ name: "sample_title", width: 300 }, { name: "sample_type" }] }, entity: "sample_card", idColumn: "sample_cardid", primaryName: "sample_title", metadata: {}, configuration: {}, secure: { t: "subgrid" } });
+  assert.deepEqual([sized.ColumnsTotalWidth, sized.Columns.map((c) => c.Width)], [400, [300, 100]]);
 });

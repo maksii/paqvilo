@@ -174,6 +174,7 @@ const YAML_MARKUP_KINDS = [
   { dir: 'polls', suffix: '.poll.yml', fields: ['adx_question'] },
   { dir: 'basic-forms', suffix: '.basicform.yml', fields: ['adx_instructions'] },
   { dir: 'basic-forms', suffix: '.basicformmetadata.yml', fields: ['adx_description', 'adx_label', 'adx_validationregularexpressionerrormessage'] },
+  { dir: 'advanced-forms', suffix: '.advancedformstep.yml', fields: ['adx_title'] },
   { dir: 'advanced-forms', suffix: '.advancedformmetadata.yml', fields: ['adx_description', 'adx_label', 'adx_validationregularexpressionerrormessage'] },
 ];
 // The same fields in a .powerpages-site (short-key) export: unprefixed keys, one web link per file.
@@ -183,6 +184,7 @@ const SHORT_KEY_MARKUP_KINDS = [
   { dir: 'polls', suffix: '.poll.yml', fields: ['question'] },
   { dir: 'basic-forms', suffix: '.basicform.yml', fields: ['instructions'] },
   { dir: 'basic-forms', suffix: '.basicformmetadata.yml', fields: ['description', 'label', 'validationregularexpressionerrormessage'] },
+  { dir: 'advanced-forms', suffix: '.advancedformstep.yml', fields: ['title'] },
   { dir: 'advanced-forms', suffix: '.advancedformmetadata.yml', fields: ['description', 'label', 'validationregularexpressionerrormessage'] },
 ];
 // A field of a YAML record: adx_<name> in PAC YAML, <name> in a .powerpages-site export, which
@@ -205,7 +207,7 @@ function markupValues(value) {
   return [{}];
 }
 const yamlField = (source) => (raw) => {
-  const content = parseYaml(raw, true);
+  const content = source.parsedYaml?.(raw) ?? parseYaml(raw, true);
   if (content.__error) return null;
   if (source.recordId && atPath(content, [...source.fieldPath.slice(0, -1), source.recordIdField]) !== source.recordId) return null;
   let value = atPath(content, source.fieldPath);
@@ -361,7 +363,42 @@ export function sourceText(src, raw) {
   }
   if (text == null) return null;
   text = text.replace(/^﻿/, '');
-  return src.extract ? src.extract(text) : text;
+  return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
+}
+
+/** One source snapshot per run, reusing only metadata whose file stamp still agrees. */
+export function createSourceReader(model) {
+  const files = new Map();
+  return source => {
+    const yamlFieldSource=source.fieldPath&&/\.ya?ml$/i.test(source.file);
+    if (!files.has(source.file)) {
+      const root = source.sourceDir ?? model?.sourceDir;
+      let entry = { raw: null, yaml: null };
+      try {
+        const stat = root ? sourceFileStat(root, source.file) : fs.statSync(source.file);
+        if (!stat?.isFile()) throw new Error('Source is missing or outside the extract');
+        const cached = model?.yamlCache?.get(source.file);
+        entry.stamp=fileStamp(stat);
+        if (yamlFieldSource && cached?.stamp === entry.stamp) entry.yaml = cached.value;
+        else entry.raw = fs.readFileSync(source.file, 'utf8');
+      } catch { /* Missing and unsafe sources retain sourceText's null result. */ }
+      files.set(source.file, entry);
+    }
+    const entry = files.get(source.file);
+    if (yamlFieldSource) {
+      if (!entry.yaml && entry.raw !== null) {
+        entry.yaml = parseYaml(entry.raw, true);
+        model?.yamlCache?.set(source.file,{stamp:entry.stamp,value:entry.yaml});
+      }
+      if (!entry.yaml) return null;
+      return sourceText({ ...source, parsedYaml: () => entry.yaml }, '');
+    }
+    // A file may contain both structured fields and a raw source descriptor.
+    if (entry.raw === null && entry.yaml !== null) {
+      try { entry.raw = fs.readFileSync(source.file, 'utf8'); } catch { return null; }
+    }
+    return sourceText(source, entry.raw);
+  };
 }
 
 const XML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
@@ -442,11 +479,14 @@ const COMPONENT_MARKUP_FIELDS = new Map([
   [COMPONENT.WEB_LINK, ['description']],
   [COMPONENT.BASIC_FORM, ['instructions']],
   [COMPONENT.BASIC_FORM_METADATA, ['description', 'label', 'validationregularexpressionerrormessage']],
+  [COMPONENT.ADVANCED_FORM_STEP, ['title']],
   [COMPONENT.ADVANCED_FORM_METADATA, ['description', 'label', 'validationregularexpressionerrormessage']],
 ]);
 const CLASSIC_METADATA = /(?:^(?:website|websiteaccess|webrole|webpagerule|urlhistory|forumthreadtype|sitesetting|sitemarker|publishingstate|websitelanguage|tag|adplacement|shortcut|redirect|ad)\.yml$|(?:^|\/)[^/]+\.(?:webpage|webfile|contentsnippet|webtemplate|basicform|basicformmetadata|advancedform|advancedformstep|advancedformmetadata|list|pagetemplate|tablepermission|entitypermission|columnpermissionprofile|columnpermission|weblink|weblinkset|poll|pollplacement|polloption|forum|forumpermission|forumaccesspermission|webrole|webpagelanguage|websitelanguage|sitemarker|sitesetting|publishingstate|webpageaccesscontrolrule|websiteaccess|redirect|shortcut|deployment|botconsumer|cloudflowconsumer|serverlogic|uxcomponent|pollplacement|adplacement|publishingstatetransitionrule|portallanguage|sourcefile)\.yml$)/i;
+/** Enhanced site and language documents configure the live host, rather than page overlays. */
+export const isEnhancedSiteMetadata = (relative) => /(?:^|\/)powerpagesite(?:s|languages)\.xml$/i.test(relative.replace(/\\/g, '/'));
 /** Portal metadata filenames, excluding unrelated YAML/XML notes in the checkout. */
-export const isPortalMetadata = (relative) => CLASSIC_METADATA.test(relative.replace(/\\/g, '/')) || /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replace(/\\/g, '/'));
+export const isPortalMetadata = (relative) => CLASSIC_METADATA.test(relative.replace(/\\/g, '/')) || /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(relative.replace(/\\/g, '/')) || isEnhancedSiteMetadata(relative);
 const stableValue = (value) => JSON.stringify(value, (_key, item) => item && typeof item === 'object' && !Array.isArray(item) ? Object.fromEntries(Object.keys(item).sort().map((key) => [key, item[key]])) : item);
 
 export class PortalModel {
@@ -535,13 +575,16 @@ export class PortalModel {
   // Language prefixes come from exported metadata or explicit localized source names.
   // Never assume that an arbitrary two-letter page slug denotes a language.
   #loadLanguages() {
+    const urls=new Map();
+    for(const page of this.pages.values()) {const url=this.pagePath(page.id);if(url)urls.set(urlKey(url),[...(urls.get(urlKey(url))??[]),page]);}
+    for(const [url,pages]of urls)if(pages.length>1)this.warnings.push(`duplicate page URL ${url}: ${pages.map(page=>page.name?`${page.name} (${page.id})`:page.id).join(', ')}`);
     this.languageCodes = new Set();
     this.pagePaths = new Set([...this.pages.values()].map((page) => this.pagePath(page.id)).filter(Boolean).map(urlKey));
     const add = (code) => { if (typeof code === 'string' && /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code)) this.languageCodes.add(code.toLowerCase()); };
     const field = (row, key) => row?.[`adx_${key}`] ?? row?.[`mspp_${key}`] ?? row?.[key];
     const languageRows = [];
     const portalRows = [];
-    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => entry.isFile() ? [path.join(this.sourceDir, entry.name)] : entry.isDirectory() && /^(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?$/i.test(entry.name) ? this.#files(path.join(this.sourceDir, entry.name)) : []);
+    const candidates = fs.readdirSync(this.sourceDir, { withFileTypes: true }).flatMap((entry) => entry.isFile() ? [path.join(this.sourceDir, entry.name)] : entry.isDirectory() && /^(?:Assets|(?:web[-]?site|portal|powerpage[-]?site)[-]?languages?)$/i.test(entry.name) ? this.#files(path.join(this.sourceDir, entry.name)) : []);
     for (const file of candidates) {
       const name = path.basename(file);
       if (/^(?:websitelanguage|portallanguage)\.yml$/i.test(name) || /\.(?:websitelanguage|portallanguage)\.ya?ml$/i.test(name)) {
@@ -553,15 +596,19 @@ export class PortalModel {
         for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
           if (/<statecode>\s*1\s*</.test(match[1])) continue;
           const content = componentContent(match[1]) ?? {};
-          languageRows.push({ ...content, languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode, name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name });
+          languageRows.push({ ...content, id:/\bpowerpagesitelanguageid="([^"]+)"/.exec(match[0])?.[1], languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode, name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name });
         }
       }
     }
+    const languageLabels=new Map();
     for (const row of languageRows) {
       const reference = String(field(row, 'portallanguageid')?.id ?? field(row, 'portallanguageid') ?? '').replace(/[{}]/g, '').toLowerCase();
       const linked = portalRows.find((item) => String(field(item, 'portallanguageid') ?? item.id ?? '').replace(/[{}]/g, '').toLowerCase() === reference);
-      add(field(row, 'languagecode') ?? field(linked, 'languagecode') ?? portalLanguage({ name: field(row, 'name') })?.code);
+      const code=field(row, 'languagecode') ?? field(linked, 'languagecode') ?? portalLanguage({ name: field(row, 'name') })?.code;
+      add(code);
+      if(code)languageLabels.set(String(field(row,'websitelanguageid')??row.id??'').replace(/[{}]/g,'').toLowerCase(),code);
     }
+    for(const source of this.inlineSources)if(source.pageLayer&&source.pageLayer!=='root')source.pageLayer=languageLabels.get(source.pageLayer.replace(/[{}]/g,'').toLowerCase())??'localized '+source.pageLayer;
     // Some PAC extracts omit language records but retain explicit en-US/fr-FR filenames.
     for (const source of this.inlineSources) add(/\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(source.rel)?.[1] ?? /\/content-pages\/([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\//i.exec(source.rel)?.[1]);
   }
@@ -589,7 +636,7 @@ export class PortalModel {
       value = { __error: err.message };
       this.yamlCache.delete(file);
     }
-    if (value.__error) this.warnings.push(`${path.relative(this.sourceDir, file)}: ${value.__error}`);
+    if (value.__error) this.warnings.push(`${path.relative(this.sourceDir, file).replaceAll('\\','/')}: ${value.__error}`);
     this.currentYaml.set(file, value);
     return value;
   }
@@ -653,6 +700,7 @@ export class PortalModel {
         type,
         name: decode(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
         content: content ?? {},
+        languageId:content?.webpagelanguageid?.id??content?.webpagelanguageid??/<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(xml)?.[1],
         dir,
         file,
         rel: `powerpagecomponents/${entry.name}/powerpagecomponent.xml`,
@@ -775,7 +823,11 @@ export class PortalModel {
             // several sources share one XML file; the field keeps them apart
             rel: `${c.rel}#${field}`,
             label: `${c.name} (${field})`,
-            field,
+            field, componentId:c.id, exists:Object.hasOwn(c.content,field),
+            pageLayer:c.type === COMPONENT.WEB_PAGE ? c.content.isroot === false && c.content.rootwebpageid
+              ? String(c.languageId ?? c.id)
+              : 'root' : undefined,
+            renders:!(c.type===COMPONENT.WEB_PAGE&&[...this.pageAlias.values()].includes(c.id)),
             extract: componentField(field),
             pageUrl: c.type === COMPONENT.WEB_PAGE ? this.pagePath(c.id) : null,
             usedOn: c.type === COMPONENT.BASIC_FORM || c.type === COMPONENT.LIST ? this.pagesShowing(c.id) : c.type === COMPONENT.ADVANCED_FORM_STEP ? this.pagesShowing(c.content.webform) : [],
@@ -816,7 +868,7 @@ export class PortalModel {
       const y = this.#readYaml(file);
       if (!yamlId(y, 'webpage')) continue;
       const id = String(yamlId(y, 'webpage')).toLowerCase();
-      if (Number(y.statecode) === 1) {
+      if (Number(y.statecode ?? y.adx_statecode) === 1) {
         this.inactivePages.add(id);
         continue;
       }
@@ -829,7 +881,7 @@ export class PortalModel {
       }
       // A language record lacking its root cannot establish a separate URL tree.
       if (path.basename(path.dirname(file)) === 'content-pages' || path.basename(path.dirname(path.dirname(file))) === 'content-pages') {
-        this.warnings.push(`${path.relative(this.sourceDir, file)}: language page has no root page`);
+        this.warnings.push(`${path.relative(this.sourceDir, file).replaceAll('\\','/')}: language page has no root page`);
         continue;
       }
       this.pages.set(id, {
@@ -1009,7 +1061,7 @@ export class PortalModel {
             this.inactiveSources.push({ file, rel });
             continue;
           }
-          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'id'].find((key) => record[key] != null);
+          const recordIdField = ['adx_entityformmetadataid', 'adx_webformmetadataid', 'adx_webformstepid', 'adx_weblinkid', 'adx_pollid', 'adx_entityformid', 'adx_weblinksetid', 'id'].find((key) => record[key] != null);
           for (const field of def.fields) {
             for (const value of markupValues(record[field])) {
               const fieldPath = index === null ? [field] : [index, field];
@@ -1047,7 +1099,7 @@ export class PortalModel {
 
   /** Changes the overlay cannot render: portal configuration, record creation/deletion and schema. */
   deploymentChanges(baseline, changed) {
-    const files = [...changed].map((file) => ({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') })).filter(({ rel }) => this.format === 'enhanced' ? /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel) : CLASSIC_METADATA.test(rel) && !rel.startsWith('../'));
+    const files = [...changed].map((file) => ({ file, rel: path.relative(this.sourceDir, file).replace(/\\/g, '/') })).filter(({ rel }) => !rel.startsWith('../') && (this.format === 'enhanced' ? /^powerpagecomponents\/[^/]+\/powerpagecomponent\.xml$/i.test(rel) || isEnhancedSiteMetadata(rel) : CLASSIC_METADATA.test(rel)));
     baseline.preload?.(files.map(({ file }) => file));
     const changes = [];
     if (this.format === 'classic') {
@@ -1065,6 +1117,10 @@ export class PortalModel {
       if (before === after) continue;
       if (before === null || after === null) {
         changes.push({ rel, reason: `${after === null ? 'deleted' : 'new'} portal metadata requires deployment; the overlay cannot create or delete portal records` });
+        continue;
+      }
+      if (isEnhancedSiteMetadata(rel)) {
+        changes.push({ rel, reason: 'site or language configuration changed; these fields require deployment' });
         continue;
       }
       if (this.format !== 'enhanced') {

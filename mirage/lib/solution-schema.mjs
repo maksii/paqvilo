@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { inflateRawSync } from "node:zlib";
+import {metadataNumeric} from './exact-numeric.mjs';
 import {
   parseSolutionXml,
   descendants,
@@ -14,6 +15,7 @@ import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
 import { parsePluginDocument } from './exported-plugins.mjs';
 import {
   standardTable,
+  standardOptionSet,
   standardRelationships,
   pluralizeEntitySetName,
   IMPLICIT_SYSTEM_COLUMNS,
@@ -21,7 +23,7 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@10";
+export const SCHEMA_PARSER_ID = "schema@12";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
@@ -34,6 +36,8 @@ const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", 
 const norm = (value) => String(value ?? "").trim().toLowerCase();
 const valid = (name) => /^[a-z][\w]*$/i.test(String(name ?? ""));
 const bit = (value) => (value === "1" ? true : value === "0" ? false : undefined);
+// Entity flags written as 1/0 or True/False (HasRelatedNotes).
+const flag = (value) => bit(value) ?? (/^true$/i.test(value ?? "") ? true : /^false$/i.test(value ?? "") ? false : undefined);
 const num = (value) => {
   if (value == null || value === "") return undefined;
   const n = Number(value);
@@ -131,13 +135,25 @@ async function walkFiles(dir, accept = () => true) {
 // ---------------------------------------------------------------------------
 // Parsing (pure; results are JSON-serializable and cached per file)
 
+// <Descriptions><Description description=".." languagecode=".."/></Descriptions> keyed by LCID.
+function descriptionsOf(node) {
+  const labels = {};
+  for (const row of child(node, "Descriptions")?.children ?? [])
+    if (row.name === "Description" && row.attrs.description != null) labels[String(row.attrs.languagecode ?? "")] ??= row.attrs.description;
+  return Object.keys(labels).length ? labels : undefined;
+}
+
 function optionSetFacts(node) {
   return compact({
     name: node.attrs.Name,
     type: norm(childText(node, "OptionSetType")) || undefined,
     isGlobal: bit(childText(node, "IsGlobal")),
+    introducedVersion: childText(node, "IntroducedVersion") || undefined,
+    isCustomizable: bit(childText(node, "IsCustomizable")),
+    displayLabels: labelsOf(child(node, "displaynames")),
+    descriptionLabels: descriptionsOf(node),
     options: descendants(node, "option").map((o) =>
-      compact({ value: Number(o.attrs.value), labels: labelsOf(o) }),
+      compact({ value: Number(o.attrs.value), labels: labelsOf(o), externalValue: o.attrs.ExternalValue, color: o.attrs.Color, descriptionLabels: descriptionsOf(o) }),
     ),
     states: descendants(node, "state").map((o) =>
       compact({
@@ -177,8 +193,8 @@ function attributeFacts(node) {
     maxLength: num(t("MaxLength")),
     precision: num(t("Accuracy")),
     precisionSource: num(t("AccuracySource")),
-    minValue: num(t("MinValue")),
-    maxValue: num(t("MaxValue")),
+    minValue: metadataNumeric(t("MinValue")),
+    maxValue: metadataNumeric(t("MaxValue")),
     format: t("Format") || undefined,
     dateTimeBehavior: BEHAVIOR[t("Behavior")],
     autoNumberFormat: t("AutoNumberFormat") || undefined,
@@ -186,6 +202,29 @@ function attributeFacts(node) {
     attributeOf: norm(t("AttributeOf")) || undefined,
     lookupStyle: t("LookupStyle"),
     labels: labelsOf(child(node, "displaynames")),
+    descriptionLabels: descriptionsOf(node),
+    // Platform metadata the native services echo as AttributeMetadata.
+    imeMode: norm(t("ImeMode")) || undefined,
+    introducedVersion: t("IntroducedVersion") || undefined,
+    isAuditEnabled: bit(t("IsAuditEnabled")),
+    isCustomizable: bit(t("IsCustomizable")),
+    isRenameable: bit(t("IsRenameable")),
+    canModifySearchSettings: bit(t("CanModifySearchSettings")),
+    canModifyRequirementLevelSettings: bit(t("CanModifyRequirementLevelSettings")),
+    canModifyAdditionalSettings: bit(t("CanModifyAdditionalSettings")),
+    canModifyGlobalFilterSettings: bit(t("CanModifyGlobalFilterSettings")),
+    canModifyIsSortableSettings: bit(t("CanModifyIsSortableSettings")),
+    canChangeDateTimeBehavior: bit(t("CanChangeDateTimeBehavior")),
+    sourceType: num(t("SourceType")),
+    isGlobalFilterEnabled: bit(t("IsGlobalFilterEnabled")),
+    isSortableEnabled: bit(t("IsSortableEnabled")),
+    isDataSourceSecret: bit(t("IsDataSourceSecret")),
+    isSearchable: bit(t("IsSearchable")),
+    isFilterable: bit(t("IsFilterable")),
+    isRetrievable: bit(t("IsRetrievable")),
+    isLocalizable: bit(t("IsLocalizable")),
+    databaseLength: num(t("Length")),
+    formulaDefinition: t("FormulaDefinition") || undefined,
     optionSetName: t("OptionSetName"),
     optionSet: optionSet ? optionSetFacts(optionSet) : undefined,
   });
@@ -231,6 +270,8 @@ function entityFacts(node, info) {
     isActivity: bit(h("IsActivity")),
     // Document management (SharePoint document locations) enabled for the table.
     documentManagement: bit(h("IsDocumentManagementEnabled")),
+    // Notes (annotations) enabled for the table.
+    relatedNotes: flag(h("HasRelatedNotes")),
     isIntersect: bit(h("IsIntersect")),
     labels: labelsOf(child(header, "LocalizedNames")),
     collectionLabels: labelsOf(child(header, "LocalizedCollectionNames")),
@@ -760,6 +801,10 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           table.documentManagement = entity.documentManagement;
           table.documentManagementFile = doc.file;
         }
+        if (entity.relatedNotes !== undefined) {
+          table.relatedNotes = entity.relatedNotes;
+          table.relatedNotesFile = doc.file;
+        }
         if (entity.isIntersect) table.isIntersect = true;
         if (entity.isVirtual) table.isVirtual = true;
         Object.assign(table.labels, entity.labels);
@@ -818,6 +863,35 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         standardCount++;
       }
     }
+  // Notes: enabling them on a table (HasRelatedNotes) creates the one-to-many relationship
+  // <table>_Annotations from the table to annotation.objectid (navigation objectid_<table>),
+  // the relationship that notes table permissions name (adx_parentrelationship); exports omit it.
+  let annotationCount = 0;
+  for (const table of Object.values(tables)) {
+    if (table.relatedNotes !== true) continue;
+    const schemaName = `${table.logicalName}_Annotations`;
+    const existing = Object.values(relationships).some(
+      (relationship) =>
+        relationship.type === "one-to-many" &&
+        relationship.referencingEntity === "annotation" &&
+        relationship.referencingAttribute === "objectid" &&
+        relationship.referencedEntity === table.logicalName,
+    );
+    if (existing || relationships[schemaName.toLowerCase()]) continue;
+    relationships[schemaName.toLowerCase()] = {
+      schemaName,
+      type: "one-to-many",
+      referencingEntity: "annotation",
+      referencedEntity: table.logicalName,
+      referencingAttribute: "objectid",
+      referencingNavigation: `objectid_${table.logicalName}`,
+      referencedNavigation: schemaName,
+      source: table.relatedNotesFile,
+      sources: [table.relatedNotesFile],
+      relatedNotes: true,
+    };
+    annotationCount++;
+  }
   // Document management: enabling it on a table (IsDocumentManagementEnabled) creates the
   // one-to-many relationship <table>_SharePointDocumentLocations from the table to
   // sharepointdocumentlocation.regardingobjectid (navigation regardingobjectid_<table>), as
@@ -1000,8 +1074,20 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     diagnostics,
     standardRelationships: standardCount,
     documentLocationRelationships: documentLocationCount,
+    annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest("hex"),
   };
+}
+
+/**
+ * Exported column facts behind the platform's AttributeMetadata (entity-grid-data echoes
+ * them per record): the column's own properties and its local or global option set.
+ */
+function columnMetadataFacts(tableName, attribute, globalSet) {
+  if (attribute.implicit || attribute.intersectTarget) return undefined;
+  const { source: _s, sources: _ss, name: _n, optionSet, ...facts } = attribute;
+  const set = optionSet ?? (globalSet && !globalSet.dynamic ? (({ source: _gs, sourceKind: _k, ...rest }) => rest)(globalSet) : undefined);
+  return { ...facts, ...(set ? { optionSet: set } : {}), customTable: !standardTable(tableName) };
 }
 
 /** Field definition used by forms, the Web API policy and persisted mapping metadata. */
@@ -1022,10 +1108,10 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
   const options = (attribute.optionSet?.options ?? [])
     .map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) }))
     .concat(states, statuses);
-  const globalSet = attribute.optionSetName ? schema.optionSets[norm(attribute.optionSetName)] : null;
+  const globalSet = attribute.optionSetName ? schema.optionSets[norm(attribute.optionSetName)] ?? standardOptionSet(attribute.optionSetName) : null;
   if (!options.length && globalSet)
     options.push(...(globalSet.options ?? []).map((o) => ({ value: o.value, label: labelText(o.labels, String(o.value)) })));
-  if (attribute.optionSetName && !options.length)
+  if (attribute.optionSetName && !options.length && !globalSet?.dynamic)
     diagnostics?.push({
       code: "SOLUTION_OPTIONSET_UNRESOLVED",
       file: attribute.source,
@@ -1034,11 +1120,16 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       optionSetName: attribute.optionSetName,
       message: `Global option set ${attribute.optionSetName} is not available in the selected solution roots.`,
     });
-  const type = attribute.type ?? "nvarchar";
-  const lookupTargets =
+  const type = !options.length && globalSet?.dynamic ? "entityname" : attribute.type ?? "nvarchar";
+  const sourceLookupTargets =
     schema.targets[tableName + "/" + attribute.name] ??
     (attribute.intersectTarget ? [attribute.intersectTarget] : undefined) ??
     (["lookup", "owner"].includes(type) ? STANDARD_LOOKUP_TARGETS[attribute.name] : undefined);
+  // Solution relationships can name the abstract owner table. Owner columns
+  // resolve to the concrete user/team targets, unlike ordinary lookup columns.
+  const lookupTargets = type === "owner" && sourceLookupTargets?.includes("owner")
+    ? [...new Set(sourceLookupTargets.flatMap(target => target === "owner" ? STANDARD_LOOKUP_TARGETS.ownerid : [target]))]
+    : sourceLookupTargets;
   const appDefault = attribute.appDefaultValue;
   const defaultValue =
     type === "bit" && /^[01]$/.test(appDefault ?? "")
@@ -1057,7 +1148,10 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
     ...(attribute.validForUpdate !== undefined ? { validForUpdate: attribute.validForUpdate } : {}),
     label: labelText(attribute.labels, attribute.name),
     dataverseType: type,
-    ...(attribute.optionSetName ? { optionSetName: attribute.optionSetName, optionSetSource: globalSet?.source } : {}),
+    ...(attribute.optionSetName ? { optionSetName: attribute.optionSetName, optionSetSource: globalSet?.source,
+      ...(globalSet?.sourceKind ? { optionSetSourceKind: globalSet.sourceKind } : {}),
+      ...(!attribute.optionSet?.options?.length && globalSet?.open ? { optionSetOpen: true } : {}),
+      ...(globalSet?.dynamic ? { optionSetDynamic: true } : {}) } : {}),
     ...(states.length ? { states } : {}),
     ...(statuses.length ? { statuses } : {}),
     type: SIMPLE_TYPES[type] ?? "text",
@@ -1069,6 +1163,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       requiredLevel: attribute.requiredLevel,
       validForRead: attribute.validForRead,
       precision: attribute.precision,
+      precisionSource: attribute.precisionSource,
       minValue: attribute.minValue,
       maxValue: attribute.maxValue,
       format: attribute.format,
@@ -1082,7 +1177,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
       isPrimaryName: table?.primaryNameAttribute === attribute.name || undefined,
       attributeOf: attribute.attributeOf,
       implicit: attribute.implicit,
-      ...(provenance ? { source: attribute.source, sources: attribute.sources?.length > 1 ? attribute.sources : undefined } : {}),
+      ...(provenance ? { source: attribute.source, sources: attribute.sources?.length > 1 ? attribute.sources : undefined, columnMetadata: columnMetadataFacts(tableName, attribute, globalSet) } : {}),
     }),
   };
 }
@@ -1099,4 +1194,71 @@ export function tableFields(schema, tableName, options = {}) {
     for (const [name, column] of Object.entries(IMPLICIT_SYSTEM_COLUMNS))
       fields[name] ??= options.provenance === false ? (({ source, ...rest }) => rest)(column) : { ...column };
   return fields;
+}
+
+/**
+ * The column values Dataverse fills on create when a row omits them: the two-option and choice
+ * AppDefaultValue of the table's columns. The create pipeline (DataStore.createRecord through the
+ * solution mapping's recordDefaults) and seeded rows (seedRecordDefaults) share this table.
+ */
+export function tableColumnDefaults(attributes) {
+  const defaults = {};
+  for (const a of Object.values(attributes ?? {})) {
+    const raw = a.appDefaultValue;
+    if (a.type === "bit" && /^[01]$/.test(raw ?? "")) defaults[a.name] = raw === "1";
+    else if (a.type === "picklist" && /^-?\d+$/.test(raw ?? "") && raw !== "-1") defaults[a.name] = Number(raw);
+  }
+  return defaults;
+}
+
+/**
+ * Rows a data pack or preset seeds bypass the create pipeline; give them what Dataverse sets on
+ * create: `createdon`/`modifiedon` (the seeding time) on tables that export them, the column
+ * default of omitted Yes/No and choice columns (AppDefaultValue), a state with its default status
+ * reason, and autonumber values ({SEQNUM:n} from seed 1000 in row order; `sequences` receives the
+ * next value per `table.column`, the DataStore's autoNumberSequences). Explicit values
+ * (including null) are kept. Returns new row arrays.
+ */
+export function seedRecordDefaults(tables, schema, { now = Date.now(), sequences = {} } = {}) {
+  if (!schema?.tables || !tables) return tables;
+  const stamp = new Date(now).toISOString().replace(/\.\d{3}Z$/, "Z");
+  const out = {};
+  for (const [name, rows] of Object.entries(tables)) {
+    const attributes = schema.tables[name]?.attributes;
+    if (!attributes || !Array.isArray(rows)) {
+      out[name] = rows;
+      continue;
+    }
+    const defaults = Object.entries(tableColumnDefaults(attributes));
+    // Historical seed rows get deterministic sequence numbers only; random/time components are assigned on create.
+    const autonumbers = Object.values(attributes).filter((a) => /\{SEQNUM:\d+\}/.test(a.autoNumberFormat ?? "") && !/\{(?:RANDSTRING|DATETIMEUTC):/.test(a.autoNumberFormat));
+    const states = attributes.statecode?.optionSet?.states ?? [];
+    const statusOf = (state) => states.find((s) => s.value === Number(state))?.defaultStatus;
+    out[name] = rows.map((row) => {
+      if (!row || typeof row !== "object") return row;
+      const next = { ...row };
+      for (const [column, value] of defaults) if (!Object.hasOwn(next, column)) next[column] = value;
+      if (states.length && !Object.hasOwn(next, "statecode")) next.statecode = 0;
+      if (states.length && attributes.statuscode && !Object.hasOwn(next, "statuscode") && statusOf(next.statecode) !== undefined) next.statuscode = statusOf(next.statecode);
+      for (const a of autonumbers) {
+        if (next[a.name] != null && next[a.name] !== "") continue;
+        const key = `${name}.${a.name}`;
+        const value = Number(sequences[key] ?? 1000);
+        sequences[key] = value + 1;
+        next[a.name] = a.autoNumberFormat.replace(/\{SEQNUM:(\d+)\}/g, (_all, width) => String(value).padStart(Number(width), "0"));
+      }
+      if (attributes.createdon && !Object.hasOwn(next, "createdon")) next.createdon = stamp;
+      if (attributes.modifiedon && !Object.hasOwn(next, "modifiedon")) next.modifiedon = next.createdon ?? stamp;
+      return next;
+    });
+  }
+  return out;
+}
+
+/** A preset body with seeded tables; autonumber counters continue in its settings. */
+export function seedPresetBody(body, schema, options = {}) {
+  if (!body?.tables || !schema?.tables) return body;
+  const sequences = { ...body.settings?.autoNumberSequences };
+  const tables = seedRecordDefaults(body.tables, schema, { ...options, sequences });
+  return { ...body, tables, ...(Object.keys(sequences).length ? { settings: { ...body.settings, autoNumberSequences: sequences } } : {}) };
 }

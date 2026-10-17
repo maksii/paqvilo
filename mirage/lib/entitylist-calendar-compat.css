@@ -1,0 +1,8 @@
+/* Mirage local stand-in for the platform calendar styles (entitylist-calendar-compat.js markup). */
+.entitylist[data-view="calendar"] .calendar-header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: .5rem; margin-bottom: .75rem; }
+.entitylist[data-view="calendar"] .calendar { display: grid; gap: 1px; }
+.entitylist[data-view="calendar"] .calendar.cal-month, .entitylist[data-view="calendar"] .calendar.cal-week { grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.entitylist[data-view="calendar"] .calendar.cal-year { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.entitylist[data-view="calendar"] .cal-day, .entitylist[data-view="calendar"] .cal-year-month { border: 1px solid #ddd; min-height: 4rem; padding: .25rem; }
+.entitylist[data-view="calendar"] .cal-day ul { list-style: none; margin: 0; padding: 0; }
+.entitylist[data-view="calendar"] .cal-day-number { font-weight: 600; }

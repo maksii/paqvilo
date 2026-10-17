@@ -1,0 +1,219 @@
+{
+  "table": "pqvd_baselineitem",
+  "solution": "PaqviloBaseline",
+  "assemblyId": "b4700000-0000-4000-8000-370000000001",
+  "assemblyName": "Paqvilo.Demo.Plugins",
+  "typeId": "f717477f-a9da-413a-8131-e7ce1e463800",
+  "typeName": "Paqvilo.Demo.Plugins.BaselineRules",
+  "steps": [
+    {
+      "id": "1e179f07-6516-487b-8074-cda103f9ac46",
+      "kind": "fail",
+      "message": "Create",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-create-prevalidation",
+      "error": "Baseline plugin rejected create at prevalidation",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "17c0da41-c9c6-44fd-8f9a-887b62444e61",
+      "kind": "fail",
+      "message": "Create",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-create-preoperation",
+      "error": "Baseline plugin rejected create at preoperation",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "025c3837-d15a-4657-8ca7-6bf3d3027960",
+      "kind": "fail",
+      "message": "Create",
+      "stage": 40,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-create-postoperation",
+      "error": "Baseline plugin rejected create at postoperation",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "d6622bf7-e694-4a69-8380-a1800300edca",
+      "kind": "fail",
+      "message": "Update",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-update-prevalidation",
+      "error": "Baseline plugin rejected update at prevalidation",
+      "filteringAttributes": "pqvd_text",
+      "image": null
+    },
+    {
+      "id": "20385fe3-4296-4890-8b82-df63a230eb3c",
+      "kind": "fail",
+      "message": "Update",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-update-preoperation",
+      "error": "Baseline plugin rejected update at preoperation",
+      "filteringAttributes": "pqvd_text",
+      "image": null
+    },
+    {
+      "id": "d0b3cb0c-ac01-4e6b-8c9b-d83a42331397",
+      "kind": "fail",
+      "message": "Update",
+      "stage": 40,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-update-postoperation",
+      "error": "Baseline plugin rejected update at postoperation",
+      "filteringAttributes": "pqvd_text",
+      "image": {
+        "id": "d561a2af-8d40-4381-835b-cb18f1f3fecf",
+        "name": "baselinepost",
+        "type": "PostImage",
+        "attributes": "pqvd_text"
+      }
+    },
+    {
+      "id": "c6478322-5f00-477d-8c67-4bf60e4f5e5a",
+      "kind": "fail",
+      "message": "Delete",
+      "stage": 10,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-delete-prevalidation",
+      "error": "Baseline plugin rejected delete at prevalidation",
+      "filteringAttributes": null,
+      "image": {
+        "id": "ea5d0c05-ce7e-4268-8dde-d159724e6549",
+        "name": "baseline",
+        "type": "PreImage",
+        "attributes": "pqvd_text"
+      }
+    },
+    {
+      "id": "9b366876-9300-41e3-8c14-56dad889f9cb",
+      "kind": "fail",
+      "message": "Delete",
+      "stage": 20,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-delete-preoperation",
+      "error": "Baseline plugin rejected delete at preoperation",
+      "filteringAttributes": null,
+      "image": {
+        "id": "4f7399b5-30b4-40e4-8ba3-35df06db4963",
+        "name": "baseline",
+        "type": "PreImage",
+        "attributes": "pqvd_text"
+      }
+    },
+    {
+      "id": "5a129c79-c4ce-4d99-874c-dc9e07679c3f",
+      "kind": "fail",
+      "message": "Delete",
+      "stage": 40,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-delete-postoperation",
+      "error": "Baseline plugin rejected delete at postoperation",
+      "filteringAttributes": null,
+      "image": {
+        "id": "33b0055e-7df2-420b-869d-4cf93e77fd63",
+        "name": "baseline",
+        "type": "PreImage",
+        "attributes": "pqvd_text"
+      }
+    },
+    {
+      "id": "11cd29e8-6c38-4a7b-82fc-5dcf7e953360",
+      "kind": "fail",
+      "message": "Retrieve",
+      "stage": 40,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-fail-retrieve-postoperation",
+      "error": "Baseline plugin rejected retrieve at postoperation",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "38c7ff44-e41f-41ca-8dd6-d2ccee92dbe4",
+      "kind": "hide",
+      "message": "RetrieveMultiple",
+      "stage": 40,
+      "rank": 10,
+      "mode": 0,
+      "sentinel": "plugin-hide-retrievemultiple",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "39eda5a2-bc64-4f97-8b55-623127c6af4c",
+      "kind": "impersonated-noop",
+      "message": "Update",
+      "stage": 40,
+      "rank": 30,
+      "mode": 0,
+      "configuration": "noop",
+      "runAs": "application-user",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "20aa6fe3-9895-4354-8c89-cbe503085257",
+      "kind": "async-noop",
+      "message": "Create",
+      "stage": 40,
+      "rank": 30,
+      "mode": 1,
+      "asyncAutoDelete": true,
+      "configuration": "noop",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "e4f813e7-c687-43de-8b49-6470ab3f8040",
+      "kind": "disabled",
+      "message": "Delete",
+      "stage": 10,
+      "rank": 20,
+      "mode": 0,
+      "configuration": "noop",
+      "disabled": true,
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "704361a6-0292-48f7-83ed-5242f807c292",
+      "kind": "mutate",
+      "message": "Create",
+      "stage": 20,
+      "rank": 20,
+      "mode": 0,
+      "configuration": "mutate",
+      "filteringAttributes": null,
+      "image": null
+    },
+    {
+      "id": "270a767c-f2f1-48ce-8b95-8c84fc66759b",
+      "kind": "mutate",
+      "message": "Update",
+      "stage": 20,
+      "rank": 20,
+      "mode": 0,
+      "configuration": "mutate",
+      "filteringAttributes": "pqvd_ticker,pqvd_textarea",
+      "image": null
+    }
+  ]
+}

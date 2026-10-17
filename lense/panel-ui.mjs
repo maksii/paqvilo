@@ -29,7 +29,9 @@ export function panelUi(data) {
     // when the page gives nothing.
     const CSS = `
       :host { all: initial; }
+      @media print { :host { display:none!important; } }
       * { box-sizing: border-box; }
+      [hidden] { display:none!important; }
       .wrap { --bg: #fff; --fg: #212529; --muted: #6c757d; --primary: #0d6efd; --on-primary: #fff; --link: #0d6efd;
         --radius: 4px; --font: "Segoe UI", system-ui, -apple-system, Arial, sans-serif;
         --warn-bg: #fff3cd; --warn: #d39e00; --danger: #b02a37; --success: #146c43;
@@ -45,6 +47,7 @@ export function panelUi(data) {
       svg { width: 14px; height: 14px; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; flex: none; display: block; }
       mark { background: var(--warn-bg); color: inherit; padding: 0; }
 
+      .pp-persona-picker { width:100%;min-width:0; } .pp-persona-picker input,.pp-persona-facets select {box-sizing:border-box;width:100%;font:inherit;background:var(--bg);color:var(--fg);border:1px solid var(--line);border-radius:5px;padding:5px} .pp-persona-picker [data-panel-persona-results]{max-height:320px;overflow:auto;overscroll-behavior:contain;border-block:1px solid var(--line);margin-block:8px} .pp-persona-picker input[type=checkbox]{width:auto} .pp-persona-facets{display:grid;grid-template-columns:1fr 1fr;gap:7px;margin:8px 0}.pp-persona-row{display:flex;gap:8px;border-top:1px solid var(--line);padding:7px}.pp-persona-row.selected{background:var(--tint);box-shadow:inset 3px 0 var(--primary)}.pp-persona-choice{display:flex;flex:1;min-width:0;flex-direction:column;gap:2px}.pp-persona-choice span{font-size:11px;color:var(--muted)}.pp-persona-group{margin:8px 0}.pp-persona-group>summary{font-weight:600;cursor:pointer}.pp-persona-group h4,.pp-persona-picker h4{margin:8px 0 3px;font-size:12px}
       .pill { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 10px; border-radius: var(--radius);
         max-width: calc(100vw - 16px);
         background: var(--bg); border: 1px solid var(--panel-line); box-shadow: var(--shadow);
@@ -92,7 +95,9 @@ export function panelUi(data) {
       .seg button.on { background: var(--primary); color: var(--on-primary); }
 
       .tabs { display: flex; gap: 2px; padding: 0 6px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
-      .targets { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .targets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .target-confirm { flex-basis:100%; padding:8px; border:1px solid var(--danger); border-radius:var(--radius); }
+      .target-confirm p { margin:0 0 8px; }
       .targets label { flex: none; font-size: 12px; color: var(--muted); }
       .targets select { flex: 1; min-width: 0; max-width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--input-line); border-radius: var(--radius); padding: 4px; }
       .targets select:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
@@ -102,7 +107,7 @@ export function panelUi(data) {
       .gitline .commit { flex: none; }
       .tab { padding: 8px 8px 6px; color: var(--fg); border-bottom: 3px solid transparent; display: inline-flex; gap: 5px; align-items: center; flex: none; white-space: nowrap; }
       .tab:hover { color: var(--primary); }
-      .tab.on { color: var(--primary); border-bottom-color: var(--primary); font-weight: 600; }
+      .tab.on { color: var(--tab-ink,var(--fg)); border-bottom-color: var(--primary); font-weight: 600; }
 
       .tools { display: flex; align-items: center; gap: 8px; padding: 8px 10px; }
       .search { flex: 1; display: flex; align-items: center; gap: 6px; background: var(--bg); border: 1px solid var(--input-line); border-radius: var(--radius); padding: 0 8px; height: 30px; color: var(--muted); }
@@ -272,6 +277,7 @@ export function panelUi(data) {
       // Mirage: the page report is fetched once per runtime version, tweaks once per revision.
       inspect: null,
       inspectLoading: null,
+      inspectRequest: 0,
       tweaks: null,
       tweaksLoading: null,
       defaults: {},
@@ -346,17 +352,17 @@ export function panelUi(data) {
             <div class="head"></div>
             <div class="targets"></div>
             <div class="gitline"></div>
-            <div class="tabs"></div>
+            <div class="tabs" role="tablist" aria-label="Dev panel tabs"></div>
             <div class="tools">
               <label class="search">${icon('search')}<input type="text" spellcheck="false" autocomplete="off"><kbd>/</kbd></label>
               <span class="toolbtns"></span>
             </div>
-            <div class="body"></div>
+            <div class="body" role="tabpanel" id="paqvilo-tab-content"></div>
             <div class="foot"></div>
           </div>
-          <div class="toast"></div>
+          <div class="toast" role="status" aria-live="polite"></div>
         </div>
-        <div class="float"></div>
+        <div class="float" role="status" aria-live="polite"></div>
       </div>`;
     const $ = (sel) => root.querySelector(sel);
     const wrap = $('.wrap');
@@ -372,7 +378,8 @@ export function panelUi(data) {
       probe.style.cssText = 'position:absolute;left:-9999px;top:0;visibility:hidden;pointer-events:none;';
       const classes = ['btn btn-primary', 'form-control', 'text-muted', 'alert alert-warning', 'alert alert-danger', 'alert alert-success', 'btn btn-danger', 'btn btn-success', 'badge', 'dropdown-menu'];
       probe.innerHTML = '<a href="#">a</a>' + classes.map((c) => `<div class="${c}">x</div>`).join('');
-      document.body.appendChild(probe);
+      probe.dataset.paqviloThemeProbe='';
+      host.appendChild(probe);
       const [link, button, input, muted, warning, danger, success, dangerButton, successButton, badge, menu] = [...probe.children].map((node) => getComputedStyle(node));
       const solid = (color) => (color && !/^(?:transparent|rgba\(0, 0, 0, 0\))$/.test(color) ? color : null);
       // the colour that says "warning" / "error" / "done" on this site: the accent bar of its
@@ -407,15 +414,38 @@ export function panelUi(data) {
         '--panel-line': parseFloat(menu.borderTopWidth) > 0 ? solid(menu.borderTopColor) : null,
         '--shadow': menu.boxShadow && menu.boxShadow !== 'none' ? menu.boxShadow : null,
       };
+      // The host does not inherit the portal's ancestor backgrounds. Resolve alpha against
+      // the document canvas before checking contrast or using that colour in the shadow root.
+      const sample = document.createElement('canvas'); sample.width = sample.height = 1;
+      const sampler = sample.getContext('2d', {willReadFrequently:true});
+      const rgba = color => {
+        if (!color) return null;
+        if (sampler) {
+          sampler.clearRect(0,0,1,1); sampler.fillStyle = 'transparent'; sampler.fillStyle = color; sampler.fillRect(0,0,1,1);
+          const pixels = sampler.getImageData(0,0,1,1).data;
+          return [pixels[0],pixels[1],pixels[2],pixels[3]/255];
+        }
+        const match = /^rgba?\(([^)]+)\)$/.exec(String(color));
+        if (!match) return null;
+        const channels = match[1].split(/[\s,/]+/).filter(Boolean).map(Number);
+        return channels.length >= 3 ? [...channels.slice(0, 3), channels[3] ?? 1] : null;
+      };
+      const blend = (foreground, background) => foreground.slice(0, 3).map((channel, index) => channel * foreground[3] + background[index] * (1 - foreground[3]));
+      const canvas = blend(rgba(getComputedStyle(document.documentElement).backgroundColor) ?? [255,255,255,1], [255,255,255]);
+      const background = blend(rgba(body.backgroundColor) ?? [0,0,0,0], canvas);
+      if (rgba(theme['--bg'])) theme['--bg'] = `rgb(${background.join(',')})`;
       probe.remove();
+      const luminance=color=>{const channels=rgba(color);if(!channels)return null;return blend(channels,background).map(c=>{c/=255;return c<=.04045?c/12.92:((c+.055)/1.055)**2.4;}).reduce((sum,c,i)=>sum+c*[.2126,.7152,.0722][i],0);};
+      const bg=luminance(theme['--bg']??'#fff'),fg=luminance(theme['--primary']);
+      theme['--tab-ink']=bg!==null&&fg!==null&&(Math.max(bg,fg)+.05)/(Math.min(bg,fg)+.05)>=4.5?theme['--primary']:(bg??1)>.179?'#000':'#fff';
       for (const [name, value] of Object.entries(theme)) {
         if (value) wrap.style.setProperty(name, value);
         else wrap.style.removeProperty(name);
       }
     };
-    readTheme();
-    // stylesheets that arrive late (or a theme switch) change the answer
-    window.addEventListener('load', readTheme, { signal: lifetime.signal });
+    // Probe once after stylesheets load, rather than caching the unstyled document's colours.
+    if (document.readyState === 'complete') readTheme();
+    else window.addEventListener('load', readTheme, { once: true, signal: lifetime.signal });
     const el = { pill: $('.pill'), panel: $('.panel'), head: $('.head'), targets: $('.targets'), git: $('.gitline'), tabs: $('.tabs'), body: $('.body'), foot: $('.foot'), input: $('.search input'), toolbtns: $('.toolbtns'), toast: $('.toast'), float: $('.float') };
 
     // ------------------------------------------------------------------------------ feedback
@@ -441,7 +471,7 @@ export function panelUi(data) {
 
     // ------------------------------------------------------------------------------ placement
     const place = () => {
-      const { pos } = S.ui;
+      const pos = S.ui.open ? S.ui.pos : (S.pillPos ??= {h:'left',v:'bottom',dx:12,dy:12});
       const vw = document.documentElement.clientWidth || window.innerWidth;
       const vh = window.innerHeight;
       const dx = Math.max(4, Math.min(pos.dx, vw - 48));
@@ -450,10 +480,30 @@ export function panelUi(data) {
       host.style.right = pos.h === 'right' ? dx + 'px' : 'auto';
       host.style.top = pos.v === 'top' ? dy + 'px' : 'auto';
       host.style.bottom = pos.v === 'bottom' ? dy + 'px' : 'auto';
+      if(!S.ui.open&&!S.ui.hidden&&!stopDrag){
+        const rect=el.pill.getBoundingClientRect();
+        const controls=[...document.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,[role=button],iframe')].filter(node=>!node.closest('#paqvilo-panel,#paqvilo-xray')).flatMap(node=>{
+          const r=node.getBoundingClientRect();
+          return r.width&&r.height&&r.right>0&&r.bottom>0&&r.left<vw&&r.top<vh&&getComputedStyle(node).visibility!=='hidden'?[r]:[];
+        });
+        const score=(left,top)=>{
+          let count=0,area=0;
+          for(const r of controls){const overlap=Math.max(0,Math.min(left+rect.width,r.right)-Math.max(left,r.left))*Math.max(0,Math.min(top+rect.height,r.bottom)-Math.max(top,r.top));if(overlap){count++;area+=overlap;}}
+          return {count,area};
+        };
+        let best={pos,score:score(rect.left,rect.top)};
+        for(const h of ['left','right'])for(const v of ['bottom','top']){
+          const candidate={h,v,dx:12,dy:12},candidateScore=score(h==='left'?12:vw-12-rect.width,v==='top'?12:vh-12-rect.height);
+          if(candidateScore.count<best.score.count||candidateScore.count===best.score.count&&candidateScore.area<best.score.area)best={pos:candidate,score:candidateScore};
+        }
+        S.pillPos=best.pos;
+        host.style.left=best.pos.h==='left'?best.pos.dx+'px':'auto';host.style.right=best.pos.h==='right'?best.pos.dx+'px':'auto';
+        host.style.top=best.pos.v==='top'?best.pos.dy+'px':'auto';host.style.bottom=best.pos.v==='bottom'?best.pos.dy+'px':'auto';
+      }
     };
     let stopDrag = null;
     const startDrag = (e) => {
-      if (e.button !== 0 || e.target.closest('button, input, .seg')) return;
+      if (e.button !== 0 || e.target.closest('a, button, input, .seg')) return;
       stopDrag?.();
       const handle = e.currentTarget;
       const box = (S.ui.open ? el.panel : el.pill).getBoundingClientRect();
@@ -473,7 +523,7 @@ export function panelUi(data) {
         const left = Math.max(4, Math.min(vw - box.width - 4, box.left + mx));
         const top = Math.max(4, Math.min(vh - box.height - 4, box.top + my));
         // anchored to the nearest corner, so it stays put when the window is resized
-        const pos = S.ui.pos;
+        const pos = S.ui.open ? S.ui.pos : S.pillPos;
         pos.h = left + box.width / 2 < vw / 2 ? 'left' : 'right';
         pos.v = top + box.height / 2 < vh / 2 ? 'top' : 'bottom';
         pos.dx = Math.round(pos.h === 'left' ? left : vw - left - box.width);
@@ -506,7 +556,7 @@ export function panelUi(data) {
       // Without this the browser may begin a drag of its own (of a link of the page that lies
       // under the panel) and take the pointer away after the first few pixels.
       handle.addEventListener('mousedown', (e) => {
-        if (!e.target.closest('button, input, .seg')) e.preventDefault();
+        if (!e.target.closest('a, button, input, .seg')) e.preventDefault();
       });
     }
     window.addEventListener(
@@ -516,7 +566,11 @@ export function panelUi(data) {
       },
       { capture: true, signal: lifetime.signal },
     );
-    window.addEventListener('resize', place, { signal: lifetime.signal });
+    let placeTimer;
+    const schedulePlace=()=>{clearTimeout(placeTimer);placeTimer=setTimeout(place,100);};
+    window.addEventListener('resize', schedulePlace, { signal: lifetime.signal });
+    window.addEventListener('scroll', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
+    window.addEventListener('scrollend', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
 
     // ------------------------------------------------------------------------------ pieces
     const chips = (it) => {
@@ -538,7 +592,7 @@ export function panelUi(data) {
       return `<div class="row${it.fresh ? ' fresh' : ''}${it.paused ? ' off' : ''}" data-rel="${esc(it.rel)}" data-url="${esc(it.url ?? '')}">
         <span class="ico ${cls}" title="${esc(what)}">${code}</span>
         <button class="main" data-act="open" title="Open ${esc(it.rel)} in the editor">
-          <div class="name"><span>${hl(title)}</span>${KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : ''}${chips(it)}</div>
+          <div class="name" title="${esc(title)}"><span>${hl(title)}</span>${KIND[it.kind] ? `<span class="what">${esc(what)}</span>` : ''}${chips(it)}</div>
           <div class="sub">${hl(sub)}</div>
         </button>
         <div class="acts">
@@ -551,7 +605,7 @@ export function panelUi(data) {
     const group = (id, title, rows, count) => {
       if (!rows.length) return '';
       const closed = Boolean(S.ui.collapsed[id]) && !S.q;
-      return `<div class="group"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? rows.length}</span><span class="line"></span></button>${closed ? '' : rows.join('')}</div>`;
+      return `<div class="group"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? rows.length}</span><span class="line"></span></button>${closed ? '' : rows.join('')}</div>`;
     };
     const emptyState = (title, text) => `<div class="empty"><b>${esc(title)}</b>${text}</div>`;
 
@@ -613,14 +667,14 @@ export function panelUi(data) {
       const capped = !closed && items.length > RUNTIME_LIMIT && !S.more[id];
       // Rows are built only for open groups, and only up to the cap.
       const shown = closed ? [] : (capped ? items.slice(0, RUNTIME_LIMIT) : items).map(toRow);
-      return `<div class="group" data-group="${id}"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? items.length}</span><span class="line"></span></button>${shown.join('')}${capped ? `<button class="morebtn" data-act="more" data-id="${id}">Show all ${items.length}</button>` : ''}</div>`;
+      return `<div class="group" data-group="${id}"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? items.length}</span><span class="line"></span></button>${shown.join('')}${capped ? `<button class="morebtn" data-act="more" data-id="${id}">Show all ${items.length}</button>` : ''}</div>`;
     };
     /** One reported item; rows with a reference open their local source (at `find` when given). */
     const rrow = (item, { code, title, sub = '', chips = '', acts = '', depth = 0, find = '', wrap = false, cls = '' }) => {
       const ref = item?.ref ?? '';
       // Enhanced components keep each field as a JSON key inside powerpagecomponent.xml.
       const findText = find || (/powerpagecomponent\.xml$/i.test(ref) && /^[a-z_]+$/i.test(item?.fieldPath ?? '') ? `"${item.fieldPath}":` : '');
-      const body = `<div class="name"><span>${hl(title)}</span>${chips}</div>${sub ? `<div class="sub">${hl(sub)}</div>` : ''}`;
+      const body = `<div class="name" title="${esc(title)}"><span>${hl(title)}</span>${chips}</div>${sub ? `<div class="sub">${hl(sub)}</div>` : ''}`;
       return `<div class="row${wrap ? ' wrapt' : ''}${depth ? ` d${Math.min(depth, 6)}` : ''}" data-rel="${esc(ref)}" data-path="${esc(item?.path ?? '')}" data-find="${esc(findText)}">
         <span class="ico ${cls}">${esc(code)}</span>
         ${ref ? `<button class="main" data-act="open" title="Open ${esc(ref)} in the editor">${body}</button>` : `<div class="main">${body}</div>`}
@@ -657,14 +711,12 @@ export function panelUi(data) {
       const report = S.inspect.report;
       if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
       const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
-      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
+      out += `<div class="card"><div class="srcs inspect-tools"><button class="src" data-act="xray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎ Lense X-ray</button><button class="src" data-act="inspect-refresh">Refresh inspection</button><button class="src" data-act="inspect-pick" aria-pressed="${S.pickingElement}">${S.pickingElement ? 'Cancel element selection' : 'Select an element'}</button><button class="src" data-act="inspect-fold" data-v="open">Expand all</button><button class="src" data-act="inspect-fold" data-v="closed">Collapse all</button></div><div class="srcs inspect-nav" role="group" aria-label="Inspection sections">${sections.map(([id, label]) => `<button class="f${S.inspectSection === id ? ' on' : ''}" data-act="inspect-section" data-v="${id}" aria-pressed="${S.inspectSection === id}">${label}</button>`).join('')}</div><div class="sub inspection-help">${esc(report.evidence?.source ?? 'Static dependencies and local runtime evidence.')} Click a source row to open its file.</div></div>`;
       if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       if (S.selectedElement) {
         const selected = S.selectedElement;
-        const matching = (report.columns ?? []).filter((column) => column.name === selected.id || column.name === selected.name);
-        const field = matching.length === 1 ? matching[0] : null;
-        const candidates = field ? [field] : matching.length ? matching : (report.pageSources ?? []);
-        out += `<div class="card"><div class="path">Selected: ${esc(selected.tag)}${selected.id ? `#${esc(selected.id)}` : ''}</div><div class="sub">${esc(selected.name ? `name ${selected.name}` : selected.classes || 'No field identifier')} · ${field ? 'exported field match' : 'No direct source binding. Start with the page sources below.'}</div>${candidates.map((item) => rrow(item, { code: field ? 'COL' : 'SRC', title: field ? `${field.entity}.${field.name}` : item.name, sub: item.ref ?? '' })).join('')}</div>`;
+        const identity=S.selectedIdentity;
+        out += `<div class="card" data-selected-identity><div class="path">Selected: ${esc(identity?.title??selected.tag)}${identity?'':selected.id?`#${esc(selected.id)}`:''}</div><div class="sub">${esc(identity?`${identity.kind} · ${identity.sub??''}`:'Select again with X-ray to resolve this element.')}</div>${(identity?.fields??[]).map(item=>rrow(item,{code:'COL',title:`${item.entity}.${item.name}`,sub:item.label??''})).join('')}${[...(identity?.forms??[]),...(identity?.views??[]),...(identity?.lists??[])].map(item=>rrow(item,{code:'CFG',title:item.name,sub:item.ref??''})).join('')}${(identity?.sources??[]).map(item=>rrow(item,{code:'SRC',title:item.name,sub:[item.ref,item.line?`line ${item.line}`:''].filter(Boolean).join(' · ')})).join('')}</div>`;
       }
       const page = report.page;
       if (page) {
@@ -682,7 +734,7 @@ export function panelUi(data) {
       groups.push(rgroup('runtime-access', 'Page access rules', rules, (rule) => rrow(rule, {
         code: rule.right === 1 ? 'GRANT' : 'RULE',
         title: rule.name,
-        sub: `${rule.rightLabel} · ${rule.scopeLabel} · ${(rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles'}${rule.inherited ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}` : ''}`,
+        sub: `${rule.id} · ${rule.page?.url??''} · ${rule.rightLabel} · ${rule.scopeLabel} · ${(rule.roles ?? []).map((role) => role.name ?? `${role.id} (unresolved)`).join(', ') || 'no roles'}${rule.inherited ? ` · inherited from ${rule.page?.name ?? rule.page?.url ?? 'an ancestor'}` : ''}`,
         chips: `${rule.matches ? '<span class="c new">current persona</span>' : ''}${rule.overridden ? '<span class="c edited">local override</span>' : ''}`,
         find: rule.id,
         wrap: true,
@@ -794,6 +846,59 @@ export function panelUi(data) {
       return out + (listed || emptyState(S.q ? 'Nothing matches' : 'No dependencies in this section', S.q ? 'Clear the filter to see the page inspection.' : 'Choose another section or refresh after navigating.'));
     };
 
+    const personaFold = value => String(value??'').normalize('NFKD').replace(/\p{M}/gu,'').toLowerCase().replace(/[øæœßđðłþ]/g,letter=>S.tweaks?.personaCatalog?.transliterations?.[letter]??letter);
+    const personaPreferences = () => {
+      try{const value=JSON.parse(localStorage.getItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`)??'{}');return {pinned:Array.isArray(value.pinned)?value.pinned.filter(v=>typeof v==='string').slice(0,100):[],recent:Array.isArray(value.recent)?value.recent.filter(v=>typeof v==='string').slice(0,5):[]};}catch{return {pinned:[],recent:[]};}
+    };
+    const savePersonaPreferences = value => {try{localStorage.setItem(`paqvilo:panel-personas:${S.tweaks?.personaCatalog?.scope??location.origin}`,JSON.stringify(value));}catch{/* optional preference */}};
+    const personaCollator=new Intl.Collator('en',{sensitivity:'base'});
+    let personaOrderCache;
+    const personaMatches = (query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]}) => {
+      const terms=personaFold(query.q).trim().split(/\s+/).filter(Boolean),people=S.tweaks?.personas??[];
+      const index=S.tweaks?.personaIndex??people.map(person=>({key:person.key??`@contact:${person.contactId}`,text:personaFold([person.name,...(person.roles??[])].join(' ')),roles:(person.roles??[]).map(personaFold),tags:[],group:'__other'}));
+      const groups=S.tweaks?.personaCatalog?.groups??[],groupOrder=new Map(groups.map((group,index)=>[personaFold(group.id),index])),subgroups=new Map(groups.map(group=>[personaFold(group.id),new Map((group.subgroups??[]).map((sub,index)=>[personaFold(sub.id),index]))]));
+      if(personaOrderCache?.people!==people)personaOrderCache={people,ordered:index.map((entry,i)=>({...entry,persona:people[i]})).filter(entry=>entry.persona).sort((a,b)=>(groupOrder.get(a.group)??groups.length)-(groupOrder.get(b.group)??groups.length)||(a.subgroup?subgroups.get(a.group)?.get(a.subgroup)??1000:-1)-(b.subgroup?subgroups.get(b.group)?.get(b.subgroup)??1000:-1)||(a.persona.order??1000)-(b.persona.order??1000)||personaCollator.compare(String(a.persona.label??a.persona.name??a.key),String(b.persona.label??b.persona.name??b.key))||a.key.localeCompare(b.key))};
+      return personaOrderCache.ordered.filter(entry=>entry.persona&&entry.persona.active!==false&&terms.every(term=>entry.text.includes(term))&&['roles','tags','accounts'].every(facet=>!query[facet]?.length||query[facet].some(value=>entry[facet].includes(personaFold(value))))&&(!query.rolesOnly||entry.roles.length>0)&&(!query.groups?.length||query.groups.map(personaFold).includes(entry.group))&&(!query.subgroups?.length||query.subgroups.some(value=>personaFold(value)===`${entry.group}:${entry.subgroup}`)));
+    };
+    const personaRowsHtml = () => {
+      const matching=personaMatches(),preferences=personaPreferences(),offset=Math.max(0,Math.min(S.personaPage??0,Math.max(0,matching.length-1))),pageRows=matching.slice(offset,offset+50);
+      const row=entry=>{const p=entry.persona,selected=S.pick.personaKey?S.pick.personaKey===entry.key:S.pick.persona===p.contactId;return `<div class="pp-persona-row${selected?' selected':''}" data-panel-persona-row="${esc(entry.key)}"><button class="pp-persona-choice" data-act="choosepersona" data-contact="${esc(p.contactId)}" data-key="${esc(entry.key)}" aria-pressed="${selected}"><strong>${esc(p.label??p.name??p.contactId)}${p.default?' · Default':''}</strong><span>${esc(p.name??p.contactId)}${p.account?.name?` · ${esc(p.account.name)}`:""}</span>${p.description?`<span>${esc(p.description.split(/\r?\n/,1)[0])}</span>`:''}<span>${esc((p.roles??[]).join(', ')||'No web roles')}${p.tags?.length?` · ${esc(p.tags.join(', '))}`:''}${p.context?` · Setup available: ${esc(S.tweaks.personaCatalog?.contexts?.find(c=>c.id===p.context)?.label??p.context)} (full picker)`:''}</span></button><button data-act="pinpersona" data-key="${esc(entry.key)}" aria-pressed="${preferences.pinned.includes(entry.key)}" aria-label="Pin ${esc(p.label??p.name)}">${preferences.pinned.includes(entry.key)?'★':'☆'}</button></div>`;};
+      const shortcut=(keys,label)=>{const byKey=new Map(matching.map(entry=>[entry.key,entry]));const rows=keys.map(key=>byKey.get(key)).filter(Boolean).slice(0,10);return rows.length?`<section><h4>${label}</h4>${rows.map(row).join('')}</section>`:'';};
+      const groups=[...(S.tweaks?.personaCatalog?.groups??[]).filter(group=>matching.some(entry=>entry.persona.group===group.id)),{id:'__other',label:'Other contacts'}];
+      const defaultRow=offset===0?matching.find(entry=>entry.persona.default):null;
+      return `<p class="dim" role="status" data-panel-persona-count>${matching.length?offset+1:0}–${Math.min(offset+50,matching.length)} of ${matching.length} personas</p>${defaultRow?`<section><h4>Default</h4>${row(defaultRow)}</section>`:''}${shortcut(preferences.pinned,'Pinned')}${shortcut(preferences.recent,'Recent')}${groups.map(group=>{const all=matching.filter(entry=>(entry.group||'__other')===group.id),rows=pageRows.filter(entry=>(entry.group||'__other')===group.id&&entry!==defaultRow);if(!all.length)return '';return `<details class="pp-persona-group"${all.length<=25||S.personaFilters?.q||S.personaFilters?.rolesOnly||['roles','tags','accounts','groups','subgroups'].some(key=>S.personaFilters?.[key]?.length)?' open':''}><summary>${esc(group.label)} · ${all.length}${!rows.length?`<button class="btn" data-act="persona-group" data-group="${esc(group.id)}">View ${esc(group.label)} matches</button>`:''}</summary>${rows.filter(entry=>!entry.persona.subgroup).map(row).join('')}${(group.subgroups??[]).map(sub=>{const entries=rows.filter(entry=>entry.persona.subgroup===sub.id);return entries.length?`<h4>${esc(sub.label)} · ${all.filter(entry=>entry.persona.subgroup===sub.id).length}</h4>${entries.map(row).join('')}`:''}).join('')}</details>`;}).join('')}${matching.length?'':'<p class="dim">No personas match. Clear a filter or use fewer terms.</p>'}<div class="tw">${offset?'<button class="btn" data-act="persona-page" data-direction="-1">Previous</button>':''}${offset+50<matching.length?'<button class="btn" data-act="persona-page" data-direction="1">Show more</button>':''}</div>`;
+    };
+    const personaPickerHtml = (selectedId) => {
+      if(S.pick.persona===undefined&&selectedId!==undefined)S.pick.persona=selectedId;
+      const query=S.personaFilters??{q:'',roles:[],tags:[],groups:[],subgroups:[]},people=S.tweaks?.personas??[],groups=[...(S.tweaks?.personaCatalog?.groups??[]).filter(group=>people.some(person=>person.active!==false&&person.group===group.id)),...(people.some(person=>person.active!==false&&person.group==='__other')?[{id:'__other',label:'Other contacts'}]:[])];
+      const facets=[['roles','Web role',[...new Set(people.flatMap(p=>p.roles??[]))].map(id=>({id,label:id}))],['tags','Tag',[...new Set(people.flatMap(p=>p.tags??[]))].map(id=>({id,label:id}))],['accounts','Account',[...new Map(people.filter(p=>p.account?.id).map(p=>[p.account.id,p.account.name??p.account.id])).entries()].map(([id,label])=>({id,label}))],['groups','Group',groups],['subgroups','Subgroup',groups.flatMap(group=>(group.subgroups??[]).map(sub=>({id:`${group.id}:${sub.id}`,label:`${group.label} / ${sub.label}`})))]];
+      for (const facet of facets) {
+        const [name] = facet, available = new Set();
+        for (const entry of personaMatches({...query,[name]:[]})) {
+          const values = name === 'groups' ? [entry.group] : name === 'subgroups' ? entry.subgroup ? [`${entry.group}:${entry.subgroup}`] : [] : entry[name] ?? [];
+          for (const value of values) available.add(personaFold(value));
+        }
+        facet[2] = facet[2].filter(item => available.has(personaFold(item.id)) || query[name]?.includes(item.id));
+      }
+      const selected=people.find(p=>p.contactId===S.pick.persona),activeFilters=[query.roles,query.tags,query.groups,query.subgroups,query.accounts].reduce((total,values)=>total+(values?.length??0),0)+(query.rolesOnly?1:0);
+      return `<div class="pp-persona-picker"><label>Find a persona<input type="search" data-panel-persona-query value="${esc(query.q)}" placeholder="Name, account, role, tag or description"></label><details class="pp-persona-filter-disclosure"${(S.personaFilterDisclosureOpen??Boolean(activeFilters))?' open':''}><summary>Filters${activeFilters?` · ${activeFilters} active`:''}</summary><div class="pp-persona-facets">${facets.filter(([, ,options])=>options.length).map(([name,label,options])=>`<label>${label}<select data-panel-persona-facet="${name}" aria-label="${label}" multiple size="2">${options.filter((item,index)=>index<100||query[name]?.includes(item.id)).map(item=>`<option value="${esc(item.id)}"${query[name]?.includes(item.id)?' selected':''}>${esc(item.label)}</option>`).join('')}</select></label>`).join('')}</div><label><input type="checkbox" data-panel-persona-roles-only${query.rolesOnly?' checked':''}> Has web roles</label><p class="dim">All terms match. Any values within one filter match; filters combine.${facets.some(([, ,options])=>options.length>100)?' Filter menus show the first 100 values; use search for other names, roles, accounts or tags.':''}</p><button class="btn" data-act="persona-clear">Clear filters</button></details><div data-panel-persona-results>${personaRowsHtml()}</div><p class="dim" data-panel-persona-selected>Selected: ${esc(selected?.label??selected?.name??'Choose a persona')}. ${S.tweaks?.session?.supported?'Sign-in changes this browser’s identity; runtime settings stay unchanged.':'Switch persona changes the runtime default for requests without their own sign-in session.'}</p><button class="btn" data-act="sim" data-hash="identity">Open full picker and isolated setups</button></div>`;
+    };
+    const refreshPersonaRows = () => {
+      // Recompute available facets as well as rows, preserving the focused search/control.
+      const picker=el.panel.querySelector('.pp-persona-picker');
+      if(picker){
+        S.personaFilterDisclosureOpen=picker.querySelector('.pp-persona-filter-disclosure')?.open??false;
+        const active=root.activeElement,search=active?.hasAttribute('data-panel-persona-query'),selection=search?[active.selectionStart,active.selectionEnd]:null;
+        const identity=active&&picker.contains(active)?{tag:active.tagName,data:{...active.dataset}}:null;
+        picker.outerHTML=personaPickerHtml();
+        delete S.html.body;
+        const replacement=identity?[...el.panel.querySelectorAll('.pp-persona-picker button,.pp-persona-picker input,.pp-persona-picker select')].find(node=>node.tagName===identity.tag&&Object.entries(identity.data).every(([key,value])=>node.dataset[key]===value)):null;
+        if(identity)(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});if(search&&selection)try{replacement?.setSelectionRange(...selection);}catch{}
+      }
+      const query=S.personaFilters??{},count=['roles','tags','groups','subgroups','accounts'].reduce((total,key)=>total+(query[key]?.length??0),0)+(query.rolesOnly?1:0),summary=el.panel.querySelector('.pp-persona-filter-disclosure>summary');
+      if(summary)summary.textContent='Filters'+(count?` · ${count} active`:'');
+    };
+
     const tweaksHtml = () => {
       const runtime = S.d.mirage;
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
@@ -823,17 +928,17 @@ export function panelUi(data) {
           <div class="dim">${esc((session.roles ?? []).join(', ') || 'no web roles')}${session.roleSource === 'override' ? ' (simulation override)' : ''}${session.accountId ? ` · account ${esc(session.accountId)}` : ''}</div>
           <div class="dim" data-idp="${provider ? 'external' : 'local'}">${via}</div>
           ${session.signedIn ? '<div class="tw"><button class="btn" data-act="signout">Sign out</button></div>' : ''}
-          ${t.personas.length ? `<div class="tw"><select data-pick="persona" aria-label="Persona to sign in as">${t.personas.map((item) => option(item.contactId, personaLabel(item), persona === item.contactId)).join('')}</select><button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>` : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>'}
+          ${t.personas.length ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="signin">Sign in as ${esc(chosen?.name ?? chosen?.contactId ?? 'persona')}</button></div>` : '<div class="dim">No local personas yet: create one in _sim, Identity &amp; permissions.</div>'}
           ${session.error ? `<div class="dim">${esc(session.error)}</div>` : ''}
           <div class="dim">This page runs the portal's own sign-in (or sign-out) and comes back here. Only this browser changes; other browsers keep their own sessions.</div></div>`;
       } else {
         const persona = S.pick.persona ?? (t.identity?.contactId ?? '');
-        out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw"><select data-pick="persona" aria-label="Persona">${option('', 'Anonymous visitor', persona === '')}${t.personas.map((item) => option(item.contactId, `${item.name ?? item.contactId}${item.roles?.length ? ` — ${item.roles.join(', ')}` : ''}${item.active === false ? ' (inactive)' : ''}`, persona === item.contactId)).join('')}</select><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
+        out += `<div class="card"><div class="path">Persona</div>${t.personasAvailable ? `<div class="tw">${personaPickerHtml(persona)}<button class="btn" data-act="choosepersona" data-contact="" data-key="anonymous">Anonymous visitor</button><button class="btn" data-act="persona">Switch persona</button></div>` : '<div class="dim">This Mirage does not report personas.</div>'}<div class="dim">Current: ${esc(t.identity?.name ?? 'Anonymous')} · ${esc((t.identity?.roles ?? []).join(', ') || 'no web roles')}. Pages reload as this persona.</div></div>`;
       }
       out += `<div class="card"><div class="path">Table permissions</div><div class="tw"><span class="seg">${[['enforce', 'Enforce'], ['permissive', 'Permissive']].map(([value, label]) => `<button class="${t.permissionMode === value ? 'on' : ''}" data-act="permissions" data-v="${value}" title="${value === 'enforce' ? 'Apply table permissions, web roles and scopes' : 'Sandbox: every identity may read and write all local tables'}">${label}</button>`).join('')}</span><span class="dim">grant source ${esc(t.permissionSource ?? 'unknown')}</span></div></div>`;
       if (t.scenarios.length) {
         const pick = S.pick.scenario ?? t.activeScenario?.id ?? t.scenarios[0].id;
-        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, item.name ?? item.id, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
+        out += `<div class="card"><div class="path">Scenario <span class="dim">${t.activeScenario ? `active: ${esc(t.activeScenario.name ?? t.activeScenario.id)}` : ''}</span></div><div class="tw"><select data-pick="scenario" aria-label="Scenario">${t.scenarios.map((item) => option(item.id, `${item.name ?? item.id}${item.catalogue ? ` · ${item.persona} → ${item.startPath ?? "/"}${item.context ? " · isolated setup" : ""}` : ""}`, pick === item.id)).join('')}</select><button class="btn" data-act="ask" data-kind="scenario">Apply scenario</button></div></div>`;
       }
       if (t.presets.length) {
         const pick = S.pick.preset ?? t.presets[0].id;
@@ -847,7 +952,7 @@ export function panelUi(data) {
       const policy = typeof s.confinePortalPages !== 'boolean' ? null : s.confinePortalPages
         ? `Confined to loopback · external assets ${s.externalAssets ? 'allowed' : 'blocked'} · ${s.externalFrameOrigins ? `${s.externalFrameOrigins} online embed origin${s.externalFrameOrigins === 1 ? '' : 's'} allowed` : 'no online embedded content'}`
         : 'Not confined: pages carry only the headers their site settings define';
-      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policy ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${esc(policy)}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>` : ''}</div>`;
+      out += `<div class="card"><div class="path">Mirage status</div><div class="srcs"><span class="lbl2">Source</span><span class="dim">${esc(s.sourceFingerprint ?? 'unknown')}</span></div><div class="srcs"><span class="lbl2">Revision</span><span class="dim">${esc(s.revision ?? '?')}${s.reloading ? ' · reloading sources' : ''}${s.pendingReload ? ' · another reload queued' : ''}</span><span class="lbl2">Diagnostics</span><span class="dim">${esc(s.diagnostics?.total ?? s.diagnostics ?? 0)}</span></div>${policy ? `<div class="srcs"><span class="lbl2">Content policy</span><span class="dim" data-policy="${s.confinePortalPages ? 'confined' : 'open'}">${esc(policy)} · ${esc(s.contentPolicySource??'runtime state')}</span><button class="src" data-act="sim" data-hash="connection">Change in _sim</button></div>` : ''}</div>`;
       return out;
     };
 
@@ -881,7 +986,7 @@ export function panelUi(data) {
       const rows = S.d.activity
         .filter((a) => matches(a.text, (a.files ?? []).join(' ')))
         .map((a) => {
-          const kind = a.type === 'fault' ? ['ERR', 'k-err'] : a.type === 'deploy' ? ['DEPL', 'k-warn'] : a.type === 'switch' ? ['SET', ''] : a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
+          const kind = a.type === 'fault' ? ['ERR', 'k-err'] : a.type === 'dialog' ? ['DIALOG', 'k-warn'] : a.type === 'deploy' ? ['DEPL', 'k-warn'] : a.type === 'switch' ? ['SET', ''] : a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
           return `<div class="row wrapt"><span class="ico ${kind[1]}">${kind[0]}</span><div class="main"><div class="name"><span>${hl(a.text)}</span></div>${a.files?.length ? `<div class="sub">${hl(a.files.join(', '))}</div>` : ''}</div><span class="time">${clock(a.at)}</span></div>`;
         });
       return rows.join('') || emptyState('Nothing happened yet', 'Saves, reloads and switches of this session are listed here.');
@@ -938,7 +1043,11 @@ export function panelUi(data) {
     const set = (key, node, html) => {
       if (S.html[key] === html) return false;
       S.html[key] = html;
+      const active=root.activeElement;
+      const identity=item=>{const row=item.closest('[data-rel],[data-panel-persona-row],[data-group]');return row?JSON.stringify({...row.dataset}):'';};
+      const focused=active&&node.contains(active)?{tag:active.tagName,data:{...active.dataset},id:active.id,row:identity(active)}:null;
       node.innerHTML = html;
+      if(focused){const replacement=[...node.querySelectorAll('button,input,select,a,[tabindex]')].find(item=>item.tagName===focused.tag&&item.id===focused.id&&identity(item)===focused.row&&Object.entries(focused.data).every(([key,value])=>item.dataset[key]===value));(replacement??el.tabs.querySelector('[aria-selected=true]'))?.focus({preventScroll:true});}
       return true;
     };
     const render = () => {
@@ -969,7 +1078,7 @@ export function panelUi(data) {
         `${dot}<b>${d.online ? 'ONLINE' : 'LOCAL'}</b><span class="lbl">${esc(d.site)} @ ${esc(d.env)}</span>${real}${branch}
          ${d.online || d.mirageMode ? '' : `<span class="n ok" title="${d.items.length} overrides on this page">${d.items.length}</span>`}
          ${warns ? `<span class="n warn" title="${d.mirageMode ? 'source notes or runtime issues' : `${warns} changes need a deployment or were not applied`}">${warns}</span>` : ''}
-         ${errs + net ? `<span class="n err" title="${errs} JavaScript errors, ${net} failed requests">${errs + net}</span>` : ''}
+         ${errs + net ? `<span class="n err" title="${errs} JavaScript ${errs===1?'error':'errors'}, ${net} failed ${net===1?'request':'requests'}">${errs + net}</span>` : ''}
          ${d.pending.length || d.pendingBaseline ? `<span class="n warn" title="${d.mirageMode ? 'source changes are being applied by Mirage' : 'sources or baseline changed since this page loaded'}">${icon('reload')}</span>` : ''}`,
       );
       // a save that just arrived: say so even while the panel is closed or hidden
@@ -981,23 +1090,37 @@ export function panelUi(data) {
           float(`${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`);
         }
       }
-      if (!ui.open) return;
+      const xray = document.getElementById('paqvilo-xray')?.__px;
+      const currentInspection=d.inspection??d.mirage;
+      const inspected=currentInspection?.active&&S.inspect&&S.inspect.version>=currentInspection.version?S.inspect:null;
+      xray?.update({ ...d, ui, inspectionError: inspected?.error }, inspected?.report??null);
+      if (xray?.enabled) ensureInspect();
+      if (!ui.open) {place();return;}
       set(
         'head',
         el.head,
         `${dot}<span class="brand">paqvilo</span><span class="tag">${esc(d.site)}</span><span class="tag env">${esc(d.env)}</span>${real}<span class="grow"></span>
          ${d.mirageMode ? '' : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${d.online ? '' : 'on live'}" data-act="mode" data-v="local">Local</button><button class="${d.online ? 'on online' : ''}" data-act="mode" data-v="online">Online</button></span><button class="ib ${d.live ? 'on' : 'warn'}" data-act="live" title="Live reload is ${d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself'}">${icon(d.live ? 'bolt' : 'pause')}</button>`}
-         <button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
+         <button class="ib" data-act="xray" title="Lense X-ray (Alt+Shift+X)" aria-label="Toggle Lense X-ray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎</button><button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
+         ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup">Setup</a>` : ''}
          <button class="ib" data-act="size" title="${ui.large ? 'Smaller panel' : 'Larger panel'}">${icon('size')}</button>
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,
       );
       const inspection = d.inspection ?? d.mirage;
-      const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: inspection?.active ? `<span class="n ${inspection.page?.allowed === false ? 'warn' : 'ok'}" title="Page sources and component dependencies">${inspection.counts?.total ?? 0}</span>` : '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
-      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length < 2 ? 'disabled' : ''} title="${S.targets.length < 2 ? 'Start dev with --portals all to enable other configured portals' : 'Open the selected configured portal in this tab'}">${S.targets.map((target, index) => `<option value="${index}" title="${esc(target.origin)}" ${target.origin === location.origin ? 'selected' : ''}>${esc(target.siteName)} @ ${esc(target.envName)}${target.origin === location.origin ? ' · CURRENT' : ''}${target.caution ? ' · REAL DATA' : ''}</option>`).join('')}</select>`);
+      const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
+      const targetGroups = [['Local runtimes',t=>/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Remote',t=>!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Caution · REAL DATA',t=>t.caution]].map(([name,keep])=>{
+        const options=S.targets.map((target,index)=>keep(target)?`<option value="${index}" ${target.origin===location.origin?'selected':''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`:'').join('');
+        return options?`<optgroup label="${name}">${options}</optgroup>`:'';
+      }).join('');
+      const pendingTarget=S.pendingTarget;
+      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" ${S.targetSwitching?'disabled':''}>Go</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
       set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
-      set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}">${label}${tabCount[id]}</button>`).join(''));
+      set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]}</button>`).join(''));
+      el.body.setAttribute('aria-labelledby','paqvilo-tab-'+ui.tab);
       el.input.placeholder = PLACEHOLDER[ui.tab] ?? '';
+      el.input.setAttribute('aria-label',el.input.placeholder||'Search');
+      el.input.closest('.search').hidden=ui.tab==='tweaks';
       set(
         'toolbtns',
         el.toolbtns,
@@ -1016,7 +1139,7 @@ export function panelUi(data) {
       set(
         'foot',
         el.foot,
-        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`}</span><span class="grow"></span><span class="stats" title="${d.mirageMode ? 'Mirage renders source and owns source reloads' : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets'}">${d.mirageMode ? 'Mirage runtime' : `${d.stats.webFiles} files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`}</span>`,
+        `<span title="${d.keys.hide} hides or shows paqvilo, ${d.keys.panel} opens or closes this panel${d.mirageMode ? '' : `, ${d.keys.mode} switches between local and online`}">Alt+Shift+ <kbd>${d.keyCodes.hide.slice(-1)}</kbd> hide &nbsp;<kbd>${d.keyCodes.panel.slice(-1)}</kbd> panel${d.mirageMode ? '' : ` &nbsp;<kbd>${d.keyCodes.mode.slice(-1)}</kbd> online`} &nbsp;<kbd>X</kbd> X-ray &nbsp;<kbd>Esc</kbd> close &nbsp;<kbd>/</kbd> search</span><span class="grow"></span><span class="stats" title="${d.mirageMode ? 'Mirage renders source and owns source reloads' : 'what the local sources hold: web files, custom scripts and styles, changed templates and snippets'}">${d.mirageMode ? 'Mirage runtime' : `${d.stats.webFiles} files &middot; ${d.stats.blocks} scripts &middot; ${d.stats.patches} patches`}</span>`,
       );
     };
 
@@ -1033,12 +1156,16 @@ export function panelUi(data) {
       S.keepScroll = false;
       render();
     };
+    let previousFocus;
     const setOpen = (open) => {
+      if(open)document.getElementById('paqvilo-xray')?.__px?.toggle(false);
+      if(open&&!S.ui.open)previousFocus=root.activeElement??document.activeElement;
       S.ui.open = open;
       if (open) S.ui.hidden = false;
       if (open && S.ui.tab === 'explore' && !S.catalog) loadCatalog();
       saveUi();
       render();
+      if(open)el.tabs.querySelector('[aria-selected=true]')?.focus();else (previousFocus?.isConnected?previousFocus:el.pill).focus();
     };
     const setHidden = (hidden) => {
       S.ui.hidden = hidden;
@@ -1067,16 +1194,22 @@ export function panelUi(data) {
       else toast(r.error ?? 'failed', true);
     };
     /** The Inspect report is requested once per runtime version, outside of every redraw. */
+    const acceptInspection=(request,version,answer)=>{
+      if(lifetime.signal.aborted||S.inspectRequest!==request)return false;
+      S.inspectLoading=null;
+      const current=S.d?.inspection??S.d?.mirage,resultVersion=Math.max(version,answer.version??0);
+      if(!current?.active||current.version>resultVersion){render();return false;}
+      S.inspect=answer.ok?{version:resultVersion,report:answer.report,status:answer.status,error:answer.error}:{version,report:null,error:answer.error??'inspection failed'};
+      render();return true;
+    };
     const ensureInspect = () => {
       const c = S.d?.inspection ?? S.d?.mirage;
       if (!c?.active || !c.version || (S.inspect && S.inspect.version >= c.version) || S.inspectLoading === c.version) return;
       const version = c.version;
+      const request=++S.inspectRequest;
       S.inspectLoading = version;
       api('inspect').then((r) => {
-        if (S.inspectLoading !== version) return;
-        S.inspectLoading = null;
-        S.inspect = r.ok ? { version: Math.max(version, r.version ?? 0), report: r.report, status: r.status, error: r.error } : { version, report: null, error: r.error ?? 'inspection failed' };
-        render();
+        acceptInspection(request,version,r);
       });
     };
     const ensureTweaks = () => {
@@ -1121,6 +1254,21 @@ export function panelUi(data) {
       const url = row?.dataset.url || '';
       const d = S.d;
       switch (name) {
+        case 'xray':
+          stopPicking();
+          document.getElementById('paqvilo-xray')?.__px?.toggle();
+          S.ui.open = false;
+          render();
+          break;
+        case 'choosepersona': {
+          if(t.dataset.contact&&!S.tweaks?.personas?.some(p=>p.contactId===t.dataset.contact))break;
+          S.pick.persona=t.dataset.contact;S.pick.personaKey=t.dataset.key;render();break;
+        }
+        case 'pinpersona': {const value=personaPreferences();value.pinned=value.pinned.includes(t.dataset.key)?value.pinned.filter(key=>key!==t.dataset.key):[t.dataset.key,...value.pinned].slice(0,100);savePersonaPreferences(value);refreshPersonaRows();break;}
+        case 'persona-group': S.personaFilters={...S.personaFilters,groups:[t.dataset.group],subgroups:[]};S.personaFilterDisclosureOpen=true;S.personaPage=0;render();break;
+        case 'persona-page': S.personaPage=Math.max(0,(S.personaPage??0)+Number(t.dataset.direction)*50);refreshPersonaRows();break;
+        case 'persona-clear': S.personaFilters={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilterDisclosureOpen=false;S.personaPage=0;render();break;
+
         case 'inspect-section':
           S.inspectSection = t.dataset.v;
           render();
@@ -1131,16 +1279,21 @@ export function panelUi(data) {
           render();
           break;
         case 'inspect-refresh': {
+          const version=(S.d?.inspection??S.d?.mirage)?.version??0,request=++S.inspectRequest;
+          S.inspect=null;S.inspectLoading=version;render();
           const answer = await api('inspect', { refresh: true });
-          if (answer.ok) S.inspect = { version: answer.version, report: answer.report, status: answer.status, error: answer.error };
-          else toast(answer.error ?? 'Inspection failed.', true);
-          fresh();
+          if(acceptInspection(request,version,answer)){
+            if(!answer.ok)toast(answer.error??'Inspection failed.',true);
+            fresh();
+          }
           break;
         }
         case 'inspect-locate':
           locateElement(t.dataset.field);
           break;
         case 'inspect-pick': {
+          const xray=document.getElementById('paqvilo-xray')?.__px;
+          if(xray){stopPicking();S.ui.open=false;render();xray.pickOnce();break;}
           if (S.pickingElement) { stopPicking(); render(); break; }
           S.pickingElement = true;
           S.pickHandler = (event) => {
@@ -1196,6 +1349,7 @@ export function panelUi(data) {
           const name = personas.find((item) => item.contactId === contactId)?.name ?? contactId;
           // The page posts the portal's sign-in form and navigates; it comes back signed in.
           const r = await api('signin', { contactId });
+          if(r.ok){const value=personaPreferences(),key=S.pick.personaKey??`@contact:${contactId}`;value.recent=[key,...value.recent.filter(item=>item!==key)].slice(0,5);savePersonaPreferences(value);}
           if (r.ok) toast(`Signing in as ${name} through ${r.via ?? 'the portal'} ...`);
           else toast(r.error ?? 'Could not sign in', true);
           break;
@@ -1221,7 +1375,7 @@ export function panelUi(data) {
           if (!item) break;
           S.confirm = kind === 'preset'
             ? { kind, id, label: 'Apply preset', text: `Apply preset "${item.name ?? id}"? It replaces the local records, roles and settings it defines; pages reload.` }
-            : { kind, id, label: 'Apply scenario', text: `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.` };
+            : { kind, id, catalogue: item.catalogue === true, ...(item.catalogueId?{id:item.catalogueId}:{}), label: 'Apply scenario', text: item.catalogue ? `Open "${item.name}" as ${item.persona} at ${item.startPath??'/'}? ${item.context||item.preset?'Its setup opens in an isolated local runtime.':'This browser signs in through the portal.'}` : `Apply scenario "${item.name ?? id}"? Its preset, persona and permission mode change in one step; pages reload.` };
           render();
           break;
         }
@@ -1234,7 +1388,7 @@ export function panelUi(data) {
           S.confirm = null;
           render();
           if (!pending) break;
-          const r = await api(pending.kind, { id: pending.id });
+          const r = await api(pending.kind, { id: pending.id, ...(pending.catalogue?{catalogue:true}:{}) });
           // A scenario persona signs this browser in (or out) through the portal after the reload.
           if (r.ok && r.navigating) toast(`${pending.label.replace('Apply ', '')} applied; ${r.contactId ? 'signing in as its persona' : 'signing out'} after the reload ...`);
           else if (r.ok) reloadAfterTweak(`${pending.label.replace('Apply ', '')} applied; reloading ...`);
@@ -1269,7 +1423,7 @@ export function panelUi(data) {
           if (url) location.href = url;
           break;
         case 'admin':
-          location.href = '/_sim/';
+          window.open('/_sim/','_blank','noopener');
           break;
         case 'copy':
           copy(row?.dataset.path || d.sourceDir.replace(/[\\/]$/, '') + '/' + rel.split('#')[0], 'Path');
@@ -1284,6 +1438,7 @@ export function panelUi(data) {
           if (!rel) break;
           const line = Number(t.dataset.line || row?.dataset.line) || undefined;
           const r = await api('open', { rel, line, col: Number(row?.dataset.col) || undefined, find: t.dataset.find || row?.dataset.find || undefined });
+          document.getElementById('paqvilo-xray')?.__px?.status(r.ok ? `Opened ${baseName(rel)} in the editor` : r.error ?? 'Could not open the editor');
           if (r.ok) toast(`Opened ${baseName(rel)}${line ? ':' + line : ''} in the editor`);
           else if (r.url) location.href = r.url; // the editor's own link; the browser asks once
           else toast(r.error ?? 'Could not open the editor', true);
@@ -1338,7 +1493,11 @@ export function panelUi(data) {
       const t = e.target.closest('[data-act]');
       if (t) act(t.dataset.act, t);
     });
+    el.panel.addEventListener('toggle',event=>{if(event.target.isConnected&&event.target.matches('.pp-persona-filter-disclosure'))S.personaFilterDisclosureOpen=event.target.open;},true);
+    el.panel.addEventListener('input',event=>{if(!event.target.matches('[data-panel-persona-query]'))return;S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters.q=event.target.value;S.personaPage=0;refreshPersonaRows();});
     el.panel.addEventListener('change', (e) => {
+      if(e.target.matches('[data-panel-persona-roles-only]')){S.personaFilters??={q:'',roles:[],tags:[]};S.personaFilters.rolesOnly=e.target.checked;S.personaPage=0;refreshPersonaRows();return;}
+      if(e.target.matches('[data-panel-persona-facet]')){S.personaFilters??={q:'',roles:[],tags:[],groups:[],subgroups:[]};S.personaFilters[e.target.dataset.panelPersonaFacet]=[...e.target.selectedOptions].map(option=>option.value);S.personaPage=0;refreshPersonaRows();return;}
       const pick = e.target.closest?.('[data-pick]');
       if (!pick) return;
       S.pick[pick.dataset.pick] = pick.value;
@@ -1347,16 +1506,32 @@ export function panelUi(data) {
     el.pill.addEventListener('click', () => {
       if (Date.now() - S.dragged > 250) setOpen(true);
     });
-    el.targets.addEventListener('change', (event) => {
-      if (lifetime.signal.aborted || event.target.id !== 'paqvilo-target') return;
-      const value = event.target.value;
-      const target = /^\d+$/.test(value) ? S.targets[Number(value)] : null;
-      // Only the configured, validated target list supplies destinations, never option text/URLs.
-      if (!target || target.origin === location.origin) return;
-      location.assign(target.url);
-    });
+    const resetTarget=()=>{const select=el.targets.querySelector('select');if(select)select.value=String(S.targets.findIndex(target=>target.origin===location.origin));};
+    const cancelTarget=()=>{S.pendingTarget=null;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();};
+    const switchTarget=async target=>{
+      if(S.targetSwitching)return;
+      S.pendingTarget=null;resetTarget();S.targetSwitching=true;render();
+      try{
+        if(!S.targets.some(item=>item.origin===target.origin&&item.url===target.url))throw new Error('The selected target is no longer available');
+        const result=await api('ui',S.ui);
+        if(!result.ok)throw new Error(result.error??'The dev loop did not save the current panel');
+        location.assign(target.url);
+      }catch(error){toast(error.message,true);}
+      finally{S.targetSwitching=false;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();}
+    };
+    const goTarget=async()=>{
+      const value=el.targets.querySelector('select')?.value,target=/^\d+$/.test(value)?S.targets[Number(value)]:null;
+      if(!target||target.origin===location.origin){cancelTarget();return;}
+      if(target.caution||S.d.mirageMode&&!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(target.origin)){
+        S.pendingTarget=target;resetTarget();render();el.targets.querySelector('[data-target-cancel]')?.focus();return;
+      }
+      await switchTarget(target);
+    };
+    el.targets.addEventListener('click',event=>{if(event.target.closest('[data-target-cancel]'))cancelTarget();else if(event.target.closest('[data-target-confirm]')&&S.pendingTarget)void switchTarget(S.pendingTarget);else if(event.target.closest('[data-target-go]'))void goTarget();});
+    el.targets.addEventListener('change',()=>{if(S.pendingTarget){S.pendingTarget=null;render();}});
+    el.targets.addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('select')){event.preventDefault();void goTarget();}});
     el.pill.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') setOpen(true);
+      if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();setOpen(true);}
     });
     el.input.addEventListener('input', () => {
       S.q = el.input.value;
@@ -1367,19 +1542,37 @@ export function panelUi(data) {
       el.panel.addEventListener(type, (e) => {
         e.stopPropagation();
         if (type !== 'keydown') return;
+        if(e.target.matches('[role=tab]')&&['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){const tabs=[...el.tabs.querySelectorAll('[role=tab]')],at=tabs.indexOf(e.target),next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(at+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;e.preventDefault();void act('tab',tabs[next]);el.tabs.querySelector('[aria-selected=true]')?.focus();return;}
         if (e.key === 'Escape') {
+          if(S.pendingTarget){cancelTarget();return;}
           if (S.diff) S.diff = null;
           else if (S.q) S.q = el.input.value = '';
           else return setOpen(false);
           fresh();
-        } else if (e.key === '/' && e.target !== el.input) {
+        } else if (e.key === '/' && S.ui.tab !== 'tweaks' && !e.target.matches('input,textarea,select,[contenteditable]:not([contenteditable=false])')) {
           e.preventDefault();
           el.input.focus();
         }
       });
     }
+    document.addEventListener('paqvilo-xray', (event) => {
+      const detail = event.detail ?? {};
+      if (detail.action === 'open') {
+        act('open', { dataset: { rel: detail.ref, line: detail.line, find: detail.find }, closest: () => null });
+      } else if (detail.action === 'refresh') {
+        act('inspect-refresh', { dataset: {}, closest: () => null });
+      } else if (detail.action === 'selected') {
+        S.selectedElement = detail.element;
+        S.selectedIdentity = detail.identity;
+        if(detail.oneShot){S.ui.tab='runtime';setOpen(true);}
+      } else if (detail.action === 'toggled') {
+        if (detail.enabled) { S.ui.hidden = false; S.ui.open = false; }
+        render();
+      }
+    }, { signal: lifetime.signal });
     const onKey = (e) => {
       if (!host.isConnected) return window.removeEventListener('keydown', onKey, true);
+      if(S.ui.open&&S.ui.tab!=='tweaks'&&e.key==='/'&&!e.altKey&&!e.ctrlKey&&!e.metaKey&&!e.composedPath().some(node=>node?.matches?.('input,textarea,select,[contenteditable]:not([contenteditable=false])'))){e.preventDefault();el.input.focus();return;}
       if (!S.d || !e.altKey || !e.shiftKey || e.ctrlKey || e.metaKey) return;
       // by key position, so it works on any keyboard layout
       if (e.code === S.d.keyCodes.hide) setHidden(!S.ui.hidden);
@@ -1395,15 +1588,19 @@ export function panelUi(data) {
       get token() { return S.d?.token; },
       dispose() {
         stopPicking();
+        document.getElementById('paqvilo-xray')?.__px?.dispose();
         lifetime.abort();
         clearTimeout(toastTimer);
         clearTimeout(floatTimer);
         clearTimeout(saveTimer);
+        clearTimeout(placeTimer);
         host.remove();
       },
       update(d) {
         if (lifetime.signal.aborted) return;
         const catalogChanged = S.d && S.d.catalogVersion !== d.catalogVersion;
+        const previousInspection=S.d?.inspection??S.d?.mirage,nextInspection=d.inspection??d.mirage;
+        if(catalogChanged||previousInspection&&previousInspection.version!==nextInspection?.version){S.selectedElement=null;S.selectedIdentity=null;}
         S.d = d;
         if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {
@@ -1442,4 +1639,6 @@ export function removePanelUi({ token }) {
   window.__paqviloRetiredSessions = retired;
   const host = document.getElementById('paqvilo-panel');
   if (host?.__pp?.token === token) host.__pp.dispose();
+  const xray = document.getElementById('paqvilo-xray');
+  if (xray?.__px?.token === token) xray.__px.dispose();
 }

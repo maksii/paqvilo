@@ -6,7 +6,7 @@ import os from 'node:os';
 import { DataStore } from '../lib/data.mjs';
 import { parseSchemaDocument, scanSolutionSources, classifySolutionPath } from '../lib/solution-schema.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
-import { importSolutionPlugins, pluginCatalogue, pluginHandlers, runPluginPhase, parsePluginDocument, resolvePluginSourceFiles } from '../lib/exported-plugins.mjs';
+import { importSolutionPlugins, pluginCatalogue, pluginHandlers, runPluginPhase, parsePluginDocument, resolvePluginSourceFiles, pluginStepMatchesEntity } from '../lib/exported-plugins.mjs';
 import { validateOperationOverrides } from '../lib/operation-catalogue.mjs';
 import { pluginFixture, pluginId, assemblyXml, pluginStepsXml } from './plugin-fixture.mjs';
 import { observedConfig } from '../lib/project-config.mjs';
@@ -73,13 +73,29 @@ test('solution plugin facts preserve assembly/type/step registrations and exact 
   assert.deepEqual(step.filteringAttributes, ['fx_title']); assert.equal(step.stageName, 'PreValidation');
   assert.equal(step.unsupported, null);
   assert.match(step.sourceFile, /SdkMessageProcessingSteps/); assert.match(step.typeSourceFile, /PluginAssemblies/); assert.match(step.assemblySourceFile, /PluginAssemblies/);
-  assert.match(metadata.plugins.steps.find(item => item.id === pluginId(9)).unsupported, /Asynchronous/);
+  assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(9)).unsupported, null);
+  assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(9)).mode, 1);
   assert.equal(metadata.plugins.steps.find(item => item.id === pluginId(10)).enabled, false);
   assert.equal(classifySolutionPath('PluginAssemblies/Synthetic/Synthetic.dll'), null);
   const combined = parseSchemaDocument(`<ImportExportXml>${assemblyXml}<SdkMessageProcessingSteps>${pluginStepsXml.join('')}</SdkMessageProcessingSteps></ImportExportXml>`, { kind: 'customizations' });
   assert.equal(importSolutionPlugins([{ documents: [{ file: '/invented/Customizations.xml', facts: combined, hash: 'one' }] }]).steps.length, 9);
   const unresolved = parsePluginDocument('<SdkMessageProcessingStep SdkMessageProcessingStepId="x"><SdkMessageId>an-id</SdkMessageId><Stage>10</Stage></SdkMessageProcessingStep>');
   assert.equal(unresolved.steps[0].message, null, 'message GUIDs are never guessed');
+});
+
+test('explicit unfiltered RetrieveMultiple dispatch preserves the actual root and never guesses an unresolved filter',()=>{
+ const step=(id,binding,message='RetrieveMultiple')=>`<SdkMessageProcessingStep SdkMessageProcessingStepId="${pluginId(id)}"><PluginTypeId>${pluginId(2)}</PluginTypeId><SdkMessageName>${message}</SdkMessageName>${binding}<Stage>20</Stage><Rank>${id}</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep>`;
+ const xml=`<ImportExportXml>${assemblyXml}${step(21,'<SdkMessageFilterId/>')}${step(22,'<PrimaryEntity>none</PrimaryEntity>')}${step(23,'')}${step(24,`<SdkMessageFilterId>${pluginId(99)}</SdkMessageFilterId>`)}${step(25,'<SdkMessageFilterId/>','Create')}</ImportExportXml>`;
+ const parsed=parsePluginDocument(xml),plugins=importSolutionPlugins([{documents:[{file:'/invented/global.xml',facts:{plugins:parsed}}]}]);
+ for(const id of [21,22]){const declaration=plugins.steps.find(step=>step.id===pluginId(id));assert.equal(declaration.unfiltered,true);assert.equal(declaration.entity,null);assert.equal(declaration.unsupported,null);assert.equal(pluginStepMatchesEntity(declaration,'fixture'),true);}
+ for(const id of [23,24,25])assert.ok(plugins.steps.find(step=>step.id===pluginId(id)).unsupported);
+ const seen=[],handlers=pluginHandlers([{id:'invented-explicit-global',pluginSteps:{[pluginId(21)]:event=>{seen.push(event.entity);},[pluginId(22)]:event=>{seen.push(event.entity);}}}]);
+ const items=pluginCatalogue({plugins,handlers}),store=new DataStore({state:{mappings:{fixture:{idColumn:'fixtureid',entitySet:'fixtures'},other:{idColumn:'otherid',entitySet:'others'}},tables:{fixture:[{fixtureid:pluginId(40)}],other:[]},plugins:[],permissions:[],settings:{permissionMode:'enforce'}}});
+ store.setPluginPipeline(event=>runPluginPhase({...event,store,items,handlers}),event=>items.some(item=>item.enabled&&pluginStepMatchesEntity(item,event.entity)&&item.message.toLowerCase()===event.operation));
+ assert.equal(store.fetchXml('<fetch><entity name="fixture"><attribute name="fixtureid"/></entity></fetch>',{admin:true}).entities.length,1);
+ assert.deepEqual(store.fetchXml('<fetch><entity name="other"><attribute name="otherid"/></entity></fetch>',{admin:true}).entities,[]);assert.deepEqual(seen,['fixture','fixture','other','other']);
+ assert.equal(pluginStepMatchesEntity({entity:null,unfiltered:true,messageFilterId:pluginId(99),message:'RetrieveMultiple'},'fixture'),false);
+ assert.equal(pluginStepMatchesEntity({entity:null,unfiltered:true,messageFilterId:null,message:'RetrieveMultiple',mode:1},'fixture'),false);
 });
 
 test('synchronous trusted plugin phases sort rank, filter submitted columns, reject async handlers and roll back failures', async () => {
@@ -108,7 +124,7 @@ test('synchronous trusted plugin phases sort rank, filter submitted columns, rej
   events.length = 0;
   await store.update('fx_widgets', created.fx_widgetid, { fx_note: 'Changed note' }, editor);
   assert.deepEqual(events, [], 'unrelated attributes skip filtered Update registrations');
-  assert.ok(diagnostics.some(item => item.code === 'PLUGIN_STEP_UNSUPPORTED' && item.stepId === pluginId(9)));
+  assert.ok(!diagnostics.some(item => item.stepId === pluginId(9)), 'Asynchronous steps are not run or reported as synchronous failures.');
   await store.update('fx_widgets', created.fx_widgetid, { fx_title: 'Valid' }, editor);
   assert.deepEqual(events, ['update10', 'update20'], 'unchanged values still trigger submitted filtering attributes');
   assert.throws(() => pluginHandlers([{ id: 'async', pluginSteps: { [pluginId(3)]: async () => ({}) } }]), /synchronous/);
@@ -151,5 +167,18 @@ test('automatic plugin placeholders and editable mocks are inventoried, CSRF pro
   assert.equal((await admin(route, 'PATCH', { mode: 'mock', body: { target: { fx_title: 'Configured title' } } })).status, 200);
   assert.equal((await write('PATCH', `fx_widgets(${row.fx_widgetid})`, { fx_title: 'Input' })).status, 204);
   assert.equal(app.store.snapshot().tables.fx_widget[0].fx_title, 'Configured title');
-  assert.equal((await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status, 409);
+  assert.equal((await admin('/operations/' + encodeURIComponent(`plugin-step:${pluginId(9)}`), 'PATCH', { mode: 'mock' })).status, 200);
+});
+
+test('well-known SDK message ids resolve without a project observation', () => {
+  const createId = '9ebdbb1b-ea3e-db11-86a7-000a3a5473e8';
+  const xml = `<ImportExportXml><PluginAssembly FullName="Invented.WidgetRules, Version=2.0.0.0, Culture=neutral" PluginAssemblyId="${pluginId(1)}"><PluginTypes><PluginType Name="Invented.WidgetRules.Validate" AssemblyQualifiedName="Invented.WidgetRules.Validate, Invented.WidgetRules" PluginTypeId="${pluginId(2)}"/></PluginTypes><FileName>/PluginAssemblies/Rules.dll</FileName></PluginAssembly><SdkMessageProcessingStep Name="Step" SdkMessageProcessingStepId="${pluginId(3)}"><SdkMessageId>${createId}</SdkMessageId><PluginTypeId>${pluginId(2)}</PluginTypeId><PluginTypeName>Invented.WidgetRules.Validate, Invented.WidgetRules</PluginTypeName><PrimaryEntity>fx_widget</PrimaryEntity><Stage>10</Stage><Rank>3</Rank><Mode>0</Mode><SupportedDeployment>0</SupportedDeployment></SdkMessageProcessingStep></ImportExportXml>`;
+  const layers = [{ documents: [{ file: '/invented/Rules.dll.data.xml', facts: parseSchemaDocument(xml, { kind: 'customizations' }) }] }];
+  const step = importSolutionPlugins(layers).steps[0];
+  assert.equal(step.message, 'Create');
+  assert.equal(step.messageEvidence, 'platform-sdk-message');
+  assert.equal(step.unsupported, null);
+  // A project observation still overrides the platform table.
+  const observed = observedConfig({ evidence: 'Invented', sdkMessages: { [createId]: { name: 'Update', evidence: 'Invented row' } } });
+  assert.equal(importSolutionPlugins(layers, observed).steps[0].message, 'Update');
 });

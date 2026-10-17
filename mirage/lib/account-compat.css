@@ -1,0 +1,8 @@
+/* Local equivalent of the platform's /Areas/Account/css/account.css (account pages: sign-in,
+   registration, invitation): an empty validation summary stays hidden; tabs, page content and
+   provider buttons keep the account layout spacing; the login heading is a ruled section title. */
+.validation-summary-valid{display:none}
+.nav-account,.page-content{margin-top:20px}
+.btn-line{margin-bottom:5px}
+.messages{margin-bottom:20px}
+.login-heading-section{margin:0 0 21px;padding-bottom:21px;border-bottom:1px solid #e5e5e5;color:#333;font-size:20px;font-weight:bold;line-height:inherit}

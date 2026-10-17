@@ -34,6 +34,7 @@
  * fragment consumers. The static Liquid inventory of the same export is attached, so the
  * per-portal summary (--ci prints one JSON line per persona) also counts unsupported constructs.
  */
+import { parseToolArgs, toolOptionsHelp } from './tool-options.mjs';
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,7 +44,6 @@ import { portalField } from "./lib/importer.mjs";
 import { isHtmlDocument } from "./lib/source-dependencies.mjs";
 import { inventoryPortal } from "./liquid-inventory.mjs";
 
-const TOOLKIT_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 /** Diagnostics that mean Power Pages would also print an error into the page. */
 export const LIQUID_ERROR_CODES = new Set(["liquid-syntax-error", "liquid-error", "liquid-runtime-error"]);
 /** Diagnostics that describe Liquid behaviour worth reviewing but rendered as Power Pages does. */
@@ -64,34 +64,8 @@ const INJECTION_MARKERS = [
 const INLINE_ERROR = /Liquid (?:syntax )?error: [^<\r\n]{0,200}/g;
 
 function parseArgs(argv) {
-  const options = { json: false, ci: false, strict: false, solutionRoots: [] };
-  for (let i = 0; i < argv.length; i++) {
-    const arg = argv[i];
-    const value = () => {
-      const next = argv[++i];
-      if (next == null) throw new Error(`${arg} requires a value`);
-      return next;
-    };
-    if (arg === "--site") options.site = value();
-    else if (arg === "--env") options.env = value();
-    else if (arg === "--source") options.source = value();
-    else if (arg === "--solution-root") options.solutionRoots.push(value());
-    else if (arg === "--project") options.project = value();
-    else if (arg === "--portal") options.portal = value();
-    else if (arg === "--persona") options.persona = value();
-    else if (arg === "--preset") options.preset = value();
-    else if (arg === "--state") options.state = value();
-    else if (arg === "--out") options.out = value();
-    else if (arg === "--path") options.pathPrefix = value();
-    else if (arg === "--limit") options.limit = Number(value());
-    else if (arg === "--repo") options.repo = value();
-    else if (arg === "--config") options.config = value();
-    else if (arg === "--json") options.json = true;
-    else if (arg === "--ci") options.ci = true;
-    else if (arg === "--strict") options.strict = true;
-    else if (arg === "--help" || arg === "-h") options.help = true;
-    else throw new Error(`Unknown argument ${arg}`);
-  }
+  const args = parseToolArgs("render-sweep", argv);
+  const options = { ...args, solutionRoots: args["solution-root"] ?? [], pathPrefix: args.path, limit: args.limit == null ? undefined : Number(args.limit) };
   const sources = [options.site, options.source, options.project].filter(Boolean).length;
   if (sources > 1) throw new Error("Use one of --site, --source or --project.");
   if (options.solutionRoots.length && !options.source) throw new Error("--solution-root applies to --source only.");
@@ -221,6 +195,7 @@ export function classifyResponse({ status, contentType, body, diagnostics }) {
     liquidErrors: liquid.filter((diagnostic) => LIQUID_ERROR_CODES.has(diagnostic.code)),
     liquidNotices: liquid.filter((diagnostic) => !LIQUID_ERROR_CODES.has(diagnostic.code)),
     otherDiagnostics: diagnostics.filter((diagnostic) => !String(diagnostic.code ?? "").startsWith("liquid-")).map((diagnostic) => diagnostic.code),
+    permissionQueries: diagnostics.filter(diagnostic=>diagnostic.code==='PERMISSION_QUERY_ROW_MULTIPLICATION'),
   };
 }
 
@@ -246,12 +221,14 @@ export async function resolveTarget(options) {
       solutionRoots: portal.solutionRoots ?? [],
       origin: projectOrigin(project, portal),
       deploymentProfile: portal.deploymentProfile,
-      stateFile: options.state ?? projectStateFile(project, portal.id, path.join(TOOLKIT_ROOT, ".paqvilo", "simulator", "projects")),
+      stateFile: options.state ?? projectStateFile(project, portal.id, path.join(path.dirname(project.configFile), ".paqvilo", "simulator", "projects")),
       preset: options.preset ?? null,
       simulatorOptions: {
         project: projectSummary(project, portal.id),
         solutionOrder: project.solutionOrder,
         environmentVariables: project.environmentVariables,
+        deploymentProfiles: portal.deploymentProfiles,
+        platform: portal.platform,
         // Observed platform behaviour recorded for the portal (lib/project-config.mjs).
         observed: portal.observed ?? null,
       },
@@ -282,10 +259,10 @@ export async function resolveTarget(options) {
     sourceDir: cfg.sourceDir,
     solutionRoots: configuredRoots.length ? configuredRoots : await (await import("./lib/solution-roots.mjs")).discoverSolutionRoots(cfg.sourceDir),
     origin: cfg.origin,
-    stateFile: options.state ?? path.join(TOOLKIT_ROOT, ".paqvilo", "simulator", cfg.siteName, "state.json"),
+    stateFile: options.state ?? path.join(cfg.stateDir, "simulator", cfg.siteName, "state.json"),
     preset: options.preset ?? cfg.mirageConfig?.preset ?? null,
     // Observed platform behaviour from the site's mirage settings (paqvilo.config.yml).
-    simulatorOptions: { observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
+    simulatorOptions: { platform: cfg.mirageConfig?.platform, render: cfg.mirageConfig?.render, deploymentProfiles: cfg.mirageConfig?.deploymentProfiles, observed: cfg.mirageConfig?.observed ?? null, dataPacks: cfg.mirageConfig?.dataPacks ?? [] },
   };
 }
 
@@ -418,6 +395,7 @@ async function sweepPersona(target, persona, options) {
       requests: results.length,
       byStatus,
       liquidDiagnosticCounts: codeCounts,
+      permissionQueries: results.flatMap(result=>(result.permissionQueries??[]).map(diagnostic=>({...diagnostic,path:result.url}))),
       liquidErrorPages: results.filter((result) => result.liquidErrors.length || result.inlineErrors.length).map((result) => result.url),
       injectedNonDocuments: results.filter((result) => result.injected.length).map((result) => ({ url: result.url, markers: result.injected })),
       failures: results.filter((result) => result.failure || result.status >= 500).map((result) => ({ url: result.url, status: result.status, failure: result.failure ?? null })),
@@ -476,6 +454,7 @@ export function ciSummary(report, run) {
     missingTemplateUses: run.liquidDiagnosticCounts["liquid-template-not-found"] ?? 0,
     unsupported: report.inventory?.unsupported.length ?? null,
     authoredSyntaxErrors: report.inventory?.syntaxErrors.length ?? null,
+    permissionRowMultiplication: run.permissionQueries ?? [],
     injectedNonDocuments: run.injectedNonDocuments.length,
     failures: run.failures.length,
   };
@@ -513,9 +492,7 @@ function summarize(report) {
 export async function main(argv = process.argv.slice(2)) {
   const options = parseArgs(argv);
   if (options.help || (!options.site && !options.source && !options.project)) {
-    console.log(
-      "Usage: node mirage/render-sweep.mjs (--site NAME [--env NAME] | --source DIR [--portal ID] [--solution-root DIR]... | --project FILE [--portal ID]) [--persona anonymous|authenticated|all-roles|configured|both|all] [--preset NAME] [--state FILE] [--json] [--ci] [--out DIR] [--path PREFIX] [--limit N] [--strict] [--repo DIR]",
-    );
+    console.log(`Usage: paqvilo mirage render-sweep ${toolOptionsHelp("render-sweep")}`);
     return options.help ? 0 : 2;
   }
   const report = await renderSweep(options);

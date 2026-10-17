@@ -6,6 +6,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, spawnSync, execFileSync } from 'node:child_process';
 import { once } from 'node:events';
+import { createInterface } from 'node:readline';
 import { createFixture, SITE } from './fixture.mjs';
 import { inspectCheckout } from '../lense/commands/doctor.mjs';
 import { editSource } from '../lense/source-edit.mjs';
@@ -20,6 +21,24 @@ function runWithin(timeout, ...args) {
   return spawnSync(process.execPath, [cli, ...args], { env, encoding: 'utf8', windowsHide: true, timeout });
 }
 const run = (...args) => runWithin(30_000, ...args);
+
+test('doctor Mirage gate diagnoses an invalid default profile and names every catalogue-relative file', () => {
+  const config = fx.file('profile-doctor.json'), first = fx.file('profile-first.json'), second = fx.file('profile-second.json');
+  fs.writeFileSync(first, JSON.stringify({EnvironmentVariables: [{SchemaName: 'sample_one', Value: 'one'}]}));
+  fs.writeFileSync(second, JSON.stringify({EnvironmentVariables: [{SchemaName: 'sample_two', Value: 'two'}]}));
+  fs.writeFileSync(config, JSON.stringify({sites: {test: {source: '.', environments: {dev: 'https://portal.example.test'}, mirage: {port: 0, deploymentProfiles: {default: 'dev', profiles: {dev: {environmentVariables: ['profile-first.json', 'profile-second.json']}}}}}}}));
+  const valid = run('doctor', '--config', config, '--mirage', '--json');
+  assert.equal(valid.status, 0, valid.stdout + valid.stderr);
+  fs.writeFileSync(second, '{invalid');
+  const plain = run('doctor', '--config', config);
+  assert.equal(plain.status, 0, plain.stdout + plain.stderr);
+  assert.match(plain.stdout, /environmentVariables profile-first.json: found, environmentVariables profile-second.json: found/);
+  const gated = run('doctor', '--config', config, '--mirage', '--json');
+  assert.equal(gated.status, 1, gated.stdout + gated.stderr);
+  const report = JSON.parse(gated.stdout);
+  assert.equal(report.ready, false); assert.equal(report.reports[0].lenseReady, true);
+  assert.equal(report.reports[0].mirage.ready, false);
+});
 
 test('offline doctor diagnoses the extract and unavailable baseline without fetch', (t) => {
   t.mock.method(globalThis, 'fetch', () => { throw new Error('Network access is forbidden in offline diagnostics'); });
@@ -136,7 +155,7 @@ test('machine-readable CLI failures reject ignored options and interactive JSON 
     assert.equal(result.stderr, '');
   }
   const typo = run('resources', '--unknown-option', '--json');
-  assert.equal(JSON.parse(typo.stdout).error.code, 'INVALID_ARGUMENT');
+  assert.equal(JSON.parse(typo.stdout).error.code, 'unsupported_option');
   assert.equal(JSON.parse(run('--help', '--json').stdout).command, 'help');
   assert.equal(JSON.parse(run('agent', '--help').stdout).command, 'help', 'agent commands consistently produce JSON');
 });
@@ -211,6 +230,12 @@ test('browser/profile CLI choices are discoverable offline and incompatible comm
   assert.equal(JSON.parse(attach.stdout).inEffect.browser.mode, 'attach');
   assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');
   assert.deepEqual(JSON.parse(attach.stdout).inEffect.browser.profileInfo, { kind: 'attached', name: null, channel: null, userDataDir: null, profileDirectory: null });
+  for (const endpoint of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
+    const invalid = runWithin(3000, 'dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222');
+    assert.equal(invalid.status, 1, invalid.stderr);
+    assert.match(invalid.stderr, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
+    assert.match(invalid.stderr, /--debug-port 0/);
+  }
   const conflict = run('list', '--config', file, '--profile', 'work', '--user-data-dir', 'test-browser-root', '--json');
   assert.equal(conflict.status, 1);
   assert.match(JSON.parse(conflict.stdout).problem, /cannot be combined/);
@@ -347,6 +372,12 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     const doctor = run('doctor', '--config', config, '--repo', fx.dir, '--all', '--json');
     assert.equal(doctor.status, 0, doctor.stdout + doctor.stderr);
     const reports = JSON.parse(doctor.stdout).reports;
+    const gated = run('doctor', '--config', config, '--repo', fx.dir, '--all', '--mirage', '--json');
+    assert.equal(gated.status, 1, gated.stdout + gated.stderr);
+    assert.equal(JSON.parse(gated.stdout).ready, false);
+    assert.deepEqual(JSON.parse(gated.stdout).checks, ['lense', 'sources', 'mirage']);
+    assert.equal(JSON.parse(gated.stdout).reports.find(item => item.site === 'broken').lenseReady, true);
+    assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--all').stdout, /Mirage NOT READY \(use --mirage to gate Sources and Mirage\)/);
     const ready = reports.find((item) => item.site === 'test').mirage;
     assert.equal(ready.ready, true, JSON.stringify(ready));
     assert.equal(ready.dependencies.ready, true);
@@ -357,7 +388,7 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     const broken = reports.find((item) => item.site === 'broken');
     assert.equal(broken.ready, true, 'Mirage readiness is reported beside the overlay verdict');
     assert.equal(broken.mirage.ready, false);
-    assert.ok(broken.mirage.errors.some((error) => /Solution root does not exist/.test(error)));
+    assert.ok(broken.mirage.errors.some((error) => /Solution root does not exist/.test(error.message)));
     assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--site', 'broken').stdout, /mirage NOT READY[\s\S]*MIRAGE ERROR: Mirage Solution root does not exist/);
   } finally { fs.rmSync(roots, { recursive: true, force: true }); }
 });
@@ -370,11 +401,37 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   fs.mkdirSync(path.dirname(paths.ownershipFile), { recursive: true });
   const idle = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore', windowsHide: true });
   const starting = idle(), unrelated = idle(), finished = idle();
-  t.after(() => {
-    for (const child of [starting, unrelated, finished]) { try { child.kill(); } catch { /* exited */ } }
+  let identityGuard;
+  t.after(async () => {
+    await Promise.all([starting, unrelated, finished, identityGuard].filter(Boolean).map(async child => {
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      const closed = once(child, 'close');
+      child.kill();
+      await closed;
+    }));
     fs.rmSync(root, { recursive: true, force: true });
   });
   await Promise.all([starting, unrelated, finished].map((child) => once(child, 'spawn')));
+  if (process.platform === 'win32') {
+    // Windows can recycle a terminated PID into a concurrent process probe. Retaining
+    // process handles keeps these two fixture PIDs reserved until the death assertions finish.
+    const guardScript = [
+      `$fixtures = @(Get-Process -Id ${starting.pid},${finished.pid} -ErrorAction Stop)`,
+      'foreach ($fixture in $fixtures) { $null = $fixture.Handle }',
+      "[Console]::Out.WriteLine('retained')",
+      '$null = [Console]::In.ReadLine()',
+      'foreach ($fixture in $fixtures) { $fixture.Dispose() }',
+    ].join('; ');
+    identityGuard = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', guardScript], { stdio: ['pipe', 'pipe', 'ignore'], windowsHide: true });
+    const reader = createInterface({ input: identityGuard.stdout, crlfDelay: Infinity });
+    try {
+      const [ready] = await Promise.race([
+        once(reader, 'line', { signal: AbortSignal.timeout(15_000) }),
+        once(identityGuard, 'exit').then(([code]) => { throw new Error(`Fixture process-handle guard exited before readiness (${code})`); }),
+      ]);
+      assert.equal(ready, 'retained');
+    } finally { reader.close(); }
+  }
   finished.kill();
   await once(finished, 'exit');
   const sourceDir = path.join(root, 'portal');
@@ -392,8 +449,7 @@ test('mirage stop ends owned starting processes, prunes stale records and never 
   assert.deepEqual(report.stopped.map((item) => [item.pid, item.graceful, item.wasReady]), [[starting.pid, false, false]]);
   assert.deepEqual(report.remaining, []);
   assert.deepEqual(report.pruned.map((item) => item.pid).sort((a, b) => a - b), [finished.pid, unrelated.pid].sort((a, b) => a - b));
-  // Windows may reuse the exited PID for one of the concurrent process probes.
-  assert.match(report.pruned.find((item) => item.pid === finished.pid).reason, /exited|another program/);
+  assert.equal(report.pruned.find((item) => item.pid === finished.pid).reason, 'process exited');
   assert.match(report.pruned.find((item) => item.pid === unrelated.pid).reason, /another program/);
   assert.equal(isAlive(starting.pid), false);
   assert.equal(isAlive(unrelated.pid), true, 'a reused PID belongs to another program and is never signalled');

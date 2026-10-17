@@ -1,4 +1,5 @@
 import { portalField as field } from "./importer.mjs";
+import { applyPlatformConfig } from './platform-config.mjs';
 import { bootstrapPresetLibrary } from "./presets.mjs";
 import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
 
@@ -7,7 +8,7 @@ import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
  * layers (`metadata` = importSolutionData result) when available, otherwise from the
  * documented Dataverse catalogue or the entity-set pluralization fallback (inferred).
  */
-export function initialState(portal, { origin, packs, metadata } = {}) {
+export function initialState(portal, { origin, packs, metadata, platform } = {}) {
   const mappings = {};
   const tables = {};
   const permissions = [];
@@ -180,5 +181,5 @@ export function initialState(portal, { origin, packs, metadata } = {}) {
     tables,
     ...(packs ? { packs } : {}),
   });
-  return state;
+  return applyPlatformConfig(state, platform);
 }

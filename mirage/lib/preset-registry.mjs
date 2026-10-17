@@ -2,6 +2,10 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { registerExpressionOperators, registerShellConventions, validateEndpoints } from "./extensions.mjs";
+import { validateWebApiErrorTemplates } from "./webapi-error-templates.mjs";
+import { seedPresetBody } from "./solution-schema.mjs";
+import { validatePersonaCatalog } from './persona-catalog.mjs';
+import { configurationPresetReport, experimentId } from './experiment-presets.mjs';
 
 /**
  * Project-agnostic preset registry.
@@ -19,6 +23,8 @@ export const LAZY_PRESET = Symbol.for("paqvilo-mirage.lazy-preset");
 const packIdPattern = /^[a-z0-9][a-z0-9._-]*$/;
 const presetIdPattern = /^[\w.-]+$/;
 const reserved = new Set(["__proto__", "constructor", "prototype"]);
+const packDirectories = new WeakMap();
+export const packDirectory = pack => packDirectories.get(pack) ?? pack.parity?.directory;
 
 /** Presets that are valid for every exported portal. */
 export function genericPresets() {
@@ -126,7 +132,7 @@ export function validatePack(pack, source = "data pack") {
       fail(`${key} must be a nonempty string`);
   if (typeof pack.matches !== "function")
     fail("matches({ portal }) must be a function");
-  if (typeof pack.presets !== "function")
+  if (typeof pack.presets !== "function" && !(pack.presets === undefined && dataProperty(pack, 'configurationPresets')))
     fail("presets({ portal, metadata, options }) must be a function");
   const generators = dataProperty(pack, "generators")?.value;
   if (generators !== undefined) {
@@ -141,6 +147,10 @@ export function validatePack(pack, source = "data pack") {
     if (property && property.value !== undefined && !Array.isArray(property.value))
       fail(`${key} must be an array`);
   }
+  const catalogProperty = Object.getOwnPropertyDescriptor(pack, 'personaCatalog');
+  if (catalogProperty && !('value' in catalogProperty)) fail('personaCatalog must be a data property');
+  if (catalogProperty?.value !== undefined) validatePersonaCatalog(catalogProperty.value, `Data pack ${pack.id}`);
+  configurationPresetReport([pack]);
   // Extension points (lib/extensions.mjs): plugin expression operators and
   // HTTP endpoints under /__sim/ served while the pack matches the portal.
   const operators = dataProperty(pack, "expressionOperators")?.value;
@@ -154,8 +164,15 @@ export function validatePack(pack, source = "data pack") {
   const pluginSteps = dataProperty(pack, 'pluginSteps')?.value;
   if (pluginSteps !== undefined && (!pluginSteps || typeof pluginSteps !== 'object' || Array.isArray(pluginSteps) || Object.entries(pluginSteps).some(([id, handler]) => !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g, '')) || typeof handler !== 'function' || handler.constructor?.name === 'AsyncFunction')))
     fail('pluginSteps must map exported step IDs to synchronous functions');
+  for(const kind of ['pluginRuntimes','flowIdentities']){
+    const entries=dataProperty(pack,kind)?.value;
+    if(entries!==undefined&&(!entries||typeof entries!=='object'||Array.isArray(entries)||Object.entries(entries).some(([id,value])=>!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(id.replace(/[{}]/g,''))||!value||typeof value!=='object'||Array.isArray(value))))fail(`${kind} must map exact exported IDs to explicit trusted descriptors`);
+  }
   try {
     validateEndpoints(pack.id, dataProperty(pack, "endpoints")?.value);
+    const templates = Object.getOwnPropertyDescriptor(pack, "webApiErrorTemplates");
+    if (templates && !("value" in templates)) fail("webApiErrorTemplates must be an explicit data property");
+    if (templates?.value !== undefined) validateWebApiErrorTemplates(templates.value);
   } catch (error) {
     fail(error.message);
   }
@@ -188,11 +205,18 @@ export async function builtinPackModules(root = PACKS_ROOT) {
 
 /** Import and validate one pack module (absolute path or file URL). */
 export async function loadPack(module) {
+  if (module && typeof module === 'object' && !(module instanceof URL)) {
+    const pack = validatePack(module, module.id ?? 'loaded pack');
+    registerExpressionOperators(pack.id, pack.expressionOperators);
+    registerShellConventions(pack.id, pack.shell);
+    return pack;
+  }
   const url = module instanceof URL || /^file:/i.test(String(module))
     ? String(module)
     : pathToFileURL(path.resolve(String(module))).href;
   const imported = await import(url);
   const pack = validatePack(imported.default, fileURLToPath(url));
+  packDirectories.set(pack, path.dirname(fileURLToPath(url)));
   registerExpressionOperators(pack.id, pack.expressionOperators);
   registerShellConventions(pack.id, pack.shell);
   return pack;
@@ -217,7 +241,7 @@ const explicitEntries = (entries, base, label) => {
     if (typeof entry === "string") entry = { module: entry };
     if (!entry || typeof entry !== "object" || typeof entry.module !== "string" || !entry.module.trim())
       throw new Error(`${label}[${index}].module is required`);
-    if (entry.id !== undefined && (typeof entry.id !== "string" || !packIdPattern.test(entry.id)))
+    if (entry.id != null && (typeof entry.id !== "string" || !packIdPattern.test(entry.id)))
       throw new Error(`${label}[${index}].id is invalid`);
     const module = /^file:/i.test(entry.module)
       ? fileURLToPath(entry.module)
@@ -245,8 +269,10 @@ export async function discoverPacks({
   portal,
   explicit = [],
   root = PACKS_ROOT,
+  packs: suppliedPacks = [],
 } = {}) {
-  const entries = await packModules({ project, explicit, root });
+  if (!Array.isArray(suppliedPacks)) throw new Error('packs must be an array');
+  const entries = [...await packModules({ project, explicit, root }), ...suppliedPacks.map(module => ({ module }))];
   const loaded = new Map();
   const packs = [];
   for (const entry of entries) {
@@ -257,12 +283,12 @@ export async function discoverPacks({
       );
     const previous = loaded.get(pack.id);
     if (previous) {
-      if (path.resolve(previous) === path.resolve(entry.module)) continue;
+      if (previous.pack === pack) continue;
       throw new Error(
-        `Duplicate data pack id '${pack.id}' in ${previous} and ${entry.module}`,
+        `Duplicate data pack id '${pack.id}' in ${previous.module} and ${entry.module}`,
       );
     }
-    loaded.set(pack.id, entry.module);
+    loaded.set(pack.id, { module: entry.module, pack });
     if (packMatches(pack, portal)) packs.push(pack);
   }
   return packs;
@@ -280,6 +306,7 @@ export function presetDescriptor(library, id) {
     id,
     name: value?.name ?? id,
     description: value?.description ?? "",
+    ...(value?.configurationPreset ? {configurationPreset:value.configurationPreset} : {}),
     ...(value?.pack ? { pack: value.pack } : {}),
     lazy: false,
   };
@@ -299,9 +326,22 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
   let loaded = false;
   const get = () => {
     if (!loaded) {
-      const value = load();
+      let value = load();
       if (!value || typeof value !== "object" || Array.isArray(value))
         throw new Error(`Preset ${id}${pack ? ` in data pack ${pack}` : ""} did not load an object`);
+      // A lazy descriptor's configuration link is also part of its hydrated preset.
+      // Reject contradictory metadata rather than listing one scenario and applying another.
+      if (entry.configurationPreset !== undefined) {
+        experimentId(entry.configurationPreset);
+        if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
+          const message=`Preset ${id} configurationPreset does not match its lazy descriptor`;
+          const diagnostic={code:'PACK_CONFIGURATION_PRESET_LINK_INVALID',severity:'error',pack:pack??null,preset:id,descriptorConfigurationPreset:entry.configurationPreset,bodyConfigurationPreset:typeof value.configurationPreset==='string'?value.configurationPreset:null,message};
+          throw Object.assign(new Error(message), {status:400,code:diagnostic.code,details:{configurationPresetDiagnostic:diagnostic}});
+        }
+        if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
+      }
+      if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
+      if (value.configurationPreset !== undefined) experimentId(value.configurationPreset);
       body = finish ? finish(value) : value;
       loaded = true;
     }
@@ -311,6 +351,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
     id,
     name: entry.name ?? id,
     description: entry.description ?? "",
+    ...(entry.configurationPreset ? {configurationPreset:entry.configurationPreset} : {}),
     ...(pack ? { pack } : {}),
     lazy: true,
   });
@@ -332,7 +373,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
 
 /** Call a pack's preset factory and check ids before they enter a library. */
 export function packPresetEntries(pack, { portal, metadata, options } = {}) {
-  const entries = pack.presets({ portal, metadata, options: options ?? {} }) ?? {};
+  const entries = pack.presets?.({ portal, metadata, options: options ?? {} }) ?? {};
   if (typeof entries !== "object" || Array.isArray(entries))
     throw new Error(`Data pack ${pack.id} presets() must return an object`);
   return Object.entries(entries);
@@ -351,8 +392,28 @@ export function presetLibrary({ portal, metadata, packs = [], options } = {}) {
     for (const [id, entry] of packPresetEntries(pack, { portal, metadata, options })) {
       if (Object.hasOwn(library, id))
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);
-      defineLazyPreset(library, id, entry, { pack: pack.id });
+      defineLazyPreset(library, id, entry, { pack: pack.id, finish: (body) => seedPresetBody(body, metadata?.schema) });
     }
   }
   return library;
+}
+
+/** Value-free preflight for configuration bodies and links declared in preset descriptors.
+ * Lazy preset loaders are not evaluated; put configurationPreset on their descriptor. */
+export function configurationPresetDiagnostics(packOrPacks, options = {}) {
+  const packs = Array.isArray(packOrPacks) ? packOrPacks : [packOrPacks];
+  const report = configurationPresetReport(packs);
+  const diagnostics = [...report.diagnostics], ids = new Set(['source-defaults', 'expanded-query-budget', 'webapi-disabled', ...report.presets.map(p => p.id)]);
+  for (const pack of packs) {
+    let entries;
+    try { entries = packPresetEntries(pack, options); }
+    catch { diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_INVALID', severity:'error', pack:pack.id, message:`Data pack ${pack.id} preset descriptors could not be inspected.`}); continue; }
+    for (const [id, entry] of entries) {
+      if (entry?.configurationPreset === undefined) continue;
+      try { experimentId(entry.configurationPreset); }
+      catch { diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_INVALID',severity:'error',pack:pack.id,preset:id,message:`Data preset ${id} must name a valid configuration preset ID.`}); continue; }
+      if (!ids.has(entry.configurationPreset)) diagnostics.push({code:'PACK_CONFIGURATION_PRESET_LINK_UNKNOWN',severity:'error',pack:pack.id,preset:id,configurationPreset:entry.configurationPreset,message:`Data preset ${id} names unavailable configuration preset ${entry.configurationPreset}.`});
+    }
+  }
+  return diagnostics;
 }

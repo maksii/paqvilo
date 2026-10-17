@@ -1,0 +1,68 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <systemform>
+    <formid>{28ed8f58-20fa-434f-8c1b-af99a0294c8e}</formid>
+    <IntroducedVersion>1.0.0.0</IntroducedVersion>
+    <FormPresentation>0</FormPresentation>
+    <FormActivationState>1</FormActivationState>
+    <form showImage="false">
+      <tabs>
+        <tab name="general" id="{A3326959-2C56-459F-82CC-759675CCEF4E}" IsUserDefined="1" showlabel="true" expanded="true">
+          <labels>
+            <label description="General" languagecode="1033" />
+          </labels>
+          <columns>
+            <column width="100%">
+              <sections>
+                <section name="general" id="{3033524D-0E8C-46D6-8AFD-B09A123F127F}" showlabel="true" showbar="false" columns="1" layout="varwidth" celllabelposition="Top" labelwidth="115">
+                  <labels>
+                    <label description="General" languagecode="1033" />
+                  </labels>
+                  <rows>
+                    <row>
+                      <cell id="{82D1055C-251B-418A-86F8-8338F159168D}" showlabel="true">
+                        <labels>
+                          <label description="Name" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}" datafieldname="pqvd_name" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{80CE7617-565F-41DE-8EC5-13389AF5D9EE}" showlabel="true">
+                        <labels>
+                          <label description="Item" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_itemid" classid="{270BD3DB-D9AF-4782-9025-509E298DEC0A}" datafieldname="pqvd_itemid" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{CBA8042C-8EB9-4893-8834-169E44E0D646}" showlabel="true">
+                        <labels>
+                          <label description="Note" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_note" classid="{E0DECE4B-6FC8-4A8F-A065-082708572369}" datafieldname="pqvd_note" disabled="false" />
+                      </cell>
+                    </row>
+                    <row>
+                      <cell id="{88CB93E5-9DD1-4A50-86F2-D8EC5FE2D015}" showlabel="true">
+                        <labels>
+                          <label description="Sort order" languagecode="1033" />
+                        </labels>
+                        <control id="pqvd_sortorder" classid="{C6D124CA-7EDA-4A60-AEA9-7FB8D318B68F}" datafieldname="pqvd_sortorder" disabled="false" />
+                      </cell>
+                    </row>
+                  </rows>
+                </section>
+              </sections>
+            </column>
+          </columns>
+        </tab>
+      </tabs>
+    </form>
+    <IsCustomizable>1</IsCustomizable>
+    <CanBeDeleted>1</CanBeDeleted>
+    <LocalizedNames>
+      <LocalizedName description="Baseline Child" languagecode="1033" />
+    </LocalizedNames>
+  </systemform>
+</forms>

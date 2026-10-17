@@ -63,6 +63,7 @@ test(
                 pageMode: mode === "passthrough" ? "live" : "local",
               },
               status: {
+                sourceDir: path.join(directory, 'unrequested-network-path.json'),
                 revision: 1,
                 implementationFingerprint:
                   mode === "missing-implementation"
@@ -212,6 +213,10 @@ test(
     assert.equal(result.passed, true, JSON.stringify(result.differences));
     assert.equal(result.pixels.different, 0);
     assert.equal(result.local.semanticDomSha256, result.live.semanticDomSha256);
+    const report = JSON.parse(await fs.readFile(path.join(directory, 'same/report.json'), 'utf8'));
+    assert.deepEqual(report.simulator, result.simulator);
+    assert.equal(report.simulator.sourceDir, path.join(directory, 'unrequested-network-path.json'));
+    await assert.rejects(fs.stat(path.join(directory, 'unrequested-network-path.json')), error => error.code === 'ENOENT');
     assert.equal(await ownedTabsClosed(), 1);
     assert.equal(await userPage.title(), "Portal");
     assert.ok(await fs.stat(result.artifacts.difference));

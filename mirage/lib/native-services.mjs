@@ -1,15 +1,23 @@
 import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import fs from "node:fs/promises";
+import path from "node:path";
 import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
 import { csvCell } from './csv.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
-import { contextualViewFetchXml, renderQuickForm } from "./platform.mjs";
+import { notesFilter } from "./form-service.mjs";
+import { platformResourceHeaders, siteHeaders, notModified, PAGE_HEADERS } from "./response-headers.mjs";
+import { contextualViewFetchXml } from "./platform.mjs";
+import { nativeActionStateValues } from "./native-form-actions.mjs";
 import { handleImplicitGrant } from "./auth-token.mjs";
 import { handleODataFeed } from "./odata-feeds.mjs";
 import { platformBundleFor, localAspNetScript } from "./platform-manifest.mjs";
+import { adapterEnabled } from './local-overrides.mjs';
+import { attributeMetadata } from './attribute-metadata.mjs';
+import { calendarSettings, calendarLanguageScript, calendarEvents, calendarIcs, parseCalendarPath } from './list-views.mjs';
+import { CALENDAR_TEMPLATES } from './entitylist-calendar-templates.mjs';
 import {
   subgridSettings,
   subgridActionApplies,
@@ -328,7 +336,7 @@ export function buildLayout({
   if (selectColumn)
     columns.push({
       LogicalName: "col-select",
-      Name: "<span class='fa fa-check' aria-hidden='true'></span> <span class='sr-only'>Select</span>",
+      Name: `<span class='fa fa-check' aria-hidden='true'></span> <span class='${typeof selectColumn === "string" ? selectColumn : "sr-only"}'>Select</span>`,
       Metadata: null,
       Width: 20,
       SortDisabled: true,
@@ -337,21 +345,24 @@ export function buildLayout({
   for (const cell of view.fields ?? []) {
     if (!cell?.name) continue;
     const override = overrideFor(settings, cell.name);
-    const { table, attribute, field } = columnMetadata(
+    const { table, attribute, field: known } = columnMetadata(
       metadata,
       entity,
       fetch,
       cell.name,
     );
-    const width = Number(override?.Width) || Number(cell.width) || 100;
+    // A platform lookup view names system columns the export does not describe.
+    const field = known ?? (cell.dataverseType ? { dataverseType: cell.dataverseType, label: cell.label } : undefined);
+    // A view cell without a width serialises Width 0 (live: the ActionCards system view, every column 0, total 0).
+    const width = Number(override?.Width) || (cell.widthless ? 0 : Number(cell.width) || 100);
     columns.push({
       LogicalName: cell.name,
       Name: localizedText(override?.DisplayName, field?.label ?? cell.label ?? attribute),
       Metadata: compactAttributeMetadata(table, attribute, field, primaryName),
       Width: width,
-      SortDisabled: /^(multiselectpicklist|memo|ntext)$/i.test(
-        field?.dataverseType ?? "",
-      ),
+      // Multi-select choice columns cannot sort; memo columns can (live subgrid evidence).
+      // disableSorting="1" view cells cannot sort either (live: ActionCards cardtypeid).
+      SortDisabled: Boolean(cell.sortDisabled) || /^multiselectpicklist$/i.test(field?.dataverseType ?? ""),
       Type: 0,
     });
   }
@@ -367,9 +378,10 @@ export function buildLayout({
       SortDisabled: true,
       Type: 2,
     });
-  const total = columns.reduce((sum, column) => sum + column.Width, 0) || 1;
+  // A zero total (every column widthless) serialises each share as .NET's "NaN" (live ActionCards layout).
+  const total = columns.reduce((sum, column) => sum + column.Width, 0);
   for (const column of columns)
-    column.WidthAsPercent = (column.Width / total) * 100;
+    column.WidthAsPercent = total ? (column.Width / total) * 100 : "NaN";
   return {
     Configuration: configuration,
     Base64SecureConfiguration: protectConfiguration(secure),
@@ -384,6 +396,8 @@ export function buildLayout({
 }
 
 /** Native action link objects (subset of the managed ViewActionLink contract). */
+// The platform's default action tooltips (live list layouts).
+const ACTION_TOOLTIPS = { 1: "View details", 2: "Edit", 3: "Create", 4: "Delete" };
 export function actionLinks(settings, { portal, requestUrl, website }) {
   const actions = [];
   for (const [position, list] of [
@@ -436,7 +450,7 @@ export function actionLinks(settings, { portal, requestUrl, website }) {
         source: action,
         Type: type,
         Label: label,
-        Tooltip: localizedText(action.ButtonTooltip, ""),
+        Tooltip: localizedText(action.ButtonTooltip, ACTION_TOOLTIPS[type] ?? ""),
         Enabled: true,
         Target: target,
         EntityForm:
@@ -601,7 +615,7 @@ export function listModel({ portal, metadata, store, list, schemas = {} }) {
       placeholder: localizedText(portalField(m, "searchplaceholdertext", ""), "Search"),
       tooltip: localizedText(
         portalField(m, "searchtooltiptext", ""),
-        "To search on partial text, use the asterisk (*) wildcard character.",
+        "To search on partial text, use the asterisk (*) wildcard character. ",
       ),
     },
     filter: {
@@ -621,7 +635,52 @@ export function listModel({ portal, metadata, store, list, schemas = {} }) {
     detailsLabel: localizedText(portalField(m, "detailsbuttonlabel", ""), "View details"),
     createLabel: localizedText(portalField(m, "createbuttonlabel", ""), "Create"),
     emptyText: localizedText(portalField(m, "emptylisttext", ""), ""),
+    calendar: calendarSettings(list, metadata),
   };
+}
+
+/** Calendar list services: language table, event feed and iCalendar download. */
+async function handleCalendarService(req, res, url, context, websiteId) {
+  const route = parseCalendarPath(url.pathname);
+  if (!route || route.website !== websiteId || !["GET", "HEAD"].includes(req.method)) return false;
+  const culture = context.portal.websiteLanguages?.find((language) => language.isDefault)?.code ?? "en-US";
+  if (route.kind === "language") {
+    const body = Buffer.from(calendarLanguageScript(/^[a-z]{2}(-[A-Z]{2})?$/.test(culture) ? culture : "en-US"));
+    // Live: a day of private caching from the render time; Vary: * on every answer (live).
+    const now = Date.now();
+    res.writeHead(200, { "content-type": "text/javascript; charset=utf-8", "cache-control": "private, max-age=86400", expires: new Date(now + 86400000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "*", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] ?? "SAMEORIGIN", "content-length": body.length });
+    res.end(req.method === "HEAD" ? undefined : body);
+    return true;
+  }
+  const list = (context.portal.lists ?? []).find((candidate) => canonical(candidate.id) === route.list);
+  if (!list) return false;
+  try {
+    const model = listModel({ portal: context.portal, metadata: context.metadata, store: context.store, list, schemas: context.schemas });
+    // The platform feed answers a list without its start or end date column with this error (live).
+    if (!model.calendar?.start || !model.calendar?.end) return sendJson(res, 200, { success: 0, error: "Calendars require both a start and end date." }), true;
+    const from = Date.parse(url.searchParams.get("from") ?? "");
+    const to = Date.parse(url.searchParams.get("to") ?? "");
+    const query = await executeGridQuery(model, { viewId: route.view, page: 1, pageSize: 5000, allowLargePages: true, search: url.searchParams.get("search") ?? "" }, context);
+    if (query.accessDenied) return sendJson(res, 200, { success: 0, error: "You don't have permissions to view these records." }), true;
+    // The view can omit calendar columns; a permission-checked record read supplies them for each selected row.
+    const rows = [];
+    for (const row of query.rows) {
+      const id = row[model.idColumn];
+      rows.push({ ...row, ...((id != null && (await context.readProvider.get(model.entity, id, context.identity))) || {}) });
+    }
+    const details = model.detailsPage ? context.portal.pages.find((page) => canonical(page.id) === model.detailsPage)?.url : null;
+    const events = calendarEvents(rows, { calendar: model.calendar, idColumn: model.idColumn, detailsUrl: details, idParameter: model.idParameter, from, to });
+    if (route.kind === "icalendar") {
+      const body = Buffer.from(calendarIcs(events));
+      res.writeHead(200, { "content-type": "text/calendar; charset=utf-8", "content-disposition": 'attachment; filename="calendar.ics"', ...PAGE_HEADERS, "content-length": body.length });
+      res.end(req.method === "HEAD" ? undefined : body);
+      return true;
+    }
+    sendJson(res, 200, { success: 1, result: events });
+  } catch (error) {
+    sendError(res, error);
+  }
+  return true;
 }
 
 function formDefinition(portal, kind, formId) {
@@ -672,7 +731,7 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
         entity: cell.entity,
         name: solutionView(metadata, cell.viewId, cell.entity)?.name ?? cell.label ?? cell.id,
         fetchXml: cell.fetchXml,
-        fields: cell.fields?.map((field) => ({ name: field.name, width: field.width, label: field.label })) ?? [],
+        fields: cell.fields?.map((field) => ({ name: field.name, width: field.width, label: field.label, ...(field.widthless ? { widthless: true } : {}), ...(field.sortDisabled ? { sortDisabled: true } : {}) })) ?? [],
       }
     : null;
   if (!view)
@@ -696,8 +755,56 @@ export function subgridModel({ portal, schemas, metadata, store, kind, formId, s
     search: {
       enabled: cell.searchEnabled === true,
       placeholder: 'Search',
-      tooltip: 'To search on partial text, use the asterisk (*) wildcard character.',
+      tooltip: 'To search on partial text, use the asterisk (*) wildcard character. ',
     },
+  };
+}
+
+/**
+ * The platform's own default lookup views (savedquery type 64) of the system tables a portal
+ * ships without exporting them, as Dataverse defines them: columns, labels, widths and order
+ * (Learn: Contact, Account and Currency default views; live lookup dialogs render exactly
+ * these). Ids are the platform's fixed savedquery ids, identical in every environment. The
+ * Account Lookup View carries no order (live evidence).
+ */
+const PLATFORM_LOOKUP_VIEWS = Object.freeze({
+  contact: { id: "a2d479c5-53e3-4c69-addd-802327e67a0d", name: "Contacts Lookup View", idColumn: "contactid", order: "fullname", fields: [
+    { name: "fullname", label: "Full Name", width: 300 },
+    { name: "emailaddress1", label: "Email", width: 200 },
+    { name: "telephone1", label: "Business Phone", width: 125 },
+    { name: "parentcustomerid", label: "Company Name", width: 150, dataverseType: "customer" },
+    { name: "address1_city", label: "Address 1: City", width: 100 },
+    { name: "address1_telephone1", label: "Address 1: Phone", width: 125 },
+  ] },
+  account: { id: "a9af0ab8-861d-4cfa-92a5-c6281fed7fab", name: "Account Lookup View", idColumn: "accountid", fields: [
+    { name: "name", label: "Account Name", width: 300 },
+    { name: "emailaddress1", label: "Email", width: 200 },
+    { name: "telephone1", label: "Main Phone", width: 100 },
+    { name: "accountnumber", label: "Account Number", width: 100 },
+    { name: "primarycontactid", label: "Primary Contact", width: 150, dataverseType: "lookup" },
+    { name: "address1_city", label: "Address 1: City", width: 100 },
+  ] },
+  transactioncurrency: { id: "cd5625b0-dda8-4ee2-b13f-b9331e027c8a", name: "Currency Lookup View", idColumn: "transactioncurrencyid", order: "currencyname", fields: [
+    { name: "currencyname", label: "Currency Name", width: 200 },
+    { name: "isocurrencycode", label: "Currency Code", width: 125 },
+    { name: "currencysymbol", label: "Currency Symbol", width: 100 },
+    { name: "exchangerate", label: "Exchange Rate", width: 100, dataverseType: "decimal" },
+    { name: "currencyprecision", label: "Currency Precision", width: 125, dataverseType: "int" },
+  ] },
+});
+
+/** The platform default lookup view of a system table, or null for other tables. */
+export function platformLookupView(entity) {
+  const view = PLATFORM_LOOKUP_VIEWS[canonical(entity)];
+  if (!view) return null;
+  const attributes = [view.idColumn, ...view.fields.map((field) => field.name)].map((name) => `<attribute name="${name}"/>`).join("");
+  return {
+    id: view.id,
+    entity: canonical(entity),
+    name: view.name,
+    fetchXml: `<fetch><entity name="${canonical(entity)}">${attributes}${view.order ? `<order attribute="${view.order}"/>` : ""}</entity></fetch>`,
+    fields: view.fields.map((field) => ({ ...field })),
+    platform: true,
   };
 }
 
@@ -724,6 +831,11 @@ export function lookupModel({ portal, schemas, metadata, store, kind, formId, st
     const name = primaryNameColumn(store, metadata, target) ?? targetMapping.idColumn;
     if (field.lookupView?.entity === canonical(target))
       return { ...field.lookupView, name: solutionView(metadata, field.lookupView.id)?.name ?? "Lookup View" };
+    // Without a form-selected view, the target's exported default lookup view (query type 64).
+    const lookupView = (metadata?.views ?? []).find((view) => view.entity === canonical(target) && view.queryType === 64 && view.isDefault);
+    if (lookupView) return { id: lookupView.id, entity: lookupView.entity, name: lookupView.name, fetchXml: lookupView.fetchXml, fields: lookupView.fields, sourceFile: lookupView.file };
+    const platformView = platformLookupView(target);
+    if (platformView) return platformView;
     // A lookup without an imported default view still exposes the target's
     // primary name, sorted ascending, as the minimum native lookup projection.
     return {
@@ -748,7 +860,7 @@ export function lookupModel({ portal, schemas, metadata, store, kind, formId, st
     settings: {},
     pageSize:
       Number(portal.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10,
-    search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character." },
+    search: { enabled: true, placeholder: "Search", tooltip: "To search on partial text, use the asterisk (*) wildcard character. " },
   };
 }
 
@@ -762,7 +874,9 @@ export function associateModel(context) {
   const view = solutionView(context.metadata, action.ViewId, grid.entity) ?? {
     ...grid.views[0],
   };
-  return { ...grid, kind: "associate", views: [view], action };
+  // The associate dialog pages like a lookup dialog, not like its subgrid (live parent-edit/associate-dialog: pageSize 10).
+  const pageSize = Number(context.portal?.settings?.["Portal/Lookup/Modal/Grid/PageSize"]) || 10;
+  return { ...grid, kind: "associate", views: [view], action, pageSize };
 }
 
 // ---------------------------------------------------------------------------
@@ -899,7 +1013,10 @@ function applyMetaFilter(fetch, metaFilter, definition) {
       if (!safeName(node.name) || !safeName(node.from) || !safeName(node.to)) continue;
       const condition = node.filters?.[0]?.conditions?.[0] ?? {};
       const attribute = condition.attribute ?? node.from;
-      const ids = selected.filter((value) => GUID.test(value));
+      const staticConditions = condition["adx.uiinputtype"] === "dynamic" ? [] : (node.filters?.[0]?.conditions ?? []);
+      const ids = selected
+        .map((value) => String(staticConditions.find((candidate) => String(candidate["adx.id"]) === value)?.value ?? value).replace(/[{}]/g, ""))
+        .filter((value) => GUID.test(value));
       if (!ids.length || !safeName(attribute)) continue;
       entity.children.push({
         name: "link-entity",
@@ -955,6 +1072,9 @@ function applyUserFilters(fetch, model, request, identity, website) {
 
 function applyRelationship(fetch, model, parentId, store) {
   if (model.kind !== "subgrid" && model.kind !== "associate") return;
+  // A subgrid without a relationship (empty RelationshipName) lists its whole view: no parent
+  // filter, table permissions decide (live Contact form ActionCards).
+  if (model.kind === "subgrid" && !String(model.cell?.relationship ?? "").trim()) return;
   const relation = model.relationship;
   if (!relation || !relation.many)
     fail(`Subgrid ${model.cell.id} requires exported relationship ${model.cell.relationship}`, 501, "SUBGRID_RELATIONSHIP_REQUIRED");
@@ -1053,7 +1173,40 @@ export function formatDotNetDate(date, format) {
   );
 }
 
-function attributeEntry(name, value, { field, settings, entity, primaryName, timezoneOffset = 0 }) {
+/**
+ * The user's time zone with its daylight-saving rules. The platform reads it from the
+ * timeZoneCode cookie its client sets; an IANA name there is honoured. Otherwise, on loopback
+ * the browser shares this machine's zone: use it when its current offset matches the offset
+ * the grid request reports (getTimezoneOffset), else the fixed offset applies.
+ */
+export function requestTimeZone(req, offset, now = new Date()) {
+  const cookie = /(?:^|;\s*)timeZoneCode=([^;]+)/.exec(req?.headers?.cookie ?? "")?.[1];
+  const zone = cookie ? decodeURIComponent(cookie) : null;
+  if (zone && validTimeZone(zone)) return zone;
+  const local = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  return offset !== undefined && offset !== null && offset !== "" && Number(offset) === now.getTimezoneOffset() ? local : null;
+}
+const validTimeZone = (zone) => {
+  try {
+    new Intl.DateTimeFormat("en-US", { timeZone: zone });
+    return zone.includes("/") || zone === "UTC";
+  } catch {
+    return false;
+  }
+};
+/** A Date whose UTC fields are the wall-clock time in the user's zone (or fixed offset). */
+export function userLocalDate(date, { timeZone, timezoneOffset = 0 } = {}) {
+  if (!timeZone) return new Date(date.getTime() - Number(timezoneOffset || 0) * 60000);
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", { timeZone, hourCycle: "h23", year: "numeric", month: "numeric", day: "numeric", hour: "numeric", minute: "numeric", second: "numeric" }).formatToParts(date).map((part) => [part.type, part.value]));
+  return new Date(Date.UTC(Number(parts.year), Number(parts.month) - 1, Number(parts.day), Number(parts.hour) % 24, Number(parts.minute), Number(parts.second)));
+}
+
+// The grid service formats values with the request language's culture (en-US for 1033):
+// date and time "M/d/yyyy h:mm tt"; the site's DateTime/* settings apply in the client only.
+const CULTURE_DATE = "M/d/yyyy";
+const CULTURE_DATETIME = "M/d/yyyy h:mm tt";
+
+function attributeEntry(name, value, { field, settings, entity, primaryName, timezoneOffset = 0, timeZone = null, currency = () => null }) {
   const dataverseType = String(field?.dataverseType ?? "").toLowerCase();
   let type = NET_TYPES[dataverseType];
   const inner = scalar(value);
@@ -1065,14 +1218,16 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     else if (typeof value === "string" && GUID.test(value)) type = "System.Guid";
     else type = "System.String";
   }
+  // Strings and ids carry no formatted value (Dataverse FormattedValues has none for them).
   const entry = {
     Name: name,
     Type: type,
     Value: inner,
-    FormattedValue: inner == null ? "" : String(inner),
+    FormattedValue: "",
     DateTimeFormat: "DateAndTime",
     DisplayValue: inner == null ? "" : String(inner),
-    AttributeMetadata: compactAttributeMetadata(entity, name.split(".").at(-1), field, primaryName),
+    AttributeMetadata: attributeMetadata(entity, name.split(".").at(-1), field, { primaryName }) ?? compactAttributeMetadata(entity, name.split(".").at(-1), field, primaryName),
+    DateTimeBehavior: null,
   };
   if (type === NET_TYPES.lookup) {
     const id = canonical(value?.id ?? value);
@@ -1084,17 +1239,22 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.Value = number == null ? null : { Value: number, ExtensionData: null };
     entry.FormattedValue = entry.DisplayValue = value?.label ?? option?.label ?? (number == null ? "" : String(number));
   } else if (type === NET_TYPES.multiselectpicklist) {
-    const values = (Array.isArray(value) ? value : String(inner ?? "").split(","))
+    const values = (Array.isArray(value) ? value : String(inner ?? "").split(",").filter((item) => item.trim() !== ""))
       .map((item) => Number(scalar(item)))
       .filter(Number.isFinite);
-    entry.Value = values.map((number) => ({ Value: number, ExtensionData: null }));
-    entry.FormattedValue = entry.DisplayValue = values
-      .map((number) => (field?.options ?? []).find((option) => Number(option.value) === number)?.label ?? String(number))
-      .join("; ");
+    const labels = values.map((number) => (field?.options ?? []).find((option) => Number(option.value) === number)?.label ?? String(number));
+    entry.Value = values.map((number) => ({ Value: number, ExtensionData: {} }));
+    // The service's formatted value of a choices column is its last selected label; the display value joins all.
+    entry.FormattedValue = labels.at(-1) ?? "";
+    entry.DisplayValue = labels.join("; ");
   } else if (type === "Microsoft.Xrm.Sdk.Money") {
     const number = inner == null || inner === "" ? null : Number(inner);
     entry.Value = number == null ? null : { Value: number, ExtensionData: null };
-    entry.FormattedValue = entry.DisplayValue = number == null ? "" : number.toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    // The record's currency supplies the symbol and, for currency-precision columns (PrecisionSource 2), the decimals.
+    const money = number == null ? null : currency();
+    const digits = Number(field?.precisionSource) === 2 && Number.isInteger(Number(money?.currencyprecision)) ? Number(money.currencyprecision) : Number(field?.precision ?? 2);
+    // Symbols and precision come from the record; the current pattern uses en-US grouping and a leading minus.
+    entry.FormattedValue = entry.DisplayValue = number == null ? "" : `${number < 0 ? "-" : ""}${money?.currencysymbol ?? ""}${Math.abs(number).toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
   } else if (type === "System.Boolean") {
     const bool = inner === true || inner === 1 || /^(true|1)$/i.test(String(inner ?? ""));
     entry.Value = inner == null ? null : bool;
@@ -1102,15 +1262,13 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.FormattedValue = entry.DisplayValue = inner == null ? "" : option?.label ?? (bool ? "Yes" : "No");
   } else if (type === "System.DateTime") {
     const date = inner == null || inner === "" ? null : new Date(inner);
-    const dateOnly = /dateonly/i.test(field?.behavior ?? field?.format ?? "") || field?.type === "date";
+    const dateOnly = field?.dateTimeBehavior === "DateOnly" || /^date(only)?$/i.test(field?.format ?? "");
+    if (field?.dateTimeBehavior) entry.DateTimeBehavior = { Value: field.dateTimeBehavior, ExtensionData: {} };
     if (date && !Number.isNaN(date.getTime())) {
       entry.Value = `/Date(${date.getTime()})/`;
       entry.DateTimeFormat = dateOnly ? "DateOnly" : "DateAndTime";
-      const local = dateOnly ? date : new Date(date.getTime() - Number(timezoneOffset || 0) * 60000);
-      const format = dateOnly
-        ? settings?.["DateTime/DateFormat"] || "dd/MM/yyyy"
-        : settings?.["DateTime/DateTimeFormat"] || `${settings?.["DateTime/DateFormat"] || "dd/MM/yyyy"} ${settings?.["DateTime/TimeFormat"] || "HH:mm"}`;
-      entry.FormattedValue = formatDotNetDate(local, format);
+      const local = dateOnly || field?.dateTimeBehavior === "TimeZoneIndependent" ? date : userLocalDate(date, { timeZone, timezoneOffset });
+      entry.FormattedValue = formatDotNetDate(local, dateOnly ? CULTURE_DATE : CULTURE_DATETIME);
       entry.DisplayValue = dateOnly ? date.toISOString().slice(0, 10) : date.toISOString().replace(/\.\d{3}Z$/, "Z");
     } else {
       entry.Value = null;
@@ -1127,7 +1285,7 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     entry.FormattedValue = entry.DisplayValue = number == null ? "" : number.toLocaleString("en-US");
   } else if (type === "System.Guid") {
     entry.Value = inner == null ? null : canonical(inner);
-    entry.FormattedValue = entry.DisplayValue = entry.Value ?? "";
+    entry.DisplayValue = entry.Value ?? "";
   }
   return entry;
 }
@@ -1167,8 +1325,9 @@ export function gridRecord(row, model, layout, context) {
   const id = canonical(row[model.idColumn]);
   const attributes = [];
   const seen = new Set();
+  // The service returns only the attributes a record has a value for.
   const push = (name, value) => {
-    if (seen.has(name) || value === undefined) return;
+    if (seen.has(name) || value == null || value === "") return;
     seen.add(name);
     const { table, field } = columnMetadata(context.metadata, model.entity, fetch, name);
     attributes.push(
@@ -1178,10 +1337,12 @@ export function gridRecord(row, model, layout, context) {
         entity: table,
         primaryName: model.primaryName,
         timezoneOffset: context.timezoneOffset,
+        timeZone: context.timeZone,
+        currency: () => recordCurrency(context, model.entity, row, id),
       }),
     );
   };
-  for (const column of layout.Columns) if (column.Type === 0) push(column.LogicalName, row[column.LogicalName] ?? null);
+  for (const column of layout.Columns) if (column.Type === 0) push(column.LogicalName, row[column.LogicalName]);
   for (const [key, value] of Object.entries(row)) {
     if (key.includes("@") || key.startsWith("__") || /^_.*_value$/.test(key)) continue;
     if (!key.includes(".") && !fields[key] && key !== model.idColumn && !/^(statecode|statuscode)$/.test(key)) continue;
@@ -1190,14 +1351,37 @@ export function gridRecord(row, model, layout, context) {
   push(model.idColumn, id);
   const state = scalar(row.statecode);
   const status = scalar(row.statuscode);
+  const unassessed = context.config?.mode !== "live" && (model.kind === "associate" || !hasItemActions(model));
   return {
     Id: id,
     EntityName: model.entity,
     Attributes: attributes,
-    ...permissionsFor(context, model.entity, row),
-    StateCode: state == null ? 0 : Number(state),
-    StatusCode: status == null ? 0 : Number(status),
+    ...(unassessed ? UNASSESSED : { ...permissionsFor(context, model.entity, row), StatusCode: status == null ? 0 : Number(status) }),
+    StateCode: unassessed || state == null ? 0 : Number(state),
   };
+}
+
+// The platform assesses record privileges only for grids with item actions. Records it does not
+// assess report every privilege false, StatusCode 0 and StateCode 0 (the statecode/statuscode
+// attributes keep their values): grids without item actions (lookup dialogs, lists and subgrids
+// configured without ItemActions; evidence: list/item-list-filters, item-list-odata, item-list-mine,
+// basic-form/item-edit/lookup-search entity-lookup-grid-data.json, multistep-insert subgrid, the item-read and
+// item-edit-actions children subgrids). The associate dialog is a selection grid like a lookup dialog: its records are
+// unassessed although it shares the subgrid's ItemActions (live basic-form/parent-edit/associate-dialog #21 vs the
+// subgrid's own #20/#22). A subgrid with item actions is assessed whatever the grant's scope (live
+// basic-form/item-edit/populated and item-edit/permission/parent-scope: children reached through the parent chain
+// report CanRead/CanWrite/CanDelete true).
+const UNASSESSED = { CanRead: false, CanWrite: false, CanDelete: false, CanAppend: false, CanAppendTo: false, StatusCode: 0 };
+const hasItemActions = (model) => (model.settings?.ItemActions ?? []).some((action) => ACTION_TYPES[action?.Type]);
+/** The transactioncurrency row of a record (read as the platform's formatter, not the persona). */
+function recordCurrency(context, entity, row, id) {
+  try {
+    const reference = row.transactioncurrencyid ?? context.store?.get?.(entity, id, { admin: true })?.transactioncurrencyid;
+    const currencyId = canonical(reference?.id ?? reference);
+    return currencyId ? (context.store.get("transactioncurrency", currencyId, { admin: true }) ?? null) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** Execute one native grid data request. */
@@ -1238,6 +1422,13 @@ export async function executeGridQuery(model, request, context) {
   const fetch = parseFetchTree(
     contextualViewFetchXml(view.fetchXml, { user: identity, website: context.portal.website }),
   );
+  // The service also reads the record state (statecode, statuscode) for the state actions.
+  const root = rootEntity(fetch);
+  const tableFields = entityFields(context.metadata, model.entity);
+  if (!childNodes(root, "all-attributes").length)
+    for (const name of ["statecode", "statuscode"])
+      if (tableFields[name] && !childNodes(root, "attribute").some((node) => node.attrs.name === name))
+        root.children.unshift({ name: "attribute", attrs: { name }, children: [], text: "" });
   applyRelationship(fetch, model, context.secure?.parent, store);
   applyUserFilters(fetch, model, request, identity, context.portal.website?.id);
   if (model.search?.enabled !== false) applySearch(fetch, request.search, layout.Columns, context.metadata, model.entity);
@@ -1311,6 +1502,10 @@ export async function gridData(model, request, context) {
   };
 }
 
+// A download cell: the formatted value, or the display value of strings, ids and choices columns.
+const downloadText = (attribute) =>
+  !attribute ? "" : attribute.FormattedValue && !/OptionSetValueCollection$/.test(attribute.Type) ? attribute.FormattedValue : (attribute.DisplayValue ?? "");
+
 // ---------------------------------------------------------------------------
 // Request handling.
 
@@ -1326,6 +1521,7 @@ const JAVASCRIPT = "application/javascript; charset=utf-8";
 const staticType = (path) => (path.endsWith(".css") ? "text/css; charset=utf-8" : JAVASCRIPT);
 
 // A transparent 1x1 PNG for the offline notification bar icons (platform CDN images).
+const GIF_PIXEL = Buffer.from("R0lGODlhAQABAAAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==", "base64");
 const PNG_PIXEL = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=", "base64");
 /**
  * Native platform paths (lib/platform-manifest.mjs) served from local equivalents when
@@ -1337,9 +1533,30 @@ const NATIVE_EQUIVALENTS = new Map([
   ["/xrm-adx/js/webform.js", { file: new URL("./xrm-webform-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/radcaptcha.js", { file: new URL("./radcaptcha-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview.js", { file: new URL("./crmentityformview-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/fileuploadcontrol.js", { file: new URL("./fileuploadcontrol-compat.js", import.meta.url), type: JAVASCRIPT }],
+  // Map lists with credentials (platform.mjs mapListControl).
+  ["/xrm-adx/js/entitylist-map.js", { file: new URL("./entitylist-map-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/json2.min.js", { body: Buffer.from("/* Mirage: JSON is native. */"), type: JAVASCRIPT }],
+  ["/xrm-adx/samples/images/loader.gif", { body: GIF_PIXEL, type: "image/gif" }],
+  ["/xrm-adx/js/jquery.stackranking.js", { file: new URL("./stackranking-compat.js", import.meta.url), type: JAVASCRIPT }],
   ["/xrm-adx/js/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/xrm-adx/js/bootstrapv5/crmentityformview-datetime.js", { file: new URL("./crmentityformview-datetime-compat.js", import.meta.url), type: JAVASCRIPT }],
+  // Calendar lists (list-views.mjs): one local client stands in for the platform calendar scripts.
+  ["/areas/entitylist/js/entitylist-calendar.js", { file: new URL("./entitylist-calendar-compat.js", import.meta.url), type: JAVASCRIPT }],
+  ["/areas/entitylist/js/bootstrapv5/calendar.min.js", { body: Buffer.from("/* Mirage: the calendar renderer is part of entitylist-calendar.js. */"), type: JAVASCRIPT }],
+  ["/areas/entitylist/js/calendar.min.js", { body: Buffer.from("/* Mirage: the calendar renderer is part of entitylist-calendar.js. */"), type: JAVASCRIPT }],
+  ["/areas/entitylist/css/bootstrapv5/calendar.min.css", { file: new URL("./entitylist-calendar-compat.css", import.meta.url), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/calendar.min.css", { file: new URL("./entitylist-calendar-compat.css", import.meta.url), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/bootstrapv5/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
+  ["/areas/entitylist/css/entitylist-calendar.css", { body: Buffer.alloc(0), type: "text/css; charset=utf-8" }],
+  // The calendar templates the calendar client fetches by name (local equivalents).
+  ...Object.entries(CALENDAR_TEMPLATES).flatMap(([name, source]) => ["/areas/entitylist/tmpls/bootstrapv5/", "/areas/entitylist/tmpls/"].map((folder) => [folder + name + ".html", { body: Buffer.from(source), type: "text/html; charset=utf-8" }])),
   ["/resource/powerappsportal/img/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/resource/powerappsportal/img/close.png", { body: PNG_PIXEL, type: "image/png" }],
+  ["/resource/powerappsportal/img/lock.png", { body: PNG_PIXEL, type: "image/png" }],
+  // The attach-file control's warning icon (CDN image with an /xrm-adx/icons/ fallback).
+  ["/resource/powerappsportal/icons/warning.png", { body: PNG_PIXEL, type: "image/png" }],
+  ["/xrm-adx/icons/warning.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/web.png", { body: PNG_PIXEL, type: "image/png" }],
   ["/css/images/close.png", { body: PNG_PIXEL, type: "image/png" }],
 ]);
@@ -1363,6 +1580,30 @@ const RESOURCE_STRINGS = {
 };
 const RESOURCE_MANAGER = /^\/_portal\/([^/]+)\/Resources\/ResourceManager\/?$/i;
 
+
+/**
+ * /_webresource/{name}: a solution web resource (WebResources/{name} of an imported solution
+ * root), served as the platform does: text/plain for images and markup, scripts and styles
+ * with their own types; private, revalidating for 30 days.
+ */
+async function serveSolutionWebResource(req, res, url, context) {
+  const match = /^\/_webresource\/([A-Za-z0-9_][A-Za-z0-9_./-]*)$/.exec(url.pathname);
+  if (!match || match[1].includes("..") || !["GET", "HEAD"].includes(req.method)) return false;
+  for (const root of context.metadata?.roots ?? []) {
+    const body = await fs.readFile(path.join(root, "WebResources", match[1])).catch(() => null);
+    if (!body) continue;
+    const type = /\.js$/i.test(match[1]) ? JAVASCRIPT : /\.css$/i.test(match[1]) ? "text/css; charset=utf-8" : "text/plain; charset=utf-8";
+    const now = Date.now();
+    // An HTML web resource is served as a page: text/html with the page cache headers (live
+    // pqvd_baseline_banner.html, 60 captures); other types keep the private 30-day caching.
+    if (/\.html?$/i.test(match[1])) res.writeHead(200, { "content-type": "text/html; charset=utf-8", ...PAGE_HEADERS, "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
+    else res.writeHead(200, { "content-type": type, "cache-control": "private", expires: new Date(now + 30 * 86400 * 1000).toUTCString(), "last-modified": new Date(now).toUTCString(), vary: "Accept-Encoding", "x-frame-options": siteHeaders(context.portal ?? {})["x-frame-options"] });
+    res.end(req.method === "HEAD" ? undefined : body);
+    return true;
+  }
+  return false;
+}
+
 /** Serve a native platform path from its local equivalent unless the export or the asset cache owns it. */
 async function serveNativeEquivalent(req, res, url, context, websiteId) {
   const key = (() => {
@@ -1385,13 +1626,32 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   if (exported) return false;
   if (context.cache && equivalent.bundle?.capture !== false) {
     const cached = await context.cache.get(url.pathname + url.search, { origin: context.live?.origin }).catch(() => null);
-    if (cached) return false;
+    if (cached) {
+      await reportCapturedBundleRequirements(bundle,cached,context,url.pathname);
+      return false;
+    }
   }
-  const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
+  const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle, context.compat) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
   if (placeholder) reportPlaceholder(context, placeholder, url.pathname);
-  res.writeHead(200, { "content-type": equivalent.type, "cache-control": "no-cache", "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
-  res.end(req.method === "HEAD" ? undefined : body);
+  // Portal-origin platform resources carry the headers observed online; CDN bundles and images stay no-cache.
+  // The platform's /xrm-adx/samples/ images are static files too (live map list loader image).
+  const kind = localAspNetScript(url) ? "axd" : manager ? "resource-manager" : /^\/(?:js|xrm-adx\/(?:js|samples)|areas\/entitylist)\//.test(key) ? "static" : null;
+  // A local equivalent file dates its response by its own modification time, so a browser reuses
+  // it within its heuristic freshness as it does the platform's (live: no second request from
+  // the quick view document) and a conditional request is answered 304.
+  const modified = equivalent.file && !equivalent.bundle ? (await fs.stat(fileURLToPath(equivalent.file)).catch(() => null))?.mtimeMs : null;
+  const headers = kind
+    ? platformResourceHeaders(kind, { pathname: key, body, contentType: equivalent.type, frameOptions: siteHeaders(context.portal ?? {})["x-frame-options"], modified })
+    : { "content-type": equivalent.type, "cache-control": "no-cache" };
+  // Script resources registered by a control carry their own type (live: the RadCaptcha resources are text/javascript).
+  if (kind === "axd" && localAspNetScript(url)?.contentType) headers["content-type"] = localAspNetScript(url).contentType;
+  // Calendar assets (live): scripts and stylesheets cache for a week, templates are not cached.
+  if (/^\/areas\/entitylist\/(?:css|js)\//.test(key)) headers["cache-control"] = "public,max-age=604800";
+  if (/^\/areas\/entitylist\/tmpls\//.test(key)) Object.assign(headers, { "cache-control": "no-cache, no-store, must-revalidate", expires: "-1", pragma: "no-cache" });
+  const unchanged = Boolean(kind && kind !== "resource-manager" && notModified(req.headers, headers));
+  res.writeHead(unchanged ? 304 : 200, { ...headers, "x-sim-resource-provider": placeholder ? "local-platform-placeholder" : "local-platform-equivalent" });
+  res.end(req.method === "HEAD" || unchanged ? undefined : body);
   return true;
 }
 
@@ -1404,19 +1664,20 @@ const BUNDLE_SOURCES = {
 // default-<lcid>.moment bundle: the site language's moment locale (moment ships "en").
 const MOMENT_LOCALE = "(function(){var m=window.moment;if(m&&typeof m.locale==='function'){m.locale((document.documentElement.getAttribute('lang')||'en').toLowerCase());}})();";
 const bundleBodies = new Map();
-async function bundleEquivalent(bundle) {
-  if (!bundleBodies.has(bundle.id))
+async function bundleEquivalent(bundle, compat = {}) {
+  const key = bundle.id + JSON.stringify(compat);
+  if (!bundleBodies.has(key))
     bundleBodies.set(
-      bundle.id,
+      key,
       (async () => {
         const parts = [];
         // Source map comments would point at files that are not served.
-        for (const source of bundle.local)
+        for (const source of bundle.local.filter(source => adapterEnabled(source, compat)))
           parts.push(`/* Local equivalent part: ${source} */\n${(await bundleSource(source)).replace(/^\/\/# sourceMappingURL=.*$/gm, "")}`);
         return Buffer.from(parts.join(bundle.kind === "stylesheet" ? "\n" : "\n;\n"));
       })(),
     );
-  return bundleBodies.get(bundle.id);
+  return bundleBodies.get(key);
 }
 // A source is a library, a file of lib/, one "// @part <name>" section of a file
 // ("file#name"), or "provided:<file>" for a resource whose surface another part provides.
@@ -1433,6 +1694,21 @@ async function bundleSource(source) {
 }
 // One diagnostic per runtime and platform resource without a local equivalent.
 const reported = new WeakMap();
+/** Known platform globals whose provider may have been replaced by captured bytes. */
+export async function reportCapturedBundleRequirements(bundle,cached,context,pathname) {
+  if(bundle?.id!=='moment-locale'||!/(?:jQuery|\$)\.timeago\.settings/.test(cached.body.toString('utf8'))||typeof context.recordDiagnostic!=='function')return;
+  const profile=context.config?.shellProfile??{};
+  const paths=['headScripts','beforeContentScripts','bodyScripts','afterFooterScripts'].flatMap(key=>profile[key]??[]).map(entry=>typeof entry==='string'?entry:entry.src).filter(Boolean);
+  const provider=paths.find(path=>platformBundleFor(path)?.id==='postpreform');
+  // No capture means platformShell supplies the complete local equivalent.
+  if(!provider)return;
+  const bytes=await context.cache.get(provider,{origin:context.live?.origin}).catch(()=>null);
+  if(!bytes||/\btimeago\b/.test(bytes.body.toString('utf8')))return;
+  const seen=reported.get(context.recordDiagnostic)??new Set();reported.set(context.recordDiagnostic,seen);
+  if(seen.has('global:jQuery.timeago'))return;seen.add('global:jQuery.timeago');
+  context.recordDiagnostic({code:'PLATFORM_BUNDLE_GLOBAL_UNPROVIDED',severity:'warning',path:pathname,global:'jQuery.timeago',provider,
+    message:'The captured moment locale uses jQuery.timeago.settings, but the captured postpreform provider does not supply timeago. Recapture the complete platform bundle.'});
+}
 function reportPlaceholder(context, placeholder, pathname) {
   const record = context.recordDiagnostic;
   if (typeof record !== "function") return;
@@ -1447,6 +1723,46 @@ function reportPlaceholder(context, placeholder, pathname) {
     bundle: placeholder.id,
     message: `${placeholder.reason} No captured copy exists, so an empty local placeholder is served at the platform path.`,
   });
+}
+
+/** A note form body: JSON, urlencoded fields or multipart (the file part becomes {name, type, content}). */
+async function readNoteBody(req) {
+  const type = String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase();
+  if (!type || type === "application/json") return { body: await readJson(req, 64 * 1024 * 1024), native: false };
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > 64 * 1024 * 1024) fail("Request body is too large", 413, "RequestTooLarge");
+    chunks.push(chunk);
+  }
+  const bytes = Buffer.concat(chunks);
+  const body = {};
+  if (type === "application/x-www-form-urlencoded") {
+    for (const [name, value] of new URLSearchParams(bytes.toString("utf8"))) body[name] = value;
+  } else if (type === "multipart/form-data") {
+    let data;
+    try { data = await new Response(bytes, { headers: { "content-type": req.headers["content-type"] } }).formData(); }
+    catch { fail("Malformed multipart note form"); }
+    for (const [name, value] of data) {
+      if (typeof value === "string") body[name] = value;
+      else if (value.size || value.name) body[name] = { name: value.name, type: value.type, content: Buffer.from(await value.arrayBuffer()).toString("base64") };
+    }
+  } else fail("Unsupported note form content type", 415, "UnsupportedMediaType");
+  if (typeof body.isPrivate === "string") body.isPrivate = /^true$/i.test(body.isPrivate);
+  return { body, native: true };
+}
+
+/** The note subject's creation stamp, as the platform writes it: M/d/yyyy h:mm:ss AM UTC. */
+export function noteStamp(date) {
+  return date.toLocaleString("en-US", { timeZone: "UTC", hour12: true, month: "numeric", day: "numeric", year: "numeric", hour: "numeric", minute: "2-digit", second: "2-digit" }).replace(",", "") + " UTC";
+}
+
+// An empty answer is never compressed, so it carries no Vary: Accept-Encoding (live: the native add-note 201).
+function sendEmpty(res, status) {
+  const { vary, ...headers } = PAGE_HEADERS;
+  res.writeHead(status, { ...headers, "x-frame-options": "SAMEORIGIN", "content-length": 0 });
+  res.end();
 }
 
 async function readJson(req, limit = 4 * 1024 * 1024) {
@@ -1471,12 +1787,24 @@ async function readJson(req, limit = 4 * 1024 * 1024) {
 
 function sendJson(res, status, value, headers = {}) {
   const body = Buffer.from(JSON.stringify(value));
+  // The services answer with the page no-cache policy and frame confinement (live grid data responses).
   res.writeHead(status, {
     "content-type": "application/json; charset=utf-8",
-    "cache-control": "no-store",
+    ...PAGE_HEADERS,
+    "x-frame-options": "SAMEORIGIN",
     "content-length": body.length,
     ...headers,
   });
+  res.end(body);
+}
+// A grid service's AccessDenied answer is cache-control: private, without the no-cache pragma/expires
+// (live list/item-list/permission/anonymous and item-list-modal/permission/anonymous entity-grid-data.json).
+// The subgrid service answers its denial with the page no-cache policy instead (live
+// basic-form/contact-read-current entity-subgrid-data.json #22: no-cache, no-store, must-revalidate, expires -1, pragma).
+const sendSubgridAccessDenied = (res) => sendJson(res, 200, { AccessDenied: true });
+function sendAccessDenied(res) {
+  const body = Buffer.from(JSON.stringify({ AccessDenied: true }));
+  res.writeHead(200, { "cache-control": "private", "content-type": "application/json; charset=utf-8", vary: "Accept-Encoding", "x-frame-options": "SAMEORIGIN", "content-length": body.length });
   res.end(body);
 }
 function sendError(res, error) {
@@ -1554,28 +1882,79 @@ function defaultStatus(metadata, entity, state) {
   return (statusField?.statuses ?? statusField?.options ?? []).find((option) => Number(option.state) === state)?.value ?? (state === 0 ? 1 : 2);
 }
 
-/** Notes (annotations) visible on portal forms: *WEB* prefix, private notes only for their author. */
-export function portalNotes(rows, identity) {
+/** Notes (annotations) visible on portal forms: the NotesFilter prefix (`*WEB*`), private notes only for their author. */
+export function portalNotes(rows, identity, prefix = "*WEB*") {
   const contact = canonical(identity?.contactId ?? identity?.id);
   return rows.filter((row) => {
     const text = String(row.notetext ?? "");
     const subject = String(row.subject ?? "");
     const isPrivate = subject.includes("*PRIVATE*");
-    return (text.startsWith("*WEB*") && !isPrivate) || (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`));
+    return (text.startsWith(prefix) && !isPrivate) || (isPrivate && contact && subject.toLowerCase().includes(`[contact:${contact}]`));
   });
 }
 
-async function annotationRows(context, entity, id) {
+// The notes service orders by createdon as the request's orders say (Direction 1 descending, null ascending;
+// live basic-form/item-edit/lookup-clear vs item-edit-actions/create-related-dialog); notes of the same instant keep
+// creation order ascending and its reverse descending.
+async function annotationRows(context, entity, id, descending = true) {
   const mapping = mappingFor(context.store, "annotation");
-  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon" descending="true"/></entity></fetch>`;
+  const xml = `<fetch><entity name="annotation"><all-attributes/><filter type="and"><condition attribute="objectid" operator="eq" value="${xmlEscape(id)}"/></filter><order attribute="createdon"/></entity></fetch>`;
   const result = await context.readProvider.fetchXml(xml, context.identity);
-  return (result.entities ?? result.value ?? []).filter(
+  // Notes of the same instant (seeded together) keep the order they were created in, as the live
+  // reset's sequential creates do; the query's own tie-break is the table's key order.
+  let created = new Map();
+  try {
+    created = new Map((context.store?.tableRows?.("annotation") ?? []).map((row, index) => [canonical(row[mapping.idColumn]), index]));
+  } catch {
+    created = new Map();
+  }
+  const time = (row) => Date.parse(row.createdon ?? "") || 0;
+  const rows = [...(result.entities ?? result.value ?? [])]
+    .map((row, index) => ({ row, index, order: created.get(canonical(row[mapping.idColumn])) ?? Infinity }))
+    .sort((a, b) => time(a.row) - time(b.row) || (a.order === b.order ? a.index - b.index : a.order < b.order ? -1 : 1))
+    .map((entry) => entry.row);
+  if (descending) rows.reverse();
+  return rows.filter(
     (row) => !row.objecttypecode || canonical(scalar(row.objecttypecode)) === canonical(entity) || canonical(row.objectid?.logical_name) === canonical(entity),
   ).map((row) => ({ ...row, [mapping.idColumn]: row[mapping.idColumn] }));
 }
 
+// The notes service's record Attributes (live entity-notes responses): the note row's columns in the
+// platform's order, as grid attribute entries. The service resolves AttributeMetadata by column name on the
+// regarding table, not on annotation (live basic-form/item-read/read-only: createdon/modifiedon/createdby carry
+// pqvd_baselineitem metadata, EntityLogicalName included; subject, notetext, objectid... report null).
+const NOTE_COLUMNS = [
+  ["objectid", "lookup"], ["modifiedon", "datetime"], ["subject", "nvarchar"], ["isdocument", "bit"], ["filesize", "int"],
+  ["createdon", "datetime"], ["filename", "nvarchar"], ["objecttypecode", "nvarchar"], ["notetext", "memo"],
+  ["annotationid", "uniqueidentifier"], ["mimetype", "nvarchar"], ["createdby", "lookup"],
+];
+function noteAttributes(row, context, zone, regarding) {
+  const fields = entityFields(context.metadata, "annotation");
+  const regardingFields = entityFields(context.metadata, regarding);
+  const out = [];
+  for (const [name, dataverseType] of NOTE_COLUMNS) {
+    let value = row[name];
+    if (name === "isdocument") value ??= Boolean(row.filename);
+    if (name === "filesize") value ??= row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0;
+    if (name === "objecttypecode") value ??= row.objectid?.logical_name ?? regarding;
+    if (value == null || value === "") continue;
+    const field = fields[name] ?? { dataverseType, ...(dataverseType === "datetime" ? { dateTimeBehavior: "UserLocal" } : {}) };
+    const entry = attributeEntry(name, value, { field, settings: context.portal.settings, entity: "annotation", ...zone });
+    entry.AttributeMetadata = attributeMetadata(regarding, name, regardingFields[name]) ?? null;
+    // The regarding reference carries no name and no formatted value.
+    if (name === "objectid" && entry.Value) { entry.Value.Name = null; entry.FormattedValue = entry.DisplayValue = ""; }
+    // The table type shows the table's display name (live: "Baseline Item"), else its logical name.
+    if (name === "objecttypecode") {
+      const labels = mappingFor(context.store, String(scalar(value)))?.labels ?? {};
+      entry.FormattedValue = entry.DisplayValue = labels[1033] ?? Object.values(labels)[0] ?? String(scalar(value));
+    }
+    out.push(entry);
+  }
+  return out;
+}
+
 const fileSizeDisplay = (bytes) =>
-  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(2)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(2)} KB` : `${bytes} B`;
+  bytes >= 1048576 ? `${(bytes / 1048576).toFixed(2)} MB` : bytes >= 1024 ? `${(bytes / 1024).toFixed(2)} KB` : `${bytes} bytes`;
 
 async function handleNotes(action, req, res, context) {
   if (action === "entity-notes") {
@@ -1586,56 +1965,70 @@ async function handleNotes(action, req, res, context) {
       fail("The regarding record was not found", 404, "NotFound");
     const pageSize = Math.min(Math.max(Number(body.pageSize) || 10, 1), 50);
     const page = Math.max(1, Number(body.page) || 1);
-    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id), context.identity);
+    const prefix = notesFilter(context.portal);
+    // The notes request reports no offset: the user's zone comes from the timeZoneCode cookie, else the
+    // loopback browser shares this machine's zone (live formats the dates in the user's local time).
+    const zone = { timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) ?? (body.timezoneOffset == null ? Intl.DateTimeFormat().resolvedOptions().timeZone : null) };
+    const order = Array.isArray(body.orders) ? body.orders.find((entry) => String(entry?.Attribute ?? "").toLowerCase() === "createdon") : null;
+    const descending = Array.isArray(body.orders) ? Number(order?.Direction) === 1 : true;
+    const rows = portalNotes(await annotationRows(context, regarding.LogicalName, regarding.Id, descending), context.identity, prefix);
     const contact = canonical(context.identity?.contactId ?? context.identity?.id);
     const records = rows.slice((page - 1) * pageSize, page * pageSize).map((row) => {
       const id = canonical(row.annotationid);
       const size = Number(row.filesize) || (row.documentbody ? Buffer.from(String(row.documentbody), "base64").length : 0);
       const mine = Boolean(contact) && String(row.subject ?? "").toLowerCase().includes(`[contact:${contact}]`);
-      const text = String(row.notetext ?? "").replace(/^\*WEB\*/, "");
+      const raw = String(row.notetext ?? "");
+      const text = raw.startsWith(prefix) ? raw.slice(prefix.length) : raw;
+      // Live entity-notes records (basic-form/item-edit/note-add, plugin-mutation): attachment fields first,
+      // AttachmentSize serialised as an empty object, CreatedOn as a WCF date, append rights granted.
       return {
-        Id: id,
-        EntityName: "annotation",
-        Attributes: [],
-        CanRead: true,
-        CanWrite: mine,
-        CanDelete: mine,
-        CanAppend: false,
-        CanAppendTo: false,
-        StateCode: 0,
-        StatusCode: 0,
         AttachmentUrl: row.filename ? `/_entity/annotation/${id}/${context.portal.website?.id ?? ""}` : null,
         AttachmentContentType: row.mimetype ?? null,
         AttachmentFileName: row.filename ?? null,
         AttachmentIsImage: /^image\/(jpeg|gif|png)$/i.test(row.mimetype ?? ""),
-        AttachmentSize: size,
-        AttachmentSizeDisplay: fileSizeDisplay(size),
-        CreatedOn: row.createdon ?? null,
+        AttachmentSize: {},
+        AttachmentSizeDisplay: row.filename ? fileSizeDisplay(size) : null,
+        CreatedOn: row.createdon ? `/Date(${Date.parse(row.createdon)})/` : null,
         CreatedOnDisplay: row.createdon ? new Date(row.createdon).toISOString().replace(/\.\d{3}Z$/, "Z") : null,
         HasAttachment: Boolean(row.filename),
         Subject: row.subject ?? "",
-        Text: text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]).replace(/\n/g, "<br />"),
+        // The platform wraps the note text in a paragraph.
+        Text: `<p>${text.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]).replace(/\n/g, "<br />")}</p>`,
         UnformattedText: text,
         IsPostedByCurrentUser: mine,
-        PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? "")?.[1] ?? "",
+        PostedByName: /by (.*?) \[contact:/i.exec(row.subject ?? "")?.[1] ?? row.createdby?.name ?? "",
         DisplayToolbar: mine,
         IsPrivate: String(row.subject ?? "").includes("*PRIVATE*"),
+        Id: id,
+        EntityName: "annotation",
+        Attributes: noteAttributes(row, context, zone, canonical(regarding.LogicalName)),
+        CanRead: true,
+        CanWrite: mine,
+        CanDelete: mine,
+        CanAppend: true,
+        CanAppendTo: true,
+        StateCode: 0,
+        StatusCode: 0,
       };
     });
     return sendJson(res, 200, {
+      MoreRecords: rows.length > page * pageSize,
       Records: records,
       ItemCount: rows.length,
       PageCount: Math.ceil(rows.length / pageSize),
       PageNumber: page,
       PageSize: pageSize,
-      MoreRecords: rows.length > page * pageSize,
-      CreateActionMetadata: { Disabled: false, DisabledMessage: null },
-      DisabledItemActionLinks: [],
+      NextPagePagingCookie: null,
+      ViewConfiguration: null,
+      CompleteViewLayout: null,
+      CreateActionMetadata: null,
+      DisabledItemActionLinks: null,
     });
   }
-  // Add, update and delete use JSON locally; the native form posts multipart
-  // fields with the same names (text, isPrivate, file as base64 here).
-  const body = await readJson(req, 64 * 1024 * 1024);
+  // Add, update and delete take the native form transport (urlencoded fields, multipart with
+  // a chosen file) and, for local tooling, JSON with the same names (file as base64).
+  const { body, native } = await readNoteBody(req);
+  if (native && req.headers.__requestverificationtoken === undefined && body.__RequestVerificationToken !== context.csrf) fail("The anti-forgery token is missing or invalid.", 403, "MissingPortalRequestVerificationToken");
   const contact = canonical(context.identity?.contactId ?? context.identity?.id);
   if (!contact) fail("Notes require a signed-in contact", 401, "SignInRequired");
   if (action === "entity-form-addnote") {
@@ -1655,8 +2048,8 @@ async function handleNotes(action, req, res, context) {
       ([, rel]) => rel.many !== true && canonical(rel.from) === "objectid" && canonical(rel.entity) === canonical(parentMapping.logicalName),
     )?.[0];
     const values = {
-      notetext: `*WEB*${text}`,
-      subject: `Note created on ${new Date().toUTCString()} by ${fullname} [contact:${contact}]${body.isPrivate ? " *PRIVATE*" : ""}`,
+      notetext: `${notesFilter(context.portal)}${text}`,
+      subject: `Note created on ${noteStamp(new Date())} by ${fullname} [contact:${contact}]${body.isPrivate ? " *PRIVATE*" : ""}`,
       objecttypecode: parentMapping.logicalName,
       ...(navigation
         ? { [`${navigation}@odata.bind`]: `/${parentMapping.entitySet}(${id})` }
@@ -1669,6 +2062,8 @@ async function handleNotes(action, req, res, context) {
       values.filesize = Buffer.from(values.documentbody, "base64").length;
     }
     const created = await context.change(() => context.store.create("annotation", values, context.identity));
+    // The platform answers the native form with an empty 201.
+    if (native) return sendEmpty(res, 201);
     return sendJson(res, 201, { Id: canonical(created.annotationid) });
   }
   const id = String(body.id ?? "");
@@ -1800,34 +2195,11 @@ export async function handleNativeService(req, res, url, context) {
   }
   const websiteId = canonical(context.portal.website?.id);
   if (await serveNativeEquivalent(req, res, url, context, websiteId)) return true;
+  if (await handleCalendarService(req, res, url, context, websiteId)) return true;
   if (await handleODataFeed(req, res, url, context)) return true;
   if (await handleImplicitGrant(req, res, url, { portal: context.portal, identity: context.identity, contact: contactRow(context), origin: context.origin })) return true;
   if (await serveCommunityPlacement(req, res, url, context, websiteId)) return true;
-  const quick = /^\/_portal\/quickform-template-path\/([0-9a-f-]{36})\/?$/i.exec(url.pathname);
-  if (quick) {
-    if (canonical(quick[1]) !== websiteId) return false;
-    try {
-      if (!["GET", "HEAD"].includes(req.method)) fail("Quick view forms require GET.", 405, "MethodNotAllowed");
-      const body = await renderQuickForm({
-        portal: context.portal,
-        schemas: context.schemas,
-        store: context.store,
-        readProvider: context.readProvider,
-        identity: context.identity,
-        params: Object.fromEntries(url.searchParams),
-      });
-      const styles = (context.portal.webFiles ?? [])
-        .filter((file) => /bootstrap(?:\.min)?\.css$/i.test(file.url ?? ""))
-        .map((file) => `<link rel="stylesheet" href="${xmlEscape(file.url)}">`)
-        .join("");
-      res.writeHead(200, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(`<!doctype html><html><head><meta charset="utf-8"><title>Quick view</title>${styles}</head><body><form id="content_form"><div id="content-container">${body}</div></form></body></html>`);
-    } catch (error) {
-      res.writeHead(error.status ?? 500, { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" });
-      res.end(`<!doctype html><title>Quick view</title><p role="alert">${xmlEscape(error.message)}</p>`);
-    }
-    return true;
-  }
+  if (await serveSolutionWebResource(req, res, url, context)) return true;
   const token = /^\/_portal\/([^/]+)\/Layout\/GetAntiForgeryToken\/?$/i.exec(url.pathname);
   if (token) {
     if (canonical(token[1]) !== websiteId) return false;
@@ -1878,11 +2250,13 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (req.method !== "POST") fail("Native portal services require POST.", 405, "MethodNotAllowed");
-    verifyToken(req, context.csrf);
     if (/^entity-(notes|form-addnote|form-updatenote|form-deletenote)$/.test(normalized)) {
+      // The native notes form posts its token as a field; JSON callers send the header.
+      if (req.headers.__requestverificationtoken !== undefined || /^(?:application\/json)?$/.test(String(req.headers["content-type"] ?? "").split(";")[0].trim().toLowerCase())) verifyToken(req, context.csrf);
       await handleNotes(normalized, req, res, context);
       return true;
     }
+    verifyToken(req, context.csrf);
     const body = await readJson(req);
     if (/^entity-(grid|subgrid|lookup-grid)-data\.json$/.test(normalized)) {
       const secure = unprotectConfiguration(body.base64SecureConfiguration);
@@ -1892,15 +2266,18 @@ export async function handleNativeService(req, res, url, context) {
       const model = modelFor(secure, context);
       if (model.kind === "subgrid" && model.definition && secure.parent) {
         if (!(await context.readProvider.get(model.schema.entity, secure.parent, context.identity)))
-          return sendJson(res, 200, { AccessDenied: true }), true;
+          return sendSubgridAccessDenied(res), true;
       }
-      const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0 });
-      sendJson(res, 200, data);
+      const data = await gridData(model, body, { ...context, secure, timezoneOffset: Number(body.timezoneOffset) || 0, timeZone: requestTimeZone(req, body.timezoneOffset) });
+      if (data.AccessDenied) (model.kind === "subgrid" || model.kind === "associate" ? sendSubgridAccessDenied : sendAccessDenied)(res);
+      else sendJson(res, 200, data);
       return true;
     }
     if (normalized === "entity-grid-delete") {
-      const entity = body.LogicalName ?? body.logicalName;
-      const id = body.Id ?? body.id;
+      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
       if (!safeName(entity) || !GUID.test(String(id ?? ""))) fail("Invalid_Request", 400, "Invalid_Request");
       // A form subgrid delete must name its declared grid; plain list and form
       // deletes rely on the table permission of the current persona.
@@ -1928,12 +2305,16 @@ export async function handleNativeService(req, res, url, context) {
       return true;
     }
     if (normalized === "action-deactivate" || normalized === "action-activate") {
-      const entity = body.LogicalName ?? body.logicalName;
-      const id = body.Id ?? body.id;
+      // A form action bar posts { entityReference: { LogicalName, Id } } (live); grids post the reference itself.
+      const reference = body.entityReference ?? body;
+      const entity = reference.LogicalName ?? reference.logicalName;
+      const id = reference.Id ?? reference.id;
       if (!safeName(entity) || !GUID.test(String(id ?? ""))) fail("Invalid_Request", 400, "Invalid_Request");
       const state = normalized === "action-deactivate" ? 1 : 0;
+      // The table's own state/status pair (solution metadata or the store's field definitions), then the standard 1/2 defaults.
+      const resolved = nativeActionStateValues(entity, state ? "deactivate" : "activate", { metadata: context.metadata, store: context.store });
       await context.change(() =>
-        writeOperation(context, "update", entity, id, { statecode: state, statuscode: defaultStatus(context.metadata, entity, state) }),
+        writeOperation(context, "update", entity, id, { statecode: state, statuscode: resolved?.statuscode ?? defaultStatus(context.metadata, entity, state) }),
       );
       res.writeHead(204);
       res.end();
@@ -1978,7 +2359,7 @@ export async function handleNativeService(req, res, url, context) {
       for (let page = 1; records.length < maximum; page++) {
         const data = await gridData(model, { ...body, page, pageSize: Math.min(maximum, 5000), allowLargePages: true, download: true }, { ...context, secure });
         if (data.AccessDenied) {
-          sendJson(res, 200, { AccessDenied: true });
+          sendAccessDenied(res);
           return true;
         }
         records.push(...(data.Records ?? []));
@@ -1986,7 +2367,7 @@ export async function handleNativeService(req, res, url, context) {
       }
       const columns = (Array.isArray(body.columns) ? body.columns : []).filter((column) => column?.LogicalName && column.Type !== 1 && column.Type !== 2);
       const header = columns.map((column) => csvCell(String(column.Name ?? column.LogicalName).replace(/<[^>]*>/g, ""))).join(",");
-      const lines = records.slice(0, maximum).map((record) => columns.map((column) => csvCell(record.Attributes.find((attribute) => attribute.Name === column.LogicalName)?.FormattedValue ?? "")).join(","));
+      const lines = records.slice(0, maximum).map((record) => columns.map((column) => csvCell(downloadText(record.Attributes.find((attribute) => attribute.Name === column.LogicalName)))).join(","));
       // Excel downloads are served as CSV with an explicit diagnostic header:
       // the local runtime does not generate Office Open XML workbooks.
       const key = `${new Date().toISOString().slice(0, 19)}|${String(body.viewName ?? "export").replace(/[\\/:*?"<>|]/g, "_")}.csv`;

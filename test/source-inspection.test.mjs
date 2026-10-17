@@ -6,6 +6,70 @@ import { createSourceInspector, inspectionSources, inspectRenderedPage } from '.
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
+test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async t => {
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'), '<div id="page-block"><button id="fx_title">Title</button></div>');
+  fs.appendFileSync(path.join(fx.portal,'web-templates/Partial.webtemplate.source.html'), '<aside id="template-block"></aside>');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Banner.contentsnippet.value.html'), '<span id="snippet-block">A source fixture</span>');
+  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'), 'document.getElementById("fx_title");');
+  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/');
+  for(const [selector,suffix] of [['#page-block','Home.webpage.copy.html'],['#template-block','Partial.webtemplate.source.html'],['#snippet-block','Banner.contentsnippet.value.html']]) {
+    const row=report.elementSources.find(item=>item.selector===selector);
+    assert.ok(row?.sourceFile.endsWith(suffix),`${selector} resolves to its owning exported source`);
+    assert.equal(row.certainty,'candidate');assert.equal(row.evidence,'source-selector');
+  }
+  const script=report.elementSources.find(item=>item.selector==='#fx_title'&&item.kind==='script');
+  assert.ok(script.sourceFile.endsWith('widget.js'));assert.equal(script.line,1);assert.equal(script.certainty,'candidate');
+});
+
+test('platform routes index the website shell includes while authored bare-shell pages respect their template',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  fs.appendFileSync(path.join(fx.portal,'website.yml'),'\nadx_headerwebtemplateid: header\nadx_footerwebtemplateid: footer');
+  for(const [name,id,body] of [['Header','header','<header id="site-header">{% include "Logo" %}</header>'],['Logo','logo','<img id="site-logo" src="/logo.svg">'],['Footer','footer','<footer id="site-footer"></footer>']]){
+    fs.writeFileSync(path.join(fx.portal,`web-templates/${name}.webtemplate.yml`),`adx_webtemplateid: ${id}\nadx_name: ${name}`);
+    fs.writeFileSync(path.join(fx.portal,`web-templates/${name}.webtemplate.source.html`),body);
+  }
+  const inspector=createSourceInspector({sourceDir:fx.portal});
+  const platform=(await inspector.inspect('/SignIn')).report;
+  assert.equal(platform.page,null);assert.ok(platform.elementSources.some(row=>row.selector==='#site-logo'));
+  assert.ok(platform.webTemplates.some(row=>row.name==='Footer'));
+  const authored=(await inspector.inspect('/')).report;
+  assert.equal(authored.webTemplates.some(row=>row.name==='Header'),false,'exported usewebsiteheaderandfooter=false excludes the shell');
+});
+
+test('source inspection retains markup from the 900th of a thousand referenced snippets and declares oversized bodies',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const snippets=Array.from({length:1000},(_,index)=>({adx_contentsnippetid:'late-'+index,adx_name:'Late '+index,adx_value:`<aside id="late-${index}"></aside>`}));
+  snippets.push({adx_contentsnippetid:'oversized',adx_name:'Oversized',adx_value:'x'.repeat(1024*1024+1)});
+  fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify(snippets));
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),snippets.map(row=>`{{ snippets[${JSON.stringify(row.adx_name)}] }}`).join(''));
+  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/');
+  assert.ok(report.elementSources.some(row=>row.selector==='#late-900'));
+  assert.equal(report.snippets.filter(row=>row.name.startsWith('Late ')).length,1000);
+  assert.equal(report.elementSourceLimits.truncated,true);
+});
+
+test('a rendered classic list adds its configured view and columns even without a static page reference',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);const id='10000000-0000-4000-8000-000000000001';
+  fs.mkdirSync(path.join(fx.portal,'lists'));
+  fs.writeFileSync(path.join(fx.portal,'lists/Items.list.yml'),`adx_entitylistid: ${id}\nadx_name: Items\nadx_entityname: fx_widget\nadx_view: item-view`);
+  fs.mkdirSync(path.join(fx.solution,'Entities/fx_widget/SavedQueries'),{recursive:true});
+  fs.writeFileSync(path.join(fx.solution,'Entities/fx_widget/SavedQueries/Items.xml'),'<savedquery><savedqueryid>item-view</savedqueryid><fetchxml><fetch><entity name="fx_widget"><attribute name="fx_title"/></entity></fetch></fetchxml><layoutxml><grid><row><cell name="fx_title"/></row></grid></layoutxml><LocalizedNames><LocalizedName description="Items" languagecode="1033"/></LocalizedNames></savedquery>');
+  const {report}=await createSourceInspector({sourceDir:fx.portal,mirageConfig:{project:fx.project}}).inspect('/',{controls:[{listId:id.replaceAll('-','')}]});
+  assert.deepEqual(report.components.find(row=>row.kind==='list').viewIds,['item-view']);
+  assert.ok(report.views.some(row=>row.id==='item-view'));assert.ok(report.columns.some(row=>row.entity==='fx_widget'&&row.name==='fx_title'));
+});
+
+test('repeated enrichment keeps unresolved diagnostics stable and rejects absent reports clearly',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),'{% codecomponent name: "unknown.Control" %}');
+  const inspector=createSourceInspector({sourceDir:fx.portal}),{report}=await inspector.inspect('/');
+  await inspector.enrich(report);const before=structuredClone(report.unresolved);
+  await inspector.enrich(report);assert.deepEqual(report.unresolved,before);
+  assert.ok(before.some(row=>row.kind==='code-component'));
+  for(const value of [null,undefined,[],42,'report'])await assert.rejects(()=>inspector.enrich(value),/requires a page report object/);
+});
+
 test('inspection traces exported plugin steps applicable to page tables with type and assembly sources, without claiming live execution', async t => {
   const fx = inspectionFixture(); t.after(fx.cleanup);
   const assembly = path.join(fx.solution, 'PluginAssemblies/Synthetic/Synthetic.xml');
@@ -48,7 +112,7 @@ test('live inspection selects exported route languages and matching snippet sour
   assert.equal(french.language.code, 'fr-FR');
   assert.equal(french.page.title, 'French page');
   assert.equal(french.requestPath, '/fr-FR/');
-  assert.equal(french.pageSources.find((row) => row.name === 'Page JavaScript').sourceFile, path.join(fx.portal, 'web-pages/home/Home.fr-FR.webpage.custom_javascript.js'));
+  assert.equal(french.pageSources.find((row) => row.name === 'Language page JavaScript').sourceFile, path.join(fx.portal, 'web-pages/home/Home.fr-FR.webpage.custom_javascript.js'));
   assert.equal(french.snippets[0].value, 'French banner');
   assert.equal(french.snippets[0].sourceFile, path.join(fx.portal, 'content-snippets/Banner.fr-FR.contentsnippet.value.html'));
   const english = (await inspector.inspect('/en-US/')).report;

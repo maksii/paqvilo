@@ -13,6 +13,15 @@ const require = createRequire(import.meta.url);
 const SITE = "7b2b3c4d-1e2f-4a5b-8c6d-7e8f9a0b1c2d";
 const CONTACT = "c2000000-0000-4000-8000-000000000001";
 
+test("code component server form preserves hosted nested-form parsing", async (t) => {
+  const { page, app } = await portalFixture(t, { home: '<div data-pcf-schema="Invented.Component"></div><section><form data-first><input name="subject"></form></section><form data-second><input name="second"></form>' });
+  await page.goto(app.url + '/');
+  assert.equal(await page.locator('form#liquid_form').count(), 1);
+  assert.equal(await page.locator('form[data-first]').count(), 0);
+  assert.equal(await page.locator('input[name=subject]').count(), 1);
+  assert.equal(await page.locator('form[data-second]').count(), 1);
+});
+
 // Synthetic portal: header with a dropdown menu, footer followed by an authored cookie
 // banner, a plain page and a basic form page. Nothing leaves loopback.
 async function portalFixture(t, { settings = [], home = null } = {}) {

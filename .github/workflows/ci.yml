@@ -13,6 +13,11 @@ on:
         type: string
         required: false
         default: ''
+      package_version:
+        description: Runner-only version for a gated preview archive
+        type: string
+        required: false
+        default: ''
 
 permissions:
   contents: read
@@ -71,6 +76,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -114,6 +124,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -125,8 +140,12 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
+      - name: Baseline fixture offline regressions
+        run: npm run test:example
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
+      - name: Company Operations offline regressions
+        run: npm run test:company
       - name: Install matching Chromium
         run: node node_modules/playwright-core/cli.js install --with-deps chromium
       - name: Lense loopback browser acceptance
@@ -135,6 +154,10 @@ jobs:
           PAQVILO_BROWSER: chromium
       - name: Mirage loopback browser acceptance
         run: npm --prefix mirage run test:browser
+        env:
+          PAQVILO_BROWSER: chromium
+      - name: Company Operations loopback browser acceptance
+        run: npm run test:company:browser
         env:
           PAQVILO_BROWSER: chromium
       - name: Collect only synthetic evidence
@@ -168,6 +191,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: |
           npm ci --ignore-scripts
@@ -179,8 +207,49 @@ jobs:
           git config --global gc.auto 0
       - name: Lense offline unit regressions
         run: npm test
+      - name: Baseline fixture offline regressions
+        run: npm run test:example
+      - name: Install pinned Microsoft SDK reference for original CLR regressions
+        shell: pwsh
+        run: |
+          $sdkDirectory = Join-Path $env:RUNNER_TEMP 'paqvilo-sdk-reference'
+          New-Item -ItemType Directory -Path $sdkDirectory | Out-Null
+          $sdkArchive = Join-Path $sdkDirectory 'sdk.zip'
+          Invoke-WebRequest 'https://api.nuget.org/v3-flatcontainer/microsoft.crmsdk.coreassemblies/9.0.2.60/microsoft.crmsdk.coreassemblies.9.0.2.60.nupkg' -OutFile $sdkArchive
+          if ((Get-FileHash $sdkArchive -Algorithm SHA256).Hash -ne '59650574CDC89C1F506FABD7275FE6325A59A8BAE9FA9F92C5B5C2CBE31D5E1F') { throw 'Microsoft SDK archive digest mismatch' }
+          Expand-Archive -LiteralPath $sdkArchive -DestinationPath (Join-Path $sdkDirectory 'reference')
+          "PAQ_TEST_XRM_SDK=$(Join-Path $sdkDirectory 'reference/lib/net462/Microsoft.Xrm.Sdk.dll')" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Execute original CLR plugin regressions (required SDK fixture)
+        shell: pwsh
+        run: |
+          if (-not (Test-Path -LiteralPath $env:PAQ_TEST_XRM_SDK)) { throw 'CLR SDK fixture was not installed' }
+          node --test mirage/test/plugin-clr.test.mjs mirage/test/plugin-context-values.test.mjs mirage/test/plugin-double-values.test.mjs mirage/test/plugin-lookup-values.test.mjs mirage/test/plugin-shared-variables.test.mjs mirage/test/plugin-response.test.mjs mirage/test/plugin-main-response.test.mjs mirage/test/plugin-http-error.test.mjs mirage/test/plugin-sdk-values.test.mjs mirage/test/plugin-query-paging.test.mjs mirage/test/plugin-admin-dependency.test.mjs mirage/test/plugin-admin-sdk-values.test.mjs mirage/test/plugin-read-mock-response.test.mjs mirage/test/plugin-sdk-execute.test.mjs mirage/test/plugin-association.test.mjs mirage/test/plugin-bulk.test.mjs mirage/test/exact-numeric.test.mjs
       - name: Mirage offline unit regressions
         run: npm --prefix mirage run test
+
+      - name: Restore locked SDK projection driver fixture
+        shell: pwsh
+        run: |
+          dotnet restore examples/company-operations/plugins/SdkProbes/SdkProbes.csproj --locked-mode --disable-build-servers
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "PAQ_TEST_SDK_PROBES_RESTORED=1" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+      - name: Company Operations offline regressions
+        run: npm run test:company
+      - name: Build and execute Company Operations plugin regressions
+        shell: pwsh
+        run: |
+          dotnet restore examples/company-operations/plugins/Tests/Tests.csproj --locked-mode
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          dotnet build examples/company-operations/plugins/Tests/Tests.csproj --no-restore -c Release
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & examples/company-operations/plugins/Tests/bin/Release/net462/Tests.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($project in @('QueryObservation', 'PipelineTests')) {
+            dotnet restore "examples/company-operations/plugins/$project/$project.csproj" --locked-mode
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            dotnet build "examples/company-operations/plugins/$project/$project.csproj" --no-restore -c Release
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
 
   package:
     needs: changes
@@ -200,6 +269,11 @@ jobs:
           cache-dependency-path: |
             npm-shrinkwrap.json
             mirage/package-lock.json
+      - name: Stamp preview package metadata
+        if: inputs.package_version != ''
+        env:
+          PACKAGE_VERSION: ${{ inputs.package_version }}
+        run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
         run: npm ci --ignore-scripts
       # The smoke test installs the packed tarball offline, which needs registry metadata in the npm cache.

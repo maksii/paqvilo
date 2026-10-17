@@ -6,8 +6,11 @@ import os from "node:os";
 import {
   importSolutionMetadata,
   parseSolutionXml,
+  systemFormSchemaFor,
 } from "../lib/solution-metadata.mjs";
 import { formCells } from "../lib/native-services.mjs";
+import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
+import { formattedValue, isDateOnlyField } from '../lib/dataverse-values.mjs';
 async function fixture(t, files) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), "solution-metadata-"));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -22,6 +25,14 @@ const form = (title) =>
   `<forms xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"><systemform><formid>{form-id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="tab_1" id="tab-id"><labels><label description="General" languagecode="1033"/></labels><columns><column width="100%"><sections><section name="general" showlabel="true"><labels><label description="General &gt; label" languagecode="1033"/></labels><rows><row><cell showlabel="true"><labels><label description="${title}" languagecode="1033"/></labels><control id="name-control" datafieldname="fullname" disabled="false"/></cell></row></rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="Portal edit" languagecode="1033"/></LocalizedNames></systemform></forms>`;
 const entity =
   '<Entity><Name>contact</Name><EntityInfo><entity><attributes><attribute PhysicalName="fullname"><Name>fullname</Name><LogicalName>fullname</LogicalName><Type>nvarchar</Type><RequiredLevel>required</RequiredLevel><MaxLength>120</MaxLength><displaynames><displayname description="Name" languagecode="1033"/></displaynames></attribute></attributes></entity></EntityInfo></Entity>';
+
+test('imported Solution date display preserves TimeZoneIndependent instant storage', async t => {
+  const root=await fixture(t, {'Entities/Contact/Entity.xml':entity.replace('</attributes>', '<attribute PhysicalName="scheduled"><Name>scheduled</Name><Type>datetime</Type><Format>date</Format><Behavior>3</Behavior></attribute></attributes>')});
+  const metadata=await importSolutionMetadata(root),field=metadata.entities.contact.fields.scheduled;
+  assert.equal(field.format,'date');
+  assert.equal(isDateOnlyField(field),false);
+  assert.equal(formattedValue('2025-02-07T00:00:00Z',field),'2/7/2025');
+});
 const view =
   '<savedqueries><savedquery><savedqueryid>{view-id}</savedqueryid><layoutxml><grid><row><cell name="fullname" width="200"/></row></grid></layoutxml><fetchxml><fetch><entity name="contact"><attribute name="fullname"/></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Portal contacts" languagecode="1033"/></LocalizedNames></savedquery></savedqueries>';
 const portal = () => ({
@@ -44,6 +55,85 @@ const portal = () => ({
   ],
   advancedForms: [],
   records: [],
+});
+
+for (const [name, groupType] of [
+  ["main", "main"],
+  ["card", "card"],
+  ["unknown literal", "future-source-type"],
+  ["absent group type", undefined],
+  ["standalone systemform", null],
+]) {
+  test(`form metadata takes the FormXml group directory as the type of ${name}`, async (t) => {
+    const systemform = form("Name").replace(/^<forms[^>]*>/, "").replace(/<\/forms>$/, "");
+    const xml = groupType === null
+      ? systemform
+      : `<forms${groupType === undefined ? "" : ` type="${groupType}"`}>${systemform}</forms>`;
+    const root = await fixture(t, {
+      "Entities/Contact/Entity.xml": entity,
+      "Entities/Contact/FormXml/main/form.xml": xml,
+    });
+    const metadata = await importSolutionMetadata([root], { portal: portal() });
+    assert.equal(metadata.forms.length, 1);
+    // A document without a declared group type takes its FormXml/<group>/ directory (main here).
+    assert.equal(metadata.forms[0].formType, groupType ?? "main");
+    if (groupType === 'card') {
+      assert.equal(metadata.componentSchemas['basic-form'], undefined);
+      assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
+    } else assert.equal(metadata.componentSchemas["basic-form"].formId, "form-id");
+  });
+}
+
+test("mixed source form groups retain their types and select Main rather than earlier Card", async (t) => {
+  const systemform = form("Name").replace(/^<forms[^>]*>/, "").replace(/<\/forms>$/, "");
+  const root = await fixture(t, {
+    "Entities/Contact/Entity.xml": entity,
+    "Entities/Contact/FormXml/main/forms.xml": `<FormXml><forms type="card">${systemform.replace("{form-id}", "{card-id}")}</forms><forms type="main">${systemform.replace("{form-id}", "{main-id}")}</forms></FormXml>`,
+  });
+  const metadata = await importSolutionMetadata([root], { portal: portal() });
+  assert.deepEqual(metadata.forms.map(({ id, formType }) => ({ id, formType })), [
+    { id: "card-id", formType: "card" },
+    { id: "main-id", formType: "main" },
+  ]);
+  assert.equal(metadata.componentSchemas["basic-form"].formId, "main-id");
+});
+
+for (const order of ['card-first', 'main-first']) test(`standalone numeric types select Main with ${order} source order`, async t => {
+  const systemform = form('Name').replace(/^<forms[^>]*>/, '').replace(/<\/forms>$/, '');
+  const typed = (id, type, column) => systemform.replace('{form-id}', `{${id}}`).replace('<formid>', `<type>${type}</type><formid>`).replace('datafieldname="fullname"', `datafieldname="${column}"`);
+  const rows = [typed('card-id', 11, 'createdon'), typed('main-id', 2, 'fullname')];
+  if (order === 'main-first') rows.reverse();
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/standalone.xml': `<FormXml>${rows.join('')}</FormXml>` });
+  const metadata = await importSolutionMetadata(root, { portal: portal() });
+  // The FormXml/main/ directory types both documents; the numeric type still decides eligibility.
+  const expected = [{ id: 'card-id', systemFormType: 11, formType: 'main' }, { id: 'main-id', systemFormType: 2, formType: 'main' }];
+  if (order === 'main-first') expected.reverse();
+  assert.deepEqual(metadata.forms.map(({ id, systemFormType, formType }) => ({ id, systemFormType, formType })), expected);
+  assert.equal(metadata.componentSchemas['basic-form'].formId, 'main-id');
+  assert.deepEqual(metadata.componentSchemas['basic-form'].fields.map(field => field.name), ['fullname']);
+  assert.equal(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_NAME_AMBIGUOUS'), false);
+});
+
+test('numeric form type overrides enclosing group and explicit Card cannot become an approximated form', async t => {
+  const xml = form('Name').replace('<forms ', '<forms type="main" ').replace('<formid>', '<type>11</type><formid>');
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/card.xml': xml });
+  const definition = portal();
+  definition.forms[0].metadata.adx_formid = 'form-id';
+  const metadata = await importSolutionMetadata(root, { portal: definition });
+  assert.equal(metadata.forms[0].systemFormType, 11);
+  assert.equal(metadata.forms[0].formType, 'main');
+  assert.equal(metadata.componentSchemas['basic-form'], undefined);
+  assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }), null);
+});
+
+test('absent source and legacy untyped layouts retain their approximation behavior', async t => {
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity });
+  const definition = portal();
+  const metadata = await importSolutionMetadata(root, { portal: definition });
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }).approximated, true);
+  metadata.forms = [{ id: 'legacy-id', entity: 'contact', name: 'Portal edit', active: true }];
+  assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }).approximated, true);
 });
 
 test("global option-set references resolve labels across solution roots and unresolved choices remain explicit", async (t) => {
@@ -155,7 +245,8 @@ test("native audit and operation-specific immutable columns retain exported Data
     update.componentSchemas["basic-form"].fields[0].validForUpdate,
     false,
   );
-  assert.equal(update.componentSchemas["basic-form"].fields[0].readOnly, true);
+  // Column validity stays on the field; the renderer applies it to the mode it renders.
+  assert.equal(update.componentSchemas["basic-form"].fields[0].readOnly, false);
   site.forms[0].mode = 100000000;
   const create = await importSolutionMetadata(root, { portal: site });
   assert.equal(create.componentSchemas["basic-form"].fields[0].readOnly, false);
@@ -474,4 +565,70 @@ test('notes cells without datafieldname survive exported systemform parsing', as
   assert.equal(cell.label, 'Related notes');
   assert.equal(cell.colspan, 2);
   assert.equal(metadata.componentSchemas['basic-form'].fields.length, 1);
+});
+
+test("hidden sections keep an empty place; subgrid and web resource cells resolve by control class; lookup views carry their query type", async (t) => {
+  const base = form("Name");
+  const sections = `<section name="secret" visible="false" showlabel="true"><labels><label description="Secret" languagecode="1033"/></labels><rows><row><cell><labels><label description="Hidden name" languagecode="1033"/></labels><control id="hidden-name" datafieldname="fullname"/></cell></row></rows></section><section name="extras" showlabel="true"><labels><label description="Extras" languagecode="1033"/></labels><rows><row><cell rowspan="4"><labels><label description="Related" languagecode="1033"/></labels><control id="related_grid" classid="{E7A81278-8635-4D9E-8D4D-59480B391C5B}"><parameters><TargetEntityType>contact</TargetEntityType><ViewId>{view-id}</ViewId><RelationshipName>contact_children</RelationshipName></parameters></control></cell></row><row><cell showlabel="false" rowspan="2"><labels><label description="Logo" languagecode="1033"/></labels><control id="WebResource_logo" classid="{9FDF5F91-88B1-47F4-AD53-C11EFC01A01D}"><parameters><Url>acme_logo.svg</Url><Scrolling>no</Scrolling><Border>true</Border></parameters></control></cell></row></rows></section>`;
+  const lookupView = view.replace("<savedqueryid>{view-id}</savedqueryid>", "<savedqueryid>{lookup-view}</savedqueryid><isdefault>1</isdefault><querytype>64</querytype>");
+  const root = await fixture(t, {
+    "Entities/Contact/Entity.xml": entity,
+    "Entities/Contact/FormXml/main/{form-id}.xml": base.replace("</section></sections>", `</section>${sections}</sections>`),
+    "Entities/Contact/SavedQueries/{view-id}.xml": view,
+    "Entities/Contact/SavedQueries/{lookup-view}.xml": lookupView,
+  });
+  const site = portal();
+  site.forms[0].metadata = {};
+  const metadata = await importSolutionMetadata(root, { portal: site });
+  const schema = metadata.componentSchemas["basic-form"];
+  const [general, hidden, extras] = schema.layout[0].columns[0].sections;
+  assert.equal(general.name, "general");
+  assert.deepEqual(hidden, { name: "secret", hidden: true, rows: [] });
+  assert.deepEqual(extras.rows.map((row) => row[0].type), ["subgrid", "webresource"]);
+  assert.equal(extras.rows[0][0].relationship, "contact_children");
+  assert.deepEqual(
+    { url: extras.rows[1][0].url, scrolling: extras.rows[1][0].scrolling, border: extras.rows[1][0].border, showLabel: extras.rows[1][0].showLabel, rowspan: extras.rows[1][0].rowspan },
+    { url: "acme_logo.svg", scrolling: "no", border: true, showLabel: false, rowspan: 2 },
+  );
+  const views = Object.fromEntries(metadata.views.map((item) => [item.id, item]));
+  assert.deepEqual([views["lookup-view"].queryType, views["lookup-view"].isDefault], [64, true]);
+  assert.deepEqual([views["view-id"].queryType, views["view-id"].isDefault], [0, false]);
+});
+
+test("saved query layout cells marked ishidden are not grid columns", async (t) => {
+  const hidden = view.replace('<cell name="fullname" width="200"/>', '<cell name="fullname" width="200"/><cell name="fax" ishidden="1" width="100"/>');
+  const root = await fixture(t, {
+    "Solution/Entities/Contact/Entity.xml": entity,
+    "Solution/Entities/Contact/FormXml/main/{form-id}.xml": form("Friendly name"),
+    "Solution/Entities/Contact/SavedQueries/{view-id}.xml": hidden,
+  });
+  const result = await importSolutionMetadata(root, { portal: portal() });
+  assert.deepEqual(result.componentSchemas.list.fields.map((field) => field.name), ["fullname"]);
+});
+
+test("a control naming a target table and a view is a dataset subgrid without the subgrid class (Contact ActionCards)", async t => {
+  const cards = '<row><cell showlabel="false" rowspan="6"><labels><label description="Assistant" languagecode="1033"/></labels><control id="ActionCards" classid="{F9A8A302-114E-466A-B582-6771B2AE0D92}"><parameters><ViewId>{view-id}</ViewId><RelationshipName /><TargetEntityType>contact</TargetEntityType><RecordsPerPage>4</RecordsPerPage></parameters></control></cell></row>';
+  const root = await fixture(t, {
+    'Entities/contact/Entity.xml': entity,
+    'Entities/contact/FormXml/main/{form-id}.xml': form('Name').replace('</rows>', cards + '</rows>'),
+    'Entities/contact/SavedQueries/{view-id}.xml': view.replace('<cell name="fullname" width="200"/>', '<cell name="fullname"/><cell name="firstname" disableSorting="1"/>'),
+  });
+  const metadata = await importSolutionMetadata(root, {portal: portal()});
+  const cell = formCells(metadata.componentSchemas['basic-form']).find(c => c.id === 'ActionCards');
+  // Layout cells without a width are zero-width columns; disableSorting="1" disables the sort.
+  assert.deepEqual(cell.fields.map(field => [field.name, field.widthless === true, field.sortDisabled === true]), [['fullname', true, false], ['firstname', true, true]]);
+  assert.deepEqual({type: cell.type, entity: cell.entity, relationship: cell.relationship, showLabel: cell.showLabel, rowspan: cell.rowspan, recordsPerPage: cell.recordsPerPage}, {type: 'subgrid', entity: 'contact', relationship: '', showLabel: false, rowspan: 6, recordsPerPage: 4});
+  assert.ok(cell.fetchXml);
+});
+
+test("systemFormSchemaFor selects the Main systemform of a table and form name, not a same-named card form", async t => {
+  const systemform = form('Name').replace(/^<forms[^>]*>/, '').replace(/<\/forms>$/, '');
+  const typed = (id, type, column) => systemform.replace('{form-id}', `{${id}}`).replace('<formid>', `<type>${type}</type><formid>`).replace('datafieldname="fullname"', `datafieldname="${column}"`);
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/main/standalone.xml': `<FormXml>${typed('card-id', 11, 'createdon')}${typed('main-id', 2, 'fullname')}</FormXml>` });
+  const metadata = await importSolutionMetadata(root, { portal: { ...portal(), forms: [] } });
+  // A multistep step's reference read-only form: a synthetic definition with the table and form name only.
+  const schema = systemFormSchemaFor({ id: 'ReadOnlyFormView_contact', name: 'ReadOnlyFormView_contact', entityName: 'contact', formName: 'Portal edit', metadata: {} }, metadata);
+  assert.equal(schema.formId, 'main-id');
+  assert.deepEqual(formCells(schema).map((cell) => cell.name).filter(Boolean), ['fullname']);
+  assert.equal(systemFormSchemaFor({ entityName: 'contact', formName: 'Other form', metadata: {} }, metadata), null);
 });

@@ -12,6 +12,20 @@ import {
 import { initialState } from "../lib/bootstrap.mjs";
 
 const user = { contactId: "c1", accountId: "a1", roles: ["Member"] };
+test('enforced unknown navigation bindings reject create and plugin updates atomically', async () => {
+  const initial = state();
+  initial.settings = { ...initial.settings, associationPermissions: 'enforce' };
+  const store = new DataStore({ state: initial });
+  store.setPluginPipeline(({ record, stage }) => { if (stage === 20) record.firstname = 'Plugin changed'; });
+  for (const write of [
+    () => store.create('contacts', { firstname: 'Synthetic', 'unknown@odata.bind': '/accounts(a1)' }, user),
+    () => store.update('contacts', 'c1', { firstname: 'Synthetic', 'unknown@odata.bind': '/accounts(a1)' }, user),
+  ]) {
+    const before = store.snapshot();
+    await assert.rejects(write(), error => error.code === 'MissingRelationship' && error.status === 400);
+    assert.deepEqual(store.snapshot(), before);
+  }
+});
 test("Authored cache-refresh FetchXML parenthesized GUIDs identify the same permitted product without changing ordinary text comparisons", () => {
   const id = "33333333-3333-3333-3333-333333333333";
   const store = new DataStore({
@@ -45,7 +59,9 @@ test("Authored cache-refresh FetchXML parenthesized GUIDs identify the same perm
     },
   });
   for (const value of [id, "(" + id + ")", "{" + id + "}"]) {
-    const xml = `<fetch><entity name="product"><attribute name="name"/><filter><condition attribute="productid" operator="in"><value>${value}</value></condition></filter></entity></fetch>`;
+    // Scoped portal queries default to distinct; project a required identity
+    // explicitly rather than depending on an implicit primary key.
+    const xml = `<fetch><entity name="product"><attribute name="productid"/><attribute name="name"/><filter><condition attribute="productid" operator="in"><value>${value}</value></condition></filter></entity></fetch>`;
     assert.deepEqual(store.fetchXml(xml, user).entities, [
       { productid: id, name: "Medicinal Product" },
     ]);
@@ -866,7 +882,7 @@ test("FetchXML nested links and existential link types preserve multiplicity cor
   });
   const store = new DataStore({ state: initial });
   const link = (type) =>
-    `<fetch><entity name="contact"><attribute name="firstname"/><link-entity name="audit" from="contactid" to="contactid" link-type="${type}" alias="log"><attribute name="subject"/></link-entity></entity></fetch>`;
+    `<fetch><entity name="contact"><attribute name="firstname"/><link-entity name="audit" from="contactid" to="contactid" link-type="${type}" alias="log">${type === 'inner' ? '<attribute name="subject"/>' : ''}</link-entity></entity></fetch>`;
   assert.equal(store.fetchXml(link("inner"), user).entities.length, 2);
   assert.equal(store.fetchXml(link("exists"), user).entities.length, 1);
   assert.equal(store.fetchXml(link("not any"), user).entities.length, 2);
@@ -1089,4 +1105,12 @@ test("imported unresolved permissions stay disabled with actionable diagnostics 
   const broken = store.snapshot();
   broken.permissions.find((p) => p.id === "parent").enabled = true;
   await assert.rejects(store.replaceState(broken), DataError);
+});
+
+test("rows the portal creates carry the observed portal application user as createdby", () => {
+  const store = new DataStore({ state: { mappings: { task: { entitySet: "tasks", idColumn: "taskid" } }, tables: { task: [] }, permissions: [], settings: { permissionMode: "permissive" } } });
+  assert.equal(store.createRecord("task", { title: "Before" }, { admin: true }).createdby, undefined);
+  store.setObserved({ portalApplicationUser: "# Portals-Sample" });
+  assert.deepEqual(store.createRecord("task", { title: "Portal" }, { admin: true }).createdby, { id: null, logical_name: "systemuser", name: "# Portals-Sample" });
+  assert.equal(store.createRecord("task", { title: "Explicit", createdby: null }, { admin: true }).createdby, null);
 });
