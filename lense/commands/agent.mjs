@@ -136,7 +136,17 @@ export default async function agent(_cfg, args, positionals = []) {
   }
   let handle;
   const output = args.output ? path.resolve(args.output) : null;
-  if (output) { await fs.mkdir(path.dirname(output), { recursive: true }); handle = await fs.open(output, 'wx', 0o600); }
+  if (output) {
+    await fs.mkdir(path.dirname(output), { recursive: true });
+    try { handle = await fs.open(output, 'wx', 0o600); }
+    catch (error) {
+      if (error.code === 'EEXIST') {
+        const relative=path.relative(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),output);
+        throw argument(`Screenshot output already exists: ${(path.isAbsolute(relative)?path.basename(output):relative).replaceAll('\\', '/')}. Existing files are never replaced; choose a new --output.`);
+      }
+      throw error;
+    }
+  }
   try {
     const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
     if (handle) {

@@ -596,15 +596,19 @@ export class PortalModel {
         for (const match of xml.matchAll(/<powerpagesitelanguage\b[^>]*>([\s\S]*?)<\/powerpagesitelanguage>/g)) {
           if (/<statecode>\s*1\s*</.test(match[1])) continue;
           const content = componentContent(match[1]) ?? {};
-          languageRows.push({ ...content, languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode, name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name });
+          languageRows.push({ ...content, id:/\bpowerpagesitelanguageid="([^"]+)"/.exec(match[0])?.[1], languagecode: /<languagecode>([^<]+)<\/languagecode>/.exec(match[1])?.[1] ?? content.languagecode, name: /<name>([^<]+)<\/name>/.exec(match[1])?.[1] ?? content.name });
         }
       }
     }
+    const languageLabels=new Map();
     for (const row of languageRows) {
       const reference = String(field(row, 'portallanguageid')?.id ?? field(row, 'portallanguageid') ?? '').replace(/[{}]/g, '').toLowerCase();
       const linked = portalRows.find((item) => String(field(item, 'portallanguageid') ?? item.id ?? '').replace(/[{}]/g, '').toLowerCase() === reference);
-      add(field(row, 'languagecode') ?? field(linked, 'languagecode') ?? portalLanguage({ name: field(row, 'name') })?.code);
+      const code=field(row, 'languagecode') ?? field(linked, 'languagecode') ?? portalLanguage({ name: field(row, 'name') })?.code;
+      add(code);
+      if(code)languageLabels.set(String(field(row,'websitelanguageid')??row.id??'').replace(/[{}]/g,'').toLowerCase(),code);
     }
+    for(const source of this.inlineSources)if(source.pageLayer&&source.pageLayer!=='root')source.pageLayer=languageLabels.get(source.pageLayer.replace(/[{}]/g,'').toLowerCase())??'localized '+source.pageLayer;
     // Some PAC extracts omit language records but retain explicit en-US/fr-FR filenames.
     for (const source of this.inlineSources) add(/\.([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\.(?:webpage|contentsnippet)\./i.exec(source.rel)?.[1] ?? /\/content-pages\/([a-z]{2,3}(?:-[a-z0-9]{2,8})+)\//i.exec(source.rel)?.[1]);
   }
@@ -696,6 +700,7 @@ export class PortalModel {
         type,
         name: decode(/<name>([\s\S]*?)<\/name>/.exec(xml)?.[1] ?? ''),
         content: content ?? {},
+        languageId:content?.webpagelanguageid?.id??content?.webpagelanguageid??/<powerpagesitelanguageid>\s*(?:<powerpagesitelanguageid>)?\s*([^<\s][^<]*?)\s*<\/powerpagesitelanguageid>/.exec(xml)?.[1],
         dir,
         file,
         rel: `powerpagecomponents/${entry.name}/powerpagecomponent.xml`,
@@ -819,6 +824,9 @@ export class PortalModel {
             rel: `${c.rel}#${field}`,
             label: `${c.name} (${field})`,
             field, componentId:c.id, exists:Object.hasOwn(c.content,field),
+            pageLayer:c.type === COMPONENT.WEB_PAGE ? c.content.isroot === false && c.content.rootwebpageid
+              ? String(c.languageId ?? c.id)
+              : 'root' : undefined,
             renders:!(c.type===COMPONENT.WEB_PAGE&&[...this.pageAlias.values()].includes(c.id)),
             extract: componentField(field),
             pageUrl: c.type === COMPONENT.WEB_PAGE ? this.pagePath(c.id) : null,

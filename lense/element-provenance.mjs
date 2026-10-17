@@ -3,7 +3,7 @@ import { parseFragment } from 'parse5';
 const markupCache=new Map();let markupBytes=0,markupParses=0,markupHits=0;
 const scriptCache=new Map();let scriptBytes=0;
 export const elementSourceHintCacheStats=()=>({entries:markupCache.size,bytes:markupBytes,parses:markupParses,hits:markupHits});
-const copyHint=(hint,source)=>({...source,...hint,classes:[...(hint.classes??[])],attributes:{...hint.attributes},locations:(hint.locations??[]).map(location=>({...location,classes:[...(location.classes??[])],attributes:{...location.attributes},contexts:[...location.contexts]})),lines:[...(hint.lines??[])]});
+const copyHint=(hint,source)=>({...source,...hint,classes:[...(hint.classes??[])],attributes:{...hint.attributes},locations:(hint.locations??[]).map(location=>({...location,classes:[...(location.classes??[])],attributes:{...location.attributes},contexts:[...location.contexts],ancestors:(location.ancestors??[]).map(item=>({...item,classes:[...item.classes]}))})),lines:[...(hint.lines??[])]});
 
 const cssId = value => '#' + [...value].map((char, index) => /[a-zA-Z_]/.test(char) || char === '-' && (index > 0 || value.length > 1) || /[0-9]/.test(char) && index > 0 && !(index === 1 && value[0] === '-') ? char : `\\${char.codePointAt(0).toString(16)} `).join('');
 
@@ -29,7 +29,7 @@ function markupForInspection(text) {
 export function elementSourceHints(body, source, { limit = Infinity } = {}) {
   if (!body || String(body).length > 1024 * 1024) return [];
   const text=String(body),cacheKey=source.sourceFile?source.sourceFile+'\u0000'+(source.recordId??source.id??''):null,cached=cacheKey&&markupCache.get(cacheKey);
-  if(cached?.body===text){markupHits++;return cached.hints.slice(0,limit).map(hint=>copyHint(hint,source));}
+  if(cached?.body===text){markupHits++;markupCache.delete(cacheKey);markupCache.set(cacheKey,cached);return cached.hints.slice(0,limit).map(hint=>copyHint(hint,source));}
   const original=String(body),prepared=markupForInspection(original);
   markupParses++;
   const tree = parseFragment(prepared.text, { sourceCodeLocationInfo: true });
@@ -66,7 +66,9 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
     const contexts=[];
     for(let ancestor=node.parentNode;ancestor;ancestor=ancestor.parentNode){const aid=ancestor.attrs?.find(attr=>attr.name==='id')?.value;if(staticValue(aid)&&ids.get(aid)===1)contexts.push(cssId(aid));}
     const attributes=Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]]));
-    const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,tag:node.tagName,classes:staticClasses,attributes};
+    const ancestors=[];
+    for(let ancestor=node.parentNode;ancestor&&ancestors.length<6;ancestor=ancestor.parentNode){const classes=(ancestor.attrs?.find(attr=>attr.name==='class')?.value??'').replace(/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g,'{dynamic}').split(/\s+/).filter(staticValue);if(classes.length)ancestors.push({tag:ancestor.tagName,classes});}
+    const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,ancestors,tag:node.tagName,classes:staticClasses,attributes};
     const existing=selectors.get(selector);
     if(existing){existing.occurrences++;existing.locations.push(location);existing.lines=existing.locations.map(item=>item.line).filter(Boolean);continue;}
     selectors.set(selector,{
@@ -80,20 +82,24 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
   if(cacheKey){
     if(cached)markupBytes-=cached.body.length*2;
     markupCache.delete(cacheKey);markupCache.set(cacheKey,{body:text,hints});markupBytes+=text.length*2;
-    while(markupCache.size>512||markupBytes>12*1024*1024){const key=markupCache.keys().next().value;markupBytes-=markupCache.get(key).body.length*2;markupCache.delete(key);}
+    while(markupCache.size>4096||markupBytes>32*1024*1024){const key=markupCache.keys().next().value;markupBytes-=markupCache.get(key).body.length*2;markupCache.delete(key);}
   }
   return hints.slice(0,limit).map(hint=>copyHint(hint,source));
 }
 
 /** Literal selector references identify script candidates, never event-handler ownership. */
-export function scriptSourceHints(body, source, { limit = 120 } = {}) {
+export function scriptSourceHints(body, source, { limit = 120, ids = [] } = {}) {
   if (typeof body!=='string'||!body||body.length>1024*1024) return [];
-  const cap=Math.max(0,Math.min(1000,limit)),key=source.sourceFile?source.sourceFile+'\u0000'+cap:null,cached=key&&scriptCache.get(key);
-  const answer=(hints,truncated)=>{const result=hints.map(hint=>({...source,...hint}));Object.defineProperty(result,'truncated',{value:truncated});return result;};
-  if(cached?.body===body)return answer(cached.hints,cached.truncated);
-  const scanned=scanScriptSourceHints(body,{sourceFile:source.sourceFile},cap+1),truncated=scanned.length>cap,hints=scanned.slice(0,cap).map(({sourceFile,...hint})=>hint);
-  if(key){if(cached)scriptBytes-=cached.body.length*2;scriptCache.delete(key);scriptCache.set(key,{body,hints,truncated});scriptBytes+=body.length*2;while(scriptCache.size>128||scriptBytes>4*1024*1024){const old=scriptCache.keys().next().value;scriptBytes-=scriptCache.get(old).body.length*2;scriptCache.delete(old);}}
-  return answer(hints,truncated);
+  const cap=Math.max(0,Math.min(1000,limit)),key=source.sourceFile??null,cached=key&&scriptCache.get(key);
+  const answer=hints=>{
+    const present=new Set(ids.map(cssId)),rank=hint=>present.has(hint.selector)?0:hint.selector.startsWith('#')?1:2;
+    const result=[...hints].sort((a,b)=>rank(a)-rank(b)).slice(0,cap).map(hint=>({...source,...hint}));
+    Object.defineProperty(result,'truncated',{value:hints.length>cap});return result;
+  };
+  if(cached?.body===body)return answer(cached.hints);
+  const hints=scanScriptSourceHints(body,{sourceFile:source.sourceFile},10000).map(({sourceFile,...hint})=>hint);
+  if(key){if(cached)scriptBytes-=cached.body.length*2;scriptCache.delete(key);scriptCache.set(key,{body,hints});scriptBytes+=body.length*2;while(scriptCache.size>128||scriptBytes>4*1024*1024){const old=scriptCache.keys().next().value;scriptBytes-=scriptCache.get(old).body.length*2;scriptCache.delete(old);}}
+  return answer(hints);
 }
 function scanScriptSourceHints(body,source,limit){
   const rows=[],seen=new Set();let index=0,previous='';

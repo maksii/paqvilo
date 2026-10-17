@@ -198,10 +198,12 @@ test('attached and explicitly disabled sessions never expose an agent server', a
 test('dismissed dialog events are origin-confined and never answer browser dialogs',async t=>{
   const fx=await fixture(t);
   fx.session.emit('dialog',{page:fx.page,type:'confirm',message:'token=private Publish?',disposition:'dismissed'});
+  fx.session.emit('dialog',{page:fx.page,type:'beforeunload',message:'',disposition:'accepted'});
   fx.session.emit('dialog',{page:fx.page,type:'prompt',message:'Interactive prompt',disposition:'interactive'});
   fx.setUrl('https://outside.example/');fx.session.emit('dialog',{page:fx.page,type:'alert',message:'Foreign',disposition:'dismissed'});
   const events=(await (await fx.call('/v1/events')).json()).events.filter(event=>event.type==='dialog');
-  assert.equal(events.length,1);assert.equal(events[0].dialogType,'confirm');assert.equal(events[0].pageId,'1');assert.equal(events[0].disposition,'dismissed');assert.doesNotMatch(events[0].text,/private/);
+  assert.equal(events.length,2);assert.equal(events[0].dialogType,'confirm');assert.equal(events[0].pageId,'1');assert.equal(events[0].disposition,'dismissed');assert.doesNotMatch(events[0].text,/private/);
+  assert.equal(events[1].dialogType,'beforeunload');assert.equal(events[1].disposition,'accepted');assert.equal(events[1].text,'');
 });
 
 test('redaction strips query values, fragments, credentials and common credential formats', () => {

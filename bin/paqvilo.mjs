@@ -2,7 +2,7 @@
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
-import { MIRAGE_TOOLS, mirageToolHelp } from '../mirage/tool-registry.mjs';
+import { MIRAGE_TOOLS, MIRAGE_LIFECYCLE, mirageToolHelp } from '../mirage/tool-registry.mjs';
 
 const HELP = `paqvilo — Power Pages development
 
@@ -59,7 +59,7 @@ if (['--version', '-v'].includes(product)) {
   else console.error(`paqvilo: ${message}`);
   process.exitCode = 1;
 } else {
-  const lifecycle = new Set(['init', 'dev', 'start', 'status', 'stop']);
+  const lifecycle = new Set(MIRAGE_LIFECYCLE);
   const tools = new Set(Object.keys(MIRAGE_TOOLS));
   let program, forwarded;
   if (product === 'dataverse') {

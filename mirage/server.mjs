@@ -492,6 +492,8 @@ export async function createSimulator({
   if (!['always', 'bootstrap'].includes(presetMode)) throw new Error('presetMode must be bootstrap or always');
   const stateExisted = stateFile ? await fs.stat(stateFile).then(() => true, error => { if (error.code === 'ENOENT') return false; throw error; }) : false;
   const startupPreset = { name: preset ?? null, mode: presetMode, applied: Boolean(preset && (presetMode === 'always' || !stateExisted)) };
+  // Display labels from older runtimes may have leaked into persisted state.
+  const policyOrigin = value => value === 'runtime state (project default differs)' || value?.startsWith('project defaults') ? 'project defaults' : 'runtime state';
   const seededInitialState = () => {
     const state = initial ? { ...initial } : initialState(portal, bootstrapOptions());
     const explicitPolicy = ['confinePortalPages', 'externalAssets', 'externalFrameOrigins'].some(key => Object.hasOwn(initial?.simulator ?? {}, key));
@@ -517,6 +519,7 @@ export async function createSimulator({
   // Validate new state before init writes it, and loaded state before any enrichment saves.
   if (!stateExisted) validateStartupConfiguration();
   await store.init();
+  store.state.simulator.contentPolicySource = policyOrigin(store.state.simulator.contentPolicySource);
   if (stateExisted) validateStartupConfiguration();
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
@@ -750,9 +753,11 @@ export async function createSimulator({
     const matchesDefaults = ['confinePortalPages','externalAssets','externalFrameOrigins'].every(key => key === 'externalFrameOrigins'
       ? JSON.stringify([...(simulator[key]??[])].sort()) === JSON.stringify([...(policyDefaults[key]??[])].sort())
       : (simulator[key]===true) === (policyDefaults[key]===true));
-    const source = simulator.contentPolicySource === 'project defaults' &&
-      (!Object.keys(policyDefaults).length || !matchesDefaults)
-      ? 'runtime state (project default differs)' : simulator.contentPolicySource;
+    const origin = policyOrigin(simulator.contentPolicySource);
+    const source = origin === 'project defaults'
+      ? !Object.keys(policyDefaults).length ? 'project defaults (no longer configured)'
+        : !matchesDefaults ? 'runtime state (project default differs)' : origin
+      : origin;
     return { ...simulator, contentPolicySource: source, observed: observed ?? simulator.observed ?? portal.observed ?? null };
   };
   // Sign-in sessions (lib/auth-session.mjs): every portal request (pages,
@@ -1491,7 +1496,10 @@ export async function createSimulator({
   const personasPayload = () => ({ ...personaReport(), identity: identitySummary(), session: describeSession(trace.getStore()?.auth?.session), runtimes: personaRuntimes.list() });
   const findPersona = key => {
     const report = personaReport(), persona = report.personas.find(entry => entry.key === key);
-    if (!report.enabled || !persona) throw error('Unknown persona "' + key + '". Closest keys: ' + closestPersonaKeys(key, report.personas).join(', '), 404, 'PersonaNotFound');
+    if (!report.enabled || !persona) {
+      const closest = closestPersonaKeys(key, report.personas);
+      throw error('Unknown persona "' + key + '".' + (closest.length ? ' Closest keys: ' + closest.join(', ') : ''), 404, 'PersonaNotFound');
+    }
     return persona;
   };
   const personaRuntimes = createPersonaContexts({ directory:path.join(projectRoot,'.paqvilo','persona-runtimes'), maxInstances: personaInstance ? 0 : (personaContextsOption.maxInstances ?? 4),
@@ -2299,7 +2307,7 @@ export async function createSimulator({
           delete patch.permissionMode;
         }
         state.simulator = {
-          ...config(),
+          ...state.simulator,
           ...patch,
           ...(['confinePortalPages','externalAssets','externalFrameOrigins'].some(key=>Object.hasOwn(patch,key))?{contentPolicySource:'runtime state'}:{}),
           live: { ...config().live, ...patch.live },
@@ -2395,7 +2403,7 @@ export async function createSimulator({
           ).filter((item) => item.parentName !== report.profile.parentName),
           report.profile,
         ];
-        state.simulator = { ...config(), shellProfile: profile };
+        state.simulator = { ...state.simulator, shellProfile: profile };
         await saveState(state);
         for (const diagnostic of report.diagnostics)
           recordDiagnostic(diagnostic);
@@ -2420,7 +2428,7 @@ export async function createSimulator({
           ).filter((item) => !selected.has(item.path)),
           ...report.baselines,
         ];
-        state.simulator = { ...config(), shellProfile: profile };
+        state.simulator = { ...state.simulator, shellProfile: profile };
         await saveState(state);
         for (const diagnostic of report.diagnostics)
           recordDiagnostic(diagnostic);
@@ -2472,7 +2480,7 @@ export async function createSimulator({
           report.shellProfile,
           { pagePath: body.path },
         );
-        state.simulator = { ...config(), shellProfile: report.shellProfile };
+        state.simulator = { ...state.simulator, shellProfile: report.shellProfile };
         await saveState(state);
         return json(res, report.complete ? 200 : 207, {
           ...report,
@@ -3120,8 +3128,8 @@ export async function createSimulator({
         res.writeHead(302,{location:result.url,'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax','cache-control':'no-store'});return res.end();
       }
       if (req.method !== 'GET') throw error('Method not allowed',405);
-      const personaKey=url.searchParams.get('persona');
-      if (personaKey===null || !personaKey.trim())throw error('The persona parameter is required.',400,'PersonaParameterRequired');
+      const personaKey=url.searchParams.get('persona')?.trim();
+      if (!personaKey)throw error('The persona parameter is required.',400,'PersonaParameterRequired');
       const persona = findPersona(personaKey);
       const report = personaReport();
       const returnUrl = personaStartPath(url.searchParams.get('returnUrl') ?? persona.startPath ?? report.contexts.find(context=>context.id===persona.context)?.startPath ?? '/', url.searchParams.has('returnUrl') ? 'returnUrl' : 'Persona startPath');

@@ -34,6 +34,7 @@ test('persona shortcuts reject unsafe redirects and require a CSRF post',async t
   const invalid=await call('/personas/launch','POST',{personaKey:'person-1',returnUrl:'https://other.example/'});assert.equal(invalid.response.status,400);assert.match(invalid.value.error.message,/^returnUrl must be a relative path/);
   const target=app.url+'/_sim/sign-in?persona=person-1&returnUrl=%2F%3Fwelcome%3D1';
   const get=await fetch(target);assert.equal(get.status,200);assert.match(await get.text(),/name="personaKey" value="person-1"/);
+  const padded=await fetch(app.url+'/_sim/sign-in?persona=%20person-1%09');assert.equal(padded.status,200);assert.match(await padded.text(),/name="personaKey" value="person-1"/);
   const rejected=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1'}),redirect:'manual'});assert.equal(rejected.status,403);
   const signed=await fetch(app.url+'/_sim/sign-in',{method:'POST',body:new URLSearchParams({personaKey:'person-1',ReturnUrl:'/?welcome=1',__RequestVerificationToken:app.state().csrf}),redirect:'manual'});
   assert.equal(signed.status,302);assert.equal(signed.headers.get('location'),app.url+'/?welcome=1');assert.ok(signed.headers.get('set-cookie'));

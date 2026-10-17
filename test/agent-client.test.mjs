@@ -69,8 +69,13 @@ test('client enforces operation-specific arguments and writes PNG evidence witho
   try { assert.equal(await agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), 0); }
   finally { console.log = log; }
   assert.equal(result.path, output);
+  assert.deepEqual(result.writesFiles,[output]);
   assert.deepEqual(await fs.readFile(output), png);
-  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /EEXIST/);
+  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), error=>{
+    const reported=/already exists: (.+)\. Existing files/.exec(error.message)?.[1];
+    const relative=path.relative(process.cwd(),output);
+    return error.code==='invalid_argument'&&reported===(path.isAbsolute(relative)?path.basename(output):relative).replaceAll('\\','/')&&!path.isAbsolute(reported);
+  });
 });
 
 test('agent request times out and removes reserved screenshot after invalid server output', async (t) => {

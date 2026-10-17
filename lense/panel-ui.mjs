@@ -986,7 +986,7 @@ export function panelUi(data) {
       const rows = S.d.activity
         .filter((a) => matches(a.text, (a.files ?? []).join(' ')))
         .map((a) => {
-          const kind = a.type === 'fault' ? ['ERR', 'k-err'] : a.type === 'deploy' ? ['DEPL', 'k-warn'] : a.type === 'switch' ? ['SET', ''] : a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
+          const kind = a.type === 'fault' ? ['ERR', 'k-err'] : a.type === 'dialog' ? ['DIALOG', 'k-warn'] : a.type === 'deploy' ? ['DEPL', 'k-warn'] : a.type === 'switch' ? ['SET', ''] : a.how === 'css' ? ['CSS', ''] : ['SAVE', ''];
           return `<div class="row wrapt"><span class="ico ${kind[1]}">${kind[0]}</span><div class="main"><div class="name"><span>${hl(a.text)}</span></div>${a.files?.length ? `<div class="sub">${hl(a.files.join(', '))}</div>` : ''}</div><span class="time">${clock(a.at)}</span></div>`;
         });
       return rows.join('') || emptyState('Nothing happened yet', 'Saves, reloads and switches of this session are listed here.');
@@ -1517,7 +1517,7 @@ export function panelUi(data) {
         if(!result.ok)throw new Error(result.error??'The dev loop did not save the current panel');
         location.assign(target.url);
       }catch(error){toast(error.message,true);}
-      finally{S.targetSwitching=false;resetTarget();render();}
+      finally{S.targetSwitching=false;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();}
     };
     const goTarget=async()=>{
       const value=el.targets.querySelector('select')?.value,target=/^\d+$/.test(value)?S.targets[Number(value)]:null;

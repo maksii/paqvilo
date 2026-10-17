@@ -57,6 +57,7 @@ export function inspectCheckout(cfg, { started = performance.now(), session = ne
 
 export default async function doctor(_cfg, args) {
   const catalogue = loadCatalogue(args);
+  if (args.site && !Object.hasOwn(catalogue.sites, args.site)) throw Object.assign(new Error(`Unknown site "${args.site}". Known sites: ${Object.keys(catalogue.sites).join(', ')}`), {code:'invalid_argument'});
   const reports = [];
   const names = args.all ? Object.keys(catalogue.sites) : [args.site];
   // Opt in to gating on Mirage while preserving the Lense-only default verdict.
@@ -76,7 +77,7 @@ export default async function doctor(_cfg, args) {
       if (args.mirage) report.ready = report.ready && report.mirage.ready;
       reports.push(report);
     } catch (err) {
-      reports.push({ site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite, ready: false, errors: [err.message], warnings: [] });
+      reports.push({ site: site ?? catalogue.settings.values.PAQVILO_SITE ?? catalogue.root.defaultSite, ready: false, errors: [{code:err.code??'check_failed',message:err.message}], warnings: [] });
     }
   }
   // mirage dev with portals=all runs one Mirage per site: each needs its own port.
@@ -100,7 +101,7 @@ export default async function doctor(_cfg, args) {
     for (const item of reports) {
       console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.lenseReady ? 'ready' : 'NOT READY'} · Sources ${item.sourcesReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate Sources and Mirage)'}` : ''}`);
       if (item.counts) console.log(`  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`);
-      for (const error of item.errors) console.log(`  ERROR: ${error}`);
+      for (const error of item.errors) console.log(`  ERROR: ${error.message ?? error}`);
       for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);
       for (const change of item.needsDeploy ?? []) console.log(`  NEEDS DEPLOY: ${change.rel}: ${change.reason}`);
       const mirage = item.mirage;

@@ -57,4 +57,13 @@ test('missing and blank persona parameters have a parameter-specific 400 while u
     assert.equal(response.status,400);assert.match(body,/<title>Invalid persona parameter/);assert.match(body,/The persona parameter is required/);assert.doesNotMatch(body,/Unknown persona/);
   }
   const unknown=await fetch(app.url+'/_sim/sign-in?persona=absent');assert.equal(unknown.status,404);assert.match(await unknown.text(),/Unknown persona/);
+  assert.doesNotMatch(await (await fetch(app.url+'/_sim/sign-in?persona=absent')).text(),/Closest keys:\s*</);
+});
+
+test('an API create without a Create grant retains the detailed table permission diagnostic',async t=>{
+  const {app}=await fixture(t),headers={...signInHeaders(app,'person',{roles:['NoCreate']}),'content-type':'application/json',__RequestVerificationToken:app.state().csrf};
+  const response=await fetch(app.url+'/_api/items',{method:'POST',headers,body:'{"title":"Denied"}'});
+  assert.equal(response.status,403);
+  const diagnostics=(await(await fetch(app.url+'/_sim/api/diagnostics')).json()).diagnostics.filter(item=>item.path==='/_api/items');
+  assert.equal(diagnostics.length,1);assert.equal(diagnostics[0].code,'TABLE_PERMISSION_DENIED');assert.equal(diagnostics[0].operation,'create');assert.equal(diagnostics[0].table,'item');assert.deepEqual(diagnostics[0].permissions,[]);
 });

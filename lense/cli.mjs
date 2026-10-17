@@ -182,7 +182,7 @@ const command = positionals[0];
 if(values.json||command==='agent'){
   const print=console.log.bind(console);
   console.log=(value)=>{let result;try{result=JSON.parse(value);}catch{return print(value);}
-    const normalizeError=error=>typeof error==='string'?{code:'command_failed',message:error}:{...error,code:error?.code??'check_failed',message:error?.message??error?.reason??'Command failed'};
+    const normalizeError=error=>typeof error==='string'?{code:command==='doctor'?'check_failed':'command_failed',message:error}:{...error,code:error?.code??'check_failed',message:error?.message??error?.reason??'Command failed'};
     if(Array.isArray(result))result={results:result};
     if(Array.isArray(result.reports))result.reports=result.reports.map(report=>({...report,errors:(report.errors??[]).map(normalizeError),...(report.mirage?{mirage:{...report.mirage,errors:(report.mirage.errors??[]).map(normalizeError)}}:{})}));
     const errors=(result.errors??(result.error?[result.error]:(result.reports??[]).flatMap(report=>[...(report.errors??[]),...(result.checks?.includes('mirage')&&report.mirage?.ready===false?report.mirage.errors:[]) ]))).map(normalizeError);

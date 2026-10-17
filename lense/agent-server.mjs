@@ -5,6 +5,7 @@ import path from 'node:path';
 import http from 'node:http';
 import crypto from 'node:crypto';
 import { refreshUrl } from './navigation.mjs';
+import { consoleLocation } from './console-location.mjs';
 
 const MAX_EVENTS = 500;
 const MAX_BODY = 32 * 1024;
@@ -223,7 +224,8 @@ export async function startAgentServer({ session, context, panel, attached = fal
     on(page, 'console', (message) => {
       if (!active(page)) return;
       const location = message.location?.() ?? {};
-      push({ type: 'console', pageId, documentId: currentDocuments.get(page).id, level: message.type(), text: redactText(message.text()), ...(location.url ? { url: redactUrl(location.url), line: location.lineNumber + 1, column: location.columnNumber + 1 } : {}) });
+      const place = consoleLocation(message, page.url());
+      push({ type: 'console', pageId, documentId: currentDocuments.get(page).id, level: message.type(), text: redactText(message.text()), ...(location.url ? { url: redactUrl(location.url), line: place.line, column: place.column } : {}) });
     }, local);
     on(page, 'pageerror', (error) => { if (active(page)) push({ type: 'pageerror', pageId, documentId: currentDocuments.get(page).id, text: redactText(error.message) }); }, local);
     on(page, 'request', (request) => recordRequest(request, page), local);
@@ -247,8 +249,8 @@ export async function startAgentServer({ session, context, panel, attached = fal
   on(context, 'requestfailed', (request) => { if (requests.get(request)?.unattributed) finishRequest(request, true); });
   on(session, 'fault', (error, url) => push({ type: 'overlay-error', text: redactText(error.message), ...(url ? { url: location(url) } : {}) }));
   on(session,'dialog',entry=>{
-    if(entry.disposition!=='dismissed'||!entry.page||!active(entry.page))return;
-    push({type:'dialog',pageId:pageIds.get(entry.page),documentId:currentDocuments.get(entry.page)?.id,dialogType:redactText(entry.type,80),text:redactText(entry.message),disposition:'dismissed'});
+    if(!['dismissed','accepted'].includes(entry.disposition)||!entry.page||!active(entry.page))return;
+    push({type:'dialog',pageId:pageIds.get(entry.page),documentId:currentDocuments.get(entry.page)?.id,dialogType:redactText(entry.type,80),text:redactText(entry.message),disposition:entry.disposition});
   });
   on(session, 'refreshed', ({ files = [], how, baselineChanged = false } = {}) => push({ type: 'refresh', files: files.slice(0, MAX_ITEMS).map((file) => session.rel(file)), truncated: files.length > MAX_ITEMS, how, baselineChanged }));
   on(session, 'hit', (hit) => push({ type: 'overlay', pageId: hit.page ? pageIds.get(hit.page) : undefined, url: location(hit.url), kind: hit.type, sources: (hit.sources ?? []).slice(0, 30).map(({ rel, kind, action }) => ({ rel, kind, action })) }));

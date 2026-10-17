@@ -1,10 +1,9 @@
 # Release notes
 
-## 0.9.4 (preview)
+## 0.9.4
 
 This release expands project configuration, improves local rendering and makes large
-datasets and automated testing more practical. Preview builds are available for testing;
-use an exact preview version until the stable release is published.
+datasets and automated testing more practical.
 
 ### New
 
@@ -55,14 +54,19 @@ use an exact preview version until the stable release is published.
   and redirects share one bounded navigation wait.
 - Native checkboxes save Boolean values using the platform's posted-control semantics.
   Solution date-only display and configured minimum-date errors retain their source meaning.
+- X-ray source matches compare container modifiers and complete class lists, keep ambiguous
+  snippets as possible matches, and reuse unchanged inspection reports and source hints.
+  Element picks consume the full mouse or touch gesture before reopening the panel.
+- Content-policy provenance survives unrelated configuration edits. Persona shortcuts,
+  permission diagnostics, dialog reporting and CLI argument errors are more consistent.
 
 ### Upgrade notes
 
 The published version line is **0.9.x**. Projects pinned to old checkout versions such as
 `^1` or `1.2.0` must change that range explicitly.
 
-For previews, follow [branch package installation](branch-packages.md). Once stable 0.9.4
-is published, update with `npm install --save-dev paqvilo@^0.9.4`, commit the lockfile and
+For previews, follow [branch package installation](branch-packages.md). Update to stable
+0.9.4 with `npm install --save-dev paqvilo@^0.9.4`, commit the lockfile and
 run your project tests. Use your existing dependency category if it differs.
 
 Large state files may use a format older releases cannot read. Back up state before

@@ -18,3 +18,19 @@ export const MIRAGE_TOOLS = Object.freeze({
   'capture-shell': '--config FILE [--site ID] [--env ID | --all] [--path /] [--cdp LOOPBACK_URL] [--timeout MILLISECONDS] [--no-rich-text] [--strict] [--json]',
 });
 export const mirageToolHelp = name => `Usage: paqvilo mirage ${name} ${MIRAGE_TOOLS[name]}\n`;
+export const MIRAGE_LIFECYCLE = Object.freeze(['init', 'dev', 'start', 'status', 'stop']);
+export const MIRAGE_CORE_COMMANDS = Object.freeze(['serve', 'inspect', 'render', 'capture-shell', 'capture-stylesheets', 'capture-snippet-composition', 'verify', 'data']);
+export const MIRAGE_COMMANDS = Object.freeze([...new Set(['demo', ...MIRAGE_LIFECYCLE, ...MIRAGE_CORE_COMMANDS, ...Object.keys(MIRAGE_TOOLS)])]);
+export function unknownMirageCommand(command) {
+  const distance = candidate => {
+    let previous = Array.from({length:candidate.length+1}, (_,i)=>i);
+    for (let i=1;i<=command.length;i++) {
+      const row=[i];
+      for(let j=1;j<=candidate.length;j++) row[j]=Math.min(row[j-1]+1,previous[j]+1,previous[j-1]+Number(command[i-1]!==candidate[j-1]));
+      previous=row;
+    }
+    return previous[candidate.length];
+  };
+  const closest = [...MIRAGE_COMMANDS].sort((a,b)=>distance(a)-distance(b))[0];
+  return `Unknown command: ${command}. Choose ${MIRAGE_COMMANDS.join(', ')}. Closest command: ${closest}. Run paqvilo mirage --help for options.`;
+}

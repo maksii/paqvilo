@@ -13,6 +13,7 @@ import { shareSolutionParses } from "./lib/solution-cache.mjs";
 import { runtimePort } from "./lib/runtime-port.mjs";
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
+import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 let parsed;
@@ -75,6 +76,8 @@ const command = positionals[0] ?? "serve";
 if (args.help || command === "help") {
   console.log(`Power Pages local mirage
 
+Commands: ${MIRAGE_COMMANDS.join(', ')}
+
   node mirage/cli.mjs serve [--site SITE --env ENV] [--repo PATH]
   node mirage/cli.mjs serve --source PATH --port 8787
   node mirage/cli.mjs inspect --project mirage.project.yml --json
@@ -109,8 +112,7 @@ Live access uses the selected connected browser identity. Exact parity requires 
   process.exit(0);
 }
 try {
-  const commands=['serve','inspect','render','capture-shell','capture-stylesheets','capture-snippet-composition','verify','data'];
-  if(!commands.includes(command))throw new Error(`Unknown command: ${command}. Choose ${commands.join(', ')}. Run paqvilo mirage --help for options.`);
+  if(!MIRAGE_CORE_COMMANDS.includes(command))throw new Error(unknownMirageCommand(command));
   if (command === "data") {
     const { runDataCommand } = await import("./lib/data-generation.mjs");
     // data scaffold resolves its portal like serve: a project file and portal,

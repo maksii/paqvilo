@@ -24,3 +24,10 @@ test('markup without IDs retains intrinsic source selectors and marks repeated s
   assert.equal(hints.find(row=>row.selector==='p.note').occurrences,2);
   assert.equal(hints.some(row=>/nth-child|>/.test(row.selector)),false,'positional selectors must not change ownership when a region is moved');
 });
+
+test('container class evidence excludes Liquid expressions and cached ancestry stays independent',()=>{
+  const body='<div class="alert {{ chosen_class }}"><p class="message">Notice</p></div>',source={sourceFile:'/invented/dynamic-container.html'};
+  const first=elementSourceHints(body,source).find(row=>row.selector==='p.message');
+  assert.deepEqual(first.locations[0].ancestors,[{tag:'div',classes:['alert']}]);first.locations[0].ancestors[0].classes.push('changed');
+  assert.deepEqual(elementSourceHints(body,source).find(row=>row.selector==='p.message').locations[0].ancestors,[{tag:'div',classes:['alert']}]);
+});

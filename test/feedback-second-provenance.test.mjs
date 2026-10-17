@@ -23,6 +23,14 @@ test('script hint limits report only an actual additional unique reference and c
   limited[0].name='mutated';const cached=scriptSourceHints(body+'$("#extra");',{...source,name:'Second'});assert.equal(cached[0].name,'Second');assert.equal(cached.truncated,true);
 });
 
+test('script hint caps scan later references and prefer current-page ids',()=>{
+  const body=Array.from({length:200},(_,index)=>`$('#id${index}');`).join('\n');
+  const source={sourceFile:'/invented/long.js'};
+  const hints=scriptSourceHints(body,source,{ids:['id190']});
+  assert.equal(hints.length,120);assert.equal(hints.truncated,true);assert.equal(hints[0].selector,'#id190');assert.equal(hints[0].line,191);
+  assert.equal(scriptSourceHints(body,source,{ids:['id195']})[0].selector,'#id195','cached scans rank against each page');
+});
+
 test('hint cache returns independent descriptors and invalidates only changed source bodies',()=>{
   const file='/invented/cache-specific.html',body='<section id="cached"><button class="owned">Go</button></section>',source={sourceFile:file,name:'First'};
   const first=elementSourceHints(body,source),before=elementSourceHintCacheStats();first[0].ref='mutated';first[0].locations[0].contexts.push('#unrelated');
@@ -59,4 +67,24 @@ test('list source links select definition metadata and script truncation is expo
   fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.custom_javascript.js'),Array.from({length:121},(_,index)=>`$("#item${index}");`).join('\n'));
   const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/'),list=report.components.find(row=>row.kind==='list');
   assert.equal(list.sourceFile,definition);assert.equal(list.customization.sourceFile,script);assert.equal(report.elementSourceLimits.scriptTruncated,true);assert.equal(report.elementSourceLimits.truncated,true);
+  assert.deepEqual(report.elementSourceLimits.scriptTruncatedSources,[path.join(fx.portal,'web-pages/home/Home.webpage.custom_javascript.js')]);
+});
+
+test('600 source reports survive A/B/A and unchanged refresh without reparsing markup',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  for(let i=0;i<600;i++){
+    fs.writeFileSync(path.join(fx.portal,`web-templates/S${i}.webtemplate.yml`),`adx_webtemplateid: s${i}\nadx_name: S${i}`);
+    fs.writeFileSync(path.join(fx.portal,`web-templates/S${i}.webtemplate.source.html`),`<aside class="s${i}">Invented</aside>`);
+  }
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),Array.from({length:600},(_,i)=>`{% include 'S${i}' %}`).join('\n'));
+  const inspector=createSourceInspector({sourceDir:fx.portal}),start=performance.now();
+  const first=await inspector.inspect('/'),built=performance.now()-start,parses=elementSourceHintCacheStats().parses;
+  await inspector.inspect('/other/');first.report.pageSources.length=0;
+  const revisit=performance.now(),again=await inspector.inspect('/');
+  assert.ok(performance.now()-revisit<200,'cached revisit stays below 200 ms');assert.ok(again.report.pageSources.length>0,'cached reports are independent');assert.equal(elementSourceHintCacheStats().parses,parses);
+  inspector.invalidate();await inspector.inspect('/');assert.equal(elementSourceHintCacheStats().parses,parses);
+  inspector.invalidate();const refresh=performance.now();await inspector.inspect('/');
+  assert.ok(performance.now()-refresh<Math.max(built*2,1000),'unchanged refresh remains comparable to its first build');assert.equal(elementSourceHintCacheStats().parses,parses);
+  fs.appendFileSync(path.join(fx.portal,'web-templates/S590.webtemplate.source.html'),'<b id="changed590"></b>');inspector.invalidate();
+  const changed=await inspector.inspect('/');assert.equal(elementSourceHintCacheStats().parses,parses+1);assert.ok(changed.report.elementSources.some(item=>item.selector==='#changed590'));
 });

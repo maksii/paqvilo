@@ -20,6 +20,7 @@ import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
 import { observeHttpErrors } from './http-errors.mjs';
+import { consoleLocation } from './console-location.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
@@ -405,11 +406,12 @@ export function enablePanel(context, session, opts = {}) {
     const entry = index.pagesByKey.get(key);
     if (entry) {
       const pageSources = index.sourcesByPage.get(key) ?? [];
-      const layers = new Set(pageSources.filter(s=>s.kind.startsWith('page-')).map(s => /\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1] ?? 'root'));
+      const layerOf=s=>s.pageLayer??/\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1]??'root';
+      const layers = new Set(pageSources.filter(s=>s.kind.startsWith('page-')).map(layerOf));
       const sources = pageSources.map((s) => {
         const lang = /\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1];
         const text = sourceText(s);
-        const layer=lang??(layers.size>1&&s.kind.startsWith('page-')?'root':null);
+        const layer=layers.size>1&&s.kind.startsWith('page-')?layerOf(s):lang;
         return { rel: s.rel, label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ` (${layer})` : ''}`, empty: !text || !text.trim() };
       });
       const info = { path: entry.url, name: entry.page.name ?? '', dir: session.rel(entry.page.dir), sources };
@@ -960,8 +962,8 @@ export function enablePanel(context, session, opts = {}) {
       const text = msg.text();
       // the browser's own line about a failed request; the request itself is listed
       if (/^Failed to load resource/.test(text)) return;
-      const loc = msg.location();
-      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url || page.url(), loc.url && Number.isInteger(loc.lineNumber) ? loc.lineNumber + 1 : undefined, loc.url && Number.isInteger(loc.columnNumber) ? loc.columnNumber + 1 : undefined) });
+      const loc = consoleLocation(msg, page.url());
+      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url, loc.line, loc.column) });
     });
     listen('requestfailed', (req) => {
       const reason = req.failure()?.errorText ?? '';
@@ -1004,7 +1006,7 @@ export function enablePanel(context, session, opts = {}) {
   on(session, 'online-state', scheduleAll);
   on(session, 'dialog', ({ page, type, message, disposition }) => {
     if (!page || !sameOrigin(page.url(), cfg.origin)) return;
-    log({ type: 'dialog', text: `${type} dialog ${disposition}: ${message}` });
+    log({ type: 'dialog', text: `${type} dialog ${disposition}${message ? ': ' + message : ''}` });
     schedule(page);
   });
   on(session, 'head', scheduleAll);

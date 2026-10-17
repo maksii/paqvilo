@@ -37,6 +37,31 @@ test('framework-only evidence needs a unique small source in the page include ch
   assert.equal((await identify('a')).title,'No reliable source');
 });
 
+test('framework-only matches count sibling sources, reject class subsets and do not headline enclosing regions',async t=>{
+  const sources=Array.from({length:5},(_,i)=>hints('<button class="close">Close</button>','Close'+i,{includedBy:['page']})).flat();
+  const {page,identify,data}=await fixture(t,'<button class="close">Close</button><button class="btn btn-default">Generated</button><div class="title"><span>Generated</span></div>',{elementSources:sources});
+  assert.equal((await identify('button.close')).title,'No reliable source');
+  const elementSources=[...hints('<button class="btn">A</button><button class="btn">B</button>','Subset',{includedBy:['page']}),...['Full1','Full2'].flatMap(name=>hints('<button class="btn btn-default">Go</button>',name,{includedBy:['page']})),...Array.from({length:25},(_,i)=>hints('<div class="title">Title</div>','Title'+i,{includedBy:['page']})).flat()];
+  await page.evaluate(({data,report})=>document.getElementById('paqvilo-xray').__px.update(data,report),{data,report:{elementSources}});
+  assert.equal((await identify('.btn')).title,'No reliable source');assert.equal((await identify('span')).title,'No reliable source');
+});
+
+test('snippet modifier classes on the nearest container resolve shared descendants independently of page chains',async t=>{
+  const source=modifier=>`<div class="alert ${modifier}"><div class="message">Notice</div><button class="close">Close</button></div>`;
+  const elementSources=['info','warning','danger','success','other'].flatMap(kind=>hints(source('alert-'+kind),kind,{kind:'snippet',usedBy:['page']}));
+  const {page,identify,data}=await fixture(t,source('alert-warning'),{elementSources});
+  for(const selector of ['.alert','.message','.close'])assert.equal((await identify(selector)).title,'warning',selector);
+  await page.evaluate(({data,report})=>document.getElementById('paqvilo-xray').__px.update(data,report),{data,report:{elementSources:elementSources.map(item=>({...item,usedBy:['unrelated']}))}});
+  for(const selector of ['.alert','.message','.close'])assert.equal((await identify(selector)).title,'warning',selector);
+  await page.locator('.alert').evaluate(node=>node.classList.remove('alert-warning'));
+  for(const selector of ['.alert','.message','.close']){const row=await identify(selector);assert.equal(row.title,'No reliable source',selector);assert.ok(row.matches.length>0);assert.ok(row.matches.every(item=>!item.strong));}
+});
+
+test('date labels use their data-entity container even without an identified form',async t=>{
+  const {identify}=await fixture(t,'<div data-entityname="item"><div class="cell"><div><label id="c_label" for="c">Date</label></div><input type="hidden" class="datetime" id="c"><input id="c_datepicker_description"></div></div>',{columns:[{entity:'item',name:'c'},{entity:'other',name:'c'}]});
+  for(const selector of ['label','#c_datepicker_description'])assert.equal((await identify(selector)).sub,'item.c');
+});
+
 test('date display controls and labels resolve only with a same-cell base input and form context',async t=>{
   const {identify}=await fixture(t,'<form data-formid="F"><div class="cell"><label for="c_datepicker_description">Date</label><input type="text" class="datetime" id="c" style="display:none"><input id="c_datepicker_description"></div></form><input id="foo_datepicker_description">',{forms:[{id:'F',name:'Form',entity:'item'}],columns:[{entity:'item',name:'c'},{entity:'other',name:'c'}]});
   for(const selector of ['label','#c_datepicker_description'])assert.deepEqual((await identify(selector)).fields.map(row=>row.entity+'.'+row.name),['item.c']);

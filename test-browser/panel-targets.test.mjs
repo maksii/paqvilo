@@ -80,6 +80,13 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   await page.locator('[data-target-cancel]').click();assert.equal(page.url(),first+'/current');
   assert.equal(await selector.inputValue(),'0','cancel restores the actual target');
   await selector.selectOption('1');await page.locator('[data-target-go]').click();
+  await page.route('**/__paqvilo/api/ui',route=>route.abort());
+  await page.locator('[data-target-confirm]').click();
+  await page.waitForFunction(()=>document.getElementById('paqvilo-panel').shadowRoot.activeElement?.matches('[data-target-go]'));
+  assert.equal(await selector.inputValue(),'0');assert.equal(page.url(),first+'/current');
+  assert.match(await page.locator('#paqvilo-panel .toast').innerText(),/dev loop does not answer/);
+  await page.unroute('**/__paqvilo/api/ui');
+  await selector.selectOption('1');await page.locator('[data-target-go]').click();
   await Promise.all([page.waitForURL(second + '/start/?filter=ready#section'), page.locator('[data-target-confirm]').click()]);
   assert.equal(dialogs,0,'target confirmations never use page dialogs');
   await beta.draw(page);

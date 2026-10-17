@@ -15,6 +15,10 @@ test('unused PAC connection references are reported without dropping connected e
   const loaded=await loadDeploymentProfiles(config);
   assert.equal(loaded.connectionReferences.length,1);assert.equal(loaded.connectionReferences[0].logicalName,'active');
   assert.equal(loaded.diagnostics[0].code,'DEPLOYMENT_PROFILE_CONNECTION_UNSET');assert.equal(loaded.diagnostics[0].count,1);assert.deepEqual(loaded.diagnostics[0].logicalNames,['unused']);
+  assert.equal(loaded.diagnostics[0].message,'1 connection reference entry has no ConnectionId and was not seeded.');
+  await fs.writeFile(file,JSON.stringify({ConnectionReferences:[{LogicalName:'unused',ConnectionId:'',ConnectorId:''},{LogicalName:'second',ConnectionId:'',ConnectorId:''}]}));
+  assert.equal((await loadDeploymentProfiles(config)).diagnostics[0].message,'2 connection reference entries have no ConnectionId and were not seeded.');
+  await fs.writeFile(file,JSON.stringify({ConnectionReferences:[{LogicalName:'unused',ConnectionId:'',ConnectorId:''},{LogicalName:'active',ConnectionId:'synthetic-connection',ConnectorId:'connector'}]}));
   const app=await createSimulator({...fixture,deploymentProfiles:config,watch:false});fixture.onCleanup(()=>app.close());
   assert.equal(app.store.snapshot().tables.connectionreference.length,1);
   assert.ok(app.state().diagnostics.some(d=>d.code==='DEPLOYMENT_PROFILE_CONNECTION_UNSET'));

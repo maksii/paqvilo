@@ -131,7 +131,7 @@ Options --selector (CSS, at most 1,000 characters), --limit (1–200, default 10
 
 ### agent screenshot
 
-Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Existing files are never overwritten. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
+Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Existing files are never overwritten: an existing output returns `invalid_argument`, naming the path relative to the project (the filename alone when it is on another volume). Choose a new output filename. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
 
 ### agent viewport
 

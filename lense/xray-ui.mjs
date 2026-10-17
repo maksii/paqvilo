@@ -26,7 +26,7 @@ export function xrayUi(data) {
   let geometryCache=null,styleCache=null;
   const styleFor=node=>{if(!styleCache)return getComputedStyle(node);if(!styleCache.has(node))styleCache.set(node,getComputedStyle(node));return styleCache.get(node);};
   let d = data, report = null, enabled = false, interacting = false, alt = false, selected = null, hover = null, layer = 'all', details = true, frame = 0, candidates = [], needsScan = true, detailsDirty=false, pointer = { x: 0, y: 0 }, drag = null, disposed = false;
-  let oneShot=false,candidateLimit=false;
+  let oneShot=false,candidateLimit=false,pickGesture=false,pendingPick=null;
   const own = node => node === host || node?.closest?.('#paqvilo-panel,#paqvilo-handle,#paqvilo-xray') || ['paqvilo-panel','paqvilo-handle','paqvilo-xray'].includes(node?.getRootNode?.()?.host?.id);
   const label = node => `${node.localName}${node.id ? '#' + node.id.slice(0,160) : ''}${!node.id && node.classList?.length ? '.' + [...node.classList].slice(0,2).join('.') : ''}`;
   const descent=new WeakMap();
@@ -35,7 +35,7 @@ export function xrayUi(data) {
   const lineage = node => { const rows = []; for (let current = node; current; current = parent(current)) rows.push(current); return rows; };
   const labelledControl=node=>{
     const labelNode=lineage(node).find(item=>item.localName==='label');
-    const labelScope=labelNode?.closest('[data-formid],[data-form-layout],[id^="EntityFormControl"],[id^="WebFormControl"],form');
+    const labelScope=labelNode?.closest('[data-formid],[data-form-layout],[id^="EntityFormControl"],[id^="WebFormControl"],[data-entityname],[data-entity],form');
     return labelNode?.htmlFor?[...(labelScope??labelNode.parentElement??document).querySelectorAll('[id]')].find(item=>item.id===labelNode.htmlFor)??null:labelNode?.querySelector('input,select,textarea,output')??null;
   };
   const binding = node => {
@@ -115,26 +115,38 @@ export function xrayUi(data) {
       chainFrequencies=new Map();for(const item of report?.elementSources??[])if((item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))){let files=chainFrequencies.get(item.selector);if(!files)chainFrequencies.set(item.selector,files=new Set());files.add((item.ref??item.sourceFile)+'#'+(item.recordId??item.id??item.name??''));}
     }
     for(const item of report?.elementSources??[]){try{
-      const depth=ancestors.findIndex(ancestor=>ancestor.matches(item.selector));if(depth<0)continue;
+      const exactDepth=ancestors.findIndex(ancestor=>ancestor.matches(item.selector));
+      const depth=exactDepth>=0?exactDepth:item.matchKind==='class'?ancestors.findIndex(ancestor=>ancestor.localName===item.tag&&(item.classes??[]).some(name=>ancestor.classList.contains(name))):-1;if(depth<0)continue;
       const target=ancestors[depth];
       const locations=item.locations??[];
       const matchingTags=locations.filter(location=>!location.tag||location.tag===target.localName);
-      const contexts=(matchingTags.length?matchingTags:locations).map(location=>{const agreement=(location.contexts??[]).filter(selector=>ancestors.slice(depth+1).some(ancestor=>ancestor.matches(selector))).length,declared=location.classes??item.classes??[],present=declared.filter(name=>target.classList.contains(name)).length;return {...location,agreement,locationScore:agreement*20+present*5-(declared.length-present)*65};}).sort((a,b)=>b.locationScore-a.locationScore);
+      const contexts=(matchingTags.length?matchingTags:locations).map(location=>{
+        const agreement=(location.contexts??[]).filter(selector=>ancestors.slice(depth+1).some(ancestor=>ancestor.matches(selector))).length,declared=location.classes??item.classes??[],present=declared.filter(name=>target.classList.contains(name)).length;
+        let contextual=0,contradictions=0;
+        for(const context of location.ancestors??[]){const container=ancestors.slice(depth+1).find(ancestor=>ancestor.localName===context.tag&&context.classes.some(name=>ancestor.classList.contains(name)));if(!container)continue;const missing=context.classes.filter(name=>!container.classList.contains(name));contradictions+=missing.length;contextual+=missing.length?0:context.classes.filter(name=>!framework.test(name)).length;}
+        return {...location,agreement,contextual,contradictions,locationScore:agreement*20+present*5-(declared.length-present)*65+contextual*20-contradictions*65};
+      }).sort((a,b)=>b.locationScore-a.locationScore);
       const declaredClasses=contexts[0]?.classes??item.classes??[],classes=declaredClasses.filter(name=>target.classList.contains(name)),meaningful=classes.filter(name=>!framework.test(name));
       const agreed=contexts[0]?.agreement??0,tagMatch=locations.some(location=>location.tag===target.localName)||!item.tag||item.tag===target.localName;
       const pageChain=(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))??false;
       const missing=declaredClasses.length-classes.length,targetClasses=[...target.classList].filter(name=>!framework.test(name)),coverage=targetClasses.length?meaningful.length/targetClasses.length:1;
       const rarity=report?.elementSourceFrequencies?.[item.selector]??frequencies.get(item.selector)?.size??1;
-      const frameworkOwner=item.matchKind==='class'&&!meaningful.length&&pageChain&&chainFrequencies.get(item.selector)?.size===1&&(item.occurrences??1)<=3;
-      const strong=tagMatch&&!missing&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||agreed>0||frameworkOwner));
+      const fuller=(report?.elementSources??[]).some(other=>other.matchKind==='class'&&other.tag===target.localName&&(other.classes?.length??0)>declaredClasses.length&&other.classes.every(name=>target.classList.contains(name)));
+      const contextual=contexts[0]?.contextual??0,contradictions=contexts[0]?.contradictions??0;
+      const frameworkOwner=item.matchKind==='class'&&!meaningful.length&&depth===0&&!fuller&&pageChain&&chainFrequencies.get(item.selector)?.size===1&&(item.occurrences??1)<=3;
+      const strong=tagMatch&&!missing&&!contradictions&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0||frameworkOwner));
       const attributeCount=Object.entries(contexts[0]?.attributes??item.attributes??{}).filter(([key,value])=>target.getAttribute(key)===value).length;
       // Prefer stronger evidence across adjacent regions, but do not let a distant
       // page-container ID eclipse the distinctive template immediately around a node.
-      const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20-depth*40+coverage*15-missing*65+(frameworkOwner?40:0)-Math.min(10,Math.log2(Math.max(1,rarity))*2);
+      const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20+contextual*20-contradictions*65-depth*40+coverage*15-missing*65+(frameworkOwner?40:0)-Math.min(10,Math.log2(Math.max(1,rarity))*2);
       const best=contexts.filter(location=>location.locationScore===contexts[0]?.locationScore);
-      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,
+      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,frameworkOwner,
         evidenceLabel:`${item.kind==='script'?'Script reference':strong?'Markup match':'Possible match'}: ${item.selector}${depth?' on an enclosing element':''}${item.occurrences>1?' · '+item.occurrences+' locations in this source':''}`});
     }catch{}}
+    // A page's include graph cannot disambiguate identical snippet markup.
+    // Keep equally supported snippets as possibilities instead of choosing a name.
+    for(const row of rows)if(row.kind==='snippet'&&row.strong&&rows.some(other=>other!==row&&other.kind==='snippet'&&other.sourceFile!==row.sourceFile&&other.selector===row.selector&&other.depth===row.depth&&other.score-(other.frameworkOwner?40:0)===row.score-(row.frameworkOwner?40:0)))row.ambiguous=true;
+    for(const row of rows)if(row.ambiguous){row.strong=false;row.evidenceLabel=row.evidenceLabel.replace('Markup match:','Possible match:');}
     const ranked=rows.sort((a,b)=>Number(b.strong)-Number(a.strong)||b.score-a.score||a.depth-b.depth||Number(b.pageChain)-Number(a.pageChain));
     const result=ranked.slice(0,60);result.omitted=Math.max(0,ranked.length-result.length);return result;
   };
@@ -179,7 +191,7 @@ export function xrayUi(data) {
       if(owners.length)out+=`<div class="note">Referenced by: ${esc([...new Set(owners)].join(', '))}</div>`;
     }else if(!exact&&!componentSources.length&&!b.native.length&&!b.code.length)out+='<div class="section"><p class="note">No local markup or component binding identifies this element. Select an enclosing region or check the page sources below.</p></div>';
     if(node.matches('img[src],link[href],script[src]')){let path;try{const url=new URL(node.getAttribute('src')??node.getAttribute('href'),location.href);if(url.origin===location.origin)path=url.pathname;}catch{}const assets=(report?.assets??[]).filter(item=>item.url===path);if(assets.length)out+=`<div class="section"><h3>Web file</h3>${sourceRows(assets,'Rendered resource URL')}</div>`;}
-    if(report?.elementSourceLimits?.truncated)out+='<p class="note">Source hint index truncated; some matches may be unavailable.</p>';
+    if(report?.elementSourceLimits?.truncated)out+=`<p class="note">Source hint index truncated; some matches may be unavailable.${report.elementSourceLimits.scriptTruncatedSources?.length?' Truncated scripts: '+report.elementSourceLimits.scriptTruncatedSources.map(esc).join(', ')+'.':''}</p>`;
     if(matches.omitted)out+=`<p class="note">Showing 60 source matches; ${matches.omitted} additional candidates are omitted from these details.</p>`;
     if(scripts.length)out+=`<details><summary>Related script references (${scripts.length})</summary>${sourceRows(scripts,'Literal selector reference; event ownership is not inferred')}</details>`;
     const page=report?.page;
@@ -293,7 +305,19 @@ export function xrayUi(data) {
   listen(document,'toggle',event=>{if(event.target===host||!event.target.matches?.('dialog,[popover]'))return;if(event.target.matches('dialog:modal')){modalOrder=modalOrder.filter(node=>node!==event.target);modalOrder.push(event.target);}if(enabled){topLayer(event.newState==='open');schedule();}},{capture:true});
   observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
   listen(window,'pointermove',event=>{if(!enabled)return;pointer={x:event.clientX,y:event.clientY};if(drag){card.style.left=Math.max(8,Math.min(innerWidth-card.offsetWidth-8,event.clientX-drag.x))+'px';card.style.top=Math.max(74,Math.min(innerHeight-card.offsetHeight-8,event.clientY-drag.y))+'px';card.style.right='auto';card.style.bottom='auto';return;}const node=event.composedPath().find(item=>item instanceof Element);if(own(node)&&!node?.classList?.contains('shield'))return;hover=node?.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node;if(own(hover))hover=null;schedule();},{capture:true});
-  for(const type of ['pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu','auxclick','touchstart','touchend'])listen(window,type,event=>{if(!enabled||interacting||alt||event.altKey)return;const node=event.composedPath().find(item=>item instanceof Element);if(!node||(own(node)&&!node.classList?.contains('shield')))return;event.preventDefault();event.stopImmediatePropagation();if(type==='pointerdown'||type==='touchstart')select(node.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node);},{capture:true});
+  for(const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','click','dblclick','contextmenu','auxclick','touchstart','touchend','touchcancel','focus','focusin','focusout','blur'])listen(window,type,event=>{
+    if(!pickGesture&&(!enabled||interacting||alt||event.altKey))return;
+    const node=event.composedPath().find(item=>item instanceof Element);
+    if(!pickGesture&&(!node||(own(node)&&!node.classList?.contains('shield'))))return;
+    event.preventDefault();event.stopImmediatePropagation();
+    if(type==='pointerdown'||type==='touchstart'){
+      const point=event.changedTouches?.[0]??event;
+      const picked=node.classList?.contains('shield')?underPointer(point.clientX,point.clientY):node;
+      if(oneShot){pickGesture=true;pendingPick=picked;}else select(picked);
+    }
+    if(['click','auxclick','contextmenu','touchend'].includes(type)&&pickGesture){const picked=pendingPick;if(oneShot)select(picked);pickGesture=false;pendingPick=null;}
+    if(type==='pointercancel'||type==='touchcancel'){pickGesture=false;pendingPick=null;}
+  },{capture:true,passive:false});
   listen(window,'scroll',()=>{needsScan=true;schedule();},{capture:true,passive:true});listen(document,'load',schedule,{capture:true});listen(window,'resize',()=>{card.style.left='';card.style.top='';card.style.right='';card.style.bottom='';needsScan=true;schedule();},{passive:true});
   listen(window,'keydown',event=>{
     if(event.altKey&&event.shiftKey&&event.code==='KeyX'){event.preventDefault();event.stopImmediatePropagation();toggle();return;}

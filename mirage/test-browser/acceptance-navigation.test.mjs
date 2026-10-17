@@ -167,21 +167,28 @@ test('acceptance distinguishes failed loopback writes from external proxy refusa
  });
 });
 
-for(const redirect of [false,true])test(`a slow ${redirect?'POST redirect':'GET document'} retains half the click budget for its commit`,{timeout:30000},async t=>{
+for(const redirect of [false,true])test(`a slow ${redirect?'POST redirect':'GET document'} retains a measured reserve for its commit`,{timeout:30000},async t=>{
  const flow=await navigationFixture(t,{redirect,history:'none',writeMs:15000,documentDelay:1500,timeout:4000});
- assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);assert.ok(flow.navigationWaits.every(wait=>wait.commitReserveMs>1000&&wait.commitReserveMs<=2000&&wait.commitReservePolicy==='half-remaining-action'));
+ assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);assert.ok(flow.navigationWaits.every(wait=>wait.commitReserveMs>1000&&wait.commitReserveMs<=2000&&wait.commitReservePolicy==='measured-document-response'));
 });
 
-test('the default navigation hold leaves half of a 15 s action for a 2.5 s document response',{timeout:30000},async t=>{
+test('the measured reserve leaves time for a 2.5 s document with writes exceeding a 15 s action',{timeout:30000},async t=>{
  const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:15000});
  assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);
  assert.ok(flow.navigationCancelledRequests.every(row=>row.reason==='document-replaced'));
- assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='half-remaining-action'&&wait.commitReserveMs>6500&&wait.commitReserveMs<=7500));
+ assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='measured-document-response'&&wait.commitReserveMs===3000));
 });
-test('a 4 s action reports its half-time reserve when a 2.5 s replacement cannot fit',{timeout:15000},async t=>{
+test('a short action retains its half-budget bound when a 2.5 s replacement cannot fit',{timeout:15000},async t=>{
  const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:4000});
  assert.equal(flow.passed,false);assert.match(flow.error,/Timeout 4000ms/);
- assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='half-remaining-action'&&wait.commitReserveMs>1000&&wait.commitReserveMs<=2000));
+ assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='measured-document-response'&&wait.commitReserveMs>1000&&wait.commitReserveMs<=2000));
+});
+test('4 s writes settle before an immediate redirect within an 8 s action in three successive runs',{timeout:45000},async t=>{
+ for(let run=0;run<3;run++){
+  const flow=await navigationFixture(t,{redirect:true,history:'none',writeMs:4000,documentDelay:0,timeout:8000});
+  assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests?.length??0,0);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
+  assert.ok(flow.navigationWaits.some(wait=>wait.commitReservePolicy==='measured-document-response'&&wait.commitReserveMs===3000));
+ }
 });
 test('an explicit navigation commit reserve overrides the default half-time budget',{timeout:15000},async t=>{
  const flow=await navigationFixture(t,{history:'none',writeMs:30000,documentDelay:2500,timeout:4000,navigationCommitReserveMs:3000});

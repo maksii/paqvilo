@@ -2671,12 +2671,7 @@ export class DataStore {
       this.state.settings.permissionMode !== "permissive" &&
       !this.rules(m.logicalName, "create", identity).length
     )
-      throw new DataError(
-        "Table permission denied create",
-        403,
-        "PermissionDenied",
-        { operation: "create", table: m.logicalName },
-      );
+      this.assertAllowed(m.logicalName, 'create', row, identity);
     row.createdon ??= isoUtc(Date.now());
     row.modifiedon ??= row.createdon;
     this.applyAutoNumbers(m, row, options);

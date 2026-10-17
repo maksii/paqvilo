@@ -123,7 +123,7 @@ export async function loadDeploymentProfiles(config, pin = null) {
     }
   }
   return { ...selection, environmentVariables, connectionReferences,
-    diagnostics: unset.length ? [{code:'DEPLOYMENT_PROFILE_CONNECTION_UNSET',severity:'warning',count:unset.length,logicalNames:unset.map(item=>item.logicalName),files:[...new Set(unset.map(item=>item.file))],message:`${unset.length} connection reference entries have no ConnectionId and were not seeded.`}] : [],
+    diagnostics: unset.length ? [{code:'DEPLOYMENT_PROFILE_CONNECTION_UNSET',severity:'warning',count:unset.length,logicalNames:unset.map(item=>item.logicalName),files:[...new Set(unset.map(item=>item.file))],message:unset.length === 1 ? '1 connection reference entry has no ConnectionId and was not seeded.' : `${unset.length} connection reference entries have no ConnectionId and were not seeded.`}] : [],
     pagesFile: selection.enabled.pages ? selection.sources.pages : undefined,
     // Hash every active file so external settings changes participate in runtime evidence.
     fingerprint: createHash('sha256').update(JSON.stringify({ profile: selection.profile, enabled: selection.enabled, contents })).digest('hex'),

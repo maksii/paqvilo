@@ -12,6 +12,8 @@ import { SITE } from './fixture.mjs';
 import { OverlaySession } from '../lense/session.mjs';
 import { editSource } from '../lense/source-edit.mjs';
 import { auditResources } from '../lense/resource-audit.mjs';
+import {enablePanel} from '../lense/panel.mjs';
+import {fakeBrowser} from './fake-browser.mjs';
 
 const HOME = '00000000-0000-0000-0000-0000000000a0';
 const HOME_EN = '00000000-0000-0000-0000-0000000000a1';
@@ -79,6 +81,17 @@ function editField(id, field, change) {
 }
 
 const rewriter = (site = SITE) => new HtmlRewriter({ model: new PortalModel(dir), site, baseline: new GitBaseline(dir, 'HEAD'), sourceMaps: true });
+
+test('component page source labels distinguish the root and localized record without inventing a language',async()=>{
+  const origin='http://127.0.0.1:1234',browser=fakeBrowser(),tab=browser.openTab(origin+'/Newsfeed/');
+  const session=new OverlaySession({sourceDir:dir,origin,site:structuredClone(SITE),sourceMaps:false});
+  const panel=enablePanel(browser.context,session);
+  try{
+    const sources=panel.stateFor(tab.page).page.sources;
+    assert.equal(new Set(sources.map(item=>item.label)).size,sources.length);
+    assert.ok(sources.some(item=>item.label==='JavaScript (root)'));assert.ok(sources.some(item=>item.label===`JavaScript (localized ${NEWS_EN})`));
+  }finally{await panel.dispose();}
+});
 
 test('known enhanced XML saves refresh page code and metadata asynchronously', async () => {
   const session = new OverlaySession({ sourceDir: dir, site: structuredClone(SITE) });
