@@ -85,7 +85,7 @@ test('agent request times out and removes reserved screenshot after invalid serv
 
 test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code',async t=>{
   const fx=await fixture(t,(req,res)=>{
-    let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{const value=JSON.parse(body);assert.equal(value.timeoutMs,1000);setTimeout(()=>res.writeHead(504,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'action_timeout',message:'The browser navigation timed out'}})),value.timeoutMs+50);});
+    let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{const value=JSON.parse(body);assert.equal(value.timeoutMs,1000);setTimeout(()=>res.writeHead(504,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'action_timeout',message:'The browser navigation timed out'}})),1050);});
   });
   await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'2000'},['navigate']),error=>error.code==='action_timeout'&&error.status===504);
   await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'150'},['navigate']),error=>error.code==='invalid_argument');
