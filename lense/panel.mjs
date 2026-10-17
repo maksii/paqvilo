@@ -19,6 +19,7 @@ import { portalResourceUrl } from './online.mjs';
 import { filesForPage } from './browser.mjs';
 import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
+import { observeHttpErrors } from './http-errors.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
@@ -247,7 +248,9 @@ export function enablePanel(context, session, opts = {}) {
   const profileInfo=!browser.cdpUrl&&(browser.profile||browser.userDataDir||browser.profileDir||opts.profileDir)?browserProfileInfo({...cfg,configDir:cfg.configDir??cfg.stateDir??process.cwd(),browser:{...browser,channel:browser.channel??'msedge',profileDir:browser.profileDir??'profiles'}},opts.profileDir):null;
   const profile=profileInfo?JSON.stringify([profileInfo.channel,process.platform==='win32'?profileInfo.userDataDir.toLowerCase():profileInfo.userDataDir,profileInfo.profileDirectory]):token;
   const namespace=crypto.createHash('sha256').update(String(profile)).digest('hex').slice(0,20);
-  const uiFile = cfg.stateDir ? path.join(cfg.stateDir, 'panels', namespace+'.json') : null;
+  // An attached browser without a known profile has no durable identity. Keep
+  // its UI in this context instead of leaving an unreadable random file per run.
+  const uiFile = cfg.stateDir && profileInfo ? path.join(cfg.stateDir, 'panels', namespace+'.json') : null;
   let ui = contextUi.get(context) ?? {};
   try {
     const saved = JSON.parse(fs.readFileSync(uiFile, 'utf8'));
@@ -279,6 +282,8 @@ export function enablePanel(context, session, opts = {}) {
   const timers = new Map();
   const drawings = new WeakMap();
   const dirtyDrawings = new WeakSet();
+  const errorObservers = new Set();
+  const errorsByPage = new WeakMap();
   let sourceIndex;
   const pageInfoCache = new Map();
   const indexSources = () => {
@@ -399,10 +404,13 @@ export function enablePanel(context, session, opts = {}) {
     if (pageInfoCache.has(key)) return pageInfoCache.get(key);
     const entry = index.pagesByKey.get(key);
     if (entry) {
-      const sources = (index.sourcesByPage.get(key) ?? []).map((s) => {
-        const lang = /\/content-pages\/[^/]*?\.([a-z]{2}-[A-Z]{2})\./.exec(s.rel)?.[1];
+      const pageSources = index.sourcesByPage.get(key) ?? [];
+      const layers = new Set(pageSources.filter(s=>s.kind.startsWith('page-')).map(s => /\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1] ?? 'root'));
+      const sources = pageSources.map((s) => {
+        const lang = /\/content-pages\/[^/]*?\.([a-z]{2}(?:-[a-z0-9]+)*)\./i.exec(s.rel)?.[1];
         const text = sourceText(s);
-        return { rel: s.rel, label: `${SOURCE_LABEL[s.kind] ?? s.kind}${lang ? ` (${lang})` : ''}`, empty: !text || !text.trim() };
+        const layer=lang??(layers.size>1&&s.kind.startsWith('page-')?'root':null);
+        return { rel: s.rel, label: `${SOURCE_LABEL[s.kind] ?? s.kind}${layer ? ` (${layer})` : ''}`, empty: !text || !text.trim() };
       });
       const info = { path: entry.url, name: entry.page.name ?? '', dir: session.rel(entry.page.dir), sources };
       pageInfoCache.set(key, info);
@@ -932,6 +940,16 @@ export function enablePanel(context, session, opts = {}) {
   const watch = (page) => {
     const removers = [];
     const listen = (event, handler) => removers.push(on(page, event, handler));
+    const errors = observeHttpErrors(context, page, { origin: cfg.origin, response: entry => {
+      const documentProblems=problems.get(page)??[];problems.set(page,documentProblems);
+      return body => {
+        if(problems.get(page)!==documentProblems)return;
+        const detail=[body?.error?.message,body?.error?.innererror?.message].map(value=>typeof value==='object'?value?.value:value).filter(value=>typeof value==='string').map(value=>redactText(value,2000).replace(/(\/[^\s?]+)\?[^\s]+/g,'$1?[redacted]')).join(' · ');
+        problem(page,{type:'http',status:entry.status,text:`${entry.method} ${entry.path}`,where:detail});
+      };
+    } });
+    errorObservers.add(errors);errorsByPage.set(page,errors);errors.ready.catch(()=>{});
+    listen('response',res=>{if(errors.failed&&res.status()>=400&&sameOrigin(res.url(),cfg.origin))problem(page,{type:'http',status:res.status(),text:`${res.request().method()} ${new URL(res.url()).pathname}`,where:''});});
     listen('pageerror', (err) => {
       if (!sameOrigin(page.url(), cfg.origin)) return;
       const at = /(https?:\/\/[^\s)]+?):(\d+):(\d+)/.exec(err.stack ?? '');
@@ -943,18 +961,7 @@ export function enablePanel(context, session, opts = {}) {
       // the browser's own line about a failed request; the request itself is listed
       if (/^Failed to load resource/.test(text)) return;
       const loc = msg.location();
-      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url || page.url(), Number.isInteger(loc.lineNumber) ? loc.lineNumber + 1 : undefined, Number.isInteger(loc.columnNumber) ? loc.columnNumber + 1 : undefined) });
-    });
-    listen('response', async (res) => {
-      if (res.status() < 400 || !sameOrigin(res.url(), cfg.origin)) return;
-      const u = new URL(res.url());
-      const documentProblems = problems.get(page) ?? [];
-      problems.set(page, documentProblems);
-      let detail='';
-      const headers=res.headers?.()??{},size=Number(headers['content-length']);
-      if(/^application\/(?:json|[\w.-]+\+json)(?:\s*;|$)/i.test(headers['content-type']??'')&&(!headers['content-encoding']||headers['content-encoding']==='identity')&&headers['content-length']!==undefined&&Number.isFinite(size)&&size>=0&&size<=32*1024){try{const body=await res.json();detail=[body?.error?.message,body?.error?.innererror?.message].map(value=>typeof value==='object'?value?.value:value).filter(value=>typeof value==='string').map(value=>redactText(value,2000).replace(/(\/[^\s?]+)\?[^\s]+/g,'$1?[redacted]')).join(' · ');}catch{}}
-      if (problems.get(page) !== documentProblems) return;
-      problem(page, { type: 'http', status: res.status(), text: `${res.request().method()} ${u.pathname}`, where: detail });
+      problem(page, { type: 'console', text: text.slice(0, 2000), ...place(loc.url || page.url(), loc.url && Number.isInteger(loc.lineNumber) ? loc.lineNumber + 1 : undefined, loc.url && Number.isInteger(loc.columnNumber) ? loc.columnNumber + 1 : undefined) });
     });
     listen('requestfailed', (req) => {
       const reason = req.failure()?.errorText ?? '';
@@ -969,6 +976,7 @@ export function enablePanel(context, session, opts = {}) {
     });
     listen('load', () => schedule(page));
     listen('close', () => {
+      errorObservers.delete(errors);void errors.close();
       clearTimeout(timers.get(page));
       timers.delete(page);
       dirtyDrawings.delete(page);
@@ -994,6 +1002,11 @@ export function enablePanel(context, session, opts = {}) {
     scheduleAll();
   });
   on(session, 'online-state', scheduleAll);
+  on(session, 'dialog', ({ page, type, message, disposition }) => {
+    if (!page || !sameOrigin(page.url(), cfg.origin)) return;
+    log({ type: 'dialog', text: `${type} dialog ${disposition}: ${message}` });
+    schedule(page);
+  });
   on(session, 'head', scheduleAll);
   on(session, 'refreshed', ({ files, how, baselineChanged = false, pageResults }) => {
     sourceInspector.invalidate();
@@ -1345,9 +1358,9 @@ export function enablePanel(context, session, opts = {}) {
     let timer;
     // A paused debugger must not hold shutdown open indefinitely. The queued cleanup also
     // retires this token, so a late draw cannot recreate the panel after it resumes.
-    const cleanup = Promise.allSettled(portalPages().map((page) => page.evaluate(removePanelUi, { token })));
+    const cleanup = Promise.allSettled([...portalPages().map((page) => page.evaluate(removePanelUi, { token })),...errorObservers].map(item=>item?.close?item.close():item));
     disposal = Promise.race([cleanup, new Promise((resolve) => { timer = setTimeout(resolve, 2000); })]).finally(() => clearTimeout(timer));
     return disposal;
   };
-  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), get hidden() { return ui.hidden === true; }, stateFor, draw, dispose };
+  return { keys: Object.fromEntries(Object.entries(KEYS).map(([k, code]) => [k, keyName(code)])), get hidden() { return ui.hidden === true; }, get ready(){return Promise.all([...errorObservers].map(observer=>observer.ready.catch(()=>{})));}, readyFor:page=>errorsByPage.get(page)?.ready.catch(()=>{}), stateFor, draw, dispose };
 }

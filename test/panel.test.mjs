@@ -35,6 +35,7 @@ async function setup(online = {}, overrides = {}, panelOptions = {}) {
     },
     ...panelOptions,
   });
+  await panel.ready;
   panels.push(panel);
   await interceptOrigin(b.context, ORIGIN, session.route);
   const { token } = panel.stateFor(tab.page);
@@ -60,17 +61,39 @@ test('the panel function is self-contained: it is sent to the browser as text', 
 test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {
   const {tab,panel}=await setup();
   let reads=0;
-  const response=(message,headers={'content-type':'application/json','content-length':'100'})=>({status:()=>400,url:()=>ORIGIN+'/_api/items?secret=private',request:()=>({method:()=> 'POST'}),headers:()=>headers,json:async()=>{reads++;return {error:{message,innererror:{message:'See /detail?token=private'}}};}});
-  tab.page.emit('response',response('<img src=x onerror=alert(1)> Missing lookup'));
-  tab.page.emit('response',response('Different lookup'));
-  tab.page.emit('response',response('Large',{'content-type':'application/json','content-length':'40000'}));
-  tab.page.emit('response',response('HTML',{'content-type':'text/html','content-length':'100'}));
+  const bodies=new Map();let sequence=0;
+  const send=tab.cdp.send;tab.cdp.send=async(method,params)=>{if(method==='Network.getResponseBody'){reads++;return {body:JSON.stringify(bodies.get(params.requestId)),base64Encoded:false};}return send(method,params);};
+  const response=(message,headers={'content-type':'application/json','content-length':'100'})=>{const requestId=String(++sequence);bodies.set(requestId,{error:{message,innererror:{message:'See /detail?token=private'}}});tab.cdp.emit('Network.requestWillBeSent',{requestId,request:{method:'POST'}});tab.cdp.emit('Network.responseReceived',{requestId,response:{status:400,url:ORIGIN+'/_api/items?secret=private',headers}});tab.cdp.emit('Network.loadingFinished',{requestId});};
+  response('<img src=x onerror=alert(1)> Missing lookup');
+  response('Different lookup');
+  response('Large',{'content-type':'application/json','content-length':'40000'});
+  response('HTML',{'content-type':'text/html','content-length':'100'});
   await tick();
   const issues=panel.stateFor(tab.page).problems;
   assert.equal(reads,2);
   assert.equal(issues.filter(item=>item.where).length,2);
   assert.ok(issues.some(item=>item.where.includes('<img src=x onerror=alert(1)> Missing lookup')));
   assert.ok(issues.every(item=>!JSON.stringify(item).includes('private')));
+});
+
+test('URL-less browser console errors name only the page path',async()=>{
+  const {tab,panel}=await setup();
+  tab.page.emit('console',{type:()=> 'error',text:()=> 'Blocked by CORS policy',location:()=>({url:'',lineNumber:0,columnNumber:0})});
+  assert.equal(panel.stateFor(tab.page).problems.find(row=>row.type==='console').where,'/scripts/');
+});
+
+test('page source buttons distinguish root and language layers without changing a single-layer label',async()=>{
+  const own=createFixture();
+  try{
+    fs.writeFileSync(own.file('web-pages/about/About.webpage.custom_javascript.js'),'console.log("root");');
+    const b=fakeBrowser(),tab=b.openTab(ORIGIN+'/about-us/');
+    const session=new OverlaySession({origin:ORIGIN,sourceDir:own.dir,site:structuredClone(SITE),sourceMaps:false});
+    const panel=enablePanel(b.context,session);panels.push(panel);
+    const labels=panel.stateFor(tab.page).page.sources.filter(row=>row.rel.endsWith('.js')).map(row=>row.label);
+    assert.deepEqual(labels.sort(),['JavaScript (en-US)','JavaScript (root)']);
+    const home=b.openTab(ORIGIN+'/');assert.ok(panel.stateFor(home.page).page.sources.some(row=>row.label==='CSS (en-US)'));
+    await panel.dispose();
+  }finally{own.cleanup();}
 });
 
 test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed',async()=>{
@@ -96,8 +119,10 @@ test('default profile namespaces follow selected site and environment; attached 
   const temporary=await setup({},base,{profileDir:path.join(stateDir,'temporary-audit-browser')});
   assert.notEqual(temporary.panel.stateFor(temporary.tab.page).ui.open,true);
   const attached={browser:{profileDir:'default-audit-profiles',cdpUrl:'http://127.0.0.1:9222'}};
+  const before=fs.readdirSync(path.join(stateDir,'panels')).sort();
   const attachedOne=await setup({},attached);await attachedOne.call('ui',{open:true});
   const attachedTwo=await setup({},attached);assert.notEqual(attachedTwo.panel.stateFor(attachedTwo.tab.page).ui.open,true);
+  assert.deepEqual(fs.readdirSync(path.join(stateDir,'panels')).sort(),before,'attached sessions without profile identity leave no state files');
 });
 
 test('selective CSS refresh preserves an unrelated tab\'s earlier pending save and baseline banner', async () => {
@@ -210,7 +235,7 @@ test('scope and live reload are switched while the loop runs; the position is re
   await call('live', { on: false });
   assert.equal(session.liveReload, false);
   await call('ui', { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true, somethingElse: 1 });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stateDir,'panels',fs.readdirSync(path.join(stateDir,'panels')).find(file=>JSON.parse(fs.readFileSync(path.join(stateDir,'panels',file),'utf8')).hidden)), 'utf8')), { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
+  assert.deepEqual(panel.stateFor(tab.page).ui, { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
   const restarted = await setup();
   assert.equal(panelVisibilityNotice(restarted.panel),null,'a fresh session starts independently');
   assert.equal(panel.stateFor(tab.page).ui.hidden,true);

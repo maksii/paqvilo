@@ -109,6 +109,8 @@ Live access uses the selected connected browser identity. Exact parity requires 
   process.exit(0);
 }
 try {
+  const commands=['serve','inspect','render','capture-shell','capture-stylesheets','capture-snippet-composition','verify','data'];
+  if(!commands.includes(command))throw new Error(`Unknown command: ${command}. Choose ${commands.join(', ')}. Run paqvilo mirage --help for options.`);
   if (command === "data") {
     const { runDataCommand } = await import("./lib/data-generation.mjs");
     // data scaffold resolves its portal like serve: a project file and portal,

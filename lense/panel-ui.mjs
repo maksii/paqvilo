@@ -95,7 +95,9 @@ export function panelUi(data) {
       .seg button.on { background: var(--primary); color: var(--on-primary); }
 
       .tabs { display: flex; gap: 2px; padding: 0 6px; border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: thin; }
-      .targets { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .targets { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+      .target-confirm { flex-basis:100%; padding:8px; border:1px solid var(--danger); border-radius:var(--radius); }
+      .target-confirm p { margin:0 0 8px; }
       .targets label { flex: none; font-size: 12px; color: var(--muted); }
       .targets select { flex: 1; min-width: 0; max-width: 100%; font: inherit; color: var(--fg); background: var(--bg); border: 1px solid var(--input-line); border-radius: var(--radius); padding: 4px; }
       .targets select:focus-visible { outline: 2px solid var(--primary); outline-offset: 1px; }
@@ -360,7 +362,7 @@ export function panelUi(data) {
           </div>
           <div class="toast" role="status" aria-live="polite"></div>
         </div>
-        <div class="float"></div>
+        <div class="float" role="status" aria-live="polite"></div>
       </div>`;
     const $ = (sel) => root.querySelector(sel);
     const wrap = $('.wrap');
@@ -478,11 +480,25 @@ export function panelUi(data) {
       host.style.right = pos.h === 'right' ? dx + 'px' : 'auto';
       host.style.top = pos.v === 'top' ? dy + 'px' : 'auto';
       host.style.bottom = pos.v === 'bottom' ? dy + 'px' : 'auto';
-      if(!S.ui.open&&!S.placingPill){
-        S.placingPill=true;
-        const overlaps=()=>{const r=el.pill.getBoundingClientRect();return [[r.left+4,r.top+4],[r.right-4,r.bottom-4],[r.left+r.width/2,r.top+r.height/2]].some(([x,y])=>document.elementsFromPoint(x,y).some(node=>node!==host&&!node.closest('#paqvilo-panel,#paqvilo-xray')&&node.closest('a,button,input,select,textarea,[role=button]')));};
-        for(const h of ['left','right']){for(const v of ['bottom','top']){if(!overlaps())break;S.pillPos={h,v,dx:12,dy:12};host.style.left=h==='left'?'12px':'auto';host.style.right=h==='right'?'12px':'auto';host.style.top=v==='top'?'12px':'auto';host.style.bottom=v==='bottom'?'12px':'auto';}if(!overlaps())break;}
-        S.placingPill=false;
+      if(!S.ui.open&&!S.ui.hidden&&!stopDrag){
+        const rect=el.pill.getBoundingClientRect();
+        const controls=[...document.querySelectorAll('a[href],button,input:not([type=hidden]),select,textarea,[role=button],iframe')].filter(node=>!node.closest('#paqvilo-panel,#paqvilo-xray')).flatMap(node=>{
+          const r=node.getBoundingClientRect();
+          return r.width&&r.height&&r.right>0&&r.bottom>0&&r.left<vw&&r.top<vh&&getComputedStyle(node).visibility!=='hidden'?[r]:[];
+        });
+        const score=(left,top)=>{
+          let count=0,area=0;
+          for(const r of controls){const overlap=Math.max(0,Math.min(left+rect.width,r.right)-Math.max(left,r.left))*Math.max(0,Math.min(top+rect.height,r.bottom)-Math.max(top,r.top));if(overlap){count++;area+=overlap;}}
+          return {count,area};
+        };
+        let best={pos,score:score(rect.left,rect.top)};
+        for(const h of ['left','right'])for(const v of ['bottom','top']){
+          const candidate={h,v,dx:12,dy:12},candidateScore=score(h==='left'?12:vw-12-rect.width,v==='top'?12:vh-12-rect.height);
+          if(candidateScore.count<best.score.count||candidateScore.count===best.score.count&&candidateScore.area<best.score.area)best={pos:candidate,score:candidateScore};
+        }
+        S.pillPos=best.pos;
+        host.style.left=best.pos.h==='left'?best.pos.dx+'px':'auto';host.style.right=best.pos.h==='right'?best.pos.dx+'px':'auto';
+        host.style.top=best.pos.v==='top'?best.pos.dy+'px':'auto';host.style.bottom=best.pos.v==='bottom'?best.pos.dy+'px':'auto';
       }
     };
     let stopDrag = null;
@@ -550,7 +566,11 @@ export function panelUi(data) {
       },
       { capture: true, signal: lifetime.signal },
     );
-    window.addEventListener('resize', place, { signal: lifetime.signal });
+    let placeTimer;
+    const schedulePlace=()=>{clearTimeout(placeTimer);placeTimer=setTimeout(place,100);};
+    window.addEventListener('resize', schedulePlace, { signal: lifetime.signal });
+    window.addEventListener('scroll', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
+    window.addEventListener('scrollend', schedulePlace, { capture:true, passive:true, signal:lifetime.signal });
 
     // ------------------------------------------------------------------------------ pieces
     const chips = (it) => {
@@ -695,10 +715,8 @@ export function panelUi(data) {
       if (S.pickingElement) out += '<div class="card"><div class="path">Select an element on the portal</div><div class="sub">Click a control or content block. Its action is paused for this click. Press Escape to cancel.</div></div>';
       if (S.selectedElement) {
         const selected = S.selectedElement;
-        const matching = (report.columns ?? []).filter((column) => column.name === selected.id || column.name === selected.name);
-        const field = matching.length === 1 ? matching[0] : null;
-        const candidates = field ? [field] : matching.length ? matching : (report.pageSources ?? []);
-        out += `<div class="card"><div class="path">Selected: ${esc(selected.tag)}${selected.id ? `#${esc(selected.id)}` : ''}</div><div class="sub">${esc(selected.name ? `name ${selected.name}` : selected.classes || 'No field identifier')} · ${field ? 'exported field match' : 'No direct source binding. Start with the page sources below.'}</div>${candidates.map((item) => rrow(item, { code: field ? 'COL' : 'SRC', title: field ? `${field.entity}.${field.name}` : item.name, sub: item.ref ?? '' })).join('')}</div>`;
+        const identity=S.selectedIdentity;
+        out += `<div class="card" data-selected-identity><div class="path">Selected: ${esc(identity?.title??selected.tag)}${identity?'':selected.id?`#${esc(selected.id)}`:''}</div><div class="sub">${esc(identity?`${identity.kind} · ${identity.sub??''}`:'Select again with X-ray to resolve this element.')}</div>${(identity?.fields??[]).map(item=>rrow(item,{code:'COL',title:`${item.entity}.${item.name}`,sub:item.label??''})).join('')}${[...(identity?.forms??[]),...(identity?.views??[]),...(identity?.lists??[])].map(item=>rrow(item,{code:'CFG',title:item.name,sub:item.ref??''})).join('')}${(identity?.sources??[]).map(item=>rrow(item,{code:'SRC',title:item.name,sub:[item.ref,item.line?`line ${item.line}`:''].filter(Boolean).join(' · ')})).join('')}</div>`;
       }
       const page = report.page;
       if (page) {
@@ -1091,7 +1109,12 @@ export function panelUi(data) {
       );
       const inspection = d.inspection ?? d.mirage;
       const tabCount = { overrides: `<span class="n ${d.items.length ? 'ok' : 'dimn'}">${d.items.length}</span>`, runtime: '', tweaks: '', issues: warns + errs + net ? `<span class="n ${errs + net ? 'err' : 'warn'}">${warns + errs + net}</span>` : '', activity: '', explore: '' };
-      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${[['Local runtimes',t=>/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Remote',t=>!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Caution · REAL DATA',t=>t.caution]].map(([name,keep])=>`<optgroup label="${name}">${S.targets.map((target,index)=>keep(target)?`<option value="${index}" ${target.origin===location.origin?'selected':''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`:'').join('')}</optgroup>`).join('')}</select><button data-target-go class="btn">Go</button>`);
+      const targetGroups = [['Local runtimes',t=>/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Remote',t=>!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(t.origin)&&!t.caution],['Caution · REAL DATA',t=>t.caution]].map(([name,keep])=>{
+        const options=S.targets.map((target,index)=>keep(target)?`<option value="${index}" ${target.origin===location.origin?'selected':''}>${esc(target.siteName)} @ ${esc(target.envName)}</option>`:'').join('');
+        return options?`<optgroup label="${name}">${options}</optgroup>`:'';
+      }).join('');
+      const pendingTarget=S.pendingTarget;
+      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" ${S.targetSwitching?'disabled':''}>Go</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
       set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
       set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]}</button>`).join(''));
       el.body.setAttribute('aria-labelledby','paqvilo-tab-'+ui.tab);
@@ -1135,6 +1158,7 @@ export function panelUi(data) {
     };
     let previousFocus;
     const setOpen = (open) => {
+      if(open)document.getElementById('paqvilo-xray')?.__px?.toggle(false);
       if(open&&!S.ui.open)previousFocus=root.activeElement??document.activeElement;
       S.ui.open = open;
       if (open) S.ui.hidden = false;
@@ -1269,7 +1293,7 @@ export function panelUi(data) {
           break;
         case 'inspect-pick': {
           const xray=document.getElementById('paqvilo-xray')?.__px;
-          if(xray){stopPicking();S.ui.open=false;render();xray.toggle(true);break;}
+          if(xray){stopPicking();S.ui.open=false;render();xray.pickOnce();break;}
           if (S.pickingElement) { stopPicking(); render(); break; }
           S.pickingElement = true;
           S.pickHandler = (event) => {
@@ -1482,14 +1506,30 @@ export function panelUi(data) {
     el.pill.addEventListener('click', () => {
       if (Date.now() - S.dragged > 250) setOpen(true);
     });
+    const resetTarget=()=>{const select=el.targets.querySelector('select');if(select)select.value=String(S.targets.findIndex(target=>target.origin===location.origin));};
+    const cancelTarget=()=>{S.pendingTarget=null;resetTarget();render();el.targets.querySelector('[data-target-go]')?.focus();};
+    const switchTarget=async target=>{
+      if(S.targetSwitching)return;
+      S.pendingTarget=null;resetTarget();S.targetSwitching=true;render();
+      try{
+        if(!S.targets.some(item=>item.origin===target.origin&&item.url===target.url))throw new Error('The selected target is no longer available');
+        const result=await api('ui',S.ui);
+        if(!result.ok)throw new Error(result.error??'The dev loop did not save the current panel');
+        location.assign(target.url);
+      }catch(error){toast(error.message,true);}
+      finally{S.targetSwitching=false;resetTarget();render();}
+    };
     const goTarget=async()=>{
       const value=el.targets.querySelector('select')?.value,target=/^\d+$/.test(value)?S.targets[Number(value)]:null;
-      if(!target||target.origin===location.origin)return;
-      if((target.caution||S.d.mirageMode&&!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(target.origin))&&!window.confirm(`Open ${target.siteName} @ ${target.envName}${target.caution?' (REAL DATA)':''}? Browser actions can change live data.`))return;
-      await api('ui',S.ui);location.assign(target.url);
+      if(!target||target.origin===location.origin){cancelTarget();return;}
+      if(target.caution||S.d.mirageMode&&!/^https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\])(?::|\/|$)/i.test(target.origin)){
+        S.pendingTarget=target;resetTarget();render();el.targets.querySelector('[data-target-cancel]')?.focus();return;
+      }
+      await switchTarget(target);
     };
-    el.targets.addEventListener('click',event=>{if(event.target.closest('[data-target-go]'))void goTarget();});
-    el.targets.addEventListener('keydown',event=>{if(event.key==='Enter'){event.preventDefault();void goTarget();}});
+    el.targets.addEventListener('click',event=>{if(event.target.closest('[data-target-cancel]'))cancelTarget();else if(event.target.closest('[data-target-confirm]')&&S.pendingTarget)void switchTarget(S.pendingTarget);else if(event.target.closest('[data-target-go]'))void goTarget();});
+    el.targets.addEventListener('change',()=>{if(S.pendingTarget){S.pendingTarget=null;render();}});
+    el.targets.addEventListener('keydown',event=>{if(event.key==='Enter'&&event.target.matches('select')){event.preventDefault();void goTarget();}});
     el.pill.addEventListener('keydown', (e) => {
       if (e.key === 'Enter' || e.key === ' ') {e.preventDefault();setOpen(true);}
     });
@@ -1504,6 +1544,7 @@ export function panelUi(data) {
         if (type !== 'keydown') return;
         if(e.target.matches('[role=tab]')&&['ArrowLeft','ArrowRight','Home','End'].includes(e.key)){const tabs=[...el.tabs.querySelectorAll('[role=tab]')],at=tabs.indexOf(e.target),next=e.key==='Home'?0:e.key==='End'?tabs.length-1:(at+(e.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;e.preventDefault();void act('tab',tabs[next]);el.tabs.querySelector('[aria-selected=true]')?.focus();return;}
         if (e.key === 'Escape') {
+          if(S.pendingTarget){cancelTarget();return;}
           if (S.diff) S.diff = null;
           else if (S.q) S.q = el.input.value = '';
           else return setOpen(false);
@@ -1522,6 +1563,8 @@ export function panelUi(data) {
         act('inspect-refresh', { dataset: {}, closest: () => null });
       } else if (detail.action === 'selected') {
         S.selectedElement = detail.element;
+        S.selectedIdentity = detail.identity;
+        if(detail.oneShot){S.ui.tab='runtime';setOpen(true);}
       } else if (detail.action === 'toggled') {
         if (detail.enabled) { S.ui.hidden = false; S.ui.open = false; }
         render();
@@ -1550,11 +1593,14 @@ export function panelUi(data) {
         clearTimeout(toastTimer);
         clearTimeout(floatTimer);
         clearTimeout(saveTimer);
+        clearTimeout(placeTimer);
         host.remove();
       },
       update(d) {
         if (lifetime.signal.aborted) return;
         const catalogChanged = S.d && S.d.catalogVersion !== d.catalogVersion;
+        const previousInspection=S.d?.inspection??S.d?.mirage,nextInspection=d.inspection??d.mirage;
+        if(catalogChanged||previousInspection&&previousInspection.version!==nextInspection?.version){S.selectedElement=null;S.selectedIdentity=null;}
         S.d = d;
         if (MIRAGE_TABS.includes(S.ui.tab) && (!d.mirageMode || d.mirage?.active === false)) S.ui.tab = 'overrides';
         S.targets = (Array.isArray(d.targets) ? d.targets : []).flatMap((target) => {

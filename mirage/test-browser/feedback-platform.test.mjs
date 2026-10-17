@@ -7,8 +7,11 @@ import {pathToFileURL} from 'node:url';
 import {chromium} from 'playwright-core';
 import {browserLaunchOptions} from '../lib/browser-launch.mjs';
 import {createSimulator} from '../server.mjs';
+import {importPortal} from '../lib/importer.mjs';
+import {inspectPage} from '../lib/page-resources.mjs';
+import {enrichInspection} from '../../lense/source-inspection.mjs';
 
-async function fixture(t,body){
+async function fixture(t,body,extraFiles={},options={}){
   const root=await fs.mkdtemp(path.join(tmpdir(),'mirage-platform-feedback-'));t.after(()=>fs.rm(root,{recursive:true,force:true}));
   const files={'website.yml':'adx_websiteid: site\nadx_name: Invented platform',
     'Home.webpage.yml':'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main',
@@ -20,9 +23,9 @@ async function fixture(t,body){
     'web-files/a.js':'window.assetMarker = 1;\nwindow.assetMarker++;',
     'web-files/a.js.webfile.yml':'adx_webfileid: script\nadx_name: a.js\nadx_partialurl: a.js\nadx_parentpageid: scripts\nfilename: a.js',
     'web-files/a.css':'body { color: rgb(1, 2, 3); }',
-    'web-files/a.css.webfile.yml':'adx_webfileid: style\nadx_name: a.css\nadx_partialurl: a.css\nadx_parentpageid: scripts\nfilename: a.css'};
+    'web-files/a.css.webfile.yml':'adx_webfileid: style\nadx_name: a.css\nadx_partialurl: a.css\nadx_parentpageid: scripts\nfilename: a.css',...extraFiles};
   for(const [file,text]of Object.entries(files)){await fs.mkdir(path.dirname(path.join(root,file)),{recursive:true});await fs.writeFile(path.join(root,file),text);}
-  const app=await createSimulator({sourceDir:root,watch:false});t.after(()=>app.close());
+  const app=await createSimulator({sourceDir:root,watch:false,...options});t.after(()=>app.close());
   const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());const page=await browser.newPage();
   return {app,page,root};
 }
@@ -58,10 +61,46 @@ test('exported scripts and styles carry file maps and CDP binds a breakpoint to 
   const breakpoint=await cdp.send('Debugger.setBreakpointByUrl',{url:pathToFileURL(jsFile).href,lineNumber:0});
   let hit=false;cdp.on('Debugger.paused',event=>{if(event.hitBreakpoints.includes(breakpoint.breakpointId))hit=true;void cdp.send('Debugger.resume');});
   await page.goto(app.url);assert.equal(hit,true);assert.equal(await page.evaluate(()=>window.assetMarker),2);
-  const template=parsed.find(event=>event.url===pathToFileURL(templateFile).href);assert.ok(template?.hasSourceURL);assert.ok(template.sourceMapURL.startsWith('data:application/json'));
+  const template=parsed.find(event=>event.url===pathToFileURL(templateFile).href+'?inline=1');assert.ok(template?.hasSourceURL);assert.ok(template.sourceMapURL.startsWith('data:application/json'));
   assert.deepEqual(JSON.parse(Buffer.from(template.sourceMapURL.split(',')[1],'base64')).sources,[pathToFileURL(templateFile).href]);
-  const copy=parsed.find(event=>event.url===pathToFileURL(path.join(root,'Home.webpage.copy.html')).href);
+  const copy=parsed.find(event=>event.url===pathToFileURL(path.join(root,'Home.webpage.copy.html')).href+'?inline=1');
   assert.ok(copy?.hasSourceURL);assert.equal(await page.evaluate(()=>window.pageCopyMarker),1);
+});
+
+test('inline template blocks have stable distinct debugger URLs and a breakpoint hits only its selected block',async t=>{
+  const {app,page,root}=await fixture(t,'<script>window.inlineOne=1;</script>\n<script>window.inlineTwo=2;</script>');
+  const file=pathToFileURL(path.join(root,'Main.webtemplate.source.html')).href,cdp=await page.context().newCDPSession(page),parsed=[],paused=[];
+  await cdp.send('Debugger.enable');cdp.on('Debugger.scriptParsed',event=>{if(event.url.startsWith(file))parsed.push(event);});
+  const breakpoint=await cdp.send('Debugger.setBreakpointByUrl',{url:file+'?inline=2',lineNumber:0});
+  cdp.on('Debugger.paused',event=>{paused.push(event);void cdp.send('Debugger.resume');});
+  await page.goto(app.url);
+  assert.deepEqual(parsed.map(event=>event.url),[file+'?inline=1',file+'?inline=2']);
+  assert.equal(paused.length,1);assert.ok(paused[0].hitBreakpoints.includes(breakpoint.breakpointId));
+  assert.equal(parsed.find(event=>event.scriptId===paused[0].callFrames[0].location.scriptId).url,file+'?inline=2');
+  for(const event of parsed)assert.deepEqual(JSON.parse(Buffer.from(event.sourceMapURL.split(',')[1],'base64')).sources,[file]);
+});
+
+test('list scripts and extensionless assets retain debugger provenance and declared MIME kinds',async t=>{
+  const body='<script src="/logic"></script><link rel="stylesheet" href="/styles"><img src="/picture">{% include "entity_list" key:"Cards" %}';
+  const {app,page,root}=await fixture(t,body,{
+    'Cards.list.yml':'adx_entitylistid: cards\nadx_name: Cards\nadx_entityname: item',
+    'Cards.list.custom_javascript.js':'window.listMarker=1;\nwindow.listMarker++;',
+    'web-files/logic':'window.extensionlessMarker=1;',
+    'web-files/logic.webfile.yml':'adx_webfileid: logic\nadx_name: Logic\nadx_partialurl: logic\nfilename: logic\nadx_mimetype: application/javascript',
+    'web-files/styles':'body { color: rgb(1, 2, 3); }',
+    'web-files/styles.webfile.yml':'adx_webfileid: styles\nadx_name: Styles\nadx_partialurl: styles\nfilename: styles\nadx_mimetype: text/css',
+    'web-files/picture':Buffer.from([137,80,78,71,13,10,26,10]),
+    'web-files/picture.webfile.yml':'adx_webfileid: picture\nadx_name: Picture\nadx_partialurl: picture\nfilename: picture\nadx_mimetype: image/png',
+  },{initial:{settings:{permissionMode:'permissive'},mappings:{item:{entitySet:'items',idColumn:'itemid'}},tables:{item:[]},simulator:{componentSchemas:{cards:{entity:'item',fields:[{name:'name'}]}}}}});
+  const css=await fetch(app.url+'/styles'),text=await css.text();assert.match(css.headers.get('content-type'),/^text\/css/);
+  const cssMap=JSON.parse(Buffer.from(/sourceMappingURL=data:application\/json;charset=utf-8;base64,([\w+/=]+)/.exec(text)[1],'base64'));assert.deepEqual(cssMap.sources,[pathToFileURL(path.join(root,'web-files/styles')).href]);
+  const file=pathToFileURL(path.join(root,'Cards.list.custom_javascript.js')).href,cdp=await page.context().newCDPSession(page),parsed=[];
+  assert.match(await (await fetch(app.url)).text(),/window.listMarker/);
+  await cdp.send('Debugger.enable');cdp.on('Debugger.scriptParsed',event=>parsed.push(event));
+  const breakpoint=await cdp.send('Debugger.setBreakpointByUrl',{url:file,lineNumber:1});let hits=0;cdp.on('Debugger.paused',event=>{if(event.hitBreakpoints.includes(breakpoint.breakpointId))hits++;void cdp.send('Debugger.resume');});
+  await page.goto(app.url);assert.equal(hits,1);assert.equal(await page.evaluate(()=>window.listMarker),2);assert.equal(await page.evaluate(()=>window.extensionlessMarker),1);assert.ok(parsed.some(event=>event.url===file&&event.sourceMapURL));
+  const portal=await importPortal(root),report=await enrichInspection(inspectPage(portal,'/'),portal);
+  assert.equal(report.assets.find(asset=>asset.url==='/picture').kind,'image');assert.equal(report.assets.find(asset=>asset.url==='/styles').kind,'stylesheet');
 });
 
 test('timeago updates time elements, retains dates across title changes, and honours locale and future settings',async t=>{

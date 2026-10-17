@@ -23,7 +23,7 @@ test('independent inventory catches new file/field kinds that are absent from th
   assert.equal(report.coverage.runtimeVerified, false);
   assert.ok(report.coverage.accountedPercent < 100);
   assert.ok(report.resources.every((item) => !Object.hasOwn(item, 'body') && !Object.hasOwn(item, 'content')));
-  assert.equal(report.writesFiles, false);
+  assert.deepEqual(report.writesFiles, []);
 });
 
 test('blocked, inactive and disabled are explicit instead of disappearing from the denominator', (t) => {

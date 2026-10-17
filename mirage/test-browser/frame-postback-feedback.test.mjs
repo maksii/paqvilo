@@ -116,7 +116,11 @@ for (const transport of ['json', 'postback']) for (const markup of ['inline','pa
   if(markup==='paragraph')assert.match(await frame.locator('#MessagePanel p').innerText(),/appropriate permissions/);
   assert.equal(await frame.locator('#EntityFormPanel').isVisible(), true);
   assert.equal(app.store.snapshot().tables.sample.length, 0);
-  assert.ok(app.state().diagnostics.some(item => item.code === 'PermissionDenied'));
+  const denied=app.state().diagnostics.filter(item=>['PermissionDenied','TABLE_PERMISSION_DENIED'].includes(item.code));
+  assert.equal(denied.length,1,'one detailed permission diagnostic per denied JSON or postback submission');
+  assert.equal(denied[0].code,'TABLE_PERMISSION_DENIED');
+  assert.equal(denied[0].permissions[0].parentLink.childColumn,'parentid');
+  assert.equal(denied[0].permissions[0].parentLink.value,null);
   await frame.evaluate(() => { document.getElementById('parentid').value = '22222222-2222-4222-8222-222222222222'; document.getElementById('parentid_entityname').value = 'account'; document.getElementById('parentid_name').value = 'Invented parent'; });
   await frame.locator('#InsertButton').click();
   await page.waitForFunction(() => window.loads === 3);

@@ -2,8 +2,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { OverlaySession } from '../session.mjs';
-import YAML from 'yaml';
-import { sourceText } from '../portal-model.mjs';
+import { createSourceReader } from '../portal-model.mjs';
 import { fetchOnline, mapLimit, describeStatus } from '../online.mjs';
 
 const WHERE = {
@@ -21,16 +20,7 @@ const WHERE = {
 
 export function buildMapping(session) {
   const { cfg, model } = session;
-  const parsed = new Map(), rawFiles=new Map();
-  const textOf = source => {
-    if (!source.fieldPath) return sourceText(source);
-    if(!rawFiles.has(source.file)) {try{rawFiles.set(source.file,fs.readFileSync(source.file,'utf8'));}catch{rawFiles.set(source.file,null);}}
-    if(rawFiles.get(source.file)===null)return null;
-    return sourceText({...source, parsedYaml: raw => {
-      if(!parsed.has(source.file)){try{parsed.set(source.file,YAML.parse(raw)??{});}catch{parsed.set(source.file,{__error:'Invalid YAML'});}}
-      return parsed.get(source.file);
-    }},rawFiles.get(source.file));
-  };
+  const textOf = createSourceReader(model);
   const inlineKinds = new Set(cfg.site.inline.enabled ? cfg.site.inline.kinds : []);
   const markupKinds = new Set(cfg.site.markup.enabled ? cfg.site.markup.kinds : []);
   return {

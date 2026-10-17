@@ -42,12 +42,14 @@ export default async function list(_cfg, args) {
   let inEffect = null;
   let targets = [];
   let problem = null;
+  let problemCode = 'configuration_error';
   try {
     const resolved = await loadDevTargets(args);
     inEffect = resolved.initial;
     targets = resolved.targets;
   } catch (err) {
     problem = err.message;
+    problemCode = err.code ?? problemCode;
   }
   const rel = (dir) => path.relative(catalogue.configDir, dir).replace(/\\/g, '/') || '.';
 
@@ -82,7 +84,7 @@ export default async function list(_cfg, args) {
   if (args.json) {
     let resolved;
     try { resolved = await resolveCatalogue(args); } catch (error) { resolved = { error: error.message }; }
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', ok: Boolean(inEffect), errors: inEffect ? [] : [{ code: 'CONFIGURATION_UNAVAILABLE', message: problem ?? 'No usable site and environment' }], offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'list', ok: Boolean(inEffect), errors: inEffect ? [] : [{ code: problemCode, message: problem ?? 'No usable site and environment' }], offline: true, sourceRoot: catalogue.sourceRoot, resolved, sites, inEffect: inEffect && {
       site: inEffect.siteName, env: inEffect.envName, url: inEffect.origin, source: inEffect.sourceDir, scope: inEffect.site.scope, baseline: inEffect.site.markup.baseline, portals: inEffect.portals,
       browser: { channel: inEffect.browser.channel, headless: inEffect.browser.headless, debugPort: inEffect.browser.debugPort, bypassCSP: inEffect.browser.bypassCSP, mode: inEffect.browser.cdpUrl ? 'attach' : 'launch',
         profileMode: inEffect.browser.cdpUrl ? 'attached' : inEffect.browser.userDataDir ? 'external' : inEffect.browser.profile ? 'named' : 'default',

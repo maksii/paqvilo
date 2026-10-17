@@ -287,7 +287,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   // --- which site
   const siteName = opts.site ?? s.PAQVILO_SITE ?? root.defaultSite ?? names[0];
   const site = Object.hasOwn(sites, siteName) ? sites[siteName] : null;
-  if (!site) throw new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`);
+  if (!site) throw Object.assign(new Error(`Unknown site "${siteName}". Known sites: ${names.join(', ')}. Run "npm run list" to see them.`), { code: initial && opts.site !== undefined ? 'invalid_argument' : 'configuration_error' });
   const siteFrom = opts.site ? 'command line' : s.PAQVILO_SITE ? settings.origin.PAQVILO_SITE : path.basename(configFile);
 
   // --- which environment
@@ -315,7 +315,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   }
   const env = url ? { url } : Object.hasOwn(site.environments, envName) ? site.environments[envName] : null;
   if (!env?.url) {
-    throw new Error(`Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`);
+    throw Object.assign(new Error(`Unknown environment "${envName}" for site "${siteName}". Known: ${envNames.join(', ') || '(none)'}. Run "npm run list" to see them.`), { code: initial && opts.env !== undefined ? 'invalid_argument' : 'configuration_error' });
   }
   const origin = httpUrl(env.url, `URL for site "${siteName}", environment "${envName}"`).origin;
 

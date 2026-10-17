@@ -133,7 +133,7 @@ test('details retain deeper unique evidence even when the same source has a near
 test('classic compact and idless list wrappers resolve only exported page or record identities',async t=>{
   const id='10000000-0000-4000-8000-000000000001',report={page:{listId:id},components:[{kind:'list',recordId:id,name:'Classic list',entity:'item',viewIds:['view']}],views:[{id:'view',name:'Item view',entity:'item'}]};
   const {page,identify}=await fixture(t,`<div id="EntityListControl_${id.replaceAll('-','')}"><label>Filter</label></div><div id="EntityListControl"><table><tr><th>Header</th></tr></table></div><div id="EntityListUnrelated"><p>Unknown</p></div>`,report);
-  assert.equal((await identify('label')).title,'Item view');assert.equal((await identify('th')).title,'Item view');assert.equal((await identify('p')).title,'No reliable source');
+  assert.equal((await identify('label')).title,'Classic list');assert.equal((await identify('th')).title,'Classic list');assert.equal((await identify('p')).title,'No reliable source');
   assert.ok((await page.evaluate(inspectRenderedPage)).controls.some(row=>row.listId===id.replaceAll('-','')));
 });
 

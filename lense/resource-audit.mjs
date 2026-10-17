@@ -234,7 +234,7 @@ export function auditResources(model, site) {
   const totals = { resources: resources.length, mapped: count('mapped'), blocked: count('blocked'), inactive: count('inactive'), deployment: count('deployment'), gaps: count('gap'), disabled: resources.filter((item) => item.status === 'mapped' && !item.enabled).length };
   const active = totals.mapped + totals.blocked + totals.gaps;
   return {
-    schemaVersion: 1, offline: true, writesFiles: false, format: model.format, sourceDir: root,
+    schemaVersion: 1, offline: true, writesFiles: [], format: model.format, sourceDir: root,
     scannedFiles: files.length, totals,
     coverage: { inventoryComplete: errors.length === 0, accountedPercent: errors.length ? null : resources.length ? (resources.length - totals.gaps) / resources.length * 100 : 100, mappedPercent: errors.length ? null : active ? totals.mapped / active * 100 : 100, complete: errors.length === 0 && diagnostics.length === 0 && totals.gaps === 0 && totals.blocked === 0, runtimeVerified: false },
     scope: 'All regular files under the extract, JavaScript/CSS/HTML file extensions, code-bearing YAML/component JSON fields, and all indexed web-file payloads. Inline script/style elements remain part of their containing HTML source. Mapping is independent of configured kind filters, exclusions and changed scope; enabled reports configuration only.',

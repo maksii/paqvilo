@@ -8,6 +8,7 @@ import { watchSources, trackOnlineState, logHits, printSummary } from './command
 import { isExtract } from './config.mjs';
 import { GitBaseline } from './git.mjs';
 import { compareWebFile } from './online.mjs';
+import { devDialogs } from './dev-dialogs.mjs';
 
 export async function startDevSessions(context, selection, { args = {}, attached = false, stop = () => {}, debugPort = null, log = console.log } = {}) {
   const { mode, initial, targets } = selection;
@@ -18,6 +19,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
   const pending = new Map();
   const failedAt = new Map();
   const records = new Set();
+  const stopDialogs = devDialogs(context, { configs, attached, headless: initial.browser.headless === true, sessionFor: origin => [...records].find(record => record.session.cfg.origin === origin)?.session });
   let closed = false;
   let detach;
   let closing;
@@ -67,6 +69,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
           // Reference captures want the site exactly as the environment serves it: no overlay at all.
           if (!cfg.mirage && args['no-overrides']) session.bypass = true;
           if (cfg.panel) record.panel = enablePanel(context, session);
+          await record.panel?.ready;
           // Mirage watches and reloads its own renderer. Keep this watcher only to refresh
           // the toolkit's source inventory; a second page reload can execute handlers twice.
           record.watcher = watchSources(session, context, { log, reload: !cfg.mirage });
@@ -93,6 +96,7 @@ export async function startDevSessions(context, selection, { args = {}, attached
 
   const close = () => closing ??= (async () => {
     closed = true;
+    stopDialogs();
     // Release paused requests first. Initializers finish before disposing any resources they own.
     try { await detach?.(); }
     finally {
@@ -107,7 +111,8 @@ export async function startDevSessions(context, selection, { args = {}, attached
   try {
     detach = await interceptOrigins(context, [...configs.keys()], async (route) => {
       try {
-        const { session } = await ensure(new URL(route.request().url()).origin);
+        const { session, panel } = await ensure(new URL(route.request().url()).origin);
+        try { await panel?.readyFor(route.request().frame().page()); } catch { /* requests without a document */ }
         if (closed) return route.abort();
         await session.route(route);
       } catch {

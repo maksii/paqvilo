@@ -155,7 +155,7 @@ test('machine-readable CLI failures reject ignored options and interactive JSON 
     assert.equal(result.stderr, '');
   }
   const typo = run('resources', '--unknown-option', '--json');
-  assert.equal(JSON.parse(typo.stdout).error.code, 'INVALID_ARGUMENT');
+  assert.equal(JSON.parse(typo.stdout).error.code, 'unsupported_option');
   assert.equal(JSON.parse(run('--help', '--json').stdout).command, 'help');
   assert.equal(JSON.parse(run('agent', '--help').stdout).command, 'help', 'agent commands consistently produce JSON');
 });
@@ -375,9 +375,9 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     const gated = run('doctor', '--config', config, '--repo', fx.dir, '--all', '--mirage', '--json');
     assert.equal(gated.status, 1, gated.stdout + gated.stderr);
     assert.equal(JSON.parse(gated.stdout).ready, false);
-    assert.deepEqual(JSON.parse(gated.stdout).checks, ['lense', 'mirage']);
+    assert.deepEqual(JSON.parse(gated.stdout).checks, ['lense', 'sources', 'mirage']);
     assert.equal(JSON.parse(gated.stdout).reports.find(item => item.site === 'broken').lenseReady, true);
-    assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--all').stdout, /Mirage NOT READY \(use --mirage to gate both\)/);
+    assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--all').stdout, /Mirage NOT READY \(use --mirage to gate Sources and Mirage\)/);
     const ready = reports.find((item) => item.site === 'test').mirage;
     assert.equal(ready.ready, true, JSON.stringify(ready));
     assert.equal(ready.dependencies.ready, true);

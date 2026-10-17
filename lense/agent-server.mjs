@@ -246,6 +246,10 @@ export async function startAgentServer({ session, context, panel, attached = fal
   on(context, 'requestfinished', (request) => { if (requests.get(request)?.unattributed) finishRequest(request); });
   on(context, 'requestfailed', (request) => { if (requests.get(request)?.unattributed) finishRequest(request, true); });
   on(session, 'fault', (error, url) => push({ type: 'overlay-error', text: redactText(error.message), ...(url ? { url: location(url) } : {}) }));
+  on(session,'dialog',entry=>{
+    if(entry.disposition!=='dismissed'||!entry.page||!active(entry.page))return;
+    push({type:'dialog',pageId:pageIds.get(entry.page),documentId:currentDocuments.get(entry.page)?.id,dialogType:redactText(entry.type,80),text:redactText(entry.message),disposition:'dismissed'});
+  });
   on(session, 'refreshed', ({ files = [], how, baselineChanged = false } = {}) => push({ type: 'refresh', files: files.slice(0, MAX_ITEMS).map((file) => session.rel(file)), truncated: files.length > MAX_ITEMS, how, baselineChanged }));
   on(session, 'hit', (hit) => push({ type: 'overlay', pageId: hit.page ? pageIds.get(hit.page) : undefined, url: location(hit.url), kind: hit.type, sources: (hit.sources ?? []).slice(0, 30).map(({ rel, kind, action }) => ({ rel, kind, action })) }));
 

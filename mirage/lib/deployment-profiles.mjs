@@ -76,11 +76,11 @@ export async function loadDeploymentProfiles(config, pin = null) {
     if (!loaded.has(file)) {
       let source;
       try { source = await fs.readFile(file, 'utf8'); }
-      catch(cause) { const relative=path.relative(config.configDirectory??process.cwd(),file); fail(`Cannot read deployment profile '${selection.profile}' ${section} file '${relative}' (${cause.code??'IO_ERROR'}).`,{file:relative,section,parserCode:cause.code??'IO_ERROR'}); }
+      catch(cause) { const relative=path.relative(config.configDirectory??process.cwd(),file).replaceAll('\\','/'); fail(`Cannot read deployment profile '${selection.profile}' ${section} file '${relative}' (${cause.code??'IO_ERROR'}).`,{file:relative,section,parserCode:cause.code??'IO_ERROR'}); }
       let parsed;
       try { parsed = /\.json$/i.test(file) ? JSON.parse(source) : YAML.parse(source); }
       catch(cause) {
-        const relative=path.relative(config.configDirectory??process.cwd(),file);
+        const relative=path.relative(config.configDirectory??process.cwd(),file).replaceAll('\\','/');
         const position=/position (\d+)/.exec(cause.message??'');
         const prefix=position?source.slice(0,Number(position[1])):'';
         const line=cause.linePos?.[0]?.line??(position?prefix.split('\n').length:Number(/line (\d+)/.exec(cause.message??'')?.[1]??1));
@@ -113,7 +113,7 @@ export async function loadDeploymentProfiles(config, pin = null) {
         environmentVariables[name] = String(row.Value);
       } else {
         for (const field of ['ConnectionId', 'ConnectorId']) if (typeof row[field] !== 'string' || /[\x00-\x1f]/.test(row[field])) fail(`ConnectionReferences requires valid ${field} fields.`);
-        if(!row.ConnectionId.trim()) { unset.push({logicalName:name,file:path.relative(config.configDirectory??process.cwd(),file)}); continue; }
+        if(!row.ConnectionId.trim()) { unset.push({logicalName:name,file:path.relative(config.configDirectory??process.cwd(),file).replaceAll('\\','/')}); continue; }
         if(!row.ConnectorId.trim())fail('ConnectionReferences requires non-empty ConnectorId fields.');
         const existing=connectionReferences.findIndex(item=>item.logicalName.toLowerCase()===name.toLowerCase());
         const entry={logicalName:name,connectionId:row.ConnectionId,connectorId:row.ConnectorId};

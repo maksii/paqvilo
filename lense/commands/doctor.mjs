@@ -67,11 +67,12 @@ export default async function doctor(_cfg, args) {
       const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) });
       const started = performance.now();
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
+      report.lenseReady = report.ready;
       report.sourceDiagnostics=inspectSourceYaml(cfg.sourceDir);
-      for(const item of report.sourceDiagnostics)(args.mirage?report.errors:report.warnings).push(`${path.relative(cfg.sourceDir,item.file).replaceAll('\\','/')}:${item.line}: ${item.message}`);
+      report.sourcesReady=report.sourceDiagnostics.length===0;
+      for(const item of report.sourceDiagnostics)(args.mirage?report.errors:report.warnings).push(`Sources: ${path.relative(cfg.sourceDir,item.file).replaceAll('\\','/')}:${item.line}: ${item.message}`);
       report.ready=report.errors.length===0;
       report.mirage = await mirageReadiness(cfg, { dependencies });
-      report.lenseReady = report.ready;
       if (args.mirage) report.ready = report.ready && report.mirage.ready;
       reports.push(report);
     } catch (err) {
@@ -91,13 +92,13 @@ export default async function doctor(_cfg, args) {
   }
   const ready = reports.length > 0 && reports.every((r) => r.ready);
   const warning = scaffoldWarning(catalogue.configDir);
-  const report = { offline: true, ready, checks: args.mirage ? ['lense', 'mirage'] : ['lense'], reports, ...(warning ? { warnings: [warning] } : {}) };
+  const report = { offline: true, ready, checks: args.mirage ? ['lense', 'sources', 'mirage'] : ['lense'], reports, ...(warning ? { warnings: [warning] } : {}) };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Offline checkout diagnostics (no browser or portal requests)');
     if (warning) console.log(`WARNING: ${warning}`);
     for (const item of reports) {
-      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.lenseReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate both)'}` : ''}`);
+      console.log(`\n${item.ready ? 'READY' : 'ERROR'}  ${item.site}${item.environment ? ` @ ${item.environment}` : ''}${item.mirage ? ` · Lense ${item.lenseReady ? 'ready' : 'NOT READY'} · Sources ${item.sourcesReady ? 'ready' : 'NOT READY'} · Mirage ${item.mirage.ready ? 'ready' : 'NOT READY'}${args.mirage ? '' : ' (use --mirage to gate Sources and Mirage)'}` : ''}`);
       if (item.counts) console.log(`  ${item.format}: ${item.counts.pages} pages, ${item.counts.mappedWebFiles}/${item.counts.webFiles} mapped web files, ${item.counts.inlineSources} inline sources (${item.elapsedMs} ms)`);
       for (const error of item.errors) console.log(`  ERROR: ${error}`);
       for (const warning of item.warnings) console.log(`  WARNING: ${warning}`);

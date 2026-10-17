@@ -333,8 +333,11 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
       // Reject contradictory metadata rather than listing one scenario and applying another.
       if (entry.configurationPreset !== undefined) {
         experimentId(entry.configurationPreset);
-        if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset)
-          throw Object.assign(new Error(`Preset ${id} configurationPreset does not match its lazy descriptor`), {status:400,code:'PACK_CONFIGURATION_PRESET_LINK_INVALID'});
+        if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset) {
+          const message=`Preset ${id} configurationPreset does not match its lazy descriptor`;
+          const diagnostic={code:'PACK_CONFIGURATION_PRESET_LINK_INVALID',severity:'error',pack:pack??null,preset:id,descriptorConfigurationPreset:entry.configurationPreset,bodyConfigurationPreset:typeof value.configurationPreset==='string'?value.configurationPreset:null,message};
+          throw Object.assign(new Error(message), {status:400,code:diagnostic.code,details:{configurationPresetDiagnostic:diagnostic}});
+        }
         if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
       }
       if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);

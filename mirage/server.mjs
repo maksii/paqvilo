@@ -38,6 +38,7 @@ import { observedPageErrorResponse } from "./lib/page-error-presentation.mjs";
 import { initialState } from "./lib/bootstrap.mjs";
 import {contentPolicyDefaults as resolvePolicyDefaults} from './lib/content-policy-defaults.mjs';
 import {withFileSourceMap,identityMapUrl} from '../lense/source-map.mjs';
+import {assetKind} from './lib/asset-type.mjs';
 import { listPresets } from "./lib/presets.mjs";
 import { applyPortalOverrides, portalOverrideEntries, validatePortalOverrides } from "./lib/portal-overrides.mjs";
 import { platformSettingEntries, validatePlatformOverrides } from './lib/platform-settings.mjs';
@@ -746,7 +747,13 @@ export async function createSimulator({
       identity: { roles: [] },
       live: { origin },
     };
-    return { ...simulator, observed: observed ?? simulator.observed ?? portal.observed ?? null };
+    const matchesDefaults = ['confinePortalPages','externalAssets','externalFrameOrigins'].every(key => key === 'externalFrameOrigins'
+      ? JSON.stringify([...(simulator[key]??[])].sort()) === JSON.stringify([...(policyDefaults[key]??[])].sort())
+      : (simulator[key]===true) === (policyDefaults[key]===true));
+    const source = simulator.contentPolicySource === 'project defaults' &&
+      (!Object.keys(policyDefaults).length || !matchesDefaults)
+      ? 'runtime state (project default differs)' : simulator.contentPolicySource;
+    return { ...simulator, contentPolicySource: source, observed: observed ?? simulator.observed ?? portal.observed ?? null };
   };
   // Sign-in sessions (lib/auth-session.mjs): every portal request (pages,
   // Liquid, FetchXML, /_api, forms, native services) takes its identity from the
@@ -817,6 +824,13 @@ export async function createSimulator({
     };
   };
   const recordDiagnostic = (d) => {
+    if (d.preset && d.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK')) {
+      const previous=diagnostics.findIndex(item=>item.code===d.code&&item.pack===d.pack&&item.preset===d.preset);
+      if(previous>=0){
+        if(diagnostics[previous].descriptorConfigurationPreset===d.descriptorConfigurationPreset&&diagnostics[previous].bodyConfigurationPreset===d.bodyConfigurationPreset)return;
+        diagnostics.splice(previous,1);
+      }
+    }
     diagnostics.push({ ...d, time: new Date().toISOString() });
     if (diagnostics.length > 300) diagnostics.shift();
     publishLog("diagnostic", { level: /error|fail/i.test(`${d.severity ?? ""} ${d.code ?? ""}`) ? "error" : "warning", diagnostic: diagnostics.at(-1) });
@@ -1650,7 +1664,7 @@ export async function createSimulator({
       identityProvider: externalSignIn?.status() ?? { available: false, reason: "The local identity provider is not running." },
       // Loopback confinement of local portal pages (opt-in) and its exceptions.
       confinePortalPages: state.simulator?.confinePortalPages === true,
-      contentPolicySource:state.simulator?.contentPolicySource??'runtime state',
+      contentPolicySource:config().contentPolicySource??'runtime state',
       externalAssets: state.simulator?.externalAssets === true,
       externalFrameOrigins: Array.isArray(state.simulator?.externalFrameOrigins) ? state.simulator.externalFrameOrigins.length : 0,
       presets: listPresets({ state, library: generatedPresets }),
@@ -2708,11 +2722,9 @@ export async function createSimulator({
       jsonBody,
       change,
       onError: (cause, response) => {
-        if(cause.details?.permissionDiagnostic)recordDiagnostic({...cause.details.permissionDiagnostic,path:url.pathname});
         if (context) context.error = cause;
         recordDiagnostic({
-          code: cause.code ?? "RUNTIME_ERROR",
-          message: cause.message,
+          ...(cause.details?.permissionDiagnostic??{code:cause.code??"RUNTIME_ERROR",message:cause.message}),
           path: url.pathname,
           status: response.status,
         });
@@ -3108,7 +3120,9 @@ export async function createSimulator({
         res.writeHead(302,{location:result.url,'set-cookie':result.cookieHeader+'; Path=/; HttpOnly; SameSite=Lax','cache-control':'no-store'});return res.end();
       }
       if (req.method !== 'GET') throw error('Method not allowed',405);
-      const persona = findPersona(url.searchParams.get('persona'));
+      const personaKey=url.searchParams.get('persona');
+      if (personaKey===null || !personaKey.trim())throw error('The persona parameter is required.',400,'PersonaParameterRequired');
+      const persona = findPersona(personaKey);
       const report = personaReport();
       const returnUrl = personaStartPath(url.searchParams.get('returnUrl') ?? persona.startPath ?? report.contexts.find(context=>context.id===persona.context)?.startPath ?? '/', url.searchParams.has('returnUrl') ? 'returnUrl' : 'Persona startPath');
       const { renderPersonaPicker } = await import('./lib/persona-picker-view.mjs');
@@ -3563,7 +3577,7 @@ export async function createSimulator({
         } catch (cause) {
           response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
           trace.getStore().error = cause;
-          recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
+          recordDiagnostic({ ...(cause.details?.permissionDiagnostic ?? { code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message }), path: url.pathname });
         }
         if (response.location) return postbackRedirect(res, response, portal);
         retainStagedAttachments(response.state, nativeEntries, collected);
@@ -3729,10 +3743,11 @@ export async function createSimulator({
           "x-sim-observed-sha256": observed.baseline.sha256,
         });
       let body=await readLocalFile(file, { root, maxBytes: Number.MAX_SAFE_INTEGER });
-      let jsonPayload=false;if(/\.[cm]?js$/i.test(file)){try{JSON.parse(body.toString('utf8'));jsonPayload=true;}catch{}}
-      if(/\.[cm]?js$/i.test(file)&&!jsonPayload){body=withFileSourceMap(body,file);if(!body.toString('utf8').includes('sourceURL='))body=Buffer.concat([body,Buffer.from('\n//# sourceURL='+pathToFileURL(file).href+'\n')]);}
-      else if(/\.css$/i.test(file)&&!body.toString('utf8').includes('sourceMappingURL=')){const text=body.toString('utf8');body=Buffer.concat([body,Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file,text.split(/\r\n?|\n/).length,text)} */\n`)]);}
-      return sendFile(body, asset.mimeType || mime(file));
+      const contentType=asset.mimeType||mime(file),kind=assetKind(contentType,file);
+      let jsonPayload=false;if(kind==='script'){try{JSON.parse(body.toString('utf8'));jsonPayload=true;}catch{}}
+      if(kind==='script'&&!jsonPayload){body=withFileSourceMap(body,file);if(!body.toString('utf8').includes('sourceURL='))body=Buffer.concat([body,Buffer.from('\n//# sourceURL='+pathToFileURL(file).href+'\n')]);}
+      else if(kind==='stylesheet'&&!body.toString('utf8').includes('sourceMappingURL=')){const text=body.toString('utf8');body=Buffer.concat([body,Buffer.from(`\n/*# sourceMappingURL=${identityMapUrl(file,text.split(/\r\n?|\n/).length,text)} */\n`)]);}
+      return sendFile(body, contentType);
     }
     // The captcha challenge resources answer locally (the asset cache admits no Telerik resource URL).
     if (["GET", "HEAD"].includes(req.method) && url.pathname.toLowerCase() === "/telerik.web.ui.webresource.axd" && captchaResource(req, res, url, portal)) return;
@@ -3813,7 +3828,7 @@ export async function createSimulator({
       } catch (cause) {
         response = nativePostbackResponse({ error: cause, context: submission.context, values: submission.body.values, observed: config().observed ?? portal.observed });
         nativeContext.error = cause;
-        recordDiagnostic({ code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message, path: url.pathname });
+        recordDiagnostic({ ...(cause.details?.permissionDiagnostic ?? { code: cause.code ?? 'FORM_SAVE_FAILED', message: cause.message }), path: url.pathname });
       }
       if (response.location) return postbackRedirect(res, response, portal);
       retainStagedAttachments(response.state, nativeEntries, collected);
@@ -3988,10 +4003,10 @@ export async function createSimulator({
       .run(context, () => handle(req, res))
       .catch((err) => {
         context.error = err;
-        if(err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))recordDiagnostic({code:err.code,severity:'error',message:err.message});
+        if(err.code?.startsWith('PACK_CONFIGURATION_PRESET_'))recordDiagnostic(err.details?.configurationPresetDiagnostic??{code:err.code,severity:'error',message:err.message});
         if(err.details?.permissionDiagnostic)recordDiagnostic({...err.details.permissionDiagnostic,path:req.url?.split('?')[0]});
         // Administration API errors are answered to their caller; they are not portal runtime observations.
-        if (!req.url?.startsWith("/__sim/api"))
+        if (!req.url?.startsWith("/__sim/api") && !err.details?.permissionDiagnostic)
           recordDiagnostic({
             code: err.code ?? "RUNTIME_ERROR",
             message: err.message,

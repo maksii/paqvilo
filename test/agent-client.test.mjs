@@ -77,10 +77,20 @@ test('agent request times out and removes reserved screenshot after invalid serv
   const fx = await fixture(t, (req, res) => {
     if (req.url.endsWith('screenshot')) res.writeHead(200, { 'content-type': 'text/plain' }).end('not a png');
   });
-  await assert.rejects(agentRequest(fx.discovery, '/v1/session', { timeout: 100 }), /timed out/);
+  await assert.rejects(agentRequest(fx.discovery, '/v1/session', { timeout: 100 }),error=>error.code==='request_timeout'&&error.status===504);
   const output = path.join(fx.dir, 'bad.png');
   await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /invalid PNG/);
   await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+});
+
+test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code',async t=>{
+  const fx=await fixture(t,(req,res)=>{
+    let body='';req.on('data',chunk=>body+=chunk);req.on('end',()=>{const value=JSON.parse(body);assert.equal(value.timeoutMs,1000);setTimeout(()=>res.writeHead(504,{'content-type':'application/json'}).end(JSON.stringify({error:{code:'action_timeout',message:'The browser navigation timed out'}})),value.timeoutMs+50);});
+  });
+  await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'2000'},['navigate']),error=>error.code==='action_timeout'&&error.status===504);
+  await assert.rejects(agent(null,{session:fx.file,'page-id':'1',path:'/slow',timeout:'150'},['navigate']),error=>error.code==='invalid_argument');
+  await fs.rm(fx.file);
+  await assert.rejects(agent(null,{session:fx.file},['status']),error=>error.code==='session_not_found'&&error.status===404);
 });
 
 test('agent rejects JSON scalars and arrays instead of leaking client TypeErrors',async t=>{

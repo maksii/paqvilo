@@ -1305,8 +1305,23 @@ export class DataStore {
   }
   assertAllowed(entity, operation, row, identity, related) {
     if (!this.allowed(entity, operation, row, identity)) {
-      const permissions=this.rules(entity,operation,identity).map(grant=>({id:grant.id,name:grant.name??grant.id,scope:grant.scope??'global',...(grant.field?{field:grant.field}:{}),...(grant.relationship?{relationship:grant.relationship,...((grant.scope??'global')==='parent'?{parentLink:grant.relationship.from??null}:{})}:{}),...(grant.relationshipName?{relationshipName:grant.relationshipName}:{}),...(grant.parentPermissionId?{parentPermissionId:grant.parentPermissionId}:{})}));
-      const message=`Table permission denies ${operation} on ${entity}`+(permissions.length?': '+permissions.map(grant=>`${grant.name} (${grant.scope})${grant.relationship?' relationship '+(typeof grant.relationship==='string'?grant.relationship:JSON.stringify(grant.relationship)):''}`).join('; '):'');
+      const permissions = this.rules(entity, operation, identity).map(grant => {
+        const permission = { id: grant.id, name: grant.name ?? grant.id, scope: grant.scope ?? 'global' };
+        for (const key of ['field', 'relationship', 'relationshipName', 'parentPermissionId'])
+          if (grant[key]) permission[key] = grant[key];
+        if (permission.scope === 'parent' && grant.relationship) permission.parentLink = {
+          childColumn: grant.relationship.from ?? null, value: scalar(row?.[grant.relationship.from]) ?? null,
+          parentTable: grant.relationship.entity ?? null, parentColumn: grant.relationship.to ?? null,
+          ...(grant.relationship.intersect ? { intersect: grant.relationship.intersect } : {}),
+        };
+        return permission;
+      });
+      const descriptions = permissions.map(grant => {
+        const relationship = grant.relationshipName ?? (typeof grant.relationship === 'string' ? grant.relationship :
+          grant.relationship ? `${entity}.${grant.relationship.from} → ${grant.relationship.entity}.${grant.relationship.to}` : null);
+        return `${grant.name} (${grant.scope})${relationship ? ' relationship ' + relationship : ''}`;
+      });
+      const message = `Table permission denies ${operation} on ${entity}` + (descriptions.length ? ': ' + descriptions.join('; ') : '');
       throw new DataError(
         message,
         403,

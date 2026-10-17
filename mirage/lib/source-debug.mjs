@@ -14,9 +14,11 @@ export function exportFieldFile(record, suffix) {
   return field?{file,field,value}:file;
 }
 
-export function debugScript(body, target, {line=0,column=0,source}={}) {
+export function debugScript(body, target, {line=0,column=0,source,inline}={}) {
   if(!body||!target)return body;
   const file=typeof target==='string'?target:target.file;
+  const sourceUrl=pathToFileURL(file);
+  if(inline!==undefined)sourceUrl.searchParams.set('inline',String(inline));
   const text=String(body);
   if(/\/\/[#@]\s*sourceMappingURL=/.test(text))return text;
   source=fs.readFileSync(file,'utf8');
@@ -29,7 +31,7 @@ export function debugScript(body, target, {line=0,column=0,source}={}) {
     }
     // Encoded/folded fields are not line-preserving. Name their export without
     // inventing identity mappings to unrelated lines in the containing document.
-    if(!scalar)return text+`\n//# sourceURL=${pathToFileURL(file).href}\n`;
+    if(!scalar)return text+`\n//# sourceURL=${sourceUrl.href}\n`;
     if(scalar){
       const offset=source.indexOf(scalar.srcToken.source,scalar.range[0]);
       if(offset>=0){
@@ -38,20 +40,21 @@ export function debugScript(body, target, {line=0,column=0,source}={}) {
       }
     }
   }
-  return text+`\n//# sourceURL=${pathToFileURL(file).href}\n//# sourceMappingURL=${identityMapUrl(file,text.split(/\r\n?|\n/).length,source,{line,column,subsequentColumn})}\n`;
+  return text+`\n//# sourceURL=${sourceUrl.href}\n//# sourceMappingURL=${identityMapUrl(file,text.split(/\r\n?|\n/).length,source,{line,column,subsequentColumn})}\n`;
 }
 
 /** Append debugger metadata only to executable inline script bodies. */
 export function debugMarkup(source,file) {
   if(!source||!file||!/<script\b/i.test(String(source)))return source;
   const text=String(source), tree=parseFragment(text,{sourceCodeLocationInfo:true}),patches=[];
+  let inline=0;
   const visit=node=>{
     if(node.tagName==='script'&&!node.attrs.some(attr=>attr.name==='src')){
       const type=node.attrs.find(attr=>attr.name==='type')?.value??'';
       const loc=node.sourceCodeLocation;
       if(loc?.endTag&&/^(?:|module|(?:text|application)\/(?:java|ecma)script)$/i.test(type)){
         const body=text.slice(loc.startTag.endOffset,loc.endTag.startOffset);
-        patches.push({from:loc.startTag.endOffset,to:loc.endTag.startOffset,body:debugScript(body,file,{line:loc.startTag.endLine-1,column:loc.startTag.endCol-1,source:text})});
+        patches.push({from:loc.startTag.endOffset,to:loc.endTag.startOffset,body:debugScript(body,file,{line:loc.startTag.endLine-1,column:loc.startTag.endCol-1,source:text,inline:++inline})});
       }
     }
     for(const child of node.childNodes??[])visit(child);

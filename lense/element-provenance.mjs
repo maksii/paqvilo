@@ -1,5 +1,10 @@
 import { parseFragment } from 'parse5';
 
+const markupCache=new Map();let markupBytes=0,markupParses=0,markupHits=0;
+const scriptCache=new Map();let scriptBytes=0;
+export const elementSourceHintCacheStats=()=>({entries:markupCache.size,bytes:markupBytes,parses:markupParses,hits:markupHits});
+const copyHint=(hint,source)=>({...source,...hint,classes:[...(hint.classes??[])],attributes:{...hint.attributes},locations:(hint.locations??[]).map(location=>({...location,classes:[...(location.classes??[])],attributes:{...location.attributes},contexts:[...location.contexts]})),lines:[...(hint.lines??[])]});
+
 const cssId = value => '#' + [...value].map((char, index) => /[a-zA-Z_]/.test(char) || char === '-' && (index > 0 || value.length > 1) || /[0-9]/.test(char) && index > 0 && !(index === 1 && value[0] === '-') ? char : `\\${char.codePointAt(0).toString(16)} `).join('');
 
 // Preserve original offsets/lines. Raw emits its body, while comments/manifests do not.
@@ -23,7 +28,10 @@ function markupForInspection(text) {
 /** Static selectors provide candidates, never proof of which Liquid branch rendered a node. */
 export function elementSourceHints(body, source, { limit = Infinity } = {}) {
   if (!body || String(body).length > 1024 * 1024) return [];
+  const text=String(body),cacheKey=source.sourceFile?source.sourceFile+'\u0000'+(source.recordId??source.id??''):null,cached=cacheKey&&markupCache.get(cacheKey);
+  if(cached?.body===text){markupHits++;return cached.hints.slice(0,limit).map(hint=>copyHint(hint,source));}
   const original=String(body),prepared=markupForInspection(original);
+  markupParses++;
   const tree = parseFragment(prepared.text, { sourceCodeLocationInfo: true });
   const nodes = [], ids = new Map(), selectors = new Map();
   const pending = [tree];
@@ -42,13 +50,14 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
     if(!node.tagName||!/^[a-z][a-z0-9:_-]*$/.test(node.tagName))continue;
     const opening=node.sourceCodeLocation?.startTag;
     if(opening&&prepared.ranges.some(([start,end])=>start<opening.endOffset&&end>opening.startOffset))continue;
+    const staticClasses=(attrs.class??'').replace(/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g,'{dynamic}').split(/\s+/).filter(staticValue);
     let selector,matchKind;
     if(staticValue(id)&&!/[\s]/.test(id)){
       selector=cssId(id);matchKind='id';
     }else{
       // Intrinsic class/metadata selectors survive moved nodes. Positional/nth-child paths
       // would wrongly identify neighbours after scripts restructure a page.
-      const classes=(attrs.class??'').replace(/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g,'{dynamic}').split(/\s+/).filter(staticValue).slice(0,4);
+      const classes=staticClasses.slice(0,4);
       const explicit=['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].find(name=>staticValue(attrs[name]));
       if(explicit&&/^[a-zA-Z0-9_{}-]+$/.test(attrs[explicit])){selector=`${node.tagName}[${explicit}="${attrs[explicit]}"]`;matchKind='attribute';}
       else if(classes.length){selector=node.tagName+classes.map(value=>'.'+cssId(value).slice(1)).join('');matchKind='class';}
@@ -56,32 +65,45 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
     }
     const contexts=[];
     for(let ancestor=node.parentNode;ancestor;ancestor=ancestor.parentNode){const aid=ancestor.attrs?.find(attr=>attr.name==='id')?.value;if(staticValue(aid)&&ids.get(aid)===1)contexts.push(cssId(aid));}
-    const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,tag:node.tagName};
+    const attributes=Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]]));
+    const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,tag:node.tagName,classes:staticClasses,attributes};
     const existing=selectors.get(selector);
     if(existing){existing.occurrences++;existing.locations.push(location);existing.lines=existing.locations.map(item=>item.line).filter(Boolean);continue;}
     selectors.set(selector,{
-      ...source,selector,matchKind,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:(attrs.class??'').split(/\s+/).filter(staticValue),occurrences:1,locations:[location],lines:location.line?[location.line]:[],
+      selector,matchKind,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:staticClasses,occurrences:1,locations:[location],lines:location.line?[location.line]:[],
       // Enhanced-model HTML is nested in XML/JSON; its line is not a file line.
       line: /\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,
       evidence:'source-selector',certainty:'candidate',
     });
   }
-  return [...selectors.values()].sort((a,b)=>(a.matchKind==='id'?0:1)-(b.matchKind==='id'?0:1)).slice(0,limit);
+  const hints=[...selectors.values()].sort((a,b)=>(a.matchKind==='id'?0:1)-(b.matchKind==='id'?0:1));
+  if(cacheKey){
+    if(cached)markupBytes-=cached.body.length*2;
+    markupCache.delete(cacheKey);markupCache.set(cacheKey,{body:text,hints});markupBytes+=text.length*2;
+    while(markupCache.size>512||markupBytes>12*1024*1024){const key=markupCache.keys().next().value;markupBytes-=markupCache.get(key).body.length*2;markupCache.delete(key);}
+  }
+  return hints.slice(0,limit).map(hint=>copyHint(hint,source));
 }
 
 /** Literal selector references identify script candidates, never event-handler ownership. */
 export function scriptSourceHints(body, source, { limit = 120 } = {}) {
   if (typeof body!=='string'||!body||body.length>1024*1024) return [];
+  const cap=Math.max(0,Math.min(1000,limit)),key=source.sourceFile?source.sourceFile+'\u0000'+cap:null,cached=key&&scriptCache.get(key);
+  const answer=(hints,truncated)=>{const result=hints.map(hint=>({...source,...hint}));Object.defineProperty(result,'truncated',{value:truncated});return result;};
+  if(cached?.body===body)return answer(cached.hints,cached.truncated);
+  const scanned=scanScriptSourceHints(body,{sourceFile:source.sourceFile},cap+1),truncated=scanned.length>cap,hints=scanned.slice(0,cap).map(({sourceFile,...hint})=>hint);
+  if(key){if(cached)scriptBytes-=cached.body.length*2;scriptCache.delete(key);scriptCache.set(key,{body,hints,truncated});scriptBytes+=body.length*2;while(scriptCache.size>128||scriptBytes>4*1024*1024){const old=scriptCache.keys().next().value;scriptBytes-=scriptCache.get(old).body.length*2;scriptCache.delete(old);}}
+  return answer(hints,truncated);
+}
+function scanScriptSourceHints(body,source,limit){
   const rows=[],seen=new Set();let index=0,previous='';
   const trivia=from=>{let at=from;while(at<body.length){if(/\s/.test(body[at])){at++;continue;}if(body.startsWith('//',at)||body.startsWith('<!--',at)||body.startsWith('-->',at)){const end=body.indexOf('\n',at+2);at=end<0?body.length:end+1;continue;}if(body.startsWith('/*',at)){const end=body.indexOf('*/',at+2);at=end<0?body.length:end+2;continue;}break;}return at;};
-  while(index<body.length&&rows.length<Math.max(0,Math.min(1000,limit))){
+  while(index<body.length&&rows.length<limit){
     index=trivia(index);const char=body[index];if(!char)break;
-    // Templates and ambiguous division/regex syntax are deliberately a scan boundary.
-    // Stopping is safer than attributing code printed inside either to an element.
-    if(char==='`')break;
-    if(char==='"'||char==="'"){const string=quotedString(body,index);if(!string)break;index=string.end;previous='string';continue;}
+    if(char==='`'){index=skipTemplate(body,index);previous='string';continue;}
+    if(char==='"'||char==="'"){index=skipQuoted(body,index);previous='string';continue;}
     if(char==='/'){
-      if(!['','=','(',',',':',';','[','{','!','?','return','case','=>'].includes(previous))break;
+      if(!['','=','(',',',':',';','[','{','!','?','return','case','=>'].includes(previous)){index=skipAmbiguousStatement(body,index);previous=';';continue;}
       let at=index+1,inClass=false,closed=false;
       for(;at<body.length;at++){if(body[at]==='\\'){at++;continue;}if(/[\r\n]/.test(body[at]))break;if(body[at]==='[')inClass=true;if(body[at]===']')inClass=false;if(body[at]==='/'&&!inClass){closed=true;at++;while(/[a-z]/i.test(body[at]??'')&&at<body.length)at++;break;}}
       if(!closed)break;index=at;previous='regex';continue;
@@ -102,6 +124,36 @@ export function scriptSourceHints(body, source, { limit = 120 } = {}) {
     previous=char;index++;
   }
   return rows;
+}
+
+function skipQuoted(text,start){const quote=text[start];for(let at=start+1;at<text.length;at++){if(text[at]==='\\'){at++;continue;}if(text[at]===quote)return at+1;if(/[\r\n]/.test(text[at]))return at;}return text.length;}
+function skipRegex(text,start){let inClass=false;for(let at=start+1;at<text.length;at++){const char=text[at];if(char==='\\'){at++;continue;}if(/[\r\n]/.test(char))return null;if(char==='[')inClass=true;if(char===']')inClass=false;if(char==='/'&&!inClass){at++;while(at<text.length&&/[a-z]/i.test(text[at]))at++;return at;}}return null;}
+function skipTemplate(text,start){
+  const stack=[{kind:'template'}];let at=start+1;
+  while(at<text.length&&stack.length){
+    if(stack.length>128)return text.length;
+    const state=stack.at(-1),char=text[at];
+    if(state.kind==='template'){
+      if(char==='\\'){at+=2;continue;}
+      if(char==='`'){stack.pop();at++;continue;}
+      if(char==='$'&&text[at+1]==='{'){stack.push({kind:'expression',depth:1,previous:''});at+=2;continue;}
+      at++;continue;
+    }
+    if(char==='"'||char==="'"){at=skipQuoted(text,at);state.previous='value';continue;}
+    if(char==='`'){stack.push({kind:'template'});at++;state.previous='value';continue;}
+    if(text.startsWith('//',at)){const end=text.indexOf('\n',at+2);at=end<0?text.length:end+1;continue;}
+    if(text.startsWith('/*',at)){const end=text.indexOf('*/',at+2);at=end<0?text.length:end+2;continue;}
+    if(char==='/'&&['','=', '(', ':', ',', '[', '!', '&', '|', '?', '{', ';', 'return', 'case'].includes(state.previous)){const end=skipRegex(text,at);if(end){at=end;state.previous='value';continue;}}
+    if(/[A-Za-z_$]/.test(char)){const start=at++;while(at<text.length&&/[\w$]/.test(text[at]))at++;state.previous=text.slice(start,at);continue;}
+    if(char==='{')state.depth++;if(char==='}'&&!--state.depth){stack.pop();at++;continue;}
+    if(!/\s/.test(char))state.previous=char;at++;
+  }
+  return at;
+}
+function skipAmbiguousStatement(text,start){
+  let at=skipRegex(text,start)??start+1;
+  for(;at<text.length;){const char=text[at];if(char===';'||char==='\n')return at+1;if(char==='"'||char==="'"){at=skipQuoted(text,at);continue;}if(char==='`'){at=skipTemplate(text,at);continue;}if(text.startsWith('/*',at)){const end=text.indexOf('*/',at+2);at=end<0?text.length:end+2;continue;}at++;}
+  return at;
 }
 
 function quotedString(text,start){

@@ -37,8 +37,9 @@ Close the dedicated browser or use Ctrl+C to end the dev session. Browser intera
 ## Commands at a glance
 
 Run `npx --no-install paqvilo lense --help` for the full command/options reference.
-`paqvilo lense doctor --all --mirage --json` gates on both Lense and Mirage readiness.
-Without `--mirage` its exit status covers Lense; each site line still names both states.
+`paqvilo lense doctor --all --mirage --json` gates on Lense, Sources and Mirage readiness.
+Duplicate exported YAML keys fail the Sources check without changing the Lense verdict.
+Without `--mirage` its exit status covers Lense; source diagnostics remain warnings, and each site line names all three states.
 Deployment profile lines list each file relative to the catalogue and its parse readiness.
 Setup's Git badges scope tracked changes to each source folder and report unavailable or
 timed-out status separately from a checkout without commits.
@@ -72,7 +73,7 @@ The movable card prioritizes source paths, markup matches, include context, basi
 
 Field identifiers are checked against the selected export and explicit table context; ambiguous matches stay visible as candidates. Source matching uses static IDs, classes and component attributes without relying on positional DOM paths, so moved regions can keep their source identity. Multiple templates and conditional branches can share markup; matching candidates do not establish a deployed source revision. Related script references and page dependencies remain secondary to the selected element's sources. Iframe document contents remain unavailable. Native dialogs, nested overlays, open shadow roots, scrolling and source-driven DOM replacements are handled without silently transferring a removed selection to another element.
 
-X-ray indexes markup hints across all referenced sources; it skips an individual markup source above 1,048,576 UTF-16 code units and reports that omission. Discovery and drawing remain bounded to 800 candidate elements and 250 background outlines. Details show up to 60 source matches with an omission notice. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch; JavaScript reference extraction deliberately stops at template literals or ambiguous slash syntax. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
+X-ray indexes markup hints across all referenced sources; it skips an individual markup source above 1,048,576 UTF-16 code units and reports that omission. Discovery and drawing remain bounded to 800 candidate elements and 250 background outlines. Details show up to 60 source matches with an omission notice. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch. JavaScript reference extraction skips balanced template literals and resumes at a statement boundary after ambiguous slash syntax; computed selectors and template contents remain unqualified. It retains 120 unique script hints per source and reports truncation when it finds an additional reference. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
 
 Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings. Exported language routes select the corresponding page and snippet sources. Relative asset references follow their browser URL.
 
@@ -138,7 +139,7 @@ Options --width (320–4096, default 1440), --height (240–4096, default 900). 
 
 ### agent navigate
 
-Requires --path <portal-path>. Optional --timeout (100–120000 ms) bounds the client request; the server/browser deadline is shorter. Performs an explicit GET confined to the portal origin and returns page and HTTP status. Foreign origins are rejected; redirects leaving the origin return origin_changed. Timeout returns action_timeout (504).
+Requires --path <portal-path>. Optional --timeout (2000–120000 ms) bounds the client request. Navigate and reload leave a fixed 1000 ms response margin above the browser deadline (whose maximum is 60000 ms). Performs an explicit GET confined to the portal origin and returns page and HTTP status. Foreign origins are rejected; redirects leaving the origin return origin_changed. A browser timeout returns action_timeout (504); transport expiry returns request_timeout.
 
 ### agent reload
 
@@ -148,9 +149,13 @@ Optional --timeout. Returns page and status. Only an observed GET document with 
 
 Returns stopping=true and shuts down that owned session/browser, removing its discovery file. Other sessions and attached user-owned browsers remain intact.
 
+JSON envelopes carry `schemaVersion`, `command`, `ok`, `offline`, `writesFiles` (an array), and `errors` (objects with `code` and `message`). Agent envelopes also carry `action`. Generic CLI errors use `invalid_argument`, `unsupported_option`, `unknown_command`, `configuration_error`, `command_failed`, or `check_failed`; strict inventory failures use `strict_failed` with blocked/gap counts. Domain diagnostics retain their documented runtime codes.
+
+Agent client errors additionally use `session_not_found` (missing discovery file), `invalid_session`, `session_unavailable`, `request_timeout`, `invalid_response`, and `response_too_large`. Server action codes include `invalid_argument`, `invalid_selector`, `action_timeout`, `action_failed`, `page_busy`, `session_busy`, `page_not_found`, `unsafe_reload`, `foreign_origin`, `origin_changed`, `not_found`, `method_not_allowed`, `content_type`, `invalid_json`, `body_too_large`, `image_too_large`, `response_too_large`, `browser_request`, `unauthorized`, `invalid_url`, and `stopping`. HTTP failures retain their status in the error object.
+
 ## Local source debugging
 
-Mirage appends file-backed source maps to exported JavaScript/CSS responses. Page, template and form inline JavaScript carries its export sourceURL and line-offset source map. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9223`:
+Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9223`:
 
 ```json
 {"type":"msedge","request":"attach","name":"Paqvilo Mirage","port":9223,"resolveSourceMapLocations":["**", "!**/node_modules/**"]}
@@ -158,7 +163,9 @@ Mirage appends file-backed source maps to exported JavaScript/CSS responses. Pag
 
 The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.
 
-Target selection commits only with Go or Enter. Local, remote and caution targets have separate groups; leaving a local runtime for a live target or opening caution requires confirmation. `portals: all` excludes caution targets unless explicitly selected or `includeCaution: true` is set in the catalogue. UI state is scoped to the browser profile/session, shared across its target switches; automated headless sessions start collapsed.
+Target selection commits only with Go or Enter. Nonempty local, remote and caution groups are shown; leaving a local runtime for a live target or opening caution requires an in-panel confirmation. Cancel or a failed switch restores the current target. `portals: all` excludes caution targets unless explicitly selected or `includeCaution: true` is set in the catalogue. UI state is scoped to the browser profile, shared across its target switches; a CDP attachment without a known profile keeps UI state in memory. Automated headless sessions start collapsed.
+
+Interactive dev leaves portal `alert`, `confirm`, `prompt` and before-unload dialogs for the browser user to answer. Owned headless dev dismisses alerts, confirms and prompts, and preserves Playwright's automatic acceptance of before-unload dialogs so navigation can complete. Their type, redacted message and disposition appear in Activity and agent events. Attached browsers retain control of their dialogs. This policy also applies when the panel is disabled. Panel controls use their own confirmation UI.
 
 `map --no-write --json` returns the mapping without writing reports. Otherwise writesFiles reports both mapping paths. Resources distinguish exists, empty and renders for optional enhanced fields. Duplicate active page URLs and every overwritten YAML record are diagnosed offline.
 
@@ -166,4 +173,4 @@ Lense JSON commands return a common envelope with schemaVersion, command, ok, of
 
 Lense Mirage management uses the same envelope: init names its generated project file; start names state, discovery, ownership and startup log files; stop names its updated ownership file and reports removed discoveries separately. Started runtimes can continue writing state and derived caches. Status/start/stop use offline=false; `lense mirage inspect` is offline and writes no report. Interactive `mirage dev` rejects --json; use start plus the agent API for structured automation.
 
-X-ray keeps all indexed source hints across snippets, lists repeated source lines and treats common framework classes as possible matches. Background discovery is bounded to 800 candidates and 250 outlines per paint; the toolbar legend reports the bounds. Nodes smaller than four pixels or clipped helper nodes remain selectable but have no background outline. Geometry follows scroll, resize, relevant mutations and running animations; hidden and idle documents do not poll layout.
+X-ray compares class coverage in both directions and uses rarity across the imported export. Common framework classes remain possible matches unless a matching tag occurs only a few times in one source in the page's include chain. Repeated source lines remain available. Unchanged markup hints reuse a content-aware cache across pages and refreshes (up to 512 source records and 12 MiB of source text); script hints have a separate 128-entry, 4 MiB cache. Changed source content invalidates its entry. Background discovery prefers visible elements, rebuilds on scroll, and reports when its 800-candidate budget is reached; drawing remains bounded to 250 outlines. Nodes smaller than four pixels or clipped helper nodes remain selectable but have no background outline. Geometry follows scroll, resize, relevant mutations and running animations; hidden and idle documents do not poll layout.

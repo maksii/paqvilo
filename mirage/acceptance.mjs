@@ -122,12 +122,13 @@ export async function runAcceptance({
   channel = process.env.PAQVILO_BROWSER ||
     (process.platform === "win32" ? "msedge" : "chromium"),
   timeout = 15000,
-  navigationCommitReserveMs = Math.min(2000, timeout / 2),
+  navigationCommitReserveMs,
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
 }) {
-  if (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
+  if (!Number.isFinite(timeout) || timeout <= 0) throw new Error('timeout must be a positive finite number.');
+  if (navigationCommitReserveMs !== undefined && (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout)) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
   const local = loopback(localUrl);
   if (!["http:", "https:"].includes(local.protocol))
     throw new Error("Local simulator requires HTTP(S).");
@@ -337,10 +338,13 @@ export async function runAcceptance({
             );
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
-          const reserve = navigationCommitReserveMs;
+          const now = Date.now();
+          const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
           const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
-            deadline: Math.min(Date.now() + timeout - reserve, actionDeadline - reserve), ids: new Set(),
+            deadline: now + Math.max(0, remaining - (navigationCommitReserveMs ?? remaining / 2)),
+            reserve: navigationCommitReserveMs ?? remaining / 2, ids: new Set(),
           };
+          const reserve = budget.reserve;
           for (const id of [event.networkId, event.requestId].filter(Boolean)) {
             budget.ids.add(id);
             navigationBudgets.set(id, budget);
@@ -357,6 +361,7 @@ export async function runAcceptance({
                   navigation: safeUrl(event.request.url),
                   ...wait,
                   commitReserveMs: reserve,
+                  commitReservePolicy: navigationCommitReserveMs === undefined ? 'half-remaining-action' : 'explicit',
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
             })

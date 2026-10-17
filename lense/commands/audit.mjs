@@ -15,7 +15,9 @@ export default async function audit(_cfg, args) {
   }
   const complete = reports.length > 0 && reports.every((report) => report.coverage.complete);
   const ok = reports.length > 0 && reports.every((report) => report.coverage.inventoryComplete) && (!args.strict || complete);
-  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], complete, reports };
+  const errors=reports.flatMap(report=>report.errors??[]);
+  if(args.strict&&!complete){const total=key=>reports.reduce((sum,report)=>sum+(report.totals?.[key]??0),0);errors.push({code:'strict_failed',message:`Strict source audit failed: ${total('blocked')} blocked resources, ${total('gaps')} gaps and ${reports.reduce((sum,report)=>sum+(report.diagnostics?.length??0),0)} diagnostics; inventory is incomplete or coverage needs attention.`,blocked:total('blocked'),gaps:total('gaps')});}
+  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], errors,complete, reports };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Independent offline resource inventory (mapping does not prove browser coverage)');

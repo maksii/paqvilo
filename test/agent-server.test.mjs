@@ -195,6 +195,15 @@ test('attached and explicitly disabled sessions never expose an agent server', a
   assert.equal(await startAgentServer({ session: { cfg: { agent: { enabled: false } } } }), null);
 });
 
+test('dismissed dialog events are origin-confined and never answer browser dialogs',async t=>{
+  const fx=await fixture(t);
+  fx.session.emit('dialog',{page:fx.page,type:'confirm',message:'token=private Publish?',disposition:'dismissed'});
+  fx.session.emit('dialog',{page:fx.page,type:'prompt',message:'Interactive prompt',disposition:'interactive'});
+  fx.setUrl('https://outside.example/');fx.session.emit('dialog',{page:fx.page,type:'alert',message:'Foreign',disposition:'dismissed'});
+  const events=(await (await fx.call('/v1/events')).json()).events.filter(event=>event.type==='dialog');
+  assert.equal(events.length,1);assert.equal(events[0].dialogType,'confirm');assert.equal(events[0].pageId,'1');assert.equal(events[0].disposition,'dismissed');assert.doesNotMatch(events[0].text,/private/);
+});
+
 test('redaction strips query values, fragments, credentials and common credential formats', () => {
   assert.equal(redactUrl('https://name:password@example.com/a?token=secret#private').includes('secret'), false);
   for (const value of ['password="two words"', 'Authorization: Bearer abc', 'access_token=abc', 'eyJheader.eyJbody.signature']) assert.equal(redactText(value).includes('abc'), false);

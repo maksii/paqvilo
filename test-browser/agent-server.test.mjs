@@ -6,6 +6,8 @@ import os from 'node:os';
 import path from 'node:path';
 import http from 'node:http';
 import { once, EventEmitter } from 'node:events';
+import {spawn} from 'node:child_process';
+import {fileURLToPath} from 'node:url';
 import { chromium } from 'playwright-core';
 import { startAgentServer } from '../lense/agent-server.mjs';
 import { interceptOrigin } from '../lense/intercept.mjs';
@@ -44,6 +46,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
     if (request.url.startsWith('/data')) return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
     if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
     if(request.url==='/slow'){const timer=setTimeout(()=>response.end('<p>Late document</p>'),1000);response.once('close',()=>clearTimeout(timer));return;}
+    if(request.url==='/never')return;
     response.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`);
   });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
@@ -72,6 +75,9 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   const beforeTimeout=page.url();
   const timeoutResponse=await call('/v1/pages/1/navigate',{url:'/slow',timeoutMs:150});assert.equal(timeoutResponse.status,504);assert.equal((await timeoutResponse.json()).error.code,'action_timeout');
   await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
+  const command=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','navigate','--session',agent.discoveryFile,'--page-id','1','--path','/never','--timeout','2000'],{windowsHide:true});
+  let output='';command.stdout.on('data',chunk=>output+=chunk);const [code]=await once(command,'close');
+  const deadlineError=JSON.parse(output);assert.equal(code,1);assert.equal(deadlineError.action,'navigate');assert.equal(deadlineError.error.code,'action_timeout');assert.equal(deadlineError.error.status,504);assert.equal(page.url(),beforeTimeout);
   const timeoutEvents=await (await call('/v1/events')).json();assert.doesNotMatch(JSON.stringify(timeoutEvents.events.filter(event=>event.type==='action-error')),/Call log|\\u001b/);
   const history = await (await call('/v1/events')).json();
   assert.ok(history.events.some((event) => event.type === 'response' && event.status === 404 && event.url.startsWith(external)));
@@ -124,5 +130,8 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.equal(methods.filter((method) => method !== 'GET').length, 1, 'only the explicit loopback fixture submission used POST');
   await agent.close();
   assert.equal(fs.existsSync(agent.discoveryFile), false);
+  const stoppedCommand=spawn(process.execPath,[fileURLToPath(new URL('../lense/cli.mjs',import.meta.url)),'agent','status','--session',agent.discoveryFile],{windowsHide:true});
+  let stoppedOutput='';stoppedCommand.stdout.on('data',chunk=>stoppedOutput+=chunk);assert.equal((await once(stoppedCommand,'close'))[0],1);
+  assert.equal(JSON.parse(stoppedOutput).error.code,'session_not_found');assert.equal(JSON.parse(stoppedOutput).action,'status');
   finished = true;
 });

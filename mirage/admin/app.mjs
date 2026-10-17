@@ -2080,10 +2080,19 @@ document.addEventListener("click", async (event) => {
       "Apply this preset?",
       "The preset will update simulator records and configuration according to its definition.",
       async () => {
-        await request(`/presets/${encodeURIComponent(id)}/apply`, {
-          method: "POST",
-          body: JSON.stringify({applyConfiguration}),
-        });
+        try {
+          await request(`/presets/${encodeURIComponent(id)}/apply`, {
+            method: "POST",
+            body: JSON.stringify({applyConfiguration}),
+          });
+        } catch (error) {
+          if(error.details?.error?.code?.startsWith('PACK_CONFIGURATION_PRESET_LINK')){
+            await refresh();
+            if($("#available-preset"))$("#available-preset").value=id;
+            if($("#preset-apply-configuration"))$("#preset-apply-configuration").checked=applyConfiguration;
+          }
+          throw error;
+        }
         await refresh();
         notify("Preset applied.");
       },

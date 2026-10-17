@@ -30,6 +30,9 @@ export const DEFAULT_PORT = 8787;
 const DEFAULT_STARTUP_TIMEOUT = 120_000;
 const STOP_DEADLINE = 5000;
 const ACTIONS = ['init', 'start', 'dev', 'status', 'inspect', 'stop'];
+export function validateMirageAction(action) {
+  if (!ACTIONS.includes(action)) throw new Error(`Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}. Run paqvilo lense --help for options.`);
+}
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -1167,7 +1170,7 @@ function print(value, json) {
 
 export default async function mirage(cfg, args, positionals = []) {
   const action = positionals[0] ?? 'status';
-  if (!ACTIONS.includes(action)) throw new Error(`Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}`);
+  validateMirageAction(action);
   if (action === 'dev' && args.json) throw new Error('mirage dev is interactive; use mirage start --json and agent commands for structured session access');
   if (action !== 'init' && (args.out !== undefined || args.force)) throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action)) throw new Error('--allow-live-writes applies only to mirage dev and start');

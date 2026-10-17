@@ -1041,7 +1041,7 @@ async function renderListGrid(model, context, options) {
   const filter = model.filter?.enabled ? await renderListFilter(model, context, options) : "";
   const body = filter ? (model.filter.vertical ? `<div class="row"><div class="${bs.v5 ? "col-lg-3" : "col-md-3"} filter-vertical">${filter}</div><div class="${bs.v5 ? "col-lg-9" : "col-md-9"}">${grid}</div></div>` : filter + grid) : grid;
   const js = model.list.js && (options.renderLiquid ? await options.renderLiquid(model.list.js, context) : model.list.js);
-  const script = js ? `<script type="text/javascript">${js}</script>` : "";
+  const script = js ? `<script type="text/javascript">${debugScript(js,exportFieldFile(model.list.metadata,'custom_javascript.js'))}</script>` : "";
   if (bs.v5 && pageControl) return `<div id="EntityListControl"><div class="entitylist">${body}${script}</div></div>`;
   return `<div${pageControl ? ' id="EntityListControl"' : ""} class="entitylist">${body}${script}</div>`;
 }

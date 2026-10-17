@@ -798,7 +798,7 @@ export async function importPortal(
       name: r.name,
       url: `${parent.replace(/\/$/, "")}/${partial}`,
       file,
-      mimeType: r.mimetype ?? r._attachment?.mimeType ?? null,
+      mimeType: field(r, 'mimetype', r._attachment?.mimeType ?? null),
       metadata: r,
     });
   }
