@@ -16,7 +16,7 @@ Usage: paqvilo lense <command> [options]
   lense   Overlay local sources, inspect resources and browser sessions.
           dev, list, use, doctor, map, status, audit, resources, verify, agent
   mirage  Render exported portals with Liquid and simulated Dataverse on loopback.
-          demo, init, dev, start, status, stop, serve, inspect, data, presets
+          demo, init, dev, start, status, stop, serve, inspect, data
           ${Object.keys(MIRAGE_TOOLS).join(', ')}
   doctor  Check installed dependencies and browser readiness.
   init    Scaffold an empty consumer project; --check and --refresh-editor maintain it.

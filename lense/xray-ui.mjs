@@ -17,7 +17,7 @@ export function xrayUi(data) {
     @media(max-width:850px){.bar{top:8px;gap:3px;padding:5px}.bar .hint,.brand span{display:none}.brand{padding-right:3px}.bar button{font-size:11.5px;padding:4px}.bar select{max-width:118px;font-size:11px}.card{top:auto;bottom:44px;max-height:46dvh;width:380px;right:8px}.legend{bottom:8px;font-size:10px}.legend .hint{display:none}}@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important}}
   `);
   root.adoptedStyleSheets = [sheet];
-  root.innerHTML = `<div class="ui" hidden><div class="shield"></div><div class="marks"></div><div class="bar" role="toolbar" aria-label="Lense X-ray"><div class="brand"><strong>paqvilo</strong><span>X-ray</span></div><button data-action="mode" aria-pressed="true">Inspect</button><select aria-label="Highlight layer"><option value="all">All sources</option><option value="data">Forms & data</option><option value="content">Templates & content</option><option value="none">Selection only</option></select><button data-action="details" title="Show or hide source details">Details</button><button data-action="refresh" aria-label="Refresh source inspection" title="Refresh sources and component bindings">↻</button><span class="hint"><kbd>Alt</kbd> interact</span><button class="exit" data-action="exit" aria-label="Turn off X-ray">×</button></div><aside class="card" aria-label="Power Pages source details"></aside><div class="tip" hidden></div><div class="legend"><i style="background:#29805b"></i>Fields<i style="background:#3975ad"></i>Forms & views<i style="background:#947330"></i>Source markup <span class="hint"> · click to select · <kbd>Esc</kbd> back</span></div></div>`;
+  root.innerHTML = `<div class="ui" hidden><div class="shield"></div><div class="marks"></div><div class="bar" role="toolbar" aria-label="Lense X-ray"><div class="brand"><strong>paqvilo</strong><span>X-ray</span></div><button data-action="mode" aria-pressed="true">Inspect</button><select aria-label="Highlight layer"><option value="all">All sources</option><option value="data">Forms & data</option><option value="content">Templates & content</option><option value="none">Selection only</option></select><button data-action="details" title="Show or hide source details">Details</button><button data-action="refresh" aria-label="Refresh source inspection" title="Refresh sources and component bindings">↻</button><span class="hint"><kbd>Alt</kbd> interact</span><button class="exit" data-action="exit" aria-label="Turn off X-ray">×</button></div><aside class="card" aria-label="Power Pages source details"></aside><div class="tip" hidden></div><div class="legend"><i style="background:#29805b"></i>Fields<i style="background:#3975ad"></i>Forms & views<i style="background:#947330"></i>Source markup <span class="hint"> · click to select · <kbd>Esc</kbd> back · background limits: 800 candidates / 250 outlines</span></div></div>`;
 
   const ui = root.querySelector('.ui'), marks = root.querySelector('.marks'), card = root.querySelector('.card'), tip = root.querySelector('.tip');
   const lifetime = new AbortController(), listen = (target, type, fn, options = {}) => target.addEventListener(type, fn, { ...options, signal: lifetime.signal });
@@ -28,12 +28,18 @@ export function xrayUi(data) {
   let d = data, report = null, enabled = false, interacting = false, alt = false, selected = null, hover = null, layer = 'all', details = true, frame = 0, candidates = [], needsScan = true, detailsDirty=false, pointer = { x: 0, y: 0 }, drag = null, disposed = false;
   const own = node => node === host || node?.closest?.('#paqvilo-panel,#paqvilo-handle,#paqvilo-xray') || ['paqvilo-panel','paqvilo-handle','paqvilo-xray'].includes(node?.getRootNode?.()?.host?.id);
   const label = node => `${node.localName}${node.id ? '#' + node.id.slice(0,160) : ''}${!node.id && node.classList?.length ? '.' + [...node.classList].slice(0,2).join('.') : ''}`;
-  const child = node => [...(node?.shadowRoot?.children ?? node?.children ?? [])].find(item=>!item.matches('style,script,link')&&!own(item));
+  const descent=new WeakMap();
+  const child = node => descent.get(node)?.isConnected&&parent(descent.get(node))===node?descent.get(node): [...(node?.shadowRoot?.children ?? node?.children ?? [])].find(item=>!item.matches('style,script,link')&&!own(item));
   const parent = node => node?.assignedSlot ?? node?.parentElement ?? node?.getRootNode?.()?.host ?? null;
   const lineage = node => { const rows = []; for (let current = node; current; current = parent(current)) rows.push(current); return rows; };
-  const binding = node => {
+  const labelledControl=node=>{
     const labelNode=lineage(node).find(item=>item.localName==='label');
-    const labelled=labelNode?.control??null,chain=lineage(labelled??node);
+    const labelScope=labelNode?.closest('[data-formid],[data-form-layout],[id^="EntityFormControl"],[id^="WebFormControl"],form');
+    return labelNode?.htmlFor?[...(labelScope??labelNode.parentElement??document).querySelectorAll('[id]')].find(item=>item.id===labelNode.htmlFor)??null:labelNode?.querySelector('input,select,textarea,output')??null;
+  };
+  const binding = node => {
+    const labelled=labelledControl(node);
+    const chain=lineage(labelled??node);
     const compact=value=>norm(value).replace(/-/g,'').replace(/[^a-z0-9_]/g,'_');
     const nativeAt=current=>(report?.forms??[]).filter(form=>['EntityFormControl_','WebFormControl_'].some(prefix=>current.id===prefix+compact(form.id)||current.id===prefix+compact(form.id)+'_EntityFormView'));
     let entity='',formId='',viewId='',listId='',forms=[],views=[],lists=[],family='',context='',conflict=false,formCertain=false;
@@ -42,12 +48,15 @@ export function xrayUi(data) {
       let shape={};try{const parsed=JSON.parse(current.getAttribute('data-form-layout')??current.querySelector(':scope > [data-form-layout]')?.getAttribute('data-form-layout')??'{}');if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))shape=parsed;}catch{}
       const value=name=>current.getAttribute(name)??'';
       const declared=value('data-entityname')||value('data-entity')||String(shape.EntityName??'');
-      const fid=value('data-formid')||String(shape.Id??''),vid=value('data-viewid')||value('data-selected-view'),lid=value('data-listid');
+      let frameForm='';if(current.localName==='iframe'){try{const url=new URL(current.getAttribute('src'),location.href);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}}
+      const fallbackForm=/^EntityFormControl(?:_EntityFormView)?$/.test(current.id)?report?.page?.entityFormId??report?.page?.basicFormId??'':'';
+      const fallbackList=/^EntityListControl$/.test(current.id)?report?.page?.listId??'':'';
+      const fid=value('data-formid')||String(shape.Id??'')||frameForm||fallbackForm,vid=value('data-viewid')||value('data-selected-view'),lid=value('data-listid')||/^EntityList(?:Control_)?([0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:$|_)/i.exec(current.id)?.[1]||fallbackList;
       const nativeForms=nativeAt(current);
       const recordForms=(report?.forms??[]).filter(item=>fid&&norm(item.id)===norm(fid));
       const nextForms=recordForms.length?recordForms:nativeForms.length?nativeForms:(report?.forms??[]).filter(item=>fid&&norm(item.formXml?.id)===norm(fid));
       const nextViews=(report?.views??[]).filter(item=>vid&&norm(item.id)===norm(vid));
-      const nextLists=(report?.components??[]).filter(item=>item.kind==='list'&&lid&&norm(item.recordId??item.id)===norm(lid));
+      const nextLists=(report?.components??[]).filter(item=>item.kind==='list'&&lid&&compact(item.recordId??item.id)===compact(lid));
       const nextFamily=vid||lid?'collection':fid||nativeForms.length?'form':'';
       if(family&&nextFamily&&family!==nextFamily)break;
       if(forms.length&&nextForms.length&&!nextForms.some(item=>forms.some(known=>norm(known.id)===norm(item.id))))break;
@@ -63,46 +72,77 @@ export function xrayUi(data) {
       if(!formId&&fid)formId=fid;if(!viewId&&vid)viewId=vid;if(!listId&&lid)listId=lid;
       if(!forms.length&&nextForms.length){forms=nextForms;formCertain=Boolean(recordForms.length||nativeForms.length);}
       if(!views.length&&nextViews.length)views=nextViews;if(!lists.length&&nextLists.length)lists=nextLists;
-      if(current.matches('dialog,[role=dialog]'))break;
+
     }
-    const fieldAttributes=['data-attribute','data-field','data-fieldname','data-pcf-native-field','data-th'];
+    if(!views.length&&lists.length===1&&lists[0].viewIds?.length===1)views=(report?.views??[]).filter(item=>norm(item.id)===norm(lists[0].viewIds[0]));
+    const fieldAttributes=['data-attribute','data-field','data-fieldname','data-pcf-native-field','data-th','data-lookup-datafieldname'];
     const explicit=scope.find(item=>fieldAttributes.some(name=>item.hasAttribute(name)));
     const control=labelled??scope.find(item=>item.matches('input,select,textarea,output'));
     const names=explicit?fieldAttributes.map(key=>explicit.getAttribute(key)).filter(Boolean):control?[control.id,control.getAttribute('name')].filter(Boolean):[];
+    if(control&&entity)for(const name of [...names])if(name.includes('$'))names.push(name.split('$').at(-1));
+    const cell=control?.closest('.cell,.form-group,td,[data-fieldname]');
+    if(cell){
+      for(const name of [...names]){const base=name.replace(/_(?:name|entityname|datepicker_description|datepicker|timepicker_description|timepicker|i\d+|option_\d+|\d+|selected|value|container)$/i,'');if(base!==name&&([...cell.querySelectorAll('input[type=hidden]')].some(item=>item.id===base||item.name===base)||control.matches('input[type=radio],input[type=checkbox]')&&chain.some(item=>item.id===base&&cell.contains(item))))names.push(base);}
+    }
     const fields=conflict?[]:(report?.columns??[]).filter(item=>names.includes(item.name)&&(!entity||item.entity===entity));
-    const native=(report?.nativeComponents??[]).filter(item=>scope.some(ancestor=>ancestor.id===item.id)&&(!item.viewId||!viewId||norm(item.viewId)===norm(viewId)));
+    // A grid's table is a binding boundary, but its enclosing form still owns the
+    // FormXml control. Resolve ownership separately from the selected row's table.
+    const ownerForms=chain.map(current=>{let id=current.getAttribute('data-formid');if(!id)try{id=JSON.parse(current.getAttribute('data-form-layout')??'{}')?.Id;}catch{}return id?(report?.forms??[]).filter(form=>norm(form.id)===norm(id)||norm(form.formXml?.id)===norm(id)):nativeAt(current);}).find(items=>items.length)??forms;
+    const native=(report?.nativeComponents??[]).filter(item=>scope.some(ancestor=>ancestor.id===item.id||ancestor.getAttribute('data-lookup-datafieldname')===item.id)&&(!ownerForms.length||ownerForms.some(form=>norm(form.id)===norm(item.formId)))&&(!item.viewId||!viewId||norm(item.viewId)===norm(viewId)));
     const schema=scope.find(item=>item.hasAttribute('data-pcf-schema'))?.getAttribute('data-pcf-schema');
     const code=(report?.codeComponents??[]).filter(item=>schema&&norm(item.schemaName)===norm(schema));
     return {entity,fields,forms,views,lists,native,code,formId,viewId,listId,context,conflict,formCertain};
   };
+  const framework=/^(?:form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/;
+  let rankingReport,frequencies,pageOwners;
   const sourceMatches = node => {
     const ancestors=lineage(node),rows=[];
+    if(rankingReport!==report||!frequencies){
+      rankingReport=report;frequencies=new Map();pageOwners=new Set(['page']);
+      for(const item of report?.elementSources??[])if(item.matchKind==='class'){let files=frequencies.get(item.selector);if(!files)frequencies.set(item.selector,files=new Set());files.add(item.ref??item.sourceFile);}
+      const sources=[...(report?.webTemplates??[]).map(item=>({...item,owners:['web-template:'+norm(item.id),'web-template:'+item.name]})),...(report?.snippets??[]).map(item=>({...item,owners:['content-snippet:'+norm(item.id),'content-snippet:'+item.name]}))];
+      let changed=true;
+      while(changed){changed=false;for(const item of sources)if(!item.owners.every(owner=>pageOwners.has(owner))&&(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))){for(const owner of item.owners)pageOwners.add(owner);changed=true;}}
+    }
     for(const item of report?.elementSources??[]){try{
       const depth=ancestors.findIndex(ancestor=>ancestor.matches(item.selector));if(depth<0)continue;
-      const specificity=item.matchKind==='id'?100:item.matchKind==='attribute'?70:item.matchKind==='class'?50:30;
-      rows.push({...item,depth,score:specificity-depth*6,evidenceLabel:`${item.kind==='script'?'Script reference':'Markup match'}: ${item.selector}${depth?' on an enclosing element':''}${item.occurrences>1?' · '+item.occurrences+' locations in this source':''}`});
+      const target=ancestors[depth],classes=(item.classes??[]).filter(name=>target.classList.contains(name)),meaningful=classes.filter(name=>!framework.test(name));
+      const locations=item.locations??[];
+      const matchingTags=locations.filter(location=>!location.tag||location.tag===target.localName);
+      const contexts=(matchingTags.length?matchingTags:locations).map(location=>({...location,agreement:(location.contexts??[]).filter(selector=>ancestors.slice(depth+1).some(ancestor=>ancestor.matches(selector))).length})).sort((a,b)=>b.agreement-a.agreement);
+      const agreed=contexts[0]?.agreement??0,tagMatch=locations.some(location=>location.tag===target.localName)||!item.tag||item.tag===target.localName;
+      const strong=item.matchKind==='id'&&tagMatch||item.matchKind==='attribute'&&tagMatch||item.matchKind==='class'&&tagMatch&&(meaningful.length>0&&(frequencies.get(item.selector)?.size??1)<=2||agreed>0);
+      const attributeCount=Object.entries(item.attributes??{}).filter(([key,value])=>target.getAttribute(key)===value).length;
+      // Prefer stronger evidence across adjacent regions, but do not let a distant
+      // page-container ID eclipse the distinctive template immediately around a node.
+      const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20-depth*40;
+      const best=agreed?contexts.filter(location=>location.agreement===agreed):contexts;
+      const pageChain=(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))??false;
+      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,
+        evidenceLabel:`${item.kind==='script'?'Script reference':strong?'Markup match':'Possible match'}: ${item.selector}${depth?' on an enclosing element':''}${item.occurrences>1?' · '+item.occurrences+' locations in this source':''}`});
     }catch{}}
-    return rows.sort((a,b)=>a.depth-b.depth||b.score-a.score).slice(0,30);
+    const ranked=rows.sort((a,b)=>Number(b.strong)-Number(a.strong)||b.score-a.score||a.depth-b.depth||Number(b.pageChain)-Number(a.pageChain));
+    const result=ranked.slice(0,60);result.omitted=Math.max(0,ranked.length-result.length);return result;
   };
   const dispatch = (action, detail = {}) => host.dispatchEvent(new CustomEvent('paqvilo-xray', { bubbles:true, detail:{action,...detail} }));
   const setStatus = message => { const output = card.querySelector('.status'); if (output) output.textContent = message; };
   const kindName=kind=>({'template':'Web template','snippet':'Content snippet','page':'Page copy','basic-form':'Basic form','advanced-form':'Multistep form','list':'List','script':'Script','field':'Column','view':'View','table':'Table'}[kind]??kind??'Source');
-  const sourceRows = (rows, evidence) => rows.map(item => `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}${item.line?':'+Number(item.line):''}</div>${item.evidenceLabel||evidence?`<div class="note">${esc(item.evidenceLabel??evidence)}</div>`:''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}" data-line="${Number(item.line)||''}" data-find="${esc(item.fieldPath && /powerpagecomponent\.xml$/i.test(item.ref) ? '"'+item.fieldPath+'":' : item.find ?? '')}">Open source ↗</button><button data-action="copy" data-copy="${esc(item.path??item.sourceFile??item.ref)}">Copy path</button>${item.depth?`<button data-action="source-region" data-selector="${esc(item.selector)}">Select source region</button>`:''}</div>` : ''}</div>`).join('');
+  const sourceRows = (rows, evidence) => rows.map(item => `<div class="source"><div class="name"><b>${esc(item.name ?? item.label ?? 'Source')}</b><span class="badge">${esc(kindName(item.kind))}</span></div><div class="mono">${esc(item.ref ?? item.url ?? 'Source unavailable')}${item.lines?.length?':'+item.lines.join(', '):item.line?':'+Number(item.line):''}</div>${item.evidenceLabel||evidence?`<div class="note">${esc(item.evidenceLabel??evidence)}</div>`:''}${item.ref ? `<div class="actions"><button data-action="open" data-ref="${esc(item.ref)}" data-line="${Number(item.line)||''}" data-find="${esc(item.fieldPath && /powerpagecomponent\.xml$/i.test(item.ref) ? '"'+item.fieldPath+'":' : item.find ?? '')}">Open source ↗</button><button data-action="copy" data-copy="${esc(item.path??item.sourceFile??item.ref)}">Copy path</button>${item.depth?`<button data-action="source-region" data-selector="${esc(item.selector)}">Select source region</button>`:''}</div>` : ''}</div>`).join('');
   const identify=node=>{
     const b=binding(node),matches=sourceMatches(node).filter(item=>item.kind!=='script');
     if(b.conflict)return {title:'Conflicting table context',kind:'Unresolved binding',sub:'The rendered table and exported component disagree.',b,matches};
     if(b.fields.length===1){const field=b.fields[0];return {title:field.label??field.name,kind:'Dataverse column'+(b.entity?'':' · candidate'),sub:field.entity+'.'+field.name,b,matches};}
-    if(b.forms.length===1)return {title:b.forms[0].name,kind:kindName(b.forms[0].kind??'basic-form')+(b.formCertain?'':' · candidate'),sub:b.forms[0].entity??'',b,matches};
+    if(b.forms.length===1&&b.native.length!==1)return {title:b.forms[0].name,kind:kindName(b.forms[0].kind??'basic-form')+(b.formCertain?'':' · candidate'),sub:b.forms[0].entity??'',b,matches};
     if(b.views.length===1)return {title:b.views[0].name,kind:'Dataverse view',sub:b.views[0].entity??'',b,matches};
     if(b.lists.length===1)return {title:b.lists[0].name,kind:'Power Pages list',sub:b.lists[0].entity??'',b,matches};
     if(b.native.length===1){const item=b.native[0];return {title:item.formName??item.name,kind:item.kind==='quickform'?'Quick view':item.kind==='subgrid'?'Subgrid':kindName(item.kind),sub:[item.entity,item.owner].filter(Boolean).join(' · '),b,matches};}
     if(b.code.length===1){const item=b.code[0];return {title:item.schemaName??item.name,kind:'Code component',sub:item.entity??'',b,matches};}
-    const match=matches[0];
+    const match=matches.find(item=>item.strong);
     if(match)return {title:match.name,kind:kindName(match.kind)+' · source match',sub:match.ref??'',b,matches};
-    return {title:b.fields.length>1?'Ambiguous column':'No source match',kind:'Selected element',sub:'Use page context or select an enclosing source region.',b,matches};
+    return {title:b.fields.length>1?'Ambiguous column':'No reliable source',kind:'Selected element',sub:b.context||'Use page context or select an enclosing source region.',b,matches};
   };
   const sourcesHtml = node => {
-    const b=binding(node),exact=b.fields.length===1?b.fields[0]:null,matches=sourceMatches(node),allMarkup=matches.filter(item=>item.kind!=='script'),markup=allMarkup.filter(item=>item.depth===allMarkup[0]?.depth),scripts=matches.filter(item=>item.kind==='script');
+    const b=binding(node),exact=b.fields.length===1?b.fields[0]:null,matches=sourceMatches(node),allMarkup=matches.filter(item=>item.kind!=='script'),markup=allMarkup,scripts=matches.filter(item=>item.kind==='script');
     let out=b.conflict?'<div class="section"><h3>Conflicting table context</h3><p class="note">The rendered table and exported form/view disagree. No column identity is asserted.</p></div>':'';
     if(exact){
       const table=(report?.tables??[]).find(item=>item.logicalName===exact.entity);
@@ -114,12 +154,18 @@ export function xrayUi(data) {
     if(b.native.length)out+=`<div class="section"><h3>Native component</h3>${b.native.map(item=>`<dl class="details"><dt>Control</dt><dd>${esc(item.name??item.id)}</dd><dt>Form</dt><dd>${esc(item.owner??'Unresolved')}</dd>${item.relationship?`<dt>Relation</dt><dd>${esc(item.relationship)}</dd>`:''}</dl>${sourceRows([{...item,name:kindName(item.kind)+' definition'},...(item.metadataSources??[])],'Rendered control ID matched to exported FormXml')}`).join('')}</div>`;
     if(b.code.length)out+=`<div class="section"><h3>Code component</h3>${sourceRows(b.code,'Rendered schema name matched to exported component')}${sourceRows(b.code.flatMap(item=>item.resources??[]),'Declared component resource')}</div>`;
     if(markup.length){
-      // Keep multiple possible owners visible, but collapse repeated selectors within one source file.
-      const files=[...new Map(markup.map(item=>[item.ref??item.sourceFile,item])).keys()].map(key=>markup.find(item=>(item.ref??item.sourceFile)===key));
-      out+=`<div class="section"><h3>Element source candidates <small>(${files.length})</small></h3>${sourceRows(files)}<p class="note">Matched against local markup. Multiple templates or conditional branches can share a match.</p></div>`;
+      // Retain distinct evidence within a source too: an enclosing unique ID must
+      // remain inspectable beside a nearer class match from the same file.
+      const files=[...new Map(markup.map(item=>[(item.ref??item.sourceFile)+'\u0000'+item.selector,item])).values()];
+      const strong=files.filter(item=>item.strong),possible=files.filter(item=>!item.strong);
+      if(strong.length)out+=`<div class="section"><h3>Element source candidates <small>(${strong.length})</small></h3>${sourceRows(strong)}<p class="note">Matched against local markup. Multiple templates or conditional branches can share a match.</p></div>`;
+      if(possible.length)out+=`<details open><summary>Possible matches (${possible.length})</summary>${sourceRows(possible)}<p class="note">Shared selectors alone do not identify an owner. Multiple templates or conditional branches can share a match.</p></details>`;
       const owners=[...new Set(files.flatMap(item=>item.includedBy??[]))].map(owner=>{const [kind,id]=owner.split(':');return kind==='web-template'?(report?.webTemplates??[]).find(item=>norm(item.id)===norm(id))?.name:report?.page?.name??report?.page?.pageName;}).filter(Boolean);
       if(owners.length)out+=`<div class="note">Referenced by: ${esc([...new Set(owners)].join(', '))}</div>`;
     }else if(!exact&&!componentSources.length&&!b.native.length&&!b.code.length)out+='<div class="section"><p class="note">No local markup or component binding identifies this element. Select an enclosing region or check the page sources below.</p></div>';
+    if(node.matches('img[src],link[href],script[src]')){let path;try{const url=new URL(node.getAttribute('src')??node.getAttribute('href'),location.href);if(url.origin===location.origin)path=url.pathname;}catch{}const assets=(report?.assets??[]).filter(item=>item.url===path);if(assets.length)out+=`<div class="section"><h3>Web file</h3>${sourceRows(assets,'Rendered resource URL')}</div>`;}
+    if(report?.elementSourceLimits?.truncated)out+='<p class="note">Source hint index truncated; some matches may be unavailable.</p>';
+    if(matches.omitted)out+=`<p class="note">Showing 60 source matches; ${matches.omitted} additional candidates are omitted from these details.</p>`;
     if(scripts.length)out+=`<details><summary>Related script references (${scripts.length})</summary>${sourceRows(scripts,'Literal selector reference; event ownership is not inferred')}</details>`;
     const page=report?.page;
     out+=`<details class="page-context"><summary>Page context${page?' · '+esc(page.pageName??page.name??''):''}</summary><dl class="details"><dt>Page</dt><dd>${esc(page?.pageName??page?.name??'Not in selected export')}</dd><dt>Template</dt><dd>${esc(page?.pageTemplateName??report?.pageTemplate?.name??'Unresolved')}</dd></dl>${sourceRows(report?.pageSources??[])}${sourceRows((report?.assets??[]).map(item=>({...item,kind:/\.css(?:$|\?)/i.test(item.url??item.ref??'')?'Stylesheet':'script'})),'Page asset; element ownership and applied CSS rules are not established')}${sourceRows((report?.webTemplates??[]).map(item=>({...item,kind:'template'})),'Page dependency; element ownership not established')}</details>`;
@@ -128,10 +174,12 @@ export function xrayUi(data) {
   };
   const renderCard = (preserve=false) => {
     if(!enabled)return;
-    const scroll=card.querySelector('.content')?.scrollTop??0,open=preserve?[...card.querySelectorAll('details[open]')].map(item=>item.querySelector('summary')?.textContent):[];card.hidden=!details;
+    const scroll=card.querySelector('.content')?.scrollTop??0,open=preserve?[...card.querySelectorAll('details[open]')].map(item=>item.querySelector('summary')?.textContent):[];card.hidden=!details||!selected;
     if(!selected){card.innerHTML=`<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Alt</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${report?`${(report.webTemplates??[]).length} templates · ${(report.forms??[]).length} forms · ${(report.views??[]).length} views · ${(report.columns??[]).length} columns`:esc(d.inspectionError||(d.inspection?.active===false?d.inspection.error:'')||'Loading source inspection…')}</p></div>`;return;}
     const identity=identify(selected);
-    card.innerHTML=`<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(selected).map((node,index)=>`<button class="crumb" data-action="ancestor" data-index="${index}" style="padding-left:${7+Math.min(index,6)*8}px">${index?'↳ ':''}${esc(label(node))}</button>`).join('')}${selected.localName==='iframe'?'<p class="note">This is a frame boundary. Inner document source information is unavailable.</p>':''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected)||own(parent(selected))?'disabled':''}>↑ Parent</button><button data-action="child" ${!child(selected)?'disabled':''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
+    const selectedRect=selected.getBoundingClientRect();
+    if(selectedRect.right>innerWidth-434&&selectedRect.left<innerWidth-12){card.style.left='12px';card.style.right='auto';}else{card.style.left='auto';card.style.right='12px';}
+    card.innerHTML=`<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName==='iframe'?'<p class=note>Frame boundary · select the inner document in its own tab for control details.</p>':''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(selected).map((node,index)=>`<button class="crumb" data-action="ancestor" data-index="${index}" style="padding-left:${7+Math.min(index,6)*8}px">${index?'↳ ':''}${esc(label(node))}</button>`).join('')}${selected.localName==='iframe'?'<p class="note">This is a frame boundary. Inner document source information is unavailable.</p>':''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected)||own(parent(selected))?'disabled':''}>↑ Parent</button><button data-action="child" ${!child(selected)?'disabled':''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
     for(const item of card.querySelectorAll('details'))if(open.includes(item.querySelector('summary')?.textContent))item.open=true;const body=card.querySelector('.content');if(body)body.scrollTop=scroll;
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
@@ -158,31 +206,47 @@ export function xrayUi(data) {
     const result=right>left&&bottom>top?{left,top,width:right-left,height:bottom-top}:null;geometryCache?.set(node,result);return result;
   }
   const rectHtml=(node,kind,tone)=>{const r=visibleRect(node);return r?`<div class="mark ${kind}" style="left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--tone:${tone}"></div>`:'';};
+  const backgroundClipped=node=>lineage(node).some(item=>{const css=styleFor(item);return css.clip!=='auto'&&css.clip!==''||css.clipPath!=='none'&&css.clipPath!=='';});
   const category=node=>node.matches('input,select,textarea,[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-th]')?'field':node.matches('form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],.entity-grid')?'component':'content';
   const isOccluded=(node,r)=>{const x=r.left+r.width/2,y=r.top+Math.min(r.height/2,30),top=document.elementsFromPoint(x,y).find(item=>!own(item));return top&&!lineage(node).includes(top)&&!lineage(top).includes(node);};
-  const discoveryCursors=new WeakMap();
+  const discoveryCursors=new WeakMap(),shadowRoots=new Set();
+  let releaseShadowHook=null,releaseAnimationHook=null;
+  function watchShadowRoots(){
+    if(releaseShadowHook)return;
+    const descriptor=Object.getOwnPropertyDescriptor(Element.prototype,'attachShadow');if(!descriptor?.value||!descriptor.configurable)return;
+    const wrapped=function(...args){const surface=descriptor.value.apply(this,args);if(enabled&&!disposed&&surface.mode==='open'&&!own(this)){shadowRoots.add(surface);needsScan=true;schedule();}return surface;};
+    Object.defineProperty(Element.prototype,'attachShadow',{...descriptor,value:wrapped});
+    releaseShadowHook=()=>{if(Object.getOwnPropertyDescriptor(Element.prototype,'attachShadow')?.value===wrapped)Object.defineProperty(Element.prototype,'attachShadow',descriptor);};
+  }
+  function watchAnimations(){
+    if(releaseAnimationHook)return;
+    const descriptor=Object.getOwnPropertyDescriptor(Element.prototype,'animate');if(!descriptor?.value||!descriptor.configurable)return;
+    const wrapped=function(...args){const result=descriptor.value.apply(this,args);if(enabled&&!disposed&&!own(this))animate();return result;};
+    Object.defineProperty(Element.prototype,'animate',{...descriptor,value:wrapped});
+    releaseAnimationHook=()=>{if(Object.getOwnPropertyDescriptor(Element.prototype,'animate')?.value===wrapped)Object.defineProperty(Element.prototype,'animate',descriptor);};
+  }
   const scan=()=>{
     // Rebuild observed roots so detached components are not retained indefinitely.
     observer.disconnect();observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
     const selector='input:not([type=hidden]),select,textarea,form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[data-entityname],[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-th],[role=dialog],dialog,iframe';
-    candidates=[];const roots=[document];
+    candidates=[];for(const surface of shadowRoots)if(!surface.host.isConnected)shadowRoots.delete(surface);const roots=[document,...shadowRoots];
     for(let index=0;index<roots.length&&index<40;index++){
       const surface=roots[index];
       for(const node of surface.querySelectorAll(selector)){if(!own(node)&&candidates.length<800)candidates.push(node);}
       const nodes=surface.querySelectorAll('*'),start=discoveryCursors.get(surface)??0,budget=Math.min(nodes.length,surface===document?4000:Math.max(100,Math.floor(4000/Math.max(1,roots.length-1))));
-      for(let offset=0;offset<budget;offset++){const node=nodes[(start+offset)%nodes.length];if(node.shadowRoot&&!own(node)){roots.push(node.shadowRoot);observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});}}
+      for(let offset=0;offset<budget;offset++){const node=nodes[(start+offset)%nodes.length];if(node.shadowRoot&&!own(node)){if(!roots.includes(node.shadowRoot))roots.push(node.shadowRoot);shadowRoots.add(node.shadowRoot);observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});}}
       discoveryCursors.set(surface,nodes.length?(start+budget)%nodes.length:0);
-      for(const hint of (report?.elementSources??[]).slice(0,300)){try{for(const node of [...surface.querySelectorAll(hint.selector)].slice(0,20))if(!own(node)&&!candidates.includes(node)&&candidates.length<800)candidates.push(node);}catch{}}
+      for(const hint of (report?.elementSources??[])){try{for(const node of surface.querySelectorAll(hint.selector))if(!own(node)&&!candidates.includes(node)&&candidates.length<800)candidates.push(node);}catch{}}
     }
     needsScan=false;
   };
   const paint=()=>{
-    frame=0;if(!enabled||disposed)return;geometryCache=new WeakMap();styleCache=new WeakMap();
-    if(selected&&!selected.isConnected){const removed=label(selected);selected=null;renderCard();const welcome=card.querySelector('.hero');if(welcome)welcome.textContent='Element removed';const note=card.querySelector('.note');if(note)note.textContent=removed+' was replaced or removed. Click a rendered element to select it again.';}if(hover&&!hover.isConnected)hover=null;
+    frame=0;if(!enabled||disposed||document.hidden)return;geometryCache=new WeakMap();styleCache=new WeakMap();
+    if(selected&&!selected.isConnected){const removed=label(selected);selected=null;renderCard();card.hidden=false;const welcome=card.querySelector('.hero');if(welcome)welcome.textContent='Element removed';const note=card.querySelector('.note');if(note)note.textContent=removed+' was replaced or removed. Click a rendered element to select it again.';}if(hover&&!hover.isConnected)hover=null;
     if(detailsDirty&&selected){detailsDirty=false;renderCard(true);}
     if(needsScan)scan();
     let html='',count=0;
-    if(layer!=='none')for(const node of candidates){const type=category(node);if(layer==='data'&&type==='content'||layer==='content'&&type!=='content')continue;const r=visibleRect(node);if(!r||isOccluded(node,r))continue;html+=rectHtml(node,'',type==='field'?'#29805b':type==='component'?'#3975ad':'#947330');if(++count>=250)break;}
+    if(layer!=='none')for(const node of candidates){const type=category(node);if(layer==='data'&&type==='content'||layer==='content'&&type!=='content')continue;const r=visibleRect(node);if(!r||r.width<4||r.height<4||backgroundClipped(node)||isOccluded(node,r))continue;html+=rectHtml(node,'',type==='field'?'#29805b':type==='component'?'#3975ad':'#947330');if(++count>=250)break;}
     if(selected)html+=rectHtml(selected,'selected','#76f1df');if(hover&&hover!==selected&&!interacting&&!alt)html+=rectHtml(hover,'hover','#c0b0ff');
     marks.innerHTML=html;
     const target=hover??selected,r=target&&visibleRect(target);tip.hidden=!r||interacting||alt;
@@ -191,7 +255,7 @@ export function xrayUi(data) {
     geometryCache=null;styleCache=null;
 
   };
-  const schedule=()=>{if(!host.isConnected){host.__px?.dispose();return;}if(enabled&&!frame)frame=requestAnimationFrame(paint);};
+  const schedule=()=>{if(!host.isConnected){host.__px?.dispose();return;}if(enabled&&!document.hidden&&!frame)frame=requestAnimationFrame(paint);};
   const hitStack=(x,y)=>{
     const stack=[],seen=new Set();
     const add=(node,depth=0)=>{if(own(node)||seen.has(node))return;seen.add(node);if(node.shadowRoot)observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});if(node.shadowRoot&&depth<40)for(const inner of node.shadowRoot.elementsFromPoint(x,y))if(inner.getRootNode()===node.shadowRoot)add(inner,depth+1);stack.push(node);};
@@ -202,15 +266,15 @@ export function xrayUi(data) {
   let modalOrder=[];
   const topLayer=(force=false)=>{modalOrder=modalOrder.filter(node=>node.isConnected&&node.matches(':modal'));const modal=modalOrder.at(-1)??document.activeElement?.closest('dialog:modal')??[...document.querySelectorAll('dialog:modal')].at(-1);const container=modal??document.body;const moved=host.parentElement!==container;if(moved)container.append(host);if(enabled){try{const open=host.matches(':popover-open');if(open&&(force||moved))host.hidePopover();if(!open||force||moved)host.showPopover();}catch{}}};
   const mode=()=>{ui.classList.toggle('interact',interacting||alt);const button=root.querySelector('[data-action=mode]');button.setAttribute('aria-pressed',String(!interacting&&!alt));button.textContent=interacting||alt?'Interact':'Inspect';};
-  const select=node=>{if(!node||own(node))return;selected=node;details=true;hover=node;renderCard();schedule();dispatch('selected',{element:{tag:node.localName,id:node.id.slice(0,160),name:(node.getAttribute('name')??'').slice(0,160),classes:[...node.classList].slice(0,5).join('.')}});};
-  const toggle=value=>{enabled=value??!enabled;ui.hidden=!enabled;mode();if(enabled){needsScan=true;topLayer();renderCard();schedule();}else{observer.disconnect();selected=null;hover=null;alt=false;interacting=false;marks.innerHTML='';tip.hidden=true;try{host.hidePopover();}catch{}if(frame)cancelAnimationFrame(frame);frame=0;}dispatch('toggled',{enabled});};
-  const identityAttributes=['class','style','hidden','open','id','for','role','type','data-th','data-form-layout','data-formid','data-viewid','data-selected-view','data-entityname','data-entity','name','data-field','data-fieldname','data-attribute','data-pcf-schema','data-pcf-native-field','data-listid','data-controlid','slot'];
-  const observer=new MutationObserver(records=>{if(!host.isConnected){const existing=document.getElementById('paqvilo-xray');if(host.parentElement?.matches('dialog')&&document.body?.isConnected&&(!existing||existing===host)){topLayer(true);}else{host.__px?.dispose();return;}}if(!enabled)return;const external=records.filter(record=>!own(record.target)&&!(record.type==='childList'&&[...record.addedNodes,...record.removedNodes].every(node=>node===host)));if(!external.length)return;if(selected){const associated=lineage(selected).find(item=>item.localName==='label')?.control;const related=[...lineage(selected),...lineage(associated)];if(external.some(record=>record.attributeName!=='style'&&(record.type==='childList'||related.includes(record.target)||lineage(record.target).includes(selected)||record.attributeName==='id'||record.target.localName==='slot')))detailsDirty=true;}needsScan=true;if(external.some(record=>record.type==='childList'||record.attributeName==='open'))topLayer();schedule();});
+  const select=node=>{if(!node||own(node))return;resizeObserver.disconnect();resizeObserver.observe(document.documentElement);resizeObserver.observe(node);selected=node;details=true;hover=node;renderCard();schedule();dispatch('selected',{element:{tag:node.localName,id:node.id.slice(0,160),name:(node.getAttribute('name')??'').slice(0,160),classes:[...node.classList].slice(0,5).join('.')}});};
+  const toggle=value=>{enabled=value??!enabled;ui.hidden=!enabled;mode();if(enabled){watchShadowRoots();watchAnimations();resizeObserver.observe(document.documentElement);needsScan=true;topLayer();renderCard();schedule();animate();}else{releaseShadowHook?.();releaseShadowHook=null;releaseAnimationHook?.();releaseAnimationHook=null;resizeObserver.disconnect();observer.disconnect();selected=null;hover=null;alt=false;interacting=false;marks.innerHTML='';tip.hidden=true;try{host.hidePopover();}catch{}if(frame)cancelAnimationFrame(frame);frame=0;}dispatch('toggled',{enabled});};
+  const identityAttributes=['class','style','hidden','open','id','for','role','type','data-th','data-form-layout','data-formid','data-viewid','data-selected-view','data-entityname','data-entity','name','data-field','data-fieldname','data-attribute','data-lookup-datafieldname','data-pcf-schema','data-pcf-native-field','data-listid','data-controlid','slot'];
+  const observer=new MutationObserver(records=>{if(!host.isConnected){const existing=document.getElementById('paqvilo-xray');if(host.parentElement?.matches('dialog')&&document.body?.isConnected&&(!existing||existing===host)){topLayer(true);}else{host.__px?.dispose();return;}}if(!enabled)return;const external=records.filter(record=>!own(record.target)&&!(record.type==='childList'&&[...record.addedNodes,...record.removedNodes].every(node=>node===host)));if(!external.length)return;if(selected){const associated=labelledControl(selected);const related=[...lineage(selected),...lineage(associated)];if(external.some(record=>record.attributeName!=='style'&&(record.type==='childList'||related.includes(record.target)||lineage(record.target).includes(selected)||record.attributeName==='id'||record.target.localName==='slot')))detailsDirty=true;}needsScan=true;if(external.some(record=>record.type==='childList'||record.attributeName==='open'))topLayer();schedule();});
   listen(document,'toggle',event=>{if(event.target===host||!event.target.matches?.('dialog,[popover]'))return;if(event.target.matches('dialog:modal')){modalOrder=modalOrder.filter(node=>node!==event.target);modalOrder.push(event.target);}if(enabled){topLayer(event.newState==='open');schedule();}},{capture:true});
   observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
   listen(window,'pointermove',event=>{if(!enabled)return;pointer={x:event.clientX,y:event.clientY};if(drag){card.style.left=Math.max(8,Math.min(innerWidth-card.offsetWidth-8,event.clientX-drag.x))+'px';card.style.top=Math.max(74,Math.min(innerHeight-card.offsetHeight-8,event.clientY-drag.y))+'px';card.style.right='auto';card.style.bottom='auto';return;}const node=event.composedPath().find(item=>item instanceof Element);if(own(node)&&!node?.classList?.contains('shield'))return;hover=node?.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node;if(own(hover))hover=null;schedule();},{capture:true});
-  for(const type of ['pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu','auxclick'])listen(window,type,event=>{if(!enabled||interacting||alt||event.altKey)return;const node=event.composedPath().find(item=>item instanceof Element);if(!node||(own(node)&&!node.classList?.contains('shield')))return;event.preventDefault();event.stopImmediatePropagation();if(type==='click')select(node.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node);},{capture:true});
-  listen(window,'scroll',schedule,{capture:true,passive:true});listen(window,'resize',()=>{card.style.left='';card.style.top='';card.style.right='';card.style.bottom='';schedule();},{passive:true});
+  for(const type of ['pointerdown','pointerup','mousedown','mouseup','click','dblclick','contextmenu','auxclick','touchstart','touchend'])listen(window,type,event=>{if(!enabled||interacting||alt||event.altKey)return;const node=event.composedPath().find(item=>item instanceof Element);if(!node||(own(node)&&!node.classList?.contains('shield')))return;event.preventDefault();event.stopImmediatePropagation();if(type==='pointerdown'||type==='touchstart')select(node.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node);},{capture:true});
+  listen(window,'scroll',schedule,{capture:true,passive:true});listen(document,'load',schedule,{capture:true});listen(window,'resize',()=>{card.style.left='';card.style.top='';card.style.right='';card.style.bottom='';schedule();},{passive:true});
   listen(window,'keydown',event=>{
     if(event.altKey&&event.shiftKey&&event.code==='KeyX'){event.preventDefault();event.stopImmediatePropagation();toggle();return;}
     if(!enabled)return;if(event.key==='Alt'){alt=true;mode();schedule();return;}
@@ -220,7 +284,7 @@ export function xrayUi(data) {
     if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(selected){selected=null;renderCard();schedule();}else toggle(false);return;}
     if(interacting||alt)return;
     // Do not let keyboard activation submit a focused portal form while inspecting.
-    if(['ArrowUp','ArrowDown','[',']'].includes(event.key)||!own(node)&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();if(event.key==='ArrowUp'&&selected)select(parent(selected));if(event.key==='ArrowDown'&&selected)select(child(selected));if(event.key==='['||event.key===']'){const stack=hitStack(pointer.x,pointer.y),index=stack.indexOf(selected??hover),next=index<0?0:(index+(event.key===']'?1:-1)+stack.length)%stack.length;select(stack[next]);}}
+    if(['ArrowUp','ArrowDown','[',']'].includes(event.key)||!own(node)&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();if(event.key==='ArrowUp'&&selected){const ancestor=parent(selected);if(ancestor)descent.set(ancestor,selected);select(ancestor);}if(event.key==='ArrowDown'&&selected)select(child(selected));if(event.key==='['||event.key===']'){const stack=hitStack(pointer.x,pointer.y),index=stack.indexOf(selected??hover),next=index<0?0:(index+(event.key===']'?1:-1)+stack.length)%stack.length;select(stack[next]);}}
   },{capture:true});
   listen(window,'keyup',event=>{if(event.key==='Alt'){alt=false;mode();schedule();}if(enabled&&!interacting&&!own(event.composedPath().find(item=>item instanceof Element))&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();}},{capture:true});
   listen(document,'visibilitychange',()=>{alt=false;mode();schedule();});
@@ -253,12 +317,16 @@ export function xrayUi(data) {
   listen(root,'change',event=>{if(event.target.matches('select')){layer=event.target.value;schedule();}});
   listen(root,'click',async event=>{const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
     if(action==='refresh'){setStatus('Refreshing local source inspection…');dispatch('refresh');}if(action==='exit')toggle(false);if(action==='mode'){interacting=!interacting;mode();schedule();}if(action==='details'){details=!details;card.hidden=!details;}
-    if(action==='source-region'){let region;try{region=lineage(selected).find(node=>node.matches(button.dataset.selector));}catch{}if(region)select(region);else setStatus('This source region is no longer present. Select a rendered element again.');}if(action==='clear'){selected=null;renderCard();schedule();}if(action==='parent')select(parent(selected));if(action==='child')select(child(selected));if(action==='ancestor')select(lineage(selected)[Number(button.dataset.index)]);
+    if(action==='source-region'){let region;try{region=lineage(selected).find(node=>node.matches(button.dataset.selector));}catch{}if(region)select(region);else setStatus('This source region is no longer present. Select a rendered element again.');}if(action==='clear'){selected=null;renderCard();schedule();}if(action==='parent'){const ancestor=parent(selected);if(ancestor)descent.set(ancestor,selected);select(ancestor);}if(action==='child')select(child(selected));if(action==='ancestor')select(lineage(selected)[Number(button.dataset.index)]);
     if(action==='reveal'){selected?.scrollIntoView({block:'center',inline:'nearest'});schedule();}if(action==='dock'){const r=card.getBoundingClientRect();card.style.left=r.left>innerWidth/2?'20px':'auto';card.style.right=r.left>innerWidth/2?'auto':'20px';}
     if(action==='copy'){try{await navigator.clipboard.writeText(button.dataset.copy);setStatus('Source path copied.');}catch{setStatus('The browser could not copy the source path.');}}
     if(action==='open')dispatch('open',{ref:button.dataset.ref,line:Number(button.dataset.line)||undefined,find:button.dataset.find||undefined});
   });
-  // Periodic geometry refresh covers animations, transforms and resize without continuous layout reads.
-  let geometryTicks=0;const timer=setInterval(()=>{if(++geometryTicks%5===0)needsScan=true;schedule();},300);
-  host.__px={toggle,get token(){return d.token;},get enabled(){return enabled;},update(next,nextReport){const previousError=d.inspectionError;d=next;const theme=document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');if(theme){const style=getComputedStyle(theme);for(const key of ['--bg','--fg','--muted','--primary','--link','--on-primary','--radius','--line','--head-bg','--panel-line','--shadow','--font']){const value=style.getPropertyValue(key);if(value)ui.style.setProperty(key,value);}}const currentReport=next.inspectionError||next.inspection?.active===false?null:nextReport;if(currentReport!==undefined&&currentReport!==report){report=currentReport;needsScan=true;renderCard();schedule();}else if(previousError!==d.inspectionError)renderCard();if(next.ui?.hidden&&enabled)toggle(false);},status:setStatus,dispose(){disposed=true;clearInterval(timer);cancelAnimationFrame(frame);observer.disconnect();lifetime.abort();host.remove();}};
+  // Follow active animations; idle documents never poll geometry.
+  let animationFrame=0;
+  const resizeObserver=new ResizeObserver(schedule);
+  const animate=()=>{cancelAnimationFrame(animationFrame);if(!enabled||disposed||document.hidden)return;if(document.getAnimations().some(animation=>animation.playState==='running'&&!own(animation.effect?.target))){schedule();animationFrame=requestAnimationFrame(animate);}};
+  listen(document,'animationstart',animate,{capture:true});listen(document,'transitionrun',animate,{capture:true});
+  listen(document,'visibilitychange',()=>{if(document.hidden){cancelAnimationFrame(frame);frame=0;cancelAnimationFrame(animationFrame);}else{schedule();animate();}});
+  host.__px={toggle,select,identify,get token(){return d.token;},get enabled(){return enabled;},update(next,nextReport){const previousError=d.inspectionError;d=next;const theme=document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');if(theme){const style=getComputedStyle(theme);for(const key of ['--bg','--fg','--muted','--primary','--link','--on-primary','--radius','--line','--head-bg','--panel-line','--shadow','--font']){const value=style.getPropertyValue(key);if(value)ui.style.setProperty(key,value);}}const currentReport=next.inspectionError||next.inspection?.active===false?null:nextReport;if(currentReport!==undefined&&currentReport!==report){report=currentReport;needsScan=true;renderCard();schedule();}else if(previousError!==d.inspectionError)renderCard();if(next.ui?.hidden&&enabled)toggle(false);},status:setStatus,dispose(){disposed=true;releaseShadowHook?.();releaseAnimationHook?.();resizeObserver.disconnect();cancelAnimationFrame(animationFrame);cancelAnimationFrame(frame);observer.disconnect();lifetime.abort();host.remove();}};
 }

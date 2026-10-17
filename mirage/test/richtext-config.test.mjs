@@ -4,12 +4,12 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import {validateRichTextConfiguration,findRichTextResource} from '../acceptance-api.mjs';
 import { AssetCache } from "../lib/asset-cache.mjs";
 import {
   captureRichTextConfiguration,
   resolveRichTextConfiguration,
   richTextConfigurationStatus,
-  validateRichTextConfiguration,
 } from "../lib/richtext-config.mjs";
 import { captureRichTextAssets } from "../lib/richtext-assets.mjs";
 import { createSimulator } from "../server.mjs";

@@ -132,7 +132,7 @@ export function validatePack(pack, source = "data pack") {
       fail(`${key} must be a nonempty string`);
   if (typeof pack.matches !== "function")
     fail("matches({ portal }) must be a function");
-  if (typeof pack.presets !== "function")
+  if (typeof pack.presets !== "function" && !(pack.presets === undefined && dataProperty(pack, 'configurationPresets')))
     fail("presets({ portal, metadata, options }) must be a function");
   const generators = dataProperty(pack, "generators")?.value;
   if (generators !== undefined) {
@@ -334,7 +334,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
       if (entry.configurationPreset !== undefined) {
         experimentId(entry.configurationPreset);
         if (value.configurationPreset !== undefined && value.configurationPreset !== entry.configurationPreset)
-          throw new Error(`Preset ${id} configurationPreset does not match its lazy descriptor`);
+          throw Object.assign(new Error(`Preset ${id} configurationPreset does not match its lazy descriptor`), {status:400,code:'PACK_CONFIGURATION_PRESET_LINK_INVALID'});
         if (value.configurationPreset === undefined) value = { ...value, configurationPreset: entry.configurationPreset };
       }
       if (value.personaCatalog !== undefined) validatePersonaCatalog(value.personaCatalog, `Preset ${id}`);
@@ -370,7 +370,7 @@ export function defineLazyPreset(library, id, entry, { pack, finish } = {}) {
 
 /** Call a pack's preset factory and check ids before they enter a library. */
 export function packPresetEntries(pack, { portal, metadata, options } = {}) {
-  const entries = pack.presets({ portal, metadata, options: options ?? {} }) ?? {};
+  const entries = pack.presets?.({ portal, metadata, options: options ?? {} }) ?? {};
   if (typeof entries !== "object" || Array.isArray(entries))
     throw new Error(`Data pack ${pack.id} presets() must return an object`);
   return Object.entries(entries);

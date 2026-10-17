@@ -825,7 +825,7 @@ test("HTTP: explicit stylesheet observation preserves profile on partial failure
   assert.deepEqual(app.store.snapshot().simulator.shellProfile, profile);
   await fs.writeFile(file, "body{color:green}");
   const edited = await call("/theme.css");
-  assert.equal(await edited.text(), "body{color:green}");
+  assert.equal((await edited.text()).split("\n/*# sourceMappingURL=")[0], "body{color:green}");
   assert.equal(edited.headers.get("x-sim-resource-provider"), null);
   assert.ok(
     requests.every(

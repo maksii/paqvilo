@@ -43,6 +43,7 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
     if (request.url.startsWith('/chapter/')) documents.push({ method: request.method, url: request.url });
     if (request.url.startsWith('/data')) return response.writeHead(200, { 'content-type': 'application/json' }).end('{"privateBody":"neverCaptured"}');
     if (request.url === '/redirect') return response.writeHead(302, { location: external }).end();
+    if(request.url==='/slow'){const timer=setTimeout(()=>response.end('<p>Late document</p>'),1000);response.once('close',()=>clearTimeout(timer));return;}
     response.writeHead(200, { 'content-type': 'text/html' }).end(`<!doctype html><title>Agent fixture</title><style>tr{color:rgb(1, 2, 3)}#paqvilo-panel{position:fixed;inset:0;background:red;pointer-events:none}</style><body><table><tr><th>Name</th><th>Status</th></tr><tr style="width:100%"><td>Example</td><td>Ready</td></tr></table><input type="password" value="inputSecret"><textarea>textareaSecret</textarea><div contenteditable>editableSecret</div><a href="next?token=linkSecret">Next</a><form id="fixture-post" method="post" action="/chapter/?filter=ready#posted"><button id="submit">Submit to fixture</button></form><div id="paqvilo-panel">Developer panel</div><script>console.error('token=consoleSecret');fetch('/data?token=requestSecret');</script><script src="${external}/missing.js?token=cdnSecret"></script></body>`);
   });
   const channel = process.env.PAQVILO_BROWSER || (process.platform === 'win32' ? 'msedge' : 'chromium');
@@ -62,6 +63,16 @@ test('real browser: agent API inspects DOM/styles/network, resizes, captures and
   assert.ok(rows.elements[1].rect.width > 0);
   const all = await (await call('/v1/pages/1/dom', {})).json();
   for (const secret of ['inputSecret', 'textareaSecret', 'editableSecret', 'linkSecret']) assert.equal(JSON.stringify(all).includes(secret), false);
+  const invalidSelector=await call('/v1/pages/1/dom',{selector:'div[[['});assert.equal(invalidSelector.status,400);
+  const selectorError=await invalidSelector.json();assert.equal(selectorError.error.code,'invalid_selector');assert.doesNotMatch(selectorError.error.message,/\bat |Call log|\u001b/);
+  const invalidPage=await call('/v1/pages/abc/state');assert.equal(invalidPage.status,400);assert.equal((await invalidPage.json()).error.code,'invalid_argument');
+  const future=await (await call('/v1/events?after=999999999')).json();assert.equal(future.cursorAhead,true);assert.equal(future.sessionId,discovery.id);assert.ok(future.latestSequence<999999999);assert.equal(future.hasMore,false);
+  assert.equal((await call('/v1/pages/0/state')).status,400);
+  assert.equal((await call('/v1/pages/1/unknown')).status,404);
+  const beforeTimeout=page.url();
+  const timeoutResponse=await call('/v1/pages/1/navigate',{url:'/slow',timeoutMs:150});assert.equal(timeoutResponse.status,504);assert.equal((await timeoutResponse.json()).error.code,'action_timeout');
+  await new Promise(resolve=>setTimeout(resolve,1100));assert.equal(page.url(),beforeTimeout,'timed-out navigation must not commit later');
+  const timeoutEvents=await (await call('/v1/events')).json();assert.doesNotMatch(JSON.stringify(timeoutEvents.events.filter(event=>event.type==='action-error')),/Call log|\\u001b/);
   const history = await (await call('/v1/events')).json();
   assert.ok(history.events.some((event) => event.type === 'response' && event.status === 404 && event.url.startsWith(external)));
   assert.ok(history.events.some((event) => event.type === 'requestfinished' && event.timing.responseEnd >= 0));

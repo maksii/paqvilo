@@ -41,7 +41,7 @@ test('offline resources expose exact classic paths and only configured page rela
   const report = describe(fx.dir, { page: '/en-US/', limit: '500' });
   const form = report.resources.find((resource) => resource.kind === 'basic-form-js');
   assert.equal(report.schemaVersion, 1);
-  assert.equal(report.writesFiles, false);
+  assert.deepEqual(report.writesFiles, []);
   assert.equal(form.path, fx.file('basic-forms/contact/Contact.basicform.custom_javascript.js'));
   assert.equal(form.field, null);
   assert.deepEqual(form.relatedPageUrls, ['/']);

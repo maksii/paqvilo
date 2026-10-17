@@ -23,16 +23,17 @@ after(() => {
 const tick = (ms = 30) => new Promise((r) => setTimeout(r, ms));
 
 /** A dev loop with one tab on the portal, and a way to press the buttons of its panel. */
-async function setup(online = {}) {
+async function setup(online = {}, overrides = {}, panelOptions = {}) {
   const b = fakeBrowser(online);
   const tab = b.openTab(`${ORIGIN}/scripts/`);
-  const session = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: structuredClone(SITE), sourceMaps: false, siteName: 'test', envName: 'dev', stateDir });
+  const session = new OverlaySession({ origin: ORIGIN, sourceDir: fx.dir, site: structuredClone(SITE), sourceMaps: false, siteName: 'test', envName: 'dev', stateDir, ...overrides });
   const opened = [];
   const panel = enablePanel(b.context, session, {
     open: async (...args) => {
       opened.push(args);
       return null;
     },
+    ...panelOptions,
   });
   panels.push(panel);
   await interceptOrigin(b.context, ORIGIN, session.route);
@@ -54,6 +55,49 @@ async function setup(online = {}) {
 test('the panel function is self-contained: it is sent to the browser as text', () => {
   // must compile on its own, without this module around it
   assert.doesNotThrow(() => new Function(`return (${panelUi.toString()})`));
+});
+
+test('JSON request failures retain bounded distinct causes and redact query values without reading large or non-JSON bodies', async () => {
+  const {tab,panel}=await setup();
+  let reads=0;
+  const response=(message,headers={'content-type':'application/json','content-length':'100'})=>({status:()=>400,url:()=>ORIGIN+'/_api/items?secret=private',request:()=>({method:()=> 'POST'}),headers:()=>headers,json:async()=>{reads++;return {error:{message,innererror:{message:'See /detail?token=private'}}};}});
+  tab.page.emit('response',response('<img src=x onerror=alert(1)> Missing lookup'));
+  tab.page.emit('response',response('Different lookup'));
+  tab.page.emit('response',response('Large',{'content-type':'application/json','content-length':'40000'}));
+  tab.page.emit('response',response('HTML',{'content-type':'text/html','content-length':'100'}));
+  await tick();
+  const issues=panel.stateFor(tab.page).problems;
+  assert.equal(reads,2);
+  assert.equal(issues.filter(item=>item.where).length,2);
+  assert.ok(issues.some(item=>item.where.includes('<img src=x onerror=alert(1)> Missing lookup')));
+  assert.ok(issues.every(item=>!JSON.stringify(item).includes('private')));
+});
+
+test('panel persistence separates actual browser roots and named profiles, and headless starts collapsed',async()=>{
+  const first=await setup({}, {browser:{profile:'shared',profileDir:'browser-one'}});
+  await first.call('ui',{open:true,tab:'issues'});
+  const second=await setup({}, {browser:{profile:'shared',profileDir:'browser-two'}});
+  assert.notEqual(second.panel.stateFor(second.tab.page).ui.open,true);
+  const resumed=await setup({}, {browser:{profile:'shared',profileDir:'browser-one'}});
+  assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open,true);
+  const automated=await setup({}, {browser:{profile:'shared',profileDir:'browser-one',headless:true}});
+  assert.equal(automated.panel.stateFor(automated.tab.page).ui.open,false);
+  assert.equal(first.panel.stateFor(first.tab.page).ui.open,true);
+});
+
+test('default profile namespaces follow selected site and environment; attached sessions and launch overrides stay isolated',async()=>{
+  const base={browser:{profileDir:'default-audit-profiles',headless:false}};
+  const first=await setup({},base);await first.call('ui',{open:true,tab:'issues'});
+  const otherEnv=await setup({},{...base,envName:'other'});
+  assert.notEqual(otherEnv.panel.stateFor(otherEnv.tab.page).ui.open,true);
+  const resumed=await setup({},base);assert.equal(resumed.panel.stateFor(resumed.tab.page).ui.open,true);
+  const verification=await setup({},base,{headless:true});
+  assert.equal(verification.panel.stateFor(verification.tab.page).ui.open,false,'actual headless launch overrides configured headed defaults');
+  const temporary=await setup({},base,{profileDir:path.join(stateDir,'temporary-audit-browser')});
+  assert.notEqual(temporary.panel.stateFor(temporary.tab.page).ui.open,true);
+  const attached={browser:{profileDir:'default-audit-profiles',cdpUrl:'http://127.0.0.1:9222'}};
+  const attachedOne=await setup({},attached);await attachedOne.call('ui',{open:true});
+  const attachedTwo=await setup({},attached);assert.notEqual(attachedTwo.panel.stateFor(attachedTwo.tab.page).ui.open,true);
 });
 
 test('selective CSS refresh preserves an unrelated tab\'s earlier pending save and baseline banner', async () => {
@@ -158,7 +202,7 @@ test('a web file is compared with what the environment serves', async () => {
 });
 
 test('scope and live reload are switched while the loop runs; the position is remembered', async () => {
-  const { call, session } = await setup();
+  const { call, session, panel,tab } = await setup();
   await call('scope', { scope: 'changed' });
   assert.equal(session.cfg.site.scope, 'changed');
   assert.equal(session.resolver.resolve('/scripts/app.js'), null, 'nothing is changed against the baseline');
@@ -166,9 +210,10 @@ test('scope and live reload are switched while the loop runs; the position is re
   await call('live', { on: false });
   assert.equal(session.liveReload, false);
   await call('ui', { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true, somethingElse: 1 });
-  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stateDir, 'panel.json'), 'utf8')), { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(stateDir,'panels',fs.readdirSync(path.join(stateDir,'panels')).find(file=>JSON.parse(fs.readFileSync(path.join(stateDir,'panels',file),'utf8')).hidden)), 'utf8')), { pos: { h: 'right', v: 'top', dx: 20, dy: 30 }, hidden: true });
   const restarted = await setup();
-  assert.equal(panelVisibilityNotice(restarted.panel), 'dev panel   hidden; Alt+Shift+L shows it');
+  assert.equal(panelVisibilityNotice(restarted.panel),null,'a fresh session starts independently');
+  assert.equal(panel.stateFor(tab.page).ui.hidden,true);
 });
 
 test('lookalike portal origins receive neither the panel nor its token', async () => {
@@ -541,6 +586,7 @@ test('Mirage browser sessions: Tweaks show this browser\'s session and identity 
   const signed = await call('signin', { contactId: 'alex' });
   assert.deepEqual([signed.ok, signed.navigating, signed.via, signed.returnUrl, signed.contactId], [true, true, 'Local IdP', '/scripts/', 'alex']);
   assert.deepEqual(flows.at(-1), { logOff: null, token: '/_layout/tokenhtml', action: '/Account/Login/ExternalLogin?returnUrl=%2Fscripts%2F', fields: { provider: 'https://idp.example.test/local/', login_hint: 'alex' } });
+  assert.ok(panel.stateFor(tab.page).activity.some(item => item.text === 'Signing in as Alex Local through Local IdP'));
   signedIn = 'alex';
   // Another persona: the current session ends first, because an external login made while signed
   // in would link to that account instead of switching.

@@ -21,7 +21,7 @@ function markupForInspection(text) {
 }
 
 /** Static selectors provide candidates, never proof of which Liquid branch rendered a node. */
-export function elementSourceHints(body, source, { limit = 300 } = {}) {
+export function elementSourceHints(body, source, { limit = Infinity } = {}) {
   if (!body || String(body).length > 1024 * 1024) return [];
   const original=String(body),prepared=markupForInspection(original);
   const tree = parseFragment(prepared.text, { sourceCodeLocationInfo: true });
@@ -44,21 +44,23 @@ export function elementSourceHints(body, source, { limit = 300 } = {}) {
     if(opening&&prepared.ranges.some(([start,end])=>start<opening.endOffset&&end>opening.startOffset))continue;
     let selector,matchKind;
     if(staticValue(id)&&!/[\s]/.test(id)){
-      if(ids.get(id)!==1)continue;
       selector=cssId(id);matchKind='id';
     }else{
       // Intrinsic class/metadata selectors survive moved nodes. Positional/nth-child paths
       // would wrongly identify neighbours after scripts restructure a page.
       const classes=(attrs.class??'').replace(/\{\{[\s\S]*?\}\}|\{%[\s\S]*?%\}/g,'{dynamic}').split(/\s+/).filter(staticValue).slice(0,4);
-      const explicit=['data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].find(name=>staticValue(attrs[name]));
+      const explicit=['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].find(name=>staticValue(attrs[name]));
       if(explicit&&/^[a-zA-Z0-9_{}-]+$/.test(attrs[explicit])){selector=`${node.tagName}[${explicit}="${attrs[explicit]}"]`;matchKind='attribute';}
       else if(classes.length){selector=node.tagName+classes.map(value=>'.'+cssId(value).slice(1)).join('');matchKind='class';}
       else continue;
     }
+    const contexts=[];
+    for(let ancestor=node.parentNode;ancestor;ancestor=ancestor.parentNode){const aid=ancestor.attrs?.find(attr=>attr.name==='id')?.value;if(staticValue(aid)&&ids.get(aid)===1)contexts.push(cssId(aid));}
+    const location={line:/\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,contexts,tag:node.tagName};
     const existing=selectors.get(selector);
-    if(existing){existing.occurrences++;continue;}
+    if(existing){existing.occurrences++;existing.locations.push(location);existing.lines=existing.locations.map(item=>item.line).filter(Boolean);continue;}
     selectors.set(selector,{
-      ...source,selector,matchKind,occurrences:1,
+      ...source,selector,matchKind,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:(attrs.class??'').split(/\s+/).filter(staticValue),occurrences:1,locations:[location],lines:location.line?[location.line]:[],
       // Enhanced-model HTML is nested in XML/JSON; its line is not a file line.
       line: /\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,
       evidence:'source-selector',certainty:'candidate',
@@ -87,7 +89,7 @@ export function scriptSourceHints(body, source, { limit = 120 } = {}) {
     if(/[A-Za-z_$]/.test(char)){
       const start=index;while(/[\w$]/.test(body[index]??'')&&index<body.length)index++;
       const name=body.slice(start,index);
-      if(previous==='.'&&['getElementById','querySelector','querySelectorAll'].includes(name)){
+      if(previous==='.'&&['getElementById','querySelector','querySelectorAll'].includes(name)||previous!=='.'&&['$','jQuery'].includes(name)){
         let at=trivia(index);if(body[at]==='('){at=trivia(at+1);const string=quotedString(body,at);if(string){const end=trivia(string.end);if(body[end]===')'){
           const value=string.value;
           const selector=name==='getElementById'?(!/[\s?=&/{}%\x00-\x1f\x7f]/.test(value)&&value.length<=160&&value?cssId(value):null):safeScriptSelector(value);
@@ -130,5 +132,5 @@ function safeScriptSelector(value){
   // Only declared schema/component identifiers may appear as attribute values. Arbitrary
   // DOM values, hrefs and nested functional selectors must never become saved evidence.
   const rest=value.replace(/\[(data-(?:fieldname|field|attribute|entityname|formid|viewid|listid))(?:\s*=\s*(?:"[a-z0-9_-]+"|'[a-z0-9_-]+'|[a-z0-9_-]+))?\s*\]/gi,'');
-  return /^[\w#.\s>+~,*:\\-]*$/.test(rest)?value:null;
+  return /[#.[]/.test(value)&&/^[\w#.\s>+~,*:\\-]*$/.test(rest)?value:null;
 }

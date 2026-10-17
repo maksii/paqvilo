@@ -1626,7 +1626,10 @@ async function serveNativeEquivalent(req, res, url, context, websiteId) {
   if (exported) return false;
   if (context.cache && equivalent.bundle?.capture !== false) {
     const cached = await context.cache.get(url.pathname + url.search, { origin: context.live?.origin }).catch(() => null);
-    if (cached) return false;
+    if (cached) {
+      await reportCapturedBundleRequirements(bundle,cached,context,url.pathname);
+      return false;
+    }
   }
   const body = equivalent.bundle ? await bundleEquivalent(equivalent.bundle, context.compat) : (equivalent.body ?? (await fs.readFile(fileURLToPath(equivalent.file))));
   const placeholder = equivalent.placeholder ?? (equivalent.bundle && !equivalent.bundle.local.length ? equivalent.bundle : null);
@@ -1691,6 +1694,21 @@ async function bundleSource(source) {
 }
 // One diagnostic per runtime and platform resource without a local equivalent.
 const reported = new WeakMap();
+/** Known platform globals whose provider may have been replaced by captured bytes. */
+export async function reportCapturedBundleRequirements(bundle,cached,context,pathname) {
+  if(bundle?.id!=='moment-locale'||!/(?:jQuery|\$)\.timeago\.settings/.test(cached.body.toString('utf8'))||typeof context.recordDiagnostic!=='function')return;
+  const profile=context.config?.shellProfile??{};
+  const paths=['headScripts','beforeContentScripts','bodyScripts','afterFooterScripts'].flatMap(key=>profile[key]??[]).map(entry=>typeof entry==='string'?entry:entry.src).filter(Boolean);
+  const provider=paths.find(path=>platformBundleFor(path)?.id==='postpreform');
+  // No capture means platformShell supplies the complete local equivalent.
+  if(!provider)return;
+  const bytes=await context.cache.get(provider,{origin:context.live?.origin}).catch(()=>null);
+  if(!bytes||/\btimeago\b/.test(bytes.body.toString('utf8')))return;
+  const seen=reported.get(context.recordDiagnostic)??new Set();reported.set(context.recordDiagnostic,seen);
+  if(seen.has('global:jQuery.timeago'))return;seen.add('global:jQuery.timeago');
+  context.recordDiagnostic({code:'PLATFORM_BUNDLE_GLOBAL_UNPROVIDED',severity:'warning',path:pathname,global:'jQuery.timeago',provider,
+    message:'The captured moment locale uses jQuery.timeago.settings, but the captured postpreform provider does not supply timeago. Recapture the complete platform bundle.'});
+}
 function reportPlaceholder(context, placeholder, pathname) {
   const record = context.recordDiagnostic;
   if (typeof record !== "function") return;

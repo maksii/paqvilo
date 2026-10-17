@@ -144,10 +144,11 @@ function extractReferences(source, exportedTemplateNames = new Set()) {
 /** Resolve the static imported runtime graph for a portal route without rendering or writing. */
 export function resolvePageResources(portal, route, { solutionMetadata = {} } = {}) {
   const normalized = normalizePortalPath(route);
-  const page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === normalized);
-  if (!page) return { path: normalized, page: null, pageTemplate: null, webTemplates: [], snippets: [], siteSettings: [], forms: [], views: [], tables: [], columns: [], components: [], usages: [], dependencies: [], unresolved: [{ kind: "page", expression: normalized, reason: "No imported page matches this route." }] };
+  let page = (portal.pages ?? []).find((candidate) => normalizePortalPath(candidate.url) === normalized);
+  const missingPage=!page;
+  page ??= {id:null,url:normalized,html:'',js:'',css:''};
 
-  const dependencies = [], unresolved = [], webTemplates = [], snippets = [], siteSettings = [], forms = [], views = [], tables = [], columns = [], components = [], usages = [];
+  const dependencies = [], unresolved = missingPage?[{kind:"page",expression:normalized,reason:"No imported page matches this route."}]:[], webTemplates = [], snippets = [], siteSettings = [], forms = [], views = [], tables = [], columns = [], components = [], usages = [];
   const add = (collection, descriptor) => {
     if (!descriptor) return;
     collection.push(descriptor);
@@ -161,7 +162,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
     sourceFile: sourceFile(pageRecord, "copy.html") ?? pageRecord?._file ?? null,
     file: sourceFile(pageRecord, "copy.html") ?? pageRecord?._file ?? null,
   };
-  add(components, pageDescriptor);
+  if(!missingPage)add(components, pageDescriptor);
 
   const pageTemplate = lookup(portal.pageTemplates ?? [], page.pageTemplateId);
   if (page.pageTemplateId && !pageTemplate)
@@ -357,7 +358,7 @@ export function resolvePageResources(portal, route, { solutionMetadata = {} } = 
   return {
     path: normalized,
     sourceRoots: [...new Set([portal.sourceDir, ...(solutionMetadata.roots ?? [])].filter(Boolean))],
-    page: pageDescriptor,
+    page: missingPage?null:pageDescriptor,
     pageTemplate: resolvedPageTemplate,
     webTemplates,
     snippets,

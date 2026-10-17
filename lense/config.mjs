@@ -10,6 +10,7 @@ import {identityProviderSettings,identityProviderAssets} from '../mirage/lib/ide
 //
 // Later ones win. Nothing in lense/ needs to change to add a portal or an environment.
 import fs from 'node:fs';
+import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
 import { personaContextSettings } from '../mirage/lib/persona-context-settings.mjs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -242,6 +243,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
   if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
     ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
+    ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,
     ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),
     ...(value.compat !== undefined || value.head !== undefined ? { localOverrides: resolveLocalOverrides(value, configDir) } : {}),
@@ -410,7 +412,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     if (conflicts.length) throw new Error(`portals=all cannot be combined with ${conflicts.join(', ')}. Configure each portal with sites or PAQVILO_<SITE>_SOURCE / PAQVILO_<SITE>_ENV_<NAME>, or use --portals selected.`);
   }
   const validSources = new Set();
-  const initial = resolveConfig(catalogue, opts, { validSources });
+  let initial = resolveConfig(catalogue, opts, { validSources });
   if (initial.portals === 'selected') return { mode: 'selected', initial, targets: [initial] };
   const targets = [];
   const byOrigin = new Map();
@@ -420,6 +422,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
     for (const env of environments) {
       const target = site === initial.siteName && env === initial.envName ? initial
         : resolveConfig(catalogue, { ...opts, site, env }, { initial: false, validSources, checkSource: false });
+      if(target.caution && !catalogue.root.includeCaution && !(site===initial.siteName&&opts.env===env))continue;
       if (target !== initial) target.chosen = { site: 'configured portal coverage', env: 'configured portal coverage' };
       const previous = byOrigin.get(target.origin);
       if (previous) throw new Error(`Duplicate portal origin ${target.origin}: "${previous.siteName} @ ${previous.envName}" and "${site} @ ${env}". Each origin must identify exactly one portal/environment in portals=all.`);
@@ -427,5 +430,7 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
       targets.push(target);
     }
   }
+  if(!targets.includes(initial))initial=targets[0];
+  if(!initial)throw new Error('No non-caution targets are configured; select an environment explicitly or set includeCaution: true.');
   return { mode: 'all', initial, targets };
 }

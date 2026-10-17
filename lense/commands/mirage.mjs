@@ -331,6 +331,7 @@ export async function stopOwnedSessions({ paths = DEFAULT_PATHS, sourceDir = nul
     pruned: stale.map(({ entry, reason }) => ({ ...describe(entry), reason })),
     unverified: unverified.map(({ entry, reason }) => ({ ...describe(entry), reason })),
     removedDiscoveries,
+    writesFiles: [paths.ownershipFile],
   };
 }
 
@@ -523,7 +524,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
     && owned.some((item) => item.pid === session.pid && item.discovery === session.discovery
       && item.processIdentity && item.processIdentity === processIdentity(session.pid)
       && identityMatches(item.identity, identity)));
-  if (existing) return { ...existing, owned: true, started: false, launch };
+  if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
   if (port !== '0' && !(await portAvailable(Number(port)))) throw new Error(`Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`);
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
   let child;
@@ -570,7 +571,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
             pid: session.pid, processIdentity: childIdentity, sourceDir: session.sourceDir, project: identity.project, portal: session.id ?? identity.portal,
             discovery, url: session.url, stateFile: session.stateFile, identity, log, ready: true, startedAt: new Date(started).toISOString(),
           }]);
-          return { ...session, owned: true, started: true, launch };
+          return { ...session, owned: true, started: true, launch, writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(file => file && fsSync.existsSync(file)) };
         }
       } catch { /* server has not written its discovery file yet */ }
       if (!isAlive(child.pid)) {
@@ -584,6 +585,9 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
     await abandon();
     if (interrupted) throw new Error('Mirage startup was interrupted; the starting process was stopped.');
     throw new Error(`Mirage did not become ready within ${timeout}ms${port === '0' ? '' : ` on port ${port}`}. See startup log: ${log}`);
+  } catch (error) {
+    error.writesFiles = [log, paths.ownershipFile].filter(file => fsSync.existsSync(file));
+    throw error;
   } finally {
     process.off('SIGINT', interrupt);
     process.off('SIGTERM', interrupt);
@@ -670,6 +674,7 @@ export async function initProject(cfg, args = {}) {
     defaultPortal: cfg.siteName,
     // dataModel: the catalogue site's data model for a source that does not record it (.powerpages-site).
     portals: [{ id: cfg.siteName, path: yamlPath(base, cfg.sourceDir), ...(origin ? { origin } : {}), ...(observed ? { observed } : {}), ...(configured.dataModel ? { dataModel: configured.dataModel } : {}) }],
+    ...Object.fromEntries(['confinePortalPages','externalAssets','externalFrameOrigins'].filter(key=>configured[key]!==undefined).map(key=>[key,configured[key]])),
     ...(configured.platform ? {platform:configured.platform} : {}),
     solutions: roots.map((root) => ({ id: projectId(path.basename(root), usedIds), path: yamlPath(base, root) })),
     solutionOrder,
@@ -714,7 +719,7 @@ export async function initProject(cfg, args = {}) {
   const packs = await matchingPacks(cfg, configured.dataPacks ?? []);
   const catalogued = Boolean(configured.project && samePath(configured.project, file));
   return {
-    action: 'init', file, site: cfg.siteName, env: cfg.envName, version: loaded.version,
+    action: 'init', file, writesFiles: [file], site: cfg.siteName, env: cfg.envName, version: loaded.version,
     portal: { id: cfg.siteName, sourceDir: loaded.portals[0].sourceDir, origin: loaded.portals[0].origin ?? null, observed: loaded.portals[0].observed ?? null },
     solutions: loaded.solutions.map((solution) => ({ id: solution.id, root: solution.root })),
     solutionOrder,
@@ -999,8 +1004,8 @@ async function runPortals({ cfg, args, action, plans, paths, stop, initialSite }
   const portals = await startPlans(plans, paths);
   const running = portals.filter((portal) => portal.session);
   const summary = portals.map((portal) => portal.session
-    ? { site: portal.site, url: portal.session.url, adminUrl: adminUrlOf(portal.session.url), stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null, sourceDir: portal.session.sourceDir, pid: portal.session.pid, started: portal.session.started, liveWrites: portal.session.runtime?.liveWrites ?? null }
-    : { site: portal.site, error: portal.error?.message ?? String(portal.error) });
+    ? { site: portal.site, url: portal.session.url, adminUrl: adminUrlOf(portal.session.url), stateFile: portal.session.stateFile ?? portal.session.launch?.stateFile ?? null, sourceDir: portal.session.sourceDir, pid: portal.session.pid, started: portal.session.started, writesFiles: portal.session.writesFiles ?? [], liveWrites: portal.session.runtime?.liveWrites ?? null }
+    : { site: portal.site, error: portal.error?.message ?? String(portal.error), writesFiles: portal.error?.writesFiles ?? [] });
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
     return running.length === portals.length ? 0 : 1;
@@ -1064,9 +1069,35 @@ function stopHint(cfg, args) {
   return parts.join(' ');
 }
 
+/** A diagnostic inspection can legitimately return a report with exit status 1. */
+export function inspectProcessResult(result) {
+  if (result.error) throw result.error;
+  const failed = () => new Error(String(result.stderr ?? '').trim() ||
+    `Mirage inspect ${result.signal ? `was terminated by ${result.signal}` : `exited with ${result.status}`}`);
+  let report;
+  try { report = JSON.parse(result.stdout); }
+  catch { throw result.status !== 0 ? failed() : new Error('Mirage inspect returned invalid JSON'); }
+  const valid = report && typeof report === 'object' && !Array.isArray(report) && (
+    Array.isArray(report.pages) && Array.isArray(report.diagnostics) && typeof report.sourceDir === 'string' ||
+    Array.isArray(report.portals) && typeof report.configFile === 'string' &&
+      report.portals.every(portal => portal && Array.isArray(portal.pages) && Array.isArray(portal.diagnostics))
+  );
+  if (!valid) throw result.status !== 0 ? failed() : new Error('Mirage inspect returned an invalid inspection report');
+  if (result.status !== 0 && result.status !== 1) throw failed();
+  const diagnostics = report.diagnostics ?? report.portals.flatMap(portal => portal.diagnostics);
+  const errors = result.status === 0 ? [] : diagnostics
+    .filter(item => typeof item?.code === 'string' && item.code.startsWith('invalid'))
+    .map(item => ({ ...item, message: item.message ?? item.reason ?? `Source inspection reported ${item.code}` }));
+  if (result.status !== 0 && !errors.length) throw failed();
+  return { report, exitCode: result.status, errors };
+}
+
 function print(value, json) {
   if (json) {
-    console.log(JSON.stringify({ schemaVersion: 1, command: 'mirage', ok: true, ...value }, null, 2));
+    const entries = value.projects ?? value.portals ?? [];
+    const errors = entries.filter(item => item.error).map(item => ({code:'MIRAGE_PORTAL_FAILED',message:String(item.error),site:item.site}));
+    const writesFiles = [...new Set(value.writesFiles ?? entries.flatMap(item => item.writesFiles ?? []))];
+    console.log(JSON.stringify({ schemaVersion: 1, command: 'mirage', ok: errors.length === 0, offline: ['init','inspect'].includes(value.action), errors, ...value, writesFiles, ...('started' in value || value.action === 'start' ? {runtimeWrites: value.started !== false} : {}) }, null, 2));
     return;
   }
   if (value.sessions) {
@@ -1137,6 +1168,7 @@ function print(value, json) {
 export default async function mirage(cfg, args, positionals = []) {
   const action = positionals[0] ?? 'status';
   if (!ACTIONS.includes(action)) throw new Error(`Unknown mirage action "${action}"; use ${ACTIONS.slice(0, -1).join(', ')} or ${ACTIONS.at(-1)}`);
+  if (action === 'dev' && args.json) throw new Error('mirage dev is interactive; use mirage start --json and agent commands for structured session access');
   if (action !== 'init' && (args.out !== undefined || args.force)) throw new Error('--out and --force apply only to mirage init');
   if (args['allow-live-writes'] && !['start', 'dev'].includes(action)) throw new Error('--allow-live-writes applies only to mirage dev and start');
   const paths = miragePaths(cfg, args);
@@ -1177,10 +1209,10 @@ export default async function mirage(cfg, args, positionals = []) {
     }
     const { cli, values } = cliArgs(cfg, 'inspect', effective, project);
     const result = spawnSync(process.execPath, [cli, ...values, '--json'], { cwd: TOOL_ROOT, encoding: 'utf8', windowsHide: true, maxBuffer: 16 * 1024 * 1024 });
-    if (result.error) throw result.error;
-    if (result.status !== 0) throw new Error(result.stderr.trim() || `Mirage inspect exited with ${result.status}`);
-    process.stdout.write(result.stdout);
-    return 0;
+    const { report, exitCode, errors } = inspectProcessResult(result);
+    if (args.json) print({ ...report, action: 'inspect', ok: exitCode === 0, errors, writesFiles: [] }, true);
+    else process.stdout.write(result.stdout);
+    return exitCode;
   }
   const session = await start(cfg, effective, { paths });
   const { launch } = session;

@@ -5,7 +5,24 @@ import { performance } from 'node:perf_hooks';
 import { loadCatalogue, loadConfig, TOOL_ROOT } from '../config.mjs';
 import { OverlaySession } from '../session.mjs';
 import { mirageReadiness, observedText } from './mirage.mjs';
+import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
+
+/** Inspect exported source YAML without walking local state or dependency trees. */
+export function inspectSourceYaml(sourceDir) {
+  const ignored=new Set(['.git','.portalconfig','.paqvilo','node_modules','deployment-profiles']);
+  const diagnostics=[],pending=[sourceDir];
+  while(pending.length){
+    const directory=pending.pop();
+    for(const entry of fs.readdirSync(directory,{withFileTypes:true})){
+      if(entry.isSymbolicLink()||ignored.has(entry.name.toLowerCase()))continue;
+      const file=path.join(directory,entry.name);
+      if(entry.isDirectory())pending.push(file);
+      else if(entry.isFile()&&/\.ya?ml$/i.test(entry.name))diagnostics.push(...duplicateYamlDiagnostics(fs.readFileSync(file,'utf8'),file));
+    }
+  }
+  return diagnostics;
+}
 
 export function inspectCheckout(cfg, { started = performance.now(), session = new OverlaySession(cfg) } = {}) {
   const errors = [];
@@ -50,6 +67,9 @@ export default async function doctor(_cfg, args) {
       const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) });
       const started = performance.now();
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
+      report.sourceDiagnostics=inspectSourceYaml(cfg.sourceDir);
+      for(const item of report.sourceDiagnostics)(args.mirage?report.errors:report.warnings).push(`${path.relative(cfg.sourceDir,item.file).replaceAll('\\','/')}:${item.line}: ${item.message}`);
+      report.ready=report.errors.length===0;
       report.mirage = await mirageReadiness(cfg, { dependencies });
       report.lenseReady = report.ready;
       if (args.mirage) report.ready = report.ready && report.mirage.ready;

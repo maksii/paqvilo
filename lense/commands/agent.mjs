@@ -11,14 +11,14 @@ export const AGENT_ACTIONS = ['sessions', 'status', 'pages', 'events', 'state', 
 function integer(value, name, fallback, min, max) {
   if (value === undefined) return fallback;
   if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max) {
-    throw new Error(`${name} must be an integer between ${min} and ${max}`);
+    throw Object.assign(new Error(`${name} must be an integer between ${min} and ${max}`),{code:'invalid_argument'});
   }
   return Number(value);
 }
 
 export async function readDiscovery(file) {
   let value;
-  try { value = JSON.parse(await readLocalFile(file, { maxBytes: 64 * 1024, encoding: 'utf8' })); } catch { throw new Error('Invalid session discovery JSON or file exceeds 64 KiB'); }
+  try { value = JSON.parse(await readLocalFile(file, { maxBytes: 64 * 1024, encoding: 'utf8' })); } catch (cause) { throw new Error(cause.code === 'ENOENT' ? 'Session discovery file not found (session stopped?)' : 'Invalid session discovery JSON or file exceeds 64 KiB'); }
   let endpoint;
   try { endpoint = new URL(value.endpoint); } catch { throw new Error('Invalid session endpoint'); }
   if (value.schemaVersion !== 1 || typeof value.id !== 'string' || !value.id ||
@@ -60,7 +60,8 @@ export async function agentRequest(discovery, route, { body, timeout = 35_000, i
     }
     let result;
     try { result = JSON.parse(bytes.toString('utf8')); } catch { throw new Error('Agent returned invalid JSON'); }
-    if (!response.ok) throw new Error(`Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`);
+    if(!result||typeof result!=='object'||Array.isArray(result))throw new Error('Agent returned invalid JSON: expected an object');
+    if (!response.ok) throw Object.assign(new Error(`Agent HTTP ${response.status}: ${String(result.error?.message ?? result.error ?? 'request failed').slice(0, 1000)}`),{code:result.error?.code,status:response.status});
     return result;
   } catch (error) {
     // Never include discovery objects or fetch options in an error (they contain the token).
@@ -115,6 +116,7 @@ export default async function agent(_cfg, args, positionals = []) {
   if (pageActions.includes(action) && !args['page-id']) throw new Error(`agent ${action} requires --page-id from agent pages`);
   if (action === 'navigate' && !args.path) throw new Error('agent navigate requires --path <portal-path>');
   if (action === 'screenshot' && (!args.output || path.extname(args.output).toLowerCase() !== '.png')) throw new Error('agent screenshot requires --output <file.png>');
+  if(pageActions.includes(action))integer(args['page-id'],'--page-id',undefined,1,Number.MAX_SAFE_INTEGER);
   const discovery = await readDiscovery(args.session);
   const page = `/v1/pages/${encodeURIComponent(args['page-id'])}`;
   let route;
@@ -127,8 +129,8 @@ export default async function agent(_cfg, args, positionals = []) {
     case 'snapshot': route = `${page}/dom`; body = { selector: args.selector, limit: integer(args.limit, '--limit', 100, 1, 200), styles: args.styles?.split(',').map((s) => s.trim()).filter(Boolean) }; break;
     case 'screenshot': route = `${page}/screenshot`; body = { fullPage: Boolean(args['full-page']), includePanel: Boolean(args['include-panel']) }; break;
     case 'viewport': route = `${page}/viewport`; body = { width: integer(args.width, '--width', 1440, 320, 4096), height: integer(args.height, '--height', 900, 240, 4096) }; break;
-    case 'navigate': route = `${page}/navigate`; body = { url: args.path, timeoutMs: Math.min(60_000, Math.max(100, timeout - 1000)) }; break;
-    case 'reload': route = `${page}/reload`; body = { timeoutMs: Math.min(60_000, Math.max(100, timeout - 1000)) }; break;
+    case 'navigate': route = `${page}/navigate`; body = { url: args.path, timeoutMs: Math.min(60_000, Math.max(1, timeout - Math.min(1000, Math.ceil(timeout / 2)))) }; break;
+    case 'reload': route = `${page}/reload`; body = { timeoutMs: Math.min(60_000, Math.max(1, timeout - Math.min(1000, Math.ceil(timeout / 2)))) }; break;
     case 'stop': route = '/v1/stop'; body = {}; break;
   }
   let handle;
@@ -138,7 +140,7 @@ export default async function agent(_cfg, args, positionals = []) {
     const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
     if (handle) {
       await handle.writeFile(result);
-      console.log(JSON.stringify({ schemaVersion: 1, path: output, bytes: result.length }, null, 2));
+      console.log(JSON.stringify({ schemaVersion: 1, path: output, bytes: result.length, writesFiles:[output] }, null, 2));
     } else console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (handle) { await handle.close(); handle = null; await fs.rm(output, { force: true }); }

@@ -220,7 +220,7 @@ export default async function verify(cfg, args) {
     close = opened.close;
     const { context } = opened;
     detach = await attachSession(context, session);
-    panel = enablePanel(context, session);
+    panel = enablePanel(context, session, browserOverrides);
     watcher = watchSources(session, context, { log: () => {} });
     await watcher.ready;
     page = context.pages()[0] ?? (await context.newPage());
@@ -540,12 +540,14 @@ export default async function verify(cfg, args) {
   }
   // Print one final JSON object only after teardown has determined the actual outcome.
   // Otherwise a cleanup exception could append a second CLI error object to a successful report.
+  report.writesFiles = [report.evidence.report, report.evidence.screenshot].filter(file => file && (file === report.evidence.report || fs.existsSync(file)));
   try { fs.writeFileSync(path.join(outDir, `${stamp}.json`), JSON.stringify(report, null, 2)); }
   catch (err) {
     report.passed = false;
     report.errorCode = report.errorCode ?? 'REPORT_WRITE_FAILED';
     report.error = [report.error, `Cannot write verification report: ${err.message}`].filter(Boolean).join('\n');
     failure = new Error(report.error, { cause: err });
+    report.writesFiles = report.writesFiles.filter(file => fs.existsSync(file));
   }
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else if (failure) throw new Error(`${failure.message}\nVerification report: ${path.join(outDir, `${stamp}.json`)}`, { cause: failure });

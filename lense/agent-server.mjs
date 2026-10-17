@@ -75,7 +75,7 @@ async function readBody(request) {
 // Runs only this fixed inspection program. The client supplies CSS selectors and property names.
 function inspectDom({ origin, selector, limit, textLimit, styles }) {
   if (location.origin !== origin) return { denied: true };
-  const nodes = document.querySelectorAll(selector);
+  let nodes;try{nodes=document.querySelectorAll(selector);}catch{return {invalidSelector:true};}
   const elements = [];
   let total = 0;
   const blocked = 'script,style,template,noscript,input,textarea,select,option,#paqvilo-panel,[contenteditable]:not([contenteditable="false"])';
@@ -303,7 +303,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
           const after = integer(url.searchParams.get('after'), 0, Number.MAX_SAFE_INTEGER, 0);
           const limit = integer(url.searchParams.get('limit'), 100, MAX_EVENTS);
           const selected = events.filter((event) => event.sequence > after).slice(0, limit);
-          return json(response, 200, { events: selected, oldestSequence: events[0]?.sequence ?? sequence + 1, nextSequence: selected.at(-1)?.sequence ?? after, dropped: Math.max(0, (events[0]?.sequence ?? 1) - after - 1), hasMore: selected.at(-1)?.sequence < sequence });
+          return json(response, 200, { sessionId:id, latestSequence:sequence, cursorAhead:after>sequence, events: selected, oldestSequence: events[0]?.sequence ?? sequence + 1, nextSequence: selected.at(-1)?.sequence ?? Math.min(after,sequence), dropped: Math.max(0, (events[0]?.sequence ?? 1) - after - 1), hasMore: Boolean(selected.length && selected.at(-1).sequence < sequence) });
         }
       }
       if (request.method === 'POST' && url.pathname === '/v1/stop') {
@@ -313,6 +313,8 @@ export async function startAgentServer({ session, context, panel, attached = fal
         return;
       }
       const match = /^\/v1\/pages\/(\d+)\/(state|dom|screenshot|navigate|reload|viewport)$/.exec(url.pathname);
+      const requestedPage = /^\/v1\/pages\/([^/]+)\//.exec(url.pathname)?.[1];
+      if (requestedPage !== undefined) integer(requestedPage, undefined, Number.MAX_SAFE_INTEGER);
       if (!match) throw fault(404, 'not_found', 'Unknown agent API endpoint');
       const [, pageId, action] = match;
       const page = pages.get(pageId);
@@ -322,7 +324,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
       const body = await readBody(request);
       if (action === 'viewport') {
         fields(body, ['width', 'height']);
-        if (body.width === undefined || body.height === undefined) throw fault(400, 'invalid_argument', 'width and height are required');
+        if (body.width == null || body.height == null) throw fault(400, 'invalid_argument', 'width and height are required');
         const viewport = { width: integer(body.width, undefined, 4096, 320), height: integer(body.height, undefined, 4096, 240) };
         await withPage(page, 10_000, () => page.setViewportSize(viewport));
         return json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, viewport });
@@ -334,6 +336,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
         const styles = body.styles ?? DEFAULT_STYLES;
         if (!Array.isArray(styles) || styles.length > 20 || styles.some((name) => typeof name !== 'string' || name.length > 80 || !/^(?:[a-z-]+|--[\w-]+)$/.test(name))) throw fault(400, 'invalid_argument', 'styles must contain at most 20 CSS property names');
         const result = await withPage(page, 10_000, () => page.evaluate(inspectDom, { origin: cfg.origin, selector, limit: integer(body.limit, 100, MAX_ITEMS), textLimit: integer(body.textLimit, 500, 2000, 0), styles }));
+        if(result.invalidSelector)throw fault(400,'invalid_selector','Invalid CSS selector');
         if (result.denied) throw fault(403, 'origin_changed', 'The page left the configured portal origin');
         const pageBase = result.url;
         result.url = redactUrl(result.url); result.title = redactText(result.title, 500);
@@ -376,14 +379,16 @@ export async function startAgentServer({ session, context, panel, attached = fal
       // An explicit GET also closes the race where a user submits a form after the guard.
       // Browser reload() can silently repeat the POST that produced the current document.
       const destination = action === 'navigate' ? target.href : refreshUrl(page.url());
-      const navigated = await withPage(page, timeout + 1000, () => page.goto(destination, { waitUntil, timeout }));
+      let navigated;
+      try { navigated = await withPage(page, timeout + 50, () => page.goto(destination, { waitUntil, timeout })); }
+      catch(cause){if(cause.name==='TimeoutError'||cause.code==='action_timeout'){try{const cdp=await context.newCDPSession(page);try{await cdp.send('Page.stopLoading');}finally{await cdp.detach();}}catch{}throw fault(504,'action_timeout','The browser navigation timed out');}throw cause;}
       json(response, 200, { page: { id: pageId, url: redactUrl(page.url()) }, status: navigated?.status?.() ?? null });
     } catch (error) {
-      const message = redactText(error.message);
+      const message = redactText(error.message).replace(/\x1b\[[0-9;]*m/g,'').split(/\r?\n/)[0].replace(/[\x00-\x1f\x7f]/g,' ').slice(0,1000);
       const status = error.status ?? (error.name === 'TimeoutError' ? 504 : /(?:not a valid selector|querySelectorAll.*not valid)/i.test(error.message) ? 400 : 500);
       if (status >= 500) push({ type: 'action-error', code: error.code ?? 'action_failed', text: message });
       if (!request.complete) response.setHeader('connection', 'close');
-      json(response, status, { error: { code: error.code ?? (status === 504 ? 'action_timeout' : 'action_failed'), message } });
+      json(response, status, { error: { code: error.code ?? (status === 504 ? 'action_timeout' : status === 400 && /selector/i.test(message) ? 'invalid_selector' : 'action_failed'), message } });
     }
   });
   server.requestTimeout = 10_000; server.headersTimeout = 5000; server.keepAliveTimeout = 1000; server.maxRequestsPerSocket = 100; server.maxConnections = 32;

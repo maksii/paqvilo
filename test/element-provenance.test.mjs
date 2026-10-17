@@ -13,7 +13,7 @@ test('script selectors retain candidate evidence and actual source lines, with d
   assert.equal(hints.every(row => row.certainty === 'candidate'), true);
 });
 test('duplicate IDs, large bodies and extraction caps remain explicit and bounded', () => {
-  assert.equal(elementSourceHints('<b id="same"></b><b id="same"></b>', {}).length, 0);
+  assert.equal(elementSourceHints('<b id="same"></b><b id="same"></b>', {})[0].occurrences, 2);
   assert.equal(elementSourceHints('x'.repeat(1024 * 1024 + 1), {}).length, 0);
   assert.equal(elementSourceHints('<b id="one"></b><b id="two"></b>', {}, { limit: 1 }).length, 1);
   assert.equal(elementSourceHints('<b id="one"></b>', { sourceFile: '/component.xml' })[0].line, undefined);

@@ -57,6 +57,7 @@ export function compilePermissionFetchXml(xml, {
   grantOrder,
   unscopedCreate = false,
   defaultDistinct = true,
+  defaultGlobalDistinct = defaultDistinct,
   forceScopedDistinct = false,
   seedAliasesFromAuthoredLinks = false,
 } = {}) {
@@ -70,6 +71,7 @@ export function compilePermissionFetchXml(xml, {
   const grantPaths = [];
   let normalizeQuery = false;
   const finish = (permissionGranted, permissionLinkCount = 0, grantIds = []) => {
+    if(normalizeQuery&&permissionGranted&&!grantIds.some(grant=>(grant.scope??'global')==='global')&&!forceScopedDistinct&&/^(?:false|0)$/i.test(String(tree.attrs.distinct??'')))diagnostics.push({code:'PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED',message:'Captured scoped queries qualify the default distinct=true shape; explicit distinct=false remains authored and unqualified.'});
     const finalLinks = [...walk(tree)].filter(element => element.name === 'link-entity');
     permissionLinkCount = generatedNodes.size;
     if(normalizeQuery && permissionGranted && !(unscopedCreate&&operation==='create')) {
@@ -77,7 +79,7 @@ export function compilePermissionFetchXml(xml, {
         if (tree.attrs.distinct !== 'true') diagnostics.push({code:'PERMISSION_QUERY_DISTINCT_FORCED',
           message:'The qualified scoped portal permission compiler selects DISTINCT for the secured query.'});
         tree.attrs.distinct = 'true';
-      } else if (defaultDistinct) tree.attrs.distinct ??= 'true';
+      } else if (defaultDistinct && (defaultGlobalDistinct || !grantIds.some(grant => (grant.scope ?? 'global') === 'global'))) tree.attrs.distinct ??= 'true';
     }
     return ({
     xml: normalizeQuery ? serializePermissionFetchXml(tree) : xml,
@@ -88,7 +90,7 @@ export function compilePermissionFetchXml(xml, {
       .map(element => element.attrs.alias).filter(Boolean),
     generatedTerminalConditions: root.children.filter(element => element.permissionFilter)
       .flatMap(element => [...walk(element)].filter(child => child.name === 'condition').map(child => ({...child.attrs}))),
-    permissionGranted, globalPermissionGranted: permissionGranted && grantIds.some(grant => grant.scope === 'global'),
+    permissionGranted, globalPermissionGranted: permissionGranted && grantIds.some(grant => (grant.scope ?? 'global') === 'global'),
     grantIds: grantIds.map(grant => grant.id), qualification: 'modeled', diagnostics,
     grantPaths, multiplicativePaths: grantPaths.filter(path => path.multiplicative),
     });
@@ -99,9 +101,7 @@ export function compilePermissionFetchXml(xml, {
   // writes order nodes before filters. Explicit DISTINCT is retained unless
   // the caller selects the independently qualified scoped portal contract.
   tree.attrs.mapping ??= 'logical';
-  if (!forceScopedDistinct && /^(?:false|0)$/i.test(String(tree.attrs.distinct ?? '')))
-    diagnostics.push({ code: 'PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED',
-      message: 'Captured scoped queries qualify the default distinct=true shape; explicit distinct=false remains authored and unqualified.' });
+
   const rank = { attribute: 0, 'all-attributes': 0, order: 1, filter: 2, 'link-entity': 3 };
   root.children.sort((left, right) => (rank[left.name] ?? 4) - (rank[right.name] ?? 4));
   const availableRoles = new Set(identity.roles ?? []);
@@ -175,7 +175,7 @@ export function compilePermissionFetchXml(xml, {
       }
       const condition = node('condition', Object.fromEntries(Object.entries(terminal.attrs).filter(([name]) => name !== 'entityname')), structuredClone(terminal.children));
       let alternative = path;
-      if (ancestor.identityRelationship || ancestor.scope === 'self' || ancestor.observedOrphanParent || ancestor.scope === 'global') {
+      if (ancestor.identityRelationship || ancestor.scope === 'self' || ancestor.observedOrphanParent || (ancestor.scope ?? 'global') === 'global') {
         const filter = node('filter', {}, [condition]);
         if (last) last.children.push(filter); else alternative = condition;
       } else {

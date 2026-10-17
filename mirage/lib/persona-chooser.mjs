@@ -1,18 +1,30 @@
 import {personaHtml as h} from './persona-picker-view.mjs';
 import {indexPersonaCatalog,filterPersonaIndex,personaFilters,personaRowKey,foldPersonaText} from './persona-search.mjs';
 import {personaContactId} from './persona-catalog.mjs';
+import {createHash} from 'node:crypto';
 
-const indexes=new WeakMap();
+const indexes=new WeakMap(), reports=new WeakMap();
+const orderedCatalogues=new Map();
 const bounded=value=>Math.max(0,Math.min(1000000,Number.isSafeInteger(Number(value))?Number(value):0));
 export const CHOOSER_PARAMETERS=['q','group','subgroup','role','tag','account','hasRoles','rolesOnly','offset','view','pin','recent','presentation'];
 export function chooserReport(report,users){
+  const signature=JSON.stringify(users);
+  const cached=report && reports.get(report);if(cached?.signature===signature)return cached.value;
+  const remember=value=>{if(report)reports.set(report,{signature,value});return value;};
   const byContact=new Map(users.map(user=>[personaContactId(user.contactId),user]));
   const join=entries=>entries.filter(p=>p.active!==false&&byContact.has(personaContactId(p.contactId))).map(p=>({...p,subject:byContact.get(personaContactId(p.contactId)).subject}));
-  if(!report?.enabled){const contacts=new Map((report?.other??[]).map(persona=>[personaContactId(persona.contactId),persona]));return {groups:[],personas:[],other:users.map(user=>({...contacts.get(personaContactId(user.contactId)),...user,label:user.name,roles:user.roles??[],group:'__other'})),scope:report?.scope??'local',contexts:[]};}
-  return {...report,personas:join(report.personas??[]),other:join(report.other??[])};
+  if(!report?.enabled){const contacts=new Map((report?.other??[]).map(persona=>[personaContactId(persona.contactId),persona]));return remember({groups:[],personas:[],other:users.map(user=>({...contacts.get(personaContactId(user.contactId)),...user,label:user.name,roles:user.roles??[],group:'__other'})),scope:report?.scope??'local',contexts:[]});}
+  return remember({...report,personas:join(report.personas??[]),other:join(report.other??[])});
 }
 export function chooserSelection(report,parameters=new URLSearchParams(),{limit=50}={}){
-  let index=indexes.get(report);if(!index){index=indexPersonaCatalog(report);indexes.set(report,index);}
+  let index=indexes.get(report);if(!index){
+    // Runtime revisions can rebuild a report after an unrelated row write. Keep
+    // ordering tied to the catalogue/contact contents rather than object identity.
+    const digest=createHash('sha256').update(JSON.stringify([report.groups,report.personas,report.other])).digest('hex');
+    index=orderedCatalogues.get(digest);
+    if(!index){index=indexPersonaCatalog(report);orderedCatalogues.set(digest,index);if(orderedCatalogues.size>4)orderedCatalogues.delete(orderedCatalogues.keys().next().value);}
+    indexes.set(report,index);
+  }
   const filters=personaFilters(parameters),matching=filterPersonaIndex(index,filters);
   limit=Math.max(1,Math.min(200,limit));const offset=Math.min(bounded(parameters.get('offset')),Math.max(0,matching.length-1));
   return {index,matching,rows:matching.slice(offset,offset+limit),filters,offset,limit,total:index.length};
@@ -41,7 +53,7 @@ export function chooserResults(report,params,action){
 }
 export function chooserSearch(report,params,action,hidden){
   const {index}=chooserSelection(report),selected=personaFilters(params);
-  const groups=[...(report.groups??[]),...(index.some(row=>row.persona.group==='__other')?[{id:'__other',label:'Other contacts'}]:[])];
+  const groups=[...(report.groups??[]).filter(group=>index.some(row=>row.persona.group===group.id)),...(index.some(row=>row.persona.group==='__other')?[{id:'__other',label:'Other contacts'}]:[])];
   const activeFilters=[selected.roles,selected.tags,selected.groups,selected.subgroups??[],selected.accounts].reduce((total,values)=>total+values.length,0)+(selected.hideNoRoles||selected.withoutRoles?1:0);
   const facets=[['role','Web role',[...new Set(index.flatMap(row=>row.persona.roles??[]))],selected.roles],['tag','Tag',[...new Set(index.flatMap(row=>row.persona.tags??[]))],selected.tags],['group','Group',groups.map(g=>({id:g.id,label:g.label})),selected.groups],['subgroup','Subgroup',(report.groups??[]).flatMap(g=>(g.subgroups??[]).map(sub=>({id:`${g.id}:${sub.id}`,label:`${g.label} / ${sub.label}`}))),selected.subgroups??[]],['account','Account',[...new Map(index.map(row=>[row.persona.account?.id,row.persona.account?.name])).entries()].filter(([id])=>id).map(([id,label])=>({id,label:label??id})),selected.accounts]];
   const selectedOption=(key,values,item)=>values.some(value=>foldPersonaText(value)===foldPersonaText(item.id)||key==='account'&&foldPersonaText(value)===foldPersonaText(item.label));

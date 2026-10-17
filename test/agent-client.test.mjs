@@ -56,7 +56,7 @@ test('session discovery probes identity, labels invalid files, and never prints 
 test('client enforces operation-specific arguments and writes PNG evidence without overwriting existing files', async (t) => {
   const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
   const fx = await fixture(t, (req, res) => {
-    assert.equal(req.url, '/v1/pages/page1/screenshot');
+    assert.equal(req.url, '/v1/pages/1/screenshot');
     assert.equal(req.method, 'POST');
     res.writeHead(200, { 'content-type': 'image/png' }).end(png);
   });
@@ -66,11 +66,11 @@ test('client enforces operation-specific arguments and writes PNG evidence witho
   const log = console.log;
   let result;
   console.log = (line) => { result = JSON.parse(line); };
-  try { assert.equal(await agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), 0); }
+  try { assert.equal(await agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), 0); }
   finally { console.log = log; }
   assert.equal(result.path, output);
   assert.deepEqual(await fs.readFile(output), png);
-  await assert.rejects(agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), /EEXIST/);
+  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /EEXIST/);
 });
 
 test('agent request times out and removes reserved screenshot after invalid server output', async (t) => {
@@ -79,6 +79,15 @@ test('agent request times out and removes reserved screenshot after invalid serv
   });
   await assert.rejects(agentRequest(fx.discovery, '/v1/session', { timeout: 100 }), /timed out/);
   const output = path.join(fx.dir, 'bad.png');
-  await assert.rejects(agent(null, { session: fx.file, 'page-id': 'page1', output }, ['screenshot']), /invalid PNG/);
+  await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /invalid PNG/);
   await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+});
+
+test('agent rejects JSON scalars and arrays instead of leaking client TypeErrors',async t=>{
+  let payload='null';
+  const fx=await fixture(t,(_req,res)=>res.writeHead(200,{'content-type':'application/json'}).end(payload));
+  for(const body of ['null','[]','"unexpected"','false']){
+    payload=body;
+    await assert.rejects(agentRequest(fx.discovery,'/v1/session'),/invalid JSON: expected an object/);
+  }
 });

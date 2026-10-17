@@ -279,7 +279,7 @@ test("an exported web file at a native platform path wins over the local equival
   t.after(() => app.close());
   const response = await fetch(`${app.url}/js/jquery.blockUI.js`);
   assert.equal(response.status, 200);
-  assert.equal(await response.text(), "window.exportedBlockUI = true;");
+  assert.equal((await response.text()).split("\n//# sourceMappingURL=")[0], "window.exportedBlockUI = true;");
   assert.notEqual(response.headers.get("x-sim-resource-provider"), "local-platform-equivalent");
 });
 

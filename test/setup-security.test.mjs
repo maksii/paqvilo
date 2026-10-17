@@ -16,11 +16,11 @@ test('scaffold marker inspection rejects a file replaced after its descriptor is
   const directory = work(t), file = path.join(directory, 'README.md'), replacement = path.join(directory, 'replacement');
   fs.writeFileSync(file, 'TODO(paqvilo-init): original');
   fs.writeFileSync(replacement, 'TODO(paqvilo-init): replacement');
-  const inode = fs.statSync(file).ino;
+  const inode = fs.statSync(file, { bigint: true }).ino;
   const original = fs.fstatSync;
   let swapped = false;
-  t.mock.method(fs, 'fstatSync', descriptor => {
-    const stat = original(descriptor);
+  t.mock.method(fs, 'fstatSync', (descriptor, options) => {
+    const stat = original(descriptor, options);
     if (!swapped && stat.ino === inode) {
       swapped = true; fs.renameSync(file, file + '.old'); fs.renameSync(replacement, file);
     }

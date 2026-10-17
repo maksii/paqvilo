@@ -194,7 +194,7 @@ const runtimeScript = (path) => {
     /^\/resource\/powerappsportal\/dist\/preform(?:\.BootstrapV5)?\.moment_[\w.-]+\.js$/i.test(
       pathname,
     ) ||
-    /^\/resource\/powerappsportal\/dist\/(?:postpreform\.bundle-|default-\d+\.moment_)[\w.-]+\.js$/i.test(
+    /^\/resource\/powerappsportal\/dist\/(?:postpreform(?:\.BootstrapV5)?\.bundle-|default-\d+\.moment_)[\w.-]+\.js$/i.test(
       pathname,
     ) ||
     /(?:^|\/)(?:jquery(?:[-.]|$)|bootstrap(?:[-.]|$))/i.test(pathname)
@@ -642,7 +642,7 @@ export async function capturePortalShell(
           ? "stylesheets"
           : ref.position === "headScripts"
             ? "headScripts"
-            : /(?:^|\/)(?:bootstrap(?:[-.]|$)|postpreform\.bundle-|default-\d+\.moment_)/i.test(
+            : /(?:^|\/)(?:bootstrap(?:[-.]|$)|postpreform(?:\.BootstrapV5)?\.bundle-|default-\d+\.moment_)/i.test(
                   new URL(resource.url).pathname,
                 )
               ? "afterFooterScripts"

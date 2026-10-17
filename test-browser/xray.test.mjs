@@ -57,7 +57,7 @@ test('X-ray inspects fields and sources without activating portal controls acros
   await xray.locator('.source').filter({hasText:'Partial.webtemplate.source.html'}).getByRole('button',{name:'Open source ↗'}).click();await page.waitForTimeout(50);assert.match(opened.at(-1)?.[1]??'',/Partial.webtemplate.source.html$/);assert.equal(opened.at(-1)?.[2],1);
   await evidence('02-template-source');
   await page.evaluate(()=>{const heading=document.querySelector('.updates h2'),wrapper=document.createElement('div');heading.before(wrapper);wrapper.append(heading);});
-  await xray.getByRole('button',{name:'Select source region'}).click();assert.match(await xray.locator('.element-label').textContent(),/^aside\.updates/);
+  await xray.getByRole('button',{name:'Select source region'}).first().click();assert.match(await xray.locator('.element-label').textContent(),/^aside\.updates/);
   await page.evaluate(()=>{const node=document.querySelector('.updates');node.style.position='relative';document.querySelector('.columns').prepend(node);});
   await pick('.updates h2');await xray.locator('.title').getByText('Partial',{exact:true}).waitFor();
   await xray.getByRole('button',{name:'Details',exact:true}).click();await page.evaluate(()=>window.scrollTo(0,0));await page.keyboard.down('Alt');await page.locator('#open-dialog').click();await page.keyboard.up('Alt');await page.waitForFunction(()=>document.getElementById('paqvilo-xray').parentElement.id==='dialog');

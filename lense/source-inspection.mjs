@@ -72,13 +72,13 @@ export function inspectRenderedPage() {
     try { const url = new URL(value, location.href); return url.origin === location.origin ? url.pathname : null; } catch { return null; }
   };
   const assets = [...document.querySelectorAll('script[src],link[href],img[src]')].filter(own).slice(0, 300).map((node) => ({ kind: node.tagName.toLowerCase(), path: pathname(node.getAttribute('src') ?? node.getAttribute('href')) })).filter((row) => row.path);
-  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],.entity-grid[data-selected-view],iframe.quickform[data-controlid]')].filter(own).slice(0, 300).map((node) => {
+  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe.quickform[data-controlid]')].filter(own).slice(0, 300).map((node) => {
     let layout = {};
     try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch {}
     return {
     tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), type: (node.getAttribute('type') ?? '').slice(0, 40),
     entity: String(node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '').slice(0, 160),
-    formId: String(node.getAttribute('data-formid') ?? layout.Id ?? '').slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? '').slice(0, 160),
+    formId: String(node.getAttribute('data-formid') ?? layout.Id ?? '').slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? /^EntityList(?:Control_)?([0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:$|_)/i.exec(node.id)?.[1] ?? '').slice(0, 160),
     gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '', controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
     schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160), nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
   }; });
@@ -171,12 +171,13 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
       }
       for (const cell of cells) {
         if (!['subgrid', 'quickform', 'notes'].includes(cell.type)) {
+          if(cell.lookupViewId)report.nativeComponents.push({kind:'lookup',id:cell.id??cell.name,name:cell.label??cell.name,formId:form.id,owner:form.name+'.'+(cell.name??cell.id),sourceFile:current.sourceFile,viewId:cell.lookupViewId});
           if (cell.lookupViewId) addView(cell.lookupViewId, cell.lookupView?.entity, `${form.name}.${cell.id} lookup`, 'lookup-view');
           continue;
         }
         const owner = `${form.name}.${cell.id}`;
         const observed = (rendered.controls ?? []).find((row) => row.gridId === cell.id || row.controlId === cell.id);
-        const component = { kind: cell.type, id: cell.id, name: cell.label ?? cell.id, entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null), relationship: cell.relationship ?? null, lookup: cell.lookup ?? null, owner, sourceFile: current.sourceFile, evidence: observed ? 'rendered-control-id' : 'form-source', viewId: cell.viewId ?? null, hidden: Boolean(cell.hidden), actions: [], metadataSources: [] };
+        const component = { formId:form.id, kind: cell.type, id: cell.id, name: cell.label ?? cell.id, entity: cell.entity ?? (cell.type === 'notes' ? 'annotation' : null), relationship: cell.relationship ?? null, lookup: cell.lookup ?? null, owner, sourceFile: current.sourceFile, evidence: observed ? 'rendered-control-id' : 'form-source', viewId: cell.viewId ?? null, hidden: Boolean(cell.hidden), actions: [], metadataSources: [] };
         report.nativeComponents.push(component);
         addEntity(component.entity);
         if (cell.type === 'quickform') {
@@ -285,6 +286,7 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
 
 /** Enrich a shared report with source provenance and observed DOM, never a live access verdict. */
 export async function enrichInspection(report, portal, { metadata = {}, rendered = {}, live = false, observed = null, codeCatalogue = null } = {}) {
+  if(!report||typeof report!=='object'||Array.isArray(report))throw new TypeError('Source inspection requires a page report object.');
   report.evidence = {
     mode: live ? 'live-sources' : 'local-runtime',
     source: 'Static references from the selected local export. Conditional branches may not be rendered.',
@@ -293,13 +295,14 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     solutions: (metadata.roots ?? []).length,
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
+  if(report.page&&page){report.page.entityFormId=page.formId??portalField(page.metadata??{},'entityform')??null;report.page.listId=page.listId??portalField(page.metadata??{},'entitylist')??null;}
   report.pageSources = [];
   for (const source of pageSources(portal, page)) {
     try { if ((await fs.stat(source.sourceFile)).isFile()) report.pageSources.push(source); } catch {}
   }
   if (page?.metadata?._file) {
     const root = portal.records.find((record) => record.kind === 'webpage' && norm(record.id) === norm(page.id));
-    if (root?._file && root._file !== page.metadata._file) report.pageSources.unshift({ name: 'Root page metadata', sourceFile: root._file });
+    if (root?._file && root._file !== page.metadata._file){for(const source of report.pageSources)source.name=source.name.replace(/^Page /,'Language page ');report.pageSources.unshift({ name: 'Root page metadata', sourceFile: root._file });}
   }
   // Runtime component IDs can resolve a dynamic Liquid reference without guessing its value.
   for (const control of rendered.controls ?? []) {
@@ -311,7 +314,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       (report.forms ??= []).push({ id: form.id, name: form.name, kind: 'basic-form', entity: form.entityName, mode: form.mode, formName: form.formName, sourceFile: form.metadata?._file, formXml: schema?.sourceFile ? { name: schema.formName, sourceFile: schema.sourceFile } : null, evidence: 'rendered-component-id' });
       for (const field of schema?.fields ?? []) if (field.name && !(report.columns ?? []).some((row) => row.entity === form.entityName && row.name === field.name)) (report.columns ??= []).push({ entity: form.entityName, name: field.name, sourceFile: field.source ?? metadata.entities?.[form.entityName]?.sources?.[0], resolved: true, type: field.type, label: field.label });
     }
-    const list = control.listId && portal.lists.find((row) => norm(row.id) === norm(control.listId));
+    const list = control.listId && portal.lists.find((row) => norm(row.id).replace(/-/g,'') === norm(control.listId).replace(/-/g,''));
     if (list && !(report.components ?? []).some((row) => norm(row.recordId) === norm(list.id))) (report.components ??= []).push({ kind: 'list', recordId: list.id, name: list.name, entity: list.entityName, sourceFile: list.metadata?._file, evidence: 'rendered-component-id' });
     const view = control.viewId && metadata.views?.find((row) => norm(row.id) === norm(control.viewId));
     if (view && !(report.views ?? []).some((row) => norm(row.id) === norm(view.id))) (report.views ??= []).push({ id: view.id, name: view.name, entity: view.entity, sourceFile: view.file, fields: view.fields, evidence: 'rendered-component-id' });
@@ -322,6 +325,26 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
       }
     }
   }
+  for(const component of report.components??[])if(component.kind==='list'){
+    const definition=portal.lists.find(row=>norm(row.id)===norm(component.recordId??component.id));
+    if(!definition)continue;
+    const viewIds=[];
+    for(let value of [portalField(definition.metadata??{},'view'),portalField(definition.metadata??{},'views')]){
+      if(typeof value==='string'){try{value=JSON.parse(value);}catch{value=value.split(',').map(item=>item.trim()).filter(Boolean);}}
+      const values=value?.Views??value?.views??value;
+      for(const view of Array.isArray(values)?values:values?[values]:[]){const id=typeof view==='object'?view.ViewId??view.viewId??view.id??view.value:view;if(id)viewIds.push(String(id));}
+    }
+    component.viewIds=[...new Set(viewIds)];
+    for(const viewId of component.viewIds){
+      const view=metadata.views?.find(row=>norm(row.id)===norm(viewId)&&(!component.entity||row.entity===component.entity));
+      if(!view)continue;
+      if(!(report.views??[]).some(row=>norm(row.id)===norm(view.id)))(report.views??=[]).push({id:view.id,name:view.name,entity:view.entity,sourceFile:view.file,fields:view.fields??[],evidence:'list-view'});
+      for(const column of view.fields??[])if(column.name&&!(report.columns??[]).some(row=>row.entity===view.entity&&row.name===column.name)){
+        const field=metadata.entities?.[view.entity]?.fields?.[column.name];
+        (report.columns??=[]).push({entity:view.entity,name:column.name,sourceFile:field?.source??metadata.entities?.[view.entity]?.sources?.[0],resolved:Boolean(field),label:field?.label,type:field?.dataverseType??field?.type,evidence:'list-view'});
+      }
+    }
+  }
   inspectFormDependencies(report, portal, metadata, rendered);
   const sourceBodies = [page?.html, page?.js, page?.css, ...(report.webTemplates ?? []).map((row) => portal.templates?.[row.name]?.source), ...(report.snippets ?? []).map((row) => portal.snippets?.[row.name])].filter(Boolean);
   const markup = [
@@ -329,7 +352,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     ...(report.webTemplates ?? []).map(row => ({ ...row, body: portal.templates?.[row.name]?.source, kind: 'template' })),
     ...(report.snippets ?? []).map(row => ({ ...row, body: portal.snippets?.[row.name], kind: 'snippet' })),
   ];
-  report.elementSources = markup.flatMap(({ body, ...source }) => elementSourceHints(body, source)).slice(0, 600);
+  report.elementSources = markup.flatMap(({ body, ...source }) => elementSourceHints(body, source));
   for (const source of report.pageSources.filter(row => row.fieldPath === 'customjavascript')) report.elementSources.push(...scriptSourceHints(page?.js, { ...source, kind: 'script' }));
   const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
@@ -355,7 +378,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   }
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
   report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
-  report.elementSources = report.elementSources.slice(0, 900);
+  report.elementSourceLimits={sourceBytes:1024*1024,total:report.elementSources.length,truncated:markup.some(item=>String(item.body??'').length>1024*1024)};
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
   const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z][\w]*$/i.test(value)));
@@ -413,6 +436,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     })),
   ];
   report.pluginInventory = { assemblies: metadata.plugins?.assemblies?.length ?? 0, types: metadata.plugins?.types?.length ?? 0, steps: metadata.plugins?.steps?.length ?? 0, applicable: report.logic.filter(item => item.kind === 'plugin-step').length, effective: 'unknown' };
+  report.unresolved=unique(report.unresolved??[],row=>JSON.stringify(row));
   return report;
 }
 
@@ -455,6 +479,7 @@ export function createSourceInspector(cfg) {
       return (await select(route)).metadata.plugins?.sourceRoots ?? [];
     },
     async enrich(report, rendered = {}) {
+      if(!report||typeof report!=='object'||Array.isArray(report))throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
       return enrichInspection(report, portal, { metadata, rendered, observed: sources.observed, codeCatalogue });

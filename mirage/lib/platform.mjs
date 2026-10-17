@@ -1,3 +1,4 @@
+import {debugScript,exportFieldFile} from './source-debug.mjs';
 import { decodeXml, portalField } from "./importer.mjs";
 import fs from "node:fs/promises";
 import { createHash, randomUUID } from "node:crypto";
@@ -1526,7 +1527,7 @@ async function renderForm(kind, name, context, options) {
   const startupScript = async () => {
     const source = schema.js ?? definition?.js;
     const rendered = source && (renderLiquid ? await renderLiquid(source, context) : source);
-    return rendered ? `<span><script type="text/javascript">${rendered}</script></span>` : "";
+    return rendered ? `<span><script type="text/javascript">${debugScript(rendered,exportFieldFile(schema.metadata??definition?.metadata,'custom_javascript.js'))}</script></span>` : "";
   };
   if (accessDenied) {
     // crmentityformview: the EntitySecurity/Record/ReadAccessDeniedMessage
@@ -2442,7 +2443,7 @@ async function renderForm(kind, name, context, options) {
 
   // Scripts, rich text and managed controls.
   const originalScript = schema.js ?? definition?.js;
-  const script = originalScript && (renderLiquid ? await renderLiquid(originalScript, context) : originalScript);
+  const script = originalScript && debugScript(renderLiquid ? await renderLiquid(originalScript, context) : originalScript,exportFieldFile(schema.metadata??definition?.metadata,'custom_javascript.js'));
   const richTextReady = await richTextRuntime(fields, { portal, managedControls, richTextCompatibility });
   const nativeDefinitions = Object.fromEntries(fields.filter((field) => managedControls[field.richText?.name]).map((field) => [field.richText.name, managedControls[field.richText.name]]));
   const managedReady = Object.keys(nativeDefinitions).length ? `<script>${clientManagedControlsRuntime(nativeDefinitions)}</script>` : "";

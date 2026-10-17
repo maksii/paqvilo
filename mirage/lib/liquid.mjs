@@ -1,4 +1,5 @@
 // Power Pages Liquid rendering for exported portal sources.
+import {debugMarkup,debugScript,exportFieldFile} from './source-debug.mjs';
 import { renderSettings } from './render-settings.mjs';
 import { FetchRenderCache } from './fetch-render-cache.mjs';
 //
@@ -758,7 +759,7 @@ export function createPortalRenderer(portal, options = {}) {
   async function loadTemplateSource(name, context) {
     const record = findTemplate(name);
     if (record) {
-      if (typeof record.source === "string" && record.source.trim()) return record.source;
+      if (typeof record.source === "string" && record.source.trim()) return debugMarkup(record.source,exportFieldFile(record.metadata,'source.html'));
       const managed = MANAGED_DISPLAY_NAMES[nameKey(name)] ?? (builtinSource(String(name)) !== undefined ? String(name) : undefined);
       if (managed && builtinSource(managed) !== undefined) {
         context?.diagnostic(
@@ -796,7 +797,7 @@ export function createPortalRenderer(portal, options = {}) {
     renderWebTemplate: async (id, context) => {
       const record = Object.values(portal.templates ?? {}).find((t) => String(t?.id ?? "").toLowerCase() === String(id ?? "").toLowerCase());
       if (!record) return null;
-      return renderNested(engine, record.source ?? "", context);
+      return renderNested(engine, debugMarkup(record.source ?? '',exportFieldFile(record.metadata,'source.html')), context);
     },
     knowledge: knowledgeFunctions,
     isSitemapCurrent: (url, context) => sameUrl(url, context.engine.portalHost.currentPath(context)),
@@ -1028,7 +1029,7 @@ export function createPortalRenderer(portal, options = {}) {
         adx_webpageid: p.id,
         adx_name: p.name,
         adx_title: p.title,
-        adx_copy: p.html,
+        adx_copy: debugMarkup(p.html,exportFieldFile(p.metadata,'copy.html')),
         adx_summary: p.summary,
         adx_entityform: p.formId ? entityReference(p.formId, "adx_entityform") : null,
         adx_entitylist: p.listId ? entityReference(p.listId, "adx_entitylist") : null,
@@ -1338,7 +1339,8 @@ export function createPortalRenderer(portal, options = {}) {
     const liquidContext = liquidContextFor(context);
     let template;
     try {
-      template = engine.parse(source ?? "");
+      const entry=Object.values(portal.templates??{}).find(item=>item.source===source);
+      template = engine.parse(debugMarkup(source??'',entry?exportFieldFile(entry.metadata,'source.html'):null));
     } catch (error) {
       if (!(error instanceof LiquidSyntaxError)) throw error;
       // InternalRenderLiquid: a template that fails to parse renders the bare message.
@@ -1375,7 +1377,7 @@ export function createPortalRenderer(portal, options = {}) {
       const rewriteLayout = template ? null : rewritePageLayout(page, pageTemplate);
       const body = await renderSource(template ? template.source : (rewriteLayout?.source ?? "{% include 'Page Copy' %}"), context);
       const css = page.css ? `<style>${await renderSource(page.css, context)}</style>` : "";
-      const js = page.js ? `<script>${await renderSource(page.js, context)}</script>` : "";
+      const js = page.js ? `<script>${debugScript(await renderSource(page.js, context),exportFieldFile(page.metadata,'custom_javascript.js'))}</script>` : "";
       if (!rewriteSelected && pageTemplate?.useHeaderFooter === false) {
         const mime = String(portalField(template?.metadata ?? {}, "mimetype", "text/html")).replace(/;\s*$/, "");
         return {

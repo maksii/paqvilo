@@ -146,7 +146,8 @@ and `activatePackDeniedRoutes` support project-owned parity plans.
 The acceptance entry point also exports `AssetCache`, `validateLivePath`, `decodePagingCookie`,
 `collectFetchXmlPages`, `escapeXmlAttribute`, `auditQuery`, `richTextBody`, `resolveRichTextMode`,
 `settleHostModal`, `editRichText` and `assertRichText`. These rich-text actions are the supported
-runner surface; source configuration parsing and editor-host implementation modules remain internal.
+runner surface; the three observation helpers documented below are also public. Other
+source configuration parsing and editor-host implementation modules remain internal.
 
 `connectRuntime().captureShell(path)` returns the full report even for HTTP 409 incomplete
 captures. Check `applied` and `complete`; default command success follows `applied`/`ready`,
@@ -205,3 +206,13 @@ mode keeps both data and configuration when state already exists. The catalogue 
 `paqvilo/mirage/packs`, returns value-free errors for invalid configuration bodies and
 unknown or malformed links. It inspects lazy descriptors without generating their data;
 put `configurationPreset` on the descriptor alongside `name` and `load`.
+
+The acceptance surface also exports three read-only observation building blocks:
+
+- `extractManagedRichTextControls(html)` extracts static managed control manifests, resource lists and diagnostics from HTML. It excludes instance values and authentication fields; it performs no browser or network action.
+- `findRichTextResource(portal, configUrl)` resolves one exported web-file descriptor by configuration resource name, returns undefined when absent, and rejects ambiguous mappings.
+- `validateRichTextConfiguration(bytes)` accepts Buffer/string static configuration JSON, returns its validated object and rejects unsupported or credential-bearing content.
+
+Project observation tools can use these public exports instead of deep imports. Browser reads still require an authorised session and a guard blocking all non-GET requests.
+
+`runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. The default is the smaller of 2,000 ms and half the action timeout. Redirects share one hold budget. navigationWaits records commitReserveMs and actionRemainingMs. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.

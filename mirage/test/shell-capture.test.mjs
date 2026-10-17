@@ -22,6 +22,14 @@ const htmlResponse = (html) => ({
 const page = (head, body = "") =>
   `<!doctype html><html><head>${head}</head><body>${body}</body></html>`;
 
+test('Bootstrap 5 postpreform bundles are retained as native runtime resources',async t=>{
+  const directory=await mkdtemp(join(tmpdir(),'pp-shell-v5-'));t.after(()=>rm(directory,{recursive:true,force:true}));
+  const script='/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
+  const live=livePage(page('<link rel="stylesheet" href="/platform.css">',`<script src="${script}"></script>`),{'/platform.css':{type:'text/css',body:'body{}'},[script]:{type:'text/javascript',body:'window.jQuery.timeago=function(){};'}});
+  const cache=await new AssetCache({directory:join(directory,'cache'),origin}).init();
+  const report=await capturePortalShell(cache,live,{path:'/workspace/'});assert.ok(report.captured.some(row=>row.path===script),JSON.stringify(report));
+});
+
 test('external jQuery and local CSS external dependencies remain visible without blocking platform capture', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'pp-shell-external-'));
   t.after(() => rm(directory, { recursive: true, force: true }));

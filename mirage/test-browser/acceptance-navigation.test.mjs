@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { runAcceptance } from '../acceptance.mjs';
 
-async function navigationFixture(t, { history = 'hash', late = false, completed = false, noCommit = false, noNavigation = false, redirect = false, child = false, writeMs = 0, actionDelay = 0, replacementRead = false, embedded = false, crossOrigin = false, timeout = 4000 } = {}) {
+async function navigationFixture(t, { history = 'hash', late = false, completed = false, noCommit = false, noContent = false, resetNavigation=false, documentDelay, noNavigation = false, redirect = false, child = false, writeMs = 0, actionDelay = 0, replacementRead = false, embedded = false, crossOrigin = false, timeout = 4000 } = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-document-commit-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
   const historyChange = history === 'none' ? '' : history === 'hash' ? "location.hash='pending'" : "history.pushState({},'', '?pending=1')";
@@ -30,10 +30,11 @@ async function navigationFixture(t, { history = 'hash', late = false, completed 
     res.setHeader('content-type', 'text/html');
     if (pathname === '/submit') {
       const timer = setTimeout(() => {
-        if (noCommit) { res.statusCode = 204; return res.end(); }
+        if (resetNavigation)return req.socket.destroy();
+        if (noCommit||noContent) { res.statusCode = typeof noContent === 'number' ? noContent : 204; return res.end(); }
         if (redirect) { res.statusCode = 303; res.setHeader('location', '/done'); return res.end(); }
         res.end('<p id="done">Saved</p>' + (replacementRead ? "<script>fetch('/never').catch(()=>{})</script>" : ''));
-      }, redirect ? 20 : 1500);
+      }, documentDelay ?? (redirect ? 20 : 1500));
       res.once('close', () => clearTimeout(timer));
       return;
     }
@@ -45,7 +46,7 @@ async function navigationFixture(t, { history = 'hash', late = false, completed 
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); });
   const result = await runAcceptance({ localUrl: `http://127.0.0.1:${server.address().port}`, outputDir: path.join(root, 'evidence'), timeout,
-    flows: [{ name: 'Document boundary', steps: [{ action: 'navigate', path: '/' }, ...(child || embedded ? [{action: 'visible', frame: '#child', selector: '#save'}] : []), { action: 'click', selector: '#save', ...(embedded ? {frame: '#child'} : {}) }, { action: 'settle' }, ...(!noCommit && !noNavigation ? [{ action: 'visible', selector: '#done', ...(embedded ? {frame: '#child'} : {}) }] : [])] }] });
+    flows: [{ name: 'Document boundary', steps: [{ action: 'navigate', path: '/' }, ...(child || embedded ? [{action: 'visible', frame: '#child', selector: '#save'}] : []), { action: 'click', selector: '#save', ...(embedded ? {frame: '#child'} : {}) }, { action: 'settle' }, ...(!noCommit && !noContent && !resetNavigation && !noNavigation ? [{ action: 'visible', selector: '#done', ...(embedded ? {frame: '#child'} : {}) }] : [])] }] });
   return result.flows[0];
 }
 
@@ -164,4 +165,17 @@ test('acceptance distinguishes failed loopback writes from external proxy refusa
   if(kind==='external'){assert.ok(flow.blockedRequests.some(request=>request.method==='POST'&&request.url==='https://outside.invalid/blocked-write'),JSON.stringify(flow));assert.match(flow.error,/blockedRequests/);}
   else{assert.deepEqual(flow.blockedRequests,[],JSON.stringify(flow));assert.match(flow.error,/failedRequests/);}
  });
+});
+
+for(const redirect of [false,true])test(`a slow ${redirect?'POST redirect':'GET document'} retains half the click budget for its commit`,{timeout:30000},async t=>{
+ const flow=await navigationFixture(t,{redirect,history:'none',writeMs:15000,documentDelay:1500,timeout:4000});
+ assert.equal(flow.passed,true,JSON.stringify(flow));assert.equal(flow.navigationCancelledRequests.length,2);assert.ok(flow.navigationWaits.every(wait=>wait.commitReserveMs>=2000));
+});
+for(const status of [204,205])test(`a ${status} no-content navigation keeps both completed writes and is separate from failed requests`,{timeout:30000},async t=>{
+ const flow=await navigationFixture(t,{noContent:status,completed:true,writeMs:1000,documentDelay:300,timeout:8000});
+ assert.equal(flow.passed,true,JSON.stringify(flow));assert.deepEqual(flow.failedRequests,[]);assert.equal(flow.noContentNavigations[0].status,status);assert.equal(flow.resources.filter(row=>/slow-/.test(row.url)&&row.finished).length,2);
+});
+test('a reset navigation without an HTTP response remains a failed request',{timeout:30000},async t=>{
+ const flow=await navigationFixture(t,{resetNavigation:true,completed:true,writeMs:100,documentDelay:300});
+ assert.equal(flow.passed,false);assert.ok(flow.failedRequests.length>0);
 });

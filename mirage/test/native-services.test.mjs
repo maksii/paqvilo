@@ -7,6 +7,14 @@ import { createSimulator } from "../server.mjs";
 import { protectConfiguration, unprotectConfiguration, portalNotes } from "../lib/native-services.mjs";
 import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
+import {reportCapturedBundleRequirements} from '../lib/native-services.mjs';
+
+test('a captured locale with an incomplete captured global provider is diagnosed once',async()=>{
+  const diagnostics=[],provider='/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
+  const context={recordDiagnostic:row=>diagnostics.push(row),config:{shellProfile:{afterFooterScripts:[provider]}},cache:{get:async()=>({body:Buffer.from('Date.today=function(){};')})}};
+  for(let i=0;i<2;i++)await reportCapturedBundleRequirements({id:'moment-locale'},{body:Buffer.from('jQuery.timeago.settings.strings={};')},context,'/locale.js');
+  assert.equal(diagnostics.length,1);assert.equal(diagnostics[0].code,'PLATFORM_BUNDLE_GLOBAL_UNPROVIDED');
+});
 
 const SITE = "4f1d9b2a-7c3e-4a5b-9d6e-1a2b3c4d5e6f";
 const CONTACT = "c0000000-0000-4000-8000-000000000001";

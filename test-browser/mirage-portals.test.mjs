@@ -98,7 +98,7 @@ test('local Mirage portals and live targets share one browser: the selector swit
   };
   const choose = async (index, origin) => {
     await openTab('overrides');
-    await Promise.all([page.waitForURL((url) => url.origin === origin), page.getByLabel('Portal / environment', { exact: true }).selectOption(String(index))]);
+    await Promise.all([page.waitForURL((url) => url.origin === origin), page.getByLabel('Portal / environment', { exact: true }).selectOption(String(index)).then(()=>page.locator('[data-target-go]').click())]);
   };
   const signedIn = async (app) => (await (await context.request.get(`${app.url}/_sim/api/session`)).json()).signedIn;
 

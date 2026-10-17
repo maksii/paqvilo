@@ -26,7 +26,7 @@ export default {
 };
 ```
 
-Required exports are `id`, `name`, `description`, `matches({ portal })` and `presets({ portal, metadata, options })`. Optional `generators`, `personas`, `plugins`, `expressionOperators`, `endpoints`, `shell`, `parity` and dataset helpers provide project behavior. Pack/preset IDs are validated; duplicate definitions fail. Matching filters a pack per imported portal.
+Required exports are `id`, `name`, `description`, `matches({ portal })` and `presets({ portal, metadata, options })`. A configuration-only pack that declares `configurationPresets` may omit `presets`; it contributes no data presets. Optional `generators`, `personas`, `plugins`, `expressionOperators`, `endpoints`, `shell`, `parity` and dataset helpers provide project behavior. Pack/preset IDs are validated; duplicate definitions fail. Matching filters a pack per imported portal.
 
 A trusted pack may provide `webApiErrorTemplates: { version: 1, evidence, templates }` for explicitly captured response formatting. Each template contains an evidenced `method` (`POST` or `PATCH`), a value-free `descriptor` (reader `kind`, relevant Edm types or JSON node kinds), exact CRLF `suffix`, `suffixSha256`, `capturedSourceSha256`, and `qualifiedVariationSha256`. The project must verify those captures and fresh variations for the site's source/version and method before exporting the templates. Mirage validates bounded suffix bytes, exact hashes and unique method/descriptor keys. Matching packs cannot define the same key twice; lazy accessors are rejected. An uncaptured method keeps the existing diagnostic.
 
@@ -107,3 +107,7 @@ applying the linked configuration with the data preset. The default applies data
 When a pack adopts a saved local preset ID, the pack takes precedence for application.
 The saved preset stays visible with a collision warning and can be exported or deleted in
 the administration UI. Deleting it removes only the saved copy; the pack entry remains.
+
+Create checks for a table-level grant before invoking pack handlers. Stages 10 and 20 run before declarative rules and secondary effects; row-scoped Create permission is then checked before stage 40. Rules may establish the parent link. A scoped denial reports the permission and relationship and rolls back the request, including independent PreValidation SDK writes. Other top-level PreValidation rejection boundaries retain the documented independent SDK commits.
+
+New runtime states can be seeded with catalogue `mirage.confinePortalPages`, `mirage.externalAssets` and `mirage.externalFrameOrigins` (also accepted at the Mirage project root and per portal). Existing state retains its routing choices. The panel identifies project defaults versus runtime state; /_sim Connection can change the saved setting.

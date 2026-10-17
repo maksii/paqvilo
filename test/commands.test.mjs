@@ -388,7 +388,7 @@ test('list and doctor expose catalogue Mirage settings and offline readiness wit
     const broken = reports.find((item) => item.site === 'broken');
     assert.equal(broken.ready, true, 'Mirage readiness is reported beside the overlay verdict');
     assert.equal(broken.mirage.ready, false);
-    assert.ok(broken.mirage.errors.some((error) => /Solution root does not exist/.test(error)));
+    assert.ok(broken.mirage.errors.some((error) => /Solution root does not exist/.test(error.message)));
     assert.match(run('doctor', '--config', config, '--repo', fx.dir, '--site', 'broken').stdout, /mirage NOT READY[\s\S]*MIRAGE ERROR: Mirage Solution root does not exist/);
   } finally { fs.rmSync(roots, { recursive: true, force: true }); }
 });

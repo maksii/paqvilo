@@ -297,7 +297,7 @@ test("standard PAC names, language copy, URL, annotation attachment, and rendere
   // The platform's after-footer bundles follow the footer; the page script comes last.
   assert.match(
     rendered.html,
-    /<footer>2026<\/footer>(?:<script(?: onerror="[^"]*")? src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){4}<script>window\.work = true;<\/script><\/body>/,
+    /<footer>2026<\/footer>(?:<script(?: onerror="[^"]*")? src="\/resource\/powerappsportal\/dist\/[^"]+"[^>]*><\/script>){4}<script>window\.work = true;[\s\S]*?<\/script><\/body>/,
   );
   assert.doesNotMatch(rendered.html, /\/__sim-static\//);
   assert.match(rendered.html, /\.work \{color: red\}/);

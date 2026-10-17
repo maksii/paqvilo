@@ -1304,13 +1304,16 @@ export class DataStore {
     return result;
   }
   assertAllowed(entity, operation, row, identity, related) {
-    if (!this.allowed(entity, operation, row, identity))
+    if (!this.allowed(entity, operation, row, identity)) {
+      const permissions=this.rules(entity,operation,identity).map(grant=>({id:grant.id,name:grant.name??grant.id,scope:grant.scope??'global',...(grant.field?{field:grant.field}:{}),...(grant.relationship?{relationship:grant.relationship,...((grant.scope??'global')==='parent'?{parentLink:grant.relationship.from??null}:{})}:{}),...(grant.relationshipName?{relationshipName:grant.relationshipName}:{}),...(grant.parentPermissionId?{parentPermissionId:grant.parentPermissionId}:{})}));
+      const message=`Table permission denies ${operation} on ${entity}`+(permissions.length?': '+permissions.map(grant=>`${grant.name} (${grant.scope})${grant.relationship?' relationship '+(typeof grant.relationship==='string'?grant.relationship:JSON.stringify(grant.relationship)):''}`).join('; '):'');
       throw new DataError(
-        `Table permission denies ${operation} on ${entity}`,
+        message,
         403,
         "PermissionDenied",
-        { operation, table: entity, ...(related ? { related } : {}) },
+        { operation, table: entity, permissions, permissionDiagnostic:{code:'TABLE_PERMISSION_DENIED',severity:'warning',operation,table:entity,permissions,message}, ...(related ? { related } : {}) },
       );
+    }
   }
   rows(entity, identity = {}) {
     const m = this.resolveMapping(entity);
@@ -2666,6 +2669,13 @@ export class DataStore {
     // checked after trusted declarative effects establish any membership links.
     // Top-level stage10 SDK requests commit independently; stages20/40 and
     // nested stage10 requests participate in their caller transaction.
+    // Preserve the request's original rollback boundary for portal row-scope denials.
+    // SDK PreValidation writes otherwise advance that boundary independently.
+    let deniedCreateBoundary;
+    if (!identity.admin && this.state.settings.permissionMode !== 'permissive' && this.pluginPipeline && this.pluginPipelineActive({entity:m.logicalName,operation:'create'}) && this.pluginPipelineRequiresCheckpoint({entity:m.logicalName,operation:'create',stage:10,changedAttributes})) {
+      this.promoteRowTransaction(); this.ensureReadSnapshot();
+      if(this.pluginRollbackBoundary)deniedCreateBoundary={...this.pluginRollbackBoundary};
+    }
     this.exportedPluginPhase(m, 'create', 10, pluginTarget, row, null, identity, changedAttributes, options);
     // Deep insert: single-valued navigation records are created first and bound.
     for (const item of nested.filter((entry) => entry.rel.many === false)) {
@@ -2695,7 +2705,8 @@ export class DataStore {
     this.assertAlternateKeys(m, row, rows, -1);
     this.insertRow(m.logicalName, rows, row);
     this.applySecondary(effects);
-    this.assertAllowed(m.logicalName, "create", row, identity);
+    try { this.assertAllowed(m.logicalName, "create", row, identity); }
+    catch (cause) { if(deniedCreateBoundary)Object.assign(this.pluginRollbackBoundary,deniedCreateBoundary); throw cause; }
     // Normalization drops raw navigation names; retain them for relationship validation.
     this.validateBindings(m, { ...input, ...pluginTarget }, row, identity);
     // Deep insert/bind into collection-valued navigation properties.
@@ -3183,7 +3194,10 @@ export class DataStore {
       if(this.state.settings.permissionMode!=='permissive')for(const name of names)if(!this.rules(name,'read',identity).length)
         throw new DataError('Table permission denies read on '+name,403,'PermissionDenied',{operation:'read',table:name});
     }
-    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,defaultDistinct:options.profile!=='webapi',forceScopedDistinct:nativeAdmission,seedAliasesFromAuthoredLinks:nativeAdmission,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
+    // Scoped portal paths default to unique projected tuples in both lanes.
+    // Global Web API reads retain authored multiplicity; the qualified native
+    // profile additionally forces scoped DISTINCT when explicitly disabled.
+    const permissionQuery=compilePermissionFetchXml(xml,{permissions:this.state.permissions,identity,mappings:this.state.mappings,rules:this.rules.bind(this),bypass:this.state.settings.permissionMode==='permissive',linkedPermissionOrdinals,grantOrder:this.observed?.tablePermissionGrantOrder,defaultDistinct:true,defaultGlobalDistinct:options.profile!=='webapi',forceScopedDistinct:nativeAdmission,seedAliasesFromAuthoredLinks:nativeAdmission,...(options.portalRequest===true?this.liquidFetchPermissionOptions(options):{})});
     permissionQuery.authoredXml = authoredXml;
     let result;
     try { result=this.executePermissionFetchXml(xml,identity,options,permissionQuery); }

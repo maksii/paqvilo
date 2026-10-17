@@ -17,6 +17,7 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   const work = fs.mkdtempSync(path.join(os.tmpdir(), 'paqvilo-panel-targets-'));
   const servers = [];
   const panels = [];
+  const sessions = new Map();
   const requests = [[], []];
   let browser;
   t.after(async () => {
@@ -39,7 +40,10 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   browser = await chromium.launch({ channel: channel === 'chromium' ? undefined : channel, headless: true, proxy: { server: first, bypass: '127.0.0.1,localhost' }, args: ['--disable-background-networking', '--disable-component-update', '--disable-sync', '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1, EXCLUDE localhost'] });
   const context = await browser.newContext({ serviceWorkers: 'block' });
   context.setDefaultTimeout(10_000);
-  await context.route('**/__paqvilo/api/**', (route) => route.fulfill({ json: { ok: true } }));
+  await context.route('**/__paqvilo/api/**', (route) => {
+    const url = new URL(route.request().url());
+    return sessions.get(url.origin).api(route, url.pathname.split('/').at(-1));
+  });
   const targets = [
     { siteName: 'alpha', envName: 'dev', origin: first, startPath: '/home/?item=one&item=two', caution: false },
     { siteName: 'beta', envName: 'uat', origin: second, startPath: '/start/?filter=ready#section', caution: true },
@@ -50,6 +54,7 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   ];
   const makePanel = (target) => {
     const session = new OverlaySession({ sourceDir: fixture.dir, origin: target.origin, site: structuredClone(SITE), sourceMaps: false, siteName: target.siteName, envName: target.envName, caution: target.caution, stateDir: work, devTargets: targets });
+    sessions.set(target.origin, session);
     const panel = enablePanel(context, session); panels.push(panel); return panel;
   };
   const alpha = makePanel(targets[0]); const beta = makePanel(targets[1]);
@@ -58,15 +63,24 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   await alpha.draw(page);
   await page.locator('#paqvilo-panel .pill').click();
   const selector = page.getByLabel('Portal / environment', { exact: true });
-  assert.deepEqual(await selector.locator('option').allTextContents(), ['alpha @ dev · CURRENT', 'beta @ uat · REAL DATA']);
+  assert.deepEqual(await selector.locator('option').allTextContents(), ['alpha @ dev', 'beta @ uat']);
   assert.equal(await selector.inputValue(), '0');
+  await selector.focus(); await selector.press('ArrowDown'); await selector.press('ArrowUp'); await selector.press('b');
+  assert.equal(page.url(), first + '/current', 'keyboard option selection does not commit navigation');
+  assert.equal(await selector.locator('optgroup').count(), 3);
   assert.deepEqual(requests[1], [], 'panel rendering must not probe or navigate other targets');
   await selector.evaluate((node) => { node.add(new Option('Injected URL', 'https://example.invalid/')); node.value = 'https://example.invalid/'; node.dispatchEvent(new Event('change', { bubbles: true })); });
   assert.equal(page.url(), first + '/current', 'forged select options cannot become navigation URLs');
   const oldState = alpha.stateFor(page);
-  await Promise.all([page.waitForURL(second + '/start/?filter=ready#section'), selector.selectOption('1')]);
+  await selector.selectOption('1');assert.equal(page.url(),first+'/current');
+  await page.locator('#paqvilo-panel [data-act="tab"][data-v="issues"]').click();
+  page.once('dialog',dialog=>dialog.dismiss());await page.locator('[data-target-go]').click();assert.equal(page.url(),first+'/current');
+  page.once('dialog',dialog=>dialog.accept());
+  await Promise.all([page.waitForURL(second + '/start/?filter=ready#section'), page.locator('[data-target-go]').click()]);
   await beta.draw(page);
   assert.equal(await page.locator('#paqvilo-panel').getAttribute('data-label'), 'beta @ uat');
+  assert.equal(await page.locator('#paqvilo-panel .pill').isVisible(), false, 'target switch preserves the open panel');
+  assert.equal(await page.locator('#paqvilo-panel [role="tab"][aria-selected="true"]').getAttribute('data-v'), 'issues');
   assert.ok(requests[1].includes('/start/?filter=ready'));
   await page.evaluate(panelUi, oldState);
   assert.equal(await page.locator('#paqvilo-panel').getAttribute('data-label'), 'beta @ uat', 'old-origin draw is rejected inside the page');
@@ -74,7 +88,7 @@ test('portal selector stays inert until chosen and preserves origin-specific pan
   assert.equal(await page.locator('#paqvilo-panel').getAttribute('data-label'), 'beta @ uat', 'old-origin cleanup cannot remove the current panel');
   if (await page.locator('#paqvilo-panel .pill').isVisible()) await page.locator('#paqvilo-panel .pill').click();
   assert.equal(await page.getByLabel('Portal / environment', { exact: true }).inputValue(), '1');
-  await Promise.all([page.waitForURL(first + '/home/?item=one&item=two'), page.getByLabel('Portal / environment', { exact: true }).selectOption('0')]);
+  await Promise.all([page.waitForURL(first + '/home/?item=one&item=two'), page.getByLabel('Portal / environment', { exact: true }).selectOption('0').then(()=>page.locator('[data-target-go]').click())]);
   await alpha.draw(page);
   assert.equal(await page.locator('#paqvilo-panel').getAttribute('data-label'), 'alpha @ dev');
 });

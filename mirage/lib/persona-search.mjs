@@ -1,6 +1,7 @@
 /** Shared by the server and the browser. Indexed once per catalogue refresh;
  * filtering never joins memberships or rebuilds the rest of the admin page. */
 export const PERSONA_TRANSLITERATIONS = Object.freeze({ 'ø': 'o', 'æ': 'ae', 'œ': 'oe', 'ß': 'ss', 'đ': 'd', 'ð': 'd', 'ł': 'l', 'þ': 'th' });
+const displayCollator = new Intl.Collator('en', { sensitivity: 'base' });
 const transliterations = PERSONA_TRANSLITERATIONS;
 export const foldPersonaText = value => String(value ?? '').normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[øæœßđðłþ]/g, letter => transliterations[letter]);
 const values = value => (Array.isArray(value) ? value : value ? [value] : []).map(foldPersonaText);
@@ -17,7 +18,7 @@ export function indexPersonaCatalog(report) {
   const subgroupOrder = new Map([...groups].map(([id, group]) => [id, new Map((group.subgroups ?? []).map((sub, index) => [sub.id, index]))]));
   const displayOrder = (a, b) => (groupOrder.get(a.group) ?? groups.size) - (groupOrder.get(b.group) ?? groups.size) ||
     (a.subgroup ? subgroupOrder.get(a.group)?.get(a.subgroup) ?? 1000 : -1) - (b.subgroup ? subgroupOrder.get(b.group)?.get(b.subgroup) ?? 1000 : -1) ||
-    (a.order ?? 1000) - (b.order ?? 1000) || String(a.label ?? a.name ?? a.key).localeCompare(String(b.label ?? b.name ?? b.key), 'en', {sensitivity:'base'}) || personaRowKey(a).localeCompare(personaRowKey(b));
+    (a.order ?? 1000) - (b.order ?? 1000) || displayCollator.compare(String(a.label ?? a.name ?? a.key), String(b.label ?? b.name ?? b.key)) || personaRowKey(a).localeCompare(personaRowKey(b));
   return [...(report.personas ?? []), ...(report.other ?? []).map(persona => ({ ...persona, group: '__other' }))].sort(displayOrder).map(persona => {
     const group = groups.get(persona.group), subgroup = group?.subgroups?.find(entry => entry.id === persona.subgroup);
     return { persona, key: personaRowKey(persona), text: foldPersonaText([

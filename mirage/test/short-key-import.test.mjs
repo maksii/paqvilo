@@ -149,7 +149,7 @@ test("serve treats a code site like any export, and discovered server logic enfo
   const about = await fetch(app.url + "/about/", { redirect: "manual" });
   assert.equal(about.status, 302);
   assert.match(about.headers.get("location"), /signin\?ReturnUrl=%2Fabout%2F/i);
-  assert.equal(await (await fetch(app.url + "/app.js")).text(), "window.syntheticApp = 'from the web file';\n");
+  assert.equal((await (await fetch(app.url + "/app.js")).text()).split("\n//# sourceMappingURL=")[0], "window.syntheticApp = 'from the web file';\n");
   for (const method of ["GET", "POST", "PUT", "PATCH", "DELETE"]) {
     const response = await fetch(app.url + "/_api/serverlogics/order-summary", { method, headers: { "content-type": "application/json" }, ...(method === "GET" ? {} : { body: "{}" }) });
     assert.equal(response.status, 403, method);

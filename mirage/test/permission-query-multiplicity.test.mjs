@@ -28,6 +28,70 @@ function fixture() {
 const api={portalRequest:true,profile:'webapi'};
 const xml=(distinct,link='',aggregate=false)=>`<fetch ${distinct==null?'':`distinct="${distinct}"`} ${aggregate?'aggregate="true"':''}><entity name="item"><attribute name="itemid" ${aggregate?'aggregate="count" alias="total"':''}/>${link}</entity></fetch>`;
 
+test('the default Web API compiler deduplicates omitted DISTINCT across pages and preserves authored false and Global semantics',()=>{
+  const {store}=fixture(),identity={contactId:'person',roles:['red','blue']};store.setObserved(null);
+  const result=store.fetchXml(xml(null),identity,api);assert.deepEqual(result.entities.map(row=>row.itemid),['i0','i1','i2']);
+  const first=store.fetchXml('<fetch count="2"><entity name="item"><attribute name="itemid"/><order attribute="itemid"/></entity></fetch>',identity,api);
+  const cookie=String(first.paging_cookie).replaceAll('&','&amp;').replaceAll('"','&quot;');
+  const second=store.fetchXml(`<fetch count="2" page="2" paging-cookie="${cookie}"><entity name="item"><attribute name="itemid"/><order attribute="itemid"/></entity></fetch>`,identity,api);
+  const ids=[...first.entities,...second.entities].map(row=>row.itemid);assert.equal(ids.length,3);assert.equal(new Set(ids).size,3);
+  const authored=store.fetchXml(xml('false'),identity,api);assert.ok(authored.entities.length>3);assert.ok(authored.permissionQuery.diagnostics.some(row=>row.code==='PERMISSION_QUERY_DISTINCT_FALSE_UNQUALIFIED'));
+  store.state.permissions.push({id:'global',entity:'item',scope:'global',roles:['red'],operations:['read']});
+  const global=store.fetchXml(xml(null,'<link-entity name="detail" from="itemid" to="itemid"/>'),identity,api);
+  assert.equal(global.entities.length,10);assert.doesNotMatch(global.xml,/distinct="true"/);
+});
+
+test('default scoped DISTINCT preserves projected tuples, aggregate inputs and bypass contracts',()=>{
+  const {store}=fixture(),identity={contactId:'person',roles:['red','blue']};store.setObserved(null);
+  const projected='<link-entity name="detail" from="itemid" to="itemid" alias="d"><attribute name="detailid"/></link-entity>';
+  const tuples=store.fetchXml(xml(null,projected),identity,api);
+  assert.equal(tuples.entities.length,6);
+  assert.equal(new Set(tuples.entities.map(row=>row.itemid)).size,3,'Linked projections remain part of DISTINCT, rather than collapsing by root ID');
+  const multiplicity=store.fetchXml(xml('false'),identity,api).entities.length;
+  assert.ok(multiplicity>3);
+  for(const distinct of [null,'false','true'])
+    assert.deepEqual(store.fetchXml(xml(distinct,'',true),identity,api).entities,[{total:multiplicity}]);
+  for(const bypass of ['admin','permissive']){
+    if(bypass==='permissive')store.state.settings.permissionMode='permissive';
+    const result=store.fetchXml(xml(null,'<link-entity name="detail" from="itemid" to="itemid"/>'),bypass==='admin'?{admin:true}:identity,api);
+    assert.equal(result.entities.length,10);assert.doesNotMatch(result.xml,/distinct="true"/);
+    assert.equal(result.permissionQuery.permissionLinkCount,0);
+  }
+});
+
+test('Global Web API DISTINCT remains authored in both permission profiles without scoped diagnostics',()=>{
+  for(const native of [false,true])for(const scope of ['global',undefined]){
+    const {store}=fixture(),identity={contactId:'person',roles:['red','blue']};
+    if(!native)store.setObserved(null);
+    store.state.permissions.push({id:'global',entity:'item',scope,roles:['red'],operations:['read']});
+    const preview=compilePermissionFetchXml(xml(null),{permissions:store.state.permissions,mappings:store.state.mappings,identity});
+    assert.equal(preview.globalPermissionGranted,true,'Omitted scope is the same Global grant used for execution');
+    for(const distinct of [null,'false','true']){
+      const result=store.fetchXml(xml(distinct,'<link-entity name="detail" from="itemid" to="itemid"/>'),identity,api);
+      assert.equal(result.entities.length,distinct==='true'?5:10);
+      assert.ok(!result.permissionQuery.diagnostics.some(row=>/^PERMISSION_QUERY_DISTINCT_/.test(row.code)));
+    }
+  }
+});
+
+test('omitted Global ancestor scope keeps authored linked Parent permission paths identical and requires the parent row',()=>{
+  const source='<fetch><entity name="item"><attribute name="itemid"/><link-entity name="child" from="itemid" to="itemid"/></entity></fetch>';
+  let expected;
+  for(const scope of ['global',undefined]){
+    const tables={item:[{itemid:'valid'},{itemid:'missing'}],child:[{childid:'c1',itemid:'valid',parentid:'p1'},{childid:'c2',itemid:'missing',parentid:'absent'}],parent:[{parentid:'p1'}],contact:[]};
+    const permissions=[{id:'items',entity:'item',scope:'global',operations:['read']},{id:'children',entity:'child',scope:'parent',operations:['read'],parentPermissionId:'parents',relationship:{entity:'parent',from:'parentid',to:'parentid'}},{id:'parents',entity:'parent',scope,operations:['read']}];
+    const store=new DataStore({state:{tables,mappings:Object.fromEntries(Object.keys(tables).map(entity=>[entity,{idColumn:entity+'id',entitySet:entity+'s'}])),permissions,settings:{permissionMode:'enforce'}}});
+    store.setObserved({tablePermissionQueryPipeline:'native-classic',evidence:'Invented Global ancestor consistency and parent-existence fixture'});
+    const result=store.fetchXml(source,{contactId:'person'},api);
+    assert.deepEqual(result.entities,[{itemid:'valid'}],'A real parent authorizes the linked row without any contact rows; a missing parent does not');
+    assert.equal(result.permissionQuery.permissionLinkCount,1);assert.equal(result.permissionQuery.totalLinkCount,2);
+    assert.doesNotMatch(result.xml,/<link-entity name="contact"/);
+    expected??=result.xml;assert.equal(result.xml,expected,'Omitted scope compiles exactly like explicit Global');
+    store.state.tables.parent=[];
+    assert.deepEqual(store.fetchXml(source,{contactId:'person'},api).entities,[],'A Global ancestor still requires an existing related parent row');
+  }
+});
+
 test('scoped native API unions every overlapping role subset without multiplying projected roots or authored tuples',()=>{
   const {store,memberships,principals}=fixture();
   for(const roles of [['red'],['blue'],['red','blue']]){

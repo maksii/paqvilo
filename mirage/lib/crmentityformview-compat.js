@@ -161,9 +161,9 @@
     // jQuery >= 3.7 answers a lone class selector with context.getElementsByClassName.
     const find = $.find;
     const wrapped = function (selector, context, results, seed) {
-      if (!seed && typeof selector === "string" && /^\.[\w-]+$/.test(selector) && (context == null || context === document)) {
+      if (!seed && typeof selector === "string" && /^\.[\w-]+$/.test(selector) && (context == null || context.nodeType === 9)) {
         const output = results || [];
-        Array.prototype.push.apply(output, document.querySelectorAll(selector));
+        Array.prototype.push.apply(output, (context || document).querySelectorAll(selector));
         return output;
       }
       return find.apply(this, arguments);

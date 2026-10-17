@@ -72,7 +72,7 @@ The movable card prioritizes source paths, markup matches, include context, basi
 
 Field identifiers are checked against the selected export and explicit table context; ambiguous matches stay visible as candidates. Source matching uses static IDs, classes and component attributes without relying on positional DOM paths, so moved regions can keep their source identity. Multiple templates and conditional branches can share markup; matching candidates do not establish a deployed source revision. Related script references and page dependencies remain secondary to the selected element's sources. Iframe document contents remain unavailable. Native dialogs, nested overlays, open shadow roots, scrolling and source-driven DOM replacements are handled without silently transferring a removed selection to another element.
 
-X-ray keeps discovery and drawing bounded: up to 900 source hints, 800 candidate elements and 250 background outlines. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch; JavaScript reference extraction deliberately stops at template literals or ambiguous slash syntax. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
+X-ray indexes markup hints across all referenced sources; it skips an individual markup source above 1,048,576 UTF-16 code units and reports that omission. Discovery and drawing remain bounded to 800 candidate elements and 250 background outlines. Details show up to 60 source matches with an omission notice. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch; JavaScript reference extraction deliberately stops at template literals or ambiguous slash syntax. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
 
 Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings. Exported language routes select the corresponding page and snippet sources. Relative asset references follow their browser URL.
 
@@ -97,3 +97,73 @@ Agent discovery files contain bearer tokens and stay under ignored `.paqvilo/age
 Inspect applied resources, unmatched markup patches, deployment requirements, errors and failed requests after refresh. Audit coverage reports source classification, not successful navigation or browser application. A sign-in page is not successful target coverage. `verify --signed-in` requires closing the matching dev identity first; headed sign-in can be bounded with `--sign-in-timeout`.
 
 Continue with [configuration](configuration.md), [project extensions](project-extensions.md) or the [documentation index](index.md).
+
+## Agent API reference
+
+Use `paqvilo lense agent <action> --json`. Every page action requires `--session <ignored discovery file> --page-id <numeric ID>`; never print or share discovery contents. The API is confined to its configured portal origin. Attached browsers remain user-owned; stopping an owned target stops its shared owned browser. There is no evaluation, form-action or arbitrary proxy endpoint.
+
+Responses use schemaVersion, command, ok, offline, writesFiles and errors (objects with code/message). Browser inspection has offline=false. Read failures distinguish missing discovery files from invalid JSON. HTTP failures carry stable codes: invalid_argument, invalid_selector, unauthorized, page_not_found, page_busy, session_busy, foreign_origin, origin_changed, unsafe_reload, image_too_large, response_too_large and action_timeout. Messages omit browser stacks, ANSI controls and call logs. The browser navigation deadline is shorter than the CLI HTTP deadline; timed-out navigation is stopped.
+
+### agent sessions
+
+No session is required. Optional --config selects its state folder. Returns sessions with id, site, environment, discoveryFile, reachable, plus invalidFiles and truncated. Does not return bearer tokens. At most 64 files are probed.
+
+### agent status
+
+Returns id, session (without token), readiness, browserScope, access counts, debugger port, baseline, git, overlay, pages and truncation flags. A stopped session's missing discovery file is reported explicitly.
+
+### agent pages
+
+Returns pages with numeric id, document id, sanitized URL and title. Closed or foreign-origin pages are excluded from actionable pages.
+
+### agent events
+
+Options --after (sequence, default 0) and --limit (1–500, default 100). Returns sessionId, events, oldestSequence, latestSequence, nextSequence, dropped, hasMore and cursorAhead. Advance with nextSequence and inspect dropped/hasMore. A cursor ahead of latestSequence sets cursorAhead=true and resets nextSequence to latestSequence; compare sessionId when reusing a cursor. Retention is 500 events or 1 MiB, whichever is reached first.
+
+### agent state
+
+Returns page, overlay, resources, diagnostics, runtime and limits for the current document. Lists are bounded to 200 items; inspect truncation flags. Page IDs differ from offline resource IDs.
+
+### agent snapshot
+
+Options --selector (CSS, at most 1,000 characters), --limit (1–200, default 100), --styles (up to 20 CSS properties). Returns sanitized URL, title, total, truncated and elements with tag, bounded attributes/text, visibility, rect and style. Does not copy field values. Invalid selectors return invalid_selector (400).
+
+### agent screenshot
+
+Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Existing files are never overwritten. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
+
+### agent viewport
+
+Options --width (320–4096, default 1440), --height (240–4096, default 900). Returns page and viewport. Invalid dimensions return invalid_argument.
+
+### agent navigate
+
+Requires --path <portal-path>. Optional --timeout (100–120000 ms) bounds the client request; the server/browser deadline is shorter. Performs an explicit GET confined to the portal origin and returns page and HTTP status. Foreign origins are rejected; redirects leaving the origin return origin_changed. Timeout returns action_timeout (504).
+
+### agent reload
+
+Optional --timeout. Returns page and status. Only an observed GET document with no pending navigation can reload; unknown, restored-history and POST documents return unsafe_reload (409). Navigation uses an explicit GET to avoid repeating a form post.
+
+### agent stop
+
+Returns stopping=true and shuts down that owned session/browser, removing its discovery file. Other sessions and attached user-owned browsers remain intact.
+
+## Local source debugging
+
+Mirage appends file-backed source maps to exported JavaScript/CSS responses. Page, template and form inline JavaScript carries its export sourceURL and line-offset source map. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9223`:
+
+```json
+{"type":"msedge","request":"attach","name":"Paqvilo Mirage","port":9223,"resolveSourceMapLocations":["**", "!**/node_modules/**"]}
+```
+
+The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.
+
+Target selection commits only with Go or Enter. Local, remote and caution targets have separate groups; leaving a local runtime for a live target or opening caution requires confirmation. `portals: all` excludes caution targets unless explicitly selected or `includeCaution: true` is set in the catalogue. UI state is scoped to the browser profile/session, shared across its target switches; automated headless sessions start collapsed.
+
+`map --no-write --json` returns the mapping without writing reports. Otherwise writesFiles reports both mapping paths. Resources distinguish exists, empty and renders for optional enhanced fields. Duplicate active page URLs and every overwritten YAML record are diagnosed offline.
+
+Lense JSON commands return a common envelope with schemaVersion, command, ok, offline, writesFiles (an array) and errors (objects with code/message). `status --json` returns comparisons in results, sets offline=false and fails when a comparison is incomplete. `verify --json` reports its final pass/fail after cleanup and names the evidence files it actually wrote. Resource presence and rendering flags describe indexed export relationships; they do not establish browser coverage.
+
+Lense Mirage management uses the same envelope: init names its generated project file; start names state, discovery, ownership and startup log files; stop names its updated ownership file and reports removed discoveries separately. Started runtimes can continue writing state and derived caches. Status/start/stop use offline=false; `lense mirage inspect` is offline and writes no report. Interactive `mirage dev` rejects --json; use start plus the agent API for structured automation.
+
+X-ray keeps all indexed source hints across snippets, lists repeated source lines and treats common framework classes as possible matches. Background discovery is bounded to 800 candidates and 250 outlines per paint; the toolbar legend reports the bounds. Nodes smaller than four pixels or clipped helper nodes remain selectable but have no background outline. Geometry follows scroll, resize, relevant mutations and running animations; hidden and idle documents do not poll layout.

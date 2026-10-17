@@ -207,7 +207,7 @@ function markupValues(value) {
   return [{}];
 }
 const yamlField = (source) => (raw) => {
-  const content = parseYaml(raw, true);
+  const content = source.parsedYaml?.(raw) ?? parseYaml(raw, true);
   if (content.__error) return null;
   if (source.recordId && atPath(content, [...source.fieldPath.slice(0, -1), source.recordIdField]) !== source.recordId) return null;
   let value = atPath(content, source.fieldPath);
@@ -363,7 +363,7 @@ export function sourceText(src, raw) {
   }
   if (text == null) return null;
   text = text.replace(/^﻿/, '');
-  return src.extract ? src.extract(text) : text;
+  return src.parsedYaml && src.fieldPath ? yamlField(src)(text) : src.extract ? src.extract(text) : text;
 }
 
 const XML_ENTITIES = { lt: '<', gt: '>', amp: '&', quot: '"', apos: "'" };
@@ -540,6 +540,9 @@ export class PortalModel {
   // Language prefixes come from exported metadata or explicit localized source names.
   // Never assume that an arbitrary two-letter page slug denotes a language.
   #loadLanguages() {
+    const urls=new Map();
+    for(const page of this.pages.values()) {const url=this.pagePath(page.id);if(url)urls.set(urlKey(url),[...(urls.get(urlKey(url))??[]),page]);}
+    for(const [url,pages]of urls)if(pages.length>1)this.warnings.push(`duplicate page URL ${url}: ${pages.map(page=>page.name?`${page.name} (${page.id})`:page.id).join(', ')}`);
     this.languageCodes = new Set();
     this.pagePaths = new Set([...this.pages.values()].map((page) => this.pagePath(page.id)).filter(Boolean).map(urlKey));
     const add = (code) => { if (typeof code === 'string' && /^[a-z]{2,3}(?:-[a-z0-9]{2,8})*$/i.test(code)) this.languageCodes.add(code.toLowerCase()); };
@@ -594,7 +597,7 @@ export class PortalModel {
       value = { __error: err.message };
       this.yamlCache.delete(file);
     }
-    if (value.__error) this.warnings.push(`${path.relative(this.sourceDir, file)}: ${value.__error}`);
+    if (value.__error) this.warnings.push(`${path.relative(this.sourceDir, file).replaceAll('\\','/')}: ${value.__error}`);
     this.currentYaml.set(file, value);
     return value;
   }
@@ -780,7 +783,8 @@ export class PortalModel {
             // several sources share one XML file; the field keeps them apart
             rel: `${c.rel}#${field}`,
             label: `${c.name} (${field})`,
-            field,
+            field, componentId:c.id, exists:Object.hasOwn(c.content,field),
+            renders:!(c.type===COMPONENT.WEB_PAGE&&[...this.pageAlias.values()].includes(c.id)),
             extract: componentField(field),
             pageUrl: c.type === COMPONENT.WEB_PAGE ? this.pagePath(c.id) : null,
             usedOn: c.type === COMPONENT.BASIC_FORM || c.type === COMPONENT.LIST ? this.pagesShowing(c.id) : c.type === COMPONENT.ADVANCED_FORM_STEP ? this.pagesShowing(c.content.webform) : [],
@@ -821,7 +825,7 @@ export class PortalModel {
       const y = this.#readYaml(file);
       if (!yamlId(y, 'webpage')) continue;
       const id = String(yamlId(y, 'webpage')).toLowerCase();
-      if (Number(y.statecode) === 1) {
+      if (Number(y.statecode ?? y.adx_statecode) === 1) {
         this.inactivePages.add(id);
         continue;
       }
@@ -834,7 +838,7 @@ export class PortalModel {
       }
       // A language record lacking its root cannot establish a separate URL tree.
       if (path.basename(path.dirname(file)) === 'content-pages' || path.basename(path.dirname(path.dirname(file))) === 'content-pages') {
-        this.warnings.push(`${path.relative(this.sourceDir, file)}: language page has no root page`);
+        this.warnings.push(`${path.relative(this.sourceDir, file).replaceAll('\\','/')}: language page has no root page`);
         continue;
       }
       this.pages.set(id, {

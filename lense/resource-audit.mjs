@@ -172,7 +172,7 @@ export function auditResources(model, site) {
   const inactiveSources = new Set((model.inactiveSources ?? []).map((source) => source.file));
   for (const item of entries.values()) {
     const file = path.join(root, item.relativePath);
-    const mirage = /\.[^.]+\.[^.]+$/.test(file) ? file.replace(/\.[^.]+\.[^.]+$/, '.yml') : null;
+    const mirage = /[\\/]web-files[\\/]/.test(file) ? `${file}.webfile.yml` : /\.[^./\\]+\.[^./\\]+$/.test(file) ? file.replace(/\.[^./\\]+\.[^./\\]+$/, '.yml') : null;
     if ((!item.field || model.format === 'enhanced') && inactiveSources.has(file) || metadata.get(mirage)?.inactive) Object.assign(item, { status: 'inactive', reason: 'Inactive portal record or inactive language root is not rendered.' });
   }
 

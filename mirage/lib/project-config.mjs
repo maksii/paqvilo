@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import {contentPolicyDefaults} from './content-policy-defaults.mjs';
 import { createHash } from "node:crypto";
 import YAML from "yaml";
 import { platformConfig } from './platform-config.mjs';
@@ -16,7 +17,7 @@ const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins",
 ]);
 
 function list(value, label) {
@@ -273,6 +274,7 @@ function normalizePortal(entry, index) {
     deploymentProfile: entry.deploymentProfile ?? entry.deployment_profile ?? null,
     deploymentProfiles: entry.deploymentProfiles,
     platform: entry.platform,
+    ...contentPolicyDefaults(entry),
     solutionIds: solutions,
     reference: entry.reference == null ? null : String(entry.reference),
     observed: observedConfig(entry.observed, `portals[${index}].observed`),
@@ -390,6 +392,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     const sourceDir = await resolveSource(portal.sourcePath, "Portal", portal.id);
     return {
       ...portal,
+      ...contentPolicyDefaults(raw), ...contentPolicyDefaults(portal),
       platform: platformConfig(portal.platform ?? raw.platform, `portals.${portal.id}.platform`),
       deploymentProfiles: resolveDeploymentProfiles(portal.deploymentProfiles ?? raw.deploymentProfiles, base, {sourceDir,sourceRoot:base}),
       sourceDir,

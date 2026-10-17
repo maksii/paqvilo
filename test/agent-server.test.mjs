@@ -110,6 +110,12 @@ test('DOM inspection redacts content and resolves links against the document; pa
   assert.equal((await fx.call('/v1/pages/1/viewport', { width: 800, height: 600 })).status, 200);
   assert.equal((await fx.call('/v1/pages/1/viewport', { width: 0, height: 600 })).status, 400);
   assert.equal((await fx.call('/v1/pages/1/viewport', {})).status, 400);
+  const beforeMalformed=fx.calls.length;
+  for(const body of [{width:null,height:600},{width:800,height:null},{width:null,height:null}]){
+    const response=await fx.call('/v1/pages/1/viewport',body);
+    assert.equal(response.status,400);assert.equal((await response.json()).error.code,'invalid_argument');
+  }
+  assert.equal(fx.calls.length,beforeMalformed,'null dimensions never reach the browser');
 });
 
 test('oversized and malformed requests fail without retaining browser work; operations are serialized per page', async (t) => {
@@ -129,6 +135,25 @@ test('oversized and malformed requests fail without retaining browser work; oper
   fx.setUrl('https://login.example/');
   assert.equal((await fx.call('/v1/pages/1/state')).status, 404);
   assert.deepEqual((await (await fx.call('/v1/pages')).json()).pages, []);
+});
+
+test('malformed agent body shapes, cursor bounds and methods leave the session usable',async t=>{
+  const fx=await fixture(t);
+  for(const body of [null,[],false,'unexpected']){
+    const response=await fx.call('/v1/pages/1/dom',body);
+    assert.equal(response.status,400);assert.equal((await response.json()).error.code,'invalid_argument');
+  }
+  for(const query of ['after=-1','after=1.5','after=1e2','after=9007199254740992','limit=0','limit=501']){
+    const response=await fx.call('/v1/events?'+query);
+    assert.equal(response.status,400);assert.equal((await response.json()).error.code,'invalid_argument');
+  }
+  assert.equal((await fx.call('/v1/pages/1/dom')).status,405);
+  assert.equal((await fx.call('/v1/pages/1/dom',{}, {'content-type':'text/plain'})).status,415);
+  assert.equal((await fx.call('/v1/stop',{unexpected:true})).status,400);assert.equal(fx.stops(),0);
+  assert.equal((await fx.call('/v1/session')).status,200);
+  assert.equal((await fx.call('/v1/pages/1/dom',{})).status,200);
+  const future=await (await fx.call('/v1/events?after=9007199254740991')).json();
+  assert.equal(future.sessionId,fx.discovery.id);assert.equal(future.cursorAhead,true);assert.equal(future.nextSequence,future.latestSequence);
 });
 
 test('stop and disposal remove only this discovery file and release every listener', async (t) => {

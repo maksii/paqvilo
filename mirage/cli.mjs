@@ -204,6 +204,7 @@ try {
           const simulator = await createSimulator({
             setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
             sourceDir: portal.sourceDir,
+            contentPolicyDefaults:portal,
             stateFile,
             preset: args.preset, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only',
             port: port ? port + index : 0,
@@ -415,6 +416,7 @@ try {
               sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],
         localOverrides: siteMirage?.localOverrides,
+        contentPolicyDefaults:{...configuredPortal,...siteMirage},
         render: siteMirage?.render,
         personaContexts: siteMirage?.personaContexts,
         identityProvider: siteMirage?.identityProvider,

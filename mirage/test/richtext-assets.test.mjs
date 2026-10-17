@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
+import {extractManagedRichTextControls} from '../acceptance-api.mjs';
 import { officeFontPath } from "../lib/asset-cache.mjs";
 import {
   captureRichTextAssets,
-  extractManagedRichTextControls,
   observeManagedResources,
 } from "../lib/richtext-assets.mjs";
 

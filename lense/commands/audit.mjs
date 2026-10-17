@@ -15,7 +15,7 @@ export default async function audit(_cfg, args) {
   }
   const complete = reports.length > 0 && reports.every((report) => report.coverage.complete);
   const ok = reports.length > 0 && reports.every((report) => report.coverage.inventoryComplete) && (!args.strict || complete);
-  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: false, complete, reports };
+  const report = { schemaVersion: 1, command: 'audit', ok, offline: true, writesFiles: [], complete, reports };
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Independent offline resource inventory (mapping does not prove browser coverage)');

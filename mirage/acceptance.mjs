@@ -122,10 +122,12 @@ export async function runAcceptance({
   channel = process.env.PAQVILO_BROWSER ||
     (process.platform === "win32" ? "msedge" : "chromium"),
   timeout = 15000,
+  navigationCommitReserveMs = Math.min(2000, timeout / 2),
   // Optional async hook run on the local browser context before the flows, e.g. a
   // paqvilo-mirage-auth session sign-in of the persona under test.
   prepareContext = null,
 }) {
+  if (!Number.isFinite(navigationCommitReserveMs) || navigationCommitReserveMs < 0 || navigationCommitReserveMs >= timeout) throw new Error('navigationCommitReserveMs must be nonnegative and smaller than timeout.');
   const local = loopback(localUrl);
   if (!["http:", "https:"].includes(local.protocol))
     throw new Error("Local simulator requires HTTP(S).");
@@ -335,7 +337,7 @@ export async function runAcceptance({
             );
           // Chromium reuses the network id across redirects; all hops share the first
           // hold's budget and leave time for the action's navigation to commit.
-          const reserve = Math.min(1000, timeout / 2);
+          const reserve = navigationCommitReserveMs;
           const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
             deadline: Math.min(Date.now() + timeout - reserve, actionDeadline - reserve), ids: new Set(),
           };
@@ -354,6 +356,8 @@ export async function runAcceptance({
                 (observation.navigationWaits ??= []).push({
                   navigation: safeUrl(event.request.url),
                   ...wait,
+                  commitReserveMs: reserve,
+                  actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
             })
             .catch(() => {})
@@ -478,6 +482,10 @@ export async function runAcceptance({
         const response = observation.failedResponses.find(
           (item) => item.requestKey === requestKey,
         );
+        if (request.isNavigationRequest() && [204,205].includes(record?.status) && request.failure()?.errorText === 'net::ERR_ABORTED') {
+          (observation.noContentNavigations ??= []).push({method:request.method(),url:failureUrl(request.url()),status:record.status});
+          return;
+        }
         observation.failedRequests.push({
           kind: "network",
           requestKey,

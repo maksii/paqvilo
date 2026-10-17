@@ -89,3 +89,5 @@ Source checkouts can also run
 `node --expose-gc --max-old-space-size=4096 mirage/test-volume/state-storage.mjs`.
 The published command uses a disposable directory and removes it on completion; it does
 not inspect or modify a project's state. Run it on the filesystem used for local states.
+
+Native basic-form insert/edit postbacks, JSON form submissions and multistep saves use incremental row transactions. The record, associations and annotation attachments share one rollback boundary. Trusted handlers or CLR steps that actually execute promote the unit to a full checkpoint; audit saveMode reports the resulting persistence mode. verify-storage includes a native form save with a 5,000 ms bound.

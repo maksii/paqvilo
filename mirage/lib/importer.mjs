@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import YAML from "yaml";
+import { duplicateYamlDiagnostics } from '../../lense/yaml-diagnostics.mjs';
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { portalLanguage } from "./portal-languages.mjs";
@@ -447,12 +448,7 @@ export async function importPortal(
           rows = YAML.parse(text);
         } catch (error) {
           if (!/Map keys must be unique/.test(error.message)) throw error;
-          diagnostics.push({
-            code: "duplicate-yaml-key",
-            file,
-            message: error.message,
-            recovered: true,
-          });
+          diagnostics.push(...duplicateYamlDiagnostics(text,file));
           rows = YAML.parse(text, { uniqueKeys: false });
         }
         if (!Array.isArray(rows)) rows = [rows];
@@ -600,6 +596,10 @@ export async function importPortal(
           ),
         };
         record._deploymentProfile = profileName;
+        record._profileSourceFiles = {
+          ...record._profileSourceFiles,
+          ...Object.fromEntries(fields.map(k => [k.replace(/^(?:adx|mspp)_/, ''), profile])),
+        };
         profileChanges.push({
           recordId: record.id,
           kind,

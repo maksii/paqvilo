@@ -53,6 +53,7 @@ Other
   --headless        dev/verify: no browser window
   --headed          dev/verify: show the browser window
   --signed-in       verify: use the signed-in profile of "dev" instead of an anonymous one
+  --no-write        map: return the report without writing mapping files
   --no-reload       dev: do not reload tabs when sources change
   --debug-port <n>  dev: launched browser's debugger port (0 = off; incompatible with CDP attachment)
   --check           map: request every mapped URL online
@@ -128,6 +129,7 @@ try {
       headed: { type: 'boolean' },
       'signed-in': { type: 'boolean' },
       'no-reload': { type: 'boolean' },
+      'no-write': { type: 'boolean' },
       'no-overrides': { type: 'boolean' },
       'debug-port': { type: 'string' },
       check: { type: 'boolean' },
@@ -170,12 +172,22 @@ try {
     },
   }));
 } catch (err) {
-  if (process.argv.includes('--json') || process.argv[2] === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command: process.argv[2] ?? null, ok: false, error: { code: 'INVALID_ARGUMENT', message: err.message } }));
+  if (process.argv.includes('--json') || process.argv[2] === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command: process.argv[2] ?? null, ok: false, offline:true, writesFiles:[], errors:[{code:'invalid_argument',message:err.message}], error: { code: 'INVALID_ARGUMENT', message: err.message } }));
   else console.error(`paqvilo: ${err.message}\nRun with --help to see supported options.`);
   process.exit(1);
 }
 
 const command = positionals[0];
+if(values.json||command==='agent'){
+  const print=console.log.bind(console);
+  console.log=(value)=>{let result;try{result=JSON.parse(value);}catch{return print(value);}
+    const normalizeError=error=>typeof error==='string'?{code:'COMMAND_FAILED',message:error}:{...error,code:error?.code??'CHECK_FAILED',message:error?.message??error?.reason??'Command failed'};
+    if(Array.isArray(result))result={results:result};
+    if(Array.isArray(result.reports))result.reports=result.reports.map(report=>({...report,errors:(report.errors??[]).map(normalizeError),...(report.mirage?{mirage:{...report.mirage,errors:(report.mirage.errors??[]).map(normalizeError)}}:{})}));
+    const errors=(result.errors??(result.error?[result.error]:(result.reports??[]).flatMap(report=>[...(report.errors??[]),...(result.checks?.includes('mirage')&&report.mirage?.ready===false?report.mirage.errors:[]) ]))).map(normalizeError);
+    print(JSON.stringify({schemaVersion:1,command,offline:result.command==='help'||(command==='mirage'?['init','inspect'].includes(positionals[1]):!['agent','dev','verify','status'].includes(command)),...result,ok:result.ok??result.ready??result.passed??errors.length===0,writesFiles:Array.isArray(result.writesFiles)?result.writesFiles:[],errors},null,2));
+  };
+}
 if (values.help || !command) {
   if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command: 'help', ok: Boolean(command || values.help), usage: HELP }));
   else console.log(HELP);
@@ -212,14 +224,14 @@ try {
   const browserSelection = ['browser', 'profile', 'user-data-dir', 'profile-directory'];
   const allowed = {
     dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'no-overrides', 'debug-port'],
-    map: [...selection, 'pick', 'check', 'json'], status: [...selection, 'pick', 'json'],
+    map: [...selection, 'pick', 'check', 'no-write', 'json'], status: [...selection, 'pick', 'json'],
     verify: [...selection, ...browserSelection, 'pick', 'path', 'headless', 'headed', 'signed-in', 'json', 'strict', 'sign-in-timeout'],
     doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
     agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
-    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json'],
+    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json'],
   };
   for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw new Error(`--${option} is not supported by ${command}`);
   if (values.pick && values.json) throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
@@ -246,7 +258,7 @@ try {
   // Let large JSON reports drain to piped stdout before exiting.
   if (typeof code === 'number') process.exitCode = code;
 } catch (err) {
-  if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, error: { code: 'COMMAND_FAILED', message: err.message } }));
+  if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, writesFiles:err.writesFiles??[], error: { code: err.code??'COMMAND_FAILED', message: err.message } }));
   else console.error(`paqvilo: ${err.message}`);
   if (!values.json && (command === 'dev' || command === 'mirage' && positionals[1] === 'dev')) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
   if (process.env.PAQVILO_DEBUG) console.error(err.stack);

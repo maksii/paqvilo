@@ -429,6 +429,7 @@ async function writeUnit(provider, work) {
           update: (entity, id, values, identity) => provider.updateRecord(entity, id, values, identity),
           associate: (entity, id, navigation, targetId, identity) => provider.changeAssociationRecord(entity, id, navigation, targetId, identity, true),
         }),
+        { incremental: true },
       );
     return await work(provider);
   } catch (cause) {

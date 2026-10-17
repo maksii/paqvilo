@@ -445,10 +445,10 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
   // attachment file name, unquoted base64 SHA-256 ETag, Vary, no Last-Modified, and 304.
   const file = await get("/site.css");
   assert.equal(file.status, 200);
-  assert.equal(await file.text(), css);
+  const servedCss=await file.text();assert.equal(servedCss.split("\n/*# sourceMappingURL=")[0],css);
   assert.match(file.headers.get("content-type"), /^text\/css; ?charset=utf-8$/);
   assert.equal(file.headers.get("content-disposition"), "inline;filename*=UTF-8''site.css");
-  const etag = createHash("sha256").update(css).digest("base64");
+  const etag = createHash("sha256").update(servedCss).digest("base64");
   assert.equal(file.headers.get("etag"), etag);
   assert.equal(file.headers.get("last-modified"), null);
   assert.equal(file.headers.get("vary"), "Accept-Encoding");
@@ -475,7 +475,7 @@ test("portal responses carry only HTTP/* site-setting headers; web files use the
   // Loopback confinement is an explicit opt-in: a separate policy beside the site's.
   const state = await (await get("/__sim/api/state?summary=1")).json();
   assert.equal(state.config.confinePortalPages, false);
-  assert.deepEqual(state.status.confinement, { portalPages: false, policy: null });
+  assert.deepEqual(state.status.confinement, { portalPages: false, policy: null, source:'runtime state' });
   const patch = (body) => get("/__sim/api/config", { method: "PATCH", headers: { "content-type": "application/json", "x-sim-csrf": state.csrf }, body: JSON.stringify(body) });
   assert.equal((await patch({ confinePortalPages: "yes" })).status, 400);
   assert.equal((await patch({ confinePortalPages: true })).status, 200);

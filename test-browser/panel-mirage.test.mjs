@@ -100,6 +100,29 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   // A public page: anonymous access, its template chain, the Solution form and column sources.
   await page.goto(`${app.url}/`);
   await openTab('runtime');
+  const activeTab=()=>page.evaluate(()=>document.getElementById('paqvilo-panel').shadowRoot.activeElement?.getAttribute('data-v'));
+  await panelLocator('[role=tab][aria-selected=true]').focus();
+  await page.keyboard.press('ArrowRight');
+  assert.equal(await activeTab(),'tweaks');
+  assert.equal(await panelLocator('[role=tabpanel]').getAttribute('aria-labelledby'),'paqvilo-tab-tweaks');
+  assert.equal(await panelLocator('.search').isVisible(),false);
+  await page.keyboard.press('ArrowLeft');
+  assert.equal(await activeTab(),'runtime');
+  const fold=panelLocator('[data-act=fold][data-id=runtime-chain]');
+  await fold.click();
+  assert.equal(await fold.getAttribute('aria-expanded'),'false');
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-panel').shadowRoot.activeElement?.dataset.id),'runtime-chain');
+  await page.keyboard.press('Enter');
+  assert.equal(await fold.getAttribute('aria-expanded'),'true');
+  assert.match(await panelLocator('.foot').innerText(),/X-ray.*Esc.*search/);
+  await page.route('**/_api/broken',route=>route.fulfill({status:400,contentType:'application/json',body:JSON.stringify({error:{message:'<img src=x onerror="window.unsafe=true"> Missing lookup',innererror:{message:'Check /detail?token=private'}}})}));
+  await page.evaluate(()=>fetch('/_api/broken'));
+  await openTab('issues');
+  await panelLocator('.body').getByText('<img src=x onerror="window.unsafe=true"> Missing lookup', {exact:false}).waitFor();
+  assert.equal(await panelLocator('.body img').count(),0);
+  assert.equal(await page.evaluate(()=>window.unsafe),undefined);
+  assert.doesNotMatch(await panelLocator('.body').innerText(),/private/);
+  await openTab('runtime');
   await panelLocator('.card').filter({ hasText: 'Current persona' }).getByText('allowed', { exact: true }).waitFor();
   await panelLocator('[data-group="runtime-chain"] .row').first().waitFor();
   const chain = await panelLocator('[data-group="runtime-chain"] .row .name > span:first-child').allInnerTexts();
@@ -129,7 +152,7 @@ test('Mirage panel inspects permissions, templates, forms and Solution sources, 
   await panelLocator('[data-panel-persona-query]').fill('alex');
   await panelLocator('[data-panel-persona-count]').filter({hasText:'of 1 personas'}).waitFor();
   // Local pages are not confined to loopback by default; the status card says so.
-  await panelLocator('[data-policy="open"]').getByText('Not confined: pages carry only the headers their site settings define', { exact: true }).waitFor();
+  await panelLocator('[data-policy="open"]').getByText('Not confined: pages carry only the headers their site settings define', { exact: false }).waitFor();
   const cookiesBefore = await context.cookies(app.url);
   await panelLocator('[data-act="choosepersona"][data-contact="alex"]').first().click();
   await panelLocator('[data-act="signin"]').getByText('Sign in as Alex Local', { exact: true }).waitFor();

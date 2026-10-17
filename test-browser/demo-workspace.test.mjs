@@ -63,5 +63,6 @@ test('scaffolded VS Code task signals readiness and attaches to its own developm
   assert.equal(configuration.pathMapping['/'], '${workspaceFolder}/portal/web-files');
   const resource = await page.request.get(new URL('/demo-workspace.js', page.url()).href);
   assert.equal(resource.status(), 200);
-  assert.equal((await resource.text()).replaceAll('\r\n', '\n'), (await fs.readFile(path.join(directory, 'portal/web-files/demo-workspace.js'), 'utf8')).replaceAll('\r\n', '\n'));
+  const mappedBody=(await resource.text()).replaceAll('\r\n','\n'),exportBody=(await fs.readFile(path.join(directory,'portal/web-files/demo-workspace.js'),'utf8')).replaceAll('\r\n','\n');
+  assert.ok(mappedBody.startsWith(exportBody));assert.match(mappedBody.slice(exportBody.length),/sourceMappingURL=data:/);
 });

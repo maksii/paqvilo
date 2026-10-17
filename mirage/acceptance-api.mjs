@@ -12,3 +12,7 @@ export { validateLivePath, decodePagingCookie } from './lib/live.mjs';
 export { collectFetchXmlPages, escapeXmlAttribute } from './lib/paging-validation.mjs';
 export { auditQuery } from './lib/audit-log.mjs';
 export { richTextBody, resolveRichTextMode, settleHostModal, editRichText, assertRichText } from './lib/richtext-actions.mjs';
+
+// Read-only baseline building blocks for project-owned observation tools.
+export { extractManagedRichTextControls } from './lib/richtext-assets.mjs';
+export { findRichTextResource, validateRichTextConfiguration } from './lib/richtext-config.mjs';
