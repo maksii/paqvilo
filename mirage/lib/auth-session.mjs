@@ -124,7 +124,12 @@ export function authRoute(pathname, method, { loginPath = "/signin" } = {}) {
   if (SIGN_OUT_PATH.test(pathname)) return { kind: "sign-out" };
   // The site's configured LoginPath (Authentication/ApplicationCookie/LoginPath) is a
   // sign-in path as well; paths compare case-insensitively without a trailing "/".
-  const trimmed = (value) => String(value).replace(/\/+$/, "").toLowerCase() || "/";
+  const trimmed = (value) => {
+    const text = String(value);
+    let end = text.length;
+    while (end > 0 && text.charCodeAt(end - 1) === 47) end--;
+    return text.slice(0, end).toLowerCase() || "/";
+  };
   const login = trimmed(pathname) === trimmed(loginPath);
   if (!login && !SIGN_IN_PATHS.test(pathname)) return null;
   if (method === "POST" && (login || /^\/signin\/?$/i.test(pathname))) return { kind: "sign-in-post" };

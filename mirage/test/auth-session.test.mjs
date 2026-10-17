@@ -205,6 +205,21 @@ test("sign-in and sign-out routes follow the platform paths", () => {
   for (const pathname of ["/signin/extra", "/Account/Manage", "/members/"]) assert.equal(authRoute(pathname, "GET"), null, pathname);
 });
 
+test('configured authentication routes trim trailing slashes in linear time without changing route identity',()=>{
+  for(const [pathname,loginPath] of [['/CuStOm/LoGiN////','/custom/login/'],['////','/'],['',''],['/signin////','/SIGNIN']]){
+    assert.deepEqual(authRoute(pathname,'GET',{loginPath}),{kind:'sign-in-page'});
+    assert.deepEqual(authRoute(pathname,'POST',{loginPath}),{kind:'sign-in-post'});
+  }
+  assert.equal(authRoute('/custom//login/','GET',{loginPath:'/custom/login'}),null,'internal slashes are preserved');
+  assert.equal(authRoute('/Account/Login/LogOff////','GET'),null,'configured-route trimming does not broaden sign-out matching');
+  const nearMatch='/'+ '/'.repeat(200_000)+'x';
+  const started=performance.now();
+  assert.equal(authRoute(nearMatch,'GET',{loginPath:'/custom/login'}),null);
+  assert.equal(authRoute('/custom/login','GET',{loginPath:nearMatch}),null);
+  assert.deepEqual(authRoute('/custom/login'+'/'.repeat(200_000),'GET',{loginPath:'/custom/login'}),{kind:'sign-in-page'});
+  assert.ok(performance.now()-started<1500,'long slash runs must not trigger repeated suffix scans');
+});
+
 test("the sign-in content lists personas, labels the simulation and escapes values", () => {
   const html = signInContent({
     personas: [

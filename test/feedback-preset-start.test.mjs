@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {spawnSync} from 'node:child_process';
-import {fileURLToPath} from 'node:url';
+import {fileURLToPath,pathToFileURL} from 'node:url';
 import {createFixture} from './fixture.mjs';
 import {loadConfig} from '../lense/config.mjs';
 import {catalogueArgs,cliArgs} from '../lense/commands/mirage.mjs';
@@ -16,7 +16,12 @@ test('catalogue start applies linked configuration only by flag or catalogue, an
   const env=Object.fromEntries(Object.entries(process.env).filter(([key])=>!key.startsWith('PAQVILO_')&&!key.startsWith('GIT_')));
   const run=(...args)=>spawnSync(process.execPath,[cli,'mirage',...args,'--config',config],{cwd:root,env,encoding:'utf8',windowsHide:true,timeout:120000});
   const catalog={sites:{fixture:{source:portal,environments:{local:'http://127.0.0.1:8787'},mirage:{port:0,preset:'tiny',solutionRoots:[],dataPacks:['./pack.mjs']}}}};
-  const writePack=link=>fs.writeFileSync(path.join(root,'pack.mjs'),`export default {id:'tiny',name:'Tiny',description:'Invented linked configuration',matches:()=>true,configurationPresets:[{id:'tiny-config',name:'Tiny configuration',platformOverrides:{QueryLinkEntityLimit:30}}],presets:()=>({tiny:{name:'Tiny',configurationPreset:${JSON.stringify(link)},tables:{}}})};`);
+  const packFile=path.join(root,'pack.mjs');
+  fs.writeFileSync(packFile,`import {readFileSync} from 'node:fs';
+const {link}=JSON.parse(readFileSync(new URL('./pack-data.json',import.meta.url),'utf8'));
+export default {id:'tiny',name:'Tiny',description:'Invented linked configuration',matches:()=>true,configurationPresets:[{id:'tiny-config',name:'Tiny configuration',platformOverrides:{QueryLinkEntityLimit:30}}],presets:()=>({tiny:{name:'Tiny',configurationPreset:link,tables:{}}})};
+`);
+  const writePack=link=>fs.writeFileSync(path.join(root,'pack-data.json'),JSON.stringify({link}));
   fs.writeFileSync(config,JSON.stringify(catalog));writePack('tiny-config');
   const stop=()=>{const result=run('stop','--site','fixture','--json');assert.equal(result.status,0,result.stdout+result.stderr);const report=JSON.parse(result.stdout);assert.equal(report.offline,false);assert.ok(report.writesFiles.some(file=>file.endsWith('sessions.json')));};
   try{
@@ -39,5 +44,10 @@ test('catalogue start applies linked configuration only by flag or catalogue, an
     writePack('missing-config');
     const bad=run('start','--site','fixture','--apply-configuration','--json');
     assert.equal(bad.status,1,bad.stdout+bad.stderr);assert.match(bad.stdout+bad.stderr,/missing-config/);const failure=JSON.parse(bad.stdout);assert.equal(failure.offline,false);assert.ok(failure.writesFiles.some(file=>file.endsWith('.log')));
+    const hostileLink='"; globalThis.__paqviloFixtureExecuted = true; //\n\\';
+    writePack(hostileLink);
+    const {default:loadedPack}=await import(pathToFileURL(packFile).href);
+    assert.equal(loadedPack.presets().tiny.configurationPreset,hostileLink,'fixture values remain inert JSON data');
+    assert.equal(Object.hasOwn(globalThis,'__paqviloFixtureExecuted'),false);
   }finally{stop();fs.rmSync(root,{recursive:true,force:true,maxRetries:10,retryDelay:100});}
 });

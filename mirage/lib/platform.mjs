@@ -107,14 +107,60 @@ export function contextualViewFetchXml(xml, { user, identity, website } = {}) {
       contact?.parentcustomerid,
     adx_website: website?.id,
   };
-  return xml.replace(/<condition\b[^>]*>/gi, (tag) => {
-    const type = /\buitype\s*=\s*(["'])(.*?)\1/i.exec(tag)?.[2]?.toLowerCase();
-    if (!(type in ids)) return tag;
-    const value = escape(ids[type] || "00000000-0000-0000-0000-000000000000");
-    return /\bvalue\s*=/i.test(tag)
-      ? tag.replace(/\bvalue\s*=\s*(["'])(.*?)\1/i, `value="${value}"`)
-      : tag.replace(/\/?\s*>$/, (end) => ` value="${value}"${end}`);
-  });
+  const parts=[];let copied=0,position=0;
+  while(position<xml.length){
+    const start=xml.indexOf('<',position);if(start<0)break;
+    position=start+1;
+    if(xml.slice(start+1,start+10).toLowerCase()!=='condition'||/[\w]/.test(xml[start+10]??''))continue;
+    let end=start+10,quote='';
+    for(;end<xml.length;end++){
+      const char=xml[end];
+      if(quote){if(char===quote)quote='';}
+      else if(char==='"'||char==="'")quote=char;
+      else if(char==='>')break;
+    }
+    // An unterminated tag/attribute is left as authored; do not rescan each
+    // nested '<condition' prefix in its suffix.
+    if(end===xml.length)break;
+    const tag=xml.slice(start,end+1),attributes=conditionAttributes(tag);
+    const type=attributes.type?.toLowerCase();
+    let replacement=tag;
+    if(Object.hasOwn(ids,type)){
+      const value = escape(ids[type] || "00000000-0000-0000-0000-000000000000");
+      if(attributes.value)replacement=tag.slice(0,attributes.value.start)+`value="${value}"`+tag.slice(attributes.value.end);
+      else if(!attributes.hasValue){
+        let close=tag.length-1;
+        while(close>0&&/\s/.test(tag[close-1]))close--;
+        if(tag[close-1]==='/')close--;
+        replacement=tag.slice(0,close)+` value="${value}"`+tag.slice(close);
+      }
+    }
+    parts.push(xml.slice(copied,start),replacement);copied=end+1;position=end+1;
+  }
+  parts.push(xml.slice(copied));return parts.join('');
+}
+
+// Read only the two contextual attributes, preserving all authored spacing,
+// quoting and unknown attributes outside the replaced value span.
+function conditionAttributes(tag){
+  const result={hasValue:false};let at=10;
+  while(at<tag.length-1){
+    if(!/[\w:.-]/.test(tag[at])){at++;continue;}
+    const start=at;while(at<tag.length-1&&/[\w:.-]/.test(tag[at]))at++;
+    const name=tag.slice(start,at).toLowerCase();
+    while(at<tag.length-1&&/\s/.test(tag[at]))at++;
+    if(tag[at]!=='=')continue;
+    at++;while(at<tag.length-1&&/\s/.test(tag[at]))at++;
+    if(name==='value')result.hasValue=true;
+    const quote=tag[at];
+    if(quote!=='"'&&quote!=="'"){while(at<tag.length-1&&!/\s/.test(tag[at]))at++;continue;}
+    const valueStart=++at;while(at<tag.length-1&&tag[at]!==quote)at++;
+    if(at===tag.length-1)break;
+    if(name==='uitype')result.type??=tag.slice(valueStart,at);
+    if(name==='value')result.value??={start,end:at+1};
+    at++;
+  }
+  return result;
 }
 
 /** Dataverse systemform XML can accompany the PAC export or be supplied in an admin schema. */
@@ -721,10 +767,13 @@ function nativeModal({ className, title, body, footer = "", size = "", label, bs
 // platform's indented JSON attributes keep their CR as character references.
 const crlfAttr = (value) => attr(value).replace(/\n/g, "&#13;&#10;");
 function plainText(html) {
-  return String(html ?? "")
-    .replace(/<[^>]*>/g, "")
-    .replace(/&nbsp;/g, " ")
-    .trim();
+  const text=String(html??''),parts=[];let position=0;
+  while(position<text.length){
+    const start=text.indexOf('<',position);if(start<0)break;
+    const end=text.indexOf('>',start+1);if(end<0)break;
+    parts.push(text.slice(position,start));position=end+1;
+  }
+  parts.push(text.slice(position));return parts.join('').replace(/&nbsp;/g,' ').trim();
 }
 const formModalBody = (page) => `<div class="form-loading"><span class="fa fa-spinner fa-spin fa-4x" aria-hidden="true"></span></div><iframe data-page="${attr(page)}" src="about:blank"></iframe>`;
 

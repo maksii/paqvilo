@@ -18,6 +18,30 @@ const fail = (message, status = 400, code = "InvalidFormSubmission") => {
 const truthy = (value) => value === true || /^(true|1)$/i.test(String(value ?? ""));
 const falsy = (value) => value === false || /^(false|0)$/i.test(String(value ?? ""));
 
+// Required-field text follows the existing lexical HTML handling, including
+// unterminated comments falling back to an ordinary <...> span. Failed comment
+// and tag searches are terminal: repeating opening delimiters cannot rescan the
+// same suffix for every candidate.
+function richTextRequiredText(value) {
+  const source = String(value ?? ''), parts = [];
+  let cursor = 0, canCloseComment = true;
+  while (cursor < source.length) {
+    const opening = source.indexOf('<', cursor);
+    if (opening < 0) break;
+    parts.push(source.slice(cursor, opening));
+    if (canCloseComment && source.startsWith('<!--', opening)) {
+      const closing = source.indexOf('-->', opening + 4);
+      if (closing >= 0) { cursor = closing + 3; continue; }
+      canCloseComment = false;
+    }
+    const closing = source.indexOf('>', opening + 1);
+    if (closing < 0) { cursor = opening; break; }
+    cursor = closing + 1;
+  }
+  parts.push(source.slice(cursor));
+  return parts.join('').replace(/&nbsp;|&#160;|&#xA0;/gi, ' ').trim();
+}
+
 /** Server-resolved context for a rendered form; submitted controls cannot replace it. */
 export function nativeFormSubmissionContext({ kind, formId, entity, mode, recordId = null, stepId = null, sessionId = null, recordQueryName = "id" }) {
   if (!["entityform", "webform"].includes(kind) || typeof formId !== "string" || !formId || typeof entity !== "string" || !entity)
@@ -734,12 +758,7 @@ export async function submitPortalForm(
     }
     const requiredEmpty =
       field.richText && !/<img\b/i.test(String(value ?? ""))
-        ? empty(
-            String(value ?? "")
-              .replace(/<!--[\s\S]*?-->|<[^>]*>/g, "")
-              .replace(/&nbsp;|&#160;|&#xA0;/gi, " ")
-              .trim(),
-          )
+        ? empty(richTextRequiredText(value))
         : empty(scalar(value));
     if (field.required && !field.hidden && !field.readOnly && requiredEmpty) invalid(field, "FormFieldRequired", `${field.label} is a required field.`);
     // Native format CustomValidators are server-side, unlike the Web API's

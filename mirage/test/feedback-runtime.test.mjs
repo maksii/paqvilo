@@ -137,14 +137,36 @@ test('a configuration-only pack loads into a runtime and can apply its configura
   assert.equal((await (await fetch(app.url+'/__sim/api/status')).json()).activeConfigurationPreset.id,'invented-budget');
 });
 
-test('persona authorize requests reuse an ordered index and invalidate changed contacts',()=>{
+test('persona authorize requests reuse an ordered index and invalidate changed contacts',t=>{
   const report={groups:[{id:'members'}],personas:Array.from({length:5000},(_,i)=>({key:'p'+i,contactId:String(i),label:'Person '+(5000-i),group:'members'})),enabled:true};
   const users=report.personas.map(persona=>({contactId:persona.contactId,subject:'subject-'+persona.contactId}));
+  const localeCompare=String.prototype.localeCompare,sort=Array.prototype.sort;
+  let catalogueSorts=0;
+  t.mock.method(String.prototype,'localeCompare',function(other,...options){
+    assert.equal(options.length,0,'display comparisons must reuse the module collator rather than supply locales/options per comparison');
+    return localeCompare.call(this,other);
+  });
+  // MockTracker rejects arrays as method targets, including Array.prototype.
+  t.after(()=>{Array.prototype.sort=sort;});
+  Array.prototype.sort=function(...args){
+    if(this.length===5000)catalogueSorts++;
+    return sort.apply(this,args);
+  };
   const first=chooserReport(report,users),second=chooserReport(report,structuredClone(users));
-  assert.equal(first,second);assert.equal(chooserSelection(first).index,chooserSelection(second).index);
-  users[0].subject='changed';assert.notEqual(chooserReport(report,users),first);
-  const timings=[];for(let i=0;i<4;i++){const start=performance.now();assert.equal(indexPersonaCatalog(report).length,5000);timings.push(performance.now()-start);}
-  timings.sort((a,b)=>a-b);assert.ok(timings[1]<25,`5000-person index: ${timings[1]}ms`);
+  const index=chooserSelection(first).index;
+  assert.equal(first,second);assert.equal(index.length,5000);
+  assert.equal(index,chooserSelection(second,new URLSearchParams('q=Person')).index);
+  assert.equal(index,chooserSelection(structuredClone(first)).index,'equal catalogue contents reuse ordering across report objects');
+  assert.equal(catalogueSorts,1,'unchanged authorize queries sort the catalogue once');
+  users[0].subject='changed';const changed=chooserReport(report,users);assert.notEqual(changed,first);
+  assert.equal(chooserSelection(changed).index.find(entry=>entry.key==='p0').persona.subject,'changed');
+  assert.equal(catalogueSorts,2,'a changed contact invalidates the cached index');
+  const refreshed={...report,personas:report.personas.map(persona=>persona.key==='p0'?{...persona,label:'AAA'}:persona)};
+  assert.equal(chooserSelection(chooserReport(refreshed,users)).index[0].key,'p0');
+  assert.equal(catalogueSorts,3,'a changed catalogue invalidates display ordering');
+  const start=performance.now(),direct=indexPersonaCatalog(report);
+  assert.deepEqual(direct.slice(0,3).map(entry=>entry.persona.label),['Person 1','Person 10','Person 100']);
+  t.diagnostic(`5000-person index build: ${(performance.now()-start).toFixed(2)} ms (informational; operation counts are asserted)`);
 });
 
 test('duplicate YAML reports every overwritten setting and its lines',async t=>{
@@ -205,8 +227,10 @@ test('a site-bound context reuses its portal import and exposes effective Soluti
   const {root}=await fixture(t);
   await fs.mkdir(path.join(root,'web-pages'),{recursive:true});
   const config=path.join(root,'catalogue.yml');await fs.writeFile(config,'sourceRoot: .\nsites:\n  sample:\n    source: .\n    environments:\n      local: http://127.0.0.1:8787\n');
-  const read=fs.readFile;let imports=0;
-  t.mock.method(fs,'readFile',(file,...args)=>{if(String(file)===path.join(root,'website.yml')&&args[0]==='utf8')imports++;return read(file,...args);});
+  // importPortal resolves aliases such as Windows RUNNER~1 before reading. Count
+  // its real file identity instead of the temporary directory's original spelling.
+  const website=path.join(await fs.realpath(root),'website.yml'),read=fs.readFile;let imports=0;
+  t.mock.method(fs,'readFile',(file,...args)=>{if(path.relative(website,String(file))===''&&args[0]==='utf8')imports++;return read(file,...args);});
   const context=await createMirageContext({config,site:'sample'}),app=await context.createSimulator({watch:false});t.after(()=>app.close());
   assert.equal(imports,1);
   const status=await (await fetch(app.url+'/__sim/api/status')).json();assert.deepEqual(app.state().status.solutionRoots,status.solutionRoots);
