@@ -1,6 +1,6 @@
 # Dataverse plugin registrations
 
-Mirage discovers plugin assemblies, types and steps from selected Solution sources. **Operations** shows their table, SDK message, stage, execution order, mode and filtering attributes. **Inspect** links applicable steps to exported metadata and explicitly mapped C# sources. Lense uses the same inventory; exported registrations do not prove which steps are active online.
+Mirage discovers plugin assemblies, types and steps from selected Solution sources. **Backend operations** shows their table, SDK message, stage, execution order, mode and filtering attributes. **Inspect** links applicable steps to exported metadata and explicitly mapped C# sources. Lense uses the same inventory; exported registrations do not prove which steps are active online.
 
 Choose a local execution mode for each discovered enabled step. Original CLR execution loads the original `IPlugin` assembly in an owned Windows .NET Framework process. It requires an explicitly trusted project descriptor, an externally installed Microsoft Xrm SDK assembly and a separate backend identity/security profile. Export discovery alone never enables a DLL. Missing CLR prerequisites do not prevent using mocks or disabled choices.
 
@@ -14,7 +14,7 @@ Choose a local execution mode for each discovered enabled step. Original CLR exe
 
 Source mode 1 stage 40 Create/Update/Delete steps use a bounded post-save queue. Their failure is recorded separately and cannot reject the committed caller. Unsupported source contracts remain visible; explicit mock/disabled choices are still selectable. Original execution of an unsupported contract fails diagnostically. Select **Use source default** to remove a local override.
 
-Mocks can replace a supported read query/result or bulk Targets through Operations, using the same typed local contracts as project handlers. The admin endpoint checks result shape, source table and execution stage before saving. An eligible explicit mock still applies its configured result when the original registration needs an unavailable image or identity adapter; diagnostics state that original logic was not executed. Unknown messages/stages do not gain an execution pipeline through a mock choice.
+Mocks can replace a supported read query/result or bulk Targets through Backend operations, using the same typed local contracts as project handlers. The admin endpoint checks result shape, source table and execution stage before saving. An eligible explicit mock still applies its configured result when the original registration needs an unavailable image or identity adapter; diagnostics state that original logic was not executed. Unknown messages/stages do not gain an execution pipeline through a mock choice.
 
 ## Original assembly registration
 
@@ -33,7 +33,7 @@ An explicit descriptor `persistentHost: true` reuses at most 32 owned hosts by p
 | Context | Typed input/output/shared state, selected images, live nested ParentContext, correlation/depth, explicit portal transport Contact and Context2 flags | SDK properties outside the declared proxy contract fail explicitly |
 | SDK | CRUD, Retrieve/RetrieveMultiple, typed linked Fetch/QE, nested joins/aliases and explicit per-table row grants; named Execute responses for these messages | Advanced filters, full-text queries, unknown request parameters and other SDK messages fail explicitly |
 | Relationships | Associate/Disassociate SDK calls and named responses; exact imported schema/partner direction; endpoint, proposed-row and intersect-edge backend grants | Native source/context proof; ambiguous self-reference without source EntityRole metadata and parameter replacement remain gaps |
-| Standard bulk | Explicit source-evidenced CreateMultiple/UpdateMultiple; typed Targets, Context4 aligned images, filtering, shared state, typed IDs and per-record exception details; atomic caller rollback | Native merged single/multiple ordering, elastic tables and other bulk messages remain required work; mixed registrations are rejected before writes |
+| Standard bulk | Explicit source-evidenced CreateMultiple/UpdateMultiple; typed Targets, Context4 aligned images, filtering, shared state, typed IDs and per-record exception details; atomic caller rollback | Native merged single/multiple ordering, elastic tables and other bulk messages are unqualified or unsupported; mixed registrations are rejected before writes |
 | Values | Money/Decimal and Int64 wire strings, exact typed numeric column storage/reload, option collections, references, aliases, GUIDs and dates | Exact numeric storage requires source column types/bounds/precision; recurring aggregate precision and native wire qualification remain open |
 | Mode 1 | Post-save stage 40 CRUD; separate completed SDK requests persist after later job failure | Dataverse async service scheduling, retry and native context proof |
 | Lifecycle | Shared bounded plugin/flow chains, consumer isolation and coordinated drain/stop | Recurrence, arbitrary external work and durable cloud-service scheduling are not implemented |
@@ -95,7 +95,7 @@ The [demo plugin project](../../examples/project/components/DataversePlugins/REA
 
 Source-declared lookup GUIDs are supplied to original CLR plugins as SDK `EntityReference` values when the exported lookup metadata names exactly one target table. This applies to Targets, images and SDK retrieval, including a source-defined self-referencing relationship. Explicit typed references retain their logical table; a raw GUID with missing or multiple lookup targets fails with `LocalPluginSdkUnsupported` instead of selecting a table. Compiled invented DLL regressions cover lookup casts and named association responses. See Microsoft's [EntityReference contract](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.entityreference?view=dataverse-sdk-latest) and [lookup target metadata](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.metadata.lookupattributemetadata.targets?view=dataverse-sdk-latest).
 
-Original local CLR shared values preserve byte arrays, explicitly modeled primitive and SDK arrays (including null entries and jagged string arrays), `EntityReference.KeyAttributes`/`RowVersion`, and `EntityCollection.EntityName`/`MinActiveRowVersion`/`TotalRecordCountLimitExceeded`. The installed SDK known-type catalogue and compiled typed readers guide these codecs. Unknown array contracts fail explicitly; metadata/label SDK contracts and request/response collection support remain separate work. Preserving reference metadata does not implement alternate-key backend CRUD.
+Original local CLR shared values preserve byte arrays, explicitly modeled primitive and SDK arrays (including null entries and jagged string arrays), `EntityReference.KeyAttributes`/`RowVersion`, and `EntityCollection.EntityName`/`MinActiveRowVersion`/`TotalRecordCountLimitExceeded`. The installed SDK known-type catalogue and compiled typed readers guide these codecs. Unknown array contracts fail explicitly; metadata/label SDK contracts and request/response collections are not supported. Preserving reference metadata does not implement alternate-key backend CRUD.
 
 Supported named SDK requests accept the optional `tag` string (bounded to 8 KiB locally). The tag reaches original CLR shared variables, survives PreValidation parent separation and inherits through nested shortcut service calls. Descendant replacement and plugin mutation fail before a changed tag is propagated; owned request state is restored on failure. Original-DLL regressions exercise `DeleteRequest.Parameters["tag"]`, all three Delete stages and a nested Create. Native fault HRESULTs for prohibited tag changes and portal Web API optional-tag transport require separate qualification.
 
@@ -114,7 +114,8 @@ Evidence-qualified `context.interfaceVersion: 7` supplies environment ID, tenant
 An explicit mapping `sdkRowVersionColumn` preserves a source integral row version independently of selected SDK Attributes. The original CLR transport retains `Entity.RowVersion` in both directions. Native snapshot replay can supply actual version metadata from a read-only projection or ETag evidence. Local CRUD does not predict the organisation-wide native version sequence or claim native optimistic-concurrency execution.
 
 Fetch aggregate `count` and `countcolumn` aliases carry Int32 values independently of the original column type. Grouped lookup names and choice labels use declared primary-name metadata, source target rows and option labels; missing metadata does not produce an invented name. Supported groupby lookup aliases include the native companion name attribute and formatted values. Culture-sensitive numeric, date and currency display contracts still require their source settings and separate qualification.
-# Read query registration and provider metadata
+
+## Read query registration and provider metadata
 
 An explicitly unfiltered synchronous `RetrieveMultiple` step can observe every
 supported queried table. An exported empty SDK filter or explicit `none` binding,
@@ -148,5 +149,4 @@ Fresh and pooled CLR hosts bind the owning Node process PID and actual .NET
 process birth time. A background host watcher terminates that host when its
 exact owner exits, including an abrupt process kill while plugin code loops
 without returning. Reusing a PID with a different birth time cannot keep the
-host alive. Ordinary cleanup still closes owned hosts and verifies their absence;
-interrupted proof attempts remain incomplete and are rerun from their journals.
+host alive. Ordinary cleanup still closes owned hosts and verifies their absence.

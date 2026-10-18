@@ -93,7 +93,7 @@ Agent session access
   --preset-mode bootstrap|always  mirage: seed new state only, or reset on every start
   --preset <name>   mirage: apply a scenario preset when starting (default: mirage.preset)
   --solution-root <dir> mirage: add a solution source root (repeatable; default:
-                    mirage.solutionRoots, else sibling *.Solutions.* repositories)
+                    mirage.solutionRoots, else unpacked solutions next to the portal repository)
   --startup-timeout <ms> mirage: readiness deadline (default: 120000)
   --allow-live-writes mirage dev/start: let the runtime send create, update and delete
                     requests to the live environment once _sim's live-writes switch is on

@@ -409,7 +409,7 @@ export function watchSources(session, context, { reload = true, log = console.lo
 
 export default async function dev(cfg, args) {
   const { startSetupServer } = await import('../setup/server.mjs');
-  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir } });
+  const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir, portalUrl: cfg.origin } });
   console.log(`setup       ${setup.url}`);
   try { return await develop(cfg, args, setup); }
   finally { await setup.close(); }
@@ -428,7 +428,7 @@ async function develop(cfg, args, setup) {
     console.log(`portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`);
   }
   const wantedPort = cfg.browser.debugPort;
-  const { context, attached, close, debugPort, profile } = await openBrowser(cfg, { debugPort: wantedPort });
+  const { context, attached, close, debugPort, profile } = await openBrowser(cfg, { debugPort: wantedPort, cookieOrigins: selection.targets.map(target => target.origin) });
   console.log(`browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profile.name ? ` profile ${profile.name}` : ''}${profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : ''}`);
   let stop;
   const stopped = new Promise((resolve) => { stop = resolve; });

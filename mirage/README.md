@@ -19,7 +19,7 @@ npx --no-install paqvilo mirage dev --config ./paqvilo.config.yml --site portal
 
 Open the panel with **Alt+Shift+P**. **Inspect** connects the current page to its templates, forms, tables, permissions, snippets and settings. **Tweaks** controls your browser's local persona, enforcement and scenarios. Visit `/_sim/` for local administration.
 
-**Operations** inventories exported server logic and cloud flows. Review supported defaults, set a JSON response mock or explicitly enable trusted local code. [Operation modes](docs/operations.md) explain the execution boundary. [PCF hosting](docs/code-components.md) covers standard field and explicitly bound dataset controls.
+**Backend operations** inventories exported server logic and cloud flows. Review supported defaults, set a JSON response mock or explicitly enable trusted local code. [Operation modes](docs/operations.md) explain the execution boundary. [PCF hosting](docs/code-components.md) covers standard field and explicitly bound dataset controls.
 
 New states contain exported configuration and empty business tables. Use [data scaffolding](../docs/getting-started.md#3-work-locally-with-mirage) for generated rows or a [data pack](docs/data-packs.md) for your own scenarios. The portal starts anonymous; sign in locally before testing protected pages.
 

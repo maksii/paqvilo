@@ -1,5 +1,6 @@
 import {pathToFileURL} from 'node:url';
 import http from "node:http";
+import { isDeepStrictEqual } from 'node:util';
 import { validatePersonaCatalog, mergePersonaCatalogs, resolvePersonaCatalog, personaContactId, personaStartPath } from './lib/persona-catalog.mjs';
 import {identityProviderSettings,identityProviderAssets} from './lib/identity-provider-settings.mjs';
 import { closestPersonaKeys } from './lib/persona-search.mjs';
@@ -1327,7 +1328,7 @@ export async function createSimulator({
     mutation = next.catch(() => {});
     return next;
   };
-  const saveState = async (state) => {
+  const saveState = async (state, { reload = true } = {}) => {
     const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets };
     const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
     try {
@@ -1352,10 +1353,12 @@ export async function createSimulator({
     }
     live.configure(config().live ?? {});
     if (cache) cache.origin = live.origin;
-    renderer = buildRenderer();
-    revision++;
-    for (const event of events)
-      event.write(`event: reload\ndata: ${revision}\n\n`);
+    if (reload) {
+      renderer = buildRenderer();
+      revision++;
+      for (const event of events)
+        event.write(`event: reload\ndata: ${revision}\n\n`);
+    }
   };
   const applySelectedPreset = async (name, adjust, { applyConfiguration = false } = {}) => {
     const state = store.snapshot(),
@@ -2213,8 +2216,8 @@ export async function createSimulator({
       if(method==='GET'&&!experimentRoute[2]){const presets=experimentPresets(store.snapshot({sections:['simulator']}),sourcePortal,packConfigurations.presets),item=id?presets.find(p=>p.id===id):presets;if(!item)throw error('Experiment not found.',404);return json(res,200,item);}
       return change(async()=>{
         const state=store.snapshot(),presets=experimentPresets(state,sourcePortal,packConfigurations.presets),existing=presets.find(p=>p.id===id);
-        if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);await saveState(applyExperiment(state,existing));return json(res,200,{applied:id});}
-        if(method==='POST'&&!id){const p=validateExperiment(await jsonObjectBody(req));if(presets.some(x=>x.id===p.id))throw error('Experiment ID already exists.',409);state.simulator.experimentPresets??={};if(Object.keys(state.simulator.experimentPresets).length>=100)throw error('Experiment preset limit reached.',413);state.simulator.experimentPresets[p.id]=structuredClone(p);await saveState(state);return json(res,201,p);}
+        if(method==='POST'&&experimentRoute[2]){if(!existing)throw error('Experiment not found.',404);const next=applyExperiment(state,existing);const settings=value=>{const overrides=value.simulator.portalOverrides??{};return [value.simulator.platformOverrides??{},{...overrides,settings:overrides.settings??{},snippets:overrides.snippets??{}}];};const reload=!isDeepStrictEqual(settings(state),settings(next));await saveState(next,{reload});return json(res,200,{applied:id});}
+        if(method==='POST'&&!id){const p=validateExperiment(await jsonObjectBody(req));if(presets.some(x=>x.id===p.id))throw error('Experiment ID already exists.',409);state.simulator.experimentPresets??={};if(Object.keys(state.simulator.experimentPresets).length>=100)throw error('Experiment preset limit reached.',413);state.simulator.experimentPresets[p.id]=structuredClone(p);await saveState(state,{reload:false});return json(res,201,p);}
         if(method==='DELETE'&&id&&!experimentRoute[2]){
           const saved=Object.hasOwn(state.simulator.experimentPresets??{},id);
           if(!saved){
@@ -2222,7 +2225,7 @@ export async function createSimulator({
             if(existing.builtin||existing.readOnly)throw error('Built-in and pack configuration presets cannot be deleted.',403);
           }
           delete state.simulator.experimentPresets[id];
-          await saveState(state);return json(res,200,{deleted:id});
+          await saveState(state,{reload:false});return json(res,200,{deleted:id});
         }
         throw error('Unsupported experiment operation.',405);
       });

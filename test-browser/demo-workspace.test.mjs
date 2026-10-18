@@ -60,7 +60,9 @@ test('scaffolded VS Code task signals readiness and attaches to its own developm
   const css = path.join(directory, 'portal/web-files/demo.css');
   await fs.appendFile(css, '\nbody{--workspace-task-proof:ready}\n');
   await page.waitForFunction(() => document.body && getComputedStyle(document.body).getPropertyValue('--workspace-task-proof').trim() === 'ready');
-  assert.equal(configuration.pathMapping['/'], '${workspaceFolder}/portal/web-files');
+  assert.equal(configuration.type, 'msedge');
+  assert.equal(configuration.pathMapping, undefined);
+  assert.ok(configuration.resolveSourceMapLocations.includes('${workspaceFolder}/**'));
   const resource = await page.request.get(new URL('/demo-workspace.js', page.url()).href);
   assert.equal(resource.status(), 200);
   const mappedBody=(await resource.text()).replaceAll('\r\n','\n'),exportBody=(await fs.readFile(path.join(directory,'portal/web-files/demo-workspace.js'),'utf8')).replaceAll('\r\n','\n');

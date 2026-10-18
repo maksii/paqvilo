@@ -236,6 +236,17 @@ test('session cookies restore and save atomically without retaining persistent c
   }
 });
 
+test('owned profiles discard obsolete loopback Mirage port cookies while preserving selected runtimes and remote cookies',async t=>{
+  const dir=fs.mkdtempSync(path.join(os.tmpdir(),'paqvilo-cookie-ports-'));t.after(()=>fs.rmSync(dir,{recursive:true,force:true}));
+  const file=path.join(dir,'sessions.json'),cookie=(name,domain='127.0.0.1')=>({name,domain,path:'/',expires:-1,value:'invented'});
+  const cookies=[cookie('paqvilo-mirage-auth-8000'),cookie('paqvilo-mirage-idp-8000'),cookie('paqvilo-mirage-auth-9000'),cookie('paqvilo-mirage-auth-9100'),cookie('session','portal.example.test'),cookie('paqvilo-mirage-auth-8000','portal.example.test')];
+  fs.writeFileSync(file,JSON.stringify(cookies));const removed=[];let restored;
+  const context=Object.assign(new EventEmitter(),{cookies:async()=>cookies,clearCookies:async match=>removed.push(match.name),addCookies:async values=>{restored=values;}});
+  const stop=await keepSessionCookies(context,file,{origins:['http://127.0.0.1:9000','http://127.0.0.1:9100']});await stop();
+  assert.deepEqual(removed,['paqvilo-mirage-auth-8000','paqvilo-mirage-idp-8000']);assert.equal(restored.length,4);
+  assert.equal(JSON.parse(fs.readFileSync(file,'utf8')).length,4);
+});
+
 test('download names cannot escape Downloads or name a Windows device', () => {
   assert.equal(safeDownloadName('../../private/data.txt'), 'data.txt');
   assert.equal(safeDownloadName('..\\private\\data.txt'), 'data.txt');

@@ -60,7 +60,7 @@ These are implemented sample scenarios. They do not demonstrate every Power Page
 
 Use **Tweaks** to switch from **Alex Example 01**, the editor, to **Alex Demo 01**, the reader. The reader can read accounts, related contacts and notes. Web API and PCF hide write actions; native redirect links can open a form that denies creation or editing. Write requests are denied. Switch back to Alex Example 01 to continue editing. Compare global account access with contact relationships scoped through the parent account. Inspect shows the exported role grants and local permission context.
 
-Open **Manage data and personas > Operations** to inspect the exported server logic and flow. Set a local JSON response mock, call the operation from **Extended** and compare its result. Choose **Use source default** to restore its configured behavior. These controls affect local simulation. See [operation modes](../mirage/docs/operations.md) before enabling exported code.
+Open **Manage data and personas > Backend operations** to inspect the exported server logic and flow. Set a local JSON response mock, call the operation from **Extended** and compare its result. Choose **Use source default** to restore its configured behavior. These controls affect local simulation. See [operation modes](../mirage/docs/operations.md) before enabling exported code.
 
 The same catalogue shows the plugin steps. The sample pack supplies their synchronous local handlers; Mirage does not execute the compiled assembly. Other imported plugins start as visible placeholders unless configured. See the [plugin guide](../mirage/docs/dataverse-plugins.md) before relying on a local write result.
 
@@ -71,3 +71,5 @@ Open **Manage data and personas > Plugins & presets**. Apply **Empty account wor
 Open `paqvilo-example/portal/web-files/demo.css` in VS Code, change a style and save. Check the browser after refresh. Use Inspect to locate another source before editing it.
 
 The sample also contains PAC exports, unpacked Solution sources and PCF projects. Its [project guide](../examples/project/README.md) describes the files; its [deployment guide](../examples/project/deployment/README.md) explains deployment to your own environment. Your online sign-in, environment settings and data remain separate from the local demo.
+
+For a Git baseline on Windows, run `git init` and `git config core.longpaths true` in the demo folder before `git add -A`; exported multistep metadata can exceed Windows’ default path limit.

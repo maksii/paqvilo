@@ -9,7 +9,7 @@ Changes are held in that runtime's state, survive source reloads and persist whe
 
 ## Settings catalogue
 
-The [versioned source catalogue](../lib/platform-settings.mjs) contains 23 controls. It intentionally distinguishes feature-documented organization settings from writable-but-unsupported columns. Microsoft's [organization settings guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/organization-table) recommends feature-supported controls and the supported tools for OrgDBOrgSettings, rather than writing its XML directly.
+The [versioned source catalogue](../lib/platform-settings.mjs) contains 24 controls. It intentionally distinguishes feature-documented organization settings from writable-but-unsupported columns. Microsoft's [organization settings guidance](https://learn.microsoft.com/en-us/power-apps/developer/data-platform/organization-table) recommends feature-supported controls and the supported tools for OrgDBOrgSettings, rather than writing its XML directly.
 
 | Controls | Real administration / local coverage |
 | --- | --- |
@@ -19,6 +19,7 @@ The [versioned source catalogue](../lib/platform-settings.mjs) contains 23 contr
 | `AllowSaveAsDraftAppointment`, `AutoTrackSentFolderItems` | Documented OrgDBOrgSettings-tool options; catalogue only, without Exchange simulation. [Source](https://learn.microsoft.com/en-us/power-platform/admin/orgdborgsettings). |
 | `WorkflowSettings.MaxDepth` | Legacy on-premises deployment PowerShell control, catalogue only. It does not increase the local CLR/async host safety bounds or imply a supported cloud control. [Depth documentation](https://learn.microsoft.com/en-us/dotnet/api/microsoft.xrm.sdk.iexecutioncontext.depth). |
 | `FetchConditionLimit`, `AggregateQueryRecordLimit` | Documented defaults with **simulator experiment** overrides. No supported cloud administration path is inferred. The aggregate override affects FetchXML, not OData `$apply`; authored `aggregatelimit` keeps its documented lower-limit semantics. |
+| `FetchLinkAndFilterLimit` | **Simulator experiment**: combined bound for ordinary joins plus existential filter links (default 27), separate from `QueryLinkEntityLimit`. Not a cloud administration setting. |
 | `FetchLinkDepth`, `FetchJoinRowLimit` | **Simulator safety bounds**, not Dataverse organization settings. Exceeding a bound produces an error, not truncated successful data. |
 
 Organization-column controls read one local `organization` row when available, otherwise the catalogue default/not-configured value. Instance overrides take precedence. Support-managed and simulator controls come from explicit overrides/defaults. Changing a budget does not synthesize native Power Pages permission-expansion SQL: Mirage evaluates its supported permission model and query shape. A real site comparison remains separate evidence.

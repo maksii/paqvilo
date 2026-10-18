@@ -18,6 +18,9 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   assert.equal(await fs.readFile(template, 'utf8'), 'My local changes');
   const manifest = JSON.parse(await fs.readFile(path.join(directory, 'package.json'), 'utf8'));
   assert.ok(!manifest.devDependencies.paqvilo.startsWith('file:'));
+  assert.match(manifest.devDependencies.yaml, /^\d/);
+  assert.match(manifest.devDependencies['playwright-core'], /^\d/);
+  assert.equal((await fs.readFile(path.join(directory, 'portal/web-files/theme.css'), 'utf8')).includes('\r'), false);
   assert.match(manifest.scripts['dev:debug'], /--debug-port 9222/);
   const workspace = JSON.parse(await fs.readFile(path.join(directory, 'paqvilo-demo.code-workspace'), 'utf8'));
   assert.equal(workspace.folders[0].path, '.');
@@ -25,6 +28,7 @@ test('demo copies an editable project, preserves source edits on repeat and refu
   const launch = JSON.parse(await fs.readFile(path.join(directory, '.vscode/launch.json'), 'utf8'));
   const labels = new Set(tasks.tasks.map((task) => task.label));
   for (const configuration of launch.configurations) {
+    assert.equal(configuration.type, 'msedge');
     assert.equal(configuration.request, 'attach', 'debugger reuses the toolkit browser');
     if (configuration.preLaunchTask) assert.ok(labels.has(configuration.preLaunchTask));
   }

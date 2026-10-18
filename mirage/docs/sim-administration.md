@@ -11,7 +11,7 @@ and browser options for a persona or catalogue scenario.
 
 **Platform rules** (`#platform`) configures simulated organization/platform controls, including the support-managed link-entity budget and attachment restrictions. **Settings & snippet overrides** (`#overrides`) compares source/effective values without editing exports. Both support portable configuration presets and independent state for concurrent runtimes. Coverage and real administration classifications are explicit; see [configuration experiments](configuration-experiments.md).
 
-**Operations** lists exported server logic and cloud flows, including unlinked Solution workflows. Select a JSON response mock, keep an unsupported placeholder, explicitly enable trusted exported code or use a registered project handler. **Use source default** removes a local override. Exported role grants still apply; unlinked workflows receive no invented route or grants. See [operation modes and limits](operations.md).
+**Backend operations** lists exported server logic and cloud flows, including unlinked Solution workflows. Select a JSON response mock, keep an unsupported placeholder, explicitly enable trusted exported code or use a registered project handler. **Use source default** removes a local override. Exported role grants still apply; unlinked workflows receive no invented route or grants. See [operation modes and limits](operations.md).
 
 Portal requests start anonymously. Local sign-in selects an active synthetic contact or explicit role override and stores a per-runtime `paqvilo-mirage-auth-<port>` cookie. The portal sign-in page, `_sim` and Lense Tweaks all operate on the browser session. Signing one browser in does not sign another browser in. The saved simulator identity is not a substitute for a request cookie.
 
@@ -51,8 +51,8 @@ observed independently of that table selection.
 
 Keep the state file outside the export or in ignored `.paqvilo/`, as with normal
 runtime configuration. The source fingerprint intentionally observes files in
-the export. Original external DLL/SDK bytes need the separate runtime receipt
-verifier; a plugin-definition hash alone does not observe their on-disk bytes.
+the export. Original external DLL/SDK bytes need separate verification; a
+plugin-definition hash alone does not observe their on-disk bytes.
 These witnesses establish local comparison boundaries, not native parity.
 
-Permission enforcement can be set to strict or permissive for local experiments; this choice is visible in evidence. Live create/update/delete cannot leave the runtime without `--allow-live-writes`, and still require the separate administration switch. Task authorization is required independently of either switch.
+Permission enforcement can be set to enforced or permissive for local experiments; this choice is visible in evidence. Live create/update/delete cannot leave the runtime without `--allow-live-writes`, and still require the separate administration switch. Task authorization is required independently of either switch.

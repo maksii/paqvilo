@@ -2,7 +2,7 @@
 
 This guide maps ordinary local workflows to their regression coverage and remaining platform limits. Tests use invented schemas, exported fixture structures and loopback services. Native observations are separate evidence; passing local tests does not establish complete Power Pages or Dataverse parity. CI results qualify the exact tested revision.
 
-| Stream | Working positive flow | Regression coverage | Further parity work |
+| Stream | Working positive flow | Regression coverage | Remaining limits |
 | --- | --- | --- | --- |
 | Liquid | Render source templates, includes, conditions, loops, supported filters and source-backed objects | `mirage/test/liquid*.test.mjs`; Liquid browser scenarios | Remaining hosted differences, observed object/accessor behavior and error presentation |
 | Forms and data | Create and edit a row, show saved values in details and lists, then search | `mirage/test-browser/input-roundtrip.test.mjs`; form submission and descriptor tests | Full field/format matrix, multistep paths, conditional rules and hosted validation messages |

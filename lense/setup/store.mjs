@@ -210,7 +210,23 @@ export class SetupStore {
             doc.setIn(edit.path, doc.createNode(value));
           }
         }
-        text = doc.toString();
+        const originalText = before[input.layer] ?? '{}\n';
+        const original = document(originalText, 'Configuration').doc;
+        // YAML serialization may reflow untouched plain strings. Restore their
+        // original scalar tokens, including authored wrapping and quoting.
+        const rendered = doc.toString({ lineWidth: 0 });
+        const serialized = document(rendered, 'Configuration').doc;
+        const replacements = [];
+        const preserve = (node, at = []) => {
+          if (YAML.isMap(node)) for (const pair of node.items) preserve(pair.value, [...at, pair.key.value]);
+          else if (YAML.isSeq(node)) node.items.forEach((item, index) => preserve(item, [...at, index]));
+          else if (YAML.isScalar(node) && node.range) {
+            const next = serialized.getIn(at, true);
+            if (YAML.isScalar(next) && next.range && Object.is(node.value, next.value)) replacements.push({ start: next.range[0], end: next.range[1], value: originalText.slice(node.range[0], node.range[1]) });
+          }
+        };
+        preserve(original.contents);
+        text = replacements.sort((a, b) => b.start - a.start).reduce((value, edit) => value.slice(0, edit.start) + edit.value + value.slice(edit.end), rendered);
       }
       if (Buffer.byteLength(text) > LIMIT) throw setupError('Configuration exceeds 256 KiB', 413);
       await this.validate(input.layer === 'shared' ? text : before.shared, input.layer === 'personal' ? text : before.personal);

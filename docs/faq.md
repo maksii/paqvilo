@@ -46,4 +46,4 @@ Check diagnostics and the [coverage matrix](coverage.md). Unsupported PCF hosts,
 
 ## Does Mirage execute my Dataverse plugin DLL?
 
-No. It imports the assembly, type and step registrations, then offers placeholders, rejection/target-patch mocks and trusted project handlers. Placeholders keep CRUD available and report that the business logic was skipped. The demo includes matching local models for its registered C# plugins. See [plugin simulation](../mirage/docs/dataverse-plugins.md).
+Not by default. It imports the assembly, type and step registrations, then offers placeholders, rejection/target-patch mocks and trusted project handlers. Placeholders keep CRUD available and report that the business logic was skipped. On Windows, explicitly configured original-assembly mode can execute a trusted plugin DLL locally. The demo includes matching local models for its registered C# plugins. See [plugin simulation](../mirage/docs/dataverse-plugins.md).

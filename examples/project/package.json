@@ -9,5 +9,7 @@
     "mirage": "paqvilo mirage dev --config ./paqvilo.config.yml --site example --port 0",
     "test": "node --test test/*.test.mjs"
   },
-  "dependencies": { "paqvilo": "file:../.." }
+  "dependencies": {
+    "paqvilo": "file:../.."
+  }
 }

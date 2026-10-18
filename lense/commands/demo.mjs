@@ -11,6 +11,19 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url));
 const STARTER = path.join(ROOT, 'examples/project');
 const MARKER = '.paqvilo/demo.json';
 
+// A fresh Git checkout must serve the same bytes as the copied scaffold.
+// Normalize text at the boundary instead of inheriting the toolkit checkout's autocrlf.
+async function normalizeText(directory) {
+  for (const entry of await fs.readdir(directory, { withFileTypes: true })) {
+    const file = path.join(directory, entry.name);
+    if (entry.isDirectory()) await normalizeText(file);
+    else if (entry.isFile() && /\.(?:mjs|js|ts|json|ya?ml|xml|html|css|md|txt|csv|svg|resx|cs|csproj|config|ps1|cmd|sh|template)$/i.test(entry.name)) {
+      const bytes = await fs.readFile(file);
+      if (!bytes.includes(0) && bytes.includes(13)) await fs.writeFile(file, bytes.toString('utf8').replace(/\r\n?/g, '\n'));
+    }
+  }
+}
+
 async function prepareEditorFiles(target) {
   const folder = path.join(target, '.vscode');
   await assertScaffoldPath(folder, { directory: true });
@@ -52,7 +65,8 @@ export async function prepareDemo(directory) {
   await fs.copyFile(path.join(STARTER, 'gitignore.template'), path.join(target, '.gitignore'));
   await fs.copyFile(path.join(STARTER, 'gitattributes.template'), path.join(target, '.gitattributes'));
   await fs.copyFile(path.join(STARTER, 'editor-workspace.mjs'), path.join(target, 'editor-workspace.mjs'));
-  const { version } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
+  await normalizeText(target);
+  const { version, dependencies } = JSON.parse(await fs.readFile(path.join(ROOT, 'package.json'), 'utf8'));
   await fs.writeFile(path.join(target, 'package.json'), JSON.stringify({
     name: 'paqvilo-example', private: true, type: 'module',
     scripts: {
@@ -62,7 +76,7 @@ export async function prepareDemo(directory) {
       lense: 'paqvilo lense dev --config ./paqvilo.config.yml --site example',
       test: 'node --test test/*.test.mjs',
     },
-    devDependencies: { paqvilo: version },
+    devDependencies: { paqvilo: version, yaml: dependencies.yaml, 'playwright-core': dependencies['playwright-core'] },
   }, null, 2) + '\n', { flag: 'wx' });
   await fs.mkdir(path.join(target, '.paqvilo'), { recursive: true });
   await fs.writeFile(path.join(target, MARKER), JSON.stringify({ kind: 'paqvilo-example', version: 2 }) + '\n', { flag: 'wx' });

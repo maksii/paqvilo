@@ -78,20 +78,17 @@ if (args.help || command === "help") {
 
 Commands: ${MIRAGE_COMMANDS.join(', ')}
 
-  node mirage/cli.mjs serve [--site SITE --env ENV] [--repo PATH]
-  node mirage/cli.mjs serve --source PATH --port 8787
-  node mirage/cli.mjs inspect --project mirage.project.yml --json
-  node mirage/cli.mjs serve --project mirage.project.yml --port 8787
-  node mirage/cli.mjs serve --project mirage.project.yml --portal PORTAL_ID
-  node mirage/cli.mjs inspect --source PATH --json
-  node mirage/cli.mjs render --source PATH --path /PAGE/ --output .paqvilo/page.html
-  node mirage/cli.mjs capture-shell --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/
-    [--managed-control-path /known-native-editor-route]
-  node mirage/cli.mjs capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
-  node mirage/cli.mjs capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
-  node mirage/cli.mjs verify --local http://127.0.0.1:8787 --origin https://PORTAL --cdp http://127.0.0.1:PORT --path /PAGE/
-  node mirage/cli.mjs data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
-  node mirage/cli.mjs data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
+  paqvilo mirage serve [--site SITE --env ENV] [--repo PATH]
+  paqvilo mirage serve --source PATH --port 8787
+  paqvilo mirage inspect --project mirage.project.yml --json
+  paqvilo mirage serve --project mirage.project.yml --port 8787
+  paqvilo mirage serve --project mirage.project.yml --portal PORTAL_ID
+  paqvilo mirage inspect --source PATH --json
+  paqvilo mirage render --source PATH --path /PAGE/ --output .paqvilo/page.html
+  paqvilo mirage capture-stylesheets --site SITE --env ENV --cdp http://127.0.0.1:PORT --stylesheet /styles/theme.css
+  paqvilo mirage capture-snippet-composition --site SITE --env ENV --cdp http://127.0.0.1:PORT --path /PAGE/ --parent-snippet NAME --child-snippet NAME
+  paqvilo mirage data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
+  paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH]
 

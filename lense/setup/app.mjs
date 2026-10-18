@@ -41,6 +41,11 @@ function siteEditor(site) {
 }
 function render() {
   const runtime = state.runtime;
+  const navigation = $('#runtime-navigation');
+  const portalUrl = runtime?.portalUrl ?? (runtime?.product === 'Mirage' ? '/' : null);
+  const simUrl = runtime?.portalUrl ? new URL('/_sim/', new URL(runtime.portalUrl, location.href)).href : '/_sim/';
+  navigation.hidden = !portalUrl;
+  navigation.innerHTML = portalUrl ? `<a href="${esc(portalUrl)}">← Back to portal</a>${runtime.product === 'Mirage' ? `<a href="${esc(simUrl)}">Manage data and personas</a>` : ''}` : '';
   $('#scope').textContent = state.directory;
   const count = state.findings.length;
   const personal = state.layers.personal;
@@ -125,7 +130,21 @@ $('#content').addEventListener('submit', async event => {
       // Route YAML is passed through the document editor's validator via a string operation.
       edits.push({ op: 'set', path: [...prefix, 'routes'], yaml: value('routes') || '[]' });
     }
-    await save({ operations: edits });
+    // Guided forms show effective defaults. Write only fields the user changed,
+    // so inherited values and scalar environment comments remain untouched.
+    const changed = type === 'site' ? edits.filter(edit => {
+      const path = edit.path.slice(2);
+      let previous = path.reduce((value, key) => value?.[key], site);
+      if (path.join('.') === 'startPath') previous ??= '/';
+      if (path.join('.') === 'scope') previous ??= 'all';
+      if (path[0] === 'environments' && path[2] === 'caution') previous = Boolean(previous);
+      if (path.join('.') === 'routes') previous ??= [];
+      if (edit.yaml !== undefined) return edit.yaml !== JSON.stringify(previous, null, 2);
+      const next = edit.value;
+      if (edit.op === 'delete') return previous !== undefined;
+      return JSON.stringify(previous ?? null) !== JSON.stringify(next);
+    }) : edits;
+    await save({ operations: changed });
   } catch (error) { notice(error.message, true); }
 });
 $('#refresh').addEventListener('click', () => { if (!dirty || confirm('Discard unsaved form changes and reload status?')) load(); });

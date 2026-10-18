@@ -15,6 +15,32 @@ async function fixture(t,html,report){
   return {page,identify,data};
 }
 
+test('X-ray details expose PCF bindings and Web API context with consistent toggles and Ctrl interaction',async t=>{
+  const report={codeComponents:[{schemaName:'fx.Widget',binding:'declared-schema-name',ref:'Widget.xml',resources:[{name:'script',ref:'Widget.js'}],datasets:[{name:'rows',resolved:true,entity:'fx_item',viewName:'Active items',fields:[{name:'title'}],ref:'View.xml'}]}],apiReferences:[{name:'fx_items',entity:'fx_item',ref:'Entity.xml',evidence:'observed-api-request'}]};
+  const {page}=await fixture(t,'<div data-pcf-schema="fx.Widget"><button id="action" onclick="window.used=true">Use</button></div>',report);
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.select(document.getElementById('action')));
+  const xray=page.locator('#paqvilo-xray'),details=xray.getByRole('button',{name:'Details',exact:true});
+  assert.equal(await details.getAttribute('aria-pressed'),'true');
+  const text=await xray.locator('.content').innerText();
+  for(const expected of ['fx.Widget','declared-schema-name','Widget.js','Active items','1 columns','/_api/fx_items','Observed request','no request-to-element binding'])assert.ok(text.includes(expected),expected);
+  await xray.getByRole('combobox',{name:'Highlight layer'}).selectOption('data');
+  await xray.locator('.mark[style*="#3975ad"]').first().waitFor();
+  await details.click();assert.equal(await details.getAttribute('aria-pressed'),'false');assert.equal(await xray.locator('.card').isVisible(),false);
+  await details.click();assert.equal(await details.getAttribute('aria-pressed'),'true');assert.equal(await xray.locator('.card').isVisible(),true);
+  await page.keyboard.down('Control');assert.equal(await xray.getByRole('button',{name:'Interact',exact:true}).getAttribute('aria-pressed'),'false');
+  await page.locator('#action').click();await page.keyboard.up('Control');assert.equal(await page.evaluate(()=>window.used),true);
+  assert.equal(await xray.getByRole('button',{name:'Inspect',exact:true}).getAttribute('aria-pressed'),'true');
+  if(process.env.PAQVILO_FEEDBACK_SCREENSHOTS)await page.screenshot({path:process.env.PAQVILO_FEEDBACK_SCREENSHOTS});
+});
+
+test('native PCF selection requires a rendered host rather than a configured column alone',async t=>{
+  const report={forms:[{id:'F',name:'Form',entity:'item'}],codeComponents:[{name:'fx.Editor',schemaName:'fx.Editor',binding:'native-formxml',formId:'F',field:'title',entity:'item',selectedDesktop:true,enablement:'configured'}]};
+  const {page,identify}=await fixture(t,'<form data-formid="F"><input id="title"></form>',report);
+  assert.equal((await identify('#title')).kind,'Basic form');
+  await page.evaluate(()=>{const input=document.getElementById('title'),host=document.createElement('div');host.dataset.pcfNativeField='title';input.before(host);host.append(input);});
+  assert.equal((await identify('#title')).kind,'Code component');
+});
+
 test('full class coverage outranks rare subsets and IDs with contradictory classes; export rarity survives refresh',async t=>{
   const elementSources=[...hints('<div class="state">x</div>','subset'),...['full1','full2','full3'].flatMap(name=>hints('<div class="state padded">x</div>',name)),...hints('<button id="b" class="btn exit">Close</button>','wrong-id'),...hints('<button id="{{ id }}" class="ui-btn custom">Close</button>','correct-classes')];
   const report={elementSources,elementSourceFrequencies:{'div.state':1,'div.state.padded':3}}, {page,identify,data}=await fixture(t,'<div class="state padded">x</div><button id="b" class="ui-btn custom">Close</button>',report);

@@ -8,6 +8,24 @@ import { protectConfiguration, unprotectConfiguration, portalNotes } from "../li
 import { notesFilter } from "../lib/form-service.mjs";
 import { signInHeaders } from "../testing/session.mjs";
 import {reportCapturedBundleRequirements} from '../lib/native-services.mjs';
+import {gridRecord} from '../lib/native-services.mjs';
+
+test('native grids preserve zone-less DateOnly and independent dates across host time zones',()=>{
+  const previous=process.env.TZ;
+  try {
+    for(const timezone of ['Europe/Kyiv','America/Los_Angeles','UTC']) {
+      process.env.TZ=timezone;
+      const fields={calendar:{type:'datetime',dataverseType:'datetime',dateTimeBehavior:'DateOnly',format:'DateOnly'},independent:{type:'datetime',dataverseType:'datetime',dateTimeBehavior:'TimeZoneIndependent'}};
+      const context={metadata:{entities:{item:{fields}}},portal:{settings:{}},timezoneOffset:-120};
+      const model={entity:'item',idColumn:'itemid',kind:'lookup',view:{fetchXml:'<fetch><entity name="item"/></fetch>'}};
+      const result=gridRecord({itemid:'10000000-0000-4000-8000-000000000001',calendar:'2026-11-20T00:00:00.0000000',independent:'2026-11-20T10:30:00.0000000'},model,{Columns:[]},context);
+      const attributes=Object.fromEntries(result.Attributes.map(row=>[row.Name,row]));
+      assert.equal(attributes.calendar.DisplayValue,'2026-11-20',timezone);
+      assert.equal(attributes.calendar.FormattedValue,'11/20/2026',timezone);
+      assert.equal(attributes.independent.FormattedValue,'11/20/2026 10:30 AM',timezone);
+    }
+  } finally { if(previous===undefined)delete process.env.TZ;else process.env.TZ=previous; }
+});
 
 test('a captured locale with an incomplete captured global provider is diagnosed once',async()=>{
   const diagnostics=[],provider='/resource/powerappsportal/dist/postpreform.BootstrapV5.bundle-abcdef.js';
