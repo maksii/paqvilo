@@ -63,7 +63,7 @@ to embedded hosts. The append journal grows with changes; `compact()` queues an 
 checkpoint without cloning rows. Full state replacement, presets and arbitrary `transact`
 callbacks also checkpoint. External trusted plugin handlers retain full state rollback
 copies, including independent PreValidation SDK commits; their cost can still scale with
-the state. This change does not make all query/filter/relationship operations indexed or
+the state. Journaling does not make all query/filter/relationship operations indexed or
 remove the memory cost of complete admin state exports.
 
 `DataStore` and `createSimulator` accept `persistence: { journalThresholdBytes: 0 }` to journal every size,

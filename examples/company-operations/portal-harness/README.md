@@ -122,10 +122,10 @@ and actual query-template/API wire results. It does not cover authentication,
 dispatcher/full-page execution, browser JavaScript, anonymous CRUD or unrecorded
 backend fault codes. Failed admitted Liquid queries can have exact observable
 artifacts and wire failures while `allRuntimeFaultCodesQualified` remains false.
-## Stable checkpoint (13 October 2026)
+## Qualification status (13 October 2026)
 
-Native work is stopped at the user's request. The existing authenticated Contact
-is the native runner; future runs update its web roles and clear both caches.
+The existing authenticated Contact is the native runner; native runs update its
+web roles and clear both caches.
 Parallel identities and process workers are local Mirage capabilities.
 
 The current Source4 calibration replay qualifies 184 of 204 physical reads.
@@ -140,12 +140,12 @@ runtime faults remain outside the qualified scope.
 Native memberships, both caches, the 235-step registry, authentication settings
 and private site visibility were verified restored. Opening Microsoft's studio
 added two unrelated default components; they were retained and documented in
-ignored evidence. A future native source freeze must include them.
+ignored evidence. A native source freeze must include them.
 
 `native-mask-window.mjs` has tested archive/history and shared-boundary checks,
 but is not connected to the native collector. `continuationPolicy: "mask-window"`
 is rejected before collection; the supported collector uses fresh per-page
-snapshots and cache checks. Source5 lookup tests remain opt-in and undeployed;
+snapshots and cache checks. Source5 lookup tests are opt-in;
 they require the declared variant-length upgrade and fresh native receipts.
 Private source freezes, captures, ledgers and restoration receipts stay under
 ignored `.paqvilo/`; they are excluded from the package.

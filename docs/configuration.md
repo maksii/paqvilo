@@ -157,7 +157,7 @@ See [concurrent testing](public-api.md#test-many-visitors-concurrently) and
 
 ## Standalone Mirage projects
 
-Version 2 Mirage project files contain `primaryPortal`, `portals`, `solutions`, `references`
+Version 2 Mirage project files contain `defaultPortal`, `portals`, `solutions`, `references`
 and `dataPacks`. Portals specify `{ id, path, origin?, solutions?, reference?, deploymentProfile?,
 observed?, dataModel? }`; Solutions specify `{ id, path }`; references specify
 `{ id, origin, default? }`. Paths are project-relative and each portal has isolated state.

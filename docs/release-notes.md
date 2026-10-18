@@ -1,5 +1,40 @@
 # Release notes
 
+## 0.9.5
+
+This release fixes what the recorded walkthroughs and a documentation review surfaced, and
+adds an illustrated guide to the project site.
+
+### Changed
+
+- **Demo:** the reader persona is Alex Demo 01 everywhere; the access-denied and page-not-found
+  pages no longer reference a missing image; narrow viewports keep their side padding; `yaml`
+  and `playwright-core` are declared so `npm test` passes in a fresh demo; the VS Code launch
+  configurations use `msedge` with source-map resolution and no path mapping; Solution roots
+  are listed in dependency order; the copied scaffold uses LF line endings so a Git baseline
+  matches the served bytes.
+- **Lense panel and X-ray:** hold **Ctrl** (previously Alt) to use the portal while X-ray is on;
+  the Details button reports its state; the card shows code-component bindings and Web API
+  page context; the header links to Project setup and, in Mirage, to Manage data and personas;
+  a save toast is not replayed when you switch Online / Local.
+- **Inspect:** Forms & controls lists the modal forms configured by a list's actions.
+- **Setup workspace:** a form save writes only the fields you changed and keeps the original
+  scalar formatting and comments; the workspace links back to the running portal.
+- **Mirage:** DateOnly values keep their calendar date on non-UTC hosts; saving a configuration
+  preset, or re-applying one already in effect, no longer reloads open pages; stale per-port
+  session cookies are dropped from toolkit browser profiles.
+- **Documentation and CLI help:** the page is called Backend operations; Alt+Shift+O and
+  Alt+Shift+L are documented; the `markup` setting is documented; `agent pages` fields, the
+  debugger port, plugin DLL execution and Windows long paths are described as implemented;
+  counts, setting names and `paqvilo mirage --help` examples are corrected; statements about
+  future versions and deprecation windows are removed.
+- **Site:** an interactive guide with clips and stills from the recorded walkthroughs.
+
+### Upgrade notes
+
+Update with `npm install --save-dev paqvilo@^0.9.5` and commit the lockfile. If you relied on
+Alt to interact with the portal while X-ray is on, use Ctrl.
+
 ## 0.9.4
 
 This release expands project configuration, improves local rendering and makes large
@@ -71,8 +106,8 @@ run your project tests. Use your existing dependency category if it differs.
 
 Large state files may use a format older releases cannot read. Back up state before
 upgrading and use `readStateFile` rather than `JSON.parse`; see [state storage](../mirage/docs/state-storage.md).
-Existing deep imports remain available during the documented migration period. New code
-should use the [public API](public-api.md).
+Deep imports such as `paqvilo/mirage/lib/data.mjs` are not supported entry points; use the
+[public API](public-api.md).
 
 Mirage implements selected platform contracts. Validate critical project scenarios against
 Power Pages; see [coverage](coverage.md) and the relevant [runtime reference](../mirage/docs/README.md).

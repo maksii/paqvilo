@@ -51,8 +51,8 @@ observed independently of that table selection.
 
 Keep the state file outside the export or in ignored `.paqvilo/`, as with normal
 runtime configuration. The source fingerprint intentionally observes files in
-the export. Original external DLL/SDK bytes need the separate runtime receipt
-verifier; a plugin-definition hash alone does not observe their on-disk bytes.
+the export. Original external DLL/SDK bytes need separate verification; a
+plugin-definition hash alone does not observe their on-disk bytes.
 These witnesses establish local comparison boundaries, not native parity.
 
-Permission enforcement can be set to strict or permissive for local experiments; this choice is visible in evidence. Live create/update/delete cannot leave the runtime without `--allow-live-writes`, and still require the separate administration switch. Task authorization is required independently of either switch.
+Permission enforcement can be set to enforced or permissive for local experiments; this choice is visible in evidence. Live create/update/delete cannot leave the runtime without `--allow-live-writes`, and still require the separate administration switch. Task authorization is required independently of either switch.

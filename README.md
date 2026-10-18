@@ -73,7 +73,7 @@ Prefer VS Code? Add `--scaffold`, open the generated workspace and use **F5**. T
 
 ## Use your own site
 
-Generate an empty project with `npx paqvilo@^0.9.4 init ./my-portals --name my-portals`, then run `npm run setup` inside it and fill in the values listed by `npx paqvilo init --check`. The [project scaffold guide](docs/project-scaffold.md) covers multiple sites/packs, offline tests and editor refresh.
+Generate an empty project with `npx paqvilo@^0.9.5 init ./my-portals --name my-portals`, then run `npm run setup` inside it and fill in the values listed by `npx paqvilo init --check`. The [project scaffold guide](docs/project-scaffold.md) covers multiple sites/packs, offline tests and editor refresh.
 
 Start with an existing Power Pages export. [Getting started](https://github.com/maksii/paqvilo/blob/main/docs/getting-started.md#2-scaffold-your-project) explains where to place it, how to create your configuration, and how to open the integrated browser.
 
