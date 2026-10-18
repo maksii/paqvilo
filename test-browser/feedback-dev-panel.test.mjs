@@ -29,6 +29,16 @@ async function fixture(t,html='<h1>Invented page</h1>',contextOptions={}){
   return {page,context,session,panel,origin};
 }
 
+test('recent save notifications do not replay when Online/Local recreates the panel',async t=>{
+  const {page,panel,session}=await fixture(t);
+  session.emit('refreshed',{files:[],how:'css'});await panel.draw(page);
+  await page.locator('#paqvilo-panel .float').filter({hasText:'Styles swapped'}).waitFor();
+  session.bypass=true;await page.reload();await panel.draw(page);
+  assert.equal(await page.locator('#paqvilo-panel .float').innerText(),'');
+  session.bypass=false;await page.reload();await panel.draw(page);
+  assert.equal(await page.locator('#paqvilo-panel .float').innerText(),'');
+});
+
 test('chunked and sized JSON failures retain escaped details; oversized bodies keep only HTTP metadata',async t=>{
   const {page,panel}=await fixture(t);
   for(const route of ['/error-small','/error-large','/error-sized']){

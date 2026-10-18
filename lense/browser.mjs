@@ -90,7 +90,7 @@ export async function openBrowser(cfg, overrides = {}) {
     }
   }
   // External profiles stay entirely browser-managed; never export their session credentials.
-  const stopKeeping = profile.kind === 'external' ? async () => {} : await keepSessionCookies(context, `${profileDir}.session.json`);
+  const stopKeeping = profile.kind === 'external' ? async () => {} : await keepSessionCookies(context, `${profileDir}.session.json`, { origins: overrides.cookieOrigins ?? [cfg.origin].filter(Boolean) });
   if (!headless) keepDownloads(context);
   return {
     context,
@@ -218,13 +218,17 @@ function keepDownloads(context) {
  * portal itself expires it.
  * @returns {Promise<() => Promise<void>>} stops the periodic save after one last save
  */
-export async function keepSessionCookies(context, file) {
+export async function keepSessionCookies(context, file, { origins = [] } = {}) {
+  const ports = new Set(origins.flatMap(origin => { try { const url = new URL(origin); return [url.port || (url.protocol === "https:" ? "443" : "80")]; } catch { return []; } }));
+  const stale = cookie => ["127.0.0.1", "localhost", "::1", "[::1]"].includes(cookie.domain?.replace(/^\./, "")) && /^paqvilo-mirage-(?:auth|idp)-(\d+)$/.test(cookie.name) && ports.size && !ports.has(cookie.name.split("-").at(-1));
+  for (const cookie of await context.cookies()) if (stale(cookie)) await context.clearCookies({ name: cookie.name, domain: cookie.domain, path: cookie.path });
   let lastSaved = null;
   try {
-    const saved = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const stored = JSON.parse(fs.readFileSync(file, 'utf8'));
+    const saved = Array.isArray(stored) ? stored.filter(cookie => !stale(cookie)) : stored;
     if (Array.isArray(saved)) {
       if (saved.length) await context.addCookies(saved);
-      lastSaved = JSON.stringify(saved);
+      lastSaved = JSON.stringify(stored);
     }
   } catch {
     /* first run, or an unreadable file: start signed out */
@@ -237,7 +241,7 @@ export async function keepSessionCookies(context, file) {
     saving = (async () => {
       const temporary = `${file}.tmp`;
       try {
-        const session = (await context.cookies()).filter((c) => c.expires === -1);
+        const session = (await context.cookies()).filter((c) => c.expires === -1 && !stale(c));
         const serialized = JSON.stringify(session);
         if (serialized === lastSaved) return;
         fs.writeFileSync(temporary, serialized, { mode: 0o600 });

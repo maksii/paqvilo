@@ -6,6 +6,20 @@ import { createSourceInspector, inspectionSources, inspectRenderedPage } from '.
 import { inspectionFixture, addNativeInspectionFixture } from './source-inspection-fixture.mjs';
 import { assemblyXml, stepXml, pluginId } from '../mirage/test/plugin-fixture.mjs';
 
+test('list action modal forms and Web API column candidates come from the selected exports',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  fs.mkdirSync(path.join(fx.portal,'lists'));
+  const settings={ViewActions:[{Type:'CrmEntityFormView-CreateAction',EntityFormId:'widget-edit',TargetType:0}],ItemActions:[{Type:'CrmEntityFormView-EditAction',EntityFormId:'widget-edit',TargetType:0}]};
+  fs.writeFileSync(path.join(fx.portal,'lists/Items.list.yml'),`adx_entitylistid: item-list\nadx_name: Items\nadx_entityname: fx_widget\nadx_settings: ${JSON.stringify(JSON.stringify(settings))}`);
+  fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),'{% entitylist name: "Items" %}{% endentitylist %}<script src="/widget.js"></script>');
+  fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.yml'),'adx_webpageid: home\nadx_name: Widgets\nadx_partialurl: /\nadx_pagetemplateid: main');
+  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'),'fetch("/_api/fx_widgets");');
+  const {report}=await createSourceInspector({sourceDir:fx.portal,mirageConfig:{solutionRoots:[fx.solution]}}).inspect('/');
+  const form=report.forms.find(row=>row.id==='widget-edit');assert.ok(form);assert.equal(form.evidence,'configured-list-modal-form');assert.equal(form.usedBy.length,2);
+  assert.ok(report.apiReferences.some(row=>row.entity==='fx_widget'));
+  assert.ok(report.columns.some(row=>row.entity==='fx_widget'&&row.name==='fx_title'));
+});
+
 test('element candidates preserve page, template, snippet and script source identity without runtime ownership claims', async t => {
   const fx=inspectionFixture();t.after(fx.cleanup);
   fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'), '<div id="page-block"><button id="fx_title">Title</button></div>');

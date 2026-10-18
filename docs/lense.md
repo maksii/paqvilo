@@ -63,13 +63,15 @@ The default scope overlays every local source. `--scope changed` limits overlays
 
 Create the initial source commit before previewing literal markup. The [setup instructions](getting-started.md#4-preview-live-with-lense) cover a new export; this local baseline does not identify a deployed commit.
 
-The panel's **Online / Local** switch compares the browser's responses. **Alt+Shift+P** opens the panel. **Inspect** is available for live and Mirage sessions. **Tweaks** changes local Mirage identity and scenarios. Independent targets stay isolated by origin, environment and source selection.
+The panel's **Online / Local** switch compares the browser's responses. **Alt+Shift+P** opens the panel. **Alt+Shift+L** hides or shows it; **Alt+Shift+O** switches Online / Local in Lense. **Inspect** is available for live and Mirage sessions. **Tweaks** changes local Mirage identity and scenarios. Independent targets stay isolated by origin, environment and source selection.
 
 In **Inspect**, start with **Page & templates** to open the page copy, JavaScript, CSS and template include chain. **Forms & controls** connects exported forms, lists, views and fields with rendered controls. **Select an element** identifies a control and shows an exact field match when one is available; unmatched elements point you to the page sources. Source rows open files in your configured editor.
 
-Use **◎ Lense X-ray** in Inspect, the panel header, or **Alt+Shift+X** to identify Power Pages sources in place. Hover shows the matching template, page source, form, view or Dataverse column; click keeps its details open. Green highlights identify controls, blue identifies form/view containers, and amber identifies source markup. The layer menu can limit highlights to forms/data, templates/content or the selection. Hold **Alt**, or switch to **Interact**, to use the portal; **Inspect** intercepts pointer activation, including over iframe boundaries. The inspector uses the existing Lense panel theme and does not modify portal styles or submit selected controls.
+Use **◎ Lense X-ray** in Inspect, the panel header, or **Alt+Shift+X** to identify Power Pages sources in place. Hover shows the matching template, page source, form, view or Dataverse column; click keeps its details open. Green highlights identify controls, blue identifies form/view containers, and amber identifies source markup. The layer menu can limit highlights to forms/data, templates/content or the selection. Hold **Ctrl**, or switch to **Interact**, to use the portal; **Inspect** intercepts pointer activation, including over iframe boundaries. The inspector uses the existing Lense panel theme and does not modify portal styles or submit selected controls.
 
 The movable card prioritizes source paths, markup matches, include context, basic forms and FormXml, selected views, tables and columns. **Open source** opens a source at its matching line; **Select source region** selects the enclosing markup that established the match. **Page context** and **Element & ancestry** are secondary disclosures. Use **↑ Parent / ↓ Child**, or cycle overlapping elements under the pointer with **[ / ]**. **Reveal** scrolls a selection into view; **Details** hides the card when it covers a target. **Escape** releases a selection, then exits X-ray. Refresh rereads sources and newly rendered component bindings. X-ray is temporary to the current document and is removed when the session detaches.
+
+Code component details include the exported schema, manifest properties, native column bindings, portal enablement, resources and datasets. When no rendered host identifies the component, its exported page references remain under **Page code components**. **Web API page context** shows literal or observed entity sets, their exported tables and permission rules. API-derived columns can match custom form identifiers, but remain candidates when the table context is missing. Neither a page reference nor an observed request proves which element owns a request or what access the live user has.
 
 Field identifiers are checked against the selected export and explicit table context; ambiguous matches stay visible as candidates. Source matching uses static IDs, classes and component attributes without relying on positional DOM paths, so moved regions can keep their source identity. Multiple templates and conditional branches can share markup; matching candidates do not establish a deployed source revision. Related script references and page dependencies remain secondary to the selected element's sources. Iframe document contents remain unavailable. Native dialogs, nested overlays, open shadow roots, scrolling and source-driven DOM replacements are handled without silently transferring a removed selection to another element.
 
@@ -115,7 +117,7 @@ Returns id, session (without token), readiness, browserScope, access counts, deb
 
 ### agent pages
 
-Returns pages with numeric id, document id, sanitized URL and title. Closed or foreign-origin pages are excluded from actionable pages.
+Returns pages with numeric id, document id, sanitized URL, viewport, reload permission and document method. Closed or foreign-origin pages are excluded from actionable pages.
 
 ### agent events
 
@@ -155,10 +157,10 @@ Agent client errors additionally use `session_not_found` (missing discovery file
 
 ## Local source debugging
 
-Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9223`:
+Mirage appends file-backed source maps to served JavaScript/CSS assets, including extensionless payloads with those MIME types. Page, template, list and form custom JavaScript carries its export sourceURL and line-offset source map. Individual inline blocks use stable `?inline=N` debugger URLs, while maps still point to the original export file. In VS Code, attach to the free port reported by `paqvilo mirage dev --debug-port 9222`:
 
 ```json
-{"type":"msedge","request":"attach","name":"Paqvilo Mirage","port":9223,"resolveSourceMapLocations":["**", "!**/node_modules/**"]}
+{"type":"msedge","request":"attach","name":"Paqvilo Mirage","port":9222,"resolveSourceMapLocations":["**", "!**/node_modules/**"]}
 ```
 
 The maps contain absolute file URLs, so exported files served below parent routes need no project-specific pathMapping. Set breakpoints in exported source files. Sidecar files and YAML literal blocks retain their source lines; folded/escaped fields and enhanced XML/JSON receive a sourceURL only because their encodings do not preserve JavaScript lines. Liquid expansions that change line counts can shift subsequent locations; the debugger describes rendered JavaScript, not local Liquid execution.

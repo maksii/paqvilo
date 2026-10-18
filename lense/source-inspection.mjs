@@ -168,6 +168,18 @@ function inspectFormDependencies(report, portal, metadata, rendered) {
     (item.usedBy ??= []).push(owner);
     return item;
   };
+  for (const component of report.components ?? []) {
+    if (component.kind !== 'list') continue;
+    const list = portal.lists.find(row => norm(row.id) === norm(component.recordId ?? component.id));
+    let settings;
+    try { settings = JSON.parse(portalField(list?.metadata, 'settings', '{}')); } catch { continue; }
+    for (const action of settings?.ViewActions ?? []) {
+      if (action.EntityFormId && (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)) addForm(action.EntityFormId, `${list.name} ${action.Type ?? 'action'}`, 'configured-list-modal-form');
+    }
+    for (const action of settings?.ItemActions ?? []) {
+      if (action.EntityFormId && (action.TargetType == null || action.TargetType === '' || Number(action.TargetType) === 0)) addForm(action.EntityFormId, `${list.name} ${action.Type ?? 'action'}`, 'configured-list-modal-form');
+    }
+  }
   for (const observed of rendered.controls ?? []) if (observed.viewId) addView(observed.viewId, observed.entity || null, observed.gridId || observed.id || 'Rendered native grid', 'rendered-view-id');
   for (let index = 0; index < queue.length && index < 80; index++) {
     const form = queue[index];
@@ -277,7 +289,7 @@ function inspectCodeComponents(report, body, metadata, observed, catalogue) {
   for (const binding of report.nativeCodeBindings ?? []) {
     const schemaName = [...(catalogue?.controls.keys() ?? [])].find((key) => norm(key) === norm(binding.name)) ?? observed?.codeComponents?.[norm(binding.name)] ?? null;
     const control = catalogue?.controls.get(schemaName);
-    const row = { ...binding, schemaName, expression: `${binding.owner} · FormXml factor ${binding.formFactor ?? 'unknown'}`, binding: 'native-formxml', sourceFile: control?.file ?? binding.formSourceFile, formSource: { name: binding.owner, sourceFile: binding.formSourceFile }, resources: control?.resources.map((resource) => ({ name: resource.kind, url: resource.url, sourceFile: catalogue.assets.get(resource.url)?.file })) ?? [] };
+    const row = { ...binding, schemaName, expression: `${binding.owner} · FormXml factor ${binding.formFactor ?? 'unknown'}`, binding: 'native-formxml', properties: control?.properties ?? [], sourceFile: control?.file ?? binding.formSourceFile, formSource: { name: binding.owner, sourceFile: binding.formSourceFile }, resources: control?.resources.map((resource) => ({ name: resource.kind, url: resource.url, sourceFile: catalogue.assets.get(resource.url)?.file })) ?? [] };
     report.codeComponents.push(row);
     if (!control) report.unresolved.push({ kind: 'native-code-component', expression: binding.name, owner: binding.owner, reason: 'The FormXml custom control manifest is absent from selected Solution sources.' });
     if (binding.enablement === 'ambiguous') report.unresolved.push({ kind: 'native-code-component-settings', expression: binding.field, owner: binding.owner, reason: 'Multiple attribute metadata records configure this control; portal enablement is ambiguous.' });
@@ -414,6 +426,9 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     if (entity && !(report.tables ?? []).some((row) => row.logicalName === entity[0])) {
       const [logicalName, table] = entity;
       (report.tables ??= []).push({ kind: 'table', logicalName, name: logicalName, entitySet: name, sourceFile: table.sources?.[0], sourceFiles: table.sources ?? [], fieldCount: Object.keys(table.fields ?? {}).length, evidence: 'web-api-source' });
+    }
+    if (entity) for (const [column, field] of Object.entries(entity[1].fields ?? {})) {
+      if (!report.columns.some(row => row.entity === entity[0] && row.name === column)) report.columns.push({ entity: entity[0], name: column, label: field.label, type: field.dataverseType ?? field.type, required: Boolean(field.required), sourceFile: field.source ?? entity[1].sources?.[0], resolved: true, evidence: 'web-api-table-candidate' });
     }
     return { name, entity: entity?.[0] ?? null, sourceFile: entity?.[1].sources?.[0] ?? null, evidence: observedApiSets.has(name) ? 'observed-api-request' : 'static-reference' };
   });

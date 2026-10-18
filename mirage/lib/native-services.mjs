@@ -5,6 +5,7 @@ import { createRequire } from "node:module";
 import { fileURLToPath } from "node:url";
 import { DataError } from "./data.mjs";
 import { csvCell } from './csv.mjs';
+import { parseDateValue } from './dataverse-values.mjs';
 import { normalizePortalPath, portalField } from "./importer.mjs";
 import { siteSetting } from "./redirects.mjs";
 import { notesFilter } from "./form-service.mjs";
@@ -1261,7 +1262,8 @@ function attributeEntry(name, value, { field, settings, entity, primaryName, tim
     const option = (field?.options ?? []).find((candidate) => Number(candidate.value) === (bool ? 1 : 0));
     entry.FormattedValue = entry.DisplayValue = inner == null ? "" : option?.label ?? (bool ? "Yes" : "No");
   } else if (type === "System.DateTime") {
-    const date = inner == null || inner === "" ? null : new Date(inner);
+    const parsed = parseDateValue(inner);
+    const date = inner == null || inner === "" ? null : new Date(parsed ? parsed.ms : inner);
     const dateOnly = field?.dateTimeBehavior === "DateOnly" || /^date(only)?$/i.test(field?.format ?? "");
     if (field?.dateTimeBehavior) entry.DateTimeBehavior = { Value: field.dateTimeBehavior, ExtensionData: {} };
     if (date && !Number.isNaN(date.getTime())) {

@@ -20,7 +20,7 @@ The main solution also imports the plugin assembly and eight synchronous account
 
 Open [Power Pages](https://make.powerpages.microsoft.com), select your environment, then **Inactive sites → Paqvilo demo → Reactivate**. Choose its address and open it. See Microsoft's [site reactivation instructions](https://learn.microsoft.com/power-pages/admin/reactivate-website).
 
-Register two portal users. In **Power Pages Management → Contacts**, give one user the **Workspace Editors** web role for this website. Leave the second with its automatic **Authenticated Users** role. Readers can view accounts and related contacts and notes. Editors can perform CRUD. Local sign-in uses Alex Example 01 and Blair Demo 01; the invented contacts are sample data, not online credentials.
+Register two portal users. In **Power Pages Management → Contacts**, give one user the **Workspace Editors** web role for this website. Leave the second with its automatic **Authenticated Users** role. Readers can view accounts and related contacts and notes. Editors can perform CRUD. Local sign-in uses Alex Example 01 (editor) and Alex Demo 01 (reader); the invented contacts are sample data, not online credentials.
 
 In Power Automate, open **Example Location**, select **Turn on** if required, and confirm that the portal's cloud-flow consumer allows Authenticated Users. The flow returns the submitted location. It has no external connector or connection reference. Clear the portal cache after changing web roles or settings.
 

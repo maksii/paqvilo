@@ -60,11 +60,11 @@ test('X-ray inspects fields and sources without activating portal controls acros
   await xray.getByRole('button',{name:'Select source region'}).first().click();assert.match(await xray.locator('.element-label').textContent(),/^aside\.updates/);
   await page.evaluate(()=>{const node=document.querySelector('.updates');node.style.position='relative';document.querySelector('.columns').prepend(node);});
   await pick('.updates h2');await xray.locator('.title').getByText('Partial',{exact:true}).waitFor();
-  await xray.getByRole('button',{name:'Details',exact:true}).click();await page.evaluate(()=>window.scrollTo(0,0));await page.keyboard.down('Alt');await page.locator('#open-dialog').click();await page.keyboard.up('Alt');await page.waitForFunction(()=>document.getElementById('paqvilo-xray').parentElement.id==='dialog');
+  await xray.getByRole('button',{name:'Details',exact:true}).click();await page.evaluate(()=>window.scrollTo(0,0));await page.keyboard.down('Control');await page.locator('#open-dialog').click();await page.keyboard.up('Control');await page.waitForFunction(()=>document.getElementById('paqvilo-xray').parentElement.id==='dialog');
   await pick('#fx_name');await xray.locator('.binding').getByText('fx_child.fx_name',{exact:true}).waitFor();await xray.getByText('Related children',{exact:true}).waitFor();
-  await page.keyboard.down('Alt');await page.locator('#nested-open').click();await page.keyboard.up('Alt');await pick('#nested-title');await xray.locator('.binding').getByText('fx_widget.fx_title',{exact:true}).waitFor();await evidence('03-nested-modal');
+  await page.keyboard.down('Control');await page.locator('#nested-open').click();await page.keyboard.up('Control');await pick('#nested-title');await xray.locator('.binding').getByText('fx_widget.fx_title',{exact:true}).waitFor();await evidence('03-nested-modal');
   await xray.locator('.ancestry summary').click();await xray.getByText('Element & ancestry',{exact:true}).waitFor();await xray.getByRole('button',{name:'↑ Parent',exact:true}).click();assert.match(await xray.locator('.element-label').textContent(),/^form/);
-  await page.keyboard.press('Escape');await page.keyboard.down('Alt');await page.locator('#dialog-close').click();await page.keyboard.up('Alt');
+  await page.keyboard.press('Escape');await page.keyboard.down('Control');await page.locator('#dialog-close').click();await page.keyboard.up('Control');
   await page.locator('#embedded').scrollIntoViewIfNeeded();await pick('#embedded');assert.equal(await page.evaluate(()=>window.frameClicks),0);assert.match(await xray.locator('.content').textContent(),/frame boundary/);
   await page.locator('#clipped').scrollIntoViewIfNeeded();await pick('#clipped');await page.waitForTimeout(350);
   const clip=await page.locator('#overflow').boundingBox(),rect=await xray.locator('.selected').boundingBox();assert.ok(rect.x>=clip.x&&rect.x+rect.width<=clip.x+clip.width+1);

@@ -15,7 +15,7 @@ sites:
         title: Choose a demo operator
         description: Select an invented contact for this browser. Its exported web roles determine access.
         accentColor: '#315747'
-      solutionRoots: [ ./metadata, ./code-solution, ./solution ]
+      solutionRoots: [ ./code-solution, ./metadata, ./solution ]
       solutionOrder: explicit
       dataPacks:
         - { id: example, module: ./pack/pack.mjs }

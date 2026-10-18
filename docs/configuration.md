@@ -166,3 +166,18 @@ in dependency order; `solutionOrder: explicit` preserves an explicitly ordered l
 
 Use the catalogue workflow for ordinary project development. The standalone form is useful
 for embedded tools and repeatable runtime inputs; see [bootstrap and sources](../mirage/docs/bootstrap-and-sources.md).
+
+### Markup overlays
+
+A site’s `markup` setting controls literal HTML baseline overlays in Lense:
+
+```yaml
+sites:
+  portal:
+    markup:
+      enabled: true
+      baseline: HEAD
+      kinds: [web-template, content-snippet, page-copy, page-summary, metadata-markup]
+```
+
+Set `enabled: false` to disable these patches. `baseline` selects the Git reference used for comparison; `kinds` limits eligible exported markup. These settings do not execute Liquid or deploy source changes. Inspect applied resources and unmatched patches after refreshing.

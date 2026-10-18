@@ -163,6 +163,7 @@ Lense uses a committed export as the baseline for literal markup previews and Gi
 
 ```sh
 git init
+git config core.longpaths true
 git add sources/portal-export
 git commit -m "Baseline portal export"
 ```
@@ -192,3 +193,5 @@ Lense previews supported local resources while Liquid and Dataverse execute onli
 | Inspect cannot open the editor | Set the top-level `editor` in `paqvilo.config.yml`, or `PAQVILO_EDITOR`, to your editor CLI's name or actual executable path, then restart the session. VS Code uses `code` or its installed `code.cmd`. |
 
 [Documentation index](index.md) | [Project starter](../examples/project/README.md)
+
+On Windows, enable `git config core.longpaths true` in the source repository before adding deep portal exports or the demo baseline. The setting is local to that repository.

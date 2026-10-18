@@ -42,6 +42,12 @@ async function saveForm(page, form) {
 test('setup UI configures a demo and an independent scaffold with two local Git exports and validates Mirage flows', { timeout: 120000 }, async t => {
   const work = await temporary(t), demo = path.join(work, 'demo'), consumer = path.join(work, 'consumer');
   await prepareDemo(demo);
+  const catalogueFile = path.join(demo, 'paqvilo.config.yml');
+  const catalogue = await fs.readFile(catalogueFile, 'utf8');
+  await fs.writeFile(catalogueFile, catalogue
+    .replace('      solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n', '')
+    .replace('local: http://127.0.0.1:8787', 'local: http://127.0.0.1:8787 # TODO(paqvilo-init): choose an origin')
+    + 'defaults:\n  mirage:\n    solutionRoots: [ ./code-solution, ./metadata, ./solution ]\n');
   await fs.mkdir(path.join(demo, 'node_modules'));
   await fs.symlink(root, path.join(demo, 'node_modules/paqvilo'), process.platform === 'win32' ? 'junction' : 'dir');
   await prepareProject(consumer, { name: 'onboarding', sites: ['alpha', 'beta'], noPack: true });
@@ -57,8 +63,10 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   assert.match(await page.locator('#portal-example').innerText(), /Source found/);
   const demoForm = page.locator('form[data-form=site][data-site=example]');
   await page.locator('#portal-example summary').first().click();
+  const configurationBefore = await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8');
   await demoForm.locator('[name=port]').fill('0');
   await saveForm(page, demoForm);
+  assert.equal(await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8'), configurationBefore.replace('port: 8787', 'port: 0'));
   assert.equal(YAML.parse(await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8')).sites.example.mirage.port, 0);
   const demoRuntime = await createSimulator({ sourceDir: path.join(demo, 'portal'), watch: false,
     solutionRoots: [path.join(demo, 'metadata'), path.join(demo, 'code-solution'), path.join(demo, 'solution')],
@@ -69,6 +77,8 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   await page.goto(demoRuntime.url + '/_sim/');
   const popupWait = page.waitForEvent('popup'); await page.getByRole('link', { name: 'Project setup', exact: true }).click();
   const popup = await popupWait; await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
+  assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), '/');
+  assert.equal(await popup.getByRole('link', { name: 'Manage data and personas', exact: true }).getAttribute('href'), '/_sim/');
   assert.match(await popup.locator('#overview').innerText(), /Mirage preview running/); await popup.close();
 
   const server = await startSetupServer({ directory: consumer, processEnv: {} }); t.resources.push(() => server.close());
@@ -171,8 +181,13 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   await page.locator('#paqvilo-panel').waitFor({ state: 'attached' });
   await page.keyboard.press('Alt+Shift+P');
   const link = page.locator('#paqvilo-panel a[title="Project setup"]'); await link.waitFor();
+  assert.equal(await link.locator('svg').count(), 1);
+  assert.equal(await link.innerText(), '');
+  if (process.env.PAQVILO_SETUP_SCREENSHOTS) await page.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'panel-setup.png') });
   const popupPromise = page.waitForEvent('popup'); await link.click(); const popup = await popupPromise;
   await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
   assert.equal(popup.url(), setupUrl); assert.match(await popup.locator('#overview').innerText(), /Lense preview running/);
+  assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), simulator.url);
+  if (process.env.PAQVILO_SETUP_SCREENSHOTS) await popup.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'lense-setup.png'), fullPage: true });
   assert.equal(await popup.locator('#paqvilo-panel').count(), 0);
 });

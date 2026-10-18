@@ -84,7 +84,7 @@ export function panelUi(data) {
       .tag.env { color: var(--fg); font-weight: 600; }
       @media (max-width: 520px) { .head .tag, .foot .stats { display: none; } .pill .branch { max-width: 70px; } }
       .grow { flex: 1; min-width: 4px; }
-      .ib { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); color: var(--muted); }
+      .ib { text-decoration: none; width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border-radius: var(--radius); color: var(--muted); }
       .ib:hover { background: var(--tint); color: var(--primary); }
       .ib.on { color: var(--primary); }
       .ib.warn { color: var(--fg); background: var(--warn-bg); }
@@ -214,6 +214,8 @@ export function panelUi(data) {
       @media (prefers-reduced-motion: reduce) { .row.fresh { animation: none; } }
     `;
     const ICON = {
+      setup: '<circle cx="8" cy="8" r="3"/><path d="M8 1v2M8 13v2M1 8h2M13 8h2M3 3l1.5 1.5M11.5 11.5 13 13M3 13l1.5-1.5M11.5 4.5 13 3"/>',
+      sim: '<path d="M5 2h6M6 2v5l-4 6h12l-4-6V2M4.5 10h7"/>',
       code: '<path d="M6 4 2 8l4 4M10 4l4 4-4 4"/>',
       diff: '<path d="M4 4.5h5M6.5 2v5M4 12h5M12.5 2.5v11"/>',
       copy: '<rect x="5.5" y="5.5" width="8" height="8" rx="1.5"/><path d="M10.5 5.5v-2A1.5 1.5 0 0 0 9 2H4a1.5 1.5 0 0 0-1.5 1.5v5A1.5 1.5 0 0 0 4 10h1.5"/>',
@@ -271,7 +273,7 @@ export function panelUi(data) {
       catalog: null,
       diff: null,
       html: {},
-      flashed: 0,
+      flashed: (() => { try { return Number(sessionStorage.getItem('paqvilo:last-change:' + data.token)) || 0; } catch { return 0; } })(),
       dragged: 0,
       targets: [],
       // Mirage: the page report is fetched once per runtime version, tweaks once per revision.
@@ -1085,7 +1087,8 @@ export function panelUi(data) {
       if (d.lastChange && d.lastChange.at !== S.flashed) {
         const fresh = d.now - d.lastChange.at < 8000;
         S.flashed = d.lastChange.at;
-        if (fresh && d.lastChange.how !== 'skipped') {
+        try { sessionStorage.setItem('paqvilo:last-change:' + d.token, String(S.flashed)); } catch { /* optional toast deduplication */ }
+        if (fresh && !d.online && d.lastChange.how !== 'skipped') {
           const names = d.lastChange.files.slice(0, 2).map(baseName).join(', ') + (d.lastChange.files.length > 2 ? ` +${d.lastChange.files.length - 2}` : '') || (d.lastChange.baselineChanged ? 'Git baseline updated' : '');
           float(`${d.lastChange.how === 'css' ? 'Styles swapped' : d.lastChange.how === 'reload' ? 'Reloaded' : 'Saved'} &middot; ${esc(names)}`);
         }
@@ -1102,7 +1105,8 @@ export function panelUi(data) {
         `${dot}<span class="brand">paqvilo</span><span class="tag">${esc(d.site)}</span><span class="tag env">${esc(d.env)}</span>${real}<span class="grow"></span>
          ${d.mirageMode ? '' : `<span class="seg" title="Compare with the site as it is online (${d.keys.mode})"><button class="${d.online ? '' : 'on live'}" data-act="mode" data-v="local">Local</button><button class="${d.online ? 'on online' : ''}" data-act="mode" data-v="online">Online</button></span><button class="ib ${d.live ? 'on' : 'warn'}" data-act="live" title="Live reload is ${d.live ? 'on: saving a file reloads the page' : 'off: reload the page yourself'}">${icon(d.live ? 'bolt' : 'pause')}</button>`}
          <button class="ib" data-act="xray" title="Lense X-ray (Alt+Shift+X)" aria-label="Toggle Lense X-ray" aria-pressed="${Boolean(document.getElementById('paqvilo-xray')?.__px?.enabled)}">◎</button><button class="ib" data-act="reload" title="Reload this page">${icon('reload')}</button>
-         ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup">Setup</a>` : ''}
+         ${d.setupUrl ? `<a class="ib" href="${esc(d.setupUrl)}" target="_blank" rel="noopener noreferrer" title="Project setup" aria-label="Project setup">${icon('setup')}</a>` : ''}
+         ${d.mirageMode ? `<a class="ib" href="/_sim/" target="_blank" rel="noopener noreferrer" title="Manage data and personas" aria-label="Manage data and personas">${icon('sim')}</a>` : ''}
          <button class="ib" data-act="size" title="${ui.large ? 'Smaller panel' : 'Larger panel'}">${icon('size')}</button>
          <button class="ib" data-act="hide" title="Hide everything (${d.keys.hide})">${icon('hide')}</button>
          <button class="ib" data-act="close" title="Collapse (${d.keys.panel} or Esc)">${icon('down')}</button>`,
