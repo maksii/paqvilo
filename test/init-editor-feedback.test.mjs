@@ -7,6 +7,7 @@ import YAML from 'yaml';
 import { prepareProject } from '../lense/project-scaffold.mjs';
 import { refreshEditor } from '../lense/project-editor.mjs';
 import { developmentScript, developmentWorkflows, developmentScriptDrift } from '../lense/project-workflows.mjs';
+import { loadCatalogue } from '../lense/config.mjs';
 
 const scriptsFor = options => Object.fromEntries(Object.entries(developmentWorkflows(options)).map(([name, workflow]) => [name, developmentScript(name, workflow)]));
 const readJson = async file => JSON.parse(await fs.readFile(file, 'utf8'));
@@ -145,4 +146,27 @@ test('cross-volume refresh retains working absolute debugger paths and explicitl
   const workspaceOnly = await refreshEditor(fx.directory, { config: configFile, workspaceOnly: true, processEnv: {} });
   assert.deepEqual(workspaceOnly.pathWarnings, []);
   assert.equal(await fs.readFile(tasksFile, 'utf8'), before);
+});
+
+test('canonical added shortcuts retire uppercase and underscore catalogue site IDs while custom edits stay protected', async t => {
+  const fx = await fixture(t), site = 'Portal_Archive';
+  const scripts = scriptsFor({ sites: ['alpha'] });
+  fx.config.sites[site] = { ...fx.config.sites.alpha }; await fx.write();
+  const sites = Object.keys(loadCatalogue({ config: fx.configFile }, {}).sites);
+  assert.ok(sites.includes(site), 'production catalogue accepts this identifier');
+  const added = developmentScriptDrift({ scripts, sites });
+  const siteNames = [`dev:${site}`, `dev:${site}:debug`, `mirage:dev:${site}`, `mirage:dev:${site}:debug`];
+  assert.deepEqual(added.map(change => change.name).sort(), [...siteNames].sort());
+  assert.ok(added.every(change => change.action === 'add' && !change.custom));
+  for (const change of added) scripts[change.name] = change.proposed;
+  assert.deepEqual(developmentScriptDrift({ scripts, sites }), []);
+  delete fx.config.sites[site]; await fx.write();
+  const remaining = Object.keys(loadCatalogue({ config: fx.configFile }, {}).sites);
+  const removed = developmentScriptDrift({ scripts, sites: remaining });
+  assert.deepEqual(removed.map(change => change.name).sort(), [...siteNames].sort());
+  assert.ok(removed.every(change => change.action === 'remove' && !change.custom));
+  scripts[`dev:${site}`] = 'node tools/custom-development.mjs';
+  const protectedChanges = developmentScriptDrift({ scripts, sites: remaining });
+  assert.deepEqual(protectedChanges.map(change => change.name).sort(), [`mirage:dev:${site}`, `mirage:dev:${site}:debug`].sort());
+  assert.equal(scripts[`dev:${site}`], 'node tools/custom-development.mjs');
 });

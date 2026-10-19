@@ -35,7 +35,7 @@ export function developmentWorkflows({ sites, browser, config = './paqvilo.confi
 /** Recognize only exact scaffold commands; project-authored commands remain owned by the project. */
 export function generatedDevelopmentScripts(scripts = {}, sites = [], configs = ['./paqvilo.config.yml']) {
   const previousSites = Object.values(scripts).flatMap(command => typeof command === 'string'
-    ? command.match(/ --site ([a-z0-9][a-z0-9-]*) --portals selected$/)?.[1] ?? [] : []);
+    ? command.match(/ --site ([a-zA-Z0-9][a-zA-Z0-9_-]*) --portals selected$/)?.[1] ?? [] : []);
   const generated = new Set();
   for (const browser of [undefined, 'msedge', 'chrome', 'chromium']) for (const config of configs) {
     if (scriptArgument(config) === null) continue;

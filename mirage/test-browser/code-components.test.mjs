@@ -103,7 +103,7 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   const { page } = await hostFixture(t);
   const errors = []; page.on('pageerror', error => errors.push(error.message));
   await page.evaluate(async () => {
-    window.contexts = []; window.states = []; window.destroyed = []; window.notifications = [];
+    window.contexts = []; window.states = []; window.destroyed = []; window.notifications = []; window.propertyUpdates = [];
     document.addEventListener('paqvilo:pcf-output', event => window.notifications.push(event.detail));
     ComponentFramework.registerControl('Synthetic.Types', class {
       init(context, notify, state, container) {
@@ -113,7 +113,7 @@ test('PCF repeated controls have separate instances and state, typed parameters,
         container.style.width = '200px'; container.style.height = '40px';
         container.addEventListener('output', notify);
       }
-      updateView(context) { this.container.dataset.updates = String(Number(this.container.dataset.updates || '0') + 1); this.container.dataset.updatedProperties = context.updatedProperties.join(','); }
+      updateView(context) { propertyUpdates.push({ id: this.container.id, properties: [...context.updatedProperties] }); this.container.dataset.updates = String(Number(this.container.dataset.updates || '0') + 1); this.container.dataset.updatedProperties = context.updatedProperties.join(','); }
       getOutputs() { return { choice: 4, inputOnly: 'must not propagate' }; }
       destroy() { destroyed.push(this.container.id); }
     });
@@ -137,7 +137,8 @@ test('PCF repeated controls have separate instances and state, typed parameters,
   assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('paqvilo-pcf:same-1')).owner), 'same-1');
   assert.equal(await page.evaluate(() => JSON.parse(sessionStorage.getItem('paqvilo-pcf:same-2')).owner), 'same-2');
   await page.locator('#same-1').evaluate(node => node.dispatchEvent(new Event('output')));
-  await page.waitForFunction(() => document.getElementById('same-1').dataset.updatedProperties === 'choice');
+  // A resize can legitimately follow the output callback before the browser is polled.
+  await page.waitForFunction(() => propertyUpdates.some(update => update.id === 'same-1' && update.properties.join(',') === 'choice'));
   assert.deepEqual(await page.evaluate(() => notifications), [{ choice: 4 }]);
   assert.equal(await page.evaluate(() => new Promise((resolve, reject) => contexts[0].resources.getResource('image.bin', value => resolve(atob(value).length), reject))), 512 * 1024);
   await page.locator('#same-1').evaluate(node => { node.style.width = '250px'; });
