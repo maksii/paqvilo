@@ -43,6 +43,13 @@ test('reference parity uses explicit local visitors, membership and override rol
   app.store.state.simulator.identity = { contactId: 'other', roleSource: 'override', roles: ['Reader'] };
   assert.equal((await compareReferenceContracts({ ...options, localVisitor: { configuredPersona: true } })).passed, true, 'configured override roles remain visitor-local');
   app.store.state.simulator.identity = identity;
+  const changedScope = await compareReferenceContracts({ ...options, bridge: { request: async () => {
+    app.store.state.simulator.identityScope = 'configured';
+    return { status: 200, body: { value: [{ widgetid: 'one' }] } };
+  } } });
+  assert.equal(changedScope.contracts[0].localStatus, 403, 'an explicit anonymous cookie stays anonymous when identity scope changes after setup');
+  assert.equal(changedScope.localVisitor.signedIn, false);
+  delete app.store.state.simulator.identityScope;
   app.store.state.simulator.identityScope = 'configured';
   assert.equal((await compareReferenceContracts(options)).contracts[0].localStatus, 403, 'compatibility scope does not grant the default parity visitor access');
   delete app.store.state.simulator.identityScope;
@@ -67,15 +74,63 @@ test('reference parity uses explicit local visitors, membership and override rol
 
 test('reference runner detects JSON/status/state mismatches, rejects writes and redacts query values', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-contract-'));
-  let revision = 1;
-  const server = http.createServer((req, res) => { res.setHeader('content-type', 'application/json'); res.end(JSON.stringify(req.url.startsWith('/__sim') ? { config: { mode: 'local', pageMode: 'local', endpoints: [], identity: { id: 'local' } }, status: { revision, sourceFingerprint: 'source' } } : { value: [{ id: 'one', name: 'Local' }] })); });
+  let revision = 1, localReads = 0;
+  const anonymousCookie = 'fixture-visitor=private-anonymous-session';
+  const server = http.createServer((req, res) => {
+    res.setHeader('content-type', 'application/json');
+    if (req.url.startsWith('/__sim/api/state') || req.url.startsWith('/_sim/api/state')) return res.end(JSON.stringify({ csrf: 'fixture-session-control', config: { mode: 'local', pageMode: 'local', endpoints: [], identity: { id: 'local' } }, status: { revision, sourceFingerprint: 'source' } }));
+    if (req.url === '/_sim/api/session/sign-out') {
+      assert.equal(req.method, 'POST'); assert.equal(req.headers['x-sim-csrf'], 'fixture-session-control');
+      res.setHeader('set-cookie', `${anonymousCookie}; Path=/; HttpOnly`);
+      return res.end(JSON.stringify({ signedIn: false, contactId: null, roles: [], roleSource: 'memberships' }));
+    }
+    if (req.url === '/_sim/api/session') {
+      assert.equal(req.headers.cookie, anonymousCookie);
+      return res.end(JSON.stringify({ signedIn: false, contactId: null, roles: [], roleSource: 'memberships' }));
+    }
+    localReads++;
+    assert.equal(req.method, 'GET'); assert.equal(req.url, '/_api/items?secret=hidden');
+    assert.equal(req.headers.cookie, anonymousCookie);
+    assert.equal(req.headers['x-paqvilo-local-only'], 'true');
+    assert.equal(req.headers.prefer, 'odata.maxpagesize=3');
+    assert.equal(req.headers.authorization, undefined);
+    res.end(JSON.stringify({ value: [{ id: 'one', name: 'Local' }] }));
+  });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await fs.rm(directory, { recursive: true, force: true }); });
-  const options = { localUrl: `http://127.0.0.1:${server.address().port}`, origin: 'https://example.powerappsportals.com', outputDir: directory, contracts: [{ id: 'record', path: '/_api/items?secret=hidden', collection: 'value', fields: ['id'] }], bridge: { request: async () => ({ status: 200, body: Buffer.from('{"value":[{"id":"one","name":"Native"}]}') }) } };
+  const options = { localUrl: `http://127.0.0.1:${server.address().port}`, origin: 'https://example.powerappsportals.com', outputDir: directory, contracts: [{ id: 'record', path: '/_api/items?secret=hidden', prefer: 'odata.maxpagesize=3', collection: 'value', fields: ['id'] }], bridge: { request: async (route, init) => {
+    assert.equal(route, '/_api/items?secret=hidden'); assert.deepEqual(init, { method: 'GET', prefer: 'odata.maxpagesize=3' });
+    return { status: 200, body: Buffer.from('{"value":[{"id":"one","name":"Native"}]}') };
+  } } };
   const passed = await compareReferenceContracts(options); assert.equal(passed.passed, true); assert.equal(JSON.stringify(passed).includes('hidden'), false);
   assert.equal((await compareReferenceContracts({ ...options, contracts: [{ ...options.contracts[0], fields: ['name'] }] })).passed, false);
   assert.equal((await compareReferenceContracts({ ...options, bridge: { request: async () => ({ status: 403, body: '{}' }) } })).passed, false);
   assert.equal((await compareReferenceContracts({ ...options, contracts: [{ ...options.contracts[0], expectedCount: 2 }] })).passed, false);
   assert.equal((await compareReferenceContracts({ ...options, bridge: { request: async () => { revision++; return { status: 200, body: '{"value":[{"id":"one"}]}' }; } } })).passed, false);
   await assert.rejects(compareReferenceContracts({ ...options, contracts: [{ ...options.contracts[0], method: 'POST' }] }), /GET/);
+  assert.equal(localReads, 5);
+  assert.doesNotMatch(await fs.readFile(passed.report, 'utf8'), /private-anonymous-session|fixture-session-control|hidden/);
+});
+
+test('anonymous parity requires session controls and refuses runtime-state redirects before reference access', async t => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'reference-session-guard-'));
+  let forwardedRequests = 0, referenceRequests = 0, redirect = true;
+  const destination = http.createServer((_req, res) => { forwardedRequests++; res.end('{}'); });
+  destination.listen(0, '127.0.0.1'); await once(destination, 'listening');
+  const server = http.createServer((req, res) => {
+    if (redirect) { res.writeHead(302, { location: `http://127.0.0.1:${destination.address().port}/must-not-receive-state` }); return res.end(); }
+    res.setHeader('content-type', 'application/json');
+    res.end(JSON.stringify({ config: { mode: 'local', pageMode: 'local', endpoints: [] } }));
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(async () => {
+    for (const current of [server, destination]) { current.closeAllConnections(); await new Promise(resolve => current.close(resolve)); }
+    await fs.rm(directory, { recursive: true, force: true });
+  });
+  const options = { localUrl: `http://127.0.0.1:${server.address().port}`, origin: 'https://reference.invalid', outputDir: directory, contracts: [{ id: 'read', path: '/_api/widgets', statusOnly: true }], bridge: { request: async () => { referenceRequests++; return { status: 200, body: '{}' }; } } };
+  await assert.rejects(compareReferenceContracts(options));
+  assert.equal(forwardedRequests, 0);
+  redirect = false;
+  await assert.rejects(compareReferenceContracts(options), /did not provide session controls/);
+  assert.equal(referenceRequests, 0);
 });

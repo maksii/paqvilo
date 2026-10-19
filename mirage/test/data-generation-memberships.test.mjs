@@ -67,7 +67,10 @@ test('data generate CLI materializes memberships only when opted in and remains 
   await fs.writeFile(path.join(source, 'website.yml'), 'adx_websiteid: site\nadx_name: Generated fixture');
   await fs.writeFile(path.join(source, 'webrole.yml'), `- adx_webroleid: ${roleId}\n  adx_name: Reviewer`);
   await fs.writeFile(stateFile, JSON.stringify(initial()));
-  await fs.writeFile(packFile, `export default { id: 'fixture', name: 'Fixture', description: 'Invented data', matches: () => true, presets: () => ({}), dataset: () => (${JSON.stringify(fragment())}) };`);
+  await fs.writeFile(path.join(directory, 'dataset.json'), JSON.stringify(fragment()));
+  await fs.writeFile(packFile, `import fs from 'node:fs/promises';
+const dataset = JSON.parse(await fs.readFile(new URL('./dataset.json', import.meta.url), 'utf8'));
+export default { id: 'fixture', name: 'Fixture', description: 'Invented data', matches: () => true, presets: () => ({}), dataset: () => structuredClone(dataset) };`);
   const execute = async extra => {
     const cli = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
     const { stdout } = await promisify(execFile)(process.execPath, [cli, 'mirage', 'data', 'generate', '--pack', 'fixture', '--pack-module', packFile, '--state', stateFile, ...extra], { windowsHide: true, timeout: 30000 });

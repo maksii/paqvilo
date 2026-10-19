@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 import { LiveBridge, validateLivePath } from './lib/live.mjs';
 import { createPortalSession } from './testing/sessions.mjs';
 
-const hash = value => createHash('sha256').update(JSON.stringify(value)).digest('hex');
+const hash = value => createHash('sha256').update(JSON.stringify(value) ?? 'null').digest('hex');
 const loopback = host => ['127.0.0.1', 'localhost', '[::1]'].includes(host);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
 const fieldAt = (value, selector) => selector.split('.').reduce((current, key) => current?.[key], value);
@@ -56,14 +56,14 @@ export async function compareReferenceContracts({ localUrl, origin, cdpUrl, cont
   if (localSession !== undefined && localVisitor !== undefined) throw new Error('Supply either localSession or localVisitor, not both.');
   if (localSession !== undefined && (!localSession || localSession.origin !== local.origin || typeof localSession.request !== 'function' || typeof localSession.session !== 'function')) throw new Error('Local session must be a portal visitor for the selected loopback origin.');
   const readState = async () => {
-    const response = await fetch(local.origin + '/__sim/api/state', { signal: AbortSignal.timeout(30000) });
+    const response = await fetch(local.origin + '/__sim/api/state', { redirect: 'error', signal: AbortSignal.timeout(30000) });
     if (!response.ok) throw new Error('Local runtime state is unavailable.');
     const state = await response.json();
     if (state.config?.mode !== 'local' || state.config?.pageMode !== 'local' || state.config?.endpoints?.some(endpoint => endpoint.mode === 'live')) throw new Error('Parity requires exclusively local providers.');
     return state;
   };
   const before = await readState();
-  let visitor = localSession, ownedVisitor = false, visitorIdentity;
+  let visitor = localSession, ownedVisitor = false, visitorIdentity, visitorOptions;
   if (localVisitor !== undefined) {
     if (!localVisitor || typeof localVisitor !== 'object' || Array.isArray(localVisitor) || Object.keys(localVisitor).some(key => !['contactId', 'roles', 'configuredPersona'].includes(key)) || localVisitor.configuredPersona !== undefined && typeof localVisitor.configuredPersona !== 'boolean') throw new Error('Local visitor requires contactId, optional roles, or configuredPersona: true.');
     let { contactId, roles } = localVisitor;
@@ -73,35 +73,32 @@ export async function compareReferenceContracts({ localUrl, origin, cdpUrl, cont
       if (roles === undefined && (configured?.roleSource ?? 'override') === 'override') roles = configured?.roles;
     }
     if (typeof contactId !== 'string' || !contactId.trim()) throw new Error('Local authenticated visitor requires an existing contactId; no configured persona is available.');
-    visitor = await createPortalSession({ origin: local.origin, contactId, roles });
-    ownedVisitor = true;
-  } else if (!visitor && ['configured', 'all-requests'].includes(before.config?.identityScope)) {
-    // Compatibility identity scopes affect cookie-free reads. Establish an
-    // explicit anonymous visitor so parity's default cannot inherit those grants.
-    visitor = await createPortalSession({ origin: local.origin });
-    ownedVisitor = true;
-    try { await visitor.signOut(); } catch (cause) { visitor.close(); throw cause; }
+    visitorOptions = { contactId, roles };
   }
   const stateSignature = state => hash({ source: state.status?.sourceFingerprint, implementation: state.status?.implementationFingerprint, revision: state.status?.revision, config: { ...state.config, live: undefined }, data: state.data, tableCounts: state.status?.tableCounts });
   const bridge = suppliedBridge ?? new LiveBridge({ origin: reference.origin, allowWrites: false });
   const report = { version: 1, time: new Date().toISOString(), passed: false, localOrigin: local.origin, referenceOrigin: reference.origin, sourceFingerprint: before.status?.sourceFingerprint, implementationFingerprint: before.status?.implementationFingerprint, identityFingerprint: hash(before.config?.identity), planFingerprint: hash(contracts), contracts: [] };
   try {
-    if (visitor) {
-      try { visitorIdentity = await visitor.session(); }
-      catch { throw new Error('Local visitor session is unavailable; create an open portal session for this runtime.'); }
-      if (typeof visitorIdentity?.signedIn !== 'boolean' || localVisitor && !visitorIdentity.signedIn) throw new Error('Local visitor did not establish the requested session.');
-      report.localVisitor = { signedIn: visitorIdentity.signedIn, identityFingerprint: visitorSignature(visitorIdentity) };
-    } else report.localVisitor = { signedIn: false };
+    if (!visitor) {
+      // Every comparison uses one cookie-isolated, origin-confined transport.
+      // Establish anonymous identity explicitly even with ordinary session scope:
+      // a later configured-scope change must never grant this visitor access.
+      visitor = await createPortalSession({ origin: local.origin, ...visitorOptions });
+      ownedVisitor = true;
+      if (!visitorOptions) await visitor.signOut();
+    }
+    try { visitorIdentity = await visitor.session(); }
+    catch { throw new Error('Local visitor session is unavailable; create an open portal session for this runtime.'); }
+    if (typeof visitorIdentity?.signedIn !== 'boolean' || localVisitor && !visitorIdentity.signedIn || !localSession && !localVisitor && visitorIdentity.signedIn) throw new Error('Local visitor did not establish the requested session.');
+    report.localVisitor = { signedIn: visitorIdentity.signedIn, identityFingerprint: visitorSignature(visitorIdentity) };
     if (!suppliedBridge) await bridge.connect(cdpUrl);
     for (const contract of contracts) {
       const result = { id: contract.id, path: contract.path.split('?')[0], kind: contract.kind ?? 'json', fields: contract.fields, expectedCount: contract.expectedCount, statusOnly: contract.statusOnly === true, passed: false };
       try {
         const native = await bridge.request(contract.path, { method: 'GET', prefer: contract.prefer });
-        const requestOptions = { method: 'GET', redirect: 'manual', signal: AbortSignal.timeout(30000), headers: { 'x-paqvilo-local-only': 'true', ...(contract.prefer ? { Prefer: contract.prefer } : {}) } };
         // A portal visitor owns its cookies and local-only controls. Neither is
         // accepted from a plan or copied to the reference browser/evidence.
-        if (visitor) delete requestOptions.headers['x-paqvilo-local-only'];
-        const response = await (visitor ? visitor.request(contract.path, requestOptions) : fetch(new URL(contract.path, local.origin), requestOptions));
+        const response = await visitor.request(contract.path, { method: 'GET', headers: contract.prefer ? { Prefer: contract.prefer } : {} });
         const body = await response.text();
         result.referenceStatus = native.status; result.localStatus = response.status;
         const expectedStatus = contract.expectedStatus ?? 200;
@@ -121,7 +118,7 @@ export async function compareReferenceContracts({ localUrl, origin, cdpUrl, cont
       report.contracts.push(result);
     }
     report.stateUnchanged = stateSignature(before) === stateSignature(await readState());
-    if (visitor) report.localVisitor.unchanged = visitorSignature(visitorIdentity) === visitorSignature(await visitor.session());
+    report.localVisitor.unchanged = visitorSignature(visitorIdentity) === visitorSignature(await visitor.session());
     report.passed = report.stateUnchanged && report.localVisitor.unchanged !== false && report.contracts.every(contract => contract.passed);
   } finally {
     try { if (!suppliedBridge) await bridge.close(); }

@@ -142,7 +142,10 @@ and `activatePackDeniedRoutes` support project-owned parity plans.
 
 `compareReferenceContracts({ localUrl, origin, cdpUrl, contracts, outputDir })` compares
 explicit read contracts with the connected reference browser. Local reads are anonymous
-by default. Supply `localSession: visitor` from `createPortalSession()` to reuse an open
+by default, using a temporary cookie-isolated visitor with an explicit anonymous
+session. This requires the local runtime's session controls even for anonymous reads;
+the visitor owns local-only enforcement and never follows portal redirects.
+Supply `localSession: visitor` from `createPortalSession()` to reuse an open
 visitor at exactly `localUrl`, or `localVisitor: { contactId, roles? }` to create a temporary
 authenticated visitor. Omit `roles` to resolve normal contact memberships; an explicit
 array overrides roles only for that visitor. `localVisitor: { configuredPersona: true }`
