@@ -2,11 +2,21 @@
 
 ## 0.9.6
 
-This release addresses feedback 176–193 on source inspection, local visitor tools,
-acceptance observation and offline diagnostics. The changes use synthetic exports
+This release addresses feedback 176–205 on source inspection, local visitor tools,
+acceptance observation, offline diagnostics and consumer scaffolds. The changes use synthetic exports
 and loopback fixtures; they do not certify complete Power Pages parity.
 
 ### Changed
+
+- **Consumer projects (194–205):** setup selects first install or frozen lockfile ci,
+  and browser checks follow effective configuration. Separate completion, offline
+  all-site readiness and strict executed-acceptance gates prevent empty starters from
+  implying coverage. Site-bound runners remain optional alongside source-free pack tests.
+  Editor refresh proposes npm reconciliation, includes mapped settings repositories,
+  uses relative tracked paths where possible, flags cross-drive references for review
+  and preserves custom files. Optional recipes connect
+  multi-repository paths, pack ownership, persona/state lifecycle, network boundaries
+  and existing-project adoption; the active starter remains empty and minimal.
 
 - **X-ray (176, 177, 190, 191):** reuse unchanged inspection results and source hints,
   restrict extra markup candidates to rendered elements, and display relative

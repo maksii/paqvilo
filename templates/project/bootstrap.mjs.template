@@ -1,0 +1,22 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { spawnSync } from 'node:child_process';
+
+const root = fileURLToPath(new URL('../', import.meta.url));
+const npm = process.env.npm_execpath;
+if (!npm || !fs.statSync(npm, { throwIfNoEntry: false })?.isFile()) {
+  console.error('Run npm run setup so the configured npm CLI is available.');
+  process.exitCode = 1;
+} else if (process.argv.length > 2) {
+  console.error('Bootstrap accepts no arguments; configure registry/cache choices through npm configuration.');
+  process.exitCode = 1;
+} else {
+  const locked = ['npm-shrinkwrap.json', 'package-lock.json'].some(name => fs.existsSync(path.join(root, name)));
+  const command = locked ? 'ci' : 'install';
+  console.log(`Preparing consumer dependencies with npm ${command} --ignore-scripts.`);
+  const result = spawnSync(process.execPath, [npm, command, '--ignore-scripts', '--include=dev'], { cwd: root, stdio: 'inherit', windowsHide: true });
+  // A lockfile failure is actionable; never retry it with a fresh resolution.
+  if (result.error) console.error(result.error.message);
+  process.exitCode = result.status ?? 1;
+}

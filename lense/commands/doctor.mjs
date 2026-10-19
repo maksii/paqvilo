@@ -87,8 +87,8 @@ export function inspectCheckout(cfg, { started = performance.now(), session = ne
   };
 }
 
-export default async function doctor(_cfg, args) {
-  const catalogue = loadCatalogue(args);
+export async function collectDoctor(args, { processEnv = process.env } = {}) {
+  const catalogue = loadCatalogue(args, processEnv);
   if (args.site && !Object.hasOwn(catalogue.sites, args.site)) throw Object.assign(new Error(`Unknown site "${args.site}". Known sites: ${Object.keys(catalogue.sites).join(', ')}`), {code:'invalid_argument'});
   const reports = [];
   const names = args.all ? Object.keys(catalogue.sites) : [args.site];
@@ -97,7 +97,7 @@ export default async function doctor(_cfg, args) {
   const dependencies = dependencyReadiness(TOOL_ROOT);
   for (const site of names) {
     try {
-      const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) });
+      const cfg = await loadConfig({ ...args, site, ...(args.all ? { env: catalogue.sites[site].defaultEnv ?? Object.keys(catalogue.sites[site].environments)[0] } : {}) }, processEnv);
       const started = performance.now();
       const report = inspectCheckout(cfg, { started, session: await OverlaySession.create(cfg) });
       report.lenseReady = report.ready;
@@ -130,6 +130,13 @@ export default async function doctor(_cfg, args) {
   const ready = reports.length > 0 && reports.every((r) => r.ready);
   const warning = scaffoldWarning(catalogue.configDir);
   const report = { offline: true, ready, checks: args.mirage ? ['lense', 'sources', 'mirage'] : ['lense'], reports, ...(warning ? { warnings: [warning] } : {}) };
+  return { report, catalogue };
+}
+
+export default async function doctor(_cfg, args) {
+  const { report, catalogue } = await collectDoctor(args);
+  const { ready, reports } = report;
+  const warning = report.warnings?.[0];
   if (args.json) console.log(JSON.stringify(report, null, 2));
   else {
     console.log('Offline checkout diagnostics (no browser or portal requests)');

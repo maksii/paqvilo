@@ -30,7 +30,15 @@ for (const options of [[], ['--no-pack', '--no-vscode'], ['--pack', 'alpha', '--
   const consumer = path.join(work, `consumer-${options.length}`);
   const init = spawnSync(process.execPath, [path.join(bootstrap, 'node_modules/paqvilo/bin/paqvilo.mjs'), 'init', consumer, '--name', 'smoke', '--toolkit', archive, '--json', ...options], { cwd: bootstrap, encoding: 'utf8', windowsHide: true, timeout: 30000 });
   if (init.status !== 0 || !JSON.parse(init.stdout).ok) throw new Error(`Installed init failed: ${init.stdout}\n${init.stderr}`);
-  run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], consumer);
+  const bootstrapConsumer = () => {
+    const result = spawnSync(process.execPath, [path.join(consumer, 'tools/bootstrap.mjs')], { cwd: consumer,
+      env: { ...process.env, npm_execpath: npm, npm_config_offline: 'true', npm_config_audit: 'false', npm_config_fund: 'false', npm_config_update_notifier: 'false' }, encoding: 'utf8', windowsHide: true, timeout: 120000, maxBuffer: 4*1024*1024 });
+    if(result.status!==0)throw new Error(`Installed consumer bootstrap failed: ${result.stdout}\n${result.stderr}`);
+  };
+  bootstrapConsumer();
+  const lockFile=path.join(consumer,'package-lock.json'), firstLock=fs.readFileSync(lockFile,'utf8');
+  bootstrapConsumer();
+  if(fs.readFileSync(lockFile,'utf8')!==firstLock)throw new Error('Repeat consumer bootstrap rewrote its lockfile');
   console.log(run(['test'], consumer).trim());
   console.log(run(['run', 'test:browser'], consumer).trim());
 }

@@ -32,13 +32,15 @@ export function projectScripts({ sites, browser, packs, vscode }) {
   const mirage = command => `paqvilo mirage ${command} ${config}`;
   const unit = packs.length ? packs.map(pack => `${pack.directory}/test/*.test.mjs`).join(' ') : 'test/*.test.mjs';
   const scripts = {
-    setup: `npm install --ignore-scripts && paqvilo doctor --setup --browser ${browser}${vscode ? ' && paqvilo init --refresh-editor --config ./paqvilo.config.yml' : ''}`,
-    'check:setup': `paqvilo doctor --setup --browser ${browser}`,
+    setup: 'node tools/bootstrap.mjs && npm run check:setup',
+    'check:setup': 'paqvilo doctor --setup --config ./paqvilo.config.yml',
     'check:scaffold': 'paqvilo init --check --config ./paqvilo.config.yml',
+    'check:project': 'paqvilo init --ready --config ./paqvilo.config.yml',
     configure: 'paqvilo setup --config ./paqvilo.config.yml --open',
     lense: 'paqvilo lense', mirage: 'paqvilo mirage',
   };
-  const workflows = developmentWorkflows({ sites, browser });
+  if (vscode) scripts['editor:refresh'] = 'paqvilo init --refresh-editor --config ./paqvilo.config.yml';
+  const workflows = developmentWorkflows({ sites });
   for (const [name, workflow] of Object.entries(workflows)) {
     scripts[name] = developmentScript(name, workflow);
   }
@@ -50,6 +52,7 @@ export function projectScripts({ sites, browser, packs, vscode }) {
   scripts.test = `node --test --test-concurrency=4 --test-timeout=180000 ${unit}`;
   scripts['test:browser'] = 'node tools/test-browser.mjs';
   scripts.validate = 'npm test && npm run test:browser';
+  scripts['validate:configured'] = 'npm run check:project && npm test && npm run test:browser -- --strict';
   return scripts;
 }
 
@@ -91,16 +94,23 @@ export async function prepareProject(directory, options = {}) {
     'paqvilo.config.yml': String(doc),
     '.gitignore': await template('gitignore.template'), '.gitattributes': await template('gitattributes.template'),
     '.editorconfig': await template('editorconfig.template'), '.node-version': metadata.engines.node.match(/\d+/)[0] + '\n',
-    'README.md': await template('README.md', { name, docs }), 'AGENTS.md': await template('AGENTS.md', { name, docs }),
+    'README.md': await template('README.md', { name, docs, version, node: metadata.engines.node.match(/\d+/)[0], editorStep: vscode ? 'Run `npm run editor:refresh` after configuration changes; inspect any script proposals and edited-file alternatives.' : 'Editor generation is disabled; use `paqvilo init --refresh-editor --workspace-only` if you want an ignored workspace file.' }), 'AGENTS.md': await template('AGENTS.md', { name, docs }),
+    'tools/bootstrap.mjs': await template('bootstrap.mjs.template'),
+    'docs/configuration.md': await template('configuration.md', { docs }),
+    'docs/configuration.example.yml': await template('configuration.example.yml'),
+    'docs/data-lifecycle.md': await template('data-lifecycle.md', { docs }),
+    'support/site.mjs': await template('support-site.mjs.template'),
+    'tools/browser-reporter.mjs': await template('browser-reporter.mjs.template'),
+    'docs/acceptance.md': await template('acceptance.md.template'),
     'tools/test-browser.mjs': await template('test-browser.mjs.template', { testRoots: JSON.stringify([...packs.map(pack => `${pack.directory}/test-browser`), 'test-browser']) }),
     '.env.example': `# Personal settings; CLI > shell > .env > catalogue. Paths resolve from this catalogue.\n#PAQVILO_REPO=${sourceRoot}\n#PAQVILO_SITE=${sites[0]}\n#PAQVILO_ENV=${env}\n#PAQVILO_BROWSER=${browser}\n#PAQVILO_PROFILE=feature\n#PAQVILO_SCOPE=all\n#PAQVILO_BASELINE=HEAD\n#PAQVILO_PORTALS=all\n` + sites.map(site => /^[a-z0-9]+$/.test(site) ? `#PAQVILO_${site.toUpperCase()}_SOURCE=${sourceRoot}/${site}-portal\n#PAQVILO_${site.toUpperCase()}_ENV_${env.toUpperCase().replaceAll('-', '_')}=https://${site}-${env}.example.test\n` : `# Site ${site}: use paqvilo.config.local.yml for per-site overrides (environment variable site IDs support alphanumerics only).\n`).join(''),
-    'docs/workflows.md': '# Project workflows\n\nRun these commands from the project folder. Lense browser actions and explicit shell capture can reach live portals; use only authorized environments. Mirage development and the generated tests use local sources.\n\n| npm script | Command |\n| --- | --- |\n' + Object.entries(scripts).map(([script, command]) => `| \`npm run ${script}\` | \`${command}\` |`).join('\n') + '\n',
+    'docs/workflows.md': await template('workflows.md', { commands: Object.entries(scripts).map(([script, command]) => `| \`npm run ${script}\` | \`${command}\` |`).join('\n') }),
   };
   if (packs.length) files['support/mirage.mjs'] = await template('support-mirage.mjs.template');
   else files['test/catalogue.test.mjs'] = await template('no-pack.test.mjs.template');
   for (const pack of packs) {
     files[`${pack.directory}/pack.mjs`] = await template('pack.mjs.template', { pack: pack.id });
-    files[`${pack.directory}/README.md`] = await template('pack-README.md', { pack: pack.id, docs });
+    files[`${pack.directory}/README.md`] = await template('pack-README.md', { pack: pack.id, docs, project: packs.length === 1 ? '..' : '../..' });
     files[`${pack.directory}/test/pack.test.mjs`] = await template('pack.test.mjs.template', { pack: pack.id, support: packs.length === 1 ? '../../support/mirage.mjs' : '../../../support/mirage.mjs' });
     for (const folder of ['lib', 'generators', 'fixtures', 'acceptance', 'tools', 'test-browser']) files[`${pack.directory}/${folder}/.gitkeep`] = '';
   }
@@ -115,5 +125,5 @@ export async function prepareProject(directory, options = {}) {
     Object.assign(files, editorFiles({ name, sites, browser, sourceRoot: webRoot, scripts }));
   }
   const report = await writeScaffold(directory, files, { intoExisting: options.intoExisting });
-  return { schemaVersion: 1, ok: true, ...report, next: ['npm run setup', 'paqvilo init --check', 'npm run validate'] };
+  return { schemaVersion: 1, ok: true, ...report, ...(options.intoExisting ? { adoption: 'Files were added without merging existing package/configuration. Run paqvilo init --ready to review integration diagnostics.' } : {}), next: ['npm run setup', 'npm run configure', ...(vscode ? ['npm run editor:refresh'] : []), 'npm run check:scaffold', 'npm run check:project', 'npm run validate', 'npm run validate:configured'] };
 }

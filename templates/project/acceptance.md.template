@@ -1,0 +1,111 @@
+# Project-owned acceptance tests
+
+`npm run validate` remains a lightweight starter check. An empty fixture skips the
+starter smoke; a malformed nonempty fixture fails. HTTP 200 alone never establishes
+content or permission coverage.
+
+The configured-project gate runs project readiness, unit tests and
+`npm run test:browser -- --strict`. Strict mode consumes structured Node test events
+and requires at least one executed, successful `acceptanceTest` for **every site in
+the current effective catalogue**, including personal overrides. Skips, TODOs and
+filtered-out cases do not count. New sites therefore require new cases. The runner
+consumes `--strict`; other Node test flags still work. Its strict reporter is owned
+by the runner. This is a declaration of executed acceptance coverage: the project
+author remains responsible for meaningful assertions and sufficient scenarios.
+
+Pack unit tests use `support/mirage.mjs` without a selected site and need no export.
+For source-bound runners use `siteMirage(site, { config })` from `support/site.mjs`:
+it imports the selected site's sources and applies platform, observed, deployment
+and other runtime defaults. Pass an independent synthetic fixture catalogue in tests;
+never silently bind these tests to a developer's real checkout. Start owned tests
+with `port: 0`, `watch: false` and a disposable state file. Use
+`attachSite(site, { config })` for an existing configured runtime, or provide its
+known loopback `origin` when a dynamic runtime is not discoverable or matches are
+ambiguous. The helper checks the runtime source against the selected site even
+with an explicit origin. Attachment does not own the runtime: do not stop it during cleanup.
+
+The following optional recipe can be adapted into
+`test-browser/local.acceptance.test.mjs`. It creates invented sources, an independent
+catalogue and ephemeral data, checks rendered content, authenticates through public
+session helpers and verifies an anonymous denial. Keep the default fixture folders
+empty until the project owns its assertions. Change `site` to the configured site
+whose coverage this recipe represents; repeat/adapt cases for other required sites.
+Only this example's own simulator is closed. No credentials or live portal are needed.
+
+```js
+import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+import { createPortalSession } from 'paqvilo/mirage/testing';
+import { runAcceptance } from 'paqvilo/mirage/acceptance';
+import { acceptanceTest, siteMirage } from '../support/site.mjs';
+
+const site = 'portal';
+acceptanceTest(site, 'invented content, authenticated data and anonymous denial', async () => {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'local-acceptance-'));
+  let simulator, signedIn, anonymous;
+  try {
+    const source = path.join(directory, 'portal');
+    await fs.mkdir(path.join(source, 'web-pages'), { recursive: true });
+    const files = {
+      'website.yml': 'adx_websiteid: fixture\nadx_name: Invented fixture',
+      'Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /',
+      'Home.webpage.copy.html': '<h1 id="fixture-title">Invented acceptance content</h1>',
+      'webrole.yml': '- adx_webroleid: reader\n  adx_name: Reader',
+      'sitesetting.yml': '- adx_name: Webapi/sample_item/enabled\n  adx_value: "true"\n- adx_name: Webapi/sample_item/fields\n  adx_value: sample_itemid,title',
+    };
+    for (const [name, body] of Object.entries(files)) await fs.writeFile(path.join(source, name), body);
+    const config = path.join(directory, 'fixture.config.yml');
+    await fs.writeFile(config, JSON.stringify({ sourceRoot: '.', defaultSite: site, sites: {
+      [site]: { source: 'portal', defaultEnv: 'local', environments: { local: 'https://fixture.example.test' }, mirage: { port: 0, solutionRoots: [] } },
+    } }));
+    const mirage = await siteMirage(site, { config: pathToFileURL(config) });
+    const initial = mirage.initialState();
+    initial.mappings.contact = { idColumn: 'contactid' };
+    initial.mappings.sample_item = { idColumn: 'sample_itemid', entitySet: 'sample_items' };
+    initial.tables.contact = [{ contactid: 'fixture-contact', fullname: 'Invented Reader' }];
+    initial.tables.sample_item = [{ sample_itemid: 'fixture-row', title: 'Allowed fixture row' }];
+    initial.permissions = [{ id: 'reader', entity: 'sample_item', scope: 'global', roles: ['Reader'], operations: ['read'] }];
+    initial.settings.permissionMode = 'enforce';
+    initial.simulator.mode = 'local';
+    initial.simulator.pageMode = 'local';
+    initial.simulator.endpoints = [];
+    initial.simulator.permissionSource = 'configured';
+    initial.simulator.contactRoles = [{ contactId: 'fixture-contact', roleId: 'reader' }];
+    simulator = await mirage.createSimulator({ initial, stateFile: path.join(directory, 'state.json'), port: 0, watch: false });
+    const blocked = new Set();
+    const result = await runAcceptance({ localUrl: simulator.url, outputDir: path.join(directory, 'evidence'), timeout: 3000,
+      prepareContext: async context => {
+        // Apply before any page opens. Unexpected HTTP(S) assets cannot escape CI.
+        await context.route('**/*', route => {
+          const url = new URL(route.request().url());
+          if (url.origin === new URL(simulator.url).origin) return route.continue();
+          blocked.add(url.origin); return route.abort('blockedbyclient');
+        });
+      },
+      flows: [{ name: 'Expected rendered content', steps: [
+        { action: 'navigate', path: '/' },
+        { action: 'text', selector: '#fixture-title', value: 'Invented acceptance content' },
+      ] }],
+    });
+    assert.equal(result.passed, true, 'rendered content and browser requests must pass');
+    assert.equal(blocked.size, 0, 'unexpected external requests fail hermetic acceptance');
+    signedIn = await createPortalSession({ origin: simulator.url, contactId: 'fixture-contact' });
+    const allowed = await signedIn.json('/_api/sample_items');
+    assert.equal(allowed.status, 200);
+    assert.deepEqual(allowed.body.value.map(row => row.title), ['Allowed fixture row']);
+    anonymous = await createPortalSession({ origin: simulator.url });
+    assert.equal((await anonymous.json('/_api/sample_items')).status, 403);
+  } finally {
+    try { signedIn?.close(); anonymous?.close(); }
+    finally { try { await simulator?.close(); } finally { await fs.rm(directory, { recursive: true, force: true }); } }
+  }
+});
+```
+
+Hermetic browser tests must reject unexpected external requests, including exported
+scripts, styles, images, frames and fetches. `confinePortalPages` is useful for local
+navigation but is not a promise that every authored asset stays offline. Keep live
+reference comparisons and shell capture explicitly selected and authorized.

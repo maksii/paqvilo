@@ -70,6 +70,8 @@ export const PROJECT_TEMPLATE_FILES = [
   'gitignore.template', 'gitattributes.template', 'editorconfig.template', 'README.md', 'AGENTS.md',
   'pack.mjs.template', 'pack.test.mjs.template', 'pack-README.md', 'support-mirage.mjs.template', 'no-pack.test.mjs.template',
   'test-browser.mjs.template', 'smoke.test.mjs.template',
+  'bootstrap.mjs.template', 'support-site.mjs.template', 'browser-reporter.mjs.template', 'acceptance.md.template',
+  'configuration.md', 'configuration.example.yml', 'data-lifecycle.md', 'workflows.md',
 ].map(name => `templates/project/${name}`);
 
 export const REQUIRED_RELEASE_FILES = [

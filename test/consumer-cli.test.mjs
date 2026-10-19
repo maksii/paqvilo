@@ -23,7 +23,7 @@ test('public tool registry routes each tool-specific help and prints the package
   for (const name of ['doctor', ...Object.keys(MIRAGE_TOOLS)]) assert.ok(help.stdout.includes(name), name);
   const doctor = spawnSync(process.execPath, [bin, 'doctor', '--help'], { encoding: 'utf8', windowsHide: true });
   assert.equal(doctor.status, 0, doctor.stderr);
-  assert.match(doctor.stdout, /Usage: paqvilo doctor --setup \[--json\] \[--browser CHANNEL\]/);
+  assert.match(doctor.stdout, /Usage: paqvilo doctor --setup \[--json\] \[--config FILE\] \[--browser CHANNEL\]/);
 });
 
 test('resolved catalogue reports effective paths and shell, env, local and catalogue provenance', async t => {

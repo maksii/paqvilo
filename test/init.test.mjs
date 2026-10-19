@@ -100,7 +100,8 @@ test('multiple sites/packs, chrome, custom paths and dependency specification ar
 test('no-pack/no-vscode generate runnable tests without pack adapters or editor references', async t => {
   const directory = await project(t);
   const plan = await prepareProject(directory, { name: 'bare', noPack: true, noVscode: true });
-  assert.ok(!plan.created.some(file => file.startsWith('pack/') || file.startsWith('support/') || file.startsWith('.vscode/') || file.endsWith('.code-workspace')));
+  assert.ok(!plan.created.some(file => file.startsWith('pack/') || file === 'support/mirage.mjs' || file.startsWith('.vscode/') || file.endsWith('.code-workspace')));
+  assert.ok(plan.created.includes('support/site.mjs'), 'site-bound runners are optional independently of pack generation');
   const manifest = await readJson(directory, 'package.json');
   assert.ok(!manifest.scripts.setup.includes('refresh-editor'));
   assert.equal(YAML.parse(await read(directory, 'paqvilo.config.yml')).sites.portal.mirage.dataPacks, undefined);
@@ -165,7 +166,7 @@ test('refresh adds/removes site tasks and uses catalogue/browser overrides witho
   assert.ok(task);
   assert.equal(task.args[task.args.indexOf('--site') + 1], 'new');
   assert.equal(task.args[task.args.indexOf('--browser') + 1], 'chrome');
-  assert.equal(task.args[task.args.indexOf('--config') + 1], path.join(directory, 'paqvilo.config.yml'));
+  assert.equal(task.args[task.args.indexOf('--config') + 1], '${workspaceFolder}/paqvilo.config.yml');
   assert.equal((await readJson(directory, '.vscode/launch.json')).configurations[0].type, 'chrome');
   assert.equal(await read(directory, 'package.json'), before);
   await refreshEditor(directory, { processEnv: { PAQVILO_BROWSER: 'msedge' } });
@@ -365,20 +366,20 @@ test('editor refresh follows catalogue/.env/worktree paths and preserves edited 
   const report = await refreshEditor(directory, { processEnv: {} });
   assert.ok(report.updated.includes('.vscode/launch.json'));
   let launches = await readJson(directory, '.vscode/launch.json');
-  assert.equal(launches.configurations[0].webRoot, sources);
+  assert.equal(launches.configurations[0].webRoot, '${workspaceFolder}/external');
   let workspace = await readJson(directory, 'sample.code-workspace');
-  assert.deepEqual(workspace.folders.map(item => item.path), [directory, sources, path.join(sources, 'portal-portal')]);
+  assert.deepEqual(workspace.folders.map(item => item.path), [directory]);
   const worktree = path.join(directory, 'worktree');
   await fs.mkdir(path.join(worktree, 'portal-portal'), { recursive: true });
   await refreshEditor(directory, { processEnv: { PAQVILO_REPO: worktree } });
   launches = await readJson(directory, '.vscode/launch.json');
-  assert.equal(launches.configurations[0].webRoot, worktree);
+  assert.equal(launches.configurations[0].webRoot, '${workspaceFolder}/worktree');
   const customized = JSON.stringify({ ...launches, configurations: [{ name: 'My launch', type: 'chrome', request: 'attach', port: 9999 }] });
   await fs.writeFile(path.join(directory, '.vscode/launch.json'), customized);
   const conflict = await refreshEditor(directory, { processEnv: {} });
   assert.equal(await read(directory, '.vscode/launch.json'), customized);
   assert.equal(conflict.conflicts[0].generated, '.vscode/launch.generated.json');
-  assert.equal((await readJson(directory, '.vscode/launch.generated.json')).configurations[0].webRoot, sources);
+  assert.equal((await readJson(directory, '.vscode/launch.generated.json')).configurations[0].webRoot, '${workspaceFolder}/external');
   await fs.writeFile(path.join(directory, '.vscode/launch.generated.json'), 'Keep my comparison');
   await refreshEditor(directory, { processEnv: {} });
   assert.equal(await read(directory, '.vscode/launch.generated.json'), 'Keep my comparison');
