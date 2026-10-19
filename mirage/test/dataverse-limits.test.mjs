@@ -50,6 +50,37 @@ test("execution time limit uses released durations and the documented message", 
   assert.equal(limits.admit("u1").ok, true);
 });
 
+test("execution retry waits until enough released time has expired, not only the oldest entry", () => {
+  const t = fakeClock();
+  const limits = createServiceProtection({ executionMsPer300s: 1200000, clock: t.clock });
+  limits.admit("u1").release(100000);
+  t.advance(100000);
+  limits.admit("u1").release(1200000);
+  t.advance(10000);
+  // The first entry leaves at 300 s, but 1,200,000 is still counted until the second leaves at 400 s.
+  assert.equal(rejectedWith(limits.admit("u1")).details.retryAfter, 290);
+  t.advance(190000);
+  assert.equal(limits.admit("u1").ok, false);
+  t.advance(100000);
+  assert.equal(limits.admit("u1").ok, true);
+});
+
+test("execution retry is the first entry's expiry when that alone brings usage under the limit", () => {
+  const t = fakeClock();
+  const limits = createServiceProtection({ executionMsPer300s: 1200000, clock: t.clock });
+  limits.admit("u1").release(700000);
+  t.advance(100000);
+  limits.admit("u1").release(700000);
+  t.advance(10000);
+  assert.equal(rejectedWith(limits.admit("u1")).details.retryAfter, 190);
+});
+
+test("a negative release duration never lowers usage", () => {
+  const limits = createServiceProtection({ executionMsPer300s: 1000, clock: fakeClock().clock });
+  limits.admit("u1").release(-500);
+  assert.equal(limits.headers("u1")["x-ms-ratelimit-time-remaining-xrm-requests"], "1.00");
+});
+
 test("concurrency limit counts in-flight requests until release, and release is idempotent", () => {
   const limits = createServiceProtection({ concurrentRequests: 2, clock: fakeClock().clock });
   const a = limits.admit("u1");

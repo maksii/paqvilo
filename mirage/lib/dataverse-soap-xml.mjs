@@ -11,19 +11,21 @@ export const NS = {
   svc: "http://schemas.microsoft.com/xrm/2011/Contracts/Services",
   g: "http://schemas.microsoft.com/crm/2011/Contracts",
   l: "http://schemas.microsoft.com/xrm/2012/Contracts", // unverified: URI completed from the brief
-  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // unverified: URI completed from the brief
-  x9: "http://schemas.microsoft.com/xrm/9.0/Contracts", // unverified: URI completed from the brief
+  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // KeyAttributeCollection (SDK docs)
+  x9: "http://schemas.microsoft.com/xrm/9.0/Contracts", // OptionSetValueCollection (SDK docs)
   b: "http://schemas.datacontract.org/2004/07/System.Collections.Generic",
   c: "http://www.w3.org/2001/XMLSchema",
   e: "http://schemas.microsoft.com/2003/10/Serialization/",
-  f: "http://schemas.microsoft.com/2003/10/Serialization/Arrays", // unverified: URI completed from the brief
+  f: "http://schemas.microsoft.com/2003/10/Serialization/Arrays", // unverified: ColumnSet.Columns item namespace
   i: "http://www.w3.org/2001/XMLSchema-instance",
 };
 const PREFIX = new Map(Object.entries(NS).map(([prefix, uri]) => [uri, prefix]));
 const XML_NAMESPACE = "http://www.w3.org/XML/1998/namespace";
 const KVP = "a:KeyValuePairOfstringanyType";
+const KEY_ATTRIBUTE_KVP = "o:KeyValuePairOfstringanyType"; // KeyAttributeCollection is in xrm/7.1
 const SPECIAL_DOUBLE = new Map([["INF", Infinity], ["-INF", -Infinity], ["NaN", NaN]]);
 const HEADER_NAMES = ["CallerId", "CallerObjectId", "SdkClientVersion", "UserType"];
+const SCALAR_TYPES = ["string", "int", "long", "decimal", "double", "boolean", "dateTime", "guid", "base64", "duration"];
 
 const canonical = (uri) => uri.replace(/^https:\/\//i, "http://");
 const xmlError = (message) => new DataError(message, 400, "InvalidRequest");
@@ -63,6 +65,14 @@ const declareScope = (scope, attributes) => {
   for (const [name, uri] of declarations) next.set(name === "xmlns" ? "" : name.slice(6), canonical(uri));
   return next;
 };
+// xmlDecode throws a RangeError for an out-of-range character reference; the client needs a 400.
+const decodeText = (text) => {
+  try {
+    return xmlDecode(text);
+  } catch {
+    throw xmlError("Invalid character reference in SOAP XML");
+  }
+};
 const addText = (node, text) => {
   if (node.name !== "#document") node.text += text;
   else if (text.trim()) throw xmlError("Text outside the SOAP root element");
@@ -75,7 +85,7 @@ function openTag(stack, text, start) {
   let at = name.end;
   let attr;
   while ((attr = matchAt(ATTRIBUTE, text, at))) {
-    attributes.push([attr.match[1], xmlDecode(attr.match[2] ?? attr.match[3])]);
+    attributes.push([attr.match[1], decodeText(attr.match[2] ?? attr.match[3])]);
     at = attr.end;
   }
   const tag = matchAt(TAG_END, text, at);
@@ -134,7 +144,7 @@ export function parseXml(text) {
   while (pos < text.length) {
     const lt = text.indexOf("<", pos);
     const stop = lt < 0 ? text.length : lt;
-    if (stop > pos) addText(stack.at(-1), xmlDecode(text.slice(pos, stop)));
+    if (stop > pos) addText(stack.at(-1), decodeText(text.slice(pos, stop)));
     if (lt < 0) break;
     pos = markup(stack, text, lt);
   }
@@ -151,7 +161,10 @@ const kidText = (node, ns, name) => {
   const child = kid(node, ns, name);
   return child && !isNil(child) ? child.text : null;
 };
-const valueNode = (node) => node.children.find((c) => c.name === "Value"); // unverified: layout of x9 items
+// The declared `Value` member of an OptionSetValue, Money or AliasedValue element.
+const valueNode = (node) => node.children.find((c) => c.name === "Value");
+const intOf = (node) => (node && !isNil(node) ? Number(node.text.trim()) : null);
+const textOf = (node) => (node && !isNil(node) ? node.text.trim() : null);
 function resolveQName(node, qname) {
   const [prefix, name] = splitName(qname);
   return { ns: resolvePrefix(node.scope, prefix), name };
@@ -165,6 +178,8 @@ function typeOf(node) {
 
 // Decoding. An untyped element decodes as a string, the SOAP default for xs:string.
 const scalar = (type, read = (text) => text) => (node) => ({ type, value: read(node.text.trim()) });
+// long is a Number while it is exact (within 2^53), otherwise its decimal string.
+const longOf = (text) => (Number.isSafeInteger(Number(text)) ? Number(text) : text);
 const pairsOf = (container) =>
   (container?.children ?? []).map((pair) => [kidText(pair, NS.b, "key"), kid(pair, NS.b, "value")]);
 
@@ -191,6 +206,23 @@ function decodeReference(n) {
   };
 }
 
+// RelatedEntities: each item is a KeyValuePair<Relationship, EntityCollection>. Key and value are
+// declared members, so neither carries xsi:type.
+function decodeRelated(n) {
+  if (!n || isNil(n)) return null;
+  return n.children.map((pair) => {
+    const key = kid(pair, NS.b, "key");
+    const value = kid(pair, NS.b, "value");
+    return {
+      relationship: {
+        schemaName: kidText(key, NS.a, "SchemaName"),
+        primaryEntityRole: kidText(key, NS.a, "PrimaryEntityRole"),
+      },
+      entities: value && !isNil(value) ? decodeCollection(value) : null,
+    };
+  });
+}
+
 function decodeEntity(n) {
   return {
     type: "Entity",
@@ -199,6 +231,7 @@ function decodeEntity(n) {
     attributes: decodePairs(kid(n, NS.a, "Attributes")),
     formattedValues: decodePairs(kid(n, NS.a, "FormattedValues"), (v) => v?.text ?? null),
     keyAttributes: decodePairs(kid(n, NS.a, "KeyAttributes")),
+    relatedEntities: decodeRelated(kid(n, NS.a, "RelatedEntities")),
     rowVersion: kidText(n, NS.a, "RowVersion"),
     entityState: kidText(n, NS.a, "EntityState"),
   };
@@ -222,7 +255,7 @@ function decodeCollection(n) {
 const DECODERS = new Map([
   ["c:string", (n) => ({ type: "string", value: n.text })],
   ["c:int", scalar("int", Number)],
-  ["c:long", scalar("long", Number)], // ponytail: long as Number, exact only to 2^53; add BigInt when needed
+  ["c:long", scalar("long", longOf)],
   ["c:decimal", scalar("decimal")],
   ["c:double", scalar("double", (t) => SPECIAL_DOUBLE.get(t) ?? Number(t))],
   ["c:boolean", scalar("boolean", (t) => t === "true" || t === "1")],
@@ -231,11 +264,20 @@ const DECODERS = new Map([
   ["c:base64Binary", scalar("base64")],
   ["e:duration", scalar("duration")],
   ["a:EntityReference", decodeReference],
-  ["a:OptionSetValue", (n) => ({ type: "OptionSetValue", value: decodeValue(valueNode(n))?.value ?? null })],
-  ["a:Money", (n) => ({ type: "Money", value: decodeValue(valueNode(n))?.value ?? null })],
+  ["a:OptionSetValue", (n) => ({ type: "OptionSetValue", value: intOf(valueNode(n)) })],
+  ["a:Money", (n) => ({ type: "Money", value: textOf(valueNode(n)) })],
   ["x9:OptionSetValueCollection", (n) => ({
     type: "OptionSetValueCollection",
-    values: n.children.map((item) => decodeValue(valueNode(item))?.value ?? null),
+    values: n.children.map((item) => intOf(valueNode(item))),
+  })],
+  ["a:ColumnSet", (n) => ({
+    type: "ColumnSet",
+    allColumns: kidText(n, NS.a, "AllColumns") === "true",
+    columns: (kid(n, NS.a, "Columns")?.children ?? []).map((c) => c.text),
+  })],
+  ["a:EntityReferenceCollection", (n) => ({
+    type: "EntityReferenceCollection",
+    values: n.children.map((item) => decodeReference(item)),
   })],
   ["a:AliasedValue", (n) => ({
     type: "AliasedValue",
@@ -256,54 +298,63 @@ const DECODERS = new Map([
 const nil = (name) => `<${name} i:nil="true"/>`;
 const typed = (name, qname, body) => `<${name} i:type="${qname}">${body}</${name}>`;
 const plain = (name, text) => `<${name}>${esc(text)}</${name}>`;
+const plainOrNil = (name, value) => (value == null ? nil(name) : plain(name, value));
 const maybe = (value, render) => (value == null ? "" : render(value));
 const pairItems = (entries, toValue, wrap = KVP) =>
   [...entries].map(([key, value]) => `<${wrap}><b:key>${esc(key)}</b:key>${toValue(value)}</${wrap}>`).join("");
-const pairs = (name, entries, toValue = (v) => encodeValue("b:value", v)) =>
-  `<${name}>${pairItems(entries, toValue)}</${name}>`;
+const pairs = (name, entries, toValue = (v) => encodeValue("b:value", v), wrap = KVP) =>
+  `<${name}>${pairItems(entries, toValue, wrap)}</${name}>`;
 const scalarEncoder = (qname, text = String) => (name, v) => typed(name, qname, esc(text(v.value)));
 const doubleText = (x) => (Number.isNaN(x) ? "NaN" : x === Infinity ? "INF" : x === -Infinity ? "-INF" : String(x));
 const dateText = (x) => (x instanceof Date ? x.toISOString() : String(x));
 
-function encodeReference(name, r) {
-  return typed(
-    name,
-    "a:EntityReference",
-    maybe(r.id, (id) => plain("a:Id", id)) +
-      maybe(r.keyAttributes, (keys) => pairs("a:KeyAttributes", keys)) +
-      maybe(r.logicalName, (logical) => plain("a:LogicalName", logical)) +
-      (r.name == null ? nil("a:Name") : plain("a:Name", r.name)),
-  );
+// Declared members (EntityReference fields, Relationship fields) carry no xsi:type.
+const referenceBody = (r) =>
+  maybe(r.id, (id) => plain("a:Id", id)) +
+  maybe(r.keyAttributes, (keys) => pairs("a:KeyAttributes", keys, undefined, KEY_ATTRIBUTE_KVP)) +
+  maybe(r.logicalName, (logical) => plain("a:LogicalName", logical)) +
+  (r.name == null ? nil("a:Name") : plain("a:Name", r.name));
+const encodeReference = (name, r) => typed(name, "a:EntityReference", referenceBody(r));
+const relationshipBody = (r) =>
+  maybe(r.primaryEntityRole, (x) => plain("a:PrimaryEntityRole", x)) + plain("a:SchemaName", r.schemaName);
+
+// DataContract order: Entities, EntityName, MinActiveRowVersion, MoreRecords, PagingCookie,
+// TotalRecordCount, TotalRecordCountLimitExceeded. Both counts are always written: a missing
+// TotalRecordCount reads as 0 in the SDK, while Dataverse sends -1 when no count was requested.
+const collectionBody = (c) =>
+  `<a:Entities>${(c.entities ?? []).map((e) => encodeEntity("a:Entity", e, false)).join("")}</a:Entities>` +
+  maybe(c.entityName, (x) => plain("a:EntityName", x)) +
+  maybe(c.minActiveRowVersion, (x) => plain("a:MinActiveRowVersion", x)) +
+  `<a:MoreRecords>${Boolean(c.moreRecords)}</a:MoreRecords>` +
+  maybe(c.pagingCookie, (x) => plain("a:PagingCookie", x)) +
+  plain("a:TotalRecordCount", String(c.totalRecordCount ?? -1)) +
+  plain("a:TotalRecordCountLimitExceeded", String(c.totalRecordCountLimitExceeded ?? false));
+const encodeCollection = (name, c) => typed(name, "a:EntityCollection", collectionBody(c));
+
+// Items are KeyValuePair<Relationship, EntityCollection>; key and value are declared, so no xsi:type.
+function encodeRelated(list) {
+  return `<a:RelatedEntities>${list
+    .map((r) =>
+      `<a:KeyValuePairOfRelationshipEntityCollection><b:key>${relationshipBody(r.relationship)}</b:key>` +
+      (r.entities == null ? nil("b:value") : `<b:value>${collectionBody(r.entities)}</b:value>`) +
+      "</a:KeyValuePairOfRelationshipEntityCollection>")
+    .join("")}</a:RelatedEntities>`;
 }
 
 // DataContract order: Attributes, EntityState, FormattedValues, Id, KeyAttributes, LogicalName,
-// RowVersion. RelatedEntities is omitted (optional; expand is out of scope for the 1.1 codec).
+// RelatedEntities, RowVersion. FormattedValues is KeyValuePair<string,string>: untyped values.
 function encodeEntity(name, e, typedElement) {
   const body =
     maybe(e.attributes, (m) => pairs("a:Attributes", m)) +
     maybe(e.entityState, (s) => plain("a:EntityState", s)) +
-    maybe(e.formattedValues, (m) => pairs("a:FormattedValues", m, (v) => encodeValue("b:value", { type: "string", value: v }))) +
+    maybe(e.formattedValues, (m) =>
+      `<a:FormattedValues>${pairItems(m, (v) => plainOrNil("b:value", v), "a:KeyValuePairOfstringstring")}</a:FormattedValues>`) +
     maybe(e.id, (id) => plain("a:Id", id)) +
-    maybe(e.keyAttributes, (m) => pairs("a:KeyAttributes", m)) +
+    maybe(e.keyAttributes, (m) => pairs("a:KeyAttributes", m, undefined, KEY_ATTRIBUTE_KVP)) +
     maybe(e.logicalName, (logical) => plain("a:LogicalName", logical)) +
+    maybe(e.relatedEntities, (list) => encodeRelated(list)) +
     maybe(e.rowVersion, (version) => plain("a:RowVersion", version));
   return `<${name}${typedElement ? ' i:type="a:Entity"' : ""}>${body}</${name}>`;
-}
-
-// DataContract order: Entities, EntityName, MinActiveRowVersion, MoreRecords, PagingCookie,
-// TotalRecordCount, TotalRecordCountLimitExceeded.
-function encodeCollection(name, c) {
-  return typed(
-    name,
-    "a:EntityCollection",
-    `<a:Entities>${(c.entities ?? []).map((e) => encodeEntity("a:Entity", e, false)).join("")}</a:Entities>` +
-      maybe(c.entityName, (x) => plain("a:EntityName", x)) +
-      maybe(c.minActiveRowVersion, (x) => plain("a:MinActiveRowVersion", x)) +
-      `<a:MoreRecords>${Boolean(c.moreRecords)}</a:MoreRecords>` +
-      maybe(c.pagingCookie, (x) => plain("a:PagingCookie", x)) +
-      maybe(c.totalRecordCount, (x) => plain("a:TotalRecordCount", x)) +
-      maybe(c.totalRecordCountLimitExceeded, (x) => plain("a:TotalRecordCountLimitExceeded", x)),
-  );
 }
 
 const ENCODERS = new Map([
@@ -318,30 +369,43 @@ const ENCODERS = new Map([
   ["base64", scalarEncoder("c:base64Binary")],
   ["duration", scalarEncoder("e:duration")],
   ["EntityReference", encodeReference],
-  ["OptionSetValue", (name, v) => typed(name, "a:OptionSetValue", encodeValue("a:Value", { type: "int", value: v.value }))],
-  ["Money", (name, v) => typed(name, "a:Money", encodeValue("a:Value", { type: "decimal", value: v.value }))],
+  ["OptionSetValue", (name, v) => typed(name, "a:OptionSetValue", plainOrNil("a:Value", v.value))],
+  ["Money", (name, v) => typed(name, "a:Money", plainOrNil("a:Value", v.value))],
   ["OptionSetValueCollection", (name, v) => typed(
     name,
     "x9:OptionSetValueCollection",
-    v.values.map((x) => `<x9:OptionSetValue>${encodeValue("a:Value", { type: "int", value: x })}</x9:OptionSetValue>`).join(""), // unverified: item layout
+    v.values.map((x) => `<x9:OptionSetValue>${plainOrNil("a:Value", x)}</x9:OptionSetValue>`).join(""),
+  )],
+  ["ColumnSet", (name, v) => typed(
+    name,
+    "a:ColumnSet",
+    plain("a:AllColumns", String(v.allColumns === true)) +
+      `<a:Columns>${(v.columns ?? []).map((c) => plain("f:string", c)).join("")}</a:Columns>`,
+  )],
+  ["EntityReferenceCollection", (name, v) => typed(
+    name,
+    "a:EntityReferenceCollection",
+    v.values.map((r) => `<a:EntityReference>${referenceBody(r)}</a:EntityReference>`).join(""),
   )],
   ["AliasedValue", (name, v) => typed(
     name,
     "a:AliasedValue",
-    plain("a:AttributeLogicalName", v.attribute) + plain("a:EntityLogicalName", v.entity) + encodeValue("a:Value", v.value),
+    plainOrNil("a:AttributeLogicalName", v.attribute) + plainOrNil("a:EntityLogicalName", v.entity) +
+      encodeValue("a:Value", v.value),
   )],
-  ["Relationship", (name, r) => typed(
-    name,
-    "a:Relationship",
-    maybe(r.primaryEntityRole, (x) => plain("a:PrimaryEntityRole", x)) + plain("a:SchemaName", r.schemaName),
-  )],
+  ["Relationship", (name, r) => typed(name, "a:Relationship", relationshipBody(r))],
   ["Entity", (name, v) => encodeEntity(name, v, true)],
   ["EntityCollection", encodeCollection],
 ]);
 
+// Typed wrappers whose null value is nil as a whole. Other typed values (an AliasedValue, whose
+// inner value may be null) stay typed and write their own nil <a:Value/>.
+const NIL_WHEN_VALUE_NULL = new Set([...SCALAR_TYPES, "OptionSetValue", "Money"]);
+
 /** Encodes a value as one element named `name`. Scalars may be plain JS strings or booleans. */
 export function encodeValue(name, value) {
-  if (value == null || (typeof value === "object" && "value" in value && value.value === null)) return nil(name);
+  if (value == null || (typeof value === "object" && NIL_WHEN_VALUE_NULL.has(value.type) && value.value === null))
+    return nil(name);
   if (typeof value === "string") return typed(name, "c:string", esc(value));
   if (typeof value === "boolean") return typed(name, "c:boolean", String(value));
   const encode = ENCODERS.get(value.type);
@@ -371,7 +435,8 @@ export function fault({ errorCode, message, timestamp, traceText = null, errorDe
     '<s:Fault><faultcode>s:Client</faultcode><faultstring xml:lang="en-US">' + esc(message) + "</faultstring>" +
       `<detail><OrganizationServiceFault xmlns="${NS.a}" xmlns:i="${NS.i}">` +
       `<ErrorCode>${errorCode}</ErrorCode>` +
-      `<ErrorDetails xmlns:b="${NS.b}">${pairItems(errorDetails, (v) => encodeValue("b:value", v), "b:KeyValuePairOfstringanyType")}</ErrorDetails>` + // unverified: wrapper prefix
+      // ErrorDetailCollection is in xrm/2011, the default namespace here, so the items are unprefixed.
+      `<ErrorDetails xmlns:b="${NS.b}">${pairItems(errorDetails, (v) => encodeValue("b:value", v), "KeyValuePairOfstringanyType")}</ErrorDetails>` +
       plain("Message", message) +
       plain("Timestamp", timestamp) +
       "<InnerFault i:nil=\"true\"/>" +

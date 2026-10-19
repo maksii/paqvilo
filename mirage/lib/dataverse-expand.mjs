@@ -15,7 +15,7 @@ function invalid(message) {
 
 /** Throws when raw $expand text uses $skip, $count, $search or $levels inside an option. Message unverified. */
 export function assertExpandText(text) {
-  const match = UNSUPPORTED_OPTION.exec(String(text ?? ""));
+  const match = UNSUPPORTED_OPTION.exec(String(text ?? "").replace(/'(?:[^']|'')*'/g, "''"));
   if (match) throw invalid(`The expand option $${match[1]} is not supported in $expand.`); // unverified: message text
 }
 
@@ -41,15 +41,19 @@ function checkLevel(items, mapping, resolveRelationship, nested) {
     if (!rel) throw new DataError(`Could not find a navigation property named '${item.navigation}' on ${mapping.logicalName}.`, 400, "InvalidAttribute");
     if (item.ref && rel.many) throw invalid("Expand with $ref is only supported on lookup type navigation property.");
     const hasNested = item.expand?.length > 0;
-    if (hasNested && rel.intersect)
+    if ((hasNested || nested) && rel.intersect)
       throw invalid(`The navigation property '${item.navigation}' cannot be expanded. Only many-to-one relationships are supported for nested expansion.`);
     if (rel.many && nested && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE);
+    if (!rel.many && (item.top != null || item.orderby)) throw invalid(PAGING_MESSAGE); // unverified: Dataverse may accept paging on a lookup
     // ponytail: nested children are not checked when the resolver gives no target mapping.
     if (hasNested && rel.target) checkLevel(item.expand, rel.target, resolveRelationship, nested);
   }
 }
 
-/** The option pairs of one expand item: $select, $filter, $orderby, $top and a nested $expand. */
+// Percent-encodes an option value, keeping the characters the documented nextLinks leave literal.
+const encodeOption = (value) => encodeURIComponent(String(value)).replace(/%24/g, "$").replace(/%2C/g, ",").replace(/%3B/g, ";").replace(/%3D/g, "=");
+
+/** The option pairs of one expand item, raw: $select, $filter, $orderby, $top and a nested $expand. */
 function optionPairs(item) {
   const pairs = OPTION_KEYS.filter(([, key]) => item[key] != null && item[key] !== "").map(([name, key]) => `${name}=${item[key]}`);
   if (item.expand?.length) pairs.push(`$expand=${serializeExpand(item.expand)}`);
@@ -71,7 +75,10 @@ function serializeExpand(items) {
  * (encodeSkipToken input, with countOfRecords) is given, which is the nested paging case.
  */
 export function childLinks(origin, version, set, id, nav, options = {}, { nested = false, token } = {}) {
-  const query = optionPairs(options);
+  const query = optionPairs(options).map((pair) => {
+    const at = pair.indexOf("=");
+    return `${pair.slice(0, at + 1)}${encodeOption(pair.slice(at + 1))}`;
+  });
   if (nested && token) query.push(`$skiptoken=${skipTokenQueryValue(decodeURIComponent(encodeSkipToken(token)))}`);
   return {
     key: `${nav}@odata.nextLink`,

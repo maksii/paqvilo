@@ -2,7 +2,6 @@
 // `userQuery=<id>` (saved Advanced Find queries). The query hook answers with the stored FetchXML,
 // which the records layer runs. Invented schema and GUIDs only.
 import { DataError } from "./data-error.mjs";
-import { parseKey } from "./dataverse-odata.mjs";
 
 const TEXT = "nvarchar", INT = "int", GUID = "uniqueidentifier", LOOKUP = "lookup";
 // Seeded only when absent: a Solution mapping (for example a Solution savedquery) is never rewritten.
@@ -59,21 +58,26 @@ function userQueryOf(api, c, id) {
 }
 
 // Navigation collection (`parent(<id>)/<relationship>/?savedQuery=`): add the parent's link as a FetchXML condition.
+// The records layer sets c.navigation = { parent: { mapping, id }, name } for these; any other property route
+// (or an unknown or single-valued relationship) is refused, never answered with the unfiltered set.
 // ponytail: many-to-many (intersect) relationships are not modelled; the parent link is assumed non-null (the id column).
 function withRelationship(api, c, fetchXml) {
-  const rel = c.route?.kind === "property" ? c.mapping?.relationships?.[c.route.segment] : null;
-  if (!rel || rel.many === false) return fetchXml;
+  if (c.route?.kind !== "property") return fetchXml;
+  const nav = c.navigation;
+  const parentMapping = nav?.parent?.mapping;
+  const rel = parentMapping?.relationships?.[nav.name];
+  if (!rel || rel.many === false) {
+    throw new DataError("Predefined queries are only supported on collection-valued navigation properties.", 400, "InvalidRequest", { innerCode: "0x80060888" });
+  }
   if (rel.intersect) throw new DataError("Many-to-many predefined query navigation is not supported.", 501, "NotImplemented");
-  const parentId = parseKey(c.route.key)?.id;
-  const parent = api.store.tableRows(c.mapping.logicalName).find((r) => idOf(r[c.mapping.idColumn]) === parentId);
-  if (!parent) throw notFound(c.mapping.logicalName, c.route.key);
+  const parentId = idOf(nav.parent.id);
+  const parent = api.store.tableRows(parentMapping.logicalName).find((r) => idOf(r[parentMapping.idColumn]) === parentId);
+  if (!parent) throw notFound(parentMapping.logicalName, nav.parent.id);
   const filter = `<filter type="and"><condition attribute="${rel.to}" operator="eq" value="${xmlEscape(parent[rel.from])}" /></filter>`;
   return fetchXml.replace(/<entity\b([^>]*?)(\/?)>/i, (_, attrs, selfClosing) => `<entity${attrs}>${filter}${selfClosing ? "</entity>" : ""}`);
 }
 
 export function install(api) {
-  api.store.transact(() => seed(api.store));
-
   api.recordHooks.add("query", (c, mapping) => {
     const savedId = c.url.searchParams.get("savedQuery");
     const userId = c.url.searchParams.get("userQuery");
@@ -93,4 +97,6 @@ export function install(api) {
     }
     return { fetchXml: withRelationship(api, c, query.fetchXml) };
   });
+  // Seeding is queued on the store; returning it lets an awaited install see the mappings.
+  return api.store.transact(() => seed(api.store));
 }

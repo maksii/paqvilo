@@ -15,6 +15,8 @@ const SEGMENT = new RegExp(String.raw`^([^()]+)(?:\(${KEY}\))?$`);
 const IDENT = /^[A-Za-z_]\w*$/;
 const FUNCTION_NAME = /^(?:Microsoft\.Dynamics\.CRM\.)?[A-Z][A-Za-z]+$/;
 const CRM_NAME = /^Microsoft\.Dynamics\.CRM\.([A-Za-z_]\w*)$/;
+const RELATIONSHIP_CAST = /^Microsoft\.Dynamics\.CRM\.((?:OneToMany|ManyToMany)RelationshipMetadata)$/;
+const OPTION_SET_SEGMENTS = new Set(["OptionSet", "GlobalOptionSet"]);
 const METADATA_SETS = new Set(["EntityDefinitions", "RelationshipDefinitions", "GlobalOptionSetDefinitions"]);
 const METADATA_SEGMENTS = new Set(["Attributes", "Keys", "OneToManyRelationships", "ManyToOneRelationships", "ManyToManyRelationships"]);
 const GUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\}?$/i;
@@ -67,6 +69,39 @@ const INNER_STATUS = {
   "0x80072560": 401,
   "0x80040225": 401,
   "0x8004032c": 401,
+  // Codes from the gap review (task 0.2) and from Wave 1 modules. Statuses marked unverified there default to 400.
+  "0x80040333": 500,
+  "0x8004f502": 403,
+  "0x8004f507": 403,
+  "0x8004f504": 403,
+  "0x80048d37": 403,
+  "0x80072321": 429,
+  "0x80072326": 429,
+  "0x80044a02": 400,
+  "0x80072553": 400,
+  "0x80090487": 400,
+  "0x80090017": 400,
+  "0x80048d1a": 400,
+  "0x8004032d": 400,
+  "0x80048408": 400,
+  "0x8004f00e": 400,
+  "0x80044352": 400,
+  "0x80044366": 400,
+  "0x80060304": 400,
+  "0x8006089b": 400,
+  "0x80047013": 400,
+  "0x80048340": 400,
+  "0x80048331": 400,
+  "0x80048d36": 400,
+  "0x80041128": 400,
+  "0x8004430d": 400,
+  "0x80041102": 400,
+  "0x80041130": 400,
+  "0x8004e023": 400,
+  "0x80040239": 400,
+  "0x80041120": 400,
+  "0x80072491": 400,
+  "0x80048d19": 400,
 };
 
 const decode = (text) => {
@@ -113,6 +148,11 @@ function metadata(parts, unknown) {
   const [head, second, third] = parts;
   if (head.args === "" || second?.args === "") return unknown;
   if (head.args !== undefined && keyProblem(head.args)) return invalid(keyProblem(head.args));
+  // RelationshipDefinitions[(key)]/Microsoft.Dynamics.CRM.(OneToMany|ManyToMany)RelationshipMetadata
+  const relationship = parts.length === 2 && second.args === undefined ? RELATIONSHIP_CAST.exec(second.name) : null;
+  if (head.name === "RelationshipDefinitions" && relationship) {
+    return { kind: "metadataEntity", set: head.name, key: head.args ?? null, segment: null, segmentKey: null, cast: relationship[1] };
+  }
   const result = { kind: "metadataEntity", set: head.name, key: head.args ?? null, segment: null, segmentKey: null, cast: null };
   if (parts.length === 1) return result;
   if (!METADATA_SEGMENTS.has(second.name)) return unknown;
@@ -122,7 +162,18 @@ function metadata(parts, unknown) {
   if (parts.length === 2) return result;
   const cast = CRM_NAME.exec(third.name);
   if (parts.length === 3 && cast && third.args === undefined) return { ...result, cast: cast[1] };
+  // EntityDefinitions(k)/Attributes(k2)/Microsoft.Dynamics.CRM.X/OptionSet (or GlobalOptionSet)
+  const option = parts[3];
+  if (parts.length === 4 && result.segment === "Attributes" && second.args !== undefined && cast && third.args === undefined
+    && option.args === undefined && OPTION_SET_SEGMENTS.has(option.name)) {
+    return { ...result, cast: cast[1], subSegment: option.name };
+  }
   return unknown;
+}
+
+/** Non-enumerable so existing collection/entity route objects keep their exact shape (deepEqual in the route tests). */
+function withCandidate(route, name, params) {
+  return Object.defineProperty(route, "candidate", { value: { name, params }, enumerable: false });
 }
 
 function resource(rest, path) {
@@ -138,11 +189,17 @@ function resource(rest, path) {
   if (count === 1 && FUNCTION_NAME.test(head.name)) {
     return { kind: "function", name: head.name.replace(/^Microsoft\.Dynamics\.CRM\./, ""), params: head.args };
   }
-  if (!IDENT.test(head.name) || head.args === "") return unknown;
+  if (!IDENT.test(head.name)) return unknown;
+  // One segment may also name an operation: the router resolves `candidate` against the registry before treating it as a set.
+  if (count === 1 && head.args === "") return withCandidate({ kind: "function", name: head.name, params: "" }, head.name, "");
+  if (head.args === "") return unknown;
   const set = head.name;
   const key = head.args;
   if (key !== undefined && keyProblem(key)) return invalid(keyProblem(key));
-  if (count === 1) return key === undefined ? { kind: "collection", set } : { kind: "entity", set, key };
+  if (count === 1) {
+    if (key === undefined) return withCandidate({ kind: "collection", set }, set, "");
+    return withCandidate({ kind: "entity", set, key }, set, key);
+  }
   if (count === 2) {
     const bound = CRM_NAME.exec(second.name);
     if (bound) {
@@ -180,7 +237,11 @@ export function parseDataverseRoute(pathname) {
   }
   const rest = decode(data[2] ?? "");
   if (rest === null) return { version, kind: "invalid", message: "The request URI is not valid." };
-  return { version, ...resource(rest, path) };
+  const parsed = resource(rest, path);
+  const route = { version, ...parsed };
+  // The spread drops the non-enumerable candidate, so it is copied across explicitly.
+  if (parsed.candidate) withCandidate(route, parsed.candidate.name, parsed.candidate.params);
+  return route;
 }
 
 /** Key text is echoed in headers (Location, OData-EntityId), so control characters are a 400. */

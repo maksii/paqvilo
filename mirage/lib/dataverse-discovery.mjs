@@ -37,11 +37,20 @@ const ALTERNATE_KEYS = ["UniqueName", "Region", "State", "Version"];
 const FUNCTIONS = ["contains", "startswith", "endswith"];
 const COMPARISONS = ["eq", "ne", "gt", "ge", "lt", "le"];
 const KEYWORDS = ["and", "or", "not", ...COMPARISONS];
-const TOKEN = /(\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?)|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|([A-Za-z_]\w*)|([(),=])/iy;
+// Unquoted DateTimeOffset literals (2022-07-14T00:00:00Z) are matched before numbers, which would take their year.
+const TOKEN = /(\{?[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\}?)|(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2}))|'((?:[^']|'')*)'|(-?\d+(?:\.\d+)?)|([A-Za-z_]\w*)|([(),=])/iy;
+// $filter nesting (parentheses, function arguments and `not`) past this answers 400 instead of overflowing the stack.
+const MAX_NESTING = 100;
 
 function invalid(message, code = "InvalidQuery") {
   return new DataError(message, 400, code);
 }
+
+// Milliseconds of a DateTimeOffset value (a literal already holds them), or null when it has none.
+const instant = (value) => {
+  const ms = typeof value === "number" ? value : Date.parse(value);
+  return Number.isNaN(ms) ? null : ms;
+};
 
 function tokenize(text) {
   const tokens = [];
@@ -52,10 +61,14 @@ function tokenize(text) {
     TOKEN.lastIndex = index;
     const match = TOKEN.exec(text);
     if (!match) throw invalid(`Invalid query expression near '${text.slice(index, index + 20)}'.`);
-    const [source, guid, string, number, word] = match;
+    const [source, guid, dateTime, string, number, word] = match;
     index = TOKEN.lastIndex;
     if (guid) tokens.push({ kind: "lit", guid: true, value: guid.replace(/[{}]/g, "").toLowerCase(), text: source });
-    else if (string !== undefined) tokens.push({ kind: "lit", value: string.replace(/''/g, "'"), text: source });
+    else if (dateTime) {
+      const ms = Date.parse(dateTime);
+      if (Number.isNaN(ms)) throw invalid(`Invalid query expression near '${source}'.`);
+      tokens.push({ kind: "lit", date: true, value: ms, text: source });
+    } else if (string !== undefined) tokens.push({ kind: "lit", value: string.replace(/''/g, "'"), text: source });
     else if (number) tokens.push({ kind: "lit", value: Number(number), text: source });
     else if (word) tokens.push({ kind: "word", value: word, text: source });
     else tokens.push({ kind: "punct", value: source, text: source });
@@ -68,7 +81,7 @@ function keyPredicate(text) {
   const [first, second, third] = tokens;
   const invalidKey = () => new DataError(`Invalid key predicate '${text}'.`, 400, "InvalidKey");
   if (tokens.length === 1 && first.guid) return comparison("eq", { kind: "prop", name: "Id" }, { kind: "lit", value: first.value });
-  if (tokens.length === 3 && first.kind === "word" && second.value === "=" && third.kind === "lit" && ALTERNATE_KEYS.includes(first.value)) {
+  if (tokens.length === 3 && first.kind === "word" && second.value === "=" && third.kind === "lit" && !third.date && ALTERNATE_KEYS.includes(first.value)) {
     return comparison("eq", { kind: "prop", name: first.value }, { kind: "lit", value: third.value });
   }
   throw invalidKey();
@@ -91,13 +104,26 @@ function parseFilter(text) {
     if (token?.kind !== "punct" || token.value !== value) throw fail(token);
   };
 
-  function orExpr() {
-    let node = andExpr();
-    while (isWord(peek(), "or")) {
-      take();
-      node = { kind: "or", left: node, right: andExpr() };
+  // Every parenthesised group, function argument and `not` nests here; the count bounds the recursion.
+  let depth = 0;
+  const nested = (parse) => {
+    if (++depth > MAX_NESTING) throw invalid("The $filter expression is nested too deeply.");
+    try {
+      return parse();
+    } finally {
+      depth -= 1;
     }
-    return node;
+  };
+
+  function orExpr() {
+    return nested(() => {
+      let node = andExpr();
+      while (isWord(peek(), "or")) {
+        take();
+        node = { kind: "or", left: node, right: andExpr() };
+      }
+      return node;
+    });
   }
 
   function andExpr() {
@@ -112,7 +138,7 @@ function parseFilter(text) {
   function notExpr() {
     if (!isWord(peek(), "not")) return comparisonExpr();
     take();
-    return { kind: "not", arg: notExpr() };
+    return nested(() => ({ kind: "not", arg: notExpr() }));
   }
 
   function comparisonExpr() {
@@ -131,7 +157,7 @@ function parseFilter(text) {
       expectPunct(")");
       return node;
     }
-    if (token.kind === "lit") return { kind: "lit", value: token.value };
+    if (token.kind === "lit") return { kind: "lit", value: token.value, date: token.date };
     if (token.kind !== "word") throw fail(token);
     const word = token.value.toLowerCase();
     if (word === "true" || word === "false") return { kind: "lit", value: word === "true" };
@@ -174,12 +200,18 @@ function evaluate(node, row) {
       return node.name === "startswith" ? subject.startsWith(argument) : subject.endsWith(argument);
     }
     case "cmp": {
-      const left = evaluate(node.left, row);
-      const right = evaluate(node.right, row);
+      let left = evaluate(node.left, row);
+      let right = evaluate(node.right, row);
+      if (node.left.date || node.right.date) {
+        // A stored value and a literal can differ in offset or fraction text, so dates compare as instants.
+        left = instant(left);
+        right = instant(right);
+        if (left == null || right == null) return false;
+      }
       if (node.op === "eq") return left === right;
       if (node.op === "ne") return left !== right;
       if (left == null || right == null) return false;
-      // unverified: ordering is ordinal and case-sensitive; dates compare as ISO text.
+      // unverified: ordering is ordinal and case-sensitive for strings.
       if (node.op === "gt") return left > right;
       if (node.op === "ge") return left >= right;
       if (node.op === "lt") return left < right;

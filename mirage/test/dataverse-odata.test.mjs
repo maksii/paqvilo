@@ -393,3 +393,96 @@ test('orderAnnotations: annotations precede their values, context first, nextLin
   ]);
   assert.deepEqual(Object.keys(ordered.value[0]), ['name@x', 'name']);
 });
+
+test('one-segment operation candidates: bare name, name(...) and name()', () => {
+  const bare = route('new_widgets');
+  assert.deepEqual(bare, { version: 'v9.2', kind: 'collection', set: 'new_widgets' });
+  assert.deepEqual(bare.candidate, { name: 'new_widgets', params: '' });
+  const keyed = route('new_widgets(a=1)');
+  assert.deepEqual(keyed, { version: 'v9.2', kind: 'entity', set: 'new_widgets', key: 'a=1' });
+  assert.deepEqual(keyed.candidate, { name: 'new_widgets', params: 'a=1' });
+  const empty = route('sample_Api()');
+  assert.deepEqual(empty, { version: 'v9.2', kind: 'function', name: 'sample_Api', params: '' });
+  assert.deepEqual(empty.candidate, { name: 'sample_Api', params: '' });
+  // Capitalised names keep the existing function route, unchanged by the candidate rule.
+  assert.deepEqual(route('WhoAmI()'), { version: 'v9.2', kind: 'function', name: 'WhoAmI', params: '' });
+  assert.equal(route('1bad()').kind, 'unknown');
+  assert.equal(route('new_widgets()/name').kind, 'unknown');
+});
+
+test('bound operations accept a publisher prefix in the CRM namespace', () => {
+  assert.deepEqual(route(`accounts(${G1})/Microsoft.Dynamics.CRM.new_Calculate(Amount=2)`), {
+    version: 'v9.2', kind: 'boundFunction', set: 'accounts', key: G1, name: 'new_Calculate', params: 'Amount=2',
+  });
+  assert.deepEqual(route('accounts/Microsoft.Dynamics.CRM.sample_Api'), {
+    version: 'v9.2', kind: 'boundAction', set: 'accounts', key: null, name: 'sample_Api', params: undefined,
+  });
+});
+
+test('relationship metadata by collection cast and by key cast', () => {
+  assert.deepEqual(route('RelationshipDefinitions/Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata'), {
+    version: 'v9.2', kind: 'metadataEntity', set: 'RelationshipDefinitions', key: null, segment: null, segmentKey: null, cast: 'OneToManyRelationshipMetadata',
+  });
+  assert.deepEqual(route(`RelationshipDefinitions(${G1})/Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata`), {
+    version: 'v9.2', kind: 'metadataEntity', set: 'RelationshipDefinitions', key: G1, segment: null, segmentKey: null, cast: 'ManyToManyRelationshipMetadata',
+  });
+  assert.equal(route('RelationshipDefinitions/Microsoft.Dynamics.CRM.AttributeMetadata').kind, 'unknown');
+});
+
+test('OptionSet and GlobalOptionSet sub-paths on an entity attribute', () => {
+  const base = {
+    version: 'v9.2', kind: 'metadataEntity', set: 'EntityDefinitions', key: G1, segment: 'Attributes', segmentKey: G2, cast: 'PicklistAttributeMetadata',
+  };
+  assert.deepEqual(route(`EntityDefinitions(${G1})/Attributes(${G2})/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/OptionSet`), { ...base, subSegment: 'OptionSet' });
+  assert.deepEqual(route(`EntityDefinitions(${G1})/Attributes(${G2})/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/GlobalOptionSet`), {
+    ...base, subSegment: 'GlobalOptionSet',
+  });
+  assert.equal(route(`EntityDefinitions(${G1})/Attributes/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/OptionSet`).kind, 'unknown');
+  assert.equal(route(`EntityDefinitions(${G1})/Keys(${G2})/OptionSet`).kind, 'unknown');
+});
+
+test('entity keys route without a method (parser is method-agnostic)', () => {
+  assert.deepEqual(route(`EntityDefinitions(${G1})/Keys(${G2})`), {
+    version: 'v9.2', kind: 'metadataEntity', set: 'EntityDefinitions', key: G1, segment: 'Keys', segmentKey: G2, cast: null,
+  });
+});
+
+test('every gap-review and Wave 1 inner code maps to its status, matched case-insensitively', () => {
+  const cases = [
+    ['0x80040333', 500], ['0x8004f502', 403], ['0x8004f507', 403], ['0x8004f504', 403], ['0x80048d37', 403],
+    ['0x80072321', 429], ['0x80072326', 429],
+    ['0x80044a02', 400], ['0x80072553', 400], ['0x80090487', 400], ['0x80090017', 400], ['0x80048d1a', 400],
+    ['0x8004032d', 400], ['0x80048408', 400], ['0x8004f00e', 400], ['0x80044352', 400], ['0x80044366', 400],
+    ['0x80060304', 400], ['0x8006089b', 400], ['0x80047013', 400], ['0x80048340', 400], ['0x80048331', 400],
+    ['0x80048d36', 400], ['0x80041128', 400], ['0x8004430d', 400], ['0x80041102', 400], ['0x80041130', 400],
+    ['0x8004e023', 400], ['0x80040239', 400], ['0x80041120', 400], ['0x80072491', 400], ['0x80048d19', 400],
+  ];
+  for (const [inner, status] of cases) {
+    const result = dataverseError(new DataError('x', status, 'InvalidRequest', { innerCode: inner }), {});
+    assert.equal(result.status, status, inner);
+    assert.equal(result.body.error.code, inner.toLowerCase(), inner);
+    const upper = dataverseError(new DataError('x', status, 'InvalidRequest', { innerCode: inner.toUpperCase().replace('0X', '0x') }), {});
+    assert.equal(upper.status, status, inner);
+    assert.equal(upper.body.error.code, inner.toLowerCase(), inner);
+  }
+});
+
+test('Global Discovery and records non-hex codes render with the status the throw site passes', () => {
+  const invalidKey = dataverseError(new DataError("Invalid key predicate 'x'.", 400, 'InvalidKey'), {});
+  assert.equal(invalidKey.status, 400);
+  assert.equal(invalidKey.body.error.code, '0x80040203');
+  assert.equal(dataverseError(new DataError('Invalid $filter expression', 400, 'InvalidQuery'), {}).status, 400);
+  assert.equal(dataverseError(new DataError("Resource not found for the segment 'x'.", 404, 'UnknownResource', { segment: 'x' }), {}).status, 404);
+  assert.equal(dataverseError(new DataError('No HTTP resource', 404, 'UnknownResource', { innerCode: '' }), {}).status, 404);
+});
+
+test('every 429 gets Retry-After from its details, including the concurrency and execution-time limits', () => {
+  const concurrent = dataverseError(new DataError('concurrent', 429, 'ServiceProtection', { innerCode: '0x80072326', retryAfter: 1 }), {});
+  assert.equal(concurrent.status, 429);
+  assert.equal(concurrent.body.error.code, '0x80072326');
+  assert.equal(concurrent.headers['Retry-After'], '1');
+  const execution = dataverseError(new DataError('execution', 429, 'ServiceProtection', { innerCode: '0x80072321', retryAfter: 42 }), {});
+  assert.equal(execution.status, 429);
+  assert.equal(execution.headers['Retry-After'], '42');
+  assert.equal(dataverseError(new DataError('execution', 429, 'ServiceProtection', { innerCode: '0x80072321' }), {}).headers['Retry-After'], '300');
+});

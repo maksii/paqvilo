@@ -108,7 +108,7 @@ const CONDITIONS = new Map(CONDITION_TABLE.map(([name, op, wrap], value) => [nam
 const JOIN_TABLE = [
   ["Inner", "inner"],
   ["LeftOuter", "outer"],
-  ["Natural", "inner"], // unverified: no documented natural link-type; mapped to inner as specified
+  ["Natural", "inner"], // unverified: no FetchXML link-type is documented for Natural; inner is a placeholder, not checked against the service
   ["MatchFirstRowUsingCrossApply", "matchfirstrowusingcrossapply"],
   ["In", "in"],
   ["Exists", "exists"],
@@ -142,9 +142,13 @@ function joinTypeOf(joinOperator = "Inner") {
   return linkType;
 }
 
+// Typed codec values ({type, value}, EntityReference by id) and Date objects reduce to their text before escaping.
+// unverified: booleans render as "true"; the FetchXML text form of booleans is not checked against the service.
+const scalar = (v) => (v instanceof Date ? v.toISOString() : v && typeof v === "object" ? (v.type === "EntityReference" ? v.id : v.value) : v);
+
 function conditionXml(condition) {
   const entry = conditionOf(condition.operator);
-  const values = (condition.values ?? []).map((v) => (entry.wrap ? `${entry.wrap}${literal(String(v))}${entry.wrap}` : v));
+  const values = (condition.values ?? []).map(scalar).map((v) => (entry.wrap ? `${entry.wrap}${literal(String(v))}${entry.wrap}` : v));
   const head = `${attr("entityname", condition.entityName)}${attr("attribute", condition.attributeName)} operator="${entry.op}"`;
   if (condition.compareColumns) return `<condition${head}${attr("valueof", values[0])}/>`;
   if (values.length === 0) return `<condition${head}/>`;
@@ -180,13 +184,29 @@ function linkXml(link) {
   return `<link-entity name="${esc(link.linkToEntityName)}" from="${esc(link.linkToAttributeName)}" to="${esc(link.linkFromAttributeName)}" link-type="${joinTypeOf(link.joinOperator)}"${attr("alias", link.entityAlias)}>${body}</link-entity>`;
 }
 
-/** Renders a QueryExpression model as one FetchXML string. Values are escaped; nothing is validated against a schema. */
-export function toFetchXml(model) {
+// QueryExpression with no columns returns only the primary key; FetchXML with no attributes returns every column.
+function rootColumnsXml(columnSet, entityName, primaryIdOf) {
+  if (!columnSet || columnSet.allColumns || columnSet.columns?.length) return columnsXml(columnSet);
+  const primary = primaryIdOf(entityName);
+  if (!primary) throw invalid(`No primary key is known for '${entityName}' to answer an empty ColumnSet.`);
+  return `<attribute name="${esc(primary)}"/>`;
+}
+
+/**
+ * Renders a QueryExpression model as one FetchXML string. Values are escaped; nothing is validated against a schema.
+ * primaryIdOf(entityName) supplies the primary key column for an empty ColumnSet.
+ */
+export function toFetchXml(model, { primaryIdOf = () => null } = {}) {
   const page = model.pageInfo ?? {};
+  // "Paging set" means a value is present, matching plugin-sdk-query.mjs; an all-default PageInfo is not paging.
+  // unverified: the SDK documents that a query with both PageInfo and TopCount throws; the service message text is not documented.
+  if (model.topCount != null && (page.count > 0 || page.pageNumber > 0 || page.pagingCookie || page.returnTotalRecordCount === true)) {
+    throw invalid("TopCount cannot be combined with PageInfo paging in one QueryExpression.");
+  }
   const head = flag("distinct", model.distinct) + flag("no-lock", model.noLock) + attr("top", model.topCount > 0 ? model.topCount : null) +
     attr("page", page.pageNumber > 0 ? page.pageNumber : null) + attr("count", page.count > 0 ? page.count : null) +
     attr("paging-cookie", page.pagingCookie) + flag("returntotalrecordcount", page.returnTotalRecordCount);
-  const body = columnsXml(model.columnSet) + ordersXml(model.orders) + filterXml(model.criteria) +
+  const body = rootColumnsXml(model.columnSet, model.entityName, primaryIdOf) + ordersXml(model.orders) + filterXml(model.criteria) +
     (model.linkEntities ?? []).map(linkXml).join("");
   return `<fetch${head}><entity name="${esc(model.entityName)}">${body}</entity></fetch>`;
 }
@@ -217,6 +237,7 @@ function criteriaFromJson(criteria = {}) {
   return {
     filterOperator: criteria.FilterOperator ?? "And",
     conditions: (criteria.Conditions ?? []).map((c) => ({
+      entityName: c.EntityName,
       attributeName: c.AttributeName,
       operator: c.Operator,
       values: (c.Values ?? []).map((v) => v.Value),
@@ -225,11 +246,54 @@ function criteriaFromJson(criteria = {}) {
   };
 }
 
-/** BulkDelete JSON QuerySet item ({ EntityName, Criteria }) as a QueryExpression model. */
+function columnSetFromJson(columnSet) {
+  return columnSet ? { allColumns: columnSet.AllColumns === true, columns: columnSet.Columns ?? [] } : undefined;
+}
+
+function ordersFromJson(orders) {
+  return (orders ?? []).map((o) => ({ attributeName: o.AttributeName, orderType: o.OrderType }));
+}
+
+function pageInfoFromJson(pageInfo) {
+  return pageInfo ? { count: pageInfo.Count, pageNumber: pageInfo.PageNumber, pagingCookie: pageInfo.PagingCookie, returnTotalRecordCount: pageInfo.ReturnTotalRecordCount } : undefined;
+}
+
+function linkFromJson(link) {
+  return {
+    linkFromEntityName: link.LinkFromEntityName,
+    linkFromAttributeName: link.LinkFromAttributeName,
+    linkToEntityName: link.LinkToEntityName,
+    linkToAttributeName: link.LinkToAttributeName,
+    joinOperator: link.JoinOperator ?? "Inner",
+    entityAlias: link.EntityAlias,
+    columns: columnSetFromJson(link.Columns),
+    linkCriteria: criteriaFromJson(link.LinkCriteria),
+    linkEntities: (link.LinkEntities ?? []).map(linkFromJson),
+    orders: ordersFromJson(link.Orders),
+  };
+}
+
+// QuerySet keys a BulkDelete QueryExpression may carry. Anything else is refused rather than dropped,
+// because a dropped LinkEntities or TopCount widens the delete to the whole table.
+const BULK_DELETE_KEYS = new Set(["@odata.type", "EntityName", "Criteria", "ColumnSet", "LinkEntities", "Distinct", "NoLock", "Orders", "PageInfo", "TopCount", "DataSource"]);
+
+/** BulkDelete JSON QuerySet item as a QueryExpression model. */
 export function fromBulkDeleteJson(querySetItem) {
+  for (const key of Object.keys(querySetItem)) {
+    if (!BULK_DELETE_KEYS.has(key)) throw invalid(`Unsupported BulkDelete QuerySet property '${key}'.`);
+  }
+  if (querySetItem.DataSource != null && querySetItem.DataSource !== "default") {
+    throw new DataError("Long-term retained data is not simulated.", 501, "NotImplemented");
+  }
   return {
     entityName: querySetItem.EntityName,
     criteria: criteriaFromJson(querySetItem.Criteria),
-    linkEntities: [],
+    linkEntities: (querySetItem.LinkEntities ?? []).map(linkFromJson),
+    columnSet: columnSetFromJson(querySetItem.ColumnSet),
+    distinct: querySetItem.Distinct,
+    noLock: querySetItem.NoLock,
+    orders: ordersFromJson(querySetItem.Orders),
+    pageInfo: pageInfoFromJson(querySetItem.PageInfo),
+    topCount: querySetItem.TopCount,
   };
 }

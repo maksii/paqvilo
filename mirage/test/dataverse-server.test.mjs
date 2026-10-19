@@ -8,6 +8,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
+import { GRANT_TYPES } from "../lib/dataverse-settings.mjs";
 import { createSimulator } from "../server.mjs";
 
 const APP_ID = "44444444-4444-4444-8444-444444444444";
@@ -298,4 +299,67 @@ test("close also stops the https listener", async (t) => {
   await app.close();
   await assert.rejects(httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca }));
   await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`));
+});
+
+test("without a state file the https listener keeps its CA in memory", async (t) => {
+  const { app } = await start(t, { dataverse: { enabled: true, tls: true } });
+  assert.match(app.state().dataverse.tlsOrigin, /^https:\/\/127\.0\.0\.1:\d+$/);
+  assert.ok(!app.state().dataverse.certificateFile);
+});
+
+test("state export carries no password hashes and only the hint and expiry of each secret", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  await createApplication(admin);
+  const user = await admin("/dataverse/users", {
+    method: "POST",
+    body: { fullname: "Export User", domainname: "export@example.test", objectId: OBJECT_ID, roles: ["Basic User"], password: "export password" },
+  });
+  assert.equal(user.status, 201);
+  const exported = await admin("/state/export");
+  assert.equal(exported.status, 200);
+  const app = exported.body.dataverse.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(Object.keys(app.secrets[0]).sort(), ["expiresOn", "hint", "id"]);
+  assert.equal(exported.body.dataverse.passwords, undefined);
+  assert.equal(JSON.stringify(exported.body).includes("export password"), false);
+  assert.doesNotMatch(JSON.stringify(exported.body), /"(hash|salt)"/);
+});
+
+test("registration refuses non-http redirect URIs and unknown grants, and stores nothing for them", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  for (const extra of [{ redirectUris: ["javascript:alert(1)"] }, { allowedGrants: ["teleport"] }]) {
+    const refused = await admin("/dataverse/applications", { method: "POST", body: { appId: APP_ID, displayName: "Strict client", ...extra } });
+    assert.equal(refused.status, 400);
+  }
+  const accepted = await admin("/dataverse/applications", {
+    method: "POST",
+    body: { appId: APP_ID, displayName: "Strict client", redirectUris: ["https://client.example.test/callback"], allowedGrants: ["client_credentials", GRANT_TYPES.on_behalf_of] },
+  });
+  assert.equal(accepted.status, 201);
+});
+
+test("user accessmode must be an integer when it is set", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  const refused = await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: "read-write" } });
+  assert.equal(refused.status, 400);
+  const accepted = await admin("/dataverse/users", { method: "POST", body: { fullname: "Mode User", domainname: "mode@example.test", roles: ["Basic User"], accessmode: 0 } });
+  assert.equal(accepted.status, 201);
+});
+
+test("importing a state re-seeds security rows, even when it has no Dataverse section, and a missing grants list shows every grant", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  const exported = (await admin("/state/export")).body;
+  exported.dataverse = { applications: [{ appId: APP_ID, displayName: "Legacy client", secrets: [], certificates: [], publicClient: false, redirectUris: [] }] };
+  const legacy = await admin("/state/import", { method: "POST", body: exported });
+  assert.equal(legacy.status, 200);
+  const listing = await admin("/dataverse");
+  assert.equal(listing.status, 200);
+  assert.deepEqual(listing.body.applications.find((item) => item.appId === APP_ID).allowedGrants, Object.keys(GRANT_TYPES));
+  assert.ok(listing.body.users.some((user) => user.fullname === "SYSTEM"));
+
+  delete exported.dataverse;
+  const bare = await admin("/state/import", { method: "POST", body: exported });
+  assert.equal(bare.status, 200);
+  const after = await admin("/dataverse");
+  assert.equal(after.status, 200);
+  assert.ok(after.body.users.some((user) => user.fullname === "SYSTEM"));
 });

@@ -4,9 +4,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
-import { ACCESS_RIGHTS, createPrincipals, ensureSecurityModel, grantAccess } from "../lib/dataverse-security.mjs";
+import { ACCESS_RIGHTS, baseCurrencyId, createPrincipals, ensureSecurityModel, grantAccess } from "../lib/dataverse-security.mjs";
 import { encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
-import { createRecordHandlers } from "../lib/dataverse-records.mjs";
+import { createRecordHandlers, createRecordHooks } from "../lib/dataverse-records.mjs";
+import { DataError } from "../lib/data-error.mjs";
 import { createChangeLog } from "../lib/dataverse-changes.mjs";
 import { stringifyExactJson } from "../lib/exact-numeric.mjs";
 
@@ -657,6 +658,19 @@ test("money columns serialize with four decimals, a currency symbol and the base
   assert.ok(!Object.keys(list.body.value[0]).some((key) => key.includes("@") && !key.startsWith("@odata.")), "annotations stay opt-in");
 });
 
+test("money formatting uses the Dataverse base currency when a portal currency row is listed first", async () => {
+  const t = await setup();
+  // A currency imported for the portal, placed before the base currency in the table.
+  await t.store.transact(() => t.store.state.tables.transactioncurrency.unshift({
+    transactioncurrencyid: "eeeeeeee-0000-4000-8000-000000000001", currencyname: "Euro", currencysymbol: "€", currencyprecision: 2,
+  }));
+  const id = await create(t, "widgets", { name: "Priced", price: 12.5 });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
+  assert.equal(res.body[CURRENCY], baseCurrencyId(ORG));
+  assert.equal(res.body[`${CURRENCY}@OData.Community.Display.V1.FormattedValue`], "Base currency");
+  assert.equal(res.body["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
+});
+
 test("system columns are written whether or not the mapping declares them, and follow an owner reassignment", async () => {
   const t = await setup();
   const root = t.store.state.tables.businessunit[0].businessunitid;
@@ -814,4 +828,296 @@ test("close() unsubscribes the change log from the store", async () => {
   t.handlers.close();
   await create(t, "widgets", { name: "after" });
   assert.equal((await t.changes.since("widget", 0)).changed.length, 1, "a closed log records nothing new");
+});
+
+test("query hook: a full result short-circuits the collection, and FetchXML runs through the paged reader", async () => {
+  const hooks = createRecordHooks();
+  const seen = [];
+  hooks.add("query", (c, mapping) => {
+    seen.push(mapping.logicalName);
+    const marker = c.url.searchParams.get("@marker");
+    if (marker === "full") return { status: 200, body: { value: [{ name: "from hook" }] } };
+    if (marker === "xml") return { fetchXml: '<fetch><entity name="widget"><attribute name="name"/></entity></fetch>' };
+    return undefined;
+  });
+  const t = await setup({ hooks });
+  await create(t, "widgets", { name: "real" });
+  assert.deepEqual((await t.send("GET", `/api/data/${VERSION}/widgets?@marker=full`)).body, { value: [{ name: "from hook" }] });
+  assert.deepEqual((await t.send("GET", `/api/data/${VERSION}/widgets?@marker=xml`)).body.value.map((row) => row.name), ["real"]);
+  assert.deepEqual((await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`)).body.value.map((row) => row.name), ["real"]);
+  assert.deepEqual(seen, ["widget", "widget", "widget"], "the hook is consulted first on every collection read");
+});
+
+test("query hook on a navigation collection gets the parent as c.mapping and the related mapping as its argument", async () => {
+  const hooks = createRecordHooks();
+  const calls = [];
+  hooks.add("query", (c, mapping) => {
+    if (!c.navigation) return undefined;
+    calls.push({
+      parent: c.mapping.logicalName,
+      related: mapping.logicalName,
+      parentId: String(c.navigation.parent.id).toLowerCase(),
+      parentMapping: c.navigation.parent.mapping.logicalName,
+      name: c.navigation.name,
+      route: c.route.kind,
+    });
+    return { status: 200, body: { value: [{ name: "from hook" }] } };
+  });
+  const t = await setup({ hooks });
+  const id = await create(t, "widgets", { name: "Parent" });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})/widget_gadgets`);
+  assert.deepEqual(res.body, { value: [{ name: "from hook" }] });
+  assert.deepEqual(calls, [
+    { parent: "widget", related: "gadget", parentId: id.toLowerCase(), parentMapping: "widget", name: "widget_gadgets", route: "property" },
+  ]);
+});
+
+test("stream hook answers property and value routes on any verb, ahead of the route's own answer", async () => {
+  const hooks = createRecordHooks();
+  hooks.add("stream", (c) => (c.route.kind === "value" && c.route.segment === "name" ? { status: 200, body: "streamed" } : undefined));
+  const t = await setup({ hooks });
+  const id = await create(t, "widgets", { name: "Plain" });
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${id})/name/$value`)).body, "streamed");
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${id})/name`)).body.value, "Plain", "other answers stay with the store");
+});
+
+test("project hook mutates each formatted row, root and expanded, with the expanded row's own table", async () => {
+  const hooks = createRecordHooks();
+  hooks.add("project", (c, mapping, formatted) => {
+    formatted.marked = mapping.logicalName;
+  });
+  const t = await setup({ hooks });
+  const id = await create(t, "widgets", { name: "P" });
+  await create(t, "gadgets", { name: "G", "widgetid@odata.bind": `/widgets(${id})` });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$expand=widget_gadgets`);
+  assert.equal(res.body.marked, "widget");
+  assert.equal(res.body.widget_gadgets[0].marked, "gadget");
+});
+
+test("write hooks run before and after each write, and a beforeWrite throw stores nothing", async () => {
+  const hooks = createRecordHooks();
+  const log = [];
+  hooks.add("beforeWrite", (c, mapping, info) => {
+    log.push(["before", info.operation]);
+    if (info.operation === "create" && info.data.name === "blocked") {
+      throw new DataError("Blocked by hook.", 403, "Forbidden", { innerCode: "0x80040220" });
+    }
+  });
+  hooks.add("afterWrite", (c, mapping, info) => log.push(["after", info.operation, info.id != null]));
+  const t = await setup({ hooks });
+  const id = await create(t, "widgets", { name: "ok" });
+  const blocked = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "blocked" } }));
+  assert.equal(blocked.message, "Blocked by hook.");
+  assert.equal(t.store.state.tables.widget.some((row) => row.name === "blocked"), false);
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "renamed" } });
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${id})`);
+  assert.deepEqual(log, [
+    ["before", "create"], ["after", "create", true],
+    ["before", "create"],
+    ["before", "update"], ["after", "update", true],
+    ["before", "delete"], ["after", "delete", true],
+  ]);
+});
+
+test("deep-inserted children reach the write hooks as creates of their own table", async () => {
+  const hooks = createRecordHooks();
+  const children = [];
+  hooks.add("beforeWrite", (c, mapping, info) => {
+    if (info.operation === "create" && mapping.logicalName === "gadget") children.push(info.data.name);
+  });
+  const t = await setup({ hooks });
+  await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Parent", widget_gadgets: [{ name: "kid" }] } });
+  assert.deepEqual(children, ["kid"]);
+});
+
+test("deep insert authorizes each nested child as a create, append and appendto, and a refusal names the child table", async () => {
+  const t = await setup();
+  const denied = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Parent", widget_tags: [{ name: "tagged" }] }, user: t.basic }));
+  assert.equal(denied.status, 403);
+  assert.equal(denied.details.innerCode, "0x80040220");
+  assert.match(denied.message, /\btag\b/);
+  assert.equal(t.store.state.tables.widget.length, 0, "a refused child writes nothing");
+  await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Parent", widget_gadgets: [{ name: "kid" }] }, user: t.basic });
+  assert.equal(t.store.state.tables.widget.length, 1);
+  assert.equal(t.store.state.tables.gadget.length, 1);
+});
+
+test("deep-inserted children carry their own table's audit and owner columns, with the caller on behalf", async () => {
+  const t = await setup();
+  await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Parent", widget_gadgets: [{ name: "kid" }] }, user: t.basic, caller: t.admin });
+  const kid = t.store.state.tables.gadget[0];
+  assert.equal(lowerId(kid.createdby), t.basic.systemuserid.toLowerCase());
+  assert.equal(lowerId(kid.createdonbehalfby), t.admin.systemuserid.toLowerCase());
+  assert.equal(lowerId(kid.ownerid), t.basic.systemuserid.toLowerCase());
+});
+
+test("system columns in a payload are ignored on create and update; overriddencreatedon sets createdon on create only", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", {
+    name: "Stamped",
+    "createdby@odata.bind": `/systemusers(${t.admin.systemuserid})`,
+    createdon: "2001-01-01T00:00:00Z",
+    "owninguser@odata.bind": `/systemusers(${t.admin.systemuserid})`,
+    versionnumber: 99,
+    overriddencreatedon: "2020-01-02T03:04:05Z",
+  }, t.basic);
+  const row = () => t.store.state.tables.widget.find((item) => lowerId(item.widgetid) === id.toLowerCase());
+  assert.equal(lowerId(row().createdby), t.basic.systemuserid.toLowerCase(), "the system stamp wins over the payload");
+  assert.equal(lowerId(row().owninguser), t.basic.systemuserid.toLowerCase());
+  assert.notEqual(row().versionnumber, 99);
+  assert.equal(row().createdon, "2020-01-02T03:04:05.000Z");
+  assert.equal(row().overriddencreatedon, "2020-01-02T03:04:05.000Z");
+  // unverified: live capture (ignored silently on update; the platform's answer is not captured).
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
+    body: { name: "Patched", createdon: "2031-01-01T00:00:00Z", overriddencreatedon: "2030-01-01T00:00:00Z", "modifiedby@odata.bind": `/systemusers(${t.basic.systemuserid})` },
+    user: t.admin,
+  });
+  assert.equal(row().name, "Patched");
+  assert.equal(row().createdon, "2020-01-02T03:04:05.000Z", "createdon never changes on update");
+  assert.equal(row().overriddencreatedon, "2020-01-02T03:04:05.000Z", "overriddencreatedon is ignored on update");
+  assert.equal(lowerId(row().modifiedby), t.admin.systemuserid.toLowerCase(), "modifiedby is stamped with the caller, not the bind");
+});
+
+test("a plain lookup, owner or audit property answers 400 0x0 and writes nothing; its bind form is accepted and ignored", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Plain" }, t.basic);
+  const refused = [
+    { name: "x", ownerid: { id: t.admin.systemuserid, logical_name: "systemuser" } },
+    { name: "x", createdby: t.admin.systemuserid },
+    { name: "x", _ownerid_value: t.admin.systemuserid },
+  ];
+  for (const body of refused) {
+    const create400 = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body, user: t.basic }));
+    assert.equal(create400.status, 400);
+    assert.equal(create400.details.innerCode, "0x0");
+    assert.match(create400.message, /Does not support untyped value in non-open type/);
+  }
+  const patch400 = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
+    body: { createdby: t.admin.systemuserid, ownerid: { id: t.admin.systemuserid, logical_name: "systemuser" } },
+    user: t.basic,
+  }));
+  assert.equal(patch400.status, 400);
+  assert.equal(patch400.details.innerCode, "0x0");
+  const row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.createdby), t.basic.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.ownerid), t.basic.systemuserid.toLowerCase());
+  // The bind form of an audit column is accepted and ignored: the stored createdby stays the caller.
+  const bound = await create(t, "widgets", { name: "Bound", "createdby@odata.bind": `/systemusers(${t.admin.systemuserid})` }, t.basic);
+  const bow = t.store.state.tables.widget.find((item) => item.widgetid === bound);
+  assert.equal(lowerId(bow.createdby), t.basic.systemuserid.toLowerCase());
+});
+
+test("$expand, navigation $filter and FetchXML link-entity trim rows the caller cannot read", async () => {
+  const t = await setup();
+  const adminWidget = await create(t, "widgets", { name: "AdminWidget" });
+  const mine = await create(t, "widgets", { name: "BasicWidget" }, t.basic);
+  const gadget = await create(t, "gadgets", { name: "BasicGadget", "widgetid@odata.bind": `/widgets(${mine})` }, t.basic);
+  // The basic user cannot bind to the admin's widget, so the link is set in state.
+  t.store.state.tables.gadget.find((row) => lowerId(row.gadgetid) === gadget.toLowerCase()).widgetid = adminWidget;
+  const expanded = await t.send("GET", `/api/data/${VERSION}/gadgets?$select=name&$expand=widgetid($select=name)`, { user: t.basic });
+  assert.equal(expanded.body.value[0].widgetid, null);
+  assert.ok(!JSON.stringify(expanded.body).includes("AdminWidget"));
+  const reached = await t.send("GET", `/api/data/${VERSION}/gadgets?$select=name&$filter=widgetid/name eq 'AdminWidget'`, { user: t.basic });
+  assert.deepEqual(reached.body.value, []);
+  const admin = await t.send("GET", `/api/data/${VERSION}/gadgets?$select=name&$filter=widgetid/name eq 'AdminWidget'`);
+  assert.equal(admin.body.value.length, 1, "the admin reads the link, so the filter is not simply broken");
+  const xml = `<fetch><entity name="gadget"><attribute name="name"/><link-entity name="widget" from="widgetid" to="widgetid" link-type="outer" alias="w"><attribute name="name" alias="w.name"/></link-entity></entity></fetch>`;
+  const linked = await t.send("GET", `/api/data/${VERSION}/gadgets?fetchXml=${encodeURIComponent(xml)}`, { user: t.basic });
+  assert.equal(linked.body.value.length, 1);
+  assert.ok(!JSON.stringify(linked.body).includes("AdminWidget"));
+});
+
+test("expanding to a table the caller cannot read answers 403 0x80040220", async () => {
+  const t = await setup();
+  const mine = await create(t, "widgets", { name: "BasicWidget" }, t.basic);
+  // Every built-in role reads org-owned tables, so the vault table is added without privileges and has a row to read.
+  t.store.state.mappings.vault = { logicalName: "vault", entitySet: "vaults", idColumn: "vaultid", nameColumn: "name", fields: { name: text } };
+  t.store.state.mappings.widget.relationships.widget_vault = { entity: "vault", from: "widgetid", to: "vaultid", many: false };
+  t.store.state.tables.vault = [{ vaultid: randomUUID(), name: "gold" }];
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${mine})?$expand=widget_vault`, { user: t.basic }));
+  assert.equal(error.status, 403);
+  assert.equal(error.details.innerCode, "0x80040220");
+});
+
+test("collection responses carry the global metadata version after the count, when requested", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a" });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets?$count=true&$select=name`, { headers: annotate("Microsoft.Dynamics.CRM.globalmetadataversion") });
+  assert.deepEqual(Object.keys(res.body).slice(0, 3), ["@odata.context", "@odata.count", "@Microsoft.Dynamics.CRM.globalmetadataversion"]);
+  assert.match(res.body["@Microsoft.Dynamics.CRM.globalmetadataversion"], /^\d+$/);
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$count=true&$select=name`);
+  assert.equal(plain.body["@Microsoft.Dynamics.CRM.globalmetadataversion"], undefined);
+});
+
+test("FetchXML with returntotalrecordcount answers the count and, when included, the total and its limit flag", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a" });
+  await create(t, "widgets", { name: "b" });
+  const counted = encodeURIComponent('<fetch returntotalrecordcount="true"><entity name="widget"><attribute name="name"/></entity></fetch>');
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${counted}`, { headers: annotate("*") });
+  assert.equal(res.body["@odata.count"], 2);
+  assert.equal(res.body["@Microsoft.Dynamics.CRM.totalrecordcount"], 2);
+  assert.equal(res.body["@Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded"], false);
+  assert.equal(res.body.value.length, 2);
+  const plain = encodeURIComponent('<fetch><entity name="widget"><attribute name="name"/></entity></fetch>');
+  const uncounted = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${plain}`, { headers: annotate("*") });
+  assert.equal(uncounted.body["@odata.count"], undefined);
+  assert.equal(uncounted.body["@Microsoft.Dynamics.CRM.totalrecordcount"], undefined);
+});
+
+test("savedQuery and userQuery answer 501 when no query hook answers them, on collections and navigations", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "a" });
+  for (const name of ["savedQuery", "userQuery"]) {
+    const denied = await failure(t.send("GET", `/api/data/${VERSION}/widgets?${name}=${MISSING}`));
+    assert.equal(denied.status, 501);
+    assert.equal(denied.details.innerCode, "0x80040216");
+    assert.equal(denied.message, `${name} has not yet been implemented.`);
+  }
+  const nav = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})/widget_gadgets?savedQuery=${MISSING}`));
+  assert.equal(nav.status, 501);
+});
+
+test("N:N navigation collections and their $count read through the intersect table", async () => {
+  const t = await setup();
+  const widget = await create(t, "widgets", { name: "Tagged" });
+  const tag = await create(t, "tags", { name: "red" });
+  const linked = await t.send("POST", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$ref`, {
+    body: { "@odata.id": `${ORIGIN}/api/data/${VERSION}/tags(${tag})` },
+  });
+  assert.equal(linked.status, 204);
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags?$select=name`);
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.value.map((row) => row.name), ["red"]);
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$count`)).body, "1");
+});
+
+test("UpdateMultiple keeps the first target per key; UpsertMultiple refuses a repeated key before writing", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "orig" });
+  const res = await t.send("POST", `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.UpdateMultiple`, {
+    body: { Targets: [{ widgetid: id, name: "first" }, { widgetid: id, name: "second" }] },
+  });
+  assert.equal(res.status, 204);
+  assert.equal(t.store.state.tables.widget[0].name, "first");
+  const dup = await failure(t.send("POST", `/api/data/${VERSION}/widgets/Microsoft.Dynamics.CRM.UpsertMultiple`, {
+    body: { Targets: [{ "@odata.id": `/widgets(${id})`, name: "a" }, { "@odata.id": `/widgets(${id})`, name: "b" }] },
+  }));
+  assert.equal(dup.status, 400);
+  assert.equal(dup.details.innerCode, "0x80040203");
+  assert.equal(dup.message, "Duplicate key in Targets.");
+  assert.equal(t.store.state.tables.widget[0].name, "first", "nothing is written");
+});
+
+test("change tracking reads the mapping's flag (or its metadata) unless the option overrides it", async () => {
+  const refused = await setup();
+  refused.store.state.mappings.tag.changeTrackingEnabled = false;
+  const error = await failure(refused.send("GET", `/api/data/${VERSION}/tags?$select=name`, { headers: { prefer: "odata.track-changes" } }));
+  assert.equal(error.details.innerCode, "0x80072491");
+  const metadata = await setup();
+  metadata.store.state.mappings.tag.dataverseMetadata = { ChangeTrackingEnabled: false };
+  assert.equal((await failure(metadata.send("GET", `/api/data/${VERSION}/tags?$select=name`, { headers: { prefer: "odata.track-changes" } }))).details.innerCode, "0x80072491");
+  const overridden = await setup({ changeTrackingEnabled: () => undefined });
+  overridden.store.state.mappings.tag.changeTrackingEnabled = false;
+  assert.equal((await overridden.send("GET", `/api/data/${VERSION}/tags?$select=name`, { headers: { prefer: "odata.track-changes" } })).status, 200);
 });

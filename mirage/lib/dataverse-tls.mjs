@@ -92,12 +92,21 @@ function ipv6Bytes(host) {
   return Buffer.from(words.flatMap((hex) => [parseInt(hex, 16) >> 8, parseInt(hex, 16) & 0xff]));
 }
 
+const ipBytes = (host) => (isIP(host) === 4 ? Buffer.from(host.split('.').map(Number)) : ipv6Bytes(host));
+
 // GeneralName: [7] iPAddress for literal IPs, [2] dNSName otherwise (both IMPLICIT, so primitive tags).
 function generalName(host) {
-  if (isIP(host) === 4) return contextTag(7, Buffer.from(host.split('.').map(Number)), false);
-  if (isIP(host) === 6) return contextTag(7, ipv6Bytes(host), false);
+  if (isIP(host)) return contextTag(7, ipBytes(host), false);
   return contextTag(2, Buffer.from(host, 'ascii'), false);
 }
+
+// A permitted subtree for one host: an IP address with an all-ones mask, or the DNS name.
+const permittedSubtree = (host) => seq(isIP(host)
+  ? contextTag(7, Buffer.concat([ipBytes(host), Buffer.alloc(ipBytes(host).length, 0xff)]), false)
+  : generalName(host));
+
+// DER of the nameConstraints OID (2.5.29.30): a reused certificate without it predates the constraint and is regenerated.
+const NAME_CONSTRAINTS_OID = Buffer.from('0603551d1e', 'hex');
 
 function pem(label, der) {
   return `-----BEGIN ${label}-----\n${der.toString('base64').match(/.{1,64}/g).join('\n')}\n-----END ${label}-----\n`;
@@ -124,10 +133,12 @@ export function createSelfSignedCertificate({
   const serial = randomBytes(16);
   serial[0] &= 0x7f;
   const extensions = seq(
-    extension('2.5.29.19', seq(bool(true)), true), // basicConstraints: CA:TRUE
+    extension('2.5.29.19', seq(bool(true), integer(0)), true), // basicConstraints: CA:TRUE, pathLenConstraint 0 (no sub-CAs)
     extension('2.5.29.15', namedBits([0, 2, 5]), true), // keyUsage: digitalSignature, keyEncipherment, keyCertSign
     extension('2.5.29.17', seq(...hosts.map(generalName))), // subjectAltName
     extension('2.5.29.14', octetString(keyIdentifier)), // subjectKeyIdentifier
+    // nameConstraints (critical): the CA can only vouch for the requested hosts, never login.microsoftonline.com or a live organisation.
+    ...(hosts.length ? [extension('2.5.29.30', seq(contextTag(0, Buffer.concat(hosts.map(permittedSubtree)))), true)] : []),
   );
   const tbs = seq(
     contextTag(0, integer(2)), // v3
@@ -149,8 +160,9 @@ export function createSelfSignedCertificate({
   };
 }
 
-// Reuse the PEM file (cert + key) when it parses, matches its key and is valid for more than 7 days.
-async function readUsable(file, clock) {
+// Reuse the PEM file (cert + key) when it parses, matches its key, is valid for more than 7 days, names every
+// requested host and carries the name constraint (certificates minted before it was added are replaced).
+async function readUsable(file, clock, hosts) {
   let text;
   try {
     text = await readFile(file, 'utf8');
@@ -166,15 +178,19 @@ async function readUsable(file, clock) {
     const notAfter = new Date(cert.validTo);
     if (!cert.checkPrivateKey(createPrivateKey(keyPem))) return null;
     if (!(notAfter.getTime() - clock() > RENEW_BEFORE_MS)) return null;
+    if (!hosts.every((host) => (isIP(host) ? cert.checkIP(host) : cert.checkHost(host)) !== undefined)) return null;
+    if (hosts.length && !Buffer.from(cert.raw).includes(NAME_CONSTRAINTS_OID)) return null;
     return { key: keyPem, cert: certPem, fingerprint256: cert.fingerprint256, notAfter: notAfter.toISOString() };
   } catch {
     return null;
   }
 }
 
+// A null file keeps the CA in memory only: nothing is written where another local user could plant a key.
 export async function ensureCertificate(file, options = {}) {
   const clock = options.clock ?? (() => Date.now());
-  const reused = await readUsable(file, clock);
+  if (!file) return { ...createSelfSignedCertificate(options), file: null };
+  const reused = await readUsable(file, clock, options.hosts ?? DEFAULT_HOSTS);
   if (reused) return { ...reused, file };
   const generated = createSelfSignedCertificate(options);
   await mkdir(dirname(file), { recursive: true });

@@ -62,6 +62,31 @@ test("$top or $orderby on a collection child is rejected only when the query nes
   expectError(() => assertExpand(parseExpand("primarygadgetid($expand=owninguser),widget_gadgets($top=1)"), widget, resolve), PAGING);
 });
 
+test("a sibling N:N next to a nested expand is rejected under the N:N navigation name", () => {
+  expectError(
+    () => assertExpand(parseExpand("widget_tags($select=name),widget_gadgets($expand=owninguser)"), widget, resolve),
+    "The navigation property 'widget_tags' cannot be expanded. Only many-to-one relationships are supported for nested expansion.",
+  );
+  assert.doesNotThrow(() => assertExpand(parseExpand("widget_tags($select=name),primarygadgetid($select=name)"), widget, resolve));
+});
+
+test("$top or $orderby on a single-valued lookup is rejected at any nesting", () => {
+  expectError(() => assertExpand(parseExpand("primarygadgetid($top=1)"), widget, resolve), PAGING); // unverified: Dataverse may accept it
+  expectError(() => assertExpand(parseExpand("primarygadgetid($orderby=name)"), widget, resolve), PAGING); // unverified: Dataverse may accept it
+});
+
+test("expand option values are percent-encoded once in the nextLink, nested values included", () => {
+  const [item] = parseExpand("widget_gadgets($filter=name eq 'A&B #1';$expand=owninguser($filter=name eq 'x&y'))");
+  const link = childLinks(ORIGIN, VERSION, "widgets", ID, "widget_gadgets", item);
+  const query = new URL(link.url).searchParams;
+  assert.equal(query.get("$filter"), "name eq 'A&B #1'");
+  assert.equal(query.get("$expand"), "owninguser($filter=name eq 'x&y')");
+});
+
+test("a semicolon-quote-count sequence inside a string literal is not an expand option", () => {
+  assert.doesNotThrow(() => assertExpandText("widget_gadgets($filter=name eq ';$count=1')"));
+});
+
 test("a nested one-to-many child with $top is rejected even when its parent is single-valued", () => {
   const tree = { logicalName: "root", relationships: { widget: { many: false, target: widget } } };
   expectError(() => assertExpand(parseExpand("widget($expand=widget_gadgets($top=1))"), tree, resolve), PAGING);
@@ -100,7 +125,7 @@ test("collection child link without nesting carries the options and no $skiptoke
   const [item] = parseExpand("widget_gadgets($select=name;$filter=name eq 'a';$top=2)");
   const link = childLinks(ORIGIN, VERSION, "widgets", ID, "widget_gadgets", item, { nested: false, token: { pageNumber: 2, lastId: ID, firstId: ID, idColumn: "gadgetid", countOfRecords: 2 } });
   assert.equal(link.key, "widget_gadgets@odata.nextLink");
-  assert.equal(link.url, `${ORIGIN}/api/data/v9.2/widgets(${ID})/widget_gadgets?$select=name&$filter=name eq 'a'&$top=2`);
+  assert.equal(link.url, `${ORIGIN}/api/data/v9.2/widgets(${ID})/widget_gadgets?$select=name&$filter=name%20eq%20'a'&$top=2`);
 });
 
 test("nested child link with a token carries the $skiptoken and its countOfRecords", () => {

@@ -13,9 +13,16 @@ export const GRANT_TYPES = {
 const GRANTS = Object.keys(GRANT_TYPES);
 // Namespace for the default user objectId (the RFC 4122 DNS namespace).
 const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
-const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection'];
-const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants'];
+// The audience a federated identity credential accepts (Microsoft Entra workload identity federation).
+const TOKEN_EXCHANGE_AUDIENCE = 'api://AzureADTokenExchange';
+const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentities', 'federatedIssuers', 'auditing', 'tds'];
+const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants', 'federatedCredentials'];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
+const FEDERATED_CREDENTIAL_KEYS = ['issuer', 'subject', 'audiences'];
+const MANAGED_IDENTITY_KEYS = ['clientId', 'principalId', 'displayName', 'roles'];
+const FEDERATED_ISSUER_KEYS = ['issuer', 'jwks'];
+const SERVICE_PROTECTION_KEYS = ['requestsPer300s', 'executionMsPer300s', 'executionTimeMsPer300s', 'concurrentRequests'];
+const TDS_KEYS = ['enabled', 'port'];
 
 function plainObject(value, label) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`${label} must be an object`);
@@ -72,6 +79,16 @@ function textList(value, label, fallback) {
   return [...value];
 }
 
+// An http(s) URL, returned unchanged: issuers are compared with the token's iss claim exactly.
+function httpUrl(value, label) {
+  try {
+    if (['http:', 'https:'].includes(new URL(value).protocol)) return value;
+  } catch {
+    // reported below
+  }
+  throw new Error(`${label} must be an http(s) URL`);
+}
+
 function application(value, label) {
   plainObject(value, label);
   for (const key of ['secret', 'clientSecret']) if (key in value) throw new Error(`${label}.${key}: secrets must come from secretEnvironmentVariable, never from configuration`);
@@ -86,14 +103,54 @@ function application(value, label) {
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
   if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null)) throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
   const secretEnvironmentVariable = text(value.secretEnvironmentVariable, `${label}.secretEnvironmentVariable`, null, /^[A-Z_][A-Z0-9_]*$/);
+  const federated = value.federatedCredentials === undefined ? [] : value.federatedCredentials;
+  if (!Array.isArray(federated)) throw new Error(`${label}.federatedCredentials must be an array`);
   return {
     appId: guid(required(value.appId, `${label}.appId`), `${label}.appId`),
     displayName: text(required(value.displayName, `${label}.displayName`), `${label}.displayName`, null),
     secretEnvironmentVariable,
-    roles: textList(value.roles, `${label}.roles`, ['System Administrator']),
+    // Entra application users hold no roles until they are assigned, so an application without roles has none.
+    roles: textList(value.roles, `${label}.roles`, []),
     publicClient: boolean(value.publicClient, `${label}.publicClient`, false),
     redirectUris: [...redirectUris],
     allowedGrants: [...new Set(allowedGrants.map(grantName))],
+    federatedCredentials: federated.map((item, index) => federatedCredential(item, `${label}.federatedCredentials[${index}]`)),
+  };
+}
+
+// Entra workload identity federation: an external issuer's subject, trusted for one audience.
+function federatedCredential(value, label) {
+  plainObject(value, label);
+  knownKeys(value, FEDERATED_CREDENTIAL_KEYS, label);
+  const audiences = textList(value.audiences, `${label}.audiences`, [TOKEN_EXCHANGE_AUDIENCE]);
+  if (audiences.length !== 1) throw new Error(`${label}.audiences must contain exactly one audience`);
+  return {
+    issuer: httpUrl(required(value.issuer, `${label}.issuer`), `${label}.issuer`),
+    subject: text(required(value.subject, `${label}.subject`), `${label}.subject`, null),
+    audiences,
+  };
+}
+
+// An external issuer whose public keys (JWKS) verify federated client assertions.
+function federatedIssuer(value, label) {
+  plainObject(value, label);
+  knownKeys(value, FEDERATED_ISSUER_KEYS, label);
+  const jwks = plainObject(required(value.jwks, `${label}.jwks`), `${label}.jwks`);
+  knownKeys(jwks, ['keys'], `${label}.jwks`);
+  if (!Array.isArray(jwks.keys) || jwks.keys.some((key) => !key || typeof key !== 'object' || Array.isArray(key))) throw new Error(`${label}.jwks.keys must be an array of JSON Web Keys`);
+  if (jwks.keys.some((key) => 'd' in key)) throw new Error(`${label}.jwks.keys must hold public keys only`);
+  return { issuer: httpUrl(required(value.issuer, `${label}.issuer`), `${label}.issuer`), jwks: { keys: jwks.keys.map((key) => ({ ...key })) } };
+}
+
+// A managed identity becomes an application user; its clientId is the token's appid.
+function managedIdentity(value, label) {
+  plainObject(value, label);
+  knownKeys(value, MANAGED_IDENTITY_KEYS, label);
+  return {
+    clientId: guid(required(value.clientId, `${label}.clientId`), `${label}.clientId`),
+    principalId: guid(value.principalId, `${label}.principalId`),
+    displayName: text(required(value.displayName, `${label}.displayName`), `${label}.displayName`, null),
+    roles: textList(value.roles, `${label}.roles`, ['Basic User']),
   };
 }
 
@@ -110,11 +167,28 @@ function user(value, label) {
   };
 }
 
+// Limits use the key names of dataverse-limits.mjs; executionTimeMsPer300s is accepted as an alias of executionMsPer300s.
 function serviceProtection(value) {
   if (value === undefined || value === null) return null;
   plainObject(value, 'dataverse.serviceProtection');
-  knownKeys(value, ['requestsPer300s'], 'dataverse.serviceProtection');
-  return { requestsPer300s: integer(required(value.requestsPer300s, 'dataverse.serviceProtection.requestsPer300s'), 'dataverse.serviceProtection.requestsPer300s', null, 1, Number.MAX_SAFE_INTEGER) };
+  knownKeys(value, SERVICE_PROTECTION_KEYS, 'dataverse.serviceProtection');
+  const bound = 'dataverse.serviceProtection';
+  const { executionMsPer300s, executionTimeMsPer300s } = value;
+  if (executionMsPer300s !== undefined && executionTimeMsPer300s !== undefined && executionMsPer300s !== executionTimeMsPer300s) throw new Error(`${bound}.executionTimeMsPer300s must equal executionMsPer300s when both are set`);
+  const executionKey = executionMsPer300s !== undefined ? 'executionMsPer300s' : 'executionTimeMsPer300s';
+  const max = Number.MAX_SAFE_INTEGER;
+  return {
+    requestsPer300s: integer(value.requestsPer300s, `${bound}.requestsPer300s`, null, 1, max),
+    executionMsPer300s: integer(executionMsPer300s ?? executionTimeMsPer300s, `${bound}.${executionKey}`, null, 1, max),
+    concurrentRequests: integer(value.concurrentRequests, `${bound}.concurrentRequests`, null, 1, max),
+  };
+}
+
+function tds(value, label) {
+  if (value === undefined) return { enabled: false, port: 0 };
+  plainObject(value, label);
+  knownKeys(value, TDS_KEYS, label);
+  return { enabled: boolean(value.enabled, `${label}.enabled`, false), port: integer(value.port, `${label}.port`, 0, 0, 65535) };
 }
 
 export function dataverseSettings(value, label = 'dataverse') {
@@ -139,6 +213,10 @@ export function dataverseSettings(value, label = 'dataverse') {
     applications: list(input.applications, 'applications').map((item, index) => application(item, `${label}.applications[${index}]`)),
     users: list(input.users, 'users').map((item, index) => user(item, `${label}.users[${index}]`)),
     serviceProtection: serviceProtection(input.serviceProtection),
+    managedIdentities: list(input.managedIdentities, 'managedIdentities').map((item, index) => managedIdentity(item, `${label}.managedIdentities[${index}]`)),
+    federatedIssuers: list(input.federatedIssuers, 'federatedIssuers').map((item, index) => federatedIssuer(item, `${label}.federatedIssuers[${index}]`)),
+    auditing: boolean(input.auditing, `${label}.auditing`, false),
+    tds: tds(input.tds, `${label}.tds`),
   };
 }
 

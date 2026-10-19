@@ -8,6 +8,7 @@ import {
 } from "node:fs/promises";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { isDeepStrictEqual } from "node:util";
 import {
   builtinPresets,
@@ -70,6 +71,8 @@ import {
 // The store's query error type lives in data-error.mjs; this re-export keeps imports working.
 export { DataError };
 const clone = (value) => structuredClone(value);
+// Per async context, the transaction frame of each DataStore (see DataStore#transact).
+const transactionFrames = new AsyncLocalStorage();
 const own = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
 // Query bounds (32 OData navigation levels, 15 FetchXML links, 64 XML levels)
 // live in odata-query.mjs and fetchxml-engine.mjs with their evidence.
@@ -694,6 +697,22 @@ export class DataStore {
     // Advances with every committed change (transact), so consumers such as OData
     // paging can bind to the data without digesting the whole state per request.
     this.revision = 0;
+    this.isolatedCount = 0;
+  }
+  // Only isolated transactions (see transact) divert reads and writes of `state` to
+  // a private working copy, and only inside their own async context. Everything else
+  // reads and writes the committed copy, so the default path is unchanged.
+  get state() {
+    if (this.isolatedCount) {
+      const frame = transactionFrames.getStore();
+      if (frame?.store === this && frame.working) return frame.working;
+    }
+    return this._state;
+  }
+  set state(value) {
+    const frame = this.isolatedCount ? transactionFrames.getStore() : undefined;
+    if (frame?.store === this && frame.working) frame.working = value;
+    else this._state = value;
   }
   /**
    * A key that changes whenever the data a query reads may have changed: committed
@@ -874,8 +893,30 @@ export class DataStore {
     this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
     transaction.promoted = true; this.rowTransaction = null;
   }
-  transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false, incremental = false } = {}) {
+  /**
+   * `nested: true` joins the transaction this store already runs in the same async
+   * context (no snapshot, commit, persist or event dispatch of its own); outside one
+   * it is a normal transaction. `isolated: true` keeps the changes private to the
+   * async context until the commit, so concurrent readers see the committed state.
+   */
+  transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false, incremental = false, nested = false, isolated = false } = {}) {
+    // ponytail: a nested throw that the caller catches keeps that call's partial writes;
+    // only the outermost transaction rolls back.
+    // A frame that has finished (closed) no longer joins: its async continuations run later.
+    const active = transactionFrames.getStore();
+    if (nested && active?.store === this && !active.closed)
+      return (async () => { const result = await fn(); return cloneResult ? clone(result) : result; })();
+    // Inside an isolated changeset a plain transact would queue behind its own transaction.
+    if (!nested && active?.store === this && !active.closed && active.working)
+      return Promise.reject(new DataError('Nested transact inside an isolated transaction must pass { nested: true }.', 500, 'TransactionReentry'));
+    const frame = { store: this, working: null };
     const run = this.queue.then(async () => {
+      transactionFrames.enterWith(frame);
+      // ponytail: an isolated transaction works on a full clone of the committed state
+      // and publishes it at commit. It is O(state) per changeset, a write that bypasses
+      // transact is lost at commit, and an independent plugin commit inside it persists
+      // the working copy. Use a change overlay before batch relies on any of these.
+      if (isolated) frame.working = clone(this._state);
       // Arbitrary extension callbacks retain the established full rollback
       // boundary. Core CRUD/declarative handlers use the bounded undo journal.
       const rowTransaction = incremental ? new RowTransaction(this) : null;
@@ -887,13 +928,15 @@ export class DataStore {
       };
       const previousBoundary=this.pluginRollbackBoundary,previousTransaction=this.pluginInTransaction;
       const previousEvents=this.committedEventCandidates;this.committedEventCandidates=[];
-      this.pluginRollbackBoundary=boundary;this.pluginInTransaction=false;
+      this.pluginRollbackBoundary=boundary;this.pluginInTransaction=isolated;
       try {
+        if (isolated) this.isolatedCount = (this.isolatedCount ?? 0) + 1;
         const result = await fn();
         if (!skipSaveIfUnchanged || boundary.independentCommit || boundary.backup !== null && !isDeepStrictEqual(this.state, boundary.backup)) {
           await this.save();
           this.revision++;
         }
+        if (isolated) this._state = frame.working;
         this.dispatchCommittedEvents(this.committedEventCandidates);
         // Read query results own their projection and may carry nonenumerable
         // SDK/paging/column metadata required by the transport adapter.
@@ -902,13 +945,15 @@ export class DataStore {
         if (!rowTransaction?.promoted) rowTransaction?.rollback();
         this.rowIndexes = null;
         if (boundary.backup !== null) this.state = boundary.backup;
-        if(boundary.independentCommit){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
+        if(boundary.independentCommit&&!isolated){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
         throw error;
       } finally {
         if (rowTransaction?.promoted || !rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)) this.rowIndexes = null;
         this.rowTransaction = previousRows;
         this.pluginRollbackBoundary=previousBoundary;this.pluginInTransaction=previousTransaction;
         this.committedEventCandidates=previousEvents;
+        if (isolated) this.isolatedCount -= 1;
+        frame.closed = true; frame.working = null;
       }
     });
     this.queue = run.catch(() => {});
@@ -1029,6 +1074,8 @@ export class DataStore {
   }
   exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
     if(stage!==10)this.pluginInTransaction=true;
+    // Dataverse writes with bypassCustomPlugins (MSCRM.BypassCustomPluginExecution) skip exported plug-ins.
+    if (options.bypassCustomPlugins) return;
     if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
     if (this.rowTransaction && this.pluginPipelineRequiresCheckpoint({ entity: mapping.logicalName, operation, stage, changedAttributes })) {
       // Trusted external handlers may mutate arbitrary state, including nested
@@ -3276,6 +3323,7 @@ export class DataStore {
       limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,linksAndFilters:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
       generatedAnyAllAliases: options.permissionQuery?.generatedAnyAllAliases ?? [],
       linkBudgetError:this.observed?.fetchLinkBudgetError,
+      ...(identity?.dataverse ? { dataverseIdentity: true } : {}),
     };
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
     const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();

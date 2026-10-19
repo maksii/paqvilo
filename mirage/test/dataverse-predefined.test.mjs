@@ -65,15 +65,23 @@ async function setup({ schema = null, rows = {}, mappings = {} } = {}) {
   api.principals = createPrincipals(store, SETTINGS);
   const admin = api.principals.byObjectId(ADMIN_OID);
   const basic = api.principals.byObjectId(BASIC_OID);
-  // Calls the query hook the way the records layer does: the context carries the route, user and URL.
-  const query = (user, set, { savedQuery, userQuery, route } = {}) => {
+  // Calls the query hook the way the records layer does. A navigation collection passes the parent as c.mapping and
+  // c.navigation, and the related set as the hook's mapping argument.
+  const query = (user, set, { savedQuery, userQuery, navigation } = {}) => {
     const url = new URL(`/api/data/v9.2/${set}`, "http://127.0.0.1:5555");
     if (savedQuery != null) url.searchParams.set("savedQuery", savedQuery);
     if (userQuery != null) url.searchParams.set("userQuery", userQuery);
     const mapping = store.resolveMapping(set);
-    // A navigation route names its parent set; the hook receives the parent as c.mapping and the related set as mapping.
-    const parent = route?.kind === "property" ? store.resolveMapping(route.set) : mapping;
-    return hooks.query({ user, url, route: route ?? { kind: "collection", set }, mapping: parent }, mapping);
+    if (!navigation) return hooks.query({ user, url, route: { kind: "collection", set }, mapping }, mapping);
+    const parent = store.resolveMapping(navigation.set);
+    const c = {
+      user,
+      url,
+      route: { kind: "property", set: navigation.set, key: navigation.id, segment: navigation.name },
+      mapping: parent,
+      navigation: { parent: { mapping: parent, id: navigation.id }, name: navigation.name },
+    };
+    return hooks.query(c, mapping);
   };
   return { store, api, hooks, admin, basic, query };
 }
@@ -164,16 +172,58 @@ test("an unknown userQuery answers 404 and a userQuery for another entity answer
   assert.equal(mismatch.details.innerCode, "0x80041128");
 });
 
+const GADGETS_OF_WIDGET = `<fetch><entity name="gadget"><filter type="and"><condition attribute="widgetid" operator="eq" value="${WIDGET}" /></filter><attribute name="name" /></entity></fetch>`;
+
 test("a navigation collection adds the parent link as a FetchXML condition", async () => {
   const t = await setup({
     rows: { savedquery: [{ savedqueryid: SAVED, name: "Gadgets", returnedtypecode: "gadget", fetchxml: GADGET_FETCH }] },
   });
-  const route = { kind: "property", set: "widgets", key: WIDGET, segment: "widget_gadgets" };
-  const result = await t.query(t.admin, "gadgets", { savedQuery: SAVED, route });
-  assert.equal(
-    result.fetchXml,
-    `<fetch><entity name="gadget"><filter type="and"><condition attribute="widgetid" operator="eq" value="${WIDGET}" /></filter><attribute name="name" /></entity></fetch>`,
-  );
+  const result = await t.query(t.admin, "gadgets", { savedQuery: SAVED, navigation: { set: "widgets", id: WIDGET, name: "widget_gadgets" } });
+  assert.equal(result.fetchXml, GADGETS_OF_WIDGET);
+});
+
+test("a navigation collection takes its parent from the navigation context, without c.mapping", async () => {
+  const t = await setup({
+    rows: { savedquery: [{ savedqueryid: SAVED, name: "Gadgets", returnedtypecode: "gadget", fetchxml: GADGET_FETCH }] },
+  });
+  const url = new URL(`/api/data/v9.2/widgets(${WIDGET})/widget_gadgets?savedQuery=${SAVED}`, "http://127.0.0.1:5555");
+  const c = {
+    user: t.admin,
+    url,
+    route: { kind: "property", set: "widgets", key: WIDGET, segment: "widget_gadgets" },
+    navigation: { parent: { mapping: t.store.resolveMapping("widgets"), id: WIDGET }, name: "widget_gadgets" },
+  };
+  assert.deepEqual(t.hooks.query(c, t.store.resolveMapping("gadgets")), { fetchXml: GADGETS_OF_WIDGET });
+});
+
+test("a navigation predefined query that names no collection-valued relationship answers 400, never every row", async () => {
+  const t = await setup({
+    rows: { savedquery: [{ savedqueryid: SAVED, name: "Gadgets", returnedtypecode: "gadget", fetchxml: GADGET_FETCH }] },
+  });
+  const url = new URL(`/api/data/v9.2/widgets(${WIDGET})/widget_nope?savedQuery=${SAVED}`, "http://127.0.0.1:5555");
+  const route = { kind: "property", set: "widgets", key: WIDGET, segment: "widget_nope" };
+  const navigation = { parent: { mapping: t.store.resolveMapping("widgets"), id: WIDGET }, name: "widget_nope" };
+  const gadgets = t.store.resolveMapping("gadgets");
+  for (const c of [{ user: t.admin, url, route, navigation }, { user: t.admin, url, route }]) {
+    const error = failure(() => t.hooks.query(c, gadgets));
+    assert.equal(error.status, 400);
+    assert.equal(error.message, "Predefined queries are only supported on collection-valued navigation properties.");
+  }
+  t.store.state.mappings.widget.relationships.widget_owner = { entity: "gadget", from: "widgetid", to: "widgetid", many: false };
+  const single = { ...navigation, name: "widget_owner" };
+  assert.equal(failure(() => t.hooks.query({ user: t.admin, url, route, navigation: single }, gadgets)).status, 400);
+});
+
+test("install registers the hook and returns its seeding, so awaiting install means the mappings exist", async () => {
+  const store = new DataStore({ state: emptyState() });
+  const hooks = {};
+  // A write already queued on the store delays the seeding, so only an awaited install sees it done.
+  const earlier = store.transact(() => new Promise((resolve) => setTimeout(resolve, 20)));
+  await install({ store, recordHooks: { add: (name, fn) => { hooks[name] = fn; } } });
+  assert.equal(typeof hooks.query, "function");
+  assert.equal(store.state.mappings.savedquery?.entitySet, "savedqueries");
+  assert.equal(store.state.mappings.userquery?.entitySet, "userqueries");
+  await earlier;
 });
 
 test("no predefined query parameter leaves the request to the records layer", async () => {

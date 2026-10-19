@@ -158,3 +158,78 @@ test("generated FetchXML runs through DataStore.fetchXml", async () => {
   assert.equal(page.total_record_count, 4);
   assert.equal(page.more_records, true);
 });
+
+test("BulkDelete LinkEntities restrict the delete to rows that link to a matching record", async () => {
+  const store = await new DataStore({ state: fixtureState() }).init();
+  const model = fromBulkDeleteJson({
+    EntityName: "widget",
+    LinkEntities: [{
+      LinkFromEntityName: "widget", LinkFromAttributeName: "widgetid", LinkToEntityName: "gadget", LinkToAttributeName: "widgetid", JoinOperator: "Inner",
+      LinkCriteria: { FilterOperator: "And", Conditions: [{ AttributeName: "name", Operator: "Equal", Values: [{ Value: "G-red" }] }] },
+    }],
+  });
+  assert.equal(toFetchXml(model), '<fetch><entity name="widget"><link-entity name="gadget" from="widgetid" to="widgetid" link-type="inner"><filter type="and"><condition attribute="name" operator="eq" value="G-red"/></filter></link-entity></entity></fetch>');
+  assert.deepEqual(store.fetchXml(toFetchXml(model), { admin: true }).entities.map((row) => row.name), ["Redmond"]);
+});
+
+test("BulkDelete TopCount limits the delete and PageInfo with TopCount is refused", async () => {
+  const store = await new DataStore({ state: fixtureState() }).init();
+  const limited = fromBulkDeleteJson({ EntityName: "widget", TopCount: 2, Criteria: {} });
+  assert.match(toFetchXml(limited), /<fetch top="2">/);
+  assert.equal(store.fetchXml(toFetchXml(limited), { admin: true }).entities.length, 2);
+  const paged = fromBulkDeleteJson({ EntityName: "widget", TopCount: 2, PageInfo: { Count: 2, PageNumber: 1 } });
+  assert.throws(() => toFetchXml(paged), (error) => error instanceof DataError && error.status === 400);
+});
+
+test("BulkDelete QuerySet keys outside the supported set are refused, not dropped", () => {
+  assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", Criteria: {}, Surprise: 1 }), (error) => error instanceof DataError && error.status === 400);
+});
+
+test("BulkDelete DataSource other than default is refused as not simulated", () => {
+  assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", DataSource: "default" })), '<fetch><entity name="widget"></entity></fetch>');
+  assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", DataSource: "retained" }), (error) => {
+    assert.ok(error instanceof DataError);
+    assert.equal(error.status, 501);
+    assert.equal(error.code, "NotImplemented");
+    return true;
+  });
+});
+
+test("BulkDelete condition EntityName is kept on the FetchXML condition", () => {
+  const model = fromBulkDeleteJson({ EntityName: "widget", Criteria: { Conditions: [{ EntityName: "gadget", AttributeName: "name", Operator: "Equal", Values: [{ Value: "G-red" }] }] } });
+  assert.match(toFetchXml(model), /<condition entityname="gadget" attribute="name" operator="eq" value="G-red"\/>/);
+});
+
+test("typed codec values and Date objects render as their scalar text", () => {
+  const equal = (values, attributeName = "a") => toFetchXml(where(condition("Equal", values, attributeName)));
+  assert.match(equal([{ type: "dateTime", value: "2026-01-01T00:00:00Z" }]), /value="2026-01-01T00:00:00Z"/);
+  assert.match(equal([{ type: "guid", value: "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f" }]), /value="6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f"/);
+  assert.match(equal([{ type: "EntityReference", logicalName: "gadget", id: "g-1" }]), /value="g-1"/);
+  assert.match(equal([{ type: "OptionSetValue", value: 2 }]), /value="2"/);
+  assert.match(equal([new Date("2026-01-01T00:00:00Z")]), /value="2026-01-01T00:00:00\.000Z"/);
+  // unverified: a boolean renders as "true"; the FetchXML text form of booleans is not checked against the service.
+  assert.match(equal([true]), /value="true"/);
+  assert.match(toFetchXml(where(condition("Contains", [{ type: "string", value: "Red" }]))), /value="%Red%"/);
+});
+
+test("an empty ColumnSet on the root returns only the primary key, as QueryExpression does", async () => {
+  const model = { entityName: "widget", columnSet: { allColumns: false, columns: [] } };
+  assert.equal(toFetchXml(model, { primaryIdOf: () => "widgetid" }), '<fetch><entity name="widget"><attribute name="widgetid"/></entity></fetch>');
+  assert.throws(() => toFetchXml(model), (error) => error instanceof DataError && error.status === 400);
+  const store = await new DataStore({ state: fixtureState() }).init();
+  const rows = store.fetchXml(toFetchXml(model, { primaryIdOf: () => "widgetid" }), { admin: true }).entities;
+  assert.equal(rows.length, 4);
+  for (const row of rows) assert.deepEqual(Object.keys(row).filter((key) => key !== "widgetid" && !key.startsWith("@")), []);
+});
+
+test("TopCount with paging in a QueryExpression is refused", () => {
+  // unverified: the SDK documents that a query containing both PageInfo and TopCount throws; the service message text is not documented.
+  assert.throws(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: { count: 2, pageNumber: 1 } }), (error) => error instanceof DataError && error.status === 400);
+  assert.throws(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: { returnTotalRecordCount: true } }), (error) => error instanceof DataError && error.status === 400);
+  assert.doesNotThrow(() => toFetchXml({ entityName: "widget", topCount: 3, pageInfo: {} }));
+});
+
+test("JoinOperator Natural maps to inner as an unverified placeholder", () => {
+  // unverified: no FetchXML link-type is documented for JoinOperator.Natural; inner is the current mapping and is not checked against the service.
+  assert.match(toFetchXml({ entityName: "widget", linkEntities: [{ linkToEntityName: "gadget", linkToAttributeName: "widgetid", linkFromAttributeName: "widgetid", joinOperator: "Natural" }] }), /link-type="inner"/);
+});

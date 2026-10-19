@@ -10,6 +10,8 @@ import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
 import { createChangeLog } from "./dataverse-changes.mjs";
 import { createPrincipals, ensureSecurityModel, grantAccess, modifyAccess, parseAccessMask, privilegeId, revokeAccess, uuidV5 } from "./dataverse-security.mjs";
 import { createMetadataService, objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
+import { EXTENSIONS } from "./dataverse-extensions.mjs";
+import { createOperationRegistry } from "./dataverse-operations.mjs";
 import {
   JSON_CONTENT_TYPE,
   baseHeaders,
@@ -58,11 +60,13 @@ const RING_SIZE = 500;
 const MAX_HEADER_SIZE = 65536;
 const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = "Bad Request - Invalid URL";
-// MSCRM headers that need prvBypassCustomPlugins. The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName,
-// MergeLabels) and Consistency are accepted no-ops: the simulator has no duplicate detection, solution layers or consistency levels.
-const BYPASS_HEADERS = ["mscrm.bypasscustompluginexecution", "mscrm.bypassbusinesslogicexecution"];
-// ponytail: prvBypassCustomPlugins is not seeded, so these system roles stand in for it.
-const BYPASS_ROLES = new Set(["System Administrator", "System Customizer"]);
+// The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted no-ops:
+// the simulator has no duplicate detection, solution layers or consistency levels.
+// prvBypassCustomPlugins and prvBypassCustomBusinessLogic are distinct privileges, both held by System Administrator only
+// (dataverse-security.mjs), so this role check matches exactly the holders of either.
+const BYPASS_ROLES = new Set(["System Administrator"]);
+// Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
+const TLS_HOST_NAMES = ["localhost", "127.0.0.1", "[::1]"];
 // Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
 const inBatch = new AsyncLocalStorage();
 
@@ -89,6 +93,17 @@ function originOf(req, fallbackHost) {
 }
 
 const listenerOrigin = (proto, host, port) => `${proto}://${host}${port === (proto === "https" ? 443 : 80) ? "" : `:${port}`}`;
+
+// The Host header becomes the origin that tokens carry (iss/aud) and CORS allows any origin, so a page reaching the
+// simulator under another name (DNS rebinding, a cross-site fetch by IP) must not get a token or data.
+const allowedHostNames = (listenerHost) => new Set([...TLS_HOST_NAMES, String(listenerHost).includes(":") ? `[${listenerHost}]` : String(listenerHost)].map((name) => name.toLowerCase()));
+function hostAllowed(value, names) {
+  try {
+    return names.has(new URL(`http://${value}`).hostname.toLowerCase());
+  } catch {
+    return false;
+  }
+}
 
 async function readBody(req) {
   const chunks = [];
@@ -166,8 +181,9 @@ function send(res, result, requestId, clientRequestId) {
   const body = result.body;
   if (body !== undefined && body !== null) {
     const text = typeof body === "string";
-    payload = text ? body : stringifyExactJson(orderAnnotations(body));
-    headers["content-type"] ??= text ? "text/plain; charset=utf-8" : JSON_CONTENT_TYPE;
+    const binary = Buffer.isBuffer(body);
+    payload = text || binary ? body : stringifyExactJson(orderAnnotations(body));
+    headers["content-type"] ??= text ? "text/plain; charset=utf-8" : binary ? "application/octet-stream" : JSON_CONTENT_TYPE;
   }
   for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
   res.statusCode = result.status ?? 200;
@@ -280,7 +296,7 @@ function soap(c) {
   return methodNotAllowed(c);
 }
 
-function listParamTotals(d, c, route) {
+function listParamTotals(d, c, route, common) {
   const params = parseFunctionParameters(route.params, c.url.searchParams);
   const keys = [];
   const values = [];
@@ -291,6 +307,7 @@ function listParamTotals(d, c, route) {
     } catch {
       throw new DataError("Invalid argument.", 400, "InvalidKey");
     }
+    d.principals.authorize({ user: common.user, entity: logical, operation: "read" });
     keys.push(logical);
     values.push(d.store.tableRows(logical).length);
   }
@@ -327,7 +344,7 @@ function unboundFunction(d, c, route, common) {
         },
       };
     case "RetrieveTotalRecordCount":
-      return { status: 200, body: listParamTotals(d, c, route) };
+      return { status: 200, body: listParamTotals(d, c, route, common) };
     case "RetrieveMetadataChanges":
       return { status: 200, body: metadataChanges(d, c, route) };
     default:
@@ -498,6 +515,7 @@ async function recordCall(d, route, common) {
     caller: common.caller,
     identity: common.identity,
     requestId: common.requestId,
+    bypassCustomPlugins: common.bypassCustomPlugins === true,
   });
   return result ?? { status: 204 };
 }
@@ -580,10 +598,17 @@ async function dataApi(d, c, route) {
 async function handleDataRequest(d, { method, url, route, headers = {}, bodyText, user, caller, identity, prefer, origin, requestId }) {
   const req = { method, headers };
   const c = { req, method, url, origin, requestId, prefer, meta: {} };
-  const bypassing = BYPASS_HEADERS.some((name) => ["true", "1"].includes(String(headers[name] ?? "").trim().toLowerCase()));
-  if (bypassing && !(d.principals.privileges(caller).has("prvBypassCustomPlugins") || d.principals.roles(caller).some((role) => BYPASS_ROLES.has(role.name)))) {
-    throw privilegeDenied(d, caller, "prvBypassCustomPlugins");
-  }
+  // MSCRM.BypassCustomPluginExecution: true needs prvBypassCustomPlugins. MSCRM.BypassBusinessLogicExecution (a comma list)
+  // needs prvBypassCustomBusinessLogic; CustomSync also skips the synchronous plug-in phase, as the header asks.
+  const plugins = ["true", "1"].includes(String(headers["mscrm.bypasscustompluginexecution"] ?? "").trim().toLowerCase());
+  const logic = String(headers["mscrm.bypassbusinesslogicexecution"] ?? "")
+    .split(",")
+    .map((value) => value.trim().toLowerCase())
+    .filter(Boolean);
+  const holds = (privilege) => d.principals.privileges(caller).has(privilege) || d.principals.roles(caller).some((role) => BYPASS_ROLES.has(role.name));
+  if (plugins && !holds("prvBypassCustomPlugins")) throw privilegeDenied(d, caller, "prvBypassCustomPlugins");
+  if (logic.length && !holds("prvBypassCustomBusinessLogic")) throw privilegeDenied(d, caller, "prvBypassCustomBusinessLogic");
+  const bypassCustomPlugins = plugins || logic.includes("customsync");
   let body;
   if (bodyText && BODY_METHODS.has(method) && /json/i.test(headers["content-type"] ?? "")) {
     try {
@@ -598,7 +623,9 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
     }
   }
 
-  const common = { req, origin, requestId, prefer, method, url, body, bodyText, user, caller, identity };
+  const common = { req, origin, requestId, prefer, method, url, body, bodyText, user, caller, identity, bypassCustomPlugins };
+  const operated = await operationCall(d, route, common);
+  if (operated) return operated;
   switch (route.kind) {
     case "service":
       return method === "GET" ? { status: 200, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
@@ -625,6 +652,80 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
     default:
       return recordCall(d, route, common);
   }
+}
+
+// Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions. Returns null on a miss so
+// the built-ins run. A name registered under another verb, binding or entity is a 404, as a wrong verb is for built-ins.
+async function operationCall(d, route, common) {
+  const ops = d.operations;
+  // A bound operation written without the Microsoft.Dynamics.CRM. prefix parses as a property of the entity row.
+  if ((route.kind === "property" || route.kind === "member") && ops.has(route.segment)) {
+    return envelope(400, "", "Request message has unresolved parameters", common.requestId);
+  }
+  const kind = common.method === "GET" ? "function" : "action";
+  // One segment that names a registered unbound operation (route.candidate) is that operation before it is read as a set.
+  // A wrong verb there falls through to the set, which may be a real entity; a registered bound name does not.
+  if (route.candidate && route.kind !== "function" && ops.has(route.candidate.name)) {
+    const op = ops.find({ name: route.candidate.name, kind, binding: "unbound" });
+    return op ? runOperation(d, op, route, route.candidate.params, common, undefined) : null;
+  }
+  if (!["function", "boundFunction", "boundAction"].includes(route.kind) || !ops.has(route.name)) return null;
+  let binding = "unbound";
+  let entity;
+  let mapping;
+  let id;
+  // The name is registered, so a bound route the operation cannot serve (unknown set, alternate key) is a 404, not a built-in.
+  const unroutable = () => notFound({ url: common.url, requestId: common.requestId });
+  if (route.kind !== "function") {
+    try {
+      mapping = d.store.resolveMapping(route.set);
+    } catch {
+      return unroutable();
+    }
+    entity = mapping.logicalName;
+    if (route.key == null) binding = "collection";
+    else {
+      // ponytail: alternate-key addressing is not resolved for operations; a GUID key is the supported form.
+      id = parseKey(route.key)?.id;
+      if (!id) return unroutable();
+      binding = "entity";
+    }
+  }
+  const op = ops.find({ name: route.name, kind, binding, entity });
+  if (!op) return notFound({ url: common.url, requestId: common.requestId });
+  let target;
+  if (binding === "entity") {
+    const row = d.store.get(entity, id, common.identity);
+    if (!row) throw new DataError(`${entity} With Id = ${id} Does Not Exist`, 404, "NotFound", { id });
+    target = { mapping, id, row };
+  } else if (binding === "collection") target = { mapping };
+  return runOperation(d, op, route, route.params, common, target);
+}
+
+// Calls the operation's handle(ctx) and shapes its result: object bodies are JSON, Buffers go out as they are.
+async function runOperation(d, op, route, paramsText, common, target) {
+  const headers = Object.fromEntries(Object.entries(common.req.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
+  const result = await op.handle({
+    method: common.method,
+    route,
+    url: common.url,
+    origin: common.origin,
+    version: route.version,
+    prefer: common.prefer,
+    headers,
+    body: common.body,
+    bodyBuffer: Buffer.from(common.bodyText ?? "", "utf8"),
+    params: parseFunctionParameters(paramsText, common.url.searchParams),
+    user: common.user,
+    caller: common.caller,
+    identity: common.identity,
+    requestId: common.requestId,
+    target,
+    api: d.api,
+  });
+  if (!result) return { status: 204 };
+  const jsonBody = result.body !== null && typeof result.body === "object" && !Buffer.isBuffer(result.body);
+  return jsonBody ? asJson(result) : result;
 }
 
 // $batch: parts run in process under the caller verified for the batch; a changeset rolls back to a snapshot on failure.
@@ -703,6 +804,12 @@ async function route(d, c) {
   }
   // A malformed Prefer is answered before any routing, as Dataverse does for every Web API request.
   if (c.prefer.malformed) return preferMalformedResponse(c.prefer.malformed);
+  // Extension routes (api.addRoute) answer before discovery, SOAP and the Web API; the first registered match wins.
+  const extension = (d.routes ?? []).find((entry) => entry.match(path, c.method));
+  if (extension) {
+    c.meta.kind = "extension";
+    return extension.handler(c);
+  }
   if (path === "/api/discovery/v2.0" || path === "/api/discovery/v2.0/") {
     c.meta.kind = "discovery";
     return discoveryService(c);
@@ -726,7 +833,7 @@ async function route(d, c) {
 // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
 // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
 export function createDataverseHandler(deps) {
-  const d = { ...deps, change: deps.change ?? ((fn) => fn()), throttle: new Map(), requests: deps.requests ?? [] };
+  const d = { ...deps, change: deps.change ?? ((fn) => fn()), throttle: new Map(), requests: deps.requests ?? [], hostNames: allowedHostNames(deps.host ?? "127.0.0.1") };
   const log = deps.log ?? (() => {});
   const serve = async (req, res) => {
     const requestId = randomUUID();
@@ -752,7 +859,9 @@ export function createDataverseHandler(deps) {
     const reply = (result) => send(res, result, requestId, clientRequestId);
     let result;
     try {
-      if (String(req.url ?? "").length > MAX_URL_LENGTH) {
+      if (req.headers.host !== undefined && !hostAllowed(req.headers.host, d.hostNames)) {
+        result = { status: 403, headers: { "content-type": "text/plain; charset=utf-8" }, body: "Forbidden - Host name is not served by this simulator." };
+      } else if (String(req.url ?? "").length > MAX_URL_LENGTH) {
         result = envelope(400, "0x80060888", "Invalid URI: The Uri string is too long.", requestId);
       } else {
         c.url = new URL(req.url ?? "/", origin);
@@ -844,6 +953,7 @@ export async function startDataverseApi({
   tls = null,
   records = null,
   log = () => {},
+  extensions = EXTENSIONS,
 }) {
   void observed; // accepted for the documented signature; no router behaviour depends on it yet
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
@@ -892,15 +1002,47 @@ export async function startDataverseApi({
   });
   // One change log per API: the record handlers read it, a rolled-back changeset rewinds it and a reset expires its tokens.
   const changes = createChangeLog(store, { clock });
+  const { createRecordHandlers, createRecordHooks } = await import("./dataverse-records.mjs");
+  const recordHooks = createRecordHooks();
   const recordHandlers =
-    records ??
-    (await import("./dataverse-records.mjs")).createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes });
+    records ?? createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes, hooks: recordHooks });
+
+  // Extensions get the registry, the routes and the api object; security is re-seeded after they install, so tables
+  // they seed get privileges and role grants (seedSecurity is idempotent).
+  const operations = createOperationRegistry();
+  const routes = [];
+  const api = {
+    store,
+    change: recordChange,
+    registry: operations,
+    principals,
+    metadata,
+    metadataFields,
+    records: recordHandlers,
+    recordHooks,
+    settings,
+    schema,
+    clock,
+    log,
+    addRoute: (match, handler) => {
+      routes.push({ match, handler });
+    },
+    dataRevision: () => store.dataRevision?.(),
+  };
+  for (const extension of extensions) {
+    if (typeof extension?.install !== "function") throw new Error("A Dataverse API extension needs an install(api) function.");
+    await extension.install(api);
+  }
+  if (extensions.length) await change(seedSecurity);
 
   const requests = [];
   const handle = createDataverseHandler({
     store,
     change,
     settings,
+    operations,
+    routes,
+    api,
     authority,
     principals,
     metadata,
@@ -938,6 +1080,7 @@ export async function startDataverseApi({
     // so it can be called from inside the server's change queue (its /reset handler does).
     reseed: async () => {
       await registerApplications();
+      for (const extension of extensions) await extension.reset?.(api);
       await seedSecurity();
       // The seeding writes are not changes a client should see: flush them, then expire every token issued before the reset.
       await store.flushCommittedEvents?.();

@@ -1,6 +1,7 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { request } from "node:http";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
@@ -276,6 +277,52 @@ describe("dataverse API router", () => {
     assert.equal(response.status, 500);
     assert.ok(response.headers.get("content-type").startsWith("text/xml"));
     assert.ok((await response.text()).includes("<faultcode>s:Receiver</faultcode>"));
+  });
+
+  it("passes the MSCRM bypass headers to the record handler as bypassCustomPlugins", async () => {
+    const patch = (headers) =>
+      fetch(`${origin}${apiPath("widgets(aaaaaaaa-0000-0000-0000-000000000001)")}`, {
+        method: "PATCH",
+        headers: { ...auth(), "content-type": "application/json", ...headers },
+        body: JSON.stringify({ name: "bypass" }),
+      });
+    const last = () => recordCalls.at(-1);
+    assert.equal((await patch({ "MSCRM.BypassCustomPluginExecution": "true" })).status, 200);
+    assert.equal(last().bypassCustomPlugins, true);
+    assert.equal((await patch({ "MSCRM.BypassBusinessLogicExecution": "CustomSync" })).status, 200);
+    assert.equal(last().bypassCustomPlugins, true);
+    // Other business-logic steps are not the synchronous plug-in phase, so they do not skip the plug-ins.
+    assert.equal((await patch({ "MSCRM.BypassBusinessLogicExecution": "StopSynchronousCallbackRegistration" })).status, 200);
+    assert.equal(last().bypassCustomPlugins, false);
+    assert.equal((await get(apiPath("widgets"))).status, 200);
+    assert.equal(last().bypassCustomPlugins, false);
+  });
+
+  it("refuses a Host name the simulator does not serve, with 403 plain text", async () => {
+    const port = new URL(origin).port;
+    const raw = (path, host) =>
+      new Promise((resolve, reject) => {
+        const req = request({ host: "127.0.0.1", port, path, headers: { host, ...auth() } }, (res) => {
+          let body = "";
+          res.setEncoding("utf8");
+          res.on("data", (chunk) => (body += chunk));
+          res.on("end", () => resolve({ status: res.statusCode, type: res.headers["content-type"], body }));
+        });
+        req.on("error", reject);
+        req.end();
+      });
+    const rebound = await raw("/api/data/v9.2/WhoAmI", `rebind.example:${port}`);
+    assert.equal(rebound.status, 403);
+    assert.match(rebound.type, /^text\/plain/);
+    assert.ok(!rebound.body.includes(token));
+    const sts = await raw(`/${tenantId}/v2.0/.well-known/openid-configuration`, `evil.example:${port}`);
+    assert.equal(sts.status, 403);
+    // The names in the certificate and the listener's own host still reach the listeners. A token is bound to the
+    // origin it was issued under, so the API check here uses the listener's own host.
+    const named = await raw(`/${tenantId}/v2.0/.well-known/openid-configuration`, `localhost:${port}`);
+    assert.equal(named.status, 200);
+    const loopback = await raw("/api/data/v9.2/WhoAmI", `127.0.0.1:${port}`);
+    assert.equal(loopback.status, 200);
   });
 
   it("logs requests without authorization data", async () => {
@@ -647,6 +694,31 @@ describe("dataverse API batch, metadata and sign-in", () => {
     assert.equal(error.code, "0x80040220");
     assert.ok(error.message.includes("is missing prvBypassCustomPlugins privilege"));
     assert.ok(error.message.includes(`context.Caller=${makerUserId}`));
+  });
+
+  it("requires prvBypassCustomBusinessLogic for MSCRM.BypassBusinessLogicExecution", async () => {
+    const patch = (value, headers) =>
+      send(apiPath(`widgets(${WIDGET_ID})`), {
+        method: "PATCH",
+        headers: { ...bearer(value), "content-type": "application/json", ...headers },
+        body: JSON.stringify({ name: "logic" }),
+      });
+    const denied = await patch(userToken, { "MSCRM.BypassBusinessLogicExecution": "CustomSync" });
+    assert.equal(denied.status, 403);
+    const { error } = await denied.json();
+    assert.equal(error.code, "0x80040220");
+    assert.ok(error.message.includes("is missing prvBypassCustomBusinessLogic privilege"));
+    assert.equal((await patch(token, { "MSCRM.BypassBusinessLogicExecution": "CustomSync" })).status, 204);
+  });
+
+  it("refuses RetrieveTotalRecordCount for a table the caller cannot read", async () => {
+    const query = new URLSearchParams({ "@p": '["widget"]' });
+    const path = apiPath(`RetrieveTotalRecordCount(EntityNames=@p)?${query}`);
+    const denied = await send(path, { headers: bearer(userToken) });
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).error.code, "0x80040220");
+    const allowed = await send(path, { headers: bearer(token) });
+    assert.equal(allowed.status, 200);
   });
 
   it("answers impersonation of an unknown target with 400 0x80040203 and a caller without the privilege with the full 403", async () => {

@@ -39,6 +39,14 @@ const UNSUPPORTED_OPERATORS = new Map([
   ["ne-businessid", "the portal application user's business unit is not modelled"],
 ]);
 
+// Hierarchy, team and business-unit operators need `identity.dataverse` (the Dataverse caller's
+// userId, businessUnitId, teamIds and hierarchy lookups). Without it they keep UNSUPPORTED_OPERATORS.
+const DATAVERSE_IDENTITY_OPERATORS = new Set([
+  "above", "eq-or-above", "under", "eq-or-under", "not-under",
+  "eq-useroruserhierarchy", "eq-useroruserhierarchyandteams",
+  "eq-useroruserteams", "eq-userteams", "eq-businessid", "ne-businessid",
+]);
+
 /** Every documented FetchXML condition operator with its local support status. */
 export const FETCH_OPERATORS = new Set([
   ...VALUE_OPERATORS,
@@ -80,8 +88,11 @@ export function compileOperator(operator, {
   identity = {},
   settings = {},
   now = Date.now(),
+  table,
 } = {}) {
   const op = operator === "neq" ? "ne" : operator;
+  if (identity.dataverse && DATAVERSE_IDENTITY_OPERATORS.has(op))
+    return compileIdentityOperator(op, { attribute, values, table, identity: identity.dataverse });
   const unsupported = UNSUPPORTED_OPERATORS.get(op);
   if (unsupported)
     throw new DataError(
@@ -183,7 +194,8 @@ export function compileOperator(operator, {
     case "ne-userid": {
       // Power Pages executes FetchXML as its Dataverse application user. The
       // local identity may name that user explicitly; contacts are not users.
-      const user = guidKey(identity.systemUserId) ?? identity.systemUserId ?? null;
+      const self = identity.systemUserId ?? identity.dataverse?.userId;
+      const user = guidKey(self) ?? self ?? null;
       return op === "eq-userid"
         ? (x) => user != null && !isNullValue(x) && equal(x, user)
         : (x) => !isNullValue(x) && (user == null || !equal(x, user));
@@ -216,6 +228,72 @@ export function compileOperator(operator, {
         return parsed ? predicate(parsed.ms) : false;
       };
     }
+  }
+}
+
+const identityKey = (value) => guidKey(scalar(value));
+const identityIds = (items) => new Set([...items].map((item) => guidKey(item) ?? String(item).toLowerCase()));
+
+/**
+ * Operators that need the Dataverse caller (identity.dataverse). Hierarchy sets come from the
+ * router's lookups: hierarchy(table, idColumn, recordId, mode) and userHierarchy(userId). A null
+ * answer means the table or user has no hierarchy.
+ */
+function compileIdentityOperator(op, { attribute, values, table, identity }) {
+  const hierarchyError = () =>
+    new DataError("The entity does not have a hierarchical relationship.", 400, "InvalidQuery", {
+      innerCode: "0x80040203",
+    });
+  const treeOf = (mode) => {
+    const recordId = identityKey(values[0]);
+    if (recordId == null) throw new DataError(nullMessage(attribute), 400, "InvalidQuery");
+    const ids = identity.hierarchy?.(table, attribute, recordId, mode) ?? null;
+    if (ids == null) throw hierarchyError();
+    return identityIds(ids);
+  };
+  const userSet = (extra = []) => {
+    const userId = identityKey(identity.userId) ?? identity.userId;
+    const ids = identity.userHierarchy ? identity.userHierarchy(userId) : new Set();
+    if (ids == null) throw hierarchyError();
+    return identityIds([userId, ...extra, ...ids].filter(Boolean));
+  };
+  const teams = identityIds(identity.teamIds ?? []);
+  switch (op) {
+    case "above":
+    case "eq-or-above":
+    case "under":
+    case "eq-or-under": {
+      const ids = treeOf(op);
+      return (x) => !isNullValue(x) && ids.has(identityKey(x));
+    }
+    case "not-under": {
+      const ids = treeOf("under");
+      return (x) => !isNullValue(x) && !ids.has(identityKey(x));
+    }
+    case "eq-businessid":
+    case "ne-businessid": {
+      const bu = identityKey(identity.businessUnitId) ?? identity.businessUnitId ?? null;
+      return op === "eq-businessid"
+        ? (x) => bu != null && !isNullValue(x) && identityKey(x) === bu
+        : (x) => !isNullValue(x) && (bu == null || identityKey(x) !== bu);
+    }
+    case "eq-userteams":
+      return (x) => !isNullValue(x) && teams.has(identityKey(x));
+    case "eq-useroruserteams": {
+      const set = userSet([...teams]);
+      return (x) => !isNullValue(x) && set.has(identityKey(x));
+    }
+    case "eq-useroruserhierarchy": {
+      const set = userSet();
+      return (x) => !isNullValue(x) && set.has(identityKey(x));
+    }
+    case "eq-useroruserhierarchyandteams": {
+      // Reports' own teams are not in the router's lookup, so only the caller's teams are added.
+      const set = userSet([...teams]);
+      return (x) => !isNullValue(x) && set.has(identityKey(x));
+    }
+    default:
+      throw new DataError(`Unsupported FetchXML operator ${op}`, 400, "UnsupportedQuery");
   }
 }
 

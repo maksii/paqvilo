@@ -2,12 +2,13 @@
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
 // metadata, objectTypeCode and clock are accepted for the router contract and unused so far.
+import { createHash } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference } from "./data.mjs";
 import { webApiPagingCookie } from "./fetchxml-engine.mjs";
 import { expressionPaths, parseExpand, parseODataExpression, parseOrderBy, parseSelect } from "./odata-query.mjs";
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
-import { ownershipOf, privilegeDeniedError, privilegeName } from "./dataverse-security.mjs";
+import { baseCurrencyRow, ownershipOf, privilegeDeniedError, privilegeName } from "./dataverse-security.mjs";
 import { fieldKind } from "./dataverse-values.mjs";
 import { fixedScaleNumeric } from "./exact-numeric.mjs";
 import { createChangeLog, encodeDeltaToken } from "./dataverse-changes.mjs";
@@ -42,8 +43,51 @@ const RECORD_COUNT = "Microsoft.Dynamics.CRM.totalrecordcount";
 const RECORD_LIMIT = "Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded";
 const MORE_RECORDS = "Microsoft.Dynamics.CRM.morerecords";
 const PAGING_COOKIE = "Microsoft.Dynamics.CRM.fetchxmlpagingcookie";
+const GLOBAL_VERSION = "Microsoft.Dynamics.CRM.globalmetadataversion";
+const OVERRIDDEN = "overriddencreatedon";
+// System columns Dataverse rejects on create and update (IsValidForCreate/IsValidForUpdate false): accepted and ignored,
+// the system stamp wins. unverified: live capture (ignored silently; the platform's answer is not captured).
+const SYSTEM_IGNORED = new Set([
+  "createdby", "createdon", "modifiedby", "modifiedon", "createdonbehalfby", "modifiedonbehalfby",
+  "owninguser", "owningteam", "owningbusinessunit", "versionnumber",
+]);
+const ignoredSystem = (key) => SYSTEM_IGNORED.has(key.endsWith(BIND) ? key.slice(0, -BIND.length) : key);
+// System lookups a plain (non-bind) property may not set: Dataverse answers 0x0. Their bind forms are accepted and ignored.
+const LOOKUP_SYSTEM = new Set([...Object.keys(SYSTEM_AUDIT), ...Object.keys(SYSTEM_OWNER)]);
+
+// Records hooks (api.recordHooks.add(name, fn)). Several functions may share a name and run in the order added.
+// query and stream answer with the first result that is not undefined; project, beforeWrite and afterWrite run them all.
+export function createRecordHooks() {
+  const byName = new Map();
+  return {
+    add(name, fn) {
+      if (typeof fn !== "function") throw new TypeError(`Record hook ${name} must be a function.`);
+      byName.set(name, [...(byName.get(name) ?? []), fn]);
+    },
+    list: (name) => byName.get(name) ?? [],
+  };
+}
+
+// @Microsoft.Dynamics.CRM.globalmetadataversion, copied from webapi-handler (not imported). Synthetic, never a live value.
+const metadataVersions = new WeakMap();
+function globalMetadataVersion(store) {
+  if (store.observed?.webApiGlobalMetadataVersion != null) return store.observed.webApiGlobalMetadataVersion;
+  const mappings = store.state.mappings ?? {};
+  if (!metadataVersions.has(mappings)) {
+    const digest = createHash("sha256").update(JSON.stringify(mappings)).digest("hex");
+    metadataVersions.set(mappings, String(parseInt(digest.slice(0, 8), 16)));
+  }
+  return metadataVersions.get(mappings);
+}
 
 const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
+const untypedProperty = (key, logical) =>
+  new DataError(
+    `An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property '${key}' was found in entity 'Microsoft.Dynamics.CRM.${logical}'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.`,
+    400,
+    "InvalidRequest",
+    { innerCode: "0x0" },
+  );
 const unknownSet = (set) => new DataError(`Resource not found for the segment '${set}'.`, 404, "UnknownEntity", { innerCode: "0x8006088a" });
 const notFoundRecord = (logical, id, innerCode = "0x80040217") =>
   new DataError(`${logical} With Id = ${id} Does Not Exist`, 404, "NotFound", { id, innerCode });
@@ -134,11 +178,46 @@ function withKeyViolation(mapping, data, fn) {
   }
 }
 
-// changeTrackingEnabled(logical) is false only when the table's metadata says so; undefined keeps tracking allowed.
-export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined, clock = () => Date.now(), changes = createChangeLog(store, { clock }), changeTrackingEnabled = () => undefined }) {
+// changeTrackingEnabled(logical) overrides the table's metadata flag; without it the flag is read from the mapping,
+// and an undefined flag keeps tracking allowed.
+export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined, clock = () => Date.now(), changes = createChangeLog(store, { clock }), changeTrackingEnabled, hooks = createRecordHooks() }) {
   const authorize = (c, entity, operation, mapping, row) => principals.authorize({ user: c.user, entity, operation, row, mapping });
+  const hookList = (name) => hooks.list?.(name) ?? [];
+  const runHooks = (name, ...args) => { for (const hook of hookList(name)) hook(...args); };
+  // Write hooks run synchronously inside the write's transaction; a throw there rolls the write back.
+  const beforeWrite = (c, mapping, info) => runHooks("beforeWrite", c, mapping, info);
+  const afterWrite = (c, mapping, info) => runHooks("afterWrite", c, mapping, info);
+  // Async-capable first answer: the first hook whose result is not undefined wins.
+  const firstAnswer = async (name, ...args) => {
+    for (const hook of hookList(name)) {
+      const answer = await hook(...args);
+      if (answer !== undefined) return answer;
+    }
+    return undefined;
+  };
+  const trackingFlag = (logical, mapping) =>
+    changeTrackingEnabled ? changeTrackingEnabled(logical) : (mapping.changeTrackingEnabled ?? mapping.dataverseMetadata?.ChangeTrackingEnabled);
+  const addMetadataVersion = (c, body) => {
+    if (c.include?.(GLOBAL_VERSION)) body[`@${GLOBAL_VERSION}`] = globalMetadataVersion(store);
+    return body;
+  };
+  // savedQuery and userQuery are answered only by a query hook; without an answer Dataverse's 501 stands.
+  const assertPredefinedAnswered = (url) => {
+    for (const name of ["savedQuery", "userQuery"]) {
+      if (url.searchParams.has(name)) throw new DataError(`${name} has not yet been implemented.`, 501, "NotImplemented", { innerCode: "0x80040216" });
+    }
+  };
   const filterOf = (c, mapping) => principals.readFilter({ user: c.user, entity: mapping.logicalName, mapping }) ?? null;
-  const filterOptions = (readFilter) => (readFilter ? { backendRowFilter: readFilter } : {});
+  // Security-trims every table a query reads: root, $expand, navigation $filter/$orderby and link-entity. readFilter throws
+  // PrivilegeDenied for a table without prvRead. ponytail: the store calls the filter per row, so an empty table is never checked.
+  const rowsFilterOf = (c) => {
+    const filters = new Map();
+    return (name, row) => {
+      if (!filters.has(name)) filters.set(name, principals.readFilter({ user: c.user, entity: name }) ?? (() => true));
+      return filters.get(name)(row);
+    };
+  };
+  const secured = (c, extra = {}) => queryOptions({ ...extra, backendRowsFilter: rowsFilterOf(c) });
   // Field metadata as this layer reads it: the system lookups are always declared, so a null lookup serializes as _x_value.
   const systemFields = (logical) => {
     let m;
@@ -159,8 +238,8 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (body && typeof body === "object" && !Array.isArray(body)) return body;
     throw invalid(`Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : A request body is required.`, "0x80048d19");
   };
-  // The organization's base currency seeded by the security model; null when the Dataverse tables are absent.
-  const baseCurrency = () => store.state.tables.transactioncurrency?.[0] ?? null;
+  // The organization's base currency seeded by the security model, found by the organization row's id; null when the Dataverse tables are absent.
+  const baseCurrency = () => baseCurrencyRow(store, store.state.tables.organization?.[0]?.organizationid);
   const isMoney = (mapping, key) => fieldKind(store.fieldDefinition(mapping.logicalName, key, fieldsOf)) === "money";
 
   // Money columns serialize with four-decimal lexemes, and a row that carries one reports the base currency lookup.
@@ -206,14 +285,10 @@ export function createRecordHandlers({ store, change, principals, metadataFields
         if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
         continue;
       }
-      if (!isMember(mapping, key)) {
-        throw new DataError(
-          `An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property '${key}' was found in entity 'Microsoft.Dynamics.CRM.${mapping.logicalName}'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.`,
-          400,
-          "InvalidRequest",
-          { innerCode: "0x0" },
-        );
-      }
+      // A plain lookup, owner or customer value is untyped: lookups are set through @odata.bind (a navigation object is a deep insert).
+      const lookup = fieldKind(store.fieldDefinition(mapping.logicalName, key, fieldsOf)) === "lookup";
+      const deepInsert = navigationOf(mapping, key) && body[key] && typeof body[key] === "object";
+      if (LOOKUP_SYSTEM.has(key) || (lookup && !deepInsert) || !isMember(mapping, key)) throw untypedProperty(key, mapping.logicalName);
     }
   }
 
@@ -242,7 +317,21 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       const key = `_${field}_value`;
       if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined) formatted[`${key}${NAVIGATION}`] = field;
     }
-    return shapeMoney(mapping, formatted);
+    shapeMoney(mapping, formatted);
+    projectRow(c, mapping, formatted, options?.expand);
+    return formatted;
+  }
+
+  // project hooks see the row, then each expanded row under it (in its own table, with its own nested expansions).
+  function projectRow(c, mapping, formatted, expand = []) {
+    runHooks("project", c, mapping, formatted);
+    for (const spec of expand) {
+      const rel = navigationOf(mapping, spec.navigation);
+      const value = formatted[spec.navigation];
+      if (!rel || value == null || typeof value !== "object") continue;
+      const target = store.resolveMapping(rel.entity);
+      for (const item of [].concat(value)) if (item && typeof item === "object") projectRow(c, target, item, spec.expand ?? []);
+    }
   }
 
   function rowOf(c, mapping, id) {
@@ -298,7 +387,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   }
 
   function entityBody(c, mapping, id, params) {
-    const result = store.query(mapping.logicalName, params, c.identity, undefined, queryOptions({ id }));
+    const result = store.query(mapping.logicalName, params, c.identity, undefined, secured(c, { id }));
     const projected = result.value[0];
     if (!projected) throw notFoundRecord(mapping.logicalName, id);
     const formatted = formatRow(c, mapping, projected, { etag: true, expand: parseExpand(params.get("$expand")) });
@@ -323,14 +412,14 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   }
 
   // Delta read: rows changed after the token's revision, then one $deletedEntity entry per deleted row, and a fresh delta link.
-  async function deltaPage(c, mapping, readFilter) {
+  async function deltaPage(c, mapping) {
     // Minted before the read: a commit that lands during it shows up in the next delta, not lost between the two.
     const next = changes.token();
     const { changed, deleted } = await deltaChanges(c, mapping);
     const params = collectionParams(c, mapping);
-    const options = queryOptions({ ids: changed, ...filterOptions(readFilter) });
+    const options = secured(c, { ids: changed });
     const rows = changed.length ? store.query(mapping.logicalName, params, c.identity, undefined, options).value : [];
-    const body = { "@odata.context": contextFor(c, `${suffixFor(c, mapping)}/$delta`) };
+    const body = addMetadataVersion(c, { "@odata.context": contextFor(c, `${suffixFor(c, mapping)}/$delta`) });
     body.value = [
       ...rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand: [] }), c.include)),
       ...deleted.map((id) => ({ "@odata.context": contextFor(c, `${mapping.entitySet}/$deletedEntity`), id, reason: "deleted" })),
@@ -342,7 +431,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   }
 
   // Collection page with Dataverse paging: maxpagesize (cap 5000) or the default page; $skiptoken names the next page.
-  function collectionPage(c, mapping, { ids = null, readFilter = null, nextBase = null, tracked = false }) {
+  function collectionPage(c, mapping, { ids = null, nextBase = null, tracked = false }) {
     const { url, prefer } = c;
     const pageSize = Math.min(prefer.maxPageSize ?? PAGE_CAP, PAGE_CAP);
     const offset = pageOffset(url, pageSize);
@@ -350,13 +439,14 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const delta = tracked ? (carriedDelta(url) ?? changes.token()) : null;
     const params = collectionParams(c, mapping);
     const paging = { params, offset, pageSize, preferenceApplied: null, nextLink: () => null };
-    const options = queryOptions({ ...(ids ? { ids } : {}), ...filterOptions(readFilter) });
+    const options = secured(c, ids ? { ids } : {});
     const result = ids?.length === 0 ? emptyPage() : store.query(mapping.logicalName, params, c.identity, paging, options);
     const rows = result.value;
     const total = result.paging?.totalCount ?? rows.length;
     const counted = url.searchParams.get("$count") === "true";
     const body = { "@odata.context": contextFor(c, suffixFor(c, mapping)) };
     if (counted) body["@odata.count"] = Math.min(total, PAGE_CAP);
+    addMetadataVersion(c, body);
     if (c.include?.(RECORD_COUNT)) body[`@${RECORD_COUNT}`] = counted ? Math.min(total, PAGE_CAP) : -1;
     if (c.include?.(RECORD_LIMIT)) body[`@${RECORD_LIMIT}`] = counted ? total > PAGE_CAP : false;
     const expand = parseExpand(url.searchParams.get("$expand"));
@@ -378,27 +468,32 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return { status: 200, headers: applied ? { "Preference-Applied": applied } : {}, body };
   }
 
-  function applyPage(c, mapping, readFilter) {
+  function applyPage(c, mapping) {
     assertQueryMembers(mapping, c.url.searchParams);
-    const result = store.query(mapping.logicalName, new URLSearchParams(c.url.searchParams), c.identity, undefined, queryOptions(filterOptions(readFilter)));
+    const result = store.query(mapping.logicalName, new URLSearchParams(c.url.searchParams), c.identity, undefined, secured(c));
     const value = result.value.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: false }), c.include));
-    return { status: 200, body: { "@odata.context": contextFor(c, mapping.entitySet), ...(result["@odata.count"] !== undefined ? { "@odata.count": result["@odata.count"] } : {}), value } };
+    const body = { "@odata.context": contextFor(c, mapping.entitySet), ...(result["@odata.count"] !== undefined ? { "@odata.count": result["@odata.count"] } : {}) };
+    return { status: 200, body: { ...addMetadataVersion(c, body), value } };
   }
 
-  function fetchXmlPage(c, mapping, readFilter, xml) {
+  function fetchXmlPage(c, mapping, xml) {
     const logical = mapping.logicalName;
     const root = /<entity\b[^>]*?\bname\s*=\s*["']([^"']+)["']/i.exec(xml)?.[1];
     if (root !== logical) {
       throw invalid(`The entity set name '${mapping.entitySet}' does not match the FetchXml entity '${root}'.`, "0x80060888");
     }
-    const fetched = store.fetchXml(xml, c.identity, {
-      metadata: fieldsOf,
-      backendRowsFilter: readFilter ? (name, row) => name !== logical || readFilter(row) : undefined,
-    });
+    // Every entity and link-entity is security-trimmed for the caller (see rowsFilterOf).
+    const fetched = store.fetchXml(xml, c.identity, { metadata: fieldsOf, backendRowsFilter: rowsFilterOf(c) });
     const info = fetched.columns;
     const columns = (info.columns ?? []).filter((col) => col.alias == null && !col.aliased && !col.aggregate).map((col) => col.attribute);
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.unshift(mapping.idColumn);
     const body = { "@odata.context": contextFor(c, `${mapping.entitySet}(${columns.join(",")})`) };
+    // returntotalrecordcount="true" answers the count (capped like $count) and, when included, the total and its limit flag.
+    const counted = /<fetch\b[^>]*?\breturntotalrecordcount\s*=\s*["']true["']/i.test(xml) && fetched.total_record_count >= 0;
+    if (counted) body["@odata.count"] = Math.min(fetched.total_record_count, PAGE_CAP);
+    addMetadataVersion(c, body);
+    if (counted && c.include?.(RECORD_COUNT)) body[`@${RECORD_COUNT}`] = fetched.total_record_count;
+    if (counted && c.include?.(RECORD_LIMIT)) body[`@${RECORD_LIMIT}`] = Boolean(fetched.total_record_count_limit_exceeded);
     body.value = fetched.entities.map((row) => withoutNulls(keepAnnotations(shapeMoney(mapping, c.formatter.formatFetchRow(row, info)), c.include)));
     if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
     if (fetched.more_records && fetched.paging_cookie && c.include?.(PAGING_COOKIE)) {
@@ -411,7 +506,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // includes the ids of deleted rows. Anything less answers the privilege error Dataverse gives for a limited reader.
   function assertTableTracking(c, mapping, readFilter) {
     const logical = mapping.logicalName;
-    if (changeTrackingEnabled(logical) === false) {
+    if (trackingFlag(logical, mapping) === false) {
       throw new DataError(`Entity ${logical} isn't enabled for change tracking.`, 400, "InvalidRequest", { innerCode: "0x80072491" });
     }
     if (readFilter !== null) {
@@ -430,18 +525,21 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     assertTrackable(c);
   }
 
-  function collection(c) {
+  async function collection(c) {
     const { mapping, url } = c;
     authorize(c, mapping.logicalName, "read", mapping);
     const readFilter = filterOf(c, mapping);
+    const answer = await firstAnswer("query", c, mapping);
+    if (answer !== undefined) return answer.fetchXml != null ? fetchXmlPage(c, mapping, answer.fetchXml) : answer;
+    assertPredefinedAnswered(url);
     if (tracking(c)) {
       assertTracking(c, mapping, readFilter);
-      if (url.searchParams.has("$deltatoken")) return deltaPage(c, mapping, readFilter);
+      if (url.searchParams.has("$deltatoken")) return deltaPage(c, mapping);
     }
     const xml = url.searchParams.get("fetchXml") ?? url.searchParams.get("fetchxml");
-    if (xml != null) return fetchXmlPage(c, mapping, readFilter, xml);
-    if (url.searchParams.has("$apply")) return applyPage(c, mapping, readFilter);
-    return collectionPage(c, mapping, { readFilter, tracked: tracking(c) });
+    if (xml != null) return fetchXmlPage(c, mapping, xml);
+    if (url.searchParams.has("$apply")) return applyPage(c, mapping);
+    return collectionPage(c, mapping, { tracked: tracking(c) });
   }
 
   async function countRecords(c) {
@@ -456,7 +554,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (url.searchParams.has("$filter")) params.set("$filter", url.searchParams.get("$filter"));
     params.set("$select", mapping.idColumn);
     assertQueryMembers(mapping, params);
-    const result = store.query(mapping.logicalName, params, c.identity, undefined, queryOptions(filterOptions(filterOf(c, mapping))));
+    const result = store.query(mapping.logicalName, params, c.identity, undefined, secured(c));
     return { status: 200, body: String(Math.min(result.value.length, PAGE_CAP)) };
   }
 
@@ -475,10 +573,51 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   }
 
   // Payload as the store receives it: plain columns and nav@odata.bind, every other annotation dropped.
+  // System columns are accepted and ignored (SYSTEM_IGNORED), except a plain system lookup, which assertPayload refuses;
+  // overriddencreatedon is taken by createPayload only.
   function payload(mapping, body) {
-    assertPayload(mapping, body);
     const data = {};
-    for (const [key, value] of Object.entries(body)) if (!key.includes("@") || key.endsWith(BIND)) data[key] = value;
+    for (const [key, value] of Object.entries(body)) {
+      if (key === OVERRIDDEN || (ignoredSystem(key) && (key.endsWith(BIND) || !LOOKUP_SYSTEM.has(key)))) continue;
+      if (!key.includes("@") || key.endsWith(BIND)) data[key] = value;
+    }
+    assertPayload(mapping, data);
+    return data;
+  }
+
+  // A create payload: overriddencreatedon sets createdon (UTC, ISO) and is stored under its own name; null is ignored.
+  // unverified: the rejection of an unparseable date and the stored form are not captured from the live service.
+  function createPayload(mapping, body) {
+    const data = payload(mapping, body);
+    const value = body[OVERRIDDEN];
+    if (value == null) return data;
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) throw invalid(`The value '${value}' is not a valid date-time for ${OVERRIDDEN}.`, "0x80040203");
+    data.createdon = date.toISOString();
+    data[OVERRIDDEN] = data.createdon;
+    return data;
+  }
+
+  // Deep insert: each nested child is a create of its own table, so it needs create and append on the child and appendto
+  // on the parent (a refusal names the child table), then the same payload rules. Ownership is stamped per row by the store.
+  function deepPayload(c, mapping, data) {
+    for (const key of Object.keys(data)) {
+      const rel = navigationOf(mapping, key);
+      const value = data[key];
+      if (!rel || key.endsWith(BIND) || !value || typeof value !== "object") continue;
+      if (Object.hasOwn(value, "id") && Object.hasOwn(value, "logical_name")) continue;
+      const target = store.resolveMapping(rel.entity);
+      const children = (Array.isArray(value) ? value : [value]).map((child) => {
+        if (!child || typeof child !== "object" || Array.isArray(child)) return child;
+        authorize(c, target.logicalName, "create", target);
+        authorize(c, target.logicalName, "append", target);
+        authorize(c, mapping.logicalName, "appendto", mapping);
+        const childData = deepPayload(c, target, createPayload(target, child));
+        beforeWrite(c, target, { operation: "create", data: childData, existing: null });
+        return childData;
+      });
+      data[key] = Array.isArray(value) ? children : children[0];
+    }
     return data;
   }
 
@@ -502,7 +641,8 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return data;
   }
 
-  // Owner of a write as { id, logical_name }: the ownerid bind on a create, or the ownerid lookup the store holds on an update.
+  // Owner of a write as { id, logical_name }: the ownerid bind on a create, or the ownerid the store coerced from a bind on an update.
+  // A plain ownerid never gets here: assertPayload refuses it, so no branch is needed for it.
   function ownerOf(data) {
     const bind = data[`ownerid${BIND}`];
     if (bind == null) return data.ownerid?.id ? { id: data.ownerid.id, logical_name: data.ownerid.logical_name } : null;
@@ -512,22 +652,24 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // Audit and ownership columns are written by the store after coercion, whether or not the mapping declares them.
   // The store calls this per row it writes, so a deep-inserted child gets the columns of its own table.
   const systemColumns = (c, create) => (mapping, input) => principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create });
-  const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true) });
-  const updateOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, false) });
+  const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true), bypassCustomPlugins: c.bypassCustomPlugins === true });
+  const updateOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, false), bypassCustomPlugins: c.bypassCustomPlugins === true });
 
   function createData(c, mapping, body) {
-    const data = payload(mapping, body);
+    const data = createPayload(mapping, body);
     const logical = mapping.logicalName;
     const declared = (name) => Boolean(store.fieldDefinition(logical, name, fieldsOf));
     authorize(c, logical, "create", mapping);
     if (Object.keys(data).some((key) => key.endsWith(BIND))) authorize(c, logical, "append", mapping);
     bindsOf(c, mapping, data, null);
+    deepPayload(c, mapping, data);
     // A new row is active (statecode 0) with the default status of that state.
     if (!("statecode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) data.statecode = 0;
     if (!("statuscode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) {
       const status = defaultStatus(mapping);
       if (status !== undefined) data.statuscode = status;
     }
+    beforeWrite(c, mapping, { operation: "create", data, existing: null });
     return data;
   }
 
@@ -542,6 +684,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   function updateData(c, mapping, body, existing) {
     const data = bindsOf(c, mapping, payload(mapping, body), existing);
     delete data[mapping.idColumn];
+    beforeWrite(c, mapping, { operation: "update", data, existing });
     return data;
   }
 
@@ -575,6 +718,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       );
     });
     const id = row[mapping.idColumn];
+    afterWrite(c, mapping, { operation: "create", id });
     // 204 names the new row in OData-EntityId; a 201 representation carries the row itself.
     if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": entityUrl(c.origin, c.version, mapping.entitySet, id) } };
     const represented = entityBody(c, mapping, id, entityParams(c, mapping));
@@ -588,6 +732,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const outcome = await runWrite(() =>
       upsertNow(c, mapping, key, body, { ifMatch: c.headers["if-match"], ifNoneMatch: c.headers["if-none-match"] }),
     );
+    afterWrite(c, mapping, { operation: outcome.created ? "create" : "update", id: outcome.id });
     const location = entityUrl(c.origin, c.version, mapping.entitySet, key.alternate ? key.text : outcome.id);
     if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": location } };
     const represented = entityBody(c, mapping, outcome.id, entityParams(c, mapping));
@@ -600,25 +745,27 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const key = lookupKey(c, mapping, c.route.key);
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, "delete", mapping, key.row);
-    await runWrite(() =>
-      store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(c, { ifMatch: c.headers["if-match"] })),
-    );
+    await runWrite(() => {
+      beforeWrite(c, mapping, { operation: "delete", existing: key.row });
+      return store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(c, { ifMatch: c.headers["if-match"] }));
+    });
+    afterWrite(c, mapping, { operation: "delete", id: key.row[mapping.idColumn] });
     return { status: 204 };
   }
 
   // Related rows through a relationship, narrowed by a member key and the caller's row filter.
   function relatedRows(c, mapping, row, rel, segmentKey) {
     const target = store.resolveMapping(rel.entity);
-    const readFilter = filterOf(c, target);
     const wanted = segmentKey ? parseKey(segmentKey)?.id : null;
     const rows = store
-      .queryContext(c.identity, { metadata: fieldsOf })
+      .queryContext(c.identity, { metadata: fieldsOf, backendRowsFilter: rowsFilterOf(c) })
       .related(row, rel)
-      .filter((item) => (!wanted || sameId(item[target.idColumn], wanted)) && (!readFilter || readFilter(item)));
+      .filter((item) => !wanted || sameId(item[target.idColumn], wanted));
     return { target, rows };
   }
 
-  function getNavigation(c, rel) {
+  // Navigation collections reach the query hook with c.mapping as the parent and the related mapping as its argument.
+  async function getNavigation(c, rel) {
     const { mapping, route } = c;
     const key = parentRow(c, mapping, "read");
     const { target, rows } = relatedRows(c, mapping, key.row, rel, route.segmentKey);
@@ -626,6 +773,14 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       const [row] = rows;
       return row ? { status: 200, body: entityBody(c, target, row[target.idColumn], entityParams(c, target)) } : { status: 204 };
     }
+    const navigation = { ...c, navigation: { parent: { mapping, id: key.row[mapping.idColumn] }, name: route.segment } };
+    const answer = await firstAnswer("query", navigation, target);
+    if (answer !== undefined) {
+      if (answer.fetchXml == null) return answer;
+      authorize(c, target.logicalName, "read", target);
+      return fetchXmlPage(navigation, target, answer.fetchXml);
+    }
+    assertPredefinedAnswered(c.url);
     const base = `${c.origin}/api/data/${c.version}/${mapping.entitySet}(${route.key})/${route.segment}`;
     return collectionPage(c, target, { ids: rows.map((row) => row[target.idColumn]), nextBase: base });
   }
@@ -639,7 +794,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   function readProperty(c, mapping, id, segment) {
     assertProperty(mapping, segment);
     const params = new URLSearchParams({ $select: segment });
-    const projected = store.query(mapping.logicalName, params, c.identity, undefined, queryOptions({ id })).value[0];
+    const projected = store.query(mapping.logicalName, params, c.identity, undefined, secured(c, { id })).value[0];
     return projected?.[segment] ?? null;
   }
 
@@ -664,6 +819,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const key = parentRow(c, mapping, "update");
     const data = updateData(c, mapping, { [segment]: value }, key.row);
     await runWrite(() => store.updateRecord(mapping.logicalName, key.row[mapping.idColumn], data, c.identity, updateOptions(c)));
+    afterWrite(c, mapping, { operation: "update", id: key.row[mapping.idColumn] });
     return { status: 204 };
   }
 
@@ -708,7 +864,9 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const child = rowOf(c, target, ref.id);
     if (!child) throw notFoundRecord(target.logicalName, ref.id);
     authorize(c, target.logicalName, "append", target, child);
+    beforeWrite(c, mapping, { operation: "associate", data: { relationship: route.segment, id: child[target.idColumn] }, existing: parent.row });
     await change(() => store.associate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, updateOptions(c)));
+    afterWrite(c, mapping, { operation: "associate", id: parent.row[mapping.idColumn], relationship: route.segment });
     return { status: 204 };
   }
 
@@ -720,6 +878,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const parent = parentRow(c, mapping, "update");
     const data = updateData(c, mapping, { [`${route.segment}${BIND}`]: `/${ref.set}(${ref.id})` }, parent.row);
     await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c)));
+    afterWrite(c, mapping, { operation: "update", id: parent.row[mapping.idColumn], relationship: route.segment });
     return { status: 204 };
   }
 
@@ -731,6 +890,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       const parent = parentRow(c, mapping, "update");
       const data = updateData(c, mapping, { [`${route.segment}${BIND}`]: null }, parent.row);
       await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c)));
+      afterWrite(c, mapping, { operation: "update", id: parent.row[mapping.idColumn], relationship: route.segment });
       return { status: 204 };
     }
     const parent = parentRow(c, mapping, "appendto");
@@ -739,7 +899,9 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const child = rowOf(c, target, childId);
     if (!child) throw notFoundRecord(target.logicalName, childId);
     authorize(c, target.logicalName, "append", target, child);
+    beforeWrite(c, mapping, { operation: "disassociate", data: { relationship: route.segment, id: child[target.idColumn] }, existing: parent.row });
     await change(() => store.disassociate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, updateOptions(c)));
+    afterWrite(c, mapping, { operation: "disassociate", id: parent.row[mapping.idColumn], relationship: route.segment });
     return { status: 204 };
   }
 
@@ -762,21 +924,34 @@ export function createRecordHandlers({ store, change, principals, metadataFields
           return withKeyViolation(mapping, data, () => store.createRecord(mapping.logicalName, data, c.identity, createOptions(c)));
         }),
       );
+      for (const row of rows) afterWrite(c, mapping, { operation: "create", id: row[mapping.idColumn] });
       return {
         status: 200,
         body: { "@odata.context": contextFor(c, "Microsoft.Dynamics.CRM.CreateMultipleResponse"), Ids: rows.map((row) => row[mapping.idColumn]) },
       };
     }
     if (route.name === "UpdateMultiple" || route.name === "UpsertMultiple") {
+      const update = route.name === "UpdateMultiple";
       const targets = targetsOf(c);
-      await runWrite(() => {
-        for (const target of targets) {
-          const text = route.name === "UpdateMultiple" ? String(target[mapping.idColumn] ?? "") : refOf(target["@odata.id"]).id;
-          const key = lookupKey(c, mapping, text);
-          if (route.name === "UpdateMultiple" && !key.row) throw notFoundRecord(mapping.logicalName, key.text);
-          upsertNow(c, mapping, key, target, {});
-        }
+      const texts = targets.map((target) => (update ? String(target[mapping.idColumn] ?? "") : refOf(target["@odata.id"]).id));
+      // The first target per key wins: UpdateMultiple drops later repeats, UpsertMultiple refuses the batch.
+      const seen = new Set();
+      const work = [];
+      targets.forEach((target, index) => {
+        const folded = texts[index].toLowerCase();
+        if (seen.has(folded)) return;
+        seen.add(folded);
+        work.push({ target, text: texts[index] });
       });
+      if (!update && work.length !== targets.length) throw invalid("Duplicate key in Targets.", "0x80040203"); // unverified: message
+      const outcomes = await runWrite(() =>
+        work.map(({ target, text }) => {
+          const key = lookupKey(c, mapping, text);
+          if (update && !key.row) throw notFoundRecord(mapping.logicalName, key.text);
+          return upsertNow(c, mapping, key, target, {});
+        }),
+      );
+      for (const outcome of outcomes) afterWrite(c, mapping, { operation: outcome.created ? "create" : "update", id: outcome.id });
       return { status: 204 };
     }
     if (route.name === "DeleteMultiple") {
@@ -791,14 +966,20 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return run(c);
   };
 
-  function dispatch(c) {
+  // The stream hook sees property and value routes on any verb, before the route's own verbs run.
+  const streamOr = async (c, otherwise) => {
+    const answer = await firstAnswer("stream", c);
+    return answer !== undefined ? answer : otherwise();
+  };
+
+  async function dispatch(c) {
     switch (c.route.kind) {
       case "collection": return verbs(c, { GET: collection, POST: createEntity });
       case "count": return verbs(c, { GET: countRecords });
       case "entity": return verbs(c, { GET: getEntity, PATCH: patchEntity, DELETE: deleteEntity });
-      case "property":
+      case "property": return streamOr(c, () => verbs(c, { GET: getProperty, PUT: putProperty, DELETE: deleteProperty }));
       case "member": return verbs(c, { GET: getProperty, PUT: putProperty, DELETE: deleteProperty });
-      case "value": return verbs(c, { GET: getValue });
+      case "value": return streamOr(c, () => verbs(c, { GET: getValue }));
       case "navigationCount": return verbs(c, { GET: navigationCount });
       case "ref": return verbs(c, { GET: getRef, POST: postRef, PUT: putRef, DELETE: deleteRef });
       case "navigationRef": return verbs(c, { DELETE: deleteRef });

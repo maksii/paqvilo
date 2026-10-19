@@ -84,7 +84,7 @@ function tokenize(source) {
 const KEYWORDS = new Set(["and", "or", "not", "eq", "ne", "gt", "ge", "lt", "le", "in", "null", "true", "false", "has", "add", "sub", "mul", "div", "mod"]);
 
 /** Parse an OData expression into an AST. */
-export function parseODataExpression(source, { dialect = "dataverse", aliases = {} } = {}) {
+export function parseODataExpression(source, { dialect = "dataverse", aliases = {}, rejectNotOnQueryFunctions = false } = {}) {
   const tokens = tokenize(source);
   let pos = 0;
   let conditions = 0;
@@ -254,7 +254,13 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
   const unary = () => {
     if (peekWord() === "not") {
       take();
-      return { type: "not", operand: unary() };
+      const operand = unary();
+      // Dataverse rejects negated query functions; the Dataverse records layer opts in.
+      if (rejectNotOnQueryFunctions && operand.type === "crm")
+        fail("Not operator along with the Custom Named Condition operators is not allowed", 400, "InvalidQuery", {
+          innerCode: "0x80060888",
+        });
+      return { type: "not", operand };
     }
     return primary();
   };
@@ -610,6 +616,7 @@ export function compileODataPredicate(ast, mapping, ctx) {
                 identity: ctx.identity,
                 settings,
                 now: ctx.now,
+                table: rowMapping.logicalName,
               }),
             );
           const result = cache.get(key)(resolved.value);

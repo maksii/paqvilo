@@ -236,7 +236,7 @@ function* xmlTokens(source) {
  * output shows count="5000" page="1" returntotalrecordcount="true" added
  * when absent, so the portal profile reports total_record_count by default.
  */
-export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [],linkBudgetError='documented' } = {}) {
+export function planFetch(fetch, { profile = "portal", limits: overrides = {}, generatedAnyAllAliases = [],linkBudgetError='documented',dataverseIdentity=false } = {}) {
   const limits = { ...FETCH_LIMITS, ...overrides };
   if (fetch?.name !== "fetch") fail("FetchXML must contain one complete fetch element", 400, "InvalidRequest");
   const strict = profile === "webapi" || profile === "sdk";
@@ -366,13 +366,15 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
         const operator = node.attrs.operator;
         if (operator == null)
           fail(`The required attribute 'operator' is missing on condition ${node.attrs.attribute}.`, 400, "InvalidFetchXml");
-        if (UNSUPPORTED_FETCH_OPERATORS.has(operator))
+        // Identity operators are evaluated only for a Dataverse caller (identity.dataverse).
+        const identityOperator = dataverseIdentity && UNSUPPORTED_FETCH_OPERATORS.has(operator);
+        if (UNSUPPORTED_FETCH_OPERATORS.has(operator) && !identityOperator)
           fail(
             `FetchXML operator ${operator} is not supported locally: ${UNSUPPORTED_FETCH_OPERATORS.get(operator)}.`,
             400,
             "UnsupportedQuery",
           );
-        if (!FETCH_OPERATORS.has(operator === "neq" ? "ne" : operator) && operator !== "neq")
+        if (!identityOperator && !FETCH_OPERATORS.has(operator === "neq" ? "ne" : operator) && operator !== "neq")
           fail(`Unsupported FetchXML operator ${operator}`, 400, "UnsupportedQuery");
         break;
       }
@@ -786,13 +788,15 @@ export function executeFetch(plan, ctx) {
         return compare(read(item), other == null ? undefined : fieldValue(other, otherAttribute));
       };
     }
+    // Identity operators get the bare column (the hierarchy lookup's column) and the table.
     const predicate = compileOperator(condition.attrs.operator, {
-      attribute: qualified,
+      attribute: UNSUPPORTED_FETCH_OPERATORS.has(condition.attrs.operator) ? attribute : qualified,
       values: valuesOf(condition),
       definition: columnDefinition,
       identity: ctx.identity,
       settings,
       now,
+      table: mappingOf.get(targetNode).logicalName,
     });
     return (item) => predicate(read(item));
   };

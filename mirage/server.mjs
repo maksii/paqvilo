@@ -14,7 +14,6 @@ import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
 import { attachODataReaderDetails, attachODataJsonSource, odataInvalidJsonDetails } from "./lib/webapi-error-details.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
-import os from "node:os";
 import { readLocalFile } from '../lense/local-file.mjs';
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
@@ -86,7 +85,7 @@ import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrl
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
 import { startDataverseApi } from './lib/dataverse-api.mjs';
-import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
+import { dataverseSettings, dataverseStatus, GRANT_TYPES } from './lib/dataverse-settings.mjs';
 import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
 import { hashSecret, newClientSecret, certificateThumbprints } from './lib/dataverse-auth.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
@@ -537,10 +536,11 @@ export async function createSimulator({
   // Simulated Dataverse API (lib/dataverse-api.mjs): started before the portal listens, closed by close().
   const dataverseConfig = dataverseSettings(dataverseOption ?? undefined);
   let dataverse = null;
-  // Per-run self-signed CA for the https listener; default file sits beside the state file (.paqvilo/).
+  // Self-signed CA for the https listener; the default file sits beside the state file (.paqvilo/). Without a state
+  // file the CA stays in memory: a shared temp path would let another local user plant a key.
   const dataverseCertificatePath = dataverseCertificateFile ?? (stateFile
     ? path.join(path.dirname(path.resolve(stateFile)), "dataverse-ca.pem")
-    : path.join(os.tmpdir(), "paqvilo-mirage-dataverse-ca.pem"));
+    : null);
   let dataverseCertificate = null;
   const dataverseSummary = () => ({
     ...dataverseStatus(dataverseConfig, dataverse ?? {}),
@@ -1872,7 +1872,8 @@ export async function createSimulator({
       displayName: app.displayName,
       secrets: (app.secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
       certificates: (app.certificates ?? []).map(({ thumbprint, thumbprint256 }) => ({ thumbprint, thumbprint256 })),
-      allowedGrants: app.allowedGrants ?? ["client_credentials", "refresh_token"],
+      // Same default as grantAllowed: a missing list allows every grant.
+      allowedGrants: app.allowedGrants ?? Object.keys(GRANT_TYPES),
       publicClient: app.publicClient === true,
       redirectUris: app.redirectUris ?? [],
       systemuserid: userRows().find((user) => lower(user.applicationid) === lower(app.appId))?.systemuserid ?? null,
@@ -1900,6 +1901,11 @@ export async function createSimulator({
         if (!DATAVERSE_GUID.test(appId)) throw error("appId must be a GUID.");
         if (registrations().some((app) => lower(app.appId) === appId)) throw error("An application with this appId is already registered.", 409, "DATAVERSE_APPLICATION_EXISTS");
         if (typeof body.displayName !== "string" || !body.displayName.trim()) throw error("displayName is required.");
+        // A redirect URI lands in a form action and a Location header, so only http(s) is accepted; grants must be known.
+        const httpUrl = (value) => { try { return ["http:", "https:"].includes(new URL(value).protocol); } catch { return false; } };
+        if (Array.isArray(body.redirectUris) && !body.redirectUris.every(httpUrl)) throw error("redirectUris must be http(s) URLs.");
+        const grantNames = new Set([...Object.keys(GRANT_TYPES), ...Object.values(GRANT_TYPES)]);
+        if (Array.isArray(body.allowedGrants) && !body.allowedGrants.every((grant) => grantNames.has(grant))) throw error("allowedGrants must name known grant types.");
         const roleIds = roleIdsFor(body.roles ?? ["System Administrator"]);
         // Creates the application user in its own transaction first, so a refusal leaves no registration behind.
         const systemuserid = await createApplicationUser(store, { organizationId: dataverse.organizationId, tenantId: dataverse.tenantId }, { appId, displayName: body.displayName, roles: roleIds });
@@ -1980,6 +1986,7 @@ export async function createSimulator({
       return change(async () => {
         const body = await jsonObjectBody(req);
         checkPassword(body.password);
+        if (body.accessmode !== undefined && !Number.isInteger(body.accessmode)) throw error("accessmode must be an integer.");
         if (typeof body.fullname !== "string" || !body.fullname.trim()) throw error("fullname is required.");
         if (typeof body.domainname !== "string" || !body.domainname.trim()) throw error("domainname is required.");
         const objectId = lower(body.objectId ?? randomUUID());
@@ -2114,10 +2121,14 @@ export async function createSimulator({
         referenceImports: config().referenceImports ?? [],
       });
     }
-    if (method === "GET" && relative === "/state/export")
-      return json(res, 200, store.snapshot(), {
+    if (method === "GET" && relative === "/state/export") {
+      // Credential material never leaves the runtime: password hashes are dropped and secrets keep only hint and expiry.
+      const snapshot = store.snapshot();
+      if (snapshot.dataverse) snapshot.dataverse = { ...snapshot.dataverse, passwords: undefined, applications: (snapshot.dataverse.applications ?? []).map(({ secrets, ...app }) => ({ ...app, secrets: (secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })) })) };
+      return json(res, 200, snapshot, {
         "content-disposition": 'attachment; filename="simulator-state.json"',
       });
+    }
     if (method === "GET" && relative === "/state") {
       if (evidenceDir)
         try {
@@ -2440,6 +2451,12 @@ export async function createSimulator({
         if (Array.isArray(scenarios) && !Array.isArray(next.simulator.scenarios)) next.simulator.scenarios = scenarios;
         validateConfig(next.simulator);
         await saveState(next);
+        // As in /reset: an imported state may lack the Dataverse section, and the security rows must be re-seeded.
+        if (dataverse) {
+          store.state.dataverse ??= { applications: [] };
+          store.state.dataverse.applications ??= [];
+          await dataverse.reseed();
+        }
         return json(res, 200, { imported: true, revision, tableCounts: store.summary().tableCounts });
       });
     const platformState = () => store.snapshot({sections:['simulator','settings'],tables:['organization']});

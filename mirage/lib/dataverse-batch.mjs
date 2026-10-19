@@ -29,25 +29,37 @@ function boundaryOf(contentType) {
   return match[1] ?? match[2];
 }
 
-// Splits on CRLF-delimited boundary lines and returns the text after each delimiter line.
+const escapeRegExp = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+// A line that reads as the delimiter of another multipart body (RFC 2046 bchars, optional close). Its text is never executed.
+const FOREIGN_DELIMITER = /(^|\r?\n)--[0-9A-Za-z'()+_,\-./:=? ]+?(?:--)?[ \t]*(?=\r?\n|$)/;
+
+// Splits on delimiter lines that match this boundary exactly (CRLF, the boundary, optional "--", padding, CRLF).
+// A longer boundary that starts with this one is content, not a delimiter. Returns the text after each delimiter line.
 // Docs: only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
 function sections(text, boundary) {
   const framed = `\r\n${text}`;
-  const chunks = framed.split(`\r\n--${boundary}`);
-  if (chunks.length === 1) {
-    if (framed.includes("\r\n--")) return []; // parts for another boundary: skipped, batch answers 200
+  const delimiter = new RegExp(`\\r\\n--${escapeRegExp(boundary)}(--)?[ \\t]*(?=\\r\\n|$)`, "g");
+  const found = [...framed.matchAll(delimiter)];
+  if (found.length === 0) {
+    if (framed.includes(`\r\n--${boundary}`)) throw invalid(FRAME_ERROR); // declared delimiter without valid CRLF framing
+    if (framed.includes("\r\n--")) return []; // parts for another boundary only: skipped, batch answers 200
     throw invalid(FRAME_ERROR); // no CRLF framing at all
   }
   const out = [];
-  for (const chunk of chunks.slice(1)) {
-    const eol = chunk.indexOf("\r\n");
-    const line = eol < 0 ? chunk : chunk.slice(0, eol);
-    if (line.trimEnd() === "--") return out; // closing delimiter; epilogue ignored
-    if (eol < 0 || line.trim() !== "") throw invalid(FRAME_ERROR);
-    out.push(chunk.slice(eol + 2));
+  for (let i = 0; i < found.length - 1; i++) {
+    if (found[i][1]) return out; // closing delimiter; epilogue ignored
+    out.push(framed.slice(found[i].index + found[i][0].length + 2, found[i + 1].index));
   }
-  throw invalid(FRAME_ERROR); // no closing delimiter, or no delimiter matching the boundary
+  if (found.at(-1)[1]) return out;
+  throw invalid(FRAME_ERROR); // no closing delimiter
 }
+
+// ponytail: a request body with a line that starts with "--" is cut there. JSON bodies cannot have such a line.
+// Ceiling: a raw text or binary body with such a line loses its tail. Upgrade if such bodies are needed.
+const withoutForeignParts = (text) => {
+  const cut = FOREIGN_DELIMITER.exec(text);
+  return cut ? text.slice(0, cut.index) : text;
+};
 
 // Reads "Name: value" lines up to the first blank line (CRLF or LF); returns lowercased headers and the rest.
 function readHeaders(text) {
@@ -84,10 +96,8 @@ function parseSection(section, inChangeset) {
     const boundary = boundaryOf(type);
     return { kind: "changeset", boundary, requests: sections(mime.rest, boundary).map((s) => parseSection(s, true)) };
   }
-  const request = httpRequest(mime.rest);
+  const request = httpRequest(withoutForeignParts(mime.rest));
   if (inChangeset && request.method === "GET") throw invalid("GET requests are not allowed inside change sets.");
-  // unverified: message and whole-batch (not per-part) answer; docs say batches cannot contain other batch requests.
-  if (/(^|\/)\$batch$/i.test(request.url.split("?")[0])) throw invalid("Nested $batch requests are not allowed.");
   const contentId = mime.headers["content-id"];
   return { kind: "request", ...(contentId ? { contentId } : {}), ...request };
 }

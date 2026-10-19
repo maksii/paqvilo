@@ -558,7 +558,7 @@ test("device_code: pending, slow_down, verification approves, then tokens once",
   assert.equal(pending.body.error, "authorization_pending");
   assert.deepEqual(pending.body.error_codes, [70016]);
   assert.equal(poll().body.error, "slow_down");
-  assert.equal(poll("not-a-device-code").body.error, "invalid_grant");
+  assert.equal(poll("not-a-device-code").body.error, "bad_verification_code");
   assert.deepEqual(poll("not-a-device-code").body.error_codes, [7000014]);
 
   state.now += 5000;
@@ -606,10 +606,21 @@ test("password grant issues delegated tokens and rejects bad credentials and app
 
 test("on_behalf_of exchanges a user token for a delegated token and rejects app-only assertions", () => {
   const { auth } = fixture();
+  // The assertion's audience must be the presenting app (its own api:// resource), so the exchange uses a token issued for APP_ID's API.
+  const apiToken = call(auth, { ...ROPC, scope: `api://${APP_ID}/access_as_user` });
+  assert.equal(apiToken.status, 200);
+  assert.equal(claimsOf(apiToken.body.access_token).aud, `api://${APP_ID}`);
   const userToken = call(auth, ROPC).body.access_token;
   const obo = (form) => call(auth, { grant_type: JWT_BEARER, ...DELEGATED_CLIENT, requested_token_use: "on_behalf_of", ...form });
-  const exchanged = obo({ assertion: userToken, scope: `${ORIGIN}/user_impersonation` });
+  const exchanged = obo({ assertion: apiToken.body.access_token, scope: `${ORIGIN}/user_impersonation` });
   assert.equal(exchanged.status, 200);
+  // A Dataverse-audience user token is another resource's: Entra answers AADSTS50013.
+  const dataverseAudience = obo({ assertion: userToken, scope: `${ORIGIN}/user_impersonation` });
+  assert.equal(dataverseAudience.status, 400);
+  assert.deepEqual(dataverseAudience.body.error_codes, [50013]);
+  assert.match(dataverseAudience.body.error_description, /does not match the Client app/);
+  // The API-audience token is not a Dataverse Web API bearer.
+  assert.equal(auth.verifyBearer(`Bearer ${apiToken.body.access_token}`, { origin: ORIGIN, tenantId: TENANT }).reason, "audience");
   const claims = claimsOf(exchanged.body.access_token);
   assert.equal(claims.upn, "test.user@example.test");
   assert.equal(claims.idtyp, "user");
@@ -627,6 +638,76 @@ test("on_behalf_of exchanges a user token for a delegated token and rejects app-
   assert.deepEqual(stranger.body.error_codes, [65001]);
 });
 
+test("a public client without a secret is refused for client_credentials and on_behalf_of, and still gets a device-code token", () => {
+  const { auth } = fixture();
+  const cc = call(auth, { grant_type: "client_credentials", client_id: PUBLIC_APP_ID, scope: `${ORIGIN}/.default` });
+  assert.equal(cc.status, 400);
+  assert.deepEqual(cc.body.error_codes, [7000218]);
+  const userToken = call(auth, ROPC).body.access_token;
+  const obo = call(auth, { grant_type: JWT_BEARER, client_id: PUBLIC_APP_ID, requested_token_use: "on_behalf_of", assertion: userToken, scope: `${ORIGIN}/user_impersonation` });
+  assert.deepEqual(obo.body.error_codes, [7000218]);
+
+  const dc = auth.handleDeviceCode({ origin: ORIGIN, tenantSegment: TENANT, form: { client_id: PUBLIC_APP_ID, scope: SCOPE } });
+  assert.equal(dc.status, 200);
+  const approved = auth.handleDeviceVerification({ origin: ORIGIN, url: deviceUrl, method: "POST", form: { otc: dc.body.user_code, oid: USER_OID } });
+  assert.equal(approved.status, 200);
+  const done = call(auth, { grant_type: DEVICE_GRANT, client_id: PUBLIC_APP_ID, device_code: dc.body.device_code });
+  assert.equal(done.status, 200);
+  assert.equal(claimsOf(done.body.access_token).appidacr, "0");
+});
+
+test("a token or assertion whose nbf is beyond the skew allowance is not yet valid", () => {
+  const { auth, state } = fixture();
+  const opts = { origin: ORIGIN, tenantId: TENANT };
+  const near = auth.issueAccessToken({ origin: ORIGIN, appId: APP_ID, audience: ORIGIN, now: state.now + 200_000 });
+  assert.equal(auth.verifyBearer(`Bearer ${near}`, opts).ok, true);
+  const future = auth.issueAccessToken({ origin: ORIGIN, appId: APP_ID, audience: ORIGIN, now: state.now + 600_000 });
+  assert.deepEqual(auth.verifyBearer(`Bearer ${future}`, opts), { ok: false, reason: "not-yet-valid" });
+  const futureUser = auth.issueAccessToken({ origin: ORIGIN, appId: APP_ID, audience: ORIGIN, user: TEST_USER, now: state.now + 600_000 });
+  const exchanged = call(auth, { grant_type: JWT_BEARER, ...DELEGATED_CLIENT, requested_token_use: "on_behalf_of", assertion: futureUser, scope: `${ORIGIN}/user_impersonation` });
+  assert.deepEqual(exchanged.body.error_codes, [9002313]);
+  assert.match(exchanged.body.error_description, /The assertion is not yet valid\./);
+});
+
+test("authorize refuses a code_challenge_method other than S256 or plain", () => {
+  const { auth } = fixture();
+  const bad = auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(baseAuthorize({ code_challenge: "abc", code_challenge_method: "S512" })), method: "GET" });
+  assert.equal(bad.status, 400);
+  assert.match(bad.body, /code_challenge_method must be S256 or plain/);
+  const good = auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(baseAuthorize({ code_challenge: pkce().challenge, code_challenge_method: "S256" })), method: "GET" });
+  assert.equal(good.status, 200);
+});
+
+test("the device code grant is refused for an application whose allowedGrants omit it", () => {
+  const { auth, applications } = fixture();
+  applications[0].allowedGrants = ["client_credentials"];
+  const res = auth.handleDeviceCode({ origin: ORIGIN, tenantSegment: TENANT, form: { client_id: APP_ID, scope: SCOPE } });
+  assert.equal(res.status, 400);
+  assert.deepEqual(res.body.error_codes, [700016]);
+});
+
+test("a certificate client assertion without a jti is refused with AADSTS700027, and one with a jti is accepted", () => {
+  const { auth, applications, state } = fixture();
+  const { privateKey, x5t } = registerCertificate(applications[0]);
+  const sec = Math.floor(state.now / 1000);
+  const noJti = signedAssertion(privateKey, { header: { x5t }, claims: { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300 } });
+  const refused = call(auth, assertionForm(noJti));
+  assert.equal(refused.status, 400);
+  assert.deepEqual(refused.body.error_codes, [700027]);
+  assert.match(refused.body.error_description, /must contain a jti claim/);
+  const withJti = signedAssertion(privateKey, { header: { x5t }, claims: { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "has-jti-1" } });
+  assert.equal(call(auth, assertionForm(withJti)).status, 200);
+});
+
+test("a federated client assertion without a jti is refused with AADSTS700027", () => {
+  const { auth, state, privateKey } = federatedFixture();
+  const sec = Math.floor(state.now / 1000);
+  const noJti = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 300 } });
+  const res = call(auth, federatedForm(noJti));
+  assert.equal(res.status, 400);
+  assert.deepEqual(res.body.error_codes, [700027]);
+});
+
 test("a refresh token from a delegated grant keeps the user across rotation", () => {
   const { auth } = fixture();
   const first = call(auth, ROPC).body;
@@ -635,4 +716,119 @@ test("a refresh token from a delegated grant keeps the user across rotation", ()
   assert.equal(claimsOf(second.body.access_token).upn, "test.user@example.test");
   assert.equal(claimsOf(second.body.access_token).idtyp, "user");
   assert.notEqual(second.body.refresh_token, first.refresh_token);
+});
+
+// Federated credentials, managed identities and the /common ROPC refusal. Invented issuer and subject; loopback fixtures only.
+const EXT_ISSUER = "https://issuer.example.test";
+const EXT_SUBJECT = "invented-subject-1";
+const AZURE_AUDIENCE = "api://AzureADTokenExchange";
+
+function federatedFixture() {
+  const state = { now: T0 };
+  const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const jwk = { ...pair.publicKey.export({ format: "jwk" }), kid: "ext-1", alg: "RS256", use: "sig" };
+  const applications = [{
+    appId: APP_ID,
+    displayName: "Invented federated app",
+    secrets: [],
+    certificates: [],
+    publicClient: false,
+    redirectUris: [REDIRECT],
+    federatedCredentials: [{ issuer: EXT_ISSUER, subject: EXT_SUBJECT, audiences: [AZURE_AUDIENCE] }],
+  }];
+  const federatedIssuers = [{ issuer: EXT_ISSUER, jwks: { keys: [jwk] } }];
+  const auth = createAuthority({ tenantId: TENANT, applications: () => applications, users, federatedIssuers: () => federatedIssuers, clock: () => state.now });
+  return { auth, state, applications, federatedIssuers, privateKey: pair.privateKey };
+}
+
+const federatedForm = (assertion) => ({ grant_type: "client_credentials", client_id: APP_ID, client_assertion_type: ASSERTION_TYPE, client_assertion: assertion, scope: `${ORIGIN}/.default` });
+
+test("a federated client assertion from a registered issuer authenticates with appidacr 2", () => {
+  const { auth, state, privateKey } = federatedFixture();
+  const sec = Math.floor(state.now / 1000);
+  const assertion = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 300, jti: "fed-jti-1" } });
+  const res = call(auth, federatedForm(assertion));
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+  assert.equal(claimsOf(res.body.access_token).appidacr, "2");
+  assert.equal(claimsOf(res.body.access_token).idtyp, "app");
+});
+
+test("a federated assertion with no matching credential answers invalid_client AADSTS70021", () => {
+  const { auth, state, privateKey } = federatedFixture();
+  const sec = Math.floor(state.now / 1000);
+  const base = { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 300 };
+  const wrongSubject = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { ...base, sub: "other-subject", jti: "fed-jti-2" } });
+  const wrongAudience = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { ...base, aud: "api://invented", jti: "fed-jti-3" } });
+  for (const assertion of [wrongSubject, wrongAudience]) {
+    const res = call(auth, federatedForm(assertion));
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "invalid_client");
+    assert.deepEqual(res.body.error_codes, [70021]);
+    assert.match(res.body.error_description, /No matching federated identity record found for presented assertion/);
+  }
+});
+
+test("a federated assertion must verify against the issuer's registered JWKS, RS256 only", () => {
+  const { auth, state, privateKey, federatedIssuers } = federatedFixture();
+  const sec = Math.floor(state.now / 1000);
+  const claims = { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 300 };
+  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const forged = call(auth, federatedForm(signedAssertion(stranger, { header: { kid: "ext-1" }, claims: { ...claims, jti: "fed-jti-4" } })));
+  assert.deepEqual([forged.status, forged.body.error_codes], [400, [700027]]);
+  assert.match(forged.body.error_description, /signature is invalid/);
+  const pss = call(auth, federatedForm(signedAssertion(privateKey, { alg: "PS256", header: { kid: "ext-1" }, claims: { ...claims, jti: "fed-jti-5" } })));
+  assert.deepEqual(pss.body.error_codes, [700027]);
+  federatedIssuers.length = 0; // issuer no longer registered: the signature cannot be checked
+  const unknown = call(auth, federatedForm(signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { ...claims, jti: "fed-jti-6" } })));
+  assert.deepEqual(unknown.body.error_codes, [700027]);
+});
+
+test("a federated token may outlive 10 minutes but a replayed jti is still refused", () => {
+  const { auth, state, privateKey } = federatedFixture();
+  const sec = Math.floor(state.now / 1000);
+  const hourLong = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec, exp: sec + 3600, jti: "fed-long-1" } });
+  assert.equal(call(auth, federatedForm(hourLong)).status, 200);
+  const replay = call(auth, federatedForm(hourLong));
+  assert.deepEqual(replay.body.error_codes, [9002313]);
+  const expired = signedAssertion(privateKey, { header: { kid: "ext-1" }, claims: { iss: EXT_ISSUER, sub: EXT_SUBJECT, aud: AZURE_AUDIENCE, nbf: sec - 7200, exp: sec - 3600, jti: "fed-old-1" } });
+  assert.match(call(auth, federatedForm(expired)).body.error_description, /has expired/);
+});
+
+test("a certificate-matched assertion is still verified as a certificate when federated credentials exist", () => {
+  const { auth, state, applications } = federatedFixture();
+  const { privateKey, x5t } = registerCertificate(applications[0]);
+  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const sec = Math.floor(state.now / 1000);
+  const claims = { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "cert-fed-1" };
+  const forged = call(auth, assertionForm(signedAssertion(stranger, { header: { x5t }, claims })));
+  assert.deepEqual([forged.status, forged.body.error_codes], [400, [700027]]);
+  const genuine = call(auth, assertionForm(signedAssertion(privateKey, { header: { x5t }, claims: { ...claims, jti: "cert-fed-2" } })));
+  assert.equal(genuine.status, 200, JSON.stringify(genuine.body));
+});
+
+test("the password grant is refused on /common and /consumers with invalid_request, and allowed on the tenant", () => {
+  const { auth } = fixture();
+  for (const tenantSegment of ["common", "consumers"]) {
+    const res = auth.handleToken({ origin: ORIGIN, tenantSegment, form: ROPC });
+    assert.equal(res.status, 400);
+    assert.equal(res.body.error, "invalid_request");
+    assert.match(res.body.error_description, /\/common or \/consumers/);
+  }
+  assert.equal(call(auth, ROPC).status, 200);
+});
+
+test("the managed identity issuer returns an app-only token with epoch-string expiry, for this directory's resource only", () => {
+  const { auth } = fixture();
+  const issued = auth.issueManagedIdentityToken({ origin: ORIGIN, clientId: APP_ID.toUpperCase(), resource: ORIGIN, now: T0 });
+  const sec = Math.floor(T0 / 1000);
+  assert.deepEqual(Object.keys(issued).sort(), ["client_id", "expires_in", "expires_on", "not_before", "resource", "access_token", "token_type"].sort());
+  assert.equal(issued.token_type, "Bearer");
+  assert.equal(issued.client_id, APP_ID);
+  assert.equal(issued.resource, ORIGIN);
+  assert.equal(issued.expires_on, String(sec + 3600));
+  assert.equal(issued.not_before, String(sec));
+  const claims = claimsOf(issued.access_token);
+  assert.deepEqual([claims.appid, claims.idtyp, claims.aud, claims.tid], [APP_ID, "app", ORIGIN, TENANT]);
+  assert.equal(auth.verifyBearer(`Bearer ${issued.access_token}`, { origin: ORIGIN, tenantId: TENANT }).ok, true);
+  assert.equal(auth.issueManagedIdentityToken({ origin: ORIGIN, clientId: APP_ID, resource: "https://other.example.test", now: T0 }), null);
 });

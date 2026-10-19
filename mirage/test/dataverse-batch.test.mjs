@@ -126,11 +126,48 @@ test('an inner URL over 65,536 characters answers 400 0x80060888 for that part a
   assert.equal(calls.length, 1);
 });
 
-test('a $batch request inside a batch is rejected with 400', () => {
-  for (const url of ['/api/data/v9.2/$batch', '$batch?x=1']) {
-    assert.throws(() => parseBatch(ct, batchOf([part(B, undefined, httpReq('POST', url, '{}'))])), { status: 400, message: 'Nested $batch requests are not allowed.' });
+test('a $batch URL inside a batch is parsed and left to the router, which answers the part with 400', () => {
+  for (const url of ['/api/data/v9.2/$batch', '/api/data/v9.2/$batch/', '/api/data/v9.2/%24batch']) {
+    const { parts } = parseBatch(ct, batchOf([part(B, undefined, httpReq('POST', url, '{}'))]));
+    assert.equal(parts[0].url, url);
   }
   assert.equal(parseBatch(ct, batchOf([part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets?$filter=x/$batch'))])).parts[0].method, 'GET');
+});
+
+test('parts for a foreign boundary between declared parts are not executed and do not alter the part before them', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const foreign = ['--other', 'Content-Type: application/http', 'Content-Transfer-Encoding: binary', '', httpReq('POST', '/api/data/v9.2/fail', '{"name":"evil"}'), '--other--'].join(CRLF);
+  const body = batchOf([
+    part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}')),
+    foreign,
+    part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets')),
+  ]);
+  const res = await run(parseBatch(ct, body), dispatch);
+  assert.equal(res.status, 200);
+  assert.deepEqual(
+    calls.map((c) => [c.method, c.url, c.body]),
+    [
+      ['POST', `${ORIGIN}/api/data/v9.2/widgets`, '{"name":"A"}'],
+      ['GET', `${ORIGIN}/api/data/v9.2/widgets`, undefined],
+    ],
+  );
+});
+
+test('a foreign-boundary part inside a change set is not executed and the change set ends at its own close', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const foreign = ['--other', 'Content-Type: application/http', '', httpReq('POST', '/api/data/v9.2/fail', '{}'), '--other--'].join(CRLF);
+  const cs = [`--${B}`, 'Content-Type: multipart/mixed; boundary=changeset_f', '', part('changeset_f', undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}')), foreign, '--changeset_f--'].join(CRLF);
+  const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
+  assert.equal(res.status, 200);
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].body, '{"name":"A"}');
+});
+
+test('a change set boundary that starts with the batch boundary is a separate delimiter, not a malformed batch', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const res = await run(parseBatch(ct, batchOf([changeset(`${B}_cs`, [{ cid: '1', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}') }])])), dispatch);
+  assert.equal(res.status, 200);
+  assert.equal(calls.length, 1);
 });
 
 test('rejects LF-only framing as an unreadable stream', () => {

@@ -250,3 +250,133 @@ test("DELETE on the property clears the column; other columns and routes pass th
   assert.equal(await h.hooks.stream(request("GET", { segment: "name" })), undefined);
   assert.equal(await h.hooks.stream(request("GET", { set: "unknowns" })), undefined);
 });
+
+const NEW_ID = "6f1d7c1e-0000-4000-8000-000000000002";
+const FIFTEEN_MINUTES = 15 * 60 * 1000;
+
+test("DELETE after a rolled-back write clears the live row, not a detached copy", async () => {
+  const h = harness();
+  await h.hooks.stream(request("PATCH", { headers: { "x-ms-file-name": "a.txt" }, bodyBuffer: Buffer.from("x") }));
+  const fileId = h.row().attachment;
+  let openGate;
+  const gate = new Promise((resolve) => { openGate = resolve; });
+  const failing = h.store.transact(async () => { await gate; throw new Error("boom"); }).catch(() => {});
+  const cleared = h.hooks.stream(request("DELETE"));
+  openGate();
+  await failing;
+  assert.equal((await cleared).status, 204);
+  assert.equal(h.row().attachment, null);
+  assert.equal(h.row().attachment_name, null);
+  assert.equal(h.store.state.dataverse.files[fileId], undefined);
+});
+
+test("DeleteFile after a rolled-back write clears the live column, not a detached copy", async () => {
+  const h = harness();
+  await h.hooks.stream(request("PATCH", { headers: { "x-ms-file-name": "a.txt" }, bodyBuffer: Buffer.from("x") }));
+  const fileId = h.row().attachment;
+  let openGate;
+  const gate = new Promise((resolve) => { openGate = resolve; });
+  const failing = h.store.transact(async () => { await gate; throw new Error("boom"); }).catch(() => {});
+  const deleted = h.handle("DeleteFile")(action({ FileId: fileId }));
+  openGate();
+  await failing;
+  assert.equal((await deleted).status, 204);
+  assert.equal(h.row().attachment, null);
+  assert.equal(h.row().attachment_name, null);
+});
+
+test("an image set on create is deletable once afterWrite gives the record its id", async () => {
+  const h = harness();
+  const data = { name: "New", entityimage: PNG.toString("base64") };
+  h.hooks.beforeWrite(request("POST"), h.mapping, { operation: "create", data });
+  const fileId = data.entityimage;
+  h.store.state.tables.document.push({ documentid: NEW_ID, ...data });
+  h.hooks.afterWrite(request("POST"), h.mapping, { operation: "create", id: NEW_ID });
+  assert.equal(h.store.state.dataverse.files[fileId].recordId, NEW_ID);
+  assert.equal((await h.handle("DeleteFile")(action({ FileId: fileId }))).status, 204);
+  assert.equal(h.store.state.tables.document.find((r) => r.documentid === NEW_ID).entityimage, null);
+});
+
+test("UploadBlock refuses the block that pushes one upload past MaxSizeInKB", async () => {
+  const h = harness();
+  const token = (await h.handle("InitializeFileBlocksUpload")(action({ Target: target, FileName: "big.bin", FileAttributeName: "attachment" }))).body.FileContinuationToken;
+  const data = Buffer.alloc(40 * 1024, 1).toString("base64");
+  const upload = (blockId) => h.handle("UploadBlock")(action({ BlockId: b64(blockId), BlockData: data, FileContinuationToken: token }));
+  assert.equal((await upload("block-0001")).status, 204);
+  await assert.rejects(
+    upload("block-0002"),
+    (error) => error.status === 400 && error.details.innerCode === "0x80044a02" && error.message === "Attachment file size is too big.",
+  );
+});
+
+test("upload sessions expire fifteen minutes after they start", async (t) => {
+  const h = harness();
+  let now = 1_000_000;
+  t.mock.method(Date, "now", () => now);
+  const token = (await h.handle("InitializeFileBlocksUpload")(action({ Target: target, FileName: "a.bin", FileAttributeName: "attachment" }))).body.FileContinuationToken;
+  now += FIFTEEN_MINUTES + 1;
+  await assert.rejects(
+    h.handle("UploadBlock")(action({ BlockId: b64("block-0001"), BlockData: b64("x"), FileContinuationToken: token })),
+    (error) => error.status === 400 && error.message === "The file continuation token is not valid.",
+  );
+});
+
+test("DeleteFile takes an uppercase braced FileId and answers 404 for prototype keys", async () => {
+  const h = harness();
+  await h.hooks.stream(request("PATCH", { headers: { "x-ms-file-name": "a.txt" }, bodyBuffer: Buffer.from("x") }));
+  const fileId = h.row().attachment;
+  assert.equal((await h.handle("DeleteFile")(action({ FileId: `{${fileId.toUpperCase()}}` }))).status, 204);
+  assert.equal(h.row().attachment, null);
+  await assert.rejects(
+    h.handle("DeleteFile")(action({ FileId: "__proto__" })),
+    (error) => error.status === 404 && error.message === "File __proto__ does not exist.",
+  );
+});
+
+test("an inverted Range is 416 and a 206 exposes x-ms-chunk-size", async () => {
+  const h = harness();
+  await h.hooks.stream(request("PATCH", { headers: { "x-ms-file-name": "a.txt" }, bodyBuffer: Buffer.from("0123456789") }));
+  await assert.rejects(h.hooks.stream(request("GET", { value: true, headers: { range: "bytes=5-2" } })), (error) => error.status === 416);
+  const part = await h.hooks.stream(request("GET", { value: true, headers: { range: "bytes=2-4" } }));
+  assert.match(part.headers["Access-Control-Expose-Headers"], /x-ms-chunk-size/);
+});
+
+test("a replaced image is released by afterWrite, so a write that never lands keeps the old image", async () => {
+  const h = harness();
+  const seed = { entityimage: PNG.toString("base64") };
+  h.hooks.beforeWrite(request("POST"), h.mapping, { operation: "create", data: seed });
+  const oldId = seed.entityimage;
+  h.store.state.dataverse.files[oldId].recordId = DOC; // a stored image carries its record id once created
+  h.row().entityimage = oldId;
+  const data = { entityimage: PNG.toString("base64") };
+  h.hooks.beforeWrite(request("PATCH"), h.mapping, { operation: "update", data, existing: h.row() });
+  assert.ok(h.store.state.dataverse.files[oldId], "the old image stays until the write is applied");
+  h.row().entityimage = data.entityimage;
+  h.hooks.afterWrite(request("PATCH"), h.mapping, { operation: "update", id: DOC });
+  assert.equal(h.store.state.dataverse.files[oldId], undefined);
+  assert.ok(h.store.state.dataverse.files[data.entityimage]);
+});
+
+test("project looks the stored rows up once per call, not once per formatted row", () => {
+  const h = harness();
+  const ids = [DOC, "6f1d7c1e-0000-4000-8000-000000000003", "6f1d7c1e-0000-4000-8000-000000000004"];
+  h.store.state.tables.document.push({ documentid: ids[1], name: "B" }, { documentid: ids[2], name: "C" });
+  const real = h.store.tableRows.bind(h.store);
+  let reads = 0;
+  h.store.tableRows = (name) => { reads += 1; return real(name); };
+  h.hooks.project(request("GET"), h.mapping, ids.map((id) => ({ documentid: id, photo: "raw" })));
+  assert.equal(reads, 1);
+});
+
+test("the six actions carry CSDL fragments that name their parameter and response types", () => {
+  const h = harness();
+  for (const op of h.ops) assert.equal(typeof op.csdl, "string", `${op.name} has csdl`);
+  const csdl = h.ops.map((op) => op.csdl).join("\n");
+  for (const name of ["InitializeFileBlocksUploadResponse", "CommitFileBlocksUploadResponse", "InitializeFileBlocksDownloadResponse", "DownloadBlockResponse"]) {
+    assert.match(csdl, new RegExp(`<ComplexType Name="${name}">`));
+  }
+  for (const name of ["InitializeFileBlocksUpload", "UploadBlock", "CommitFileBlocksUpload", "InitializeFileBlocksDownload", "DownloadBlock", "DeleteFile"]) {
+    assert.match(csdl, new RegExp(`<Action Name="${name}">`));
+  }
+  assert.match(csdl, /<Parameter Name="FileId" Type="Edm\.Guid" Nullable="false" \/>/);
+});

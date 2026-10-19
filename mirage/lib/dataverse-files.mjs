@@ -24,6 +24,61 @@ const MAGIC = [
   ["image/bmp", [0x42, 0x4d]],
 ];
 const EXPOSE = "x-ms-file-size; x-ms-file-name; mimetype";
+const EXPOSE_RANGE = "x-ms-file-size; x-ms-file-name; x-ms-chunk-size; mimetype";
+// ponytail: the 15-minute session TTL is a guess [unverified]; expired sessions are dropped on the next session start or lookup.
+const SESSION_TTL_MS = 15 * 60 * 1000;
+// CSDL for the six actions, so $metadata lists their parameters and response types (Web API action reference).
+const CSDL = {
+  InitializeFileBlocksUpload: `<ComplexType Name="InitializeFileBlocksUploadResponse">
+  <Property Name="FileContinuationToken" Type="Edm.String" />
+</ComplexType>
+<Action Name="InitializeFileBlocksUpload">
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" />
+  <Parameter Name="FileName" Type="Edm.String" />
+  <ReturnType Type="mscrm.InitializeFileBlocksUploadResponse" Nullable="false" />
+</Action>`,
+  UploadBlock: `<Action Name="UploadBlock">
+  <Parameter Name="BlockId" Type="Edm.String" Nullable="false" />
+  <Parameter Name="BlockData" Type="Edm.Binary" Nullable="false" />
+  <Parameter Name="FileContinuationToken" Type="Edm.String" Nullable="false" />
+</Action>`,
+  CommitFileBlocksUpload: `<ComplexType Name="CommitFileBlocksUploadResponse">
+  <Property Name="FileId" Type="Edm.Guid" />
+  <Property Name="FileSizeInBytes" Type="Edm.Int64" />
+</ComplexType>
+<Action Name="CommitFileBlocksUpload">
+  <Parameter Name="FileName" Type="Edm.String" Nullable="false" />
+  <Parameter Name="MimeType" Type="Edm.String" Nullable="false" />
+  <Parameter Name="BlockList" Type="Collection(Edm.String)" Nullable="false" />
+  <Parameter Name="FileContinuationToken" Type="Edm.String" Nullable="false" />
+  <ReturnType Type="mscrm.CommitFileBlocksUploadResponse" Nullable="false" />
+</Action>`,
+  InitializeFileBlocksDownload: `<ComplexType Name="InitializeFileBlocksDownloadResponse">
+  <Property Name="FileSizeInBytes" Type="Edm.Int64" />
+  <Property Name="FileName" Type="Edm.String" />
+  <Property Name="FileContinuationToken" Type="Edm.String" />
+  <Property Name="IsChunkingSupported" Type="Edm.Boolean" />
+</ComplexType>
+<Action Name="InitializeFileBlocksDownload">
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <Parameter Name="FileAttributeName" Type="Edm.String" Nullable="false" />
+  <Parameter Name="DataSource" Type="Edm.String" />
+  <ReturnType Type="mscrm.InitializeFileBlocksDownloadResponse" Nullable="false" />
+</Action>`,
+  DownloadBlock: `<ComplexType Name="DownloadBlockResponse">
+  <Property Name="Data" Type="Edm.Binary" />
+</ComplexType>
+<Action Name="DownloadBlock">
+  <Parameter Name="Offset" Type="Edm.Int64" Nullable="false" />
+  <Parameter Name="BlockLength" Type="Edm.Int64" Nullable="false" />
+  <Parameter Name="FileContinuationToken" Type="Edm.String" Nullable="false" />
+  <ReturnType Type="mscrm.DownloadBlockResponse" Nullable="false" />
+</Action>`,
+  DeleteFile: `<Action Name="DeleteFile">
+  <Parameter Name="FileId" Type="Edm.Guid" Nullable="false" />
+</Action>`,
+};
 
 const invalid = (message, innerCode = "0x80040203") => new DataError(message, 400, "InvalidRequest", { innerCode });
 const missing = (message) => new DataError(message, 404, "NotFound", { innerCode: MISSING_INNER });
@@ -141,11 +196,23 @@ export function install(api) {
   const { store, change, principals, recordHooks, registry } = api;
   // Upload and download sessions keyed by continuation token (in memory, see header comment).
   const sessions = new Map();
+  const purge = () => {
+    const cutoff = Date.now() - SESSION_TTL_MS;
+    for (const [token, session] of sessions) if (session.createdAt < cutoff) sessions.delete(token);
+  };
+  const openSession = (token, session) => {
+    purge();
+    sessions.set(token, { ...session, createdAt: Date.now() });
+  };
+  const liveSession = (token) => {
+    purge();
+    return sessions.get(token);
+  };
   const write = (fn) => change(() => store.transact(fn));
   const authorize = (c, mapping, operation, row) =>
     principals.authorize({ user: c.user, entity: mapping.logicalName, operation, row, mapping });
   const sessionOf = (token, mode) => {
-    const session = sessions.get(String(token ?? ""));
+    const session = liveSession(String(token ?? ""));
     if (session?.mode !== mode) throw invalid("The file continuation token is not valid.");
     return session;
   };
@@ -179,7 +246,7 @@ export function install(api) {
     const name = fileName(c);
     if (String(header(c, "x-ms-transfer-mode") ?? "").toLowerCase() === "chunked") {
       const continuation = randomUUID();
-      sessions.set(continuation, { mode: "range", entity: mapping.logicalName, id, column, kind, def, name, received: 0, total: null, chunks: [] });
+      openSession(continuation, { mode: "range", entity: mapping.logicalName, id, column, kind, def, name, received: 0, total: null, chunks: [] });
       const location = `${c.origin}/api/data/${c.version}/${c.route.set}(${c.route.key})/${column}?sessiontoken=${continuation}`;
       return {
         status: 200,
@@ -195,7 +262,7 @@ export function install(api) {
   }
 
   async function chunk(c, { mapping, id, column, kind, def, token }) {
-    const session = sessions.get(token);
+    const session = liveSession(token);
     if (session?.mode !== "range" || session.entity !== mapping.logicalName || session.column !== column || !sameGuid(session.id, id)) {
       throw invalid("The file upload session is not valid.");
     }
@@ -239,13 +306,17 @@ export function install(api) {
     const start = Number(match[1]);
     if (start >= bytes.length) throw new DataError("The requested range is not satisfiable.", 416, "InvalidRange"); // unverified
     const end = match[2] === "" ? bytes.length - 1 : Math.min(Number(match[2]), bytes.length - 1);
-    return { status: 206, headers: { ...base, "x-ms-chunk-size": String(CHUNK_SIZE), "OData-Version": "4.0" }, body: bytes.subarray(start, end + 1) };
+    if (end < start) throw new DataError("The requested range is not satisfiable.", 416, "InvalidRange"); // unverified
+    return {
+      status: 206,
+      headers: { ...base, "Access-Control-Expose-Headers": EXPOSE_RANGE, "x-ms-chunk-size": String(CHUNK_SIZE), "OData-Version": "4.0" },
+      body: bytes.subarray(start, end + 1),
+    };
   }
 
   async function clear(c, { mapping, id, column, kind }) {
-    const row = recordOf(store, mapping, id);
-    authorize(c, mapping, "update", row);
-    await write(() => release(store, row, column, kind));
+    authorize(c, mapping, "update", recordOf(store, mapping, id));
+    await write(() => release(store, recordOf(store, mapping, id), column, kind));
     return { status: 204 };
   }
 
@@ -258,20 +329,37 @@ export function install(api) {
       if (operation === "create" && value != null && !isPrimary(column, def)) {
         throw invalid(`Non-primary image attribute ${column} of entity ${mapping.logicalName} is not allowed to upload during Create operation.`, NON_PRIMARY_INNER);
       }
-      const previous = existing?.[column];
+      // The replaced or cleared image is released in afterWrite, once the row write has landed.
       if (value == null) {
-        if (previous && files[previous]) delete files[previous];
         data[column] = null;
         continue;
       }
       const id = existing?.[mapping.idColumn] ?? data[mapping.idColumn] ?? null;
       if (typeof value !== "string" || !BASE64.test(value)) throw imageFailure(mapping.logicalName, id, column);
-      // Validate before the replaced file is released, so a rejected write leaves the old image in place.
       const entry = prepared({ logical: mapping.logicalName, id, column, kind: "image", def, name: column, bytes: Buffer.from(value, "base64") });
-      if (previous && files[previous]) delete files[previous];
       const fileId = randomUUID();
       files[fileId] = entry;
       data[column] = fileId;
+    }
+  }
+
+  // Runs after a create or update has committed. A create stored its images before the record had an id, so the
+  // id is filled in here; then every image this write replaced or cleared is released.
+  // ponytail: the release scans all stored files per image-bearing write; index by record if that gets slow.
+  function afterWrite(_c, mapping, { operation, id }) {
+    if (operation !== "create" && operation !== "update") return;
+    const columns = imageColumns(mapping).map(([column]) => column);
+    if (!columns.length) return;
+    const row = store.tableRows(mapping.logicalName).find((r) => sameGuid(r[mapping.idColumn], id));
+    if (!row) return;
+    const files = filesOf(store);
+    for (const column of columns) {
+      if (row[column] && files[row[column]]) files[row[column]].recordId = id;
+    }
+    for (const [fileId, entry] of Object.entries(files)) {
+      const replaced = entry.entity === mapping.logicalName && columns.includes(entry.column)
+        && sameGuid(entry.recordId, id) && row[entry.column] !== fileId;
+      if (replaced) delete files[fileId];
     }
   }
 
@@ -280,9 +368,15 @@ export function install(api) {
     const images = imageColumns(mapping);
     if (!images.length) return;
     const files = filesRead(store);
+    const stored = new Map();
+    for (const r of store.tableRows(mapping.logicalName)) {
+      const key = guidKey(r[mapping.idColumn]);
+      if (key && !stored.has(key)) stored.set(key, r);
+    }
     for (const row of [].concat(formatted ?? [])) {
       if (!row || typeof row !== "object") continue;
-      const raw = store.tableRows(mapping.logicalName).find((r) => sameGuid(r[mapping.idColumn], row[mapping.idColumn]));
+      const key = guidKey(row[mapping.idColumn]);
+      const raw = key ? stored.get(key) : undefined;
       for (const [column] of images) {
         if (!Object.hasOwn(row, column)) continue;
         const fileId = raw?.[column] ?? null;
@@ -308,7 +402,7 @@ export function install(api) {
       if (!name) throw invalid("FileName is required.");
       authorize(c, mapping, "update", recordOf(store, mapping, id));
       const token = randomUUID();
-      sessions.set(token, { mode: "blocks", entity: mapping.logicalName, id, ...found, name, blockLength: null, blocks: new Map() });
+      openSession(token, { mode: "blocks", entity: mapping.logicalName, id, ...found, name, blockLength: null, bytes: 0, blocks: new Map() });
       return reply(c, "InitializeFileBlocksUpload", { FileContinuationToken: token });
     },
 
@@ -321,6 +415,10 @@ export function install(api) {
         throw invalid("BlockId must be base64 of up to 64 bytes, the same length for every block of a file.");
       }
       if (block.length > BLOCK_LIMIT) throw invalid("BlockData is larger than one block.");
+      // Blocks count against MaxSizeInKB as they arrive; a re-sent BlockId replaces its earlier bytes.
+      const replaced = session.blocks.get(String(input.BlockId))?.length ?? 0;
+      assertSize(session.kind, maxBytes(session.kind, session.def), session.bytes - replaced + block.length);
+      session.bytes += block.length - replaced;
       session.blockLength ??= blockId.length;
       session.blocks.set(String(input.BlockId), block);
       return { status: 204 };
@@ -358,7 +456,7 @@ export function install(api) {
       const entry = row[found.column] ? filesRead(store)[row[found.column]] : null;
       if (!entry) throw missing(`No file found for ${found.column} of ${mapping.logicalName} record ${id}.`); // unverified: error wording
       const token = randomUUID();
-      sessions.set(token, { mode: "download", fileId: row[found.column], entity: mapping.logicalName, id });
+      openSession(token, { mode: "download", fileId: row[found.column], entity: mapping.logicalName, id });
       return reply(c, "InitializeFileBlocksDownload", {
         FileSizeInBytes: entry.size, FileName: entry.name, FileContinuationToken: token, IsChunkingSupported: true,
       });
@@ -382,15 +480,16 @@ export function install(api) {
 
     async DeleteFile(c) {
       const input = bodyOf(c);
-      const entry = filesRead(store)[input.FileId];
+      const key = guidKey(input.FileId);
+      const entry = key && Object.hasOwn(filesRead(store), key) ? filesRead(store)[key] : null;
       if (!entry) throw missing(`File ${input.FileId} does not exist.`);
       const mapping = store.resolveMapping(entry.entity);
-      const row = recordOf(store, mapping, entry.recordId);
-      authorize(c, mapping, "update", row);
+      authorize(c, mapping, "update", recordOf(store, mapping, entry.recordId));
       const found = fileColumn(mapping, entry.column);
       await write(() => {
-        if (row[entry.column] === input.FileId) release(store, row, entry.column, found?.kind);
-        delete filesOf(store)[input.FileId];
+        const row = recordOf(store, mapping, entry.recordId);
+        if (guidKey(row[entry.column]) === key) release(store, row, entry.column, found?.kind);
+        delete filesOf(store)[key];
       });
       return { status: 204 };
     },
@@ -398,6 +497,9 @@ export function install(api) {
 
   recordHooks.add("stream", stream);
   recordHooks.add("beforeWrite", beforeWrite);
+  recordHooks.add("afterWrite", afterWrite);
   recordHooks.add("project", project);
-  for (const [name, handle] of Object.entries(actions)) registry.register({ name, kind: "action", binding: "unbound", handle });
+  for (const [name, handle] of Object.entries(actions)) {
+    registry.register({ name, kind: "action", binding: "unbound", handle, csdl: CSDL[name] });
+  }
 }

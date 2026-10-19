@@ -6,7 +6,13 @@ import { DataStore, emptyState } from "../lib/data.mjs";
 import {
   ACCESS_RIGHTS,
   DEPTH,
+  assertCanJoinTeam,
+  assertTeamCanHoldRoles,
+  assertTeamCanOwn,
   assignRoles,
+  baseCurrencyId,
+  baseCurrencyRow,
+  businessUnitOf,
   createApplicationUser,
   createPrincipals,
   ensureSecurityModel,
@@ -18,6 +24,8 @@ import {
   modifyAccess,
   parseAccessMask,
   revokeAccess,
+  seedTablePrivileges,
+  teamsOfUser,
   uuidV5,
 } from "../lib/dataverse-security.mjs";
 
@@ -74,11 +82,11 @@ test("ensureSecurityModel seeds organization, root unit, roles, SYSTEM user and 
   assert.equal(t.businessunit[0].businessunitid, ROOT);
   assert.deepEqual(t.role.map((r) => r.name).sort(), ["Basic User", "System Administrator", "System Customizer"]);
   assert.ok(t.systemuser.some((u) => u.fullname === "SYSTEM" && u.systemuserid === uuidV5(ORG, "systemuser:SYSTEM")));
-  // widget: 8 user-owned rights; region: 6 org-owned rights; twelve security tables: 6 each; plus prvActOnBehalfOfAnotherUser and prvBypassCustomPlugins.
-  assert.equal(t.privilege.length, 8 + 6 + 72 + 2);
-  // Admins: every privilege at Global (2 x 88). Basic User: 8 widget rights + Global Read on 12 org-owned tables
-  // (13 less principalobjectaccess, which lists every share in the organization).
-  assert.equal(t.roleprivileges.length, 176 + 8 + 12);
+  // widget: 8 user-owned rights; region: 6 org-owned rights; twelve security tables: 6 each; 16 miscellaneous privileges.
+  assert.equal(t.privilege.length, 8 + 6 + 72 + 16);
+  // Admins: every privilege at Global (2 x 102), less the two bypass privileges System Customizer does not hold. Basic User: 8 widget rights + Global Read on 12 org-owned tables
+  // (13 less principalobjectaccess, which lists every share in the organization). Miscellaneous privileges reach no Basic User.
+  assert.equal(t.roleprivileges.length, (2 * 102 - 2) + 8 + 12);
   assert.ok(!t.roleprivileges.some((rp) => rp.roleid.id === uuidV5(ORG, "role:Basic User") && rp.privilegeid.id === privilegeId(ORG, "prvReadPrincipalObjectAccess")));
   assert.equal(t.transactioncurrency.length, 1);
   assert.equal(t.transactioncurrency[0].currencysymbol, "$");
@@ -550,17 +558,22 @@ test("isInteractiveUser excludes SYSTEM, application users, disabled users and r
   assert.equal(isInteractiveUser({ ...basic, accessmode: 4 }), false); // NonInteractive
 });
 
-test("prvBypassCustomPlugins is seeded for System Administrator and System Customizer only", async () => {
+test("the bypass privileges are seeded for System Administrator only, not System Customizer", async () => {
   const store = await seeded();
   const p = createPrincipals(store, SETTINGS);
   const admin = p.resolve({ oid: ADMIN_OID }).user;
   const basic = p.resolve({ oid: BASIC_OID }).user;
   const norole = p.resolve({ oid: NOROLE_OID }).user;
-  assert.ok(store.tableRows("privilege").some((r) => r.name === "prvBypassCustomPlugins" && r.privilegeid === privilegeId(ORG, "prvBypassCustomPlugins")));
-  assert.equal(p.privileges(admin).get("prvBypassCustomPlugins"), DEPTH.Global);
-  assert.equal(p.privileges(basic).has("prvBypassCustomPlugins"), false);
+  const bypass = ["prvBypassCustomPlugins", "prvBypassCustomBusinessLogic"];
+  for (const name of bypass) {
+    assert.ok(store.tableRows("privilege").some((r) => r.name === name && r.privilegeid === privilegeId(ORG, name)));
+    assert.equal(p.privileges(admin).get(name), DEPTH.Global);
+    assert.equal(p.privileges(basic).has(name), false);
+  }
   await assignRoles(store, { systemuserid: norole.systemuserid, roleIds: [uuidV5(ORG, "role:System Customizer")] });
-  assert.equal(p.privileges(norole).get("prvBypassCustomPlugins"), DEPTH.Global);
+  for (const name of bypass) assert.equal(p.privileges(norole).has(name), false, name);
+  // System Customizer keeps its other Global miscellaneous privileges.
+  assert.equal(p.privileges(norole).get("prvReadEntity"), DEPTH.Global);
 });
 
 test("privilegeDeniedError builds the same message as the denial, with the counts and caller filled", async () => {
@@ -584,4 +597,162 @@ test("privilegeDeniedError builds the same message as the denial, with the count
   assert.ok(built.message.includes(`roleCount=1, privilegeCount=20, accessMode=0)`), built.message);
   assert.ok(built.message.includes(`(Id=${privilegeId(ORG, "prvCreateRegion")})`), built.message);
   assert.ok(built.message.includes(`context.Caller=${basic.systemuserid}.`), built.message);
+});
+
+const inner = (code) => (e) => e.status === 400 && e.details?.innerCode === code;
+
+test("access teams cannot own records or hold roles; a disabled user cannot join a team", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const admin = p.resolve({ oid: ADMIN_OID }).user;
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  const owner = await makeTeam(store, "Owners", {});
+  const access = uuidV5(ORG, "team:Access");
+  await store.transact(() => store.state.tables.team.push({ teamid: access, name: "Access", teamtype: 1, businessunitid: BU_REF(ROOT), organizationid: ORG_REF }));
+
+  assert.equal(p.authorize({ user: admin, entity: "widget", operation: "assign", row: { widgetid: "w" }, target: { id: owner, logical_name: "team" } }), DEPTH.Global);
+  assert.throws(
+    () => p.authorize({ user: admin, entity: "widget", operation: "assign", row: { widgetid: "w" }, target: { id: access, logical_name: "team" } }),
+    inner("0x80048340"),
+  );
+  assertTeamCanHoldRoles(store, owner);
+  assert.throws(() => assertTeamCanHoldRoles(store, access), inner("0x80048331"));
+  assert.throws(() => assertTeamCanOwn(store, access), inner("0x80048340"));
+  assertCanJoinTeam(store, basic.systemuserid);
+  await store.transact(() => { p.byObjectId(BASIC_OID).isdisabled = true; });
+  assert.throws(() => assertCanJoinTeam(store, basic.systemuserid), inner("0x80048d36"));
+});
+
+test("a role with isinherited 0 gives its team privileges on team-owned rows only, never on the member's own rows", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const member = p.resolve({ oid: NOROLE_OID }).user;
+  const role = await makeRole(store, "Team Only", [["prvReadWidget", DEPTH.Global]]);
+  await store.transact(() => { store.state.tables.role.find((r) => r.roleid === role).isinherited = 0; });
+  const team = await makeTeam(store, "Team Only Team", { members: [member], roles: [role] });
+  const teamRow = { widgetid: "w-team-only", ownerid: { id: team, logical_name: "team" } };
+  const ownRow = { widgetid: "w-own-team-only", ownerid: lookupOf(member) };
+  await store.transact(() => store.state.tables.widget.push(teamRow, ownRow));
+
+  assert.equal(p.authorize({ user: member, entity: "widget", operation: "read", row: teamRow }), DEPTH.Global);
+  assert.throws(() => p.authorize({ user: member, entity: "widget", operation: "read", row: ownRow }), denial("AccessDenied", "0x80048306"));
+});
+
+test("an effective principal holds only the privileges both users have, at the lower depth and on rows both admit", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  const admin = p.resolve({ oid: ADMIN_OID }).user;
+  const mine = { widgetid: "w-imp-mine", ownerid: lookupOf(basic) };
+  const theirs = { widgetid: "w-imp-theirs", ownerid: lookupOf(admin) };
+  await store.transact(() => store.state.tables.widget.push(mine, theirs));
+
+  // Admin acting as Basic: Basic's rows only, at Basic depth.
+  const asBasic = p.effectivePrincipal(admin, basic);
+  assert.equal(p.privileges(asBasic).get("prvReadWidget"), DEPTH.Basic);
+  assert.equal(p.privileges(asBasic).has("prvActOnBehalfOfAnotherUser"), false);
+  assert.equal(p.authorize({ user: asBasic, entity: "widget", operation: "update", row: mine }), DEPTH.Basic);
+  assert.throws(() => p.authorize({ user: asBasic, entity: "widget", operation: "update", row: theirs }), denial("AccessDenied", "0x80048306"));
+
+  // Basic acting as Admin: the caller lacks Global Create on regions, so the intersection denies it.
+  const asAdmin = p.effectivePrincipal(basic, admin);
+  assert.equal(p.privileges(asAdmin).has("prvCreateRegion"), false);
+  assert.equal(p.privileges(asAdmin).get("prvReadRegion"), DEPTH.Global);
+  assert.throws(
+    () => p.authorize({ user: asAdmin, entity: "region", operation: "create", row: { regionid: "r3" } }),
+    (e) => denial("PrivilegeDenied", "0x80040220")(e) && e.details.privilege === "prvCreateRegion",
+  );
+  assert.equal(p.effectivePrincipal(admin, admin), admin);
+});
+
+test("prvActOnBehalfOfAnotherUser counts only through direct roles, not through a team", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const member = p.resolve({ oid: NOROLE_OID }).user;
+  const delegate = await makeRole(store, "Delegate Lite", [["prvActOnBehalfOfAnotherUser", DEPTH.Global]]);
+  await makeTeam(store, "Delegates", { members: [member], roles: [delegate] });
+  assert.equal(p.canImpersonate(member), false);
+  await assignRoles(store, { systemuserid: member.systemuserid, roleIds: [delegate] });
+  assert.equal(p.canImpersonate(member), true);
+});
+
+test("seedTablePrivileges gives a table created after seeding its privileges once, and is idempotent", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  const admin = p.resolve({ oid: ADMIN_OID }).user;
+  store.state.mappings.gadget = { logicalName: "gadget", entitySet: "gadgets", idColumn: "gadgetid", fields: { ownerid: { dataverseType: "lookup" } } };
+  const privilegesBefore = store.state.tables.privilege.length, grantsBefore = store.state.tables.roleprivileges.length;
+
+  const names = await seedTablePrivileges(store, SETTINGS, "gadget");
+  assert.equal(names.length, 8);
+  assert.equal(store.state.tables.privilege.length, privilegesBefore + 8);
+  // User-owned: System Administrator and System Customizer at Global, Basic User at Basic, on each of the eight rights.
+  assert.equal(store.state.tables.roleprivileges.length - grantsBefore, 8 * 3);
+
+  const snapshot = JSON.stringify(store.snapshot().tables);
+  await seedTablePrivileges(store, SETTINGS, "gadget");
+  assert.equal(JSON.stringify(store.snapshot().tables), snapshot);
+
+  assert.equal(p.authorize({ user: basic, entity: "gadget", operation: "read", row: { gadgetid: "g1", ownerid: lookupOf(basic) } }), DEPTH.Basic);
+  assert.equal(p.authorize({ user: admin, entity: "gadget", operation: "delete", row: { gadgetid: "g2" } }), DEPTH.Global);
+  await assert.rejects(seedTablePrivileges(store, SETTINGS, "nosuchtable"), (e) => e.status === 404);
+});
+
+test("group teams take members from the user's Entra group ids; business units are derived per row", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const member = p.resolve({ oid: NOROLE_OID }).user;
+  const admin = p.resolve({ oid: ADMIN_OID }).user;
+  const GROUP = "cccccccc-0000-4000-8000-000000000001";
+  const role = await makeRole(store, "Group Basic", [["prvReadWidget", DEPTH.Basic]]);
+  const group = uuidV5(ORG, "team:Group");
+  await store.transact(() => {
+    store.state.tables.team.push({ teamid: group, name: "Group", teamtype: 2, azureactivedirectoryobjectid: GROUP, businessunitid: BU_REF(ROOT), organizationid: ORG_REF });
+    store.state.tables.teamroles.push({ teamroleid: uuidV5(group, role), teamid: { id: group, logical_name: "team" }, roleid: { id: role, logical_name: "role" } });
+    store.state.tables.systemuser.find((u) => u.systemuserid === member.systemuserid).azureactivedirectorygroupids = [GROUP];
+  });
+  assert.deepEqual(teamsOfUser(store, member.systemuserid), [group]);
+  const teamRow = { widgetid: "w-group", ownerid: { id: group, logical_name: "team" } };
+  await store.transact(() => store.state.tables.widget.push(teamRow));
+  assert.equal(p.authorize({ user: member, entity: "widget", operation: "read", row: teamRow }), DEPTH.Basic);
+
+  assert.equal(businessUnitOf(store, { ownerid: lookupOf(admin) }), ROOT);
+  assert.equal(businessUnitOf(store, { ownerid: null }), "");
+});
+
+test("seeding leaves an imported portal mapping and its rows untouched, and adds only the base currency row", async () => {
+  const state = fixtureState();
+  state.mappings.transactioncurrency = {
+    logicalName: "transactioncurrency", entitySet: "transactioncurrencies", idColumn: "transactioncurrencyid", nameColumn: "currencyname",
+    metadataSources: ["solution/customizations.xml"], fields: { currencyname: { dataverseType: "nvarchar" } },
+  };
+  state.tables.transactioncurrency = [{ transactioncurrencyid: "eeeeeeee-0000-4000-8000-000000000001", currencyname: "Euro" }];
+  const mappingBefore = structuredClone(state.mappings.transactioncurrency);
+  const store = new DataStore({ state });
+  await ensureSecurityModel(store, SETTINGS);
+
+  const mapping = store.state.mappings.transactioncurrency;
+  assert.equal(mapping.userConfigured, undefined);
+  assert.equal(mapping.dataverseOnly, undefined);
+  assert.deepEqual(mapping, mappingBefore);
+
+  const rows = store.state.tables.transactioncurrency;
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows[0], { transactioncurrencyid: "eeeeeeee-0000-4000-8000-000000000001", currencyname: "Euro" });
+  assert.equal(rows[1].transactioncurrencyid, baseCurrencyId(ORG));
+  // Seeded rows carry no extra field: portal /_api/ output would show it.
+  assert.ok(rows.every((row) => Object.keys(row).every((key) => !key.startsWith("__"))));
+  // The base currency is found by id, not by position: the portal's first currency is not the base.
+  assert.equal(baseCurrencyRow(store, ORG).currencyname, "Base currency");
+  assert.equal(baseCurrencyRow(store, "not-a-guid"), null);
+});
+
+test("API-created and seeded user rows are ordinary rows with no extra field", async () => {
+  const store = await seeded();
+  await createApplicationUser(store, SETTINGS, { appId: APP_2, displayName: "Second App", roles: ["Basic User"] });
+  const row = store.state.tables.systemuser.find((u) => u.applicationid === APP_2);
+  assert.ok(row);
+  assert.ok(store.state.tables.systemuser.find((u) => u.fullname === "SYSTEM"));
+  for (const user of store.state.tables.systemuser) assert.ok(Object.keys(user).every((key) => !key.startsWith("__")));
 });

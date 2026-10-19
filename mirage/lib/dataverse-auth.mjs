@@ -11,6 +11,7 @@ const DEVICE_GRANT = GRANT_TYPES.device_code;
 const JWT_BEARER = GRANT_TYPES.on_behalf_of;
 const SUPPORTED_GRANTS = Object.values(GRANT_TYPES);
 const ASSERTION_ALGS = ["RS256", "PS256"];
+const FEDERATED_ALG = "RS256"; // Entra workload identity federation documents RS256 only
 const NON_INTERACTIVE = 4; // systemuser accessmode NonInteractive
 // Live Entra responses omit error_uri for these codes.
 const NO_ERROR_URI = new Set([70003, 7000014, 50059]);
@@ -20,6 +21,8 @@ const REFRESH_LIFETIME_MS = 24 * 60 * 60 * 1000;
 const CODE_LIFETIME_MS = 10 * 60 * 1000;
 const DEVICE_LIFETIME_SECONDS = 900;
 const DEVICE_INTERVAL_SECONDS = 5;
+// Grants a public client may redeem without a secret. client_credentials and on_behalf_of are confidential-client flows (AADSTS7000218).
+const PUBLIC_GRANTS = new Set([AUTH_CODE, DEVICE_GRANT, GRANT_TYPES.refresh_token, GRANT_TYPES.password]);
 const OIDC_SCOPES = new Set(["openid", "profile", "offline_access"]);
 const TOKEN_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", pragma: "no-cache" };
 const HTML_HEADERS = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
@@ -33,6 +36,7 @@ const ENTITIES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "
 // AADSTS code -> [error, HTTP status]. Every code answers 400 except a wrong client secret (401).
 const AAD_ERRORS = {
   50011: ["invalid_request", 400],
+  50013: ["invalid_grant", 400],
   50034: ["invalid_grant", 400],
   50126: ["invalid_grant", 400],
   50059: ["invalid_request", 400],
@@ -43,14 +47,16 @@ const AAD_ERRORS = {
   70011: ["invalid_scope", 400],
   70016: ["authorization_pending", 400],
   70019: ["expired_token", 400],
+  70021: ["invalid_client", 400],
   700016: ["unauthorized_client", 400],
   700027: ["invalid_client", 400],
   700082: ["invalid_grant", 400],
-  7000014: ["invalid_grant", 400],
+  7000014: ["bad_verification_code", 400],
   7000215: ["invalid_client", 401],
   7000218: ["invalid_client", 400],
   7000222: ["invalid_client", 400],
   90002: ["invalid_request", 400],
+  9001023: ["invalid_request", 400],
   500011: ["invalid_resource", 400],
   900144: ["invalid_request", 400],
   9002313: ["invalid_grant", 400],
@@ -118,17 +124,33 @@ const parseBasic = (authorization) => {
   const [id, ...secret] = Buffer.from(match[1], "base64").toString("utf8").split(":");
   return { clientId: safeDecode(id), secret: safeDecode(secret.join(":")) };
 };
-const acceptedResource = (value, origin) => [origin, `${origin}/`].includes(value) || String(value).toLowerCase() === DATAVERSE_APP_ID;
+// A registered application's own API resource (its app id or api://<appId>), for tokens it exposes to its clients.
+const apiResource = (value, apps) => apps.some((app) => [app.appId, `api://${app.appId}`].some((id) => id.toLowerCase() === String(value).toLowerCase()));
+const acceptedResource = (value, origin, apps = []) => [origin, `${origin}/`].includes(value) || String(value).toLowerCase() === DATAVERSE_APP_ID || apiResource(value, apps);
 // The one resource named by a scope string (OIDC scopes ignored); null when empty, mixed, or not accepted.
-const scopeResource = (scope, origin, defaultOnly) => {
+// An API resource of a registered application takes any scope name; the Dataverse resource takes .default and user_impersonation.
+const scopeResource = (scope, origin, defaultOnly, apps = []) => {
   let resource = null;
   for (const item of String(scope).split(/\s+/).filter(Boolean)) {
     if (OIDC_SCOPES.has(item)) continue;
-    const match = /^(.+)\/(\.default|user_impersonation)$/.exec(item);
-    if (!match || (defaultOnly && match[2] !== ".default") || !acceptedResource(match[1], origin) || (resource && resource !== match[1])) return null;
-    resource = match[1];
+    const match = /^(.+)\/([^/\s]+)$/.exec(item);
+    if (!match) return null;
+    const [, name, scopeName] = match;
+    const allowed = apiResource(name, apps)
+      ? !defaultOnly || scopeName === ".default"
+      : acceptedResource(name, origin) && (scopeName === ".default" || (!defaultOnly && scopeName === "user_impersonation"));
+    if (!allowed || (resource && resource !== name)) return null;
+    resource = name;
   }
   return resource;
+};
+// Lifetime window shared by bearer tokens and user assertions: exp must be a numeric date not past (with skew), nbf not in the future.
+const lifetimeProblem = (claims, nowMs) => {
+  const exp = numeric(claims.exp);
+  if (!Number.isFinite(exp)) return "malformed";
+  if (exp + SKEW_SECONDS < nowMs / 1000) return "expired";
+  if (claims.nbf !== undefined && !(numeric(claims.nbf) - SKEW_SECONDS <= nowMs / 1000)) return "not-yet-valid";
+  return null;
 };
 const hasToken = (value, token) => String(value ?? "").split(/\s+/).includes(token);
 const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ENTITIES[ch]);
@@ -183,7 +205,8 @@ export function aadError(code, { status, description = "", origin, traceId = ran
   };
 }
 
-export function createAuthority({ tenantId, applications, users, clock = () => Date.now(), accessTokenLifetimeSeconds = 3600 }) {
+// federatedIssuers() returns [{ issuer, jwks: { keys } }] for verifying federated client assertions.
+export function createAuthority({ tenantId, applications, users, federatedIssuers = () => [], clock = () => Date.now(), accessTokenLifetimeSeconds = 3600 }) {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const { kty, n, e } = publicKey.export({ format: "jwk" });
   // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
@@ -246,6 +269,22 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     });
   };
 
+  // Managed identity token (IMDS or App Service): app-only, appid = the identity's client id. Null when the resource is not this directory's.
+  const issueManagedIdentityToken = ({ origin, clientId, resource, now = clock() }) => {
+    if (!acceptedResource(resource, origin)) return null;
+    const iat = Math.floor(now / 1000);
+    const appId = String(clientId).toLowerCase();
+    return {
+      access_token: issueAccessToken({ origin, appId, audience: resource, now }),
+      expires_on: String(iat + accessTokenLifetimeSeconds),
+      expires_in: String(accessTokenLifetimeSeconds - 1),
+      not_before: String(iat),
+      resource,
+      token_type: "Bearer",
+      client_id: appId,
+    };
+  };
+
   // userOid is null for application-only refresh tokens; those rebuild app tokens.
   const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock() }) => {
     const token = randomBytes(36).toString("base64url");
@@ -277,6 +316,18 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
   // jti values of accepted client assertions, each kept until the assertion's own expiry window closes.
   const seenAssertions = new Map();
 
+  // The issuer's registered RSA key with the header's kid (any key when the header has none); null when unknown.
+  const federatedKey = (issuer, kid) => {
+    const entry = (federatedIssuers() ?? []).find((item) => item.issuer === issuer);
+    const jwk = (entry?.jwks?.keys ?? []).find((key) => kid === undefined || key.kid === kid);
+    if (!jwk) return null;
+    try {
+      return createPublicKey({ key: jwk, format: "jwk" });
+    } catch {
+      return null;
+    }
+  };
+
   const verifyAssertion = (app, form, { origin, tenantSegment, now }) => {
     const reject = (description, code = 700027) => ({ code, description });
     if (form.client_assertion_type !== ASSERTION_TYPE || !form.client_assertion) return reject(`The client assertion must be of type ${ASSERTION_TYPE}.`);
@@ -290,26 +341,40 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
       return reject("The client assertion is not a JSON Web Token.");
     }
     if (!header || typeof header !== "object" || !claims || typeof claims !== "object") return reject("The client assertion is not a JSON Web Token.");
+    const data = `${head}.${body}`;
+    const audiences = [claims.aud].flat();
     const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
-    if (!cert) return reject("The client assertion is not signed with a registered certificate.");
-    if (!ASSERTION_ALGS.includes(header.alg) || !verifies(`${head}.${body}`, signature, cert.publicKeyPem, header.alg)) return reject("The client assertion signature is invalid.");
-    const subject = app.appId.toLowerCase();
-    if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject) return reject("The client assertion's iss and sub must be the client_id.");
-    const endpoints = [tenantSegment, tenantId].flatMap((segment) => [`${origin}/${segment}/oauth2/v2.0/token`, `${origin}/${segment}/oauth2/token`]);
-    if (![claims.aud].flat().some((item) => endpoints.includes(item))) return reject("The client assertion's audience is not this token endpoint.");
+    // A federated credential matches the assertion's issuer, subject and audience; no certificate may match first.
+    const federated = cert ? null : (app.federatedCredentials ?? []).find((item) => item.issuer === claims.iss && item.subject === claims.sub && audiences.some((aud) => item.audiences.includes(aud)));
+    if (cert) {
+      if (!ASSERTION_ALGS.includes(header.alg) || !verifies(data, signature, cert.publicKeyPem, header.alg)) return reject("The client assertion signature is invalid.");
+      const subject = app.appId.toLowerCase();
+      if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject) return reject("The client assertion's iss and sub must be the client_id.");
+      const endpoints = [tenantSegment, tenantId].flatMap((segment) => [`${origin}/${segment}/oauth2/v2.0/token`, `${origin}/${segment}/oauth2/token`]);
+      if (!audiences.some((item) => endpoints.includes(item))) return reject("The client assertion's audience is not this token endpoint.");
+    } else if (federated) {
+      if (header.alg !== FEDERATED_ALG || !verifies(data, signature, federatedKey(claims.iss, header.kid), FEDERATED_ALG)) return reject("The client assertion signature is invalid.");
+    } else if ((app.federatedCredentials ?? []).length) {
+      return reject("No matching federated identity record found for presented assertion.", 70021);
+    } else {
+      return reject("The client assertion is not signed with a registered certificate.");
+    }
     const nowSeconds = now / 1000;
     const exp = numeric(claims.exp);
     const nbf = claims.nbf === undefined ? 0 : numeric(claims.nbf);
     if (!Number.isFinite(exp) || Number.isNaN(nbf)) return reject("The client assertion's nbf and exp must be numeric dates.");
     if (nbf > nowSeconds + SKEW_SECONDS) return reject("The client assertion is not yet valid.");
-    // The 10-minute cap tolerates clock skew too: msal-node rounds its issue time to the nearest second, so its exp can sit past now + 600.
-    if (exp <= nowSeconds - SKEW_SECONDS || exp > nowSeconds + 600 + SKEW_SECONDS) return reject("The client assertion has expired or lasts longer than 10 minutes.");
-    if (claims.jti !== undefined) {
-      const jti = String(claims.jti);
-      for (const [id, until] of seenAssertions) if (until <= now) seenAssertions.delete(id);
-      if (seenAssertions.has(jti)) return reject("Assertion replay detected.", 9002313);
-      seenAssertions.set(jti, (exp + SKEW_SECONDS) * 1000);
-    }
+    // Certificate assertions live at most 10 minutes. The cap tolerates clock skew too: msal-node rounds its issue time to the nearest second, so its exp can sit past now + 600.
+    // Federated tokens are bounded only by their own exp, since issuers such as cloud identity providers mint hour-long tokens.
+    const lifetime = cert ? 600 : Infinity;
+    if (exp <= nowSeconds - SKEW_SECONDS || exp > nowSeconds + lifetime + SKEW_SECONDS) return reject(cert ? "The client assertion has expired or lasts longer than 10 minutes." : "The client assertion has expired.");
+    // Entra requires a jti on every client assertion (AADSTS700027 without one), so the replay check always applies.
+    if (claims.jti === undefined) return reject("The client assertion must contain a jti claim.");
+    // Keyed with the issuer, so one issuer's jti cannot collide with another's.
+    const id = `${String(claims.iss).toLowerCase()} ${claims.jti}`;
+    for (const [key, until] of seenAssertions) if (until <= now) seenAssertions.delete(key);
+    if (seenAssertions.has(id)) return reject("Assertion replay detected.", 9002313);
+    seenAssertions.set(id, (exp + SKEW_SECONDS) * 1000);
     return { appidacr: "2" };
   };
 
@@ -318,7 +383,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (form.client_assertion || form.client_assertion_type) return verifyAssertion(app, form, ctx);
     const secret = form.client_secret ?? basic?.secret;
     if (secret === undefined) {
-      if (app.publicClient) return { appidacr: "0" };
+      if (app.publicClient && PUBLIC_GRANTS.has(form.grant_type)) return { appidacr: "0" };
       return { code: 7000218, description: "The request body must contain the following parameter: 'client_secret' or 'client_assertion'." };
     }
     const match = (app.secrets ?? []).find((item) => verifySecret(secret, item));
@@ -345,7 +410,8 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (!app) return { page: errorPage(origin, now, 700016, `Application with identifier '${input.client_id}' was not found in the directory '${tenantId}'.`) };
     if (!redirectAllowed(app, input.redirect_uri)) return { page: errorPage(origin, now, 50011, `The reply URL specified in the request does not match the reply URLs configured for the application: '${app.appId}'.`) };
     if (!hasToken(input.response_type, "code")) return { page: htmlPage(400, "Sign-in error", "unsupported_response_type: response_type must include code.") };
-    if (!scopeResource(input.scope, origin, false)) return { page: errorPage(origin, now, 70011, INVALID_SCOPE) };
+    if (input.code_challenge_method !== undefined && !["S256", "plain"].includes(input.code_challenge_method)) return { page: htmlPage(400, "Sign-in error", "invalid_request: code_challenge_method must be S256 or plain.") };
+    if (!scopeResource(input.scope, origin, false, applications())) return { page: errorPage(origin, now, 70011, INVALID_SCOPE) };
     if (app.publicClient && !input.code_challenge) return { page: errorPage(origin, now, 9002325, "Proof Key for Code Exchange is required for cross-origin authorization code redemption.") };
     return { app };
   };
@@ -391,7 +457,8 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (!form.client_id) return fail(900144, "The request body must contain the following parameter: 'client_id'.");
     const app = findApp(form.client_id);
     if (!app) return fail(700016, `Application with identifier '${form.client_id}' was not found in the directory '${tenantId}'.`);
-    if (!scopeResource(form.scope, origin, false)) return fail(70011, INVALID_SCOPE);
+    if (!grantAllowed(app, DEVICE_GRANT)) return fail(700016, `The client is not permitted to use the grant type '${DEVICE_GRANT}'.`);
+    if (!scopeResource(form.scope, origin, false, applications())) return fail(70011, INVALID_SCOPE);
     const userCode = Array.from(randomBytes(9), (byte) => USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length]).join("");
     const deviceCode = randomBytes(36).toString("base64url");
     devices.set(deviceCode, { clientId: app.appId.toLowerCase(), scope: form.scope, userCode, expiresAt: now + DEVICE_LIFETIME_SECONDS * 1000, lastPoll: null, oid: null });
@@ -447,7 +514,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (entry.challenge && !pkceMatches(entry, form.code_verifier)) return failure(9002313, "The code_verifier does not match the code_challenge supplied in the authorization request.");
     const user = interactiveUser(entry.oid);
     if (!user) return failure(9002313, MALFORMED);
-    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, nonce: entry.nonce, appidacr: auth.appidacr, version, now, reply, form });
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false, applications()), scope: entry.scope, nonce: entry.nonce, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const redeemDevice = ({ origin, app, auth, form, version, now, reply, failure }) => {
@@ -469,13 +536,13 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     devices.delete(form.device_code);
     const user = interactiveUser(entry.oid);
     if (!user) return failure(9002313, MALFORMED);
-    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, appidacr: auth.appidacr, version, now, reply, form });
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false, applications()), scope: entry.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const passwordGrant = ({ origin, app, auth, form, version, now, reply, failure }) => {
     if (form.username === undefined) return failure(900144, "The request body must contain the following parameter: 'username'.");
     if (form.password === undefined) return failure(900144, "The request body must contain the following parameter: 'password'.");
-    const resource = scopeResource(form.scope, origin, false);
+    const resource = scopeResource(form.scope, origin, false, applications());
     if (!resource) return failure(70011, INVALID_SCOPE);
     const user = interactive(users.byDomainName(form.username));
     if (!user) return failure(50034, `The user account '${form.username}' does not exist in the directory '${tenantId}'.`);
@@ -483,8 +550,9 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     return delegatedReply({ origin, app, user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
-  // Returns { user } or { description } for an assertion that is not a user token signed by this authority.
-  const userFromAssertion = (assertion, now) => {
+  // Returns { user } or { code, description } for an assertion that is not a user token signed by this authority for this client.
+  const userFromAssertion = (assertion, now, app) => {
+    const reject = (description, code = 9002313) => ({ code, description });
     const [head, body, signature] = String(assertion).split(".");
     let header;
     let claims;
@@ -492,20 +560,27 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
       header = fromB64json(head);
       claims = fromB64json(body);
     } catch {
-      return { description: "The assertion is not a JSON Web Token." };
+      return reject("The assertion is not a JSON Web Token.");
     }
-    if (header.alg !== "RS256" || !verifies(`${head}.${body}`, signature, publicKey)) return { description: "Assertion failed signature validation." };
-    if (Number(claims.exp) + SKEW_SECONDS < now / 1000) return { description: "The assertion has expired." };
-    if (claims.idtyp !== "user") return { description: "The assertion must be a user token." };
+    if (header.alg !== "RS256" || !verifies(`${head}.${body}`, signature, publicKey)) return reject("Assertion failed signature validation.");
+    const problem = lifetimeProblem(claims, now);
+    if (problem) return reject({ malformed: "The assertion's exp must be a numeric date.", expired: "The assertion has expired.", "not-yet-valid": "The assertion is not yet valid." }[problem]);
+    if (claims.idtyp !== "user") return reject("The assertion must be a user token.");
     const user = interactiveUser(claims.oid);
-    return user ? { user } : { description: "The assertion's user is not an interactive user in this directory." };
+    if (!user) return reject("The assertion's user is not an interactive user in this directory.");
+    // Entra answers AADSTS50013 when the assertion's audience is not the presenting app (its app id or api:// URI) or the tenant differs.
+    const ownIds = [app.appId, `api://${app.appId}`].map((id) => id.toLowerCase());
+    if (!ownIds.some((id) => [claims.aud].flat().some((item) => String(item).toLowerCase() === id)) || claims.tid !== tenantId) {
+      return reject("Assertion audience does not match the Client app presenting the assertion.", 50013);
+    }
+    return { user };
   };
 
   const onBehalfOf = ({ origin, app, auth, form, version, now, reply, failure }) => {
     if (!form.assertion) return failure(900144, "The request body must contain the following parameter: 'assertion'.");
-    const verdict = userFromAssertion(form.assertion, now);
-    if (!verdict.user) return failure(9002313, verdict.description);
-    const resource = scopeResource(form.scope, origin, false);
+    const verdict = userFromAssertion(form.assertion, now, app);
+    if (!verdict.user) return failure(verdict.code, verdict.description);
+    const resource = scopeResource(form.scope, origin, false, applications());
     if (!resource) return failure(70011, INVALID_SCOPE);
     return delegatedReply({ origin, app, user: verdict.user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
@@ -517,6 +592,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (!knownTenant(tenantSegment)) return failure(90002, `Tenant '${tenantSegment}' not found. Check to make sure you have the correct tenant ID and are signing into the correct cloud.`);
     if (!form.grant_type) return failure(900144, "The request body must contain the following parameter: 'grant_type'.");
     if (!SUPPORTED_GRANTS.includes(form.grant_type)) return failure(70003, `The app requested an unsupported grant type '${form.grant_type}'.`);
+    if (form.grant_type === GRANT_TYPES.password && ["common", "consumers"].includes(String(tenantSegment).toLowerCase())) return failure(9001023, "The grant type isn't supported on the /common or /consumers authentication contexts. Use /organizations or a tenant ID instead.");
     const basic = parseBasic(headers.authorization);
     const clientId = form.client_id ?? basic?.clientId;
     if (!clientId) return failure(900144, "The request body must contain the following parameter: 'client_id'.");
@@ -536,11 +612,11 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     let resource;
     if (version === "v1.0") {
       if (!form.resource) return failure(900144, "The request body must contain the following parameter: 'resource'.");
-      if (!acceptedResource(form.resource, origin)) return failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`);
+      if (!acceptedResource(form.resource, origin, applications())) return failure(500011, `The resource '${form.resource}' was not found in the directory '${tenantId}'.`);
       resource = form.resource;
     } else {
       if (!form.scope) return failure(900144, "The request body must contain the following parameter: 'scope'.");
-      resource = scopeResource(form.scope, origin, true);
+      resource = scopeResource(form.scope, origin, true, applications());
       if (!resource) return failure(70011, "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource and end in '/.default'.");
     }
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, appidacr: auth.appidacr, now });
@@ -562,7 +638,8 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     }
     if (jwtHeader.alg !== "RS256") return { ok: false, reason: "malformed" };
     if (!verifies(`${parts[0]}.${parts[1]}`, parts[2], publicKey)) return { ok: false, reason: "signature" };
-    if (Number(claims.exp) + SKEW_SECONDS < clock() / 1000) return { ok: false, reason: "expired" };
+    const problem = lifetimeProblem(claims, clock());
+    if (problem) return { ok: false, reason: problem };
     const audienceOk = [claims.aud].flat().some((item) => item === origin || item === `${origin}/` || String(item).toLowerCase() === DATAVERSE_APP_ID);
     if (!audienceOk) return { ok: false, reason: "audience" };
     if (claims.iss !== `${origin}/${tenant}/`) return { ok: false, reason: "issuer" };
@@ -621,5 +698,6 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     issueAccessToken,
     issueRefreshToken,
     verifyBearer,
+    issueManagedIdentityToken,
   };
 }

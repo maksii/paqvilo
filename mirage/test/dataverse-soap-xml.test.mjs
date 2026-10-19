@@ -57,13 +57,35 @@ const VALUES = [
     attributes: new Map([["name", text("Blue")], ["price", { type: "Money", value: "5.00" }]]),
     formattedValues: new Map([["price", "$5.00"]]),
     keyAttributes: new Map([["code", text("W-1")]]),
+    relatedEntities: null,
     rowVersion: "123",
+    entityState: null,
+  },
+  { type: "long", value: "9007199254740993" },
+  { type: "ColumnSet", allColumns: false, columns: ["name", "createdon"] },
+  { type: "ColumnSet", allColumns: true, columns: [] },
+  {
+    type: "EntityReferenceCollection",
+    values: [{ type: "EntityReference", logicalName: "widget", id: GUID, name: "Blue", keyAttributes: new Map() }],
+  },
+  {
+    type: "Entity",
+    logicalName: "widget",
+    id: GUID,
+    attributes: new Map(),
+    formattedValues: new Map(),
+    keyAttributes: new Map(),
+    relatedEntities: [{
+      relationship: { schemaName: "widget_gadgets", primaryEntityRole: "Referenced" },
+      entities: { type: "EntityCollection", entityName: "gadget", entities: [], moreRecords: false, pagingCookie: null, totalRecordCount: 1, totalRecordCountLimitExceeded: false, minActiveRowVersion: null },
+    }],
+    rowVersion: null,
     entityState: null,
   },
   {
     type: "EntityCollection",
     entityName: "widget",
-    entities: [{ type: "Entity", logicalName: "widget", id: GUID, attributes: new Map([["name", text("Blue")]]), formattedValues: new Map(), keyAttributes: new Map(), rowVersion: null, entityState: null }],
+    entities: [{ type: "Entity", logicalName: "widget", id: GUID, attributes: new Map([["name", text("Blue")]]), formattedValues: new Map(), keyAttributes: new Map(), relatedEntities: null, rowVersion: null, entityState: null }],
     moreRecords: true,
     pagingCookie: "<cookie page=\"2\"/>",
     totalRecordCount: 12,
@@ -170,10 +192,11 @@ test("Entity members are emitted in DataContract order", () => {
     attributes: new Map([["name", text("Blue")]]),
     formattedValues: new Map([["name", "Blue"]]),
     keyAttributes: new Map([["code", text("W-1")]]),
+    relatedEntities: [],
     rowVersion: "1",
     entityState: "Created",
   });
-  const order = ["<a:Attributes", "<a:EntityState", "<a:FormattedValues", "<a:Id", "<a:KeyAttributes", "<a:LogicalName", "<a:RowVersion"];
+  const order = ["<a:Attributes", "<a:EntityState", "<a:FormattedValues", "<a:Id", "<a:KeyAttributes", "<a:LogicalName", "<a:RelatedEntities", "<a:RowVersion"];
   const positions = order.map((marker) => xml.indexOf(marker));
   assert.ok(positions.every((p) => p >= 0), `missing member in ${xml}`);
   assert.deepStrictEqual(positions, [...positions].sort((a, b) => a - b));
@@ -241,4 +264,148 @@ test("throttling fault carries Retry-After as an e:duration detail", () => {
 test("unsupported value types and non-integer fault codes are refused", () => {
   assert.throws(() => encodeValue("v", { type: "Raw" }), DataError);
   assert.throws(() => fault({ errorCode: 1.5, message: "x", timestamp: "t" }), TypeError);
+});
+
+// Regression tests. Golden strings and literal namespace URIs pin the SDK wire shape; the
+// round trips above cannot, because the decoder ignores item element names.
+const encodedNode = (xml) => parseEnvelope(envelope(xml)).request;
+// Hand-written SDK-shaped XML: only the SOAP envelope prefix is declared at the root.
+const sdkNode = (xml) => parseEnvelope(`<s:Envelope xmlns:s="${NS.s}"><s:Body>${xml}</s:Body></s:Envelope>`).request;
+const sdkValue = (xml) => decodeValue(sdkNode(xml));
+const SDK_ARRAYS = "http://schemas.microsoft.com/2003/10/Serialization/Arrays";
+
+test("FormattedValues items are KeyValuePairOfstringstring with untyped values", () => {
+  const xml = encodeValue("v", {
+    type: "Entity", logicalName: "widget", id: GUID, attributes: new Map(), formattedValues: new Map([["statecode", "Active"]]),
+    keyAttributes: new Map(), relatedEntities: null, rowVersion: null, entityState: null,
+  });
+  assert.ok(
+    xml.includes("<a:FormattedValues><a:KeyValuePairOfstringstring><b:key>statecode</b:key><b:value>Active</b:value></a:KeyValuePairOfstringstring></a:FormattedValues>"),
+    xml,
+  );
+  assert.deepStrictEqual(decodePairs(byName(encodedNode(xml), "FormattedValues"), (v) => v.text), new Map([["statecode", "Active"]]));
+});
+
+test("KeyAttributes items are in the xrm/7.1 namespace (KeyAttributeCollection)", () => {
+  const xml = encodeValue("v", {
+    type: "EntityReference", logicalName: "widget", id: GUID, name: null, keyAttributes: new Map([["code", text("W-1")]]),
+  });
+  assert.ok(xml.includes("<a:KeyAttributes><o:KeyValuePairOfstringanyType><b:key>code</b:key>"), xml);
+  const item = byName(byName(encodedNode(xml), "KeyAttributes"), "KeyValuePairOfstringanyType");
+  assert.equal(item.ns, "http://schemas.microsoft.com/xrm/7.1/Contracts");
+});
+
+test("ErrorDetails items are KeyValuePairOfstringanyType in the xrm/2011 namespace", () => {
+  const xml = fault({
+    errorCode: -2147220969,
+    message: "Throttled",
+    timestamp: "2026-10-19T08:30:00Z",
+    errorDetails: new Map([["Retry-After", { type: "duration", value: "PT5S" }]]),
+  });
+  assert.ok(
+    xml.includes('<ErrorDetails xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic"><KeyValuePairOfstringanyType><b:key>Retry-After</b:key><b:value i:type="e:duration">PT5S</b:value></KeyValuePairOfstringanyType></ErrorDetails>'),
+    xml,
+  );
+  const details = byName(byName(byName(parseEnvelope(xml).request, "detail"), "OrganizationServiceFault"), "ErrorDetails");
+  assert.equal(details.children[0].ns, "http://schemas.microsoft.com/xrm/2011/Contracts");
+});
+
+test("untyped a:Value decodes OptionSetValue and its collection as int, and Money as text (SDK wire)", () => {
+  const head = `xmlns:i="${NS.i}" xmlns:a="${NS.a}"`;
+  assert.deepStrictEqual(sdkValue(`<v ${head} i:type="a:OptionSetValue"><a:Value>1</a:Value></v>`), { type: "OptionSetValue", value: 1 });
+  assert.deepStrictEqual(
+    sdkValue(`<v ${head} xmlns:x9="${NS.x9}" i:type="x9:OptionSetValueCollection"><x9:OptionSetValue><a:Value>1</a:Value></x9:OptionSetValue><x9:OptionSetValue><a:Value>3</a:Value></x9:OptionSetValue></v>`),
+    { type: "OptionSetValueCollection", values: [1, 3] },
+  );
+  assert.deepStrictEqual(sdkValue(`<v ${head} i:type="a:Money"><a:Value>12.50</a:Value></v>`), { type: "Money", value: "12.50" });
+  assert.equal(encodeValue("v", { type: "OptionSetValue", value: 2 }), '<v i:type="a:OptionSetValue"><a:Value>2</a:Value></v>');
+});
+
+test("an out-of-range character reference is a 400 DataError, not a RangeError", () => {
+  for (const bad of ["<r>&#99999999;</r>", '<r a="&#x110000;"/>']) {
+    assert.throws(() => parseXml(bad), (error) => error instanceof DataError && error.status === 400, bad);
+  }
+});
+
+test("TotalRecordCount is always written: -1 when no count was requested", () => {
+  const xml = encodeValue("v", {
+    type: "EntityCollection", entityName: "widget", entities: [], moreRecords: false, pagingCookie: null,
+    totalRecordCount: null, totalRecordCountLimitExceeded: null, minActiveRowVersion: null,
+  });
+  assert.ok(
+    xml.endsWith("<a:TotalRecordCount>-1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></v>"),
+    xml,
+  );
+  assert.equal(decodeValue(encodedNode(xml)).totalRecordCount, -1);
+});
+
+test("an AliasedValue with a null inner value stays typed and writes a nil a:Value", () => {
+  assert.equal(
+    encodeValue("v", { type: "AliasedValue", attribute: "name", entity: "widget", value: null }),
+    '<v i:type="a:AliasedValue"><a:AttributeLogicalName>name</a:AttributeLogicalName><a:EntityLogicalName>widget</a:EntityLogicalName><a:Value i:nil="true"/></v>',
+  );
+  assert.deepStrictEqual(
+    decodeValue(encodedNode(encodeValue("v", { type: "AliasedValue", attribute: "name", entity: "widget", value: null }))),
+    { type: "AliasedValue", attribute: "name", entity: "widget", value: null },
+  );
+});
+
+test("a null AliasedValue name is nil, not the text null; a null OptionSetValue stays nil as a whole", () => {
+  assert.equal(
+    encodeValue("v", { type: "AliasedValue", attribute: null, entity: "widget", value: text("x") }),
+    '<v i:type="a:AliasedValue"><a:AttributeLogicalName i:nil="true"/><a:EntityLogicalName>widget</a:EntityLogicalName><a:Value i:type="c:string">x</a:Value></v>',
+  );
+  assert.equal(encodeValue("v", { type: "OptionSetValue", value: null }), '<v i:nil="true"/>');
+});
+
+test("ColumnSet encodes AllColumns and string Columns in the arrays namespace, and decodes SDK-shaped XML", () => {
+  assert.equal(
+    encodeValue("v", { type: "ColumnSet", allColumns: false, columns: ["name", "createdon"] }),
+    '<v i:type="a:ColumnSet"><a:AllColumns>false</a:AllColumns><a:Columns><f:string>name</f:string><f:string>createdon</f:string></a:Columns></v>',
+  );
+  const head = `xmlns:i="${NS.i}" xmlns:a="${NS.a}" xmlns:f="${SDK_ARRAYS}"`;
+  const node = sdkNode(`<v ${head} i:type="a:ColumnSet"><a:AllColumns>true</a:AllColumns><a:Columns><f:string>name</f:string></a:Columns></v>`);
+  assert.deepStrictEqual(decodeValue(node), { type: "ColumnSet", allColumns: true, columns: ["name"] });
+  assert.equal(byName(node, "Columns").children[0].ns, SDK_ARRAYS);
+});
+
+test("EntityReferenceCollection encodes untyped EntityReference items and decodes SDK-shaped XML", () => {
+  assert.equal(
+    encodeValue("v", {
+      type: "EntityReferenceCollection",
+      values: [{ type: "EntityReference", logicalName: "widget", id: GUID, name: "Blue", keyAttributes: new Map() }],
+    }),
+    `<v i:type="a:EntityReferenceCollection"><a:EntityReference><a:Id>${GUID}</a:Id><a:KeyAttributes></a:KeyAttributes><a:LogicalName>widget</a:LogicalName><a:Name>Blue</a:Name></a:EntityReference></v>`,
+  );
+  assert.deepStrictEqual(
+    sdkValue(`<v xmlns:i="${NS.i}" xmlns:a="${NS.a}" i:type="a:EntityReferenceCollection"><a:EntityReference><a:Id>${GUID}</a:Id><a:LogicalName>widget</a:LogicalName><a:Name i:nil="true"/></a:EntityReference></v>`),
+    { type: "EntityReferenceCollection", values: [{ type: "EntityReference", logicalName: "widget", id: GUID, name: null, keyAttributes: new Map() }] },
+  );
+});
+
+test("RelatedEntities items are KeyValuePairOfRelationshipEntityCollection with declared key and value", () => {
+  const related = [{
+    relationship: { schemaName: "widget_gadgets", primaryEntityRole: "Referenced" },
+    entities: { type: "EntityCollection", entityName: "gadget", entities: [], moreRecords: false, pagingCookie: null, totalRecordCount: 1, totalRecordCountLimitExceeded: false, minActiveRowVersion: null },
+  }];
+  const xml = encodeValue("v", {
+    type: "Entity", logicalName: "widget", id: GUID, attributes: new Map(), formattedValues: new Map(), keyAttributes: new Map(),
+    relatedEntities: related, rowVersion: null, entityState: null,
+  });
+  assert.ok(
+    xml.includes(
+      "<a:RelatedEntities><a:KeyValuePairOfRelationshipEntityCollection><b:key><a:PrimaryEntityRole>Referenced</a:PrimaryEntityRole><a:SchemaName>widget_gadgets</a:SchemaName></b:key>" +
+        "<b:value><a:Entities></a:Entities><a:EntityName>gadget</a:EntityName><a:MoreRecords>false</a:MoreRecords><a:TotalRecordCount>1</a:TotalRecordCount><a:TotalRecordCountLimitExceeded>false</a:TotalRecordCountLimitExceeded></b:value></a:KeyValuePairOfRelationshipEntityCollection></a:RelatedEntities>",
+    ),
+    xml,
+  );
+  const item = byName(byName(encodedNode(xml), "RelatedEntities"), "KeyValuePairOfRelationshipEntityCollection");
+  assert.equal(item.ns, "http://schemas.microsoft.com/xrm/2011/Contracts");
+  assert.deepStrictEqual(decodeValue(encodedNode(xml)).relatedEntities, related);
+});
+
+test("a long beyond 2^53 is a decimal string, and a safe long stays a Number", () => {
+  assert.equal(encodeValue("v", { type: "long", value: "9007199254740993" }), '<v i:type="c:long">9007199254740993</v>');
+  assert.deepStrictEqual(sdkValue(`<v xmlns:i="${NS.i}" xmlns:c="${NS.c}" i:type="c:long">9007199254740993</v>`), { type: "long", value: "9007199254740993" });
+  assert.deepStrictEqual(sdkValue(`<v xmlns:i="${NS.i}" xmlns:c="${NS.c}" i:type="c:long">-42</v>`), { type: "long", value: -42 });
 });

@@ -29,13 +29,27 @@ export function createServiceProtection({
   // unverified: Retry-After is the seconds until the oldest counted entry leaves the window (rounded up).
   const retryAfter = (oldestAt, now) => Math.max(1, Math.ceil(((oldestAt ?? now) + WINDOW_MS - now) / 1000));
 
+  // Execution time: the retry is the expiry of the first entry whose removal, with every older one, brings the counted
+  // time under the limit. Expiring only the oldest entry can leave the user still over it, and the retry then fails again.
+  function executionRetryAfter(entries, limit, now) {
+    let sum = entries.reduce((total, e) => total + e.ms, 0);
+    for (const e of entries) {
+      sum -= e.ms;
+      if (sum < limit) return retryAfter(e.at, now);
+    }
+    return retryAfter(entries.at(-1)?.at, now);
+  }
+
   const reject = (message, innerCode, seconds) => ({
     ok: false,
     error: new DataError(message, 429, "ServiceProtection", { innerCode, retryAfter: seconds }),
   });
 
   return {
-    /** Admits one request for the user, or returns the 429 error to send. Call release(durationMs) when it finishes. */
+    /**
+     * Admits one request for the user, or returns the 429 error to send. Call release(durationMs) in a finally block:
+     * otherwise the concurrency slot leaks and the user stays throttled. A negative or non-numeric duration counts as 0.
+     */
     admit(userId) {
       const now = clock();
       const s = stateOf(userId);
@@ -54,7 +68,7 @@ export function createServiceProtection({
         return reject(
           `Combined execution time of incoming requests exceeded limit of ${thousands(executionMsPer300s)}  milliseconds over time window of 300 seconds. Decrease number of concurrent requests or reduce the duration of requests and try again later.`,
           "0x80072321",
-          retryAfter(s.executed[0]?.at, now),
+          executionRetryAfter(s.executed, executionMsPer300s, now),
         );
       }
       if (concurrentRequests != null && s.active >= concurrentRequests) {
@@ -71,7 +85,7 @@ export function createServiceProtection({
           if (released) return;
           released = true;
           s.active -= 1;
-          s.executed.push({ at: clock(), ms: durationMs });
+          s.executed.push({ at: clock(), ms: Math.max(0, Number(durationMs) || 0) });
         },
       };
     },

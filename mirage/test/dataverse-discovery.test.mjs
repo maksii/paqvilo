@@ -150,3 +150,24 @@ test("$filter rejects unknown properties and malformed expressions", () => {
 test("unknown resource segments are a 404", () => {
   assertDataError(() => get("/api/discovery/v2.0/Accounts"), 404, "UnknownResource");
 });
+
+test("$filter accepts unquoted DateTimeOffset literals and compares them as instants", () => {
+  const count = (api, filter) => get("/api/discovery/v2.0/Instances", new URLSearchParams({ $filter: filter }), api).body.value.length;
+  const documented = "TrialExpirationDate gt 2022-07-14T00:00:00Z and IsUserSysAdmin eq true";
+  const later = discovery({ ...INSTANCE, TrialExpirationDate: "2030-01-01T00:00:00Z" });
+  const earlier = discovery({ ...INSTANCE, TrialExpirationDate: "2020-01-01T00:00:00Z" });
+  assert.equal(count(later, documented), 1);
+  assert.equal(count(earlier, documented), 0);
+  assert.equal(count(earlier, "TrialExpirationDate lt 2022-07-14T00:00:00Z"), 1);
+  // The same moment written with an offset is equal to the Z literal, although the text differs.
+  const sameMoment = discovery({ ...INSTANCE, TrialExpirationDate: "2022-07-14T00:00:00Z" });
+  assert.equal(count(sameMoment, "TrialExpirationDate eq 2022-07-14T02:00:00+02:00"), 1);
+  assertDataError(() => count(later, "TrialExpirationDate gt 2022-13-40T00:00:00Z"), 400, "InvalidQuery");
+});
+
+test("$filter nesting deeper than 100 answers 400 instead of overflowing the stack", () => {
+  assert.equal(filtered(`${"(".repeat(20)}IsUserSysAdmin eq true${")".repeat(20)}`), 1);
+  assertDataError(() => filtered(`${"(".repeat(200)}IsUserSysAdmin eq true${")".repeat(200)}`), 400, "InvalidQuery");
+  assertDataError(() => filtered(`${"not ".repeat(200)}IsUserSysAdmin`), 400, "InvalidQuery");
+  assertDataError(() => filtered("(".repeat(20000)), 400, "InvalidQuery");
+});

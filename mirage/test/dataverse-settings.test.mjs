@@ -21,7 +21,7 @@ test("absent and false disable the simulator; true enables defaults", () => {
   assert.deepEqual(dataverseSettings(true), {
     enabled: true, port: 0, tls: false, tlsPort: 0, tenantId: null, organizationId: null,
     uniqueName: "orgsim", friendlyName: "Simulated environment", version: "9.2.25041.00000",
-    applications: [], users: [], serviceProtection: null,
+    applications: [], users: [], serviceProtection: null, managedIdentities: [], federatedIssuers: [], auditing: false, tds: { enabled: false, port: 0 },
   });
   assert.deepEqual(dataverseSettings({}), dataverseSettings(true));
 });
@@ -34,11 +34,17 @@ test("normalizes GUIDs to lowercase and fills application and user defaults", ()
   });
   assert.equal(settings.tenantId, "aaaaaaaa-1111-2222-3333-bbbbbbbbbbbb");
   assert.equal(settings.applications[0].appId, APP);
-  assert.deepEqual(settings.applications[0].roles, ["System Administrator"]);
+  assert.deepEqual(settings.applications[0].roles, []);
   assert.equal(settings.applications[0].publicClient, false);
   assert.equal(settings.applications[0].allowedGrants.length, 6);
   assert.deepEqual(settings.users[0].roles, ["Basic User"]);
   assert.equal(settings.users[0].objectId, USER_OBJECT);
+});
+
+test("an application keeps only the roles it declares; by default it has none", () => {
+  const declared = dataverseSettings({ applications: [{ appId: APP, displayName: "x", roles: ["System Administrator"] }] }).applications[0];
+  assert.deepEqual(declared.roles, ["System Administrator"]);
+  assert.deepEqual(dataverseSettings({ applications: [{ appId: APP, displayName: "x", roles: [] }] }).applications[0].roles, []);
 });
 
 test("rejects invalid values with precise messages", () => {
@@ -130,4 +136,51 @@ test("status exposes runtime and derived identity without secrets", () => {
     uniqueName: "sim01", version: "9.2.25041.00000",
   });
   assert.equal(dataverseStatus(dataverseSettings(undefined), { origin: "http://127.0.0.1:1" }).origin, "http://127.0.0.1:1");
+});
+
+const MI_CLIENT = "44444444-4444-4444-4444-444444444444";
+const ISSUER = "https://issuer.example.test";
+
+test("serviceProtection keeps the limiter's key names; executionTimeMsPer300s is an alias", () => {
+  const limits = dataverseSettings({ serviceProtection: { requestsPer300s: 100, executionTimeMsPer300s: 60000, concurrentRequests: 4 } }).serviceProtection;
+  assert.deepEqual(limits, { requestsPer300s: 100, executionMsPer300s: 60000, concurrentRequests: 4 });
+  assert.deepEqual(dataverseSettings({ serviceProtection: { executionMsPer300s: 5 } }).serviceProtection, { requestsPer300s: null, executionMsPer300s: 5, concurrentRequests: null });
+  assert.deepEqual(dataverseSettings({ serviceProtection: { executionMsPer300s: 5, executionTimeMsPer300s: 5 } }).serviceProtection.executionMsPer300s, 5);
+  assert.throws(() => dataverseSettings({ serviceProtection: { executionMsPer300s: 5, executionTimeMsPer300s: 6 } }), /executionTimeMsPer300s must equal executionMsPer300s/);
+  assert.throws(() => dataverseSettings({ serviceProtection: { executionTimeMsPer300s: 0 } }), /dataverse\.serviceProtection\.executionTimeMsPer300s must be an integer from 1/);
+  assert.throws(() => dataverseSettings({ serviceProtection: { concurrentRequests: 1.5 } }), /dataverse\.serviceProtection\.concurrentRequests must be an integer/);
+});
+
+test("federatedCredentials default to the token-exchange audience and need exactly one audience", () => {
+  const app = dataverseSettings({ applications: [{ appId: APP, displayName: "x", federatedCredentials: [{ issuer: ISSUER, subject: "repo:invented" }] }] }).applications[0];
+  assert.deepEqual(app.federatedCredentials, [{ issuer: ISSUER, subject: "repo:invented", audiences: ["api://AzureADTokenExchange"] }]);
+  assert.deepEqual(dataverseSettings({ applications: [{ appId: APP, displayName: "x" }] }).applications[0].federatedCredentials, []);
+  const bad = (federatedCredentials) => dataverseSettings({ applications: [{ appId: APP, displayName: "x", federatedCredentials }] });
+  assert.throws(() => bad([{ issuer: ISSUER, subject: "s", audiences: ["a", "b"] }]), /federatedCredentials\[0\]\.audiences must contain exactly one audience/);
+  assert.throws(() => bad([{ issuer: "not a url", subject: "s" }]), /federatedCredentials\[0\]\.issuer must be an http\(s\) URL/);
+  assert.throws(() => bad([{ issuer: ISSUER, subject: "s", extra: 1 }]), /federatedCredentials\[0\]\.extra is not a supported setting/);
+  assert.throws(() => bad({}), /federatedCredentials must be an array/);
+});
+
+test("managedIdentities normalise the client id and default principalId to null", () => {
+  const [mi] = dataverseSettings({ managedIdentities: [{ clientId: MI_CLIENT.toUpperCase(), displayName: "Integration identity" }] }).managedIdentities;
+  assert.deepEqual(mi, { clientId: MI_CLIENT, principalId: null, displayName: "Integration identity", roles: ["Basic User"] });
+  assert.throws(() => dataverseSettings({ managedIdentities: [{ displayName: "x" }] }), /managedIdentities\[0\]\.clientId is required/);
+  assert.throws(() => dataverseSettings({ managedIdentities: [{ clientId: MI_CLIENT, displayName: "x", principalId: "nope" }] }), /managedIdentities\[0\]\.principalId must be a GUID/);
+});
+
+test("federatedIssuers hold public JWKS only; auditing and tds validate", () => {
+  const settings = dataverseSettings({
+    federatedIssuers: [{ issuer: ISSUER, jwks: { keys: [{ kty: "RSA", kid: "k1", n: "AQAB", e: "AQAB" }] } }],
+    auditing: true,
+    tds: { enabled: true, port: 15432 },
+  });
+  assert.deepEqual(settings.federatedIssuers, [{ issuer: ISSUER, jwks: { keys: [{ kty: "RSA", kid: "k1", n: "AQAB", e: "AQAB" }] } }]);
+  assert.equal(settings.auditing, true);
+  assert.deepEqual(settings.tds, { enabled: true, port: 15432 });
+  assert.throws(() => dataverseSettings({ federatedIssuers: [{ issuer: ISSUER, jwks: { keys: [{ kty: "RSA", d: "secret" }] } }] }), /must hold public keys only/);
+  assert.throws(() => dataverseSettings({ federatedIssuers: [{ issuer: ISSUER, jwks: { keys: "x" } }] }), /jwks\.keys must be an array of JSON Web Keys/);
+  assert.throws(() => dataverseSettings({ auditing: "yes" }), /dataverse\.auditing must be true or false/);
+  assert.throws(() => dataverseSettings({ tds: { port: 70000 } }), /dataverse\.tds\.port must be an integer from 0 to 65535/);
+  assert.throws(() => dataverseSettings({ tds: { enabled: true, host: "x" } }), /dataverse\.tds\.host is not a supported setting/);
 });

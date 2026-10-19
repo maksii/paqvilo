@@ -32,7 +32,7 @@ mirage:
 | --- | --- |
 | `enabled` | Starts the listeners. Absent or `false` leaves the API off. |
 | `port` | HTTP listener port. `0` picks an ephemeral port. Use `80` for `Microsoft.PowerPlatform.Dataverse.Client`, which drops the port. |
-| `tls`, `tlsPort` | `tls: true` adds an `https` listener on `tlsPort` (`0` picks an ephemeral port). Its certificate is a per-run self-signed CA written to the certificate file reported by status (`dataverse-ca.pem` beside the state file under `.paqvilo/`, reused while valid). Trust it with `NODE_EXTRA_CA_CERTS` or `REQUESTS_CA_BUNDLE`. It is never installed into the OS store. |
+| `tls`, `tlsPort` | `tls: true` adds an `https` listener on `tlsPort` (`0` picks an ephemeral port). Its certificate is a self-signed CA, reused while it stays valid for more than 7 days (regenerated when the hosts change), name-constrained to the loopback hosts, and written to the certificate file reported by status (`dataverse-ca.pem` beside the state file under `.paqvilo/`; kept in memory when there is no state file). Trust it with `NODE_EXTRA_CA_CERTS` or `REQUESTS_CA_BUNDLE`. It is never installed into the OS store. |
 | `serviceProtection` | `{ requestsPer300s: <n> }` enables service-protection limits: a caller that exceeds `n` requests in a sliding 300 second window receives 429 `0x80072322` with `Retry-After`. Unset means no limit. |
 | `tenantId` | Tenant in the token authority. Defaults to a GUID derived from the site id. |
 | `organizationId`, `uniqueName`, `friendlyName` | Organization identity returned by `WhoAmI` and `RetrieveCurrentOrganization`. |
@@ -192,7 +192,7 @@ These endpoints live under the local administration API (`/_sim/`).
 | Method and path | Effect |
 | --- | --- |
 | `GET /_sim/api/dataverse` | Status: origins (`origin`, `tlsOrigin`), certificate file and fingerprint, authority, tenant, applications, users (with `passwordSet`), roles, requests. |
-| `POST /_sim/api/dataverse/applications` | Body `{ displayName, appId?, roles?, publicClient?, redirectUris?, allowedGrants? }`. 201 `{ appId, systemuserid, secret }`. The secret is shown once. |
+| `POST /_sim/api/dataverse/applications` | Body `{ displayName, appId?, roles?, publicClient?, redirectUris?, allowedGrants? }`. 201 `{ appId, systemuserid, secret }`. The secret is shown once. A public client (`publicClient: true`) uses only the authorization code, device code, refresh token and password (ROPC) grants. `redirectUris` must be http(s) URLs and `allowedGrants` names known grants. |
 | `POST /_sim/api/dataverse/applications/<appId>/secrets` | 201 `{ id, secret, hint, expiresOn }`. The secret is shown once. |
 | `DELETE /_sim/api/dataverse/applications/<appId>/secrets/<id>` | 204. |
 | `POST /_sim/api/dataverse/applications/<appId>/certificates` | Body `{ certificatePem }` (an X.509 certificate PEM; its SHA-1 and SHA-256 fingerprints become `x5t` / `x5t#S256`) or `{ publicKeyPem }` (a bare public key; digests of its DER SPKI). 201 `{ thumbprint, thumbprint256 }`. |
@@ -200,7 +200,6 @@ These endpoints live under the local administration API (`/_sim/`).
 | `POST /_sim/api/dataverse/users` | Body `{ fullname, domainname, objectId?, roles?, accessmode?, businessUnitId?, password? }`. 201 `{ systemuserid, azureactivedirectoryobjectid }`. |
 | `PATCH /_sim/api/dataverse/users/<systemuserid>` | Body `{ roles?, isdisabled?, accessmode?, password? }`. 200. |
 | `GET /_sim/api/dataverse/requests` | Ring buffer of recent Web API requests. |
-| `POST /_sim/api/dataverse/token` | Test convenience: body `{ appId }` returns `{ access_token }` for an application user, without a secret round-trip. |
 
 Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets appear only in the create responses above. Subsequent reads show `hint` and `expiresOn`. A `password` is 8 to 256 characters, stored hashed, and never returned; reads show only `passwordSet`. The request log never contains tokens.
 
