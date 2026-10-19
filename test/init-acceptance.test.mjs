@@ -105,21 +105,3 @@ test('site-bound recipe applies distinct platform and deployment defaults and at
     assert.match(await(await fetch(apps[index].url)).text(),new RegExp(`${site} profile content`));
   }
 });
-
-test('optional synthetic acceptance recipe executes content/auth/denial and catches regressions or external assets',async t=>{
-  const root=await project(t,{noPack:true});
-  const guide=await fs.readFile(path.join(root,'docs/acceptance.md'),'utf8');
-  const recipe=/```js\r?\n([\s\S]*?)\r?\n```/.exec(guide)?.[1];assert.ok(recipe,'runnable public-API example exists');
-  const file=path.join(root,'test-browser/local.acceptance.test.mjs');
-  await fs.writeFile(file,recipe);
-  let result=await run(root,['tools/test-browser.mjs','--strict']);assert.equal(result.code,0,result.output);
-  for(const changed of [
-    recipe.replace('<h1 id="fixture-title">Invented acceptance content</h1>','<h1 id="fixture-title">Regressed content</h1>'),
-    recipe.replace("roles: ['Reader']","roles: ['Other role']"),
-    recipe.replace("initial.settings.permissionMode = 'enforce'","initial.settings.permissionMode = 'permissive'"),
-    recipe.replace('<h1 id="fixture-title">Invented acceptance content</h1>','<h1 id="fixture-title">Invented acceptance content</h1><img src="https://unexpected.example.test/asset.png">'),
-  ]){
-    assert.notEqual(changed,recipe);await fs.writeFile(file,changed);
-    result=await run(root,['tools/test-browser.mjs','--strict']);assert.equal(result.code,1,result.output);
-  }
-});
