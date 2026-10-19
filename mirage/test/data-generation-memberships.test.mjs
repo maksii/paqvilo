@@ -59,6 +59,16 @@ test('materialization rejects absent or ambiguous roles and missing or inactive 
   assert.deepEqual(state, before);
 });
 
+test('materialization and membership identity agree on decorated contact and exported role GUIDs',()=>{
+  const data=fragment();data.tables.contact[0].contactid=`(${contactId.toUpperCase()})`;
+  const decoratedPortal={records:[{kind:'webrole',id:`(${roleId.toUpperCase()})`,name:'Reviewer'}]};
+  const merged=mergeDataset(initial(),data,{materializePersonaMemberships:true,portal:decoratedPortal});
+  assert.deepEqual(merged.state.simulator.contactRoles.at(-1),{contactId,roleId});
+  const identity=resolvePortalIdentity(decoratedPortal,merged.state,{contactId:`{${contactId}}`,roleSource:'memberships'});
+  assert.equal(identity.contactId,contactId);
+  assert.deepEqual(identity.roles,['Reviewer']);
+});
+
 test('data generate CLI materializes memberships only when opted in and remains idempotent', async t => {
   const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'generate-memberships-'));
   t.after(() => fs.rm(directory, { recursive: true, force: true }));
@@ -83,4 +93,16 @@ export default { id: 'fixture', name: 'Fixture', description: 'Invented data', m
   assert.deepEqual(after.simulator.identity, before.simulator.identity);
   assert.deepEqual(after.simulator.contactRoles, [...before.simulator.contactRoles, { contactId, roleId }]);
   assert.equal((await execute(['--materialize-persona-memberships', '--source', source])).addedMemberships, 0);
+  const unchanged=await fs.readFile(stateFile,'utf8');
+  await assert.rejects(execute(['unexpected']),/unexpected positional arguments/);
+  await assert.rejects(execute(['--rows','3']),/--rows is supported only by data scaffold/);
+  assert.equal(await fs.readFile(stateFile,'utf8'),unchanged,'unknown positional arguments cannot write state');
+  await fs.writeFile(path.join(directory,'dataset.json'),JSON.stringify({tables:{contact:[null]}}));
+  await assert.rejects(execute([]),/Dataset.tables.contact rows must be objects/);
+  assert.equal(await fs.readFile(stateFile,'utf8'),unchanged,'malformed dataset rows cannot replace state');
+  for(const invalid of [null,[],false]){
+    await fs.writeFile(path.join(directory,'dataset.json'),JSON.stringify(invalid));
+    await assert.rejects(execute([]),/Dataset must be a dataset object/);
+    assert.equal(await fs.readFile(stateFile,'utf8'),unchanged,'invalid pack output cannot replace state');
+  }
 });

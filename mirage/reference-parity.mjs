@@ -9,11 +9,19 @@ import { createPortalSession } from './testing/sessions.mjs';
 const hash = value => createHash('sha256').update(JSON.stringify(value) ?? 'null').digest('hex');
 const loopback = host => ['127.0.0.1', 'localhost', '[::1]'].includes(host);
 const canonical = value => Array.isArray(value) ? value.map(canonical) : value && typeof value === 'object' ? Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])])) : value;
-const fieldAt = (value, selector) => selector.split('.').reduce((current, key) => current?.[key], value);
+const fieldAt = (value, selector) => selector.split('.').reduce((current, key) => current !== null && typeof current === 'object' && Object.hasOwn(current, key) ? current[key] : undefined, value);
 const visitorSignature = session => hash({ signedIn: session.signedIn, contactId: session.contactId, roles: session.roles, roleSource: session.roleSource });
+function validateContractOptions(contract) {
+  if (!contract || typeof contract !== 'object' || Array.isArray(contract)) throw new Error('Each reference contract must be an object.');
+  for (const option of ['statusOnly', 'unordered']) if (contract[option] !== undefined && typeof contract[option] !== 'boolean') throw new Error(`Contract ${option} must be a boolean.`);
+  if (contract.collection !== undefined && typeof contract.collection !== 'string') throw new Error('Contract collection must be a string selector.');
+  if (contract.fields !== undefined && (!Array.isArray(contract.fields) || Array.from(contract.fields).some(key => typeof key !== 'string'))) throw new Error('Contract fields must be strings.');
+  if (contract.kind !== undefined && !['json', 'text'].includes(contract.kind)) throw new Error('Contract kind must be json or text.');
+}
 
 /** Explicit projection prevents volatile annotations from masking useful record parity. */
 export function normalizeContract(body, contract) {
+  validateContractOptions(contract);
   if (contract.statusOnly) return null;
   if (contract.kind === 'text') return String(body).replace(/\r\n/g, '\n');
   const parsed = typeof body === 'string' ? JSON.parse(body) : body;
@@ -41,13 +49,12 @@ export async function compareReferenceContracts({ localUrl, origin, cdpUrl, cont
   if (!Array.isArray(contracts) || !contracts.length || contracts.length > 100) throw new Error('Supply 1–100 explicit read contracts.');
   const ids = new Set();
   for (const contract of contracts) {
-    if (!contract.id || ids.has(contract.id)) throw new Error('Contracts require unique IDs.');
+    validateContractOptions(contract);
+    if (typeof contract.id !== 'string' || !contract.id.trim() || contract.id.length > 160 || ids.has(contract.id)) throw new Error('Contracts require unique string IDs of 1–160 characters.');
     ids.add(contract.id);
     validateLivePath(contract.path);
-    if (contract.method && contract.method !== 'GET') throw new Error('Reference parity accepts only GET reads.');
-    if (contract.kind && !['json', 'text'].includes(contract.kind)) throw new Error('Contract kind must be json or text.');
+    if (contract.method !== undefined && contract.method !== 'GET') throw new Error('Reference parity accepts only GET reads.');
     if (contract.expectedStatus !== undefined && (!Number.isInteger(contract.expectedStatus) || contract.expectedStatus < 100 || contract.expectedStatus > 599)) throw new Error('Expected HTTP status is invalid.');
-    if (contract.fields && (!Array.isArray(contract.fields) || contract.fields.some(key => typeof key !== 'string'))) throw new Error('Contract fields must be strings.');
     if (contract.expectedCount !== undefined && (!Number.isInteger(contract.expectedCount) || contract.expectedCount < 0)) throw new Error('Expected count must be a nonnegative integer.');
     if (contract.statusOnly && (contract.fields || contract.collection || contract.expectedCount !== undefined)) throw new Error('Status-only contracts cannot assert response data.');
     if (contract.prefer !== undefined && !/^odata\.maxpagesize=[1-9]\d{0,5}$/i.test(contract.prefer)) throw new Error('Only an explicit odata.maxpagesize preference is supported.');

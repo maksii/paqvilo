@@ -34,3 +34,19 @@ test('a failed future page attachment stays visible after its asynchronous setup
   await assert.rejects(observer.settle(), /future attachment failed/);
   await observer.dispose(); assert.equal(listeners(context).length, 0); assert.equal(listeners(page).length, 0);
 });
+
+test('context settling bounds pending attachment by the same deadline as page work', { timeout: 2000 }, async () => {
+  const context = new EventEmitter(); context.pages = () => [];
+  const observer = await observeContextLifecycle(context, options);
+  let rejectAttachment;
+  const page = new EventEmitter(); page.context = () => ({ newCDPSession: () => new Promise((_resolve, reject) => { rejectAttachment = reject; }) });
+  context.emit('page', page);
+  try {
+    const report = await observer.settle({ timeout: 30 });
+    assert.equal(report.settled, false); assert.equal(report.passed, false); assert.equal(report.pendingAttachments, 1);
+    assert.ok(report.waitedMs < 500, 'attachment does not escape the caller deadline');
+  } finally {
+    rejectAttachment(new Error('invented slow attachment failure'));
+    await new Promise(resolve => setImmediate(resolve)); await observer.dispose();
+  }
+});

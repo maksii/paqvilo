@@ -15,6 +15,19 @@ test('reference projections preserve nulls, missing-field errors, ordering and e
   assert.throws(() => normalizeContract({ value: [{ id: 1 }] }, plan), /configured field/);
   assert.throws(() => normalizeContract({}, plan), /collection/);
   assert.equal(normalizeContract('Not JSON', { statusOnly: true }), null);
+  assert.throws(()=>normalizeContract({value:[]},{statusOnly:'false'}),/statusOnly must be a boolean/);
+  assert.throws(()=>normalizeContract({}, {fields:['constructor']}),/configured field/);
+  assert.throws(()=>normalizeContract({}, {fields:['toString']}),/configured field/);
+  assert.deepEqual(normalizeContract(JSON.parse('{"constructor":"explicit value"}'),{fields:['constructor']}),{constructor:'explicit value'});
+  assert.deepEqual(normalizeContract({items:['first','second']},{fields:['items.0']}),{'items.0':'first'});
+});
+
+test('malformed reference options fail before local or reference reads instead of weakening comparison',async()=>{
+  let requests=0;
+  const options={localUrl:'http://127.0.0.1:1',origin:'https://reference.invalid',outputDir:'unused-evidence',contracts:[],bridge:{request:async()=>{requests++;return{status:200,body:'{}'};}}};
+  const valid={id:'valid',path:'/_api/widgets'};
+  for(const contract of [null,[],{...valid,id:{secret:'must not be copied'}},{...valid,id:'x'.repeat(161)},{...valid,statusOnly:'false'},{...valid,unordered:1},{...valid,collection:{}},{...valid,fields:[null]},{...valid,fields:Array(1)},{...valid,method:''},{...valid,kind:false}])await assert.rejects(compareReferenceContracts({...options,contracts:[valid,contract]}));
+  assert.equal(requests,0);
 });
 
 test('reference parity uses explicit local visitors, membership and override roles without changing runtime identity', async t => {

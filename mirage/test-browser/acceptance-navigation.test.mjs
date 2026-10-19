@@ -219,3 +219,28 @@ test('a reset navigation without an HTTP response remains a failed request',{tim
  const flow=await navigationFixture(t,{resetNavigation:true,completed:true,writeMs:100,documentDelay:300});
  assert.equal(flow.passed,false);assert.ok(flow.failedRequests.length>0);
 });
+
+test('a previously completed comparable redirect chain extends the next commit reserve', { timeout: 30000 }, async t => {
+ const directory = await fs.mkdtemp(path.join(os.tmpdir(), 'paqvilo-comparable-chain-'));
+ t.after(() => fs.rm(directory, { recursive: true, force: true }));
+ const markup = writes => `<p id="done">Invented page</p><form action="/save" method="POST"><button id="save">Save</button></form>${writes ? `<script>document.querySelector('form').addEventListener('submit',()=>{fetch('/slow-one',{method:'PATCH'}).catch(()=>{});fetch('/slow-two',{method:'POST'}).catch(()=>{});})</script>` : ''}`;
+ const server = http.createServer((req, res) => {
+  req.resume(); const pathname = new URL(req.url, 'http://fixture').pathname;
+  if (pathname.startsWith('/__sim/api/')) { res.setHeader('content-type','application/json'); return res.end(JSON.stringify(pathname.endsWith('/state') ? { config:{mode:'local',pageMode:'local',endpoints:[]},status:{sourceFingerprint:'fixture',implementationFingerprint:'fixture'} } : {items:[]})); }
+  if (pathname.startsWith('/slow-')) return;
+  res.setHeader('content-type','text/html');
+  if (['/save','/hop','/done'].includes(pathname)) {
+   const timer = setTimeout(() => { if (pathname !== '/done') { res.statusCode=303; res.setHeader('location',pathname === '/save' ? '/hop' : '/done'); res.end(); } else res.end(markup(true)); },800);
+   res.once('close',()=>clearTimeout(timer)); return;
+  }
+  res.end(markup(false));
+ });
+ await new Promise(resolve=>server.listen(0,'127.0.0.1',resolve));
+ t.after(async()=>{server.closeAllConnections();await new Promise(resolve=>server.close(resolve));});
+ const result = await runAcceptance({localUrl:`http://127.0.0.1:${server.address().port}`,outputDir:path.join(directory,'evidence'),timeout:5000,flows:[{name:'Comparable chain',steps:[{action:'navigate',path:'/'},{action:'click',selector:'#save'},{action:'visible',selector:'#done'},{action:'click',selector:'#save'},{action:'settle'},{action:'visible',selector:'#done'}]}]});
+ const flow=result.flows[0]; assert.equal(flow.passed,true,JSON.stringify(flow));
+ assert.ok(flow.navigationWaits.length>0);
+ assert.ok(flow.navigationWaits.every(wait=>wait.commitReservePolicy==='comparable-navigation-chain'&&wait.comparableNavigationMs>=2300&&wait.commitReserveMs>=3300),JSON.stringify(flow.navigationWaits));
+ assert.equal(flow.navigationCancelledRequests.length,2,'browser cancellations remain recorded without claiming those writes committed');
+ t.diagnostic(JSON.stringify({navigationWaits:flow.navigationWaits.map(({commitReservePolicy,comparableNavigationMs,commitReserveMs,waitedMs,settled})=>({commitReservePolicy,comparableNavigationMs,commitReserveMs,waitedMs,settled}))}));
+});

@@ -11,21 +11,37 @@ and loopback fixtures; they do not certify complete Power Pages parity.
 - **X-ray (176, 177, 190, 191):** reuse unchanged inspection results and source hints,
   restrict extra markup candidates to rendered elements, and display relative
   paths in truncation notes. Refresh checks source changes before rebuilding.
+  Large exports retain current-source hints across global cache eviction; exact
+  IDs take priority over broad class matches, and omitted oversized sources are
+  reported even when the page does not reference them. Refresh also checks explicitly
+  mapped external plugin source files without scanning their broader project roots.
 - **Acceptance (180, 183):** reserve a conservative portion of action time for
   document commits and expose a public request lifecycle observer for project-owned
   Playwright runners. Document lifecycle evidence is required to separate
-  superseded reads from failures; writes remain visible.
+  superseded reads from failures; writes remain visible. Context settling includes
+  newly opened pages and bounds attachment and observation with one deadline.
 - **CLI (181, 182):** screenshot result paths use the same relative display rules
   as errors; unknown Mirage commands suggest only nearby spellings.
 - **Identity (184, 185, 192):** configured-persona sign-in rejects missing contacts
   before posting; identity scope behavior is documented; reference parity accepts
   explicit local visitors without changing the runtime's configured identity.
+  Custom contact primary keys resolve memberships consistently, and malformed
+  comparison options fail before any local or reference reads.
 - **Diagnostics (186, 187):** `doctor --lint-profiles` optionally reports syntax
   errors in unbound exported profiles as warnings; ineligible system forms produce
-  one specific diagnostic per reference.
+  one specific diagnostic per reference, including advanced-form steps. JSON
+  syntax locations are consistent across supported Node versions.
 - **Generated data (193):** explicit opt-in persona membership materialization
   resolves exported web-role IDs. Default additive generation and catalogue
-  metadata continue to grant no memberships.
+  metadata continue to grant no memberships. Additive merges recognize equivalent
+  braced GUIDs, validate dataset shapes and reject misplaced CLI arguments before
+  writing. Own-property lookups keep inherited JavaScript names out of table reports
+  and schema definitions while preserving explicitly configured fields.
+- **Localized forms:** selected Solution language labels apply to tabs, sections,
+  cells and nested quick forms, including the existing local tab-label fallback
+  after name/ID matching.
+- **Security checks:** the required Security gate checks open CodeQL findings for
+  the analyzed ref after processing, in addition to successful analysis jobs.
 
 ### Upgrade notes
 

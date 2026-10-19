@@ -98,3 +98,29 @@ test('unreferenced snippets inserted in open shadow roots retain source candidat
   assert.equal(observed.ids.filter(id=>id==='slotted-light').length,1,'slot assignment does not visit the light node twice');
   assert.equal(observed.markupTokens.some(token=>token.includes('paqvilo-xray')||token==='class:div:shield'),false);
 });
+
+test('an exact shadow ID remains attributable after an earlier common class reaches the candidate cap',async t=>{
+  const {fx,page,inspect}=await fixture(t,'<b class="crowded">Invented shared markup</b><section id="host"></section>');
+  const rows=Array.from({length:1250},(_,index)=>({adx_contentsnippetid:'crowded-'+index,adx_name:'Crowded '+index,adx_value:'<b class="crowded"></b>'}));
+  rows.push({adx_contentsnippetid:'rare-shadow',adx_name:'Exact shadow identity',adx_value:'<aside id="rare-shadow"></aside>'});
+  fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify(rows));
+  await page.evaluate(()=>document.getElementById('host').attachShadow({mode:'open'}).innerHTML='<aside id="rare-shadow"></aside>');
+  const report=await inspect();
+  assert.equal(report.elementSourceLimits.candidateTruncated,true);
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title),'Exact shadow identity');
+});
+
+test('X-ray warns about oversized unreferenced sources without presenting them as selected-element matches',async t=>{
+  const {fx,page,inspect}=await fixture(t,'<aside id="oversize-visible">Invented</aside>');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Oversize.contentsnippet.yml'),'adx_contentsnippetid: oversize\nadx_name: Oversize');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Oversize.contentsnippet.value.html'),'<aside id="oversize-visible">PRIVATE_BODY_SENTINEL</aside>'+' '.repeat(1024*1024));
+  const report=await inspect();
+  assert.equal(report.elementSources.some(row=>row.name==='Oversize'),false);
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.select(document.querySelector('aside')));
+  const text=await page.locator('#paqvilo-xray .content').innerText();
+  assert.ok(text.includes('Export-wide markup index omitted 1 oversized source:'));
+  assert.ok(text.includes('content-snippets/Oversize.contentsnippet.value.html'));
+  assert.ok(text.includes('Omitted sources are not attributed to this element.'));
+  assert.equal(text.includes('PRIVATE_BODY_SENTINEL'),false);
+  assert.equal(text.includes(fx.portal),false);
+});

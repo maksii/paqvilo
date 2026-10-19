@@ -157,6 +157,10 @@ Supplied sessions remain caller-owned; temporary visitors are closed after compa
 No option changes the configured runtime identity, creates grants or changes reference
 browser identity. Reports include only a local identity fingerprint and sign-in status;
 cookies/CSRF values are never persisted. A changed visitor identity makes comparison fail.
+Contract IDs are unique strings of 1–160 characters. `statusOnly` and `unordered`
+accept booleans; string values such as `"false"` fail validation before reads.
+`collection` and `fields` select own JSON properties; absent fields and inherited
+prototype properties cannot count as matching response data.
 
 `paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
 `schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
@@ -247,7 +251,11 @@ and async `dispose()`. `settle()` returns `settled`, `passed`, `waitedMs`, `requ
 `pendingRequests`, `supersededReads`, `failures`, `overflow`, `disposed` and `closed`.
 `settled` means tracked portal work is no longer pending and the quiet period elapsed;
 `passed` additionally requires no failures. Context `settle()` returns per-page reports in
-`pages` with aggregate `settled` and `passed`. Context attachment errors are thrown by
+`pages` with aggregate `settled` and `passed`, `waitedMs` and `pendingAttachments`.
+Pages created while settling join the same observation, and attachment and page work
+share the requested timeout. Page reports are refreshed after waiting so activity on
+an earlier quiet page cannot be hidden by its old result. Pending attachment prevents
+success. Context attachment errors are thrown by
 `ready()`/`settle()`. Dispose removes observer listeners and CDP sessions without closing pages
 or the context. Stop using a disposed observer; it cannot report successful settling.
 

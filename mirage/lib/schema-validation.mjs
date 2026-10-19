@@ -19,7 +19,7 @@ function fieldEntry(definition) {
 export function schemaFieldIndex(schema, tableNames) {
   const tables = {};
   for (const name of [...new Set(tableNames)].sort()) {
-    const table = schema.tables[name];
+    const table = Object.hasOwn(schema.tables, name) ? schema.tables[name] : undefined;
     if (!table?.schemaComplete) continue;
     const fields = {};
     for (const [field, definition] of Object.entries(tableFields(schema, name, { provenance: false }))) fields[field] = fieldEntry(definition);
@@ -63,12 +63,12 @@ export function schemaViolations(tables, index, { idColumn = (table) => `${table
     found.set(key, entry);
   };
   for (const [table, rows] of Object.entries(tables)) {
-    const definition = index.tables[table];
+    const definition = Object.hasOwn(index.tables, table) ? index.tables[table] : undefined;
     if (!definition?.schemaComplete || !Array.isArray(rows)) continue;
     for (const row of rows)
       for (const [column, value] of Object.entries(row)) {
         if (column.startsWith("__") || column.startsWith("@")) continue;
-        if (!(column in definition.fields)) {
+        if (!Object.hasOwn(definition.fields, column)) {
           add(table, column, "unknown-column", row);
           continue;
         }

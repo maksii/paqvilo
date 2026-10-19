@@ -2,6 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import YAML from 'yaml';
+import { jsonErrorLocation } from './json-diagnostics.mjs';
 
 export const PROFILE_SECTIONS = Object.freeze(['pages', 'environmentVariables', 'connectionReferences']);
 const object = value => value && typeof value === 'object' && !Array.isArray(value);
@@ -81,10 +82,8 @@ export async function loadDeploymentProfiles(config, pin = null) {
       try { parsed = /\.json$/i.test(file) ? JSON.parse(source) : YAML.parse(source); }
       catch(cause) {
         const relative=path.relative(config.configDirectory??process.cwd(),file).replaceAll('\\','/');
-        const position=/position (\d+)/.exec(cause.message??'');
-        const prefix=position?source.slice(0,Number(position[1])):'';
-        const line=cause.linePos?.[0]?.line??(position?prefix.split('\n').length:Number(/line (\d+)/.exec(cause.message??'')?.[1]??1));
-        const column=cause.linePos?.[0]?.col??(position?prefix.length-prefix.lastIndexOf('\n'):Number(/column (\d+)/.exec(cause.message??'')?.[1]??1));
+        const location=/\.json$/i.test(file)?jsonErrorLocation(source):{line:cause.linePos?.[0]?.line??1,column:cause.linePos?.[0]?.col??1};
+        const {line,column}=location;
         const parserCode=cause.code??'JSON_SYNTAX_ERROR';
         fail(`Deployment profile '${selection.profile}' ${section} file '${relative}' is invalid JSON/YAML (${parserCode}, line ${line}, column ${column}).`,{file:relative,section,parserCode,line,column});
       }

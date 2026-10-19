@@ -260,6 +260,7 @@ export async function importSolutionMetadata(
   fingerprint.update(plugins.fingerprint);
   diagnostics.push(...plugins.diagnostics);
   const metadata = {
+    lcid,
     roots: scan.inputs.filter((input) => !["missing", "unsupported"].includes(input.type)).map((input) => input.input),
     layers: schema.layers,
     entities: tables,
@@ -294,7 +295,7 @@ export async function importSolutionMetadata(
 function formSchema(form, definition, metadata, dependencyDepth = 0) {
   if (dependencyDepth > 8)
     throw new Error("Quick form dependency nesting exceeds eight levels");
-  const tree = parseSolutionXml(form.xml);
+  const tree = parseSolutionXml(form.xml), lcid = metadata.lcid ?? 1033;
   const customControls = new Map(descendants(tree, 'controlDescription').map(description => {
     const variants = descendants(description, 'customControl').filter(control => control.attrs.name).map(control => {
       const parameters = Object.create(null);
@@ -350,7 +351,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
   let chosen = tabs;
   if (selectedTab) {
     const byName = tabs.find((t) => norm(t.attrs.name) === selectedTab || norm(t.attrs.id) === selectedTab);
-    const byLabel = byName ? null : tabs.find((t) => norm(label(child(t, "labels"))) === selectedTab);
+    const byLabel = byName ? null : tabs.find((t) => norm(label(child(t, "labels"), lcid)) === selectedTab);
     const tab = byName ?? byLabel ?? visibleTabs[0] ?? null;
     tabSelection = { requested: field(definition.metadata, "tabname"), matched: byName ? "name" : byLabel ? "label" : tab ? "first-visible" : "none", tab: tab?.attrs.name ?? null };
     chosen = tab ? [tab] : [];
@@ -381,7 +382,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               cells.push({
                 type: "notes",
                 id: control.attrs.id,
-                label: label(child(cell, "labels")) || "Notes",
+                label: label(child(cell, "labels"), lcid) || "Notes",
                 showLabel: cell.attrs.showlabel !== "false",
                 hidden: cell.attrs.visible === "false",
                 colspan: Number(cell.attrs.colspan) || 1,
@@ -397,7 +398,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                 url: text(parameters, "Url"),
                 scrolling: text(parameters, "Scrolling") || "auto",
                 border: text(parameters, "Border") === "true",
-                label: label(child(cell, "labels")),
+                label: label(child(cell, "labels"), lcid),
                 showLabel: cell.attrs.showlabel !== "false",
                 colspan: Number(cell.attrs.colspan) || 1,
                 rowspan: Number(cell.attrs.rowspan) || 1,
@@ -427,7 +428,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                   ...f,
                 })),
                 fetchXml: view?.fetchXml,
-                label: label(child(cell, "labels")),
+                label: label(child(cell, "labels"), lcid),
                 // A hidden label leaves the subgrid heading empty (live Contact form ActionCards).
                 ...(cell.attrs.showlabel === "false" ? { showLabel: false } : {}),
                 colspan: Number(cell.attrs.colspan) || 1,
@@ -455,7 +456,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                   ? formSchema(
                       quickForm,
                       {
-                        name: label(child(cell, "labels")) ?? quickForm.name,
+                        name: label(child(cell, "labels"), lcid) ?? quickForm.name,
                         mode: 100000002,
                         metadata: {},
                       },
@@ -463,7 +464,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
                       dependencyDepth + 1,
                     )
                   : null,
-                label: label(child(cell, "labels")),
+                label: label(child(cell, "labels"), lcid),
                 colspan: Number(cell.attrs.colspan) || 1,
               });
               continue;
@@ -481,7 +482,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
               ...known[name],
               name,
               id: control.attrs.id ?? name,
-              label: label(child(cell, "labels")) ?? known[name]?.label ?? name,
+              label: label(child(cell, "labels"), lcid) ?? known[name]?.label ?? name,
               // Form XML read-only; column create/update validity (validForCreate/validForUpdate)
               // applies to the mode the form renders in (an inactive record renders read-only).
               readOnly: control.attrs.disabled === "true",
@@ -518,7 +519,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
         }
         sections.push({
           name: section.attrs.name,
-          label: label(child(section, "labels")),
+          label: label(child(section, "labels"), lcid),
           showLabel: section.attrs.showlabel === "true",
           columnWidths: /^1{1,4}$/.test(section.attrs.columns ?? "") ? [...section.attrs.columns].map(() => 100 / section.attrs.columns.length) : undefined,
           rows,
@@ -528,7 +529,7 @@ function formSchema(form, definition, metadata, dependencyDepth = 0) {
     }
     layout.push({
       name: tab.attrs.name,
-      label: label(child(tab, "labels")),
+      label: label(child(tab, "labels"), lcid),
       showLabel: tab.attrs.showlabel === "true",
       columns,
     });
@@ -753,6 +754,7 @@ export function applySolutionMetadata(portal, metadata) {
           mode: field(step, "mode", 100000000),
           metadata: step,
         };
+        const diagnosticStart = diagnostics.length;
         const schema = resolve(definition);
         if (schema) {
           schema.stepId = step.id;
@@ -761,7 +763,7 @@ export function applySolutionMetadata(portal, metadata) {
           schema.metadata = step;
           schemas.push(schema);
           componentSchemas[step.id] = schema;
-        } else diagnostics.push({ code: 'ADVANCEDFORM_STEP_UNRESOLVED', id: step.id, form: form.id, entity: definition.entityName, formName: definition.formName, message: 'The exported load step has no matching eligible Dataverse systemform layout.' });
+        } else if (!diagnostics.slice(diagnosticStart).some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE')) diagnostics.push({ code: 'ADVANCEDFORM_STEP_UNRESOLVED', id: step.id, form: form.id, entity: definition.entityName, formName: definition.formName, message: 'The exported load step has no matching eligible Dataverse systemform layout.' });
       } catch (error) {
         diagnostics.push({
           code: "ADVANCEDFORM_STEP_MAPPING_ERROR",

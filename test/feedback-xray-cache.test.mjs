@@ -97,3 +97,102 @@ test('an edit during import is observed by the next refresh instead of becoming 
   inspector.invalidate();
   assert.ok((await inspector.inspect('/')).report.elementSources.some(row=>row.selector==='#edited-during-import'));
 });
+
+test('current-export hints survive global LRU and route eviction; changed, renamed and removed sources retain identity',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const rows=Array.from({length:4200},(_,index)=>({adx_webtemplateid:'beyond-cache-'+index,adx_name:'Beyond cache '+index,adx_source:`<aside id="beyond-${index}"></aside>`}));
+  const file=path.join(fx.portal,'webtemplate.yml');fs.writeFileSync(file,JSON.stringify(rows));
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),"{% include 'Beyond cache 0' %}{% include 'Beyond cache 4199' %}");
+  const inspector=createSourceInspector({sourceDir:fx.portal});
+  await inspector.inspect('/');const firstParses=elementSourceHintCacheStats().parses;
+  for(let index=0;index<18;index++)await inspector.inspect('/unresolved-route-'+index);
+  const revisited=await inspector.inspect('/');
+  assert.ok(revisited.report.elementSources.some(row=>row.selector==='#beyond-0'));
+  assert.equal(elementSourceHintCacheStats().parses,firstParses,'an evicted report reuses already indexed source hints');
+  assert.ok(inspector.stats().reports<=16);assert.ok(inspector.stats().reportBytes<=32*1024*1024);
+  assert.ok(elementSourceHintCacheStats().entries<=4096,'the global source cache bound is retained');
+  rows[4199].adx_source+='<b id="changed-beyond-cache"></b>';fs.writeFileSync(file,JSON.stringify(rows));inspector.invalidate();
+  const changed=await inspector.inspect('/');
+  assert.ok(changed.report.elementSources.some(row=>row.selector==='#changed-beyond-cache'));
+  assert.equal(elementSourceHintCacheStats().parses,firstParses+1,'one changed body above the LRU capacity causes one parse');
+  rows[4199].adx_name='Renamed beyond cache';fs.writeFileSync(file,JSON.stringify(rows));inspector.invalidate();
+  const renamed=(await inspector.inspect('/',{markupTokens:['id:changed-beyond-cache']})).report;
+  assert.equal(renamed.elementSources.find(row=>row.selector==='#changed-beyond-cache').name,'Renamed beyond cache');
+  assert.equal(elementSourceHintCacheStats().parses,firstParses+1,'source name updates rebind cached hints without parsing markup');
+  const indexed=inspector.stats().indexedSources;
+  rows.pop();fs.writeFileSync(file,JSON.stringify(rows));inspector.invalidate();
+  const removed=(await inspector.inspect('/',{markupTokens:['id:changed-beyond-cache']})).report;
+  assert.equal(removed.elementSources.some(row=>row.selector==='#changed-beyond-cache'),false);
+  assert.equal(inspector.stats().indexedSources,indexed-1,'deleted sources leave the current export index');
+  assert.equal(elementSourceHintCacheStats().parses,firstParses+1);
+  fs.appendFileSync(path.join(fx.portal,'website.yml'),'\nadx_defaultlanguage: lang-en');
+  fs.writeFileSync(path.join(fx.portal,'websitelanguage.yml'),'- adx_websitelanguageid: lang-en\n  adx_name: English\n  adx_languagecode: en-US\n  adx_lcid: 1033\n- adx_websitelanguageid: lang-fr\n  adx_name: French\n  adx_languagecode: fr-FR\n  adx_lcid: 1036');
+  for(const [code,id] of [['en-US','en'],['fr-FR','fr']]){
+    const prefix=path.join(fx.portal,'web-pages/home/Home.'+code+'.webpage');
+    fs.writeFileSync(prefix+'.yml',`adx_webpageid: home-${id}\nadx_rootwebpageid: home\nadx_isroot: false\nadx_name: ${id} page\nadx_webpagelanguageid: lang-${id}\nadx_partialurl: /\nadx_pagetemplateid: main`);
+    fs.writeFileSync(prefix+'.copy.html',`<main id="${id}-page"></main>`);
+  }
+  inspector.invalidate();await inspector.inspect('/en-US/');
+  const beforeFrench=elementSourceHintCacheStats().parses;
+  const french=(await inspector.inspect('/fr-FR/')).report;
+  assert.equal(elementSourceHintCacheStats().parses,beforeFrench+1,'a new language parses its own page, reusing unchanged shared templates beyond global LRU capacity');
+  assert.equal(french.language.code,'fr-FR');assert.equal(french.page.title,'fr page');
+  fs.writeFileSync(path.join(fx.portal,'websitelanguage.yml'),'- adx_websitelanguageid: lang-en\n  adx_name: English\n  adx_languagecode: en-US\n  adx_lcid: 1033');
+  inspector.invalidate();await inspector.inspect('/en-US/');
+  assert.equal(inspector.stats().indexedLanguages,1,'removed language indexes and the earlier default-less index are discarded');
+});
+
+test('direct rendered IDs precede broad class buckets when the additional candidate budget is reached',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const rows=Array.from({length:1250},(_,index)=>({adx_contentsnippetid:'crowded-'+index,adx_name:'Crowded '+index,adx_value:'<b class="crowded"></b>'}));
+  rows.push({adx_contentsnippetid:'exact',adx_name:'Exact identity',adx_value:'<aside id="rare-exact"></aside>'});
+  fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify(rows));
+  const report=(await createSourceInspector({sourceDir:fx.portal}).inspect('/',{markupTokens:['class:b:crowded','id:rare-exact']})).report;
+  assert.ok(report.elementSources.some(row=>row.selector==='#rare-exact'));
+  assert.equal(report.elementSourceLimits.candidateTruncated,true);
+  assert.equal(report.elementSources.filter(row=>row.name?.startsWith('Crowded ')).length,1199);
+});
+
+test('oversized referenced and unreferenced markup marks the export index incomplete without source attribution',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const oversized='<aside id="oversize-visible">PRIVATE_BODY_SENTINEL</aside>'+' '.repeat(1024*1024);
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Oversize.contentsnippet.yml'),'adx_contentsnippetid: oversize\nadx_name: Oversize');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Oversize.contentsnippet.value.html'),oversized);
+  const inspector=createSourceInspector({sourceDir:fx.portal});
+  const first=(await inspector.inspect('/',{markupTokens:['id:oversize-visible']})).report;
+  assert.equal(first.snippets.some(row=>row.name==='Oversize'),false,'the source is not in the page include graph');
+  assert.equal(first.elementSources.some(row=>row.name==='Oversize'),false,'oversized source cannot be attributed from an unparsed body');
+  assert.equal(first.elementSourceLimits.markupIndexComplete,false);
+  assert.equal(first.elementSourceLimits.markupOmittedSourceCount,1);
+  assert.deepEqual(first.elementSourceLimits.markupOmittedSources,['content-snippets/Oversize.contentsnippet.value.html']);
+  assert.equal(first.elementSourceLimits.truncated,true);
+  assert.equal(first.elementSourceLimits.markupOmittedSourcesTruncated,false);
+  assert.doesNotMatch(JSON.stringify(first.elementSourceLimits),/PRIVATE_BODY_SENTINEL|[A-Za-z]:\\/);
+  fs.appendFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.copy.html'),'{{ snippets["Oversize"] }}');
+  inspector.invalidate();
+  const referenced=(await inspector.inspect('/')).report;
+  assert.ok(referenced.snippets.some(row=>row.name==='Oversize'));
+  assert.equal(referenced.elementSourceLimits.markupOmittedSourceCount,1,'referencing a source does not double count its omission');
+  assert.equal(referenced.elementSources.some(row=>row.selector==='#oversize-visible'),false);
+  assert.equal(referenced.elementSourceLimits.truncated,true);
+});
+
+test('export-wide omission summary counts all skipped sources but bounds display names and preserves the source-size boundary',async t=>{
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const prefix='<aside id="at-limit"></aside>',atLimit=prefix+' '.repeat(1024*1024-prefix.length);
+  const tooLarge=atLimit+' ';
+  fs.writeFileSync(path.join(fx.portal,'contentsnippet.yml'),JSON.stringify([
+    {adx_contentsnippetid:'at-limit',adx_name:'At limit',adx_value:atLimit},
+    ...Array.from({length:12},(_,index)=>({adx_contentsnippetid:'omitted-'+index,adx_name:'Omitted '+index,adx_value:tooLarge,private:'PRIVATE_PROPERTY_SENTINEL'})),
+  ]));
+  const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/',{markupTokens:['id:at-limit']});
+  const limits=report.elementSourceLimits;
+  assert.equal(limits.markupOmittedSourceCount,12);
+  assert.equal(limits.markupOmittedSources.length,10);
+  assert.equal(limits.markupOmittedSourceNameLimit,10);
+  assert.equal(limits.markupOmittedSourcesTruncated,true);
+  assert.ok(limits.markupOmittedSources.every(name=>name.length<=240&&!/[\\:]|^\//.test(name)));
+  assert.doesNotMatch(JSON.stringify(limits),/PRIVATE_PROPERTY_SENTINEL|at-limit/);
+  assert.ok(report.elementSources.some(row=>row.name==='At limit'),'exactly 1MiB of UTF-16 code units is eligible');
+  assert.equal(report.elementSources.some(row=>row.name?.startsWith('Omitted')),false);
+});

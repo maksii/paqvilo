@@ -12,6 +12,9 @@ async function fixture(t) {
     if (req.url === '/stream-error') { res.writeHead(500, { 'content-type': 'text/plain' }); res.write('invented failure'); return; }
     res.setHeader('content-type', 'text/html');
     if (req.url === '/child') return res.end(`<script>fetch('/pending-child').catch(()=>{})</script>`);
+    if (req.url === '/nested') return res.end(`<iframe src="http://localhost:${server.address().port}/child"></iframe><script>fetch('/pending-parent').catch(()=>{})</script>`);
+    if (req.url === '/replacement-with-read') return res.end(`<script>fetch('/pending-replacement').catch(()=>{})</script>`);
+    if (req.url === '/delayed-read') { const timer = setTimeout(() => res.end('done'), 350); res.once('close',()=>clearTimeout(timer)); return; }
     res.end('<p>invented lifecycle fixture</p>');
   });
   await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
@@ -123,4 +126,58 @@ test('a streaming HTTP error stays failed when its document is replaced', { time
   const result = await observer.settle();
   assert.equal(result.passed, false); assert.equal(result.failures.length, 1, JSON.stringify(result));
   assert.equal(result.failures[0].status, 500); assert.deepEqual(result.supersededReads, []);
+});
+
+test('a page created during context settling joins the same bounded observation', { timeout: 30000 }, async t => {
+  const { origin, context } = await fixture(t);
+  const observer = await observeContextLifecycle(context, { origin }); t.after(() => observer.dispose());
+  const pending = observer.settle({ timeout: 700, quietMs: 300 });
+  const late = await context.newPage(); await observer.ready(); await late.goto(origin);
+  await late.evaluate(() => { fetch('/pending-late').catch(() => {}); });
+  const result = await pending;
+  assert.equal(result.settled, false); assert.equal(result.passed, false);
+  assert.equal(result.pages.length, 2, JSON.stringify(result));
+  assert.ok(result.pages.some(page => page.pendingRequests.some(request => request.url.endsWith('/pending-late'))));
+  assert.ok(result.waitedMs < 1200, 'new pages share the original timeout');
+});
+
+test('nested frame replacement retires predecessor reads and preserves replacement work', { timeout: 30000 }, async t => {
+  const { origin, page } = await fixture(t);
+  const observer = await observePageLifecycle(page, { origin }); t.after(() => observer.dispose());
+  await page.goto(origin);
+  const parentRead = page.waitForRequest(request => request.url().endsWith('/pending-parent'));
+  const childRead = page.waitForRequest(request => request.url().endsWith('/pending-child'));
+  await page.evaluate(() => { const frame = document.createElement('iframe'); frame.src='/nested'; document.body.append(frame); });
+  await Promise.all([parentRead, childRead]);
+  const parent = page.frame({ url: origin + '/nested' });
+  await parent.evaluate(() => { history.pushState({}, '', '/nested?history=1'); location.hash='same-document'; });
+  const before = await observer.settle({ timeout: 50, quietMs: 0 });
+  assert.equal(before.pendingRequests.filter(request => /pending-(parent|child)$/.test(request.url)).length, 2);
+  assert.equal(before.supersededReads.length, 0);
+  await parent.goto(origin + '/replacement-with-read');
+  const after = await observer.settle({ timeout: 150, quietMs: 0 });
+  assert.equal(after.settled, false);
+  assert.ok(after.pendingRequests.some(request => request.url.endsWith('/pending-replacement')));
+  assert.equal(after.pendingRequests.some(request => /pending-(parent|child)$/.test(request.url)), false);
+  const predecessor = after.requests.find(request => request.url.endsWith('/pending-parent'));
+  assert.ok(['superseded-read','network-failure'].includes(predecessor.outcome));
+  if(predecessor.outcome==='superseded-read') assert.equal(predecessor.lifecycle.reason,'document-replaced');
+  else { assert.equal(predecessor.error,'net::ERR_ABORTED'); assert.equal(predecessor.lifecycle,undefined,'the parent also requires evidence available at failure time'); }
+  const child = after.requests.find(request => request.url.endsWith('/pending-child'));
+  assert.ok(['superseded-read','network-failure'].includes(child.outcome));
+  if(child.outcome==='network-failure') { assert.equal(child.error,'net::ERR_ABORTED'); assert.equal(child.lifecycle,undefined,'a later detach never rehabilitates an earlier abort'); }
+});
+
+test('context settling refreshes an earlier quiet page after another page finishes waiting', { timeout: 30000 }, async t => {
+  const { origin, context, page } = await fixture(t);
+  const observer = await observeContextLifecycle(context, { origin }); t.after(() => observer.dispose());
+  const other = await context.newPage(); await observer.ready();
+  await Promise.all([page.goto(origin), other.goto(origin)]);
+  await other.evaluate(() => { fetch('/delayed-read').catch(()=>{}); });
+  const resultPromise = observer.settle({ timeout: 700, quietMs: 75 });
+  await page.waitForTimeout(125);
+  await page.evaluate(() => { fetch('/pending-after-quiet').catch(()=>{}); });
+  const result = await resultPromise;
+  assert.equal(result.settled,false); assert.equal(result.passed,false);
+  assert.ok(result.pages.some(row=>row.pendingRequests.some(request=>request.url.endsWith('/pending-after-quiet'))),JSON.stringify(result));
 });

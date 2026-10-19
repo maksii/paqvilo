@@ -72,6 +72,7 @@ jobs:
       - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4
         with:
           category: /language:${{ matrix.language }}
+          wait-for-processing: true
 
   gate:
     name: Security gate
@@ -79,6 +80,9 @@ jobs:
     needs: [changes, dependency-review, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: read
+      security-events: read
     steps:
       - name: Require applicable security jobs
         env:
@@ -90,3 +94,14 @@ jobs:
           EVENT: ${{ github.event_name }}
         run: |
           node -e "const e=process.env;const want=(required,result)=>result===(required?'success':'skipped');if(e.SCOPE_RESULT!=='success'||!want(e.RUNTIME==='true',e.CODEQL)||!want(e.EVENT==='pull_request'&&e.DEPENDENCIES==='true',e.REVIEW))process.exit(1)"
+      - name: Require no open CodeQL findings
+        if: needs.changes.outputs.runtime == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          open_alert_count="$(gh api --method GET "repos/${GITHUB_REPOSITORY:?Repository is required}/code-scanning/alerts" -f "ref=${GITHUB_REF:?Analyzed ref is required}" -f state=open -f tool_name=CodeQL -F per_page=1 --jq 'if type == "array" then length else error("Unexpected code scanning response") end')"
+          if [ "$open_alert_count" != "0" ]; then
+            echo "::error::CodeQL has open findings for the analyzed ref. Review the code scanning results."
+            exit 1
+          fi

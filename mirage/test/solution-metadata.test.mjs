@@ -34,6 +34,40 @@ test('imported Solution date display preserves TimeZoneIndependent instant stora
   assert.equal(isDateOnlyField(field),false);
   assert.equal(formattedValue('2025-02-07T00:00:00Z',field),'2/7/2025');
 });
+test('selected metadata LCID localizes form fields, layout, tab matching and nested quick forms', async t => {
+  const localized = (english, polish) => `<labels><label description="${english}" languagecode="1033"/><label description="${polish}" languagecode="1045"/></labels>`;
+  const xml = (id, title, fieldLabel, quick = '') => `<systemform><formid>${id}</formid><FormActivationState>1</FormActivationState><form><tabs><tab name="tab-main">${localized('General', 'Ogólne')}<columns><column><sections><section name="section-main">${localized('Main section', 'Sekcja główna')}<rows><row><cell>${localized(fieldLabel, 'Pole ' + fieldLabel)}<control id="fullname" datafieldname="fullname"/></cell></row>${quick}</rows></section></sections></column></columns></tab></tabs></form><LocalizedNames><LocalizedName description="${title}" languagecode="1033"/><LocalizedName description="Formularz ${title}" languagecode="1045"/></LocalizedNames></systemform>`;
+  const quick = `<row><cell>${localized('Quick form', 'Szybki formularz')}<control id="ContactQuick" datafieldname="fullname"><parameters><QuickForms>&lt;QuickForms&gt;&lt;QuickFormId entityname="contact"&gt;quick-form&lt;/QuickFormId&gt;&lt;/QuickForms&gt;</QuickForms></parameters></control></cell></row>`;
+  const root = await fixture(t, {
+    'Entities/Contact/Entity.xml': entity,
+    'Entities/Contact/FormXml/main/form.xml': xml('main-form', 'Main', 'Name', quick),
+    'Entities/Contact/FormXml/quick/quick.xml': xml('quick-form', 'Quick', 'Quick name'),
+  });
+  const site = portal(); site.forms[0].metadata = { adx_formid: 'main-form', adx_tabname: 'Ogólne' };
+  const selected = await importSolutionMetadata(root, { portal: site, lcid: 1045 });
+  const schema = selected.componentSchemas['basic-form'];
+  assert.equal(selected.lcid, 1045);
+  assert.equal(schema.formName, 'Formularz Main'); assert.equal(schema.fields[0].label, 'Pole Name');
+  assert.equal(schema.tabSelection.matched, 'label'); assert.equal(schema.layout[0].label, 'Ogólne');
+  assert.equal(schema.layout[0].columns[0].sections[0].label, 'Sekcja główna');
+  const nested = schema.layout[0].columns[0].sections[0].rows.flat().find(cell => cell.type === 'quickform');
+  assert.equal(nested.label, 'Szybki formularz'); assert.equal(nested.schema.title, 'Szybki formularz');
+  assert.equal(nested.schema.fields[0].label, 'Pole Quick name');
+  const fallback = await importSolutionMetadata(root, { portal: site, lcid: 1036 });
+  assert.equal(fallback.componentSchemas['basic-form'].fields[0].label, 'Name', 'missing requested LCID keeps the first exported label fallback');
+});
+test('an ineligible advanced-form step keeps its specific diagnostic and its parent unresolved summary', async t => {
+  const root = await fixture(t, {
+    'Entities/Contact/Entity.xml': entity,
+    'Entities/Contact/FormXml/quick/quick.xml': form('Name'),
+  });
+  const site = portal(); site.forms = []; site.lists = [];
+  site.advancedForms = [{ id:'wizard',name:'Wizard',metadata:{adx_startstep:'step'} }];
+  site.records = [{ kind:'advancedformstep',id:'step',name:'Step',adx_webform:'wizard',adx_type:100000001,adx_targetentitylogicalname:'contact',adx_formid:'form-id' }];
+  const metadata = await importSolutionMetadata(root, { portal:site });
+  assert.deepEqual(metadata.diagnostics.filter(row=>row.id==='step').map(row=>row.code),['SYSTEMFORM_INELIGIBLE_TYPE']);
+  assert.deepEqual(metadata.diagnostics.filter(row=>row.id==='wizard').map(row=>row.code),['ADVANCEDFORM_UNRESOLVED']);
+});
 const view =
   '<savedqueries><savedquery><savedqueryid>{view-id}</savedqueryid><layoutxml><grid><row><cell name="fullname" width="200"/></row></grid></layoutxml><fetchxml><fetch><entity name="contact"><attribute name="fullname"/></entity></fetch></fetchxml><LocalizedNames><LocalizedName description="Portal contacts" languagecode="1033"/></LocalizedNames></savedquery></savedqueries>';
 const portal = () => ({

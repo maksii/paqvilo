@@ -96,7 +96,8 @@ test('inspection traces exported plugin steps applicable to page tables with typ
   fs.mkdirSync(path.dirname(code), { recursive: true }); fs.writeFileSync(code, 'namespace Invented.WidgetRules { class Validate {} }');
   const projectData = JSON.parse(JSON.stringify({ version: 2, portals: [{ id: 'fixture', path: './portal', observed: { evidence: 'Invented source mapping', pluginSources: { 'Invented.WidgetRules.Validate': { path: 'components/Plugins/Rules.cs', evidence: 'Exact source fixture' } } } }], solutions: [{ id: 'sample', path: './solution' }] }));
   const projectFile = path.join(fx.work, 'project.json'); fs.writeFileSync(projectFile, JSON.stringify(projectData));
-  const { report, roots } = await createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: projectFile } }).inspect('/');
+  const inspector = createSourceInspector({ sourceDir: fx.portal, mirageConfig: { project: projectFile } });
+  const { report, roots } = await inspector.inspect('/');
   const plugin = report.logic.find(item => item.kind === 'plugin-step');
   assert.equal(plugin.id, pluginId(7)); assert.equal(plugin.evidence, 'exported-table-registration'); assert.equal(plugin.effective, 'unknown');
   assert.equal(report.logic.filter(item => item.kind === 'plugin-step').length, 1);
@@ -105,6 +106,21 @@ test('inspection traces exported plugin steps applicable to page tables with typ
   assert.ok(roots.includes(path.dirname(code))); assert.equal(roots.includes(fx.work), false, 'broad project root is not exposed');
   assert.match(plugin.description, /input attributes: fx_title.*live execution unknown/);
   assert.deepEqual(report.pluginInventory, { assemblies: 1, types: 1, steps: 2, applicable: 1, effective: 'unknown' });
+  const initialReloads=inspector.stats().reloads;
+  fs.unlinkSync(code);inspector.invalidate();
+  const removed=await inspector.inspect('/');
+  assert.equal(removed.report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),false,'deleted mapped source cannot remain current evidence');
+  assert.equal(removed.roots.includes(path.dirname(code)),false);
+  assert.equal(inspector.stats().reloads,initialReloads+1);
+  fs.writeFileSync(code,'namespace Invented.WidgetRules { class Validate {} }');inspector.invalidate();
+  assert.ok((await inspector.inspect('/')).report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),'recreated mapped source is discovered');
+  assert.equal(inspector.stats().reloads,initialReloads+2);
+  fs.appendFileSync(code,'\n// Invented source edit');inspector.invalidate();await inspector.inspect('/');
+  assert.equal(inspector.stats().reloads,initialReloads+3,'a mapped file edit invalidates source evidence');
+  fs.writeFileSync(path.join(path.dirname(code),'Unrelated.cs'),'// Not mapped');inspector.invalidate();await inspector.inspect('/');
+  assert.equal(inspector.stats().reloads,initialReloads+3,'unrelated trusted-root files do not trigger a broad scan or reload');
+  const invalid=createSourceInspector({sourceDir:fx.portal,mirageConfig:{solutionRoots:[fx.solution],observed:{pluginSources:{'Invented.WidgetRules.Validate':{root:fx.work,path:'../outside.cs',evidence:'Invented invalid mapping'}}}}});
+  assert.equal((await invalid.inspect('/')).report.logic.some(item=>item.sources?.some(source=>source.kind==='plugin-code')),false,'invalid mappings stay unavailable instead of failing the fingerprint');
 });
 
 test('live inspection selects exported route languages and matching snippet source identity', async (t) => {

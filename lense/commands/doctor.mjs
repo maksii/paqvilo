@@ -8,6 +8,7 @@ import { mirageReadiness, observedText } from './mirage.mjs';
 import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
 import YAML from 'yaml';
+import { jsonErrorLocation } from '../../mirage/lib/json-diagnostics.mjs';
 
 /** Optional syntax lint of exported deployment profiles, independent of profile selection. */
 export function inspectExportProfiles(sourceDir, deploymentProfiles = {}) {
@@ -26,9 +27,9 @@ export function inspectExportProfiles(sourceDir, deploymentProfiles = {}) {
       const source = fs.readFileSync(file, 'utf8');
       const add = (code, line = 1, column = 1) => diagnostics.push({ code, file: path.relative(sourceDir, file).replaceAll('\\', '/'), line, column, bound: bound.has(path.resolve(file)), severity: 'warning', message: `Invalid deployment profile syntax (${code}).` });
       if (/\.json$/i.test(file)) {
-        try { JSON.parse(source); } catch (error) {
-          const position = /position (\d+)/.exec(error.message), prefix = position ? source.slice(0, Number(position[1])) : '';
-          add('JSON_SYNTAX_ERROR', position ? prefix.split('\n').length : Number(/line (\d+)/.exec(error.message)?.[1] ?? 1), position ? prefix.length - prefix.lastIndexOf('\n') : Number(/column (\d+)/.exec(error.message)?.[1] ?? 1));
+        try { JSON.parse(source); } catch {
+          const { line, column } = jsonErrorLocation(source);
+          add('JSON_SYNTAX_ERROR', line, column);
         }
       } else {
         const lines = new YAML.LineCounter(), document = YAML.parseDocument(source, { lineCounter: lines });

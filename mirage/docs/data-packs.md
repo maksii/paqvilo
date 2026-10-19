@@ -66,6 +66,18 @@ adds zero. Catalogue metadata alone never grants access. Explicit memberships st
 use the normal exported permissions and automatic authenticated/anonymous roles;
 see [Power Pages web-role assignment](https://learn.microsoft.com/en-us/power-pages/security/create-web-roles).
 
+Dataset fragments and base presets must be objects, with object mappings, arrays of
+row objects per table, and an optional array of permission objects. Malformed shapes
+and extra positional arguments fail before replacing state. Primary-key overlap and
+lookup validation use the shared Dataverse GUID comparison, including case and
+optional braces/parentheses; existing rows retain their local values. Non-GUID keys
+keep their existing case-insensitive comparison. Explicit mappings provide the ID
+columns and entity-set names; membership persona resolution uses the configured
+contact ID column (default `contactid`). These are local mapping contracts and do
+not change the actual platform's exported contact schema.
+`--rows` belongs to `data scaffold`; pack selection, `--count`, and membership
+materialization belong to `data generate`. Misplaced options fail instead of being ignored.
+
 Register project providers by their exported operation names when the default simulation is insufficient:
 
 ```js

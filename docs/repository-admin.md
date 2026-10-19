@@ -28,7 +28,12 @@ security checks required for administrators.
 CI runs static/release checks, supported Node versions, Windows/CLR regressions, loopback
 browser acceptance and installed-package smoke tests. Documentation-only changes use the
 workflow's narrower checks. The security workflow performs dependency review and CodeQL
-analysis. Inspect findings as well as job conclusions; a successful scan can report alerts.
+analysis. After successful analysis/processing, `Security gate` checks the analyzed
+ref for open CodeQL findings and fails when any remain or the alert API cannot be
+read. It uses read-only security permissions and does not check out or execute PR
+sources with that token. The first alert is enough to fail; pagination cannot hide
+additional findings. Inspect findings as well as job conclusions; a successful scan
+alone can report alerts.
 
 Report vulnerabilities through [private reporting](../SECURITY.md). Historical alert
 decisions live in the [CodeQL ledger](../.github/security/codeql-triage.json). New triage

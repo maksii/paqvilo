@@ -110,13 +110,13 @@ export async function observePageLifecycle(page, { origin, maxRecords = 10000 } 
 /** Observe existing and future pages in a project-owned Chromium context.
  * Await ready() after creating a page and before navigating it. */
 export async function observeContextLifecycle(context, options) {
-  const pages = new Map(), attaching = new Set(), errors = [];
-  let disposed = false;
+  const pages = new Map(), observers = new Map(), attaching = new Set(), errors = [];
+  let disposed = false, revision = 0;
   const attach = page => {
     if (disposed || pages.has(page)) return;
     const pending = observePageLifecycle(page, options);
-    pages.set(page, pending); attaching.add(pending);
-    void pending.then(observer => { if (disposed) return observer.dispose(); }, error => errors.push(error)).finally(() => attaching.delete(pending));
+    pages.set(page, pending); attaching.add(pending); revision++;
+    void pending.then(observer => { observers.set(page, observer); if (disposed) return observer.dispose(); }, error => errors.push(error)).finally(() => attaching.delete(pending));
   };
   context.on('page', attach);
   for (const page of context.pages()) attach(page);
@@ -131,10 +131,42 @@ export async function observeContextLifecycle(context, options) {
   try { await ready(); } catch (error) { await dispose(); throw error; }
   return {
     ready,
-    async settle(options) {
-      await ready();
-      const observations = await Promise.all([...pages.values()].map(async pending => (await pending).settle(options)));
-      return { pages: observations, settled: !disposed && observations.every(row => row.settled), passed: !disposed && observations.every(row => row.passed) };
+    async settle({ timeout = 5000, quietMs = 100, pollMs = 25 } = {}) {
+      if (![timeout, quietMs, pollMs].every(Number.isFinite) || timeout < 0 || quietMs < 0 || pollMs <= 0) throw new Error('Settling requires nonnegative finite timeout/quietMs and positive pollMs.');
+      const started = Date.now(), deadline = started + timeout;
+      const withinDeadline = async promise => {
+        let timer;
+        try {
+          return await Promise.race([
+            promise.then(value => ({ value })),
+            new Promise(resolve => { timer = setTimeout(() => resolve({ timedOut: true }), Math.max(0, deadline - Date.now())); }),
+          ]);
+        } finally { clearTimeout(timer); }
+      };
+      const incomplete = async () => ({
+        pages: await Promise.all([...observers.values()].map(observer => observer.settle({ timeout: 0, quietMs, pollMs }))),
+        pendingAttachments: attaching.size, waitedMs: Date.now() - started, settled: false, passed: false,
+      });
+      for (;;) {
+        if (disposed) return incomplete();
+        // Attachment and page settling share one deadline. New pages created while
+        // another page is settling must join this observation before it can pass.
+        if ((await withinDeadline(ready())).timedOut) return incomplete();
+        if (disposed) return incomplete();
+        if (attaching.size) { if (Date.now() >= deadline) return incomplete(); continue; }
+        const generation = revision;
+        const result = await withinDeadline(Promise.all([...observers.values()].map(observer => observer.settle({ timeout: Math.max(0, deadline - Date.now()), quietMs, pollMs }))));
+        if (result.timedOut) return incomplete();
+        if (errors.length) throw errors[0];
+        // A page can become busy again after its own settle completed while a
+        // different page was still waiting. Never return those earlier snapshots.
+        const current = await Promise.all([...observers.values()].map(observer => observer.settle({ timeout: 0, quietMs, pollMs })));
+        if (generation === revision && !attaching.size && current.every(row => row.settled)) return {
+          pages: current, pendingAttachments: 0, waitedMs: Date.now() - started,
+          settled: !disposed, passed: !disposed && current.every(row => row.passed),
+        };
+        if (Date.now() >= deadline) return incomplete();
+      }
     },
     dispose,
   };

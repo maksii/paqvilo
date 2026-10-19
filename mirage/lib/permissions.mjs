@@ -1,8 +1,9 @@
 import { portalField } from "./importer.mjs";
 import { accountWebRoleIds } from "./platform-changes.mjs";
+import { guidKey } from './dataverse-values.mjs';
 
 const id = (value) =>
-  String(value?.id ?? value ?? "")
+  guidKey(value?.id ?? value) ?? String(value?.id ?? value ?? "")
     .replace(/[{}]/g, "")
     .toLowerCase();
 const scalar = (value) =>
@@ -71,7 +72,7 @@ function membershipModel(portal, state) {
     roles = new Map(webRoles.map((role) => [role.id, role]));
   const contacts = new Map(
     (state.tables?.contact ?? []).map((contact) => [
-      id(contact.contactid),
+      id(contact[state.mappings?.contact?.idColumn ?? 'contactid']),
       contact,
     ]),
   );
@@ -675,13 +676,13 @@ export function buildPermissionModel(
         ? { type: "portal-export" }
         : { type: "local-configuration" }),
   }));
-  const personas = [...identityModel.contacts.values()].map((contact) => {
+  const personas = [...identityModel.contacts].map(([contactId]) => {
     const effective = resolvePortalIdentity(portal, state, {
-      contactId: contact.contactid,
+      contactId,
       roleSource: "memberships",
     }, identityModel);
     return {
-      contactId: id(contact.contactid),
+      contactId,
       name: effective.name,
       accountId: effective.accountId,
       roles: effective.roles,

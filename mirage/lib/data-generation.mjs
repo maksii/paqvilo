@@ -12,14 +12,36 @@ import { resolvePreset } from "./presets.mjs";
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from "./schema-validation.mjs";
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
 import { membershipsForRoles } from './permissions.mjs';
+import { guidKey } from './dataverse-values.mjs';
 
 const clone = (value) => structuredClone(value);
-const idColumnOf = (state, table) => state.mappings?.[table]?.idColumn ?? `${table}id`;
+const own = (value, key) => value != null && Object.hasOwn(value, key) ? value[key] : undefined;
+const idColumnOf = (state, table) => own(state.mappings, table)?.idColumn ?? `${table}id`;
+const rowKey = value => guidKey(value) ?? String(value).toLowerCase();
+const object = value => value !== null && typeof value === 'object' && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+const validName = value => typeof value === 'string' && /^[\w.-]+$/.test(value) && !['__proto__', 'constructor', 'prototype'].includes(value);
+
+function validateDatasetBody(value, label) {
+  if (!object(value)) throw new Error(`${label} must be a dataset object`);
+  for (const section of ['mappings', 'tables']) if (value[section] !== undefined && !object(value[section])) throw new Error(`${label}.${section} must be an object`);
+  for (const [table, mapping] of Object.entries(value.mappings ?? {})) {
+    if (!validName(table) || !object(mapping)) throw new Error(`${label}.mappings must contain valid table names and mapping objects`);
+    for (const field of ['idColumn', 'entitySet']) if (mapping[field] !== undefined && !validName(mapping[field])) throw new Error(`${label}.mappings.${table}.${field} must be a valid name`);
+  }
+  for (const [table, rows] of Object.entries(value.tables ?? {})) {
+    if (!validName(table) || !Array.isArray(rows)) throw new Error(`${label}.tables must contain valid table names and row arrays`);
+    for (const row of rows) if (!object(row)) throw new Error(`${label}.tables.${table} rows must be objects`);
+  }
+  if (value.permissions !== undefined) {
+    if (!Array.isArray(value.permissions)) throw new Error(`${label}.permissions must be an array of permission objects`);
+    for (const permission of value.permissions) if (!object(permission)) throw new Error(`${label}.permissions must be an array of permission objects`);
+  }
+}
 
 /** Merge mappings: generated definitions under existing (explicit edits win). */
 function mergeMappings(target, mappings = {}) {
   for (const [table, mapping] of Object.entries(mappings)) {
-    const existing = target[table];
+    const existing = own(target, table);
     if (!existing) target[table] = clone(mapping);
     else if (existing.userConfigured !== true)
       target[table] = {
@@ -34,18 +56,18 @@ function mergeMappings(target, mappings = {}) {
 function mergeRows(state, tables = {}, report) {
   for (const [table, rows] of Object.entries(tables)) {
     const idColumn = idColumnOf(state, table);
-    const target = (state.tables[table] ??= []);
-    const seen = new Set(target.map((row) => String(row[idColumn]).toLowerCase()));
-    const entry = (report[table] ??= { added: 0, alreadyPresent: 0 });
+    const target = own(state.tables, table) ?? (state.tables[table] = []);
+    const seen = new Set(target.map((row) => rowKey(own(row, idColumn))));
+    const entry = own(report, table) ?? (report[table] = { added: 0, alreadyPresent: 0 });
     for (const row of rows) {
-      const id = row[idColumn];
+      const id = own(row, idColumn);
       if (id == null) throw new Error(`Cannot merge ${table} row without ${idColumn}`);
-      if (seen.has(String(id).toLowerCase())) {
+      if (seen.has(rowKey(id))) {
         entry.alreadyPresent++;
         continue;
       }
       target.push(clone(row));
-      seen.add(String(id).toLowerCase());
+      seen.add(rowKey(id));
       entry.added++;
     }
   }
@@ -56,15 +78,15 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
   const indexes = new Map();
   const has = (table, id) => {
     if (!indexes.has(table))
-      indexes.set(table, new Set((state.tables?.[table] ?? []).map((row) => String(row[idColumnOf(state, table)]).toLowerCase())));
-    return indexes.get(table).has(String(id).toLowerCase());
+      indexes.set(table, new Set((own(state.tables, table) ?? []).map((row) => rowKey(own(row, idColumnOf(state, table))))));
+    return indexes.get(table).has(rowKey(id));
   };
   const dangling = [];
   for (const table of tables)
-    for (const row of state.tables?.[table] ?? [])
+    for (const row of own(state.tables, table) ?? [])
       for (const [field, value] of Object.entries(row))
         if (value && typeof value === "object" && !Array.isArray(value) && value.logical_name && value.id != null && !has(String(value.logical_name).toLowerCase(), value.id))
-          dangling.push({ table, id: row[idColumnOf(state, table)], field, target: value.logical_name, value: value.id });
+          dangling.push({ table, id: own(row, idColumnOf(state, table)), field, target: value.logical_name, value: value.id });
   return dangling;
 }
 
@@ -74,8 +96,11 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
  */
 export function mergeDataset(state, fragment, { basePreset, packId, materializePersonaMemberships = false, portal } = {}) {
   if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("state must be a Mirage state object");
-  if (!state.mappings || !Array.isArray(state.permissions))
+  if (!object(state.mappings) || !Array.isArray(state.permissions))
     throw new Error("state must contain mappings and an explicit permissions array (start the Mirage once to bootstrap it)");
+  validateDatasetBody(state, 'State');
+  validateDatasetBody(fragment, 'Dataset');
+  if (basePreset !== undefined && basePreset !== null) validateDatasetBody(basePreset, 'Base preset');
   if (typeof materializePersonaMemberships !== 'boolean') throw new Error('materializePersonaMemberships must be a boolean');
   const result = clone(state);
   result.tables ??= {};
@@ -108,7 +133,7 @@ export function mergeDataset(state, fragment, { basePreset, packId, materializeP
   // Generated rows of schema-complete tables must match the bootstrapped
   // field list and option sets (mapping.fieldMetadata of Web API tables).
   const violations = schemaViolations(fragment.tables ?? {}, fieldIndexFromMappings(result.mappings), {
-    idColumn: (table) => result.mappings[table]?.idColumn ?? `${table}id`,
+    idColumn: (table) => idColumnOf(result, table),
   });
   if (violations.length)
     throw new Error(`Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join("\n")}`);
@@ -117,7 +142,7 @@ export function mergeDataset(state, fragment, { basePreset, packId, materializeP
     if (!portal || !Array.isArray(portal.records)) throw new Error('Persona memberships require the selected imported portal export.');
     const descriptors = fragment.personaRoles ?? [];
     if (!Array.isArray(descriptors)) throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
-    const normalizeId = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+    const normalizeId = value => guidKey(value) ?? String(value ?? '').replace(/[{}]/g, '').toLowerCase();
     const contactIdColumn = idColumnOf(result, 'contact');
     const contacts = new Map((result.tables.contact ?? []).map(row => [normalizeId(row[contactIdColumn]), row]));
     const generatedContacts = new Set([...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map(row => normalizeId(row[contactIdColumn])));
@@ -154,7 +179,10 @@ const parseCount = (value, option) => {
 
 /** CLI adapter: `node mirage/cli.mjs data generate --pack ID ...` (parsed args). */
 export async function runDataCommand(subcommands, args) {
+  if (subcommands.length !== 1) throw new Error('Data commands require exactly one action: generate or scaffold; unexpected positional arguments are not accepted.');
   const [action] = subcommands;
+  if (action === 'scaffold') for (const name of ['pack', 'pack-module', 'count', 'materialize-persona-memberships']) if (args[name] !== undefined) throw new Error(`--${name} is supported only by data generate`);
+  if (action === 'generate' && args.rows !== undefined) throw new Error('--rows is supported only by data scaffold; use --count NAME=N for pack-defined generation counts');
   if (action === "scaffold")
     return scaffoldDataCommand({
       profile: args.profile ?? "smoke",
@@ -220,6 +248,7 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
   const source = await new DataStore({ file: inputPath }).init();
   const input = source.snapshot();
   const fragment = await pack.dataset({ profile, seed, counts });
+  validateDatasetBody(fragment, 'Dataset');
   const library = presetLibrary({ packs: [pack] });
   const basePreset = fragment.base ? resolvePreset(input, fragment.base, library) : null;
   if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
@@ -291,29 +320,29 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
   output.simulator ??= {};
   const rows = {};
   for (const [table, generated] of Object.entries(scaffold.tables)) {
-    if (!output.mappings[table] && metadata.mappings[table]) {
-      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = metadata.mappings[table];
+    if (!own(output.mappings, table) && own(metadata.mappings, table)) {
+      const { fieldMetadata: _fields, schemaComplete: _complete, ...mapping } = own(metadata.mappings, table);
       output.mappings[table] = structuredClone(mapping);
-    } else if (!output.mappings[table])
+    } else if (!own(output.mappings, table))
       // Tables the solution layers do not define (such as the web role
       // membership intersect) get the conventional mapping of their rows.
-      output.mappings[table] = { entitySet: `${table}s`, idColumn: scaffold.idColumns[table], relationships: {}, inferred: true };
-    const key = output.mappings[table]?.idColumn ?? scaffold.idColumns[table];
-    const existing = (output.tables[table] ??= []);
-    const ids = new Set(existing.map((row) => String(row[key] ?? "").toLowerCase()));
+      output.mappings[table] = { entitySet: `${table}s`, idColumn: own(scaffold.idColumns, table), relationships: {}, inferred: true };
+    const key = own(output.mappings, table)?.idColumn ?? own(scaffold.idColumns, table);
+    const existing = own(output.tables, table) ?? (output.tables[table] = []);
+    const ids = new Set(existing.map((row) => rowKey(own(row, key) ?? "")));
     let added = 0;
     for (const row of generated)
-      if (!ids.has(String(row[key]).toLowerCase())) {
+      if (!ids.has(rowKey(own(row, key)))) {
         existing.push(structuredClone(row));
         added++;
       }
     rows[table] = { added, alreadyPresent: generated.length - added };
   }
   const memberships = (output.simulator.contactRoles ??= []);
-  const seen = new Set(memberships.map((entry) => `${String(entry.contactId).toLowerCase()}:${String(entry.roleId).toLowerCase()}`));
+  const seen = new Set(memberships.map((entry) => `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`));
   let addedMemberships = 0;
   for (const entry of scaffold.contactRoles) {
-    const key = `${entry.contactId.toLowerCase()}:${String(entry.roleId).toLowerCase()}`;
+    const key = `${rowKey(entry.contactId)}:${rowKey(entry.roleId)}`;
     if (seen.has(key)) continue;
     memberships.push(structuredClone(entry));
     seen.add(key);

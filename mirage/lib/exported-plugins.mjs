@@ -109,6 +109,21 @@ export function importSolutionPlugins(layers = [], { sdkMessages = {} } = {}) {
   return { assemblies: [...maps.assemblies.values()], types: [...maps.types.values()], steps, diagnostics, fingerprint: fingerprint.digest('hex') };
 }
 
+/** Resolve only an explicitly mapped, confined regular C# source file. */
+export async function resolvePluginSourcePath(mapping, defaultRoot) {
+  const relative = String(mapping.path ?? '').replace(/\\/g, '/');
+  if (!relative.endsWith('.cs') || path.isAbsolute(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part))) throw new Error('Use a relative .cs path inside the declared source root, excluding local/runtime directories.');
+  if (!mapping.root && !defaultRoot) throw new Error('No trusted source root is available for this mapping.');
+  const root = await fs.realpath(mapping.root ?? defaultRoot);
+  const candidate = path.resolve(root, relative);
+  const real = await fs.realpath(candidate);
+  const bound = path.relative(root, real);
+  if (!bound || bound === '..' || bound.startsWith('..' + path.sep) || path.isAbsolute(bound)) throw new Error('The mapped C# source resolves outside its declared source root.');
+  const stat = await fs.lstat(candidate);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('The mapped C# source must be a regular file of at most 1 MiB.');
+  return real;
+}
+
 /** Explicit source navigation only: inspect file identity, never parse or execute C#. */
 export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRoot) {
   const sourceRoots = new Set(), sourceFiles = new Set();
@@ -116,16 +131,7 @@ export async function resolvePluginSourceFiles(plugins, mappings = {}, defaultRo
   for (const [typeName, mapping] of Object.entries(mappings)) {
     let sourceFile = null, issue = null;
     try {
-      const relative = String(mapping.path ?? '').replace(/\\/g, '/');
-      if (!relative.endsWith('.cs') || path.isAbsolute(relative) || relative.split('/').some(part => !part || part === '.' || part === '..' || /^(?:\.git|\.paqvilo|node_modules|bin|obj)$/i.test(part))) throw new Error('Use a relative .cs path inside the declared source root, excluding local/runtime directories.');
-      if (!mapping.root && !defaultRoot) throw new Error('No trusted source root is available for this mapping.');
-      const root = await fs.realpath(mapping.root ?? defaultRoot);
-      const candidate = path.resolve(root, relative);
-      const real = await fs.realpath(candidate);
-      const bound = path.relative(root, real);
-      if (!bound || bound === '..' || bound.startsWith('..' + path.sep) || path.isAbsolute(bound)) throw new Error('The mapped C# source resolves outside its declared source root.');
-      const stat = await fs.lstat(candidate);
-      if (!stat.isFile() || stat.isSymbolicLink() || stat.size > 1024 * 1024) throw new Error('The mapped C# source must be a regular file of at most 1 MiB.');
+      const real = await resolvePluginSourcePath(mapping, defaultRoot);
       if (!plugins.types.some(type => type.name === typeName)) throw new Error('This exact plugin type is not present in the selected solution exports.');
       sourceFile = real;
       sourceFiles.add(real); sourceRoots.add(path.dirname(real));
