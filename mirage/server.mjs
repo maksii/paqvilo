@@ -90,7 +90,7 @@ import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs
 import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
 import { hashSecret, newClientSecret, certificateThumbprints } from './lib/dataverse-auth.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
-import { createPublicKey } from "node:crypto";
+import { X509Certificate, createPublicKey } from "node:crypto";
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
 // half a second of silent 8 kHz audio. No readable challenge is simulated, so CAPTCHA saves fail closed.
 const CAPTCHA_IMAGE = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z", "base64");
@@ -1945,14 +1945,16 @@ export async function createSimulator({
       return change(async () => {
         const app = requireApp(certAppId);
         const body = await jsonObjectBody(req);
+        // A certificate PEM keeps its X.509 fingerprints as x5t / x5t#S256 (what MSAL sends); a bare public key
+        // PEM gets digests of its DER SPKI instead. The verifier accepts either PEM as the signing key.
+        const pem = String(body.certificatePem ?? body.publicKeyPem ?? "");
         let key;
         try {
-          key = createPublicKey(String(body.publicKeyPem ?? ""));
+          key = createPublicKey(pem);
         } catch {
-          throw error("publicKeyPem must be a PEM public key.");
+          throw error("certificatePem or publicKeyPem must be a PEM certificate or public key.");
         }
-        const publicKeyPem = key.export({ type: "spki", format: "pem" });
-        // SHA-1 (x5t) and SHA-256 (x5t#S256) thumbprints of the DER SPKI, as the client-assertion check matches them.
+        const publicKeyPem = /-----BEGIN CERTIFICATE-----/.test(pem) ? new X509Certificate(pem).toString() : key.export({ type: "spki", format: "pem" });
         const { thumbprint, thumbprint256 } = certificateThumbprints(publicKeyPem);
         await store.transact(() => {
           app.certificates ??= [];

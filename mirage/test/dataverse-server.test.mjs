@@ -3,10 +3,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
-import { createHash, generateKeyPairSync } from "node:crypto";
+import { X509Certificate, createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { createSimulator } from "../server.mjs";
 
 const APP_ID = "44444444-4444-4444-8444-444444444444";
@@ -156,6 +157,19 @@ test("a registered certificate reports its SHA-1 and SHA-256 thumbprints", async
   const listing = await admin("/dataverse");
   const entry = listing.body.applications.find((item) => item.appId === APP_ID);
   assert.deepEqual(entry.certificates, [{ thumbprint: created.body.thumbprint, thumbprint256: created.body.thumbprint256 }]);
+});
+
+test("a registered certificate PEM keeps the certificate's fingerprints as its thumbprints", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  await createApplication(admin);
+  const { cert } = createSelfSignedCertificate({ commonName: "Invented client certificate", hosts: [] });
+  const x509 = new X509Certificate(cert);
+  const created = await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { certificatePem: cert } });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.thumbprint, x509.fingerprint.replaceAll(":", ""));
+  assert.equal(created.body.thumbprint256, x509.fingerprint256.replaceAll(":", ""));
+  const rejected = await admin(`/dataverse/applications/${APP_ID}/certificates`, { method: "POST", body: { certificatePem: "not a pem" } });
+  assert.equal(rejected.status, 400);
 });
 
 test("enabling Dataverse leaves the portal Web API answers unchanged", async (t) => {

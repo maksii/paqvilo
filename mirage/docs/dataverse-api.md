@@ -158,7 +158,7 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 
 ## Administration
 
-The **Dataverse API** view at `/_sim/#dataverse` shows the status (origins, authority, tenant and organization ids, certificate file and fingerprint), the registered applications with secret hints and certificate thumbprints, the users with roles, access mode and disabled state, and the recent requests. Its forms call the endpoints below with the runtime CSRF token: register an application, add a secret or a certificate public key, remove a secret or an application, create an interactive user with roles and an optional password, save roles, enable or disable a user, and reset the workspace. A created secret is shown once in the view with a copy button; dismissing it, leaving the view or reloading the page drops it, and no later read returns it. When the API is off the view shows "Dataverse API is disabled for this runtime".
+The **Dataverse API** view at `/_sim/#dataverse` shows the status (origins, authority, tenant and organization ids, certificate file and fingerprint), the registered applications with secret hints and certificate thumbprints, the users with roles, access mode and disabled state, and the recent requests. Its forms call the endpoints below with the runtime CSRF token: register an application, add a secret or a certificate (or bare public key), remove a secret or an application, create an interactive user with roles and an optional password, save roles, enable or disable a user, and reset the workspace. A created secret is shown once in the view with a copy button; dismissing it, leaving the view or reloading the page drops it, and no later read returns it. When the API is off the view shows "Dataverse API is disabled for this runtime".
 
 ### Endpoints
 
@@ -170,7 +170,7 @@ These endpoints live under the local administration API (`/_sim/`).
 | `POST /_sim/api/dataverse/applications` | Body `{ displayName, appId?, roles?, publicClient?, redirectUris?, allowedGrants? }`. 201 `{ appId, systemuserid, secret }`. The secret is shown once. |
 | `POST /_sim/api/dataverse/applications/<appId>/secrets` | 201 `{ id, secret, hint, expiresOn }`. The secret is shown once. |
 | `DELETE /_sim/api/dataverse/applications/<appId>/secrets/<id>` | 204. |
-| `POST /_sim/api/dataverse/applications/<appId>/certificates` | Body `{ publicKeyPem }`. 201 `{ thumbprint }`. |
+| `POST /_sim/api/dataverse/applications/<appId>/certificates` | Body `{ certificatePem }` (an X.509 certificate PEM; its SHA-1 and SHA-256 fingerprints become `x5t` / `x5t#S256`) or `{ publicKeyPem }` (a bare public key; digests of its DER SPKI). 201 `{ thumbprint, thumbprint256 }`. |
 | `DELETE /_sim/api/dataverse/applications/<appId>` | Removes the registration and its application user. 204. |
 | `POST /_sim/api/dataverse/users` | Body `{ fullname, domainname, objectId?, roles?, accessmode?, businessUnitId?, password? }`. 201 `{ systemuserid, azureactivedirectoryobjectid }`. |
 | `PATCH /_sim/api/dataverse/users/<systemuserid>` | Body `{ roles?, isdisabled?, accessmode?, password? }`. 200. |
@@ -219,7 +219,8 @@ The local behaviour is a simulation. Parity claims rest on the SDK gates under `
 | `python-dataverse` | Microsoft `PowerPlatform-Dataverse-Client` 1.1.0 with `msal` 1.39.0 | TLS `base_url`, OpenID Connect discovery with `instance_discovery=False`, picklist label resolution through `EntityDefinitions` and `OptionSet` expansion, CRUD, query builder, `CreateMultiple`, `$batch`, 400 and 404 error details |
 | `webapi-samples` | Microsoft `PowerApps-Samples` WebAPIService (C#, pinned commit) | Microsoft's own request shapes: `WhoAmI`, create with `OData-EntityId`, retrieve, update, `RetrieveMultiple`, delete, `$batch` change set, `x-ms-dop-hint` |
 | `serviceclient` | `Microsoft.PowerPlatform.Dataverse.Client` 1.2.27 (C#, token-provider constructor) | Port 80 (ServiceClient drops the port), `RetrieveCurrentOrganization` on v9.0 with the `Endpoints` dictionary and the version switch to v9.2, `ExecuteWebRequest` CRUD, `WhoAmI` over the Web API, and a clean `FaultException` for the SOAP `IOrganizationService` call |
+| `cert-auth` | `@azure/msal-node` 7.1.0 `clientCertificate` and `Microsoft.Identity.Client` 4.91.0 `WithCertificate` (C#) | Certificate client authentication: a per-run self-signed certificate registered by its fingerprints, PS256 assertions carrying `x5t#S256` and `x5c` redeemed over the TLS authority (MSAL.NET with `WithInstanceDiscovery(false)` and a CA-trusting `IMsalHttpClientFactory`), `appidacr` 2, `WhoAmI`, the token and `WhoAmI` requests in the simulator log, and AADSTS700027 for a tampered assertion |
 
-`npm run test:sdk` runs all five gates, and all five pass.
+`npm run test:sdk` runs all six gates, and all six pass.
 
 Gate dependencies stay out of the package: Node packages install under `mirage/test-sdk/<gate>/node_modules`, the Python environment and the cloned sample repository live under the ignored `.paqvilo/sdk-gates/`. A passing SDK gate shows that the client could authenticate and receive the documented shapes. It does not show that every live environment behaves identically.

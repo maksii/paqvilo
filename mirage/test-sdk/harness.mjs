@@ -5,7 +5,7 @@ import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
-import { newClientSecret } from "../lib/dataverse-auth.mjs";
+import { certificateThumbprints, newClientSecret } from "../lib/dataverse-auth.mjs";
 import { ensureCertificate } from "../lib/dataverse-tls.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -71,6 +71,16 @@ export async function startGate({ port = 0, tls = false, state = gateState(), se
     requests: () => api.requests(),
     close: () => api.close(),
   };
+}
+
+/** Registers a certificate PEM for the gate application, exactly as POST /_sim/api/dataverse/applications/<appId>/certificates does. */
+export async function registerCertificate(gate, certificatePem) {
+  const thumbprints = certificateThumbprints(certificatePem);
+  await gate.store.transact(() => {
+    const app = gate.store.state.dataverse.applications.find((item) => item.appId.toLowerCase() === gate.clientId.toLowerCase());
+    (app.certificates ??= []).push({ ...thumbprints, publicKeyPem: certificatePem });
+  });
+  return thumbprints;
 }
 
 /** Plain client_credentials token from the simulated authority (no SDK), for gates that only need a bearer. */

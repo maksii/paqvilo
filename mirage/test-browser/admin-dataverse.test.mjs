@@ -5,8 +5,10 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { X509Certificate } from "node:crypto";
 import { chromium } from "playwright-core";
 import { browserLaunchOptions } from "../lib/browser-launch.mjs";
+import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { createSimulator } from "../server.mjs";
 
 async function fixture(t, options = {}) {
@@ -102,19 +104,43 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   assert.notEqual(second, first);
   await appRow.getByRole("button", { name: "Remove" }).first().click();
   await page.getByText("Secret removed.", { exact: true }).waitFor();
-  await page.getByLabel("Public key (PEM)", { exact: true }).fill(publicKey.export({ type: "spki", format: "pem" }));
+  await page.getByLabel("Certificate or public key (PEM)", { exact: true }).fill(publicKey.export({ type: "spki", format: "pem" }));
   await page.getByRole("button", { name: "Add certificate" }).click();
   await page.getByText("Certificate added.", { exact: true }).waitFor();
   listing = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
   const registration = listing.applications.find((item) => item.displayName === "Cert client");
   assert.equal(registration.secrets.length, 1);
   assert.match(registration.certificates[0].thumbprint, /^[0-9A-F]{40}$/);
-  await appRow.getByText(registration.certificates[0].thumbprint, { exact: true }).waitFor();
+  await appRow.getByText(`SHA-1 ${registration.certificates[0].thumbprint}`, { exact: true }).waitFor();
+  await appRow.getByText(`SHA-256 ${registration.certificates[0].thumbprint256}`, { exact: true }).waitFor();
   await appRow.getByRole("button", { name: "Remove" }).last().click();
   await page.getByRole("button", { name: "Remove application" }).click();
   await page.getByText("Application removed.", { exact: true }).waitFor();
   listing = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
   assert.equal(listing.applications.some((item) => item.displayName === "Cert client"), false);
   assert.equal(listing.users.some((item) => item.fullname === "Cert client"), false);
+  assert.deepEqual(errors, []);
+});
+
+test("a certificate PEM shows its SHA-256 fingerprint in the table", { timeout: 60_000 }, async (t) => {
+  const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
+  const { cert } = createSelfSignedCertificate();
+  const fingerprint256 = new X509Certificate(cert).fingerprint256.replaceAll(":", "");
+  await page.goto(app.adminUrl + "#dataverse");
+  await page.getByRole("heading", { name: "Dataverse API" }).waitFor();
+  await page.getByLabel("Display name", { exact: true }).fill("Pem client");
+  await page.getByRole("button", { name: "Register application" }).click();
+  await page.getByRole("button", { name: "Dismiss" }).click();
+  const listing = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
+  const appId = listing.applications.find((item) => item.displayName === "Pem client").appId;
+  await page.locator("#dv-cert-app").selectOption(appId);
+  await page.getByLabel("Certificate or public key (PEM)", { exact: true }).fill(cert);
+  await page.getByRole("button", { name: "Add certificate" }).click();
+  await page.getByText("Certificate added.", { exact: true }).waitFor();
+  const appRow = page.getByRole("row", { name: /Pem client/ }).first();
+  await appRow.getByText(`SHA-256 ${fingerprint256}`, { exact: true }).waitFor();
+  const after = await (await fetch(`${app.url}/_sim/api/dataverse`)).json();
+  const stored = after.applications.find((item) => item.appId === appId).certificates[0];
+  assert.equal(stored.thumbprint256, fingerprint256);
   assert.deepEqual(errors, []);
 });

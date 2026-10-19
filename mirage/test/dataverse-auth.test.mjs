@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
-import { constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { X509Certificate, constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import { test } from "node:test";
 import { certificateThumbprints, createAuthority, hashSecret, newClientSecret, verifySecret } from "../lib/dataverse-auth.mjs";
+import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 
 // Invented identifiers and a loopback origin only.
 const ORIGIN = "https://127.0.0.1:9443";
@@ -275,6 +276,46 @@ test("a PS256 assertion matched by x5t#S256 (no x5t, an x5c header ignored) issu
   const res = call(auth, assertionForm(assertion));
   assert.equal(res.status, 200);
   assert.equal(claimsOf(res.body.access_token).appidacr, "2");
+});
+
+test("an X.509 certificate registered as its PEM is matched by the certificate's own fingerprints, not its key's", () => {
+  const { auth, applications, state } = fixture();
+  const { cert, key } = createSelfSignedCertificate({ commonName: "Invented client certificate", hosts: [] });
+  const x509 = new X509Certificate(cert);
+  const stored = certificateThumbprints(cert);
+  assert.equal(stored.thumbprint, x509.fingerprint.replaceAll(":", ""));
+  assert.equal(stored.thumbprint256, x509.fingerprint256.replaceAll(":", ""));
+  assert.notEqual(stored.thumbprint256, certificateThumbprints(x509.publicKey.export({ type: "spki", format: "pem" })).thumbprint256);
+  applications[0].certificates = [{ ...stored, publicKeyPem: cert }];
+  const sec = Math.floor(state.now / 1000);
+  const claims = { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 600 };
+  // MSAL.NET: PS256 with x5t#S256 of the certificate DER plus the x5c chain; msal-node: the SHA-256 thumbprint too.
+  const x5tS256 = Buffer.from(stored.thumbprint256, "hex").toString("base64url");
+  const ps = call(auth, assertionForm(signedAssertion(key, { alg: "PS256", header: { "x5t#S256": x5tS256, x5c: [x509.raw.toString("base64")] }, claims: { ...claims, jti: "cert-jti-1" } })));
+  assert.equal(ps.status, 200, JSON.stringify(ps.body));
+  assert.equal(claimsOf(ps.body.access_token).appidacr, "2");
+  // The deprecated SHA-1 x5t (msal-node `thumbprint`) matches the same record.
+  const x5t = Buffer.from(stored.thumbprint, "hex").toString("base64url");
+  const rs = call(auth, assertionForm(signedAssertion(key, { header: { x5t }, claims: { ...claims, jti: "cert-jti-2" } })));
+  assert.equal(rs.status, 200, JSON.stringify(rs.body));
+  // The same assertion with its claims altered after signing is refused as a bad signature.
+  const [head, , signature] = signedAssertion(key, { alg: "PS256", header: { "x5t#S256": x5tS256 }, claims: { ...claims, jti: "cert-jti-3" } }).split(".");
+  const tampered = call(auth, assertionForm(`${head}.${b64({ ...claims, sub: PUBLIC_APP_ID, jti: "cert-jti-3" })}.${signature}`));
+  assert.equal(tampered.status, 400);
+  assert.deepEqual([tampered.body.error, tampered.body.error_codes], ["invalid_client", [700027]]);
+});
+
+test("a 10-minute assertion issued from a rounded-up clock is accepted; one beyond the skew allowance is not", () => {
+  const { auth, applications, state } = fixture();
+  const { privateKey, x5t } = registerCertificate(applications[0]);
+  state.now = T0 + 600; // 0.6 s into the second: msal-node's Math.round issue time is the next whole second
+  const issued = Math.round(state.now / 1000);
+  const claims = { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: issued };
+  const tenMinutes = call(auth, assertionForm(signedAssertion(privateKey, { header: { x5t }, claims: { ...claims, exp: issued + 600, jti: "round-jti-1" } })));
+  assert.equal(tenMinutes.status, 200, JSON.stringify(tenMinutes.body));
+  const tooLong = call(auth, assertionForm(signedAssertion(privateKey, { header: { x5t }, claims: { ...claims, exp: issued + 600 + 301, jti: "round-jti-2" } })));
+  assert.equal(tooLong.status, 400);
+  assert.deepEqual(tooLong.body.error_codes, [700027]);
 });
 
 test("a PS256 assertion whose x5t#S256 matches no certificate answers 700027, as does a bad PS256 signature", () => {

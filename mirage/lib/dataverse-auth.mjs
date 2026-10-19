@@ -1,7 +1,7 @@
 // Entra ID (AAD) authority for the Dataverse simulator: RS256 signing key, OIDC metadata, client
 // authentication, client_credentials, authorization_code (PKCE), device_code, password (ROPC),
 // on-behalf-of and refresh_token grants, the interactive user pages, and AADSTS error envelopes.
-import { constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+import { X509Certificate, constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
 import { GRANT_TYPES, grantAllowed } from "./dataverse-settings.mjs";
 
 const DATAVERSE_APP_ID = "00000007-0000-0000-c000-000000000000";
@@ -78,9 +78,15 @@ const verifies = (data, signature, key, alg = "RS256") => {
     return false;
   }
 };
-// Both certificate thumbprints (upper-case hex) of a PEM public key, over its DER SPKI bytes.
-export function certificateThumbprints(publicKeyPem) {
-  const der = createPublicKey(publicKeyPem).export({ type: "spki", format: "der" });
+// Both thumbprints (upper-case hex) of a registered credential. For an X.509 certificate PEM they are the
+// certificate's SHA-1 and SHA-256 fingerprints, which is what MSAL puts in x5t and x5t#S256; for a bare
+// public key PEM (no certificate exists) they are digests of its DER SPKI bytes.
+export function certificateThumbprints(pem) {
+  if (/-----BEGIN CERTIFICATE-----/.test(String(pem))) {
+    const certificate = new X509Certificate(pem);
+    return { thumbprint: certificate.fingerprint.replaceAll(":", ""), thumbprint256: certificate.fingerprint256.replaceAll(":", "") };
+  }
+  const der = createPublicKey(pem).export({ type: "spki", format: "der" });
   return {
     thumbprint: createHash("sha1").update(der).digest("hex").toUpperCase(),
     thumbprint256: createHash("sha256").update(der).digest("hex").toUpperCase(),
@@ -296,7 +302,8 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     const nbf = claims.nbf === undefined ? 0 : numeric(claims.nbf);
     if (!Number.isFinite(exp) || Number.isNaN(nbf)) return reject("The client assertion's nbf and exp must be numeric dates.");
     if (nbf > nowSeconds + SKEW_SECONDS) return reject("The client assertion is not yet valid.");
-    if (exp <= nowSeconds - SKEW_SECONDS || exp > nowSeconds + 600) return reject("The client assertion has expired or lasts longer than 10 minutes.");
+    // The 10-minute cap tolerates clock skew too: msal-node rounds its issue time to the nearest second, so its exp can sit past now + 600.
+    if (exp <= nowSeconds - SKEW_SECONDS || exp > nowSeconds + 600 + SKEW_SECONDS) return reject("The client assertion has expired or lasts longer than 10 minutes.");
     if (claims.jti !== undefined) {
       const jti = String(claims.jti);
       for (const [id, until] of seenAssertions) if (until <= now) seenAssertions.delete(id);
