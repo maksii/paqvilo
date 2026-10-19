@@ -1,5 +1,38 @@
 # Release notes
 
+## 0.9.6
+
+This release addresses feedback 176–193 on source inspection, local visitor tools,
+acceptance observation and offline diagnostics. The changes use synthetic exports
+and loopback fixtures; they do not certify complete Power Pages parity.
+
+### Changed
+
+- **X-ray (176, 177, 190, 191):** reuse unchanged inspection results and source hints,
+  restrict extra markup candidates to rendered elements, and display relative
+  paths in truncation notes. Refresh checks source changes before rebuilding.
+- **Acceptance (180, 183):** reserve a conservative portion of action time for
+  document commits and expose a public request lifecycle observer for project-owned
+  Playwright runners. Document lifecycle evidence is required to separate
+  superseded reads from failures; writes remain visible.
+- **CLI (181, 182):** screenshot result paths use the same relative display rules
+  as errors; unknown Mirage commands suggest only nearby spellings.
+- **Identity (184, 185, 192):** configured-persona sign-in rejects missing contacts
+  before posting; identity scope behavior is documented; reference parity accepts
+  explicit local visitors without changing the runtime's configured identity.
+- **Diagnostics (186, 187):** `doctor --lint-profiles` optionally reports syntax
+  errors in unbound exported profiles as warnings; ineligible system forms produce
+  one specific diagnostic per reference.
+- **Generated data (193):** explicit opt-in persona membership materialization
+  resolves exported web-role IDs. Default additive generation and catalogue
+  metadata continue to grant no memberships.
+
+### Upgrade notes
+
+Update with `npm install --save-dev paqvilo@^0.9.6` and commit the lockfile.
+Reference reads still require explicit authorization and the intended signed-in
+browser. No deployment or live-data changes are part of these improvements.
+
 ## 0.9.5
 
 This release fixes what the recorded walkthroughs and a documentation review surfaced, and

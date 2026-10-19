@@ -1,6 +1,6 @@
 {
   "name": "paqvilo",
-  "version": "0.9.5",
+  "version": "0.9.6",
   "description": "Local-first, pro-code tools for Microsoft Power Pages: live source previews with Lense, Liquid and Dataverse simulation with Mirage.",
   "keywords": [
     "power-pages",

@@ -53,6 +53,25 @@ test('local-only visitor refuses outbound reads when mode changes during its ren
  const response=await visitor.request('/');await response.text();assert.equal(changed,true);assert.equal(liveCalls,0);assert.ok(app.store.state.simulator.mode==='live');
 });
 
+test('documented identity scopes preserve cookie precedence and configured fallback after sign-out', async t => {
+ const { app, contacts } = await fixture(t, { template: '<actor>{{user.id}}</actor>' });
+ app.store.state.simulator.identity = { contactId: contacts[0].contactid, roles: [], roleSource: 'memberships' };
+ const actor = async headers => (await (await fetch(app.url, { headers })).text()).match(/<actor>(.*?)<\/actor>/)?.[1];
+ assert.equal(await actor(), '');
+ for (const scope of ['configured', 'all-requests']) {
+  app.store.state.simulator.identityScope = scope;
+  assert.equal(await actor(), contacts[0].contactid);
+  const session = app.signIn(contacts[1].contactid);
+  assert.equal(await actor({ cookie: session.cookieHeader }), contacts[1].contactid);
+  const signedOut = await fetch(`${app.url}/_sim/api/session/sign-out`, { method: 'POST', headers: { cookie: session.cookieHeader, 'x-sim-csrf': app.state().csrf, 'content-type': 'application/json' }, body: '{}' });
+  assert.equal(signedOut.status, 200);
+  assert.equal(await actor({ cookie: signedOut.headers.get('set-cookie').split(';', 1)[0] }), '');
+  assert.equal(await actor(), contacts[0].contactid);
+ }
+ app.store.state.simulator.identityScope = 'sessions';
+ assert.equal(await actor(), '');
+});
+
 test('runtime experiment controls change local policy and keep concurrent instances independent',async t=>{
  const left=await fixture(t),right=await fixture(t),runtime=await connectRuntime({origin:left.app.url}),other=await connectRuntime({origin:right.app.url});
  const visitor=await runtime.createSession({contactId:left.contacts[0].contactid}),otherVisitor=await other.createSession({contactId:right.contacts[0].contactid});t.after(()=>{visitor.close();otherVisitor.close();});

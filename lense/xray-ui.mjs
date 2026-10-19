@@ -106,6 +106,8 @@ export function xrayUi(data) {
   let rankingReport,frequencies,pageOwners,chainFrequencies;
   const sourceMatches = node => {
     const ancestors=lineage(node),rows=[];
+    const fullerClasses=new Map();
+    for(const target of ancestors){let longest=0;for(const item of report?.elementSources??[])if(item.matchKind==='class'&&item.tag===target.localName&&(item.classes??[]).every(name=>target.classList.contains(name)))longest=Math.max(longest,item.classes?.length??0);fullerClasses.set(target,longest);}
     if(rankingReport!==report||!frequencies){
       rankingReport=report;frequencies=new Map();pageOwners=new Set(['page']);
       for(const item of report?.elementSources??[])if(item.matchKind==='class'){let files=frequencies.get(item.selector);if(!files)frequencies.set(item.selector,files=new Set());files.add((item.ref??item.sourceFile)+'#'+(item.recordId??item.id??item.name??''));}
@@ -131,7 +133,7 @@ export function xrayUi(data) {
       const pageChain=(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))??false;
       const missing=declaredClasses.length-classes.length,targetClasses=[...target.classList].filter(name=>!framework.test(name)),coverage=targetClasses.length?meaningful.length/targetClasses.length:1;
       const rarity=report?.elementSourceFrequencies?.[item.selector]??frequencies.get(item.selector)?.size??1;
-      const fuller=(report?.elementSources??[]).some(other=>other.matchKind==='class'&&other.tag===target.localName&&(other.classes?.length??0)>declaredClasses.length&&other.classes.every(name=>target.classList.contains(name)));
+      const fuller=(fullerClasses.get(target)??0)>declaredClasses.length;
       const contextual=contexts[0]?.contextual??0,contradictions=contexts[0]?.contradictions??0;
       const frameworkOwner=item.matchKind==='class'&&!meaningful.length&&depth===0&&!fuller&&pageChain&&chainFrequencies.get(item.selector)?.size===1&&(item.occurrences??1)<=3;
       const strong=tagMatch&&!missing&&!contradictions&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0||frameworkOwner));

@@ -47,6 +47,25 @@ paqvilo mirage data generate --pack customer-demo --pack-module ./pack/pack.mjs 
 
 Use repeatable `--count NAME=N` options for pack-defined dataset dimensions, for example `--count customers=5 --count orders=20`. Names and meanings belong to your generator; core passes the validated nonnegative integers as `counts` without assuming business entities.
 
+Additive generation leaves contact memberships and the configured identity unchanged by
+default. A dataset fragment can separately declare `personaRoles: [{ contactId,
+roles: ['Reviewer'] }]`. Opt in with `data generate --materialize-persona-memberships`
+and select the portal export using `--source`, `--site` or `--project` (plus `--portal`
+when needed). The public equivalent is `mergeDataset(state, fragment, {
+materializePersonaMemberships: true, portal })`, where `portal` is the selected
+`importPortal()` result.
+
+This operation resolves exact, case-sensitive role names against active web roles
+in that export and requires an existing active contact in the merged local data,
+also supplied in this fragment's or its base preset's contact rows.
+Missing/ambiguous roles and absent/inactive contacts fail before writing. It appends
+only the fragment's requested memberships, deduplicated by contact/role ID, retaining
+existing assignments, contact edits and configured identity. Base-preset descriptors
+are not materialized. `addedMemberships` reports the number added; repeated application
+adds zero. Catalogue metadata alone never grants access. Explicit memberships still
+use the normal exported permissions and automatic authenticated/anonymous roles;
+see [Power Pages web-role assignment](https://learn.microsoft.com/en-us/power-pages/security/create-web-roles).
+
 Register project providers by their exported operation names when the default simulation is insufficient:
 
 ```js

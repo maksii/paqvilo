@@ -283,7 +283,7 @@ export async function importSolutionMetadata(
         views: metadata.views.length,
         resolved: applied.counts,
         unresolved: applied.diagnostics.filter((d) =>
-          /UNRESOLVED|MAPPING_ERROR/.test(d.code),
+          /UNRESOLVED|MAPPING_ERROR|SYSTEMFORM_INELIGIBLE_TYPE/.test(d.code),
         ).length,
       },
     };
@@ -648,11 +648,12 @@ export function applySolutionMetadata(portal, metadata) {
   };
   for (const definition of portal.forms) {
     try {
+      const diagnosticStart = diagnostics.length;
       const schema = resolve(definition);
       if (schema) {
         componentSchemas[definition.id] = schema;
         componentSchemas[definition.name] = schema;
-      } else
+      } else if (!diagnostics.slice(diagnosticStart).some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'))
         diagnostics.push({
           code: "SYSTEMFORM_UNRESOLVED",
           id: definition.id,

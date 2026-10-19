@@ -11,6 +11,7 @@ import { discoverPacks, presetLibrary } from "./preset-registry.mjs";
 import { resolvePreset } from "./presets.mjs";
 import { fieldIndexFromMappings, formatViolations, schemaViolations } from "./schema-validation.mjs";
 import { validatePersonaCatalog, mergePersonaCatalogs } from './persona-catalog.mjs';
+import { membershipsForRoles } from './permissions.mjs';
 
 const clone = (value) => structuredClone(value);
 const idColumnOf = (state, table) => state.mappings?.[table]?.idColumn ?? `${table}id`;
@@ -71,10 +72,11 @@ export function findDanglingLookups(state, tables = Object.keys(state.tables ?? 
  * Merge a pack dataset fragment (and its base preset, when named) into a copy
  * of `state`. Returns { state, report }.
  */
-export function mergeDataset(state, fragment, { basePreset, packId } = {}) {
+export function mergeDataset(state, fragment, { basePreset, packId, materializePersonaMemberships = false, portal } = {}) {
   if (!state || typeof state !== "object" || Array.isArray(state)) throw new Error("state must be a Mirage state object");
   if (!state.mappings || !Array.isArray(state.permissions))
     throw new Error("state must contain mappings and an explicit permissions array (start the Mirage once to bootstrap it)");
+  if (typeof materializePersonaMemberships !== 'boolean') throw new Error('materializePersonaMemberships must be a boolean');
   const result = clone(state);
   result.tables ??= {};
   const report = { base: {}, generated: {} };
@@ -110,7 +112,36 @@ export function mergeDataset(state, fragment, { basePreset, packId } = {}) {
   });
   if (violations.length)
     throw new Error(`Generated data does not match the bootstrapped schema:\n${formatViolations(violations).join("\n")}`);
-  return { state: result, report: { ...report, addedPermissions, schemaViolations: 0 } };
+  let addedMemberships = 0;
+  if (materializePersonaMemberships) {
+    if (!portal || !Array.isArray(portal.records)) throw new Error('Persona memberships require the selected imported portal export.');
+    const descriptors = fragment.personaRoles ?? [];
+    if (!Array.isArray(descriptors)) throw new Error('Dataset personaRoles must be an array of { contactId, roles } descriptors.');
+    const normalizeId = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
+    const contactIdColumn = idColumnOf(result, 'contact');
+    const contacts = new Map((result.tables.contact ?? []).map(row => [normalizeId(row[contactIdColumn]), row]));
+    const generatedContacts = new Set([...(basePreset?.tables?.contact ?? []), ...(fragment.tables?.contact ?? [])].map(row => normalizeId(row[contactIdColumn])));
+    for (const descriptor of descriptors) {
+      if (!descriptor || typeof descriptor !== 'object' || Array.isArray(descriptor) || typeof (descriptor.contactId ?? descriptor.id) !== 'string' || !(descriptor.contactId ?? descriptor.id).trim() || !Array.isArray(descriptor.roles) || descriptor.roles.some(name => typeof name !== 'string' || !name.trim())) throw new Error('Dataset personaRoles must contain explicit contactId and role-name arrays.');
+      const contact = contacts.get(normalizeId(descriptor.contactId ?? descriptor.id));
+      if (!contact || Number(contact.statecode?.value ?? contact.statecode ?? 0) !== 0) throw new Error('Persona membership contact is missing or inactive in the merged local data.');
+      if (!generatedContacts.has(normalizeId(descriptor.contactId ?? descriptor.id))) throw new Error('Persona membership contact must be supplied by this dataset or its base preset.');
+    }
+    // Resolve every role before adding any assignments. Catalogue metadata and
+    // a base preset never implicitly create memberships during additive merge.
+    const assignments = membershipsForRoles(portal, descriptors);
+    if (assignments.length) {
+      result.simulator ??= {};
+      const memberships = (result.simulator.contactRoles ??= []);
+      const seen = new Set(memberships.map(entry => `${normalizeId(entry.contactId)}:${normalizeId(entry.roleId)}`));
+      for (const assignment of assignments) {
+        const key = `${assignment.contactId}:${assignment.roleId}`;
+        if (seen.has(key)) continue;
+        memberships.push(assignment); seen.add(key); addedMemberships++;
+      }
+    }
+  }
+  return { state: result, report: { ...report, addedPermissions, addedMemberships, schemaViolations: 0 } };
 }
 
 const parseCount = (value, option) => {
@@ -134,6 +165,7 @@ export async function runDataCommand(subcommands, args) {
       solutionRoots: args["solution-root"] ?? [],
       rowsPerTable: parseCount(args.rows, "rows"),
       resolution: args.resolution,
+      dataModel: args.dataModel ?? args['data-model'],
     });
   if (action !== "generate")
     throw new Error(
@@ -160,6 +192,9 @@ export async function runDataCommand(subcommands, args) {
     seed: args.seed,
     counts,
     project,
+    materializePersonaMemberships: args['materialize-persona-memberships'] ?? false,
+    source: args.source,
+    dataModel: args.dataModel ?? args['data-model'],
     packModules: (args["pack-module"] ?? []).map((module) => ({ module: path.resolve(module) })),
   });
 }
@@ -168,7 +203,7 @@ export async function runDataCommand(subcommands, args) {
  * `data generate`: load the pack, generate the profile, merge into --state and
  * write --out (default: --state, in place) with lock/digest/atomic replace.
  */
-export async function generateDataCommand({ pack: packId, profile = "deep", state: statePath, out, seed, counts = {}, project, packModules = [] } = {}) {
+export async function generateDataCommand({ pack: packId, profile = "deep", state: statePath, out, seed, counts = {}, project, packModules = [], materializePersonaMemberships = false, source: portalSource, dataModel } = {}) {
   if (!packId) throw new Error("--pack is required");
   if (!statePath) throw new Error("--state is required");
   const inputPath = path.resolve(statePath);
@@ -188,7 +223,9 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
   const library = presetLibrary({ packs: [pack] });
   const basePreset = fragment.base ? resolvePreset(input, fragment.base, library) : null;
   if (fragment.base && !basePreset) throw new Error(`Base preset '${fragment.base}' is unavailable`);
-  const { state: output, report } = mergeDataset(input, fragment, { basePreset, packId });
+  if (materializePersonaMemberships && !portalSource) throw new Error('Persona memberships require the selected portal source (--source, --site or --project).');
+  const portal = materializePersonaMemberships ? await (await import('./importer.mjs')).importPortal(path.resolve(portalSource), { dataModel }) : undefined;
+  const { state: output, report } = mergeDataset(input, fragment, { basePreset, packId, materializePersonaMemberships, portal });
   const generatedMs = performance.now() - started;
   // Re-check immediately before writing; the store applies its own lock and
   // digest checks (docs/state-write-integrity.md).
@@ -204,6 +241,7 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
     rows: Object.fromEntries(Object.entries(report.generated).filter(([, entry]) => entry.added || entry.alreadyPresent)),
     baseRowsAdded: Object.values(report.base).reduce((sum, entry) => sum + entry.added, 0),
     addedPermissions: report.addedPermissions,
+    addedMemberships: report.addedMemberships,
     measures: fragment.provenance?.measures ?? null,
     elapsedMs: Math.round(performance.now() - started),
     generationMs: Math.round(generatedMs),
@@ -216,7 +254,7 @@ export async function generateDataCommand({ pack: packId, profile = "deep", stat
  * --state (bootstrapped from the portal and its solution metadata when the
  * file does not exist yet), writing --out with lock/digest/atomic replace.
  */
-export async function scaffoldDataCommand({ profile = "smoke", state: statePath, out, seed, source, solutionRoots = [], rowsPerTable, resolution } = {}) {
+export async function scaffoldDataCommand({ profile = "smoke", state: statePath, out, seed, source, solutionRoots = [], rowsPerTable, resolution, dataModel } = {}) {
   if (!statePath) throw new Error("--state is required");
   if (!source) throw new Error("A portal source is required (--site/--env, --project or --source)");
   const [{ importPortal }, { importSolutionData, applySolutionData }, { discoverSolutionRoots }, { scaffoldData }, { initialState }] = await Promise.all([
@@ -232,7 +270,7 @@ export async function scaffoldDataCommand({ profile = "smoke", state: statePath,
   if (outputPath !== inputPath) await assertOfflineState(inputPath);
   const started = performance.now();
   const sourceDir = path.resolve(source);
-  const portal = await importPortal(sourceDir);
+  const portal = await importPortal(sourceDir, { dataModel });
   const roots = solutionRoots.length ? solutionRoots.map((root) => path.resolve(root)) : await discoverSolutionRoots(sourceDir);
   const metadata = await importSolutionData(roots);
   const scaffold = scaffoldData({ portal, schema: metadata.schema, profile, ...(seed ? { seed } : {}), ...(rowsPerTable ? { rowsPerTable } : {}) });

@@ -68,8 +68,10 @@ test('client enforces operation-specific arguments and writes PNG evidence witho
   console.log = (line) => { result = JSON.parse(line); };
   try { assert.equal(await agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), 0); }
   finally { console.log = log; }
-  assert.equal(result.path, output);
-  assert.deepEqual(result.writesFiles,[output]);
+  const relative = path.relative(process.cwd(), output);
+  const displayPath = (path.isAbsolute(relative) ? path.basename(output) : relative).replaceAll('\\', '/');
+  assert.equal(result.path, displayPath);
+  assert.deepEqual(result.writesFiles,[displayPath]);
   assert.deepEqual(await fs.readFile(output), png);
   await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), error=>{
     const reported=/already exists: (.+)\. Existing files/.exec(error.message)?.[1];
@@ -86,6 +88,20 @@ test('agent request times out and removes reserved screenshot after invalid serv
   const output = path.join(fx.dir, 'bad.png');
   await assert.rejects(agent(null, { session: fx.file, 'page-id': '1', output }, ['screenshot']), /invalid PNG/);
   await assert.rejects(fs.stat(output), { code: 'ENOENT' });
+});
+
+test('screenshot success reports catalogue-relative paths and preserves outside outputs', async t => {
+  const png = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10, 0]);
+  const fx = await fixture(t, (_req, res) => res.writeHead(200, { 'content-type': 'image/png' }).end(png));
+  const config = path.join(fx.dir, 'project', 'catalogue.yml');
+  for (const [output, expected] of [[path.join(fx.dir, 'project', 'evidence', 'new.png'), 'evidence/new.png'], [path.join(fx.dir, 'outside.png'), '../outside.png']]) {
+    const log = console.log; let result;
+    console.log = line => { result = JSON.parse(line); };
+    try { await agent(null, { config, session: fx.file, 'page-id': '1', output }, ['screenshot']); }
+    finally { console.log = log; }
+    assert.equal(result.path, expected); assert.deepEqual(result.writesFiles, [expected]);
+    assert.doesNotMatch(result.path, /[\\:]/); assert.deepEqual(await fs.readFile(output), png);
+  }
 });
 
 test('agent minimum deadline leaves a fixed response margin and missing sessions have a stable code',async t=>{

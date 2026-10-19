@@ -96,9 +96,13 @@ export async function connectRuntime({ origin, config, site, fetchImpl = globalT
     async signIn(context = null, { contactId, roles, configuredPersona = false } = {}) {
       const state = await request('/state?summary=1');
       if (configuredPersona) {
-        contactId ??= state.config.identity?.contactId ?? state.config.identity?.id;
-        if (roles === undefined && (state.config.identity?.roleSource ?? 'override') === 'override') roles = state.config.identity.roles;
+        const identity = state.config?.identity;
+        contactId ??= identity?.contactId ?? identity?.id;
+        if (roles === undefined && (identity?.roleSource ?? 'override') === 'override') roles = identity?.roles;
       }
+      if (typeof contactId !== 'string' || !contactId.trim()) throw Object.assign(new Error(configuredPersona
+        ? 'No configured persona contact. Configure an active contact or pass contactId; omit signIn to stay anonymous.'
+        : 'Sign-in requires contactId; omit signIn to stay anonymous.'), { code: 'MISSING_PERSONA_CONTACT' });
       const body = { contactId, ...(roles !== undefined ? { roles } : {}) };
       if (context) {
         const response = await context.request.post(`${origin}/_sim/api/session/sign-in`, { headers: { 'x-sim-csrf': state.csrf }, data: body });

@@ -1,0 +1,100 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import {chromium} from 'playwright-core';
+import {browserLaunchOptions} from '../mirage/lib/browser-launch.mjs';
+import {createSourceInspector,inspectRenderedPage} from '../lense/source-inspection.mjs';
+import {xrayUi} from '../lense/xray-ui.mjs';
+import {inspectionFixture} from '../test/source-inspection-fixture.mjs';
+
+async function fixture(t,html){
+  const fx=inspectionFixture();t.after(fx.cleanup);
+  const browser=await chromium.launch(browserLaunchOptions({headless:true}));t.after(()=>browser.close());
+  const page=await browser.newPage();
+  await page.route('**/*',route=>route.fulfill({contentType:'text/html; charset=utf-8',body:html}));
+  await page.goto('http://127.0.0.1:11111/');
+  const inspector=createSourceInspector({sourceDir:fx.portal});
+  const data={origin:'http://127.0.0.1:11111',token:'invented-cached-xray'};
+  const inspect=async()=>{
+    const {report}=await inspector.inspect('/',await page.evaluate(inspectRenderedPage));
+    for(const row of report.elementSources)if(row.sourceFile)row.ref=path.relative(fx.portal,row.sourceFile).replaceAll('\\','/');
+    await page.evaluate(xrayUi,data);
+    await page.evaluate(({data,report})=>{const api=document.getElementById('paqvilo-xray').__px;api.update(data,report);api.toggle(true);},{data,report});
+    return report;
+  };
+  return {fx,page,inspector,inspect};
+}
+
+test('script-rendered unreferenced snippets remain attributable with bounded page evidence and fast identification',async t=>{
+  const markup='<aside id="dynamic-banner" class="notice dynamic"><span class="notice-message">Invented message</span></aside>';
+  const {fx,page,inspect}=await fixture(t,`<main></main><script>document.querySelector('main').innerHTML=${JSON.stringify(markup)};</script>`);
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.yml'),'adx_contentsnippetid: dynamic\nadx_name: Dynamic notice');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.value.html'),markup);
+  const report=await inspect();
+  assert.equal(report.snippets.some(row=>row.name==='Dynamic notice'),false,'the dynamic insertion is absent from the static include graph');
+  assert.ok(report.elementSources.some(row=>row.name==='Dynamic notice'));
+  const result=await page.evaluate(()=>{
+    const api=document.getElementById('paqvilo-xray').__px,node=document.querySelector('.notice-message');
+    const start=performance.now();let result;
+    for(let index=0;index<100;index++)result=api.identify(node);
+    return {title:result.title,ms:(performance.now()-start)/100};
+  });
+  assert.equal(result.title,'Dynamic notice');
+  assert.ok(result.ms<5,'synthetic element identification stays below the 5 ms target');
+  t.diagnostic(JSON.stringify({identificationMs:result.ms}));
+  await page.locator('.notice-message').evaluate(node=>node.className='replacement-message');
+  const after=await inspect();
+  assert.ok(after.elementSources.some(row=>row.selector==='#dynamic-banner'),'the enclosing source ID survives script class changes');
+});
+
+test('script truncation notes and displayed source rows agree on root-relative forward-slash paths',async t=>{
+  const {fx,page,inspect}=await fixture(t,'<button id="id0">Invented button</button>');
+  fs.writeFileSync(path.join(fx.portal,'web-files/widget.js'),Array.from({length:200},(_,index)=>`document.querySelector('#id${index}');`).join('\n'));
+  const report=await inspect();
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.select(document.getElementById('id0')));
+  const text=await page.locator('#paqvilo-xray .content').innerText();
+  const ref=report.elementSources.find(row=>row.kind==='script'&&row.selector==='#id0').ref;
+  assert.ok(text.includes(ref));assert.ok(text.includes('Truncated scripts: '+ref+'.'));
+  assert.equal(text.includes(fx.portal),false);
+  assert.equal(/[A-Za-z]:\\/.test(text),false);
+});
+
+test('rendered IDs match exported hints across CSS escaping styles',async t=>{
+  const markup='<aside id="é:notice"><span>Invented notice</span></aside>';
+  const {fx,page,inspect}=await fixture(t,markup);
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Escaped.contentsnippet.yml'),'adx_contentsnippetid: escaped\nadx_name: Escaped notice');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Escaped.contentsnippet.value.html'),markup);
+  const report=await inspect();
+  assert.ok(report.elementSources.some(row=>row.name==='Escaped notice'));
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.querySelector('aside')).title),'Escaped notice');
+});
+
+test('rendered markup hints exclude control values, page text, queries and arbitrary data attributes',async t=>{
+  const {page}=await fixture(t,'<div id="safe" class="fixture" data-private="PRIVATE_SENTINEL">TEXT_SENTINEL</div><input id="field" value="VALUE_SENTINEL"><a href="/?query=QUERY_SENTINEL">Link</a>');
+  const observed=await page.evaluate(inspectRenderedPage),text=JSON.stringify(observed);
+  for(const sentinel of ['PRIVATE_SENTINEL','TEXT_SENTINEL','VALUE_SENTINEL','QUERY_SENTINEL'])assert.equal(text.includes(sentinel),false);
+  assert.ok(observed.markupTokens.includes('id:safe'));
+  assert.ok(observed.markupTokens.includes('class:div:fixture'));
+});
+
+test('rendered shape collection stops at its token budget and reports partial evidence',async t=>{
+  const {page}=await fixture(t,'<aside class="'+Array.from({length:9000},(_,index)=>'fixture'+index).join(' ')+'"></aside>');
+  const observed=await page.evaluate(inspectRenderedPage);
+  assert.equal(observed.markupTokens.length,8000);assert.equal(observed.truncated,true);
+});
+
+test('unreferenced snippets inserted in open shadow roots retain source candidates without collecting inspector internals',async t=>{
+  const markup='<aside id="dynamic-shadow" class="shadow-notice"><slot></slot></aside>';
+  const {fx,page,inspect}=await fixture(t,'<section id="host"><b id="slotted-light">Invented</b></section>');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Shadow.contentsnippet.yml'),'adx_contentsnippetid: shadow\nadx_name: Shadow notice');
+  fs.writeFileSync(path.join(fx.portal,'content-snippets/Shadow.contentsnippet.value.html'),markup);
+  await page.evaluate(markup=>document.getElementById('host').attachShadow({mode:'open'}).innerHTML=markup,markup);
+  const report=await inspect();
+  assert.ok(report.elementSources.some(row=>row.name==='Shadow notice'));
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.getElementById('host').shadowRoot.querySelector('aside')).title),'Shadow notice');
+  const observed=await page.evaluate(inspectRenderedPage);
+  assert.ok(observed.ids.includes('dynamic-shadow'));
+  assert.equal(observed.ids.filter(id=>id==='slotted-light').length,1,'slot assignment does not visit the light node twice');
+  assert.equal(observed.markupTokens.some(token=>token.includes('paqvilo-xray')||token==='class:div:shield'),false);
+});

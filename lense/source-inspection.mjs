@@ -2,6 +2,7 @@
 import fs from 'node:fs/promises';
 import {existsSync} from 'node:fs';
 import path from 'node:path';
+import {createHash} from 'node:crypto';
 import { readLocalFile } from './local-file.mjs';
 import { importPortal, portalField, normalizePortalPath } from '../mirage/lib/importer.mjs';
 import { importSolutionMetadata } from '../mirage/lib/solution-metadata.mjs';
@@ -12,13 +13,32 @@ import { buildPermissionModel } from '../mirage/lib/permissions.mjs';
 import { importCodeComponents } from '../mirage/lib/code-components.mjs';
 import { elementSourceHints, scriptSourceHints } from './element-provenance.mjs';
 import {assetKind} from '../mirage/lib/asset-type.mjs';
-import {SolutionFileCache} from '../mirage/lib/solution-cache.mjs';
+import {SolutionFileCache, fileStamp, mapLimit} from '../mirage/lib/solution-cache.mjs';
 
 const norm = (value) => String(value?.id ?? value ?? '').replace(/[{}]/g, '').toLowerCase();
 const unique = (rows, key) => [...new Map(rows.map((row) => [key(row), row])).values()];
 const inside = (root, file) => { const rel = path.relative(root, file); return Boolean(rel) && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
 const exportIndexes=new WeakMap();
 const bodyFile=(record,suffix)=>{const file=record?._file;if(!file)return null;if(/powerpagecomponent\.xml$/i.test(file))return file;const sidecar=file.replace(/\.ya?ml$/i,'.'+suffix);return existsSync(sidecar)?sidecar:file;};
+// Match the imported-file cache's change detection without reading every asset body.
+async function inspectionDirectoryStamp(root){
+  const files=[],skip=new Set(['.git','.portalconfig','node_modules','.paqvilo']);
+  let directories=[root];
+  while(directories.length){
+    const next=[];
+    await mapLimit(directories,32,async directory=>{
+      for(const entry of await fs.readdir(directory,{withFileTypes:true})){
+        if(entry.isSymbolicLink()||skip.has(entry.name))continue;
+        const file=path.join(directory,entry.name);
+        if(entry.isDirectory())next.push(file);else if(entry.isFile())files.push(file);
+      }
+    });
+    directories=next;
+  }
+  files.sort();
+  return mapLimit(files,64,async file=>[path.relative(root,file),(await fileStamp(file)).stamp]);
+}
+const hintTokens=hint=>hint.matchKind==='id'?['id:'+hint.domId]:hint.matchKind==='class'?(hint.classes??[]).map(name=>'class:'+hint.tag+':'+name):Object.entries(hint.attributes??{}).map(([name,value])=>'attribute:'+hint.tag+':'+name+':'+value);
 function exportIndex(portal,metadata){
   let index=exportIndexes.get(portal);if(index?.metadata===metadata)return index;
   const language=norm(portal.language?.id??portalField(portal.website,'defaultlanguage'));
@@ -26,11 +46,11 @@ function exportIndex(portal,metadata){
   for(const row of (portal.records??[]).filter(row=>row.kind==='contentsnippet'&&Number(portalField(row,'statecode',0))!==1).sort((a,b)=>Number(norm(portalField(a,'contentsnippetlanguageid'))===language)-Number(norm(portalField(b,'contentsnippetlanguageid'))===language)))snippets.set(row.name,row);
   const sources=[...(portal.pages??[]).map(page=>({body:page.html,id:page.id,sourceFile:bodyFile(page.metadata,'copy.html'),kind:'page',name:page.name})),...[...new Set(Object.values(portal.templates??{}))].map(template=>({body:template.source,id:template.id,sourceFile:bodyFile(template.metadata,'source.html'),kind:'template',name:template.name})),...[...snippets.values()].map(row=>({body:portal.snippets?.[row.name],id:row.id,sourceFile:bodyFile(row,'value.html'),kind:'snippet',name:row.name}))];
   const frequencies=new Map();
-  const markup=[];
-  for(const {body,...source}of sources)for(const hint of elementSourceHints(body,source)){if(source.kind!=='page')markup.push(hint);if(hint.matchKind==='class'){let files=frequencies.get(hint.selector);if(!files)frequencies.set(hint.selector,files=new Set());files.add(source.sourceFile+'#'+source.id);}}
+  const byToken=new Map();
+  for(const {body,...source}of sources)for(const hint of elementSourceHints(body,source)){if(source.kind!=='page')for(const token of hintTokens(hint)){let rows=byToken.get(token);if(!rows)byToken.set(token,rows=[]);rows.push(hint);}if(hint.matchKind==='class'){let files=frequencies.get(hint.selector);if(!files)frequencies.set(hint.selector,files=new Set());files.add(source.sourceFile+'#'+source.id);}}
   const forms=[...(portal.forms??[]),...(portal.advancedForms??[])].map(form=>{const schema=metadata.componentSchemas?.[form.id]??metadata.componentSchemas?.[form.name],advanced=form.metadata?.kind==='advancedform';return {id:form.id,name:form.name,kind:advanced?'advanced-form':'basic-form',entity:form.entityName??schema?.entity,sourceFile:form.metadata?._file,formXml:!advanced&&schema?.sourceFile?{id:schema.formId,name:schema.formName,sourceFile:schema.sourceFile}:null,pageReferenced:false};});
   const lists=(portal.lists??[]).map(list=>({id:list.id,recordId:list.id,name:list.name,kind:'list',entity:list.entityName,sourceFile:list.metadata?._file,pageReferenced:false,evidenceLabel:'Exported list; not referenced by this page’s sources'}));
-  index={metadata,markup,classFrequencies:Object.fromEntries([...frequencies].map(([selector,files])=>[selector,files.size])),forms,lists};exportIndexes.set(portal,index);return index;
+  index={metadata,byToken,classFrequencies:Object.fromEntries([...frequencies].map(([selector,files])=>[selector,files.size])),forms,lists};exportIndexes.set(portal,index);return index;
 }
 
 // Resolve declared browser resources against their browser URL, never a source directory.
@@ -106,8 +126,32 @@ export function inspectRenderedPage() {
     const match = route && /^\/_api\/([a-z][\w]*)(?:\(|\/|$)/i.exec(route);
     return match ? [match[1]] : [];
   }))];
-  const ids=[...document.querySelectorAll('[id]')].filter(own).slice(0,2000).map(node=>node.id).filter(id=>id.length<=160&&!/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
-  return { assets, controls, apiSets, ids, truncated: document.querySelectorAll('input,select,textarea').length > 300 };
+  const attributes=['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'];
+  const shapeSelector='[id],[class],'+attributes.map(name=>'['+name+']').join(',');
+  const elements=[],pending=[...document.children].reverse();let scanned=0,traversalTruncated=false;
+  // Visit each light/open-shadow element once; slots' assigned light children
+  // are already in the light tree. Never enter the inspector's own shadow roots.
+  while(pending.length&&scanned<8000&&elements.length<2000){
+    const node=pending.pop();if(!own(node))continue;scanned++;
+    if(node.matches(shapeSelector))elements.push(node);
+    for(const children of [node.shadowRoot?.children??[],node.children]){
+      const count=Math.min(children.length,8000-scanned-pending.length);
+      if(count<children.length)traversalTruncated=true;
+      for(let index=count-1;index>=0;index--)pending.push(children[index]);
+    }
+  }
+  const shapeTruncated=traversalTruncated||pending.length>0;
+  const ids=elements.filter(node=>node.hasAttribute('id')).map(node=>node.id).filter(id=>id.length<=160&&!/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
+  const tokens=new Set();let tokenTruncated=false;
+  const addToken=token=>{if(tokens.size>=8000&&!tokens.has(token)){tokenTruncated=true;return false;}tokens.add(token);return true;};
+  const idSet=new Set(ids);
+  const staticValue=value=>value&&value.length<=160&&!/[{}%\x00-\x1f\x7f]/.test(value);
+  shapeLoop:for(const node of elements.slice(0,2000)){
+    if(idSet.has(node.id)&&!addToken('id:'+node.id))break;
+    for(const name of node.classList)if(staticValue(name)&&!addToken('class:'+node.localName+':'+name))break shapeLoop;
+    for(const name of attributes){const value=node.getAttribute(name);if(staticValue(value)&&/^[a-zA-Z0-9_{}-]+$/.test(value)&&!addToken('attribute:'+node.localName+':'+name+':'+value))break shapeLoop;}
+  }
+  return { assets, controls, apiSets, ids, markupTokens:[...tokens], truncated: document.querySelectorAll('input,select,textarea').length > 300 || shapeTruncated || tokenTruncated };
 }
 
 const pageSources = (portal, page) => {
@@ -327,7 +371,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     solutions: (metadata.roots ?? []).length,
   };
   const page = portal.pages.find((entry) => norm(entry.id) === norm(report.page?.id));
-  const whole=exportIndex(portal,metadata);report.elementSourceFrequencies=whole.classFrequencies;report.componentIndex={forms:whole.forms.map(form=>({...form,formXml:form.formXml?{...form.formXml}:null})),lists:whole.lists.map(list=>({...list}))};
+  const whole=exportIndex(portal,metadata);report.componentIndex={forms:whole.forms.map(form=>({...form,formXml:form.formXml?{...form.formXml}:null})),lists:whole.lists.map(list=>({...list}))};
   if(report.page&&page){report.page.entityFormId=page.formId??portalField(page.metadata??{},'entityform')??null;report.page.listId=page.listId??portalField(page.metadata??{},'entitylist')??null;}
   report.pageSources = [];
   for (const source of pageSources(portal, page)) {
@@ -388,9 +432,16 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
     ...(report.snippets ?? []).map(row => ({ ...row, body: portal.snippets?.[row.name], kind: 'snippet' })),
   ];
   report.elementSources = markup.flatMap(({ body, ...source }) => elementSourceHints(body, source));
-  const referenced=new Set(report.elementSources.map(item=>item.sourceFile+'#'+item.selector));
-  report.elementSources.push(...structuredClone(whole.markup.filter(item=>!referenced.has(item.sourceFile+'#'+item.selector))));
-  let scriptTruncated=false;const scriptTruncatedSources=[];const appendScriptHints=(body,source)=>{const hints=scriptSourceHints(body,source,{ids:rendered.ids??[]});if(hints.truncated){scriptTruncated=true;scriptTruncatedSources.push(source.sourceFile??source.name);}report.elementSources.push(...hints);};
+  const referenced=new Set(report.elementSources.map(item=>item.sourceFile+'#'+(item.recordId??item.id??'')+'#'+item.selector));
+  const candidates=new Set();let candidateTruncated=false;
+  candidateLoop:for(const token of (rendered.markupTokens??[]).slice(0,8000))for(const item of whole.byToken.get(token)??[]){
+    if(referenced.has(item.sourceFile+'#'+(item.recordId??item.id??'')+'#'+item.selector)||candidates.has(item))continue;
+    if(candidates.size>=1200){candidateTruncated=true;break candidateLoop;}candidates.add(item);
+  }
+  report.elementSources.push(...[...candidates].map(item=>structuredClone(item)));
+  report.elementSourceFrequencies=Object.fromEntries(report.elementSources.filter(item=>item.matchKind==='class').map(item=>[item.selector,whole.classFrequencies[item.selector]??1]));
+  const displaySource=source=>source.sourceFile&&inside(portal.sourceDir,source.sourceFile)?path.relative(portal.sourceDir,source.sourceFile).replaceAll('\\','/'):source.name??path.basename(source.sourceFile??'Source');
+  let scriptTruncated=false;const scriptTruncatedSources=[];const appendScriptHints=(body,source)=>{const hints=scriptSourceHints(body,source,{ids:rendered.ids??[]});if(hints.truncated){scriptTruncated=true;scriptTruncatedSources.push(displaySource(source));}report.elementSources.push(...hints);};
   for (const source of report.pageSources.filter(row => row.fieldPath === 'customjavascript')) appendScriptHints(page?.js, { ...source, kind: 'script' });
   const browserBase = report.requestPath ?? report.path ?? page?.url ?? '/';
   const referencedPaths = new Set(sourceBodies.flatMap((text) => assetPaths(text, browserBase)));
@@ -416,7 +467,7 @@ export async function enrichInspection(report, portal, { metadata = {}, rendered
   }
   const body = sourceBodies.map(stripLiquidLiteralBlocks).join('\n');
   report.assets = [...matchedFiles.values()].map((file) => ({ name: file.name ?? file.url, url: file.url, kind:assetKind(file.mimeType,file.file),mimeType:file.mimeType??null,sourceFile: file.file, metadataSource: file.metadata?._file, evidence: observedPaths.has(file.url) ? 'rendered-asset' : 'static-reference' }));
-  report.elementSourceLimits={sourceBytes:1024*1024,total:report.elementSources.length,scriptHintsPerSource:120,scriptTruncated,scriptTruncatedSources,truncated:scriptTruncated||markup.some(item=>String(item.body??'').length>1024*1024)};
+  report.elementSourceLimits={sourceBytes:1024*1024,total:report.elementSources.length,renderedCandidates:1200,candidateTruncated,renderedTruncated:Boolean(rendered.truncated),scriptHintsPerSource:120,scriptTruncated,scriptTruncatedSources,truncated:scriptTruncated||candidateTruncated||Boolean(rendered.truncated)||markup.some(item=>String(item.body??'').length>1024*1024)};
   // Literal Web API entity sets resolve only through selected Solution definitions.
   // Dynamic expressions stay unknown rather than assuming an English plural table name.
   const observedApiSets = new Set((rendered.apiSets ?? []).filter((value) => /^[a-z][\w]*$/i.test(value)));
@@ -485,8 +536,25 @@ export function createSourceInspector(cfg) {
   let loading = null;
   const fileCache=new SolutionFileCache();
   let reports=new Map(),reportBytes=0;
+  const counters={reportHits:0,enrichments:0,reloads:0,unchangedRefreshes:0};
+  const fingerprint=async sources=>JSON.stringify([sources,await Promise.all([sources.sourceDir,...sources.roots].map(inspectionDirectoryStamp))]);
+  const remember=async(key,compute)=>{
+    key=createHash('sha256').update(key).digest('hex');
+    const generation=reports,cached=reports.get(key);
+    if(cached){counters.reportHits++;reports.delete(key);reports.set(key,cached);return structuredClone(await cached.result);}
+    const entry={bytes:0,result:Promise.resolve().then(compute)};reports.set(key,entry);
+    try{
+      const result=await entry.result;
+      if(generation===reports&&reports.get(key)===entry){
+        entry.bytes=JSON.stringify(result).length*2;reportBytes+=entry.bytes;
+        while(reports.size>16||reportBytes>32*1024*1024){const oldest=reports.keys().next().value;reportBytes-=reports.get(oldest).bytes;reports.delete(oldest);}
+      }
+      return structuredClone(result);
+    }catch(error){if(generation===reports&&reports.get(key)===entry)reports.delete(key);throw error;}
+  };
   const load = () => loading ??= (async () => {
     const sources = await inspectionSources(cfg);
+    counters.reloads++;
     const variants = new Map();
     const variant = async (language = null) => {
       const key = language?.id ?? '';
@@ -505,6 +573,9 @@ export function createSourceInspector(cfg) {
       })());
       return variants.get(key);
     };
+    // Capture before importing: an edit during import must force the next refresh,
+    // never label an older parsed body with the newer file's stamp.
+    const signature = await fingerprint(sources);
     const initial = await variant();
     const select = async (route) => {
       const pathname = String(route ?? '/').split(/[?#]/)[0];
@@ -513,10 +584,22 @@ export function createSourceInspector(cfg) {
       const language = !direct && initial.portal.websiteLanguages?.find((row) => row.code?.toLowerCase() === prefix?.toLowerCase());
       return { ...(language ? await variant(language) : initial), language, route: language ? pathname.slice(prefix.length + 1) || '/' : pathname, requestPath: pathname };
     };
-    return { sources, select };
+    return { sources, select, signature };
   })().catch((error) => { loading = null; throw error; });
   return {
-    invalidate() { loading = null; reports=new Map();reportBytes=0; },
+    invalidate() {
+      const previous=loading;
+      if(!previous)return;
+      loading=previous.then(async current=>{
+        const sources=await inspectionSources(cfg);
+        if(await fingerprint(sources)===current.signature){counters.unchangedRefreshes++;return current;}
+        reports=new Map();reportBytes=0;loading=null;return load();
+      }).catch(error=>{loading=null;reports=new Map();reportBytes=0;throw error;});
+      // Source-watch events can invalidate while no inspector is awaiting a report.
+      // Keep the rejection available to an awaiting reader without an unhandled promise.
+      void loading.catch(()=>{});
+    },
+    stats() { return {...counters,sourceFiles:{...fileCache.stats},reports:reports.size,reportBytes}; },
     async pluginSourceRoots(route) {
       const { select } = await load();
       return (await select(route)).metadata.plugins?.sourceRoots ?? [];
@@ -525,32 +608,24 @@ export function createSourceInspector(cfg) {
       if(!report||typeof report!=='object'||Array.isArray(report))throw new TypeError('Source inspection requires a page report object.');
       const { sources, select } = await load();
       const { portal, metadata, codeCatalogue } = await select(report.requestPath ?? report.path);
-      return enrichInspection(report, portal, { metadata, rendered, observed: sources.observed, codeCatalogue });
+      const enriched=await remember('enrich:'+JSON.stringify([report,rendered]),()=>{
+        counters.enrichments++;
+        return enrichInspection(structuredClone(report), portal, { metadata, rendered, observed: sources.observed, codeCatalogue });
+      });
+      return Object.assign(report,enriched);
     },
     async inspect(route, rendered = {}) {
-      const key=JSON.stringify([route,rendered]),generation=reports;
-      const cached=reports.get(key);
-      if(cached){reports.delete(key);reports.set(key,cached);return structuredClone(await cached.result);}
-      const entry={bytes:0};
-      entry.result=(async()=>{
-        const { sources, select } = await load();
+      const { sources, select } = await load();
+      return remember('inspect:'+JSON.stringify([route,rendered]),async()=>{
         const { portal, metadata, codeCatalogue, language, route: sourceRoute, requestPath } = await select(route);
         const report = inspectPage(portal, sourceRoute, { solutionMetadata: metadata });
         report.requestPath = requestPath;
         if (language) report.language = { id: language.id, code: language.code, lcid: language.lcid };
+        counters.enrichments++;
         await enrichInspection(report, portal, { metadata, rendered, live: true, observed: sources.observed, codeCatalogue });
         report.unresolved.push(...sources.diagnostics.map((row) => ({ kind: 'configuration', ...row })));
         return { report, roots: [sources.sourceDir, ...sources.roots, ...(metadata.plugins?.sourceRoots ?? [])], status: { site: cfg.siteName, format: portal.format, sourceDir: sources.sourceDir, diagnostics: { total: report.unresolved.length }, solutionRoots: sources.roots } };
-      })();
-      reports.set(key,entry);
-      try{
-        const result=await entry.result;
-        if(generation===reports&&reports.get(key)===entry){
-          entry.bytes=JSON.stringify(result).length*2;reportBytes+=entry.bytes;
-          while(reports.size>16||reportBytes>32*1024*1024){const oldest=reports.keys().next().value;reportBytes-=reports.get(oldest).bytes;reports.delete(oldest);}
-        }
-        return structuredClone(result);
-      }catch(error){if(generation===reports)reports.delete(key);throw error;}
+      });
     },
   };
 }

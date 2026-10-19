@@ -7,6 +7,7 @@ import {
   importSolutionMetadata,
   parseSolutionXml,
   systemFormSchemaFor,
+  applySolutionMetadata,
 } from "../lib/solution-metadata.mjs";
 import { formCells } from "../lib/native-services.mjs";
 import { approximateFormSchema } from '../lib/form-schema-fallback.mjs';
@@ -124,7 +125,25 @@ test('numeric form type overrides enclosing group and explicit Card cannot becom
   assert.equal(metadata.forms[0].formType, 'main');
   assert.equal(metadata.componentSchemas['basic-form'], undefined);
   assert.ok(metadata.diagnostics.some(item => item.code === 'SYSTEMFORM_INELIGIBLE_TYPE'));
+  assert.deepEqual(metadata.diagnostics.filter(item => item.id === 'basic-form').map(item => item.code), ['SYSTEMFORM_INELIGIBLE_TYPE']);
+  assert.equal(metadata.summary.unresolved, 2, 'the ineligible form and the separate missing list view each count once');
   assert.equal(approximateFormSchema({ definition: definition.forms[0], portal: definition, metadata }), null);
+});
+
+test('a basic form referencing a Quick View emits only its specific ineligible diagnostic', async t => {
+  const xml = form('Name').replace('<formid>', '<type>6</type><formid>');
+  const root = await fixture(t, { 'Entities/Contact/Entity.xml': entity, 'Entities/Contact/FormXml/quick/quick.xml': xml });
+  const definition = portal(); definition.lists = [];
+  const metadata = await importSolutionMetadata(root, { portal: definition });
+  assert.deepEqual(metadata.diagnostics.filter(item => item.id === 'basic-form').map(item => item.code), ['SYSTEMFORM_INELIGIBLE_TYPE']);
+  assert.equal(metadata.summary.unresolved, 1);
+  assert.equal(metadata.componentSchemas['basic-form'], undefined);
+});
+
+test('an earlier diagnostic cannot suppress an unresolved form reference', () => {
+  const metadata = { diagnostics: [{ code: 'SYSTEMFORM_INELIGIBLE_TYPE', id: 'basic-form' }], forms: [], views: [], entities: {} };
+  const result = applySolutionMetadata(portal(), metadata);
+  assert.equal(result.diagnostics.filter(item => item.code === 'SYSTEMFORM_UNRESOLVED' && item.id === 'basic-form').length, 1);
 });
 
 test('absent source and legacy untyped layouts retain their approximation behavior', async t => {

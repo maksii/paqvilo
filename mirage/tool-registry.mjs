@@ -11,7 +11,7 @@ export const MIRAGE_TOOLS = Object.freeze({
   'liquid-conformance': '--suite FILE [--rules FILE] [--json | --markdown] [--out FILE] [--timeout MS]',
   acceptance: '--local LOOPBACK_ORIGIN --plan FILE [--origin HTTPS_ORIGIN --cdp LOOPBACK_URL] [--output DIRECTORY]',
   'enrich-reference': '--state FILE --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE',
-  'reference-parity': '--local LOOPBACK_ORIGIN --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE --output DIRECTORY',
+  'reference-parity': '--local LOOPBACK_ORIGIN --origin HTTPS_ORIGIN --cdp LOOPBACK_URL --plan FILE --output DIRECTORY [--local-contact ID | --local-configured-persona] [--local-role NAME ...]',
   'query-inventory': '--portal DIRECTORY [--json]',
   verify: '--local LOOPBACK_ORIGIN --origin HTTPS_ORIGIN --cdp LOOPBACK_URL [--path /] --output DIRECTORY',
   'verify-storage': '[--json] (disposable 600,000-row storage/performance check; about 2 GiB free memory)',
@@ -32,5 +32,9 @@ export function unknownMirageCommand(command) {
     return previous[candidate.length];
   };
   const closest = [...MIRAGE_COMMANDS].sort((a,b)=>distance(a)-distance(b))[0];
-  return `Unknown command: ${command}. Choose ${MIRAGE_COMMANDS.join(', ')}. Closest command: ${closest}. Run paqvilo mirage --help for options.`;
+  // At most two edits, and at most half of the longer word. Adjacent transpositions
+  // count as two edits (for example strat -> start).
+  const threshold = Math.min(2, Math.floor(Math.max(command.length, closest.length) / 2));
+  const suggestion = distance(closest) <= threshold ? ` Closest command: ${closest}.` : '';
+  return `Unknown command: ${command}. Choose ${MIRAGE_COMMANDS.join(', ')}.${suggestion} Run paqvilo mirage --help for options.`;
 }

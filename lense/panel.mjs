@@ -1201,6 +1201,8 @@ export function enablePanel(context, session, opts = {}) {
         runtime.roots = answer.roots.map(realNative);
       } else {
         // Supplement runtime evidence with source paths without changing its access verdicts.
+        runtime.inspectionBase ??= structuredClone(runtime.report);
+        runtime.report = structuredClone(runtime.inspectionBase);
         await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
           (runtime.report.unresolved ??= []).push({ kind: 'source-inspection', reason: error.message.split('\n')[0] });
         });

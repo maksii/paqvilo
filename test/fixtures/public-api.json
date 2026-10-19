@@ -36,6 +36,8 @@
       "correlateNetworkConsole",
       "implementationEvidence",
       "observedEvidence",
+      "observePageLifecycle",
+      "observeContextLifecycle",
       "reconcileSupersededRead",
       "runAcceptance",
       "simulatorBackgroundRequest",

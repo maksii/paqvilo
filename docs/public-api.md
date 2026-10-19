@@ -140,6 +140,21 @@ Use `paqvilo/mirage/packs` for `validatePack`, `presetDescriptor`, `defineLazyPr
 registered packs as your runtime. `assertReadOnlyPath`, `DENIED_ROUTE_PATTERNS`, `validatePlan`
 and `activatePackDeniedRoutes` support project-owned parity plans.
 
+`compareReferenceContracts({ localUrl, origin, cdpUrl, contracts, outputDir })` compares
+explicit read contracts with the connected reference browser. Local reads are anonymous
+by default. Supply `localSession: visitor` from `createPortalSession()` to reuse an open
+visitor at exactly `localUrl`, or `localVisitor: { contactId, roles? }` to create a temporary
+authenticated visitor. Omit `roles` to resolve normal contact memberships; an explicit
+array overrides roles only for that visitor. `localVisitor: { configuredPersona: true }`
+uses the configured contact and preserves its membership/override choice, failing clearly
+when no contact is configured. These options are mutually exclusive. The CLI equivalents
+are `--local-contact ID`, optional repeatable `--local-role NAME`, and
+`--local-configured-persona`. To specify an empty override use the API's `roles: []`.
+Supplied sessions remain caller-owned; temporary visitors are closed after comparison.
+No option changes the configured runtime identity, creates grants or changes reference
+browser identity. Reports include only a local identity fingerprint and sign-in status;
+cookies/CSRF values are never persisted. A changed visitor identity makes comparison fail.
+
 `paqvilo/mirage/fixtures` exports `formatMockRecord`, `mergeDataset`, `findDanglingLookups`,
 `schemaViolations`, `fieldIndexFromMappings`, `schemaFieldIndex`, `formatViolations`,
 `assertOfflineState`, `stateFileFingerprint`, `importPortal` and `createPortalRenderer`.
@@ -215,4 +230,37 @@ The acceptance surface also exports three read-only observation building blocks:
 
 Project observation tools can use these public exports instead of deep imports. Browser reads still require an authorised session and a guard blocking all non-GET requests.
 
-`runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. Without an override, the reserve uses the slowest document response measured earlier in the same flow (request send to response headers, excluding intercepted hold time), plus 1 s, with a 3 s minimum, capped at half the action's remaining time. This cap preserves the previous write-hold allowance for short actions. Before any document timing is available, the reserve is half the remaining action time. The write hold is bounded by the remaining action time minus this reserve. A slower document can still exceed the action timeout; use an explicit reserve when needed. Redirects share the first hop's hold budget and reserve. `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`measured-document-response`, `half-remaining-action`, or `explicit`) and `actionRemainingMs`. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.
+`runAcceptance({ navigationCommitReserveMs })` reserves that many milliseconds of the triggering action for document/redirect commits. Without an override, a navigation allows at most 5 s for pending writes, reserving the remainder for the document and redirect chain. Its minimum reserve is 3 s, capped at half the remaining action time for short actions. Earlier successful response-header timings for the same initial method and exact URL (including query) can increase the reserve to the measured chain duration plus 1 s. An unrelated fast initial page cannot shrink the fallback. Timing excludes intercepted hold time; redirects share the first hop's hold budget and reserve. An unexpectedly slow navigation can still exceed the action timeout. `navigationWaits` records `commitReserveMs`, `commitReservePolicy` (`bounded-write-fallback`, `comparable-navigation-chain`, or `explicit`), `comparableNavigationMs` (null without comparable evidence), `writeHoldAllowanceMs` and `actionRemainingMs`. A document navigation answered 204 or 205 and ending with net::ERR_ABORTED is listed under noContentNavigations (method, sanitized URL, status); it preserves its document and is not a failed request. Pending reads/writes still have to settle; response-less aborts and other network failures remain failures.
+
+`observePageLifecycle(page, { origin, maxRecords: 10000 })` and
+`observeContextLifecycle(context, options)` are public read-only Chromium observers for
+project-owned Playwright runners. Await attachment before navigation; for a new page in an
+observed context, await `observer.ready()` before navigating it. They do not intercept requests,
+change identities, sign in, or grant live-reference access. The supplied origin confines the
+owned-background exclusion; requests to other origins remain observed.
+
+A page observer exposes `snapshot()`, `settle({ timeout: 5000, quietMs: 100, pollMs: 25 })`
+and async `dispose()`. `settle()` returns `settled`, `passed`, `waitedMs`, `requests`,
+`pendingRequests`, `supersededReads`, `failures`, `overflow`, `disposed` and `closed`.
+`settled` means tracked portal work is no longer pending and the quiet period elapsed;
+`passed` additionally requires no failures. Context `settle()` returns per-page reports in
+`pages` with aggregate `settled` and `passed`. Context attachment errors are thrown by
+`ready()`/`settle()`. Dispose removes observer listeners and CDP sessions without closing pages
+or the context. Stop using a disposed observer; it cannot report successful settling.
+
+Only GET/HEAD reads pending when a frame detach or a committed document replacement is
+observed can become `superseded-read`; this reports document lifecycle and never claims
+browser consumption or server completion. An aborted read can also qualify if its frame is
+already detached at failure time. A failure observed before that lifecycle proof stays failed,
+even if a later navigation or detach follows. Chromium can emit an iframe abort before its
+detach event; that ordering deliberately remains a failure. Fragment/history changes do not
+replace documents. HTTP errors, failed writes and cancelled writes remain in `failures`.
+The observer has no server-side write reconciliation contract. Read requests to the exact
+owned background paths documented above remain recorded but do not hold settling or fail it;
+writes to those paths are ordinary tracked work. Other event streams remain pending.
+
+Reports contain method, resource type, sanitized origin/path URL, status, timing, outcome and
+available lifecycle evidence; they omit query values, headers, cookies and bodies. Reaching
+`maxRecords` sets `overflow` and prevents a successful settle rather than silently dropping
+coverage. This is a bounded observation report, not proof of Power Pages behavior or a saved
+record. Keep project-specific assertions and acceptance fixtures in the project package.

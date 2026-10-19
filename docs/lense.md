@@ -41,6 +41,8 @@ Run `npx --no-install paqvilo lense --help` for the full command/options referen
 Duplicate exported YAML keys fail the Sources check without changing the Lense verdict.
 Without `--mirage` its exit status covers Lense; source diagnostics remain warnings, and each site line names all three states.
 Deployment profile lines list each file relative to the catalogue and its parse readiness.
+Add `--lint-profiles` to scan every exported `deployment-profiles` directory for JSON/YAML syntax errors, including unbound files. `profileDiagnostics` contains the source-relative file, parser code, line, column and bound flag. These findings are warnings; selected profile validation still controls Mirage readiness.
+Unknown Mirage commands suggest a command only within two Levenshtein edits and half the longer command length (rounded down). The valid command list and failing exit status are always retained.
 Setup's Git badges scope tracked changes to each source folder and report unavailable or
 timed-out status separately from a checkout without commits.
 
@@ -75,7 +77,14 @@ Code component details include the exported schema, manifest properties, native 
 
 Field identifiers are checked against the selected export and explicit table context; ambiguous matches stay visible as candidates. Source matching uses static IDs, classes and component attributes without relying on positional DOM paths, so moved regions can keep their source identity. Multiple templates and conditional branches can share markup; matching candidates do not establish a deployed source revision. Related script references and page dependencies remain secondary to the selected element's sources. Iframe document contents remain unavailable. Native dialogs, nested overlays, open shadow roots, scrolling and source-driven DOM replacements are handled without silently transferring a removed selection to another element.
 
-X-ray indexes markup hints across all referenced sources; it skips an individual markup source above 1,048,576 UTF-16 code units and reports that omission. Discovery and drawing remain bounded to 800 candidate elements and 250 background outlines. Details show up to 60 source matches with an omission notice. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch. JavaScript reference extraction skips balanced template literals and resumes at a statement boundary after ambiguous slash syntax; computed selectors and template contents remain unqualified. It retains 120 unique script hints per source and reports truncation when it finds an additional reference. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
+X-ray indexes markup hints across all referenced sources; it skips an individual markup source above 1,048,576 UTF-16 code units and reports that omission. Extra unreferenced template/snippet hints must match rendered IDs, classes or component attributes; discovery walks up to 8,000 light/open-shadow nodes, samples up to 2,000 DOM shapes and 8,000 tokens, and sends at most 1,200 extra hints, reporting truncation. This keeps script-inserted snippet candidates available without sending the entire export. Discovery and drawing remain bounded to 800 candidate elements and 250 background outlines. Details show up to 60 source matches with an omission notice. Large pages may show partial background coverage; selection still inspects the element under the pointer. Open shadow roots and slotted controls are supported, while closed roots and iframe contents are boundaries. Outline rectangles approximate complex clipping and rotated shapes. Static Liquid matching cannot prove a rendered branch. JavaScript reference extraction skips balanced template literals and resumes at a statement boundary after ambiguous slash syntax; computed selectors and template contents remain unqualified. It retains 120 unique script hints per source and reports truncation when it finds an additional reference. Missing exports and failed refreshes clear previous identities instead of presenting them as current evidence.
+
+Live and local inspectors cache up to 16 enriched reports within a 32 MiB budget,
+keyed by the original page report (including runtime verdict) and rendered DOM
+evidence. Refresh compares source/configuration file stamps before rebuilding;
+unchanged revisits and refreshes reuse reports and content-aware source hints.
+Changed content invalidates its hint entry. Performance depends on the export and
+machine; cache reuse does not establish platform parity.
 
 Native grids trace their selected views, relationships, action settings and modal forms. Quick views link to their FormXml. Observed Web API requests identify entity sets without collecting record IDs or query values; Solution metadata resolves their table bindings. Exported language routes select the corresponding page and snippet sources. Relative asset references follow their browser URL.
 
@@ -133,7 +142,7 @@ Options --selector (CSS, at most 1,000 characters), --limit (1–200, default 10
 
 ### agent screenshot
 
-Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Existing files are never overwritten: an existing output returns `invalid_argument`, naming the path relative to the project (the filename alone when it is on another volume). Choose a new output filename. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
+Requires --output <new.png>; optional --full-page and --include-panel. Returns path and bytes; writesFiles names the created PNG. Both fields use forward-slash paths relative to the catalogue directory (or working directory without --config). Outside that directory, paths retain `../` segments; on another volume, only the filename is reported. Existing files are never overwritten: an existing output returns `invalid_argument` using the same display rule. Choose a new output filename. PNG output is limited to 8 megapixels, 8,192 pixels per side and 8 MiB.
 
 ### agent viewport
 

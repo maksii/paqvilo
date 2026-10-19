@@ -88,8 +88,9 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     sessions.clear(); attaching.clear(); retrying.clear(); pairs.clear(); documents.clear(); loaders.clear();
   };
   page.on('frameattached', attach); page.on('framenavigated', attach); page.on('framedetached', detached); page.on('close', dispose);
-  await connect(cdp);
-  await page.addInitScript(({ browserBinding, frameBinding, reportBinding }) => {
+  try {
+    await connect(cdp);
+    await page.addInitScript(({ browserBinding, frameBinding, reportBinding }) => {
     const token = [...crypto.getRandomValues(new Uint32Array(4))].map(value => value.toString(16)).join('-');
     const report = () => {
       if (typeof window[browserBinding] === 'function') window[browserBinding](token);
@@ -98,7 +99,8 @@ export async function observeDocumentCommits(page, cdp, { document, commit }) {
     Object.defineProperty(window, reportBinding, { value:report });
     report();
     window.addEventListener('pageshow', event => { if (event.persisted) report(); });
-  }, { browserBinding, frameBinding, reportBinding });
-  for (const frame of page.frames()) void attach(frame);
-  return dispose;
+    }, { browserBinding, frameBinding, reportBinding });
+    for (const frame of page.frames()) void attach(frame);
+    return dispose;
+  } catch (error) { dispose(); throw error; }
 }

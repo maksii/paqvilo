@@ -7,6 +7,37 @@ import { OverlaySession } from '../session.mjs';
 import { mirageReadiness, observedText } from './mirage.mjs';
 import { duplicateYamlDiagnostics } from '../yaml-diagnostics.mjs';
 import { scaffoldWarning } from '../project-check.mjs';
+import YAML from 'yaml';
+
+/** Optional syntax lint of exported deployment profiles, independent of profile selection. */
+export function inspectExportProfiles(sourceDir, deploymentProfiles = {}) {
+  const profiles = deploymentProfiles.profiles ?? {};
+  const boundFiles = Array.isArray(profiles) ? profiles.flatMap(profile => profile.files.map(entry => entry.file)) : Object.values(profiles).flatMap(sources => Object.values(sources).flat());
+  const bound = new Set(boundFiles.map(file => path.resolve(file)));
+  const diagnostics = [], pending = [{ directory: sourceDir, inProfiles: false }];
+  const ignored = new Set(['.git', '.portalconfig', '.paqvilo', 'node_modules']);
+  while (pending.length) {
+    const { directory, inProfiles } = pending.pop();
+    for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+      if (entry.isSymbolicLink() || ignored.has(entry.name.toLowerCase())) continue;
+      const file = path.join(directory, entry.name);
+      if (entry.isDirectory()) { pending.push({ directory: file, inProfiles: inProfiles || entry.name.toLowerCase() === 'deployment-profiles' }); continue; }
+      if (!inProfiles || !entry.isFile() || !/\.(?:json|ya?ml)$/i.test(entry.name)) continue;
+      const source = fs.readFileSync(file, 'utf8');
+      const add = (code, line = 1, column = 1) => diagnostics.push({ code, file: path.relative(sourceDir, file).replaceAll('\\', '/'), line, column, bound: bound.has(path.resolve(file)), severity: 'warning', message: `Invalid deployment profile syntax (${code}).` });
+      if (/\.json$/i.test(file)) {
+        try { JSON.parse(source); } catch (error) {
+          const position = /position (\d+)/.exec(error.message), prefix = position ? source.slice(0, Number(position[1])) : '';
+          add('JSON_SYNTAX_ERROR', position ? prefix.split('\n').length : Number(/line (\d+)/.exec(error.message)?.[1] ?? 1), position ? prefix.length - prefix.lastIndexOf('\n') : Number(/column (\d+)/.exec(error.message)?.[1] ?? 1));
+        }
+      } else {
+        const lines = new YAML.LineCounter(), document = YAML.parseDocument(source, { lineCounter: lines });
+        for (const error of document.errors) { const position = lines.linePos(error.pos[0]); add(error.code, position.line, position.col); }
+      }
+    }
+  }
+  return diagnostics.sort((a, b) => a.file.localeCompare(b.file) || a.line - b.line || a.column - b.column);
+}
 
 /** Inspect exported source YAML without walking local state or dependency trees. */
 export function inspectSourceYaml(sourceDir) {
@@ -74,6 +105,10 @@ export default async function doctor(_cfg, args) {
       for(const item of report.sourceDiagnostics)(args.mirage?report.errors:report.warnings).push(`Sources: ${path.relative(cfg.sourceDir,item.file).replaceAll('\\','/')}:${item.line}: ${item.message}`);
       report.ready=report.errors.length===0;
       report.mirage = await mirageReadiness(cfg, { dependencies });
+      if (args['lint-profiles']) {
+        report.profileDiagnostics = inspectExportProfiles(cfg.sourceDir, report.mirage.deploymentProfiles);
+        for (const item of report.profileDiagnostics) report.warnings.push(`Profiles: ${item.file}:${item.line}:${item.column}: ${item.message}${item.bound ? '' : ' (unbound)'}`);
+      }
       if (args.mirage) report.ready = report.ready && report.mirage.ready;
       reports.push(report);
     } catch (err) {

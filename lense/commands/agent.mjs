@@ -9,6 +9,11 @@ const MAX_IMAGE = 32 * 1024 * 1024;
 const argument = (message, code = 'invalid_argument') => Object.assign(new Error(message), {code});
 export const AGENT_ACTIONS = ['sessions', 'status', 'pages', 'events', 'state', 'snapshot', 'screenshot', 'viewport', 'navigate', 'reload', 'stop'];
 
+function outputName(output, config) {
+  const relative = path.relative(config ? path.dirname(path.resolve(config)) : process.cwd(), output);
+  return (path.isAbsolute(relative) ? path.basename(output) : relative).replaceAll('\\', '/');
+}
+
 function integer(value, name, fallback, min, max) {
   if (value === undefined) return fallback;
   if (!/^\d+$/.test(String(value)) || !Number.isSafeInteger(Number(value)) || Number(value) < min || Number(value) > max) {
@@ -141,8 +146,7 @@ export default async function agent(_cfg, args, positionals = []) {
     try { handle = await fs.open(output, 'wx', 0o600); }
     catch (error) {
       if (error.code === 'EEXIST') {
-        const relative=path.relative(args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),output);
-        throw argument(`Screenshot output already exists: ${(path.isAbsolute(relative)?path.basename(output):relative).replaceAll('\\', '/')}. Existing files are never replaced; choose a new --output.`);
+        throw argument(`Screenshot output already exists: ${outputName(output, args.config)}. Existing files are never replaced; choose a new --output.`);
       }
       throw error;
     }
@@ -151,7 +155,8 @@ export default async function agent(_cfg, args, positionals = []) {
     const result = await agentRequest(discovery, route, { body, timeout, image: action === 'screenshot' });
     if (handle) {
       await handle.writeFile(result);
-      console.log(JSON.stringify({ schemaVersion: 1, path: output, bytes: result.length, writesFiles:[output] }, null, 2));
+      const displayPath = outputName(output, args.config);
+      console.log(JSON.stringify({ schemaVersion: 1, path: displayPath, bytes: result.length, writesFiles:[displayPath] }, null, 2));
     } else console.log(JSON.stringify(result, null, 2));
   } catch (err) {
     if (handle) { await handle.close(); handle = null; await fs.rm(output, { force: true }); }

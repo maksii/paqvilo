@@ -72,7 +72,7 @@ export function elementSourceHints(body, source, { limit = Infinity } = {}) {
     const existing=selectors.get(selector);
     if(existing){existing.occurrences++;existing.locations.push(location);existing.lines=existing.locations.map(item=>item.line).filter(Boolean);continue;}
     selectors.set(selector,{
-      selector,matchKind,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:staticClasses,occurrences:1,locations:[location],lines:location.line?[location.line]:[],
+      selector,matchKind,domId:matchKind==='id'?id:undefined,tag:node.tagName,attributes:Object.fromEntries(['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'].filter(name=>staticValue(attrs[name])).map(name=>[name,attrs[name]])),classes:staticClasses,occurrences:1,locations:[location],lines:location.line?[location.line]:[],
       // Enhanced-model HTML is nested in XML/JSON; its line is not a file line.
       line: /\.html?$/i.test(source.sourceFile??'')?node.sourceCodeLocation?.startLine:undefined,
       evidence:'source-selector',certainty:'candidate',

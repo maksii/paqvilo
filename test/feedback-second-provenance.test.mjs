@@ -51,7 +51,7 @@ test('shared header/footer hints reuse parsing across pages and refresh, with wh
   fs.writeFileSync(path.join(fx.portal,'Items.list.yml'),'adx_entitylistid: inventory-list\nadx_name: Unreferenced list\nadx_entityname: fx_widget');
   const inspector=createSourceInspector({sourceDir:fx.portal}),first=(await inspector.inspect('/')).report,before=elementSourceHintCacheStats();
   const second=(await inspector.inspect('/other/')).report;
-  assert.deepEqual(second.elementSourceFrequencies,first.elementSourceFrequencies);assert.equal(first.elementSourceFrequencies['b.shared-banner'],2);assert.equal(elementSourceHintCacheStats().parses,before.parses,'The second page does not parse shared files again');
+  assert.equal(second.elementSourceFrequencies['b.shared-banner'],2,'relevant candidates retain whole-export rarity');assert.equal(first.elementSourceFrequencies['b.shared-banner'],undefined,'the bare-shell page omits unrelated frequency entries');assert.equal(elementSourceHintCacheStats().parses,before.parses,'The second page does not parse shared files again');
   assert.ok(!first.forms.some(row=>row.id==='unreferenced'));assert.ok(first.componentIndex.forms.some(row=>row.id==='unreferenced'));
   assert.ok(first.componentIndex.forms.some(row=>row.id==='wizard'&&row.kind==='advanced-form'&&row.pageReferenced===false));assert.ok(first.componentIndex.lists.some(row=>row.id==='inventory-list'&&row.pageReferenced===false));
   inspector.invalidate();await inspector.inspect('/other/');assert.equal(elementSourceHintCacheStats().parses,before.parses,'Unchanged refresh reuses source hints');
@@ -67,7 +67,7 @@ test('list source links select definition metadata and script truncation is expo
   fs.writeFileSync(path.join(fx.portal,'web-pages/home/Home.webpage.custom_javascript.js'),Array.from({length:121},(_,index)=>`$("#item${index}");`).join('\n'));
   const {report}=await createSourceInspector({sourceDir:fx.portal}).inspect('/'),list=report.components.find(row=>row.kind==='list');
   assert.equal(list.sourceFile,definition);assert.equal(list.customization.sourceFile,script);assert.equal(report.elementSourceLimits.scriptTruncated,true);assert.equal(report.elementSourceLimits.truncated,true);
-  assert.deepEqual(report.elementSourceLimits.scriptTruncatedSources,[path.join(fx.portal,'web-pages/home/Home.webpage.custom_javascript.js')]);
+  assert.deepEqual(report.elementSourceLimits.scriptTruncatedSources,['web-pages/home/Home.webpage.custom_javascript.js']);
 });
 
 test('600 source reports survive A/B/A and unchanged refresh without reparsing markup',async t=>{

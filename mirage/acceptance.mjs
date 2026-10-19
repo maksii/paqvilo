@@ -2,6 +2,7 @@ import fs from "node:fs/promises";
 import { simulatorBackgroundRequest } from './lib/simulator-background-requests.mjs';
 import { cancelNavigationRequests } from './lib/navigation-cancellations.mjs';
 import { observeDocumentCommits } from './lib/document-commits.mjs';
+import { navigationCommitBudget } from './lib/navigation-budget.mjs';
 import net from "node:net";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -296,7 +297,9 @@ export async function runAcceptance({
       const pending = new Map(),
         responseObservations = [];
       const requestRecords = new Map(), frameDocuments = new WeakMap(), navigationHolds = new Set(), navigationBudgets = new Map();
-      let settlementDeadline = Infinity, actionDeadline = Infinity, documentResponseMs = null;
+      let settlementDeadline = Infinity, actionDeadline = Infinity;
+      const navigationTimings = new Map();
+      const navigationKey = (method, value) => method + ' ' + new URL(value).href;
       const requestFrame = request => { try { return request.frame(); } catch { return null; } };
       const cancelRequests = (requests, reason) => {
         const cancelled = cancelNavigationRequests(requests, pending, requestRecords, { reason });
@@ -340,15 +343,12 @@ export async function runAcceptance({
           // hold's budget and leave time for the action's navigation to commit.
           const now = Date.now();
           const remaining = Math.min(timeout, Math.max(0, actionDeadline - now));
-          // Reserve the slowest observed document response plus a commit margin.
-          // A 3 s floor tolerates a new slower document, capped at the previous
-          // half-budget reserve so short actions never lose write-hold time.
-          // Before any measurement, use half. Redirect hops share the reserve.
-          const reserveMs = navigationCommitReserveMs ?? (documentResponseMs === null ? remaining / 2 : Math.min(remaining / 2, Math.max(3000, documentResponseMs + 1000)));
-          const reservePolicy = navigationCommitReserveMs !== undefined ? 'explicit' : documentResponseMs === null ? 'half-remaining-action' : 'measured-document-response';
+          const key = navigationKey(event.request.method, event.request.url);
+          const comparableMs = navigationTimings.get(key);
+          const { reserveMs, policy: reservePolicy } = navigationCommitBudget(remaining, { explicitMs: navigationCommitReserveMs, comparableMs });
           const budget = navigationBudgets.get(event.networkId) ?? navigationBudgets.get(event.redirectedRequestId) ?? {
             deadline: now + Math.max(0, remaining - reserveMs),
-            reserve: reserveMs, policy: reservePolicy, ids: new Set(),
+            reserve: reserveMs, policy: reservePolicy, ids: new Set(), key, responseMs: 0, comparableMs,
           };
           const reserve = budget.reserve;
           for (const id of [event.networkId, event.requestId].filter(Boolean)) {
@@ -368,6 +368,8 @@ export async function runAcceptance({
                   ...wait,
                   commitReserveMs: reserve,
                   commitReservePolicy: budget.policy,
+                  comparableNavigationMs: budget.comparableMs ?? null,
+                  writeHoldAllowanceMs: Math.max(0, remaining - reserve),
                   actionRemainingMs: Number.isFinite(actionDeadline) ? Math.max(0, actionDeadline - Date.now()) : null,
                 });
             })
@@ -407,6 +409,10 @@ export async function runAcceptance({
         } catch {
           return;
         }
+        const budget = navigationBudgets.get(event.requestId);
+        const redirectTiming = event.redirectResponse?.timing;
+        if (budget && redirectTiming?.sendStart >= 0 && redirectTiming.receiveHeadersEnd >= redirectTiming.sendStart)
+          budget.responseMs += redirectTiming.receiveHeadersEnd - redirectTiming.sendStart;
         cdpRecords.set(event.requestId, {
           requestId: event.requestId,
           loaderId: event.loaderId,
@@ -427,7 +433,11 @@ export async function runAcceptance({
         const timing = event.response.timing;
         if (event.type === 'Document' && timing?.sendStart >= 0 && timing.receiveHeadersEnd >= timing.sendStart) {
           const duration = timing.receiveHeadersEnd - timing.sendStart;
-          documentResponseMs = Math.max(documentResponseMs ?? 0, duration);
+          const budget = navigationBudgets.get(event.requestId);
+          if (budget && event.response.status >= 200 && event.response.status < 300) {
+            budget.responseMs += duration;
+            navigationTimings.set(budget.key, Math.max(navigationTimings.get(budget.key) ?? 0, budget.responseMs));
+          }
         }
         if (record) {
           record.status = event.response.status;

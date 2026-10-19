@@ -60,6 +60,7 @@ Other
   --settings        list: also show every setting .env understands
   --all             doctor/audit: check every configured site's default environment offline
   --mirage          doctor: also gate Sources diagnostics and Mirage configuration
+  --lint-profiles   doctor: lint all exported deployment-profiles as warnings
   --json            list/map/status/doctor/audit/resources/verify: machine readable output
 
 Offline resource discovery
@@ -167,6 +168,7 @@ try {
       force: { type: 'boolean' },
       strict: { type: 'boolean' },
       mirage: { type: 'boolean' },
+      'lint-profiles': { type: 'boolean' },
       json: { type: 'boolean' },
       help: { type: 'boolean', short: 'h' },
     },
@@ -229,7 +231,7 @@ try {
     dev: [...selection, ...browserSelection, 'cdp-url', 'portals', 'pick', 'path', 'headless', 'headed', 'no-reload', 'no-overrides', 'debug-port'],
     map: [...selection, 'pick', 'check', 'no-write', 'json'], status: [...selection, 'pick', 'json'],
     verify: [...selection, ...browserSelection, 'pick', 'path', 'headless', 'headed', 'signed-in', 'json', 'strict', 'sign-in-timeout'],
-    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
+    doctor: [...selection, ...browserSelection, 'cdp-url', 'all', 'mirage', 'lint-profiles', 'json'], list: [...selection, ...browserSelection, 'cdp-url', 'portals', 'settings', 'json'],
     audit: [...selection, 'all', 'strict', 'json'],
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],

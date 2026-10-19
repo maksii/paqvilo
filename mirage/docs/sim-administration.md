@@ -17,6 +17,24 @@ Portal requests start anonymously. Local sign-in selects an active synthetic con
 
 Embedded tools call `simulator.signIn(contactId)` and send the returned cookie header. Playwright tests use `signInContext` from `paqvilo/mirage/testing`. Local session administration uses CSRF protection. Sign-out clears only the local session.
 
+`simulator.identityScope` supports `"sessions"` (the default) and `"configured"`.
+The legacy `"all-requests"` alias has the same behavior as `"configured"`.
+Use `"configured"` only for explicitly chosen offline tooling: cookie-less portal
+requests use the saved configured identity, with its normal membership or manual
+role-override resolution and permission checks. A valid visitor cookie takes
+precedence, including the explicit anonymous cookie issued by sign-out. This
+option neither creates a session nor signs a browser in; a cookie-less request
+uses the configured identity. Session scope
+keeps cookie-less visitors anonymous. Administration requests continue to use the
+configured identity. These are local simulation settings, not Power Pages
+authentication or production security settings. Prefer session helpers for
+independent visitors and permission tests.
+
+`connectRuntime().signIn(null, { configuredPersona: true })` requires a configured
+contact (`identity.contactId` or legacy `identity.id`). Missing and role-only
+identities fail with `MISSING_PERSONA_CONTACT` before sending a sign-in POST.
+An explicit `contactId` is also supported; omit sign-in to stay anonymous.
+
 HTTP tools can use `createPortalSession` or `connectRuntime().createSession` from
 `paqvilo/mirage/testing` for independent visitors sharing one runtime. Each owns its
 cookie jar and membership-derived identity. `runSessionMatrix` exercises a bounded

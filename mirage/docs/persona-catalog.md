@@ -3,6 +3,9 @@
 Catalogues describe **which contact to test and why**. Contacts, parent accounts and
 exported web-role memberships remain the identity source. Metadata never creates
 records or grants permissions. Legacy pack `personas` keeps its existing meaning.
+Additive datasets may separately opt in to materializing explicit `personaRoles`
+descriptors; see [data generation](data-packs.md). Catalogue metadata is never an
+input to that operation.
 
 ## Version 1 contract
 

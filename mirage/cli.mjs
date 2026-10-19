@@ -55,6 +55,7 @@ try {
       rows: { type: "string" },
       out: { type: "string" },
       count: { type: "string", multiple: true },
+      'materialize-persona-memberships': { type: 'boolean' },
       help: { type: "boolean" },
       json: { type: "boolean" },
       "no-watch": { type: "boolean" },
@@ -90,7 +91,7 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
   paqvilo mirage data generate --pack PACK_ID --profile PROFILE --state FILE [--out FILE] [--seed S]
   paqvilo mirage data scaffold --profile smoke|dev --state FILE [--rows N] [--seed S] [--out FILE]
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
-    [--count NAME=N ...] [--pack-module PATH]
+    [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
 
 Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
@@ -115,7 +116,7 @@ try {
     // data scaffold resolves its portal like serve: a project file and portal,
     // an explicit --source (solution roots discovered unless --solution-root),
     // or the toolkit catalogue site/environment (--site/--env/--repo).
-    const resolved = positionals[1] === "scaffold" ? await resolveDataSource(args) : {};
+    const resolved = positionals[1] === "scaffold" || positionals[1] === 'generate' && args['materialize-persona-memberships'] ? await resolveDataSource(args) : {};
     console.log(JSON.stringify(await runDataCommand(positionals.slice(1), { ...args, ...resolved }), null, 2));
   } else if (command === "verify") {
     const { verifyParity } = await import("./verify.mjs");
@@ -586,17 +587,19 @@ try {
   process.exitCode = 1;
 }
 
-/** Portal source and solution roots of `data scaffold`, resolved like serve. */
+/** Portal source and solution roots for data commands, resolved like serve. */
 async function resolveDataSource(options) {
   if (options.project) {
     if (options.source) throw new Error("Use either --project or --source, not both.");
     if (options["solution-root"]?.length) throw new Error("--solution-root is supplied by the project configuration.");
+    if (options['data-model']) throw new Error("--data-model is supplied by the project configuration (the portal's dataModel).");
     const project = await loadProjectConfig(options.project);
     const portalId = options.portal ?? project.defaultPortal;
     const portal = project.portals.find((candidate) => candidate.id === portalId);
     if (!portal) throw new Error(`Portal '${portalId}' is not configured in ${project.configFile}`);
     return {
       source: portal.sourceDir,
+      dataModel: portal.dataModel ?? undefined,
       "solution-root": portal.solutionRoots,
       resolution: { kind: "project", configFile: project.configFile, portal: portal.id },
     };
@@ -610,6 +613,7 @@ async function resolveDataSource(options) {
   const cfg = await loadConfig({ site: options.site, env: options.env, ...(options.repo ? { repo: options.repo } : {}), ...(options.config ? { config: options.config } : {}) });
   return {
     source: cfg.sourceDir,
+    dataModel: options['data-model'] ?? cfg.mirageConfig.dataModel,
     resolution: { kind: "catalogue", site: cfg.siteName, env: options.env, solutionRoots: options["solution-root"]?.length ? "explicit" : "discovered" },
   };
 }
