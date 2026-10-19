@@ -12,12 +12,13 @@ import { SolutionFileCache } from "./solution-cache.mjs";
 import { applyObserved } from "./redirects.mjs";
 import { isTenantAuthority } from "./external-login.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
+import { dataverseSettings } from './dataverse-settings.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse",
 ]);
 
 function list(value, label) {
@@ -444,6 +445,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     references,
     defaultReference,
     dataPacks,
+    dataverse: dataverseSettings(raw.dataverse, "dataverse"),
     environmentVariables: Object.fromEntries(Object.entries(environmentVariables).map(([name, value]) => [name, String(value)])),
   };
 }

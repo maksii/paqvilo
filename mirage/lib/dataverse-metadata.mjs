@@ -1,0 +1,552 @@
+// Dataverse metadata for the simulated Web API: EntityDefinitions, Attributes, Keys,
+// RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
+// store mapping of the same name; virtual tables are read-only fallbacks. Shapes follow
+// webapi-contract.md section 8. $metadata (CSDL) and RetrieveMetadataChanges are milestone 2.
+import { createHash } from "node:crypto";
+import { attributeMetadata } from "./attribute-metadata.mjs";
+import { tableFields } from "./solution-schema.mjs";
+import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
+
+const PREFIX = /^[a-z0-9]+_/;
+const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const OBJECT_TYPE_CODES = {
+  account: 1, contact: 2, opportunity: 3, lead: 4, annotation: 5, systemuser: 8, team: 9, businessunit: 10,
+  organization: 1019, privilege: 1023, role: 1036, systemuserroles: 1037, roleprivileges: 1024, teamroles: 2021,
+  teammembership: 1038, queue: 2020, transactioncurrency: 9105, task: 4212, email: 4202, phonecall: 4210,
+  appointment: 4201, activitypointer: 4200, webresource: 9333, savedquery: 1039, systemform: 1030, solution: 7100,
+};
+// dataverseType -> [AttributeType, @odata.type stem, AttributeTypeName]. Multi-select reports AttributeType Virtual.
+const TYPES = {
+  nvarchar: ["String", "String", "StringType"], string: ["String", "String", "StringType"],
+  memo: ["Memo", "Memo", "MemoType"], ntext: ["Memo", "Memo", "MemoType"],
+  int: ["Integer", "Integer", "IntegerType"], integer: ["Integer", "Integer", "IntegerType"],
+  bigint: ["BigInt", "BigInt", "BigIntType"], decimal: ["Decimal", "Decimal", "DecimalType"],
+  float: ["Double", "Double", "DoubleType"], double: ["Double", "Double", "DoubleType"],
+  money: ["Money", "Money", "MoneyType"],
+  bit: ["Boolean", "Boolean", "BooleanType"], boolean: ["Boolean", "Boolean", "BooleanType"],
+  datetime: ["DateTime", "DateTime", "DateTimeType"],
+  lookup: ["Lookup", "Lookup", "LookupType"], customer: ["Customer", "Customer", "CustomerType"],
+  owner: ["Owner", "Owner", "OwnerType"],
+  picklist: ["Picklist", "Picklist", "PicklistType"], state: ["State", "State", "StateType"],
+  status: ["Status", "Status", "StatusType"],
+  multiselectpicklist: ["Virtual", "MultiSelectPicklist", "MultiSelectPicklistType"],
+  primarykey: ["Uniqueidentifier", "UniqueIdentifier", "UniqueidentifierType"],
+  uniqueidentifier: ["Uniqueidentifier", "UniqueIdentifier", "UniqueidentifierType"],
+  entityname: ["EntityName", "EntityName", "EntityNameType"],
+};
+const REQUIRED = { none: "None", systemrequired: "SystemRequired", applicationrequired: "ApplicationRequired", required: "ApplicationRequired" };
+const READ_ONLY = new Set(["createdon", "modifiedon", "createdby", "modifiedby", "versionnumber"]);
+// Columns every standard table has (solution exports omit them); owner columns only for user-owned tables.
+const SYSTEM_COLUMNS = {
+  createdon: { dataverseType: "datetime", label: "Created On", schemaName: "CreatedOn" },
+  modifiedon: { dataverseType: "datetime", label: "Modified On", schemaName: "ModifiedOn" },
+  createdby: { dataverseType: "lookup", targets: ["systemuser"], label: "Created By", schemaName: "CreatedBy" },
+  modifiedby: { dataverseType: "lookup", targets: ["systemuser"], label: "Modified By", schemaName: "ModifiedBy" },
+  statecode: { dataverseType: "state", label: "Status", schemaName: "StateCode", options: [{ value: 0, label: "Active" }, { value: 1, label: "Inactive" }] },
+  statuscode: { dataverseType: "status", label: "Status Reason", schemaName: "StatusCode", statuses: [{ value: 1, label: "Active", state: 0 }, { value: 2, label: "Inactive", state: 1 }] },
+  versionnumber: { dataverseType: "bigint", label: "Version Number", schemaName: "VersionNumber" },
+};
+const OWNER_COLUMNS = {
+  ownerid: { dataverseType: "owner", targets: ["systemuser", "team"], label: "Owner", schemaName: "OwnerId" },
+  owninguser: { dataverseType: "lookup", targets: ["systemuser"], label: "Owning User", schemaName: "OwningUser" },
+  owningbusinessunit: { dataverseType: "lookup", targets: ["businessunit"], label: "Owning Business Unit", schemaName: "OwningBusinessUnit" },
+};
+const FILTER_KEYWORDS = new Set(["and", "or", "not", "eq", "ne", "true", "false", "null"]);
+
+const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
+const own = (object, key) => (object && Object.hasOwn(object, key) ? object[key] : null);
+const listOf = (value) => (value == null ? [] : (Array.isArray(value) ? value : String(value).split(","))).map((item) => String(item).trim()).filter(Boolean);
+const castName = (cast) => String(cast).replace(/^#/, "").replace(/^Microsoft\.Dynamics\.CRM\./, "");
+const keyName = (text) => /^(?:LogicalName|SchemaName)=['"]?([^'")]+)['"]?$/i.exec(String(text))?.[1]?.toLowerCase() ?? null;
+const unsupported = (message) => Object.assign(new Error(message), { status: 400, code: "UnsupportedQuery" });
+const notImplemented = () => Object.assign(new Error("$metadata document is not implemented in this milestone"), { status: 501, code: "NotImplemented" });
+
+function uuidV5(namespace, name) {
+  const text = String(namespace ?? "");
+  const ns = GUID.test(text) ? Buffer.from(text.replace(/-/g, ""), "hex") : createHash("sha1").update(text).digest().subarray(0, 16);
+  const hash = createHash("sha1").update(ns).update(String(name), "utf8").digest();
+  hash[6] = (hash[6] & 0x0f) | 0x50;
+  hash[8] = (hash[8] & 0x3f) | 0x80;
+  const hex = hash.subarray(0, 16).toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+// Localized label block; labels is an lcid-keyed object (Solution exports), fallback a plain text.
+function labelBlock(labels, fallback, lcid) {
+  const entries = Object.entries(labels ?? {})
+    .filter(([code, text]) => /^\d+$/.test(code) && text !== undefined && text !== null && text !== "")
+    .map(([code, text]) => [Number(code), String(text)]);
+  if (!entries.length && fallback) entries.push([lcid, String(fallback)]);
+  const label = ([code, text]) => ({ Label: text, LanguageCode: code, IsManaged: false, MetadataId: null, HasChanged: null });
+  const user = entries.find(([code]) => code === lcid) ?? entries[0];
+  return { LocalizedLabels: entries.map(label), UserLocalizedLabel: user ? label(user) : null };
+}
+
+const optionOf = (o, lcid) => ({
+  Value: o.value,
+  Label: labelBlock(o.labels, o.label ?? String(o.value), lcid),
+  Description: labelBlock(o.descriptionLabels, null, lcid),
+  Color: o.color ?? null,
+  IsManaged: false,
+  ExternalValue: null,
+  ParentValues: [],
+  Tag: null,
+  IsHidden: false,
+  MetadataId: null,
+  HasChanged: null,
+  ...(o.state !== undefined ? { State: o.state } : {}),
+});
+
+// $filter over metadata: eq/ne, and/or/not, parentheses, string/number/GUID/boolean/null and
+// enum literals (Namespace.Type'Member'). '+' separates tokens outside string literals.
+const TOKEN = /^[\s+]*(?:(\()|(\))|'((?:[^']|'')*)'|([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})(?![\w-])|(-?\d+(?:\.\d+)?)|([A-Za-z_][\w.]*(?:\/[A-Za-z_]\w*)*)(?:'((?:[^']|'')*)')?)/i;
+
+function toToken(m) {
+  if (m[1]) return { t: "(" };
+  if (m[2]) return { t: ")" };
+  if (m[3] !== undefined) return { t: "lit", v: m[3].replace(/''/g, "'") };
+  if (m[4]) return { t: "lit", v: m[4] };
+  if (m[5]) return { t: "lit", v: Number(m[5]) };
+  if (m[7] !== undefined) return { t: "lit", v: m[7].replace(/''/g, "'") };
+  return { t: "id", v: m[6] };
+}
+
+function tokenize(text) {
+  const tokens = [];
+  let rest = text;
+  while (/[^\s+]/.test(rest)) {
+    const m = TOKEN.exec(rest);
+    if (!m) throw unsupported(`Unsupported $filter syntax: ${text}`);
+    tokens.push(toToken(m));
+    rest = rest.slice(m[0].length);
+  }
+  return tokens;
+}
+
+function parseFilter(text) {
+  const tokens = tokenize(text);
+  let i = 0;
+  const fail = () => {
+    throw unsupported(`Unsupported $filter expression: ${text}`);
+  };
+  const word = (w) => tokens[i]?.t === "id" && tokens[i].v === w;
+  const orExpr = () => {
+    let node = andExpr();
+    while (word("or")) { i++; node = { op: "or", a: node, b: andExpr() }; }
+    return node;
+  };
+  const andExpr = () => {
+    let node = notExpr();
+    while (word("and")) { i++; node = { op: "and", a: node, b: notExpr() }; }
+    return node;
+  };
+  const notExpr = () => {
+    if (word("not")) { i++; return { op: "not", a: notExpr() }; }
+    return comparison();
+  };
+  const comparison = () => {
+    if (tokens[i]?.t === "(") {
+      i++;
+      const node = orExpr();
+      if (tokens[i]?.t !== ")") fail();
+      i++;
+      return node;
+    }
+    const left = tokens[i];
+    const op = tokens[i + 1];
+    if (left?.t !== "id" || FILTER_KEYWORDS.has(left.v) || op?.t !== "id" || !["eq", "ne"].includes(op.v)) fail();
+    i += 2;
+    const right = tokens[i++];
+    const path = left.v.split("/");
+    if (right?.t === "lit") return { op: op.v, path, value: right.v };
+    if (right?.t === "id" && ["true", "false", "null"].includes(right.v)) return { op: op.v, path, value: right.v === "null" ? null : right.v === "true" };
+    return fail();
+  };
+  const node = orExpr();
+  if (i !== tokens.length) fail();
+  return node;
+}
+
+function equal(a, b) {
+  if (a == null || b == null) return (a ?? null) === (b ?? null);
+  if (typeof a === "string" && typeof b === "string" && GUID.test(a) && GUID.test(b)) return a.toLowerCase() === b.toLowerCase();
+  return a === b;
+}
+
+function evaluate(node, item) {
+  if (node.op === "and") return evaluate(node.a, item) && evaluate(node.b, item);
+  if (node.op === "or") return evaluate(node.a, item) || evaluate(node.b, item);
+  if (node.op === "not") return !evaluate(node.a, item);
+  const value = node.path.reduce((current, key) => (current == null ? undefined : current[key]), item);
+  const same = equal(value, node.value);
+  return node.op === "eq" ? same : !same;
+}
+
+export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables }) {
+  const read = (source) => (typeof source === "function" ? source() : source) ?? null;
+  const schemaRoot = () => read(schema);
+  const mappingRoot = () => read(mappings) ?? {};
+  const virtualRoot = () => read(virtualTables) ?? {};
+  const metadataIdOf = (kind, ...parts) => uuidV5(organizationId, `${kind}:${parts.join(":")}`);
+
+  function logicalNames() {
+    const names = [...Object.keys(schemaRoot()?.tables ?? {}), ...Object.keys(mappingRoot()), ...Object.keys(virtualRoot().tables ?? {})];
+    return [...new Set(names.map((name) => name.toLowerCase()))].sort();
+  }
+
+  // One table as the service sees it: Solution schema table first, then store mapping, then virtual table.
+  function source(name) {
+    const logical = String(name ?? "").toLowerCase();
+    const root = schemaRoot();
+    const s = own(root?.tables, logical);
+    const mapping = own(mappingRoot(), logical);
+    const virtual = own(virtualRoot().tables, logical);
+    const m = mapping ?? virtual?.mapping ?? null;
+    if (!s && !m) return null;
+    const std = standardTable(logical);
+    const ownership = s?.ownership ?? m?.ownership ?? "";
+    return {
+      logical,
+      s,
+      m,
+      lcid,
+      isVirtual: s ? Boolean(s.isVirtual) : !mapping,
+      organizationOwned: /organization/i.test(ownership),
+      entitySet: s?.entitySetName ?? m?.entitySet ?? std?.entitySet ?? pluralizeEntitySetName(logical),
+      idColumn: s?.primaryIdAttribute ?? m?.idColumn ?? std?.primaryIdAttribute ?? `${logical}id`,
+      primaryName: s?.primaryNameAttribute ?? m?.nameColumn ?? std?.primaryNameAttribute ?? null,
+      fields: s ? tableFields(root, logical) : (m?.fields ?? {}),
+    };
+  }
+
+  function sourceFor(key) {
+    const text = String(key ?? "").trim();
+    const named = keyName(text);
+    if (named) return source(named);
+    if (GUID.test(text)) {
+      const hit = logicalNames().find((name) => metadataIdOf("entity", name).toLowerCase() === text.toLowerCase());
+      return hit ? source(hit) : null;
+    }
+    return source(text);
+  }
+
+  function entityOf(src) {
+    return {
+      MetadataId: metadataIdOf("entity", src.logical),
+      LogicalName: src.logical,
+      SchemaName: src.s?.schemaName ?? capitalize(src.logical),
+      EntitySetName: src.entitySet,
+      LogicalCollectionName: src.s?.logicalCollectionName ?? src.m?.logicalCollectionName ?? src.entitySet,
+      PrimaryIdAttribute: src.idColumn,
+      PrimaryNameAttribute: src.primaryName,
+      ObjectTypeCode: objectTypeCode(src.logical),
+      OwnershipType: src.organizationOwned ? "OrganizationOwned" : "UserOwned",
+      IsCustomEntity: PREFIX.test(src.logical),
+      IsActivity: Boolean(src.s?.isActivity),
+      IsIntersect: Boolean(src.s?.isIntersect || src.m?.intersect),
+      IsValidForAdvancedFind: true,
+      IsPrivate: false,
+      HasChanged: null,
+      DisplayName: labelBlock(src.s?.labels, src.m?.label ?? capitalize(src.logical), lcid),
+      DisplayCollectionName: labelBlock(src.s?.collectionLabels, src.m?.collectionLabel ?? capitalize(src.entitySet), lcid),
+      Description: labelBlock(null, null, lcid),
+    };
+  }
+
+  function synthesize(src, name, def, { attrType, typeName, type, id }) {
+    const custom = PREFIX.test(name);
+    const readOnly = id || READ_ONLY.has(name);
+    const required = REQUIRED[def.requiredLevel] ?? (id ? "SystemRequired" : def.required ? "ApplicationRequired" : "None");
+    const meta = {
+      AttributeOf: null,
+      AttributeType: attrType,
+      AttributeTypeName: { Value: typeName },
+      ColumnNumber: null,
+      Description: labelBlock(null, null, lcid),
+      DisplayName: labelBlock(def.labels, def.label ?? name, lcid),
+      EntityLogicalName: src.logical,
+      HasChanged: null,
+      IsCustomAttribute: custom,
+      IsCustomizable: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "iscustomizable" },
+      IsManaged: false,
+      IsPrimaryId: id,
+      IsPrimaryName: name === src.primaryName,
+      IsValidForAdvancedFind: !id,
+      IsValidForCreate: def.validForCreate ?? !readOnly,
+      IsValidForRead: def.validForRead ?? true,
+      IsValidForUpdate: def.validForUpdate ?? !readOnly,
+      LogicalName: name,
+      RequiredLevel: { Value: required, CanBeChanged: true, ManagedPropertyLogicalName: "canmodifyrequirementlevelsettings" },
+      SchemaName: def.schemaName ?? capitalize(name),
+    };
+    if (["String", "Memo"].includes(attrType)) meta.MaxLength = def.maxLength ?? null;
+    if (["Integer", "BigInt", "Decimal", "Double", "Money"].includes(attrType)) Object.assign(meta, { MinValue: def.minValue ?? null, MaxValue: def.maxValue ?? null });
+    if (["Decimal", "Double", "Money"].includes(attrType)) meta.Precision = def.precision ?? (attrType === "Money" ? 2 : null);
+    if (attrType === "DateTime") {
+      Object.assign(meta, {
+        Format: /^dateonly$/i.test(def.format ?? "") ? "DateOnly" : "DateAndTime",
+        DateTimeBehavior: { Value: def.dateTimeBehavior ?? "UserLocal" },
+      });
+    }
+    if (["Lookup", "Customer", "Owner"].includes(attrType)) meta.Targets = def.targets ?? def.lookupTargets ?? [];
+    if (["picklist", "multiselectpicklist", "state", "status"].includes(type)) meta.OptionSet = optionSetOf(src, name, type, def);
+    return meta;
+  }
+
+  function optionSetOf(src, name, type, def) {
+    const options = type === "state" ? (def.states ?? def.options) : type === "status" ? (def.statuses ?? def.options) : def.options;
+    return {
+      MetadataId: metadataIdOf("optionset", src.logical, name),
+      Name: `${src.logical}_${name}`,
+      OptionSetType: type === "state" ? "State" : type === "status" ? "Status" : "Picklist",
+      IsGlobal: false,
+      IsCustomOptionSet: false,
+      IsManaged: false,
+      HasChanged: null,
+      Options: (options ?? []).map((o) => optionOf(o, lcid)),
+    };
+  }
+
+  // Full AttributeMetadata from exported column facts when present, else the compact shape from the field.
+  function attributeOf(src, name, def) {
+    const id = name === src.idColumn;
+    const type = id ? "primarykey" : String(def.columnMetadata?.type ?? def.dataverseType ?? "nvarchar").toLowerCase();
+    const [attrType, stem, typeName] = TYPES[type] ?? TYPES.nvarchar;
+    const exported = def.columnMetadata ? attributeMetadata(src.logical, name, def, { primaryName: src.primaryName, lcid }) : null;
+    const meta = exported ?? synthesize(src, name, def, { attrType, typeName, type, id });
+    return Object.assign(meta, {
+      "@odata.type": `#Microsoft.Dynamics.CRM.${stem}AttributeMetadata`,
+      MetadataId: metadataIdOf("attribute", src.logical, name),
+      AttributeType: attrType,
+    });
+  }
+
+  function attributesOf(src) {
+    const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.organizationOwned ? {} : OWNER_COLUMNS) };
+    const all = { [src.idColumn]: { dataverseType: "primarykey" }, ...defaults, ...src.fields };
+    return Object.entries(all).map(([name, def]) => attributeOf(src, name, def));
+  }
+
+  function keysOf(src) {
+    const list = src.s ? (src.s.keys ?? []) : (src.m?.alternateKeys ?? []);
+    return list.map((k) => ({
+      "@odata.type": "#Microsoft.Dynamics.CRM.EntityKeyMetadata",
+      MetadataId: metadataIdOf("key", src.logical, k.name),
+      LogicalName: k.name,
+      SchemaName: k.schemaName ?? k.name,
+      EntityLogicalName: src.logical,
+      KeyAttributes: [...k.attributes],
+      EntityKeyIndexStatus: "Active",
+      IsCustomizable: { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" },
+      IsManaged: false,
+      DisplayName: labelBlock(k.labels, k.name, lcid),
+      HasChanged: null,
+    }));
+  }
+
+  // Relationship records are normalized once: 1:N (referenced side owns the collection nav) and N:N.
+  // Schema relationships come first; mapping relationships fill the same SchemaName.
+  function relationshipRecords() {
+    const records = new Map();
+    const add = (rel) => {
+      const key = rel.schemaName.toLowerCase();
+      const prev = records.get(key);
+      if (!prev) records.set(key, rel);
+      else for (const [k, v] of Object.entries(rel)) prev[k] ??= v;
+    };
+    for (const rel of Object.values(schemaRoot()?.relationships ?? {})) {
+      if (rel.type === "one-to-many") {
+        add({ type: "1:N", schemaName: rel.schemaName, referencedEntity: rel.referencedEntity, referencedAttribute: rel.referencedAttribute, referencingEntity: rel.referencingEntity, referencingAttribute: rel.referencingAttribute, referencedNav: rel.referencedNavigation, referencingNav: rel.referencingNavigation });
+      } else if (rel.type === "many-to-many") {
+        add({ type: "N:N", schemaName: rel.schemaName, intersectEntity: rel.intersectEntity, entity1: rel.entity1, attribute1: rel.attribute1, nav1: rel.navigation1, entity2: rel.entity2, attribute2: rel.attribute2, nav2: rel.navigation2 });
+      }
+    }
+    for (const logical of logicalNames())
+      for (const [nav, rel] of Object.entries(source(logical).m?.relationships ?? {})) add(fromMapping(logical, nav, rel));
+    return [...records.values()];
+  }
+
+  function fromMapping(logical, nav, rel) {
+    if (rel.intersect) {
+      return { type: "N:N", schemaName: rel.schemaName ?? rel.intersect.entity, intersectEntity: rel.intersect.entity, entity1: logical, attribute1: rel.intersect.from, nav1: nav, entity2: rel.entity, attribute2: rel.intersect.to, nav2: rel.partner ?? null };
+    }
+    const schemaName = rel.schemaName ?? `${logical}_${nav}`;
+    if (!rel.many) {
+      // Lookup on this table: the table is the referencing side.
+      return { type: "1:N", schemaName, referencedEntity: rel.entity, referencedAttribute: rel.to, referencingEntity: logical, referencingAttribute: rel.from, referencedNav: rel.partner ?? null, referencingNav: nav, cascade: rel.cascade };
+    }
+    return { type: "1:N", schemaName, referencedEntity: logical, referencedAttribute: rel.from, referencingEntity: rel.entity, referencingAttribute: rel.to, referencedNav: nav, referencingNav: rel.partner ?? null, cascade: rel.cascade };
+  }
+
+  function oneToManyShape(r) {
+    const cascade = r.cascade ?? {};
+    return {
+      "@odata.type": "#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata",
+      MetadataId: metadataIdOf("relationship", r.schemaName),
+      SchemaName: r.schemaName,
+      ReferencedEntity: r.referencedEntity,
+      ReferencedAttribute: r.referencedAttribute,
+      ReferencingEntity: r.referencingEntity,
+      ReferencingAttribute: r.referencingAttribute,
+      ReferencedEntityNavigationPropertyName: r.referencedNav ?? null,
+      ReferencingEntityNavigationPropertyName: r.referencingNav ?? null,
+      RelationshipType: "OneToManyRelationship",
+      IsCustomRelationship: PREFIX.test(r.referencingAttribute ?? ""),
+      IsManaged: false,
+      CascadeConfiguration: { Assign: "NoCascade", Delete: cascade.delete ?? "RemoveLink", Merge: "NoCascade", Reparent: "NoCascade", Share: "NoCascade", Unshare: "NoCascade", RollupView: "NoCascade" },
+      HasChanged: null,
+    };
+  }
+
+  function manyToManyShape(r) {
+    return {
+      "@odata.type": "#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata",
+      MetadataId: metadataIdOf("relationship", r.schemaName),
+      SchemaName: r.schemaName,
+      IntersectEntityName: r.intersectEntity,
+      Entity1LogicalName: r.entity1,
+      Entity1IntersectAttribute: r.attribute1,
+      Entity1NavigationPropertyName: r.nav1 ?? null,
+      Entity2LogicalName: r.entity2,
+      Entity2IntersectAttribute: r.attribute2,
+      Entity2NavigationPropertyName: r.nav2 ?? null,
+      RelationshipType: "ManyToManyRelationship",
+      IsCustomRelationship: PREFIX.test(r.intersectEntity ?? ""),
+      IsManaged: false,
+      HasChanged: null,
+    };
+  }
+
+  const relationshipShape = (r) => (r.type === "N:N" ? manyToManyShape(r) : oneToManyShape(r));
+  const oneToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencedEntity === logical).map(oneToManyShape);
+  const manyToOneOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencingEntity === logical).map(oneToManyShape);
+  const manyToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "N:N" && (r.entity1 === logical || r.entity2 === logical)).map(manyToManyShape);
+
+  const EXPANSIONS = {
+    Attributes: (src) => attributesOf(src),
+    Keys: (src) => keysOf(src),
+    OneToManyRelationships: (src) => oneToManyOf(src.logical),
+    ManyToOneRelationships: (src) => manyToOneOf(src.logical),
+    ManyToManyRelationships: (src) => manyToManyOf(src.logical),
+  };
+
+  const globalOptionSetOf = (set) => ({
+    "@odata.type": "#Microsoft.Dynamics.CRM.OptionSetMetadata",
+    MetadataId: metadataIdOf("optionset", set.name),
+    Name: set.name,
+    DisplayName: labelBlock(set.displayLabels, set.name, lcid),
+    Description: labelBlock(set.descriptionLabels, null, lcid),
+    OptionSetType: { picklist: "Picklist", boolean: "Boolean", state: "State", status: "Status" }[set.type] ?? "Picklist",
+    IsGlobal: true,
+    IsCustomOptionSet: true,
+    IsManaged: false,
+    Options: (set.options ?? set.statuses ?? set.states ?? []).map((o) => optionOf(o, lcid)),
+    HasChanged: null,
+  });
+
+  const globalSets = () => Object.values(schemaRoot()?.optionSets ?? {}).map(globalOptionSetOf);
+  function selectMetadata(item, select) {
+    const names = listOf(select);
+    if (!names.length) return item;
+    const out = {};
+    for (const key of ["@odata.type", "MetadataId"]) if (key in item) out[key] = item[key];
+    for (const name of names) {
+      const top = name.split("/")[0];
+      if (top in item) out[top] = item[top];
+    }
+    return out;
+  }
+
+  const matchKey = (item, key) => {
+    const named = keyName(key);
+    if (named) return item.LogicalName === named;
+    return GUID.test(String(key)) && String(item.MetadataId).toLowerCase() === String(key).toLowerCase();
+  };
+
+  return {
+    metadataId: metadataIdOf,
+
+    objectTypeCode: (logical) => objectTypeCode(logical),
+
+    entities() {
+      return logicalNames().map((name) => entityOf(source(name)));
+    },
+
+    entity(key, { expand } = {}) {
+      const src = sourceFor(key);
+      if (!src) return null;
+      const out = entityOf(src);
+      for (const nav of listOf(expand)) if (EXPANSIONS[nav]) out[nav] = EXPANSIONS[nav](src);
+      return out;
+    },
+
+    attributes(name, { cast, key, select, expand } = {}) {
+      const src = sourceFor(name);
+      if (!src) return null;
+      let list = attributesOf(src);
+      if (cast) list = list.filter((a) => a["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`);
+      if (key) list = list.filter((a) => matchKey(a, key));
+      const keep = listOf(select).length ? [...listOf(select), ...listOf(expand)] : null;
+      return keep ? list.map((a) => selectMetadata(a, keep)) : list;
+    },
+
+    keys(name) {
+      const src = sourceFor(name);
+      return src ? keysOf(src) : null;
+    },
+
+    manyToOne: (name) => manyToOneOf(String(name).toLowerCase()),
+    oneToMany: (name) => oneToManyOf(String(name).toLowerCase()),
+    manyToMany: (name) => manyToManyOf(String(name).toLowerCase()),
+
+    relationship(schemaName) {
+      const wanted = (keyName(schemaName) ?? String(schemaName)).toLowerCase();
+      const hit = relationshipRecords().find((r) => r.schemaName.toLowerCase() === wanted);
+      return hit ? relationshipShape(hit) : null;
+    },
+
+    relationships({ cast } = {}) {
+      const all = relationshipRecords().map(relationshipShape);
+      return cast ? all.filter((r) => r["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`) : all;
+    },
+
+    globalOptionSets: () => globalSets(),
+
+    globalOptionSet(name) {
+      const wanted = String(name).toLowerCase();
+      return globalSets().find((set) => set.Name.toLowerCase() === wanted) ?? null;
+    },
+
+    serviceDocument(origin, version) {
+      const value = logicalNames()
+        .map((name) => source(name).entitySet)
+        .sort()
+        .map((name) => ({ name, kind: "EntitySet", url: name }));
+      return { "@odata.context": `${origin}/api/data/${version}/$metadata`, value };
+    },
+
+    filterMetadata(items, filterText) {
+      const text = String(filterText ?? "");
+      if (!/[^\s+]/.test(text)) return items;
+      const ast = parseFilter(text);
+      return items.filter((item) => evaluate(ast, item));
+    },
+
+    selectMetadata,
+
+    csdl() {
+      throw notImplemented();
+    },
+
+    retrieveMetadataChanges() {
+      throw notImplemented();
+    },
+  };
+}
+
+// Standard codes are fixed; a custom table gets a stable code in 10000-59999 from its logical name.
+export function objectTypeCode(logical) {
+  const name = String(logical).toLowerCase();
+  if (Object.hasOwn(OBJECT_TYPE_CODES, name)) return OBJECT_TYPE_CODES[name];
+  return 10000 + (createHash("sha1").update(name).digest().readUInt32BE(0) % 50000);
+}

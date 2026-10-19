@@ -4,11 +4,13 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { setTimeout as delay } from 'node:timers/promises';
+import { isLoopbackOrigin } from './client.mjs';
 
 const GUID = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
-export function environmentOrigin(value) {
+export function environmentOrigin(value, { allowLoopback = false } = {}) {
   const url = new URL(value);
-  if (url.protocol !== 'https:' || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new Error('Environment must be an HTTPS organisation origin, without credentials, query or path.');
+  const secure = url.protocol === 'https:' || (allowLoopback && url.protocol === 'http:' && isLoopbackOrigin(url));
+  if (!secure || url.username || url.password || url.search || url.hash || !['', '/'].includes(url.pathname)) throw new Error('Environment must be an HTTPS organisation origin, without credentials, query or path.');
   return url.origin;
 }
 
@@ -153,20 +155,29 @@ export function parseCredentialFile(input) {
   return result;
 }
 
-export async function loadConnection(file) {
+export async function loadConnection(file, { allowLoopback = false } = {}) {
   const connection = JSON.parse(await fs.readFile(file, 'utf8'));
   if (connection.schemaVersion !== 1) throw new Error('Unsupported connection schema.');
-  connection.environmentUrl = environmentOrigin(connection.environmentUrl);
+  connection.environmentUrl = environmentOrigin(connection.environmentUrl, { allowLoopback });
   for (const field of ['tenantId', 'clientId']) if (!new RegExp(`^${GUID}$`, 'i').test(connection[field] ?? '')) throw new Error(`Connection ${field} must be a GUID.`);
   return connection;
 }
 
-export function tokenProvider(connection, { fetchImpl = fetch } = {}) {
+// Production authority unless a loopback test authority is explicitly allowed.
+function authorityEndpoint(connection, allowLoopback) {
+  if (!allowLoopback || connection.authorityHost == null) return new URL('https://login.microsoftonline.com/');
+  let authority = null;
+  try { authority = new URL(connection.authorityHost); } catch { authority = null; }
+  if (!authority || !isLoopbackOrigin(authority) || authority.username || authority.password || authority.search || authority.hash || !['', '/'].includes(authority.pathname)) throw new Error('authorityHost must be a loopback origin');
+  return new URL(`${authority.origin}/`);
+}
+
+export function tokenProvider(connection, { fetchImpl = fetch, allowLoopback = false } = {}) {
   // Validate at the API boundary too: connectedClient also accepts caller-owned
   // objects, rather than only records read through loadConnection.
   for (const field of ['tenantId','clientId']) if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(connection[field] ?? '')) throw new Error(`Connection ${field} must be a GUID.`);
-  const origin = environmentOrigin(connection.environmentUrl);
-  const endpoint = new URL('https://login.microsoftonline.com/');
+  const origin = environmentOrigin(connection.environmentUrl, { allowLoopback });
+  const endpoint = authorityEndpoint(connection, allowLoopback);
   endpoint.pathname = `/${connection.tenantId}/oauth2/v2.0/token`;
   let cached;
   return async () => {

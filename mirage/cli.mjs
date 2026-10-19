@@ -422,6 +422,7 @@ try {
         render: siteMirage?.render,
         personaContexts: siteMirage?.personaContexts,
         identityProvider: siteMirage?.identityProvider,
+        dataverse: siteMirage?.dataverse,
         projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
         platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),

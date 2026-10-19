@@ -84,7 +84,7 @@ export const REQUIRED_RELEASE_FILES = [
   'lense/dataverse/index.mjs', 'lense/dataverse/cli.mjs', 'lense/dataverse/connection.mjs',
   'lense/dataverse/client.mjs', 'lense/dataverse/manifest.mjs', 'lense/dataverse/provision.mjs', 'lense/dataverse/data.mjs',
   'docs/dataverse-provisioning.md', 'docs/design/company-operations-demo.md',
-  'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md',
+  'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md', 'docs/design/dataverse-api.md',
   'examples/company-operations/README.md', 'examples/company-operations/package.json',
   'examples/company-operations/prepare-schema.mjs', 'examples/company-operations/dataverse/manifest.json',
   'examples/company-operations/prepare-data.mjs', 'examples/company-operations/data/catalogue.json',
@@ -138,7 +138,7 @@ export const REQUIRED_RELEASE_FILES = [
 export function validateReleaseFiles(files) {
   const templates = new Set(PROJECT_TEMPLATE_FILES);
   const provisioningSources = /^examples\/company-operations\/(?:README\.md|package(?:-lock)?\.json|prepare-(?:schema|data|stress-data)\.mjs|dataverse\/manifest\.json|data\/(?:catalogue|stress-catalogue)\.json|data\/reconcile-seed-headers\.mjs|test\/(?:schema|data|stress|forms|portal-security|plugins)\.test\.mjs|forms\/(?:catalogue|deploy|import-quickfind)\.mjs|forms\/update-quickfind\.ps1|portal-security\/(?:README\.md|blueprint\.json|(?:blueprint|deploy|model-audit|role-variant|deep-variant|reference-projections|package|bind-tester|tester-overlay)\.mjs)|portal-harness\/(?:README\.md|(?:browser|parity)\.test\.mjs|(?:compile|core|deploy|runtime|test|browser-test|live-test|readiness|parity|compare-parity|replay|replay-parity)\.mjs)|plugins\/(?:README\.md|LabPublicSigning\.snk|(?:registrations|secure-provisioning)\.json|test\/(?:collector|registration)\.test\.mjs|(?:deploy|registration|inspect-metadata|inspect-trace|verify-live|upload-assemblies|prepare-registration|provision-owner-team|inspect-operation-errors|update-guard-config|audit-evidence|audit-installation)\.mjs|(?:PipelineTests|QueryObservation|Tests)\/(?:[A-Za-z]+\.(?:cs|csproj)|packages\.lock\.json)|Shared\/(?:Lab|Recording)\.cs|collector\/(?:[a-z-]+\.mjs|(?:deployment|flow-secret-contract)\.json)))$/;
-  const designDocuments = new Set(['docs/design/company-operations-demo.md', 'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md']);
+  const designDocuments = new Set(['docs/design/company-operations-demo.md', 'docs/design/power-pages-permission-test-harness.md', 'docs/design/dataverse-plugin-observation.md', 'docs/design/dataverse-api.md']);
   const demoSources = /^examples\/project\/(?:portal|solution|code-solution|metadata|components|deployment)\/[a-zA-Z0-9/_.{}, +()-]+\.(?:yml|html|css|js|mjs|ts|xml|json|resx|md|sl|pcfproj|cdsproj)$/;
   const demoArtifacts = new Set(['examples/project/deployment/PaqviloDemoSample.zip', 'examples/project/deployment/PaqviloDemoCodeComponents.zip', 'examples/project/deployment/demo-data.zip']);
   const demoEditorFiles = new Set(['examples/project/paqvilo-demo.code-workspace', 'examples/project/.vscode/tasks.json', 'examples/project/.vscode/launch.json', 'examples/project/gitattributes.template', 'examples/project/.gitattributes', 'examples/project/editor-workspace.mjs']);

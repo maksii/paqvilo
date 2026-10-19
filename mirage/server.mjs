@@ -84,6 +84,11 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
+import { startDataverseApi } from './lib/dataverse-api.mjs';
+import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
+import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
+import { hashSecret, newClientSecret } from './lib/dataverse-auth.mjs';
+import { createPublicKey } from "node:crypto";
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
 // half a second of silent 8 kHz audio. No readable challenge is simulated, so CAPTCHA saves fail closed.
 const CAPTCHA_IMAGE = Buffer.from("/9j/4AAQSkZJRgABAQEAYABgAAD/2wBDAAgGBgcGBQgHBwcJCQgKDBQNDAsLDBkSEw8UHRofHh0aHBwgJC4nICIsIxwcKDcpLDAxNDQ0Hyc5PTgyPC4zNDL/wAALCAABAAEBAREA/8QAHwAAAQUBAQEBAQEAAAAAAAAAAAECAwQFBgcICQoL/8QAtRAAAgEDAwIEAwUFBAQAAAF9AQIDAAQRBRIhMUEGE1FhByJxFDKBkaEII0KxwRVS0fAkM2JyggkKFhcYGRolJicoKSo0NTY3ODk6Q0RFRkdISUpTVFVWV1hZWmNkZWZnaGlqc3R1dnd4eXqDhIWGh4iJipKTlJWWl5iZmqKjpKWmp6ipqrKztLW2t7i5usLDxMXGx8jJytLT1NXW19jZ2uHi4+Tl5ufo6erx8vP09fb3+Pn6/9oACAEBAAA/APn+iiigD//Z", "base64");
@@ -294,6 +299,7 @@ export async function createSimulator({
   persistence,
   personaContexts: personaContextsOption = {},
   identityProvider: identityProviderOption = {},
+  dataverse: dataverseOption = null,
   personaInstance = null,
   preset,
   presetMode = 'always',
@@ -525,6 +531,10 @@ export async function createSimulator({
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
   store.setVirtualTables(siteTables); // read-only site tables (see siteTables)
   store.setObserved(observed); // observed anonymousDataAccess for table permissions
+  // Simulated Dataverse API (lib/dataverse-api.mjs): started before the portal listens, closed by close().
+  const dataverseConfig = dataverseSettings(dataverseOption ?? undefined);
+  let dataverse = null;
+  const dataverseSummary = () => dataverseStatus(dataverseConfig, dataverse ?? {});
   portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
   let sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
   await replaceCompiledState(store.snapshot());
@@ -669,6 +679,7 @@ export async function createSimulator({
       await attempt(() => live.close());
       // The local identity provider lives and ends with its runtime.
       await attempt(() => externalSignIn?.close());
+      await attempt(() => dataverse?.close());
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
@@ -1222,6 +1233,7 @@ export async function createSimulator({
     }
     return {
       csrf,
+      dataverse: dataverseSummary(),
       config: {
         ...cfg,
         confinePortalPages: cfg.confinePortalPages === true,
@@ -1641,6 +1653,7 @@ export async function createSimulator({
     for (const item of all) byCode[item.code ?? "OBSERVATION"] = (byCode[item.code ?? "OBSERVATION"] ?? 0) + 1;
     return {
       csrf,
+      dataverse: dataverseSummary(),
       site: portal.website?.name ?? portal.website?.adx_name ?? null,
       format: portal.format,
       sourceDir: portal.sourceDir,
@@ -1789,6 +1802,212 @@ export async function createSimulator({
       throw error("State import must be valid JSON.");
     }
   }
+  // Simulated Dataverse administration (/_sim/api/dataverse...). Writes run through store transactions;
+  // store.transact is not re-entrant, so each transaction below is a separate call.
+  const DATAVERSE_GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const dataverseAdmin = async (req, res, relative) => {
+    const method = req.method;
+    if (!dataverse) throw error("The Dataverse API is disabled for this runtime.", 404, "DATAVERSE_DISABLED");
+    const lower = (value) => String(value ?? "").toLowerCase();
+    const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
+    const registrations = () => store.state.dataverse.applications;
+    const roleRows = () => store.tableRows("role");
+    const userRows = () => store.tableRows("systemuser");
+    const requireApp = (appId) => {
+      const app = registrations().find((item) => lower(item.appId) === lower(decodeAdminIdentifier(appId)));
+      if (!app) throw error("Application registration not found.", 404, "DATAVERSE_APPLICATION_NOT_FOUND");
+      return app;
+    };
+    const roleIdsFor = (names) => {
+      if (!Array.isArray(names) || names.some((name) => typeof name !== "string")) throw error("roles must be an array of role names.");
+      return names.map((name) => {
+        const role = roleRows().find((item) => item.name === name);
+        if (!role) throw error(`Role ${name} does not exist.`, 400, "DATAVERSE_ROLE_NOT_FOUND");
+        return role.roleid;
+      });
+    };
+    const removeRows = (logical, predicate) => {
+      const rows = store.tableRows(logical);
+      for (let i = rows.length - 1; i >= 0; i--) if (predicate(rows[i])) store.removeRow(logical, rows, i);
+    };
+    const roleNames = (userId) => {
+      const names = new Map(roleRows().map((role) => [lower(role.roleid), role.name]));
+      return store
+        .tableRows("systemuserroles")
+        .filter((link) => lower(refId(link.systemuserid)) === lower(userId))
+        .map((link) => names.get(lower(refId(link.roleid))))
+        .filter(Boolean);
+    };
+    const userView = (user) => ({
+      systemuserid: user.systemuserid,
+      fullname: user.fullname,
+      domainname: user.domainname ?? null,
+      applicationid: user.applicationid ?? null,
+      azureactivedirectoryobjectid: user.azureactivedirectoryobjectid ?? null,
+      accessmode: user.accessmode,
+      isdisabled: user.isdisabled === true,
+      roles: roleNames(user.systemuserid),
+    });
+    const publicApp = (app) => ({
+      appId: app.appId,
+      displayName: app.displayName,
+      secrets: (app.secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
+      certificates: (app.certificates ?? []).map(({ thumbprint }) => ({ thumbprint })),
+      allowedGrants: app.allowedGrants ?? ["client_credentials", "refresh_token"],
+      publicClient: app.publicClient === true,
+      redirectUris: app.redirectUris ?? [],
+      systemuserid: userRows().find((user) => lower(user.applicationid) === lower(app.appId))?.systemuserid ?? null,
+    });
+    const expiry = () => new Date(Date.now() + 2 * 365 * 24 * 3600 * 1000).toISOString();
+    const NOT_AVAILABLE = (message) => error(message, 501, "NOT_AVAILABLE");
+
+    if (method === "GET" && relative === "/dataverse")
+      return json(res, 200, {
+        ...dataverseSummary(),
+        applications: registrations().map(publicApp),
+        users: userRows().map(userView),
+        roles: roleRows().map(({ roleid, name }) => ({ roleid, name })),
+        requests: dataverse.requests().slice(-50),
+      });
+    if (method === "GET" && relative === "/dataverse/requests")
+      return json(res, 200, { requests: dataverse.requests() });
+    if (method === "POST" && relative === "/dataverse/token")
+      throw NOT_AVAILABLE("Create a secret and use the token endpoint.");
+
+    if (method === "POST" && relative === "/dataverse/applications")
+      return change(async () => {
+        const body = await jsonObjectBody(req);
+        const appId = lower(body.appId ?? randomUUID());
+        if (!DATAVERSE_GUID.test(appId)) throw error("appId must be a GUID.");
+        if (registrations().some((app) => lower(app.appId) === appId)) throw error("An application with this appId is already registered.", 409, "DATAVERSE_APPLICATION_EXISTS");
+        if (typeof body.displayName !== "string" || !body.displayName.trim()) throw error("displayName is required.");
+        const roleIds = roleIdsFor(body.roles ?? ["System Administrator"]);
+        // Creates the application user in its own transaction first, so a refusal leaves no registration behind.
+        const systemuserid = await createApplicationUser(store, { organizationId: dataverse.organizationId, tenantId: dataverse.tenantId }, { appId, displayName: body.displayName, roles: roleIds });
+        const secret = newClientSecret();
+        const { hash, salt } = hashSecret(secret);
+        const entry = { id: randomUUID(), hash, salt, hint: secret.slice(0, 3), expiresOn: expiry() };
+        await store.transact(() => {
+          registrations().push({
+            appId, displayName: body.displayName, createdOn: new Date().toISOString(), secrets: [entry], certificates: [],
+            publicClient: body.publicClient === true, redirectUris: Array.isArray(body.redirectUris) ? body.redirectUris : [],
+            allowedGrants: Array.isArray(body.allowedGrants) ? body.allowedGrants : ["client_credentials"],
+          });
+        });
+        json(res, 201, { appId, systemuserid, secret });
+      });
+
+    const [, secretAppId] = /^\/dataverse\/applications\/([^/]+)\/secrets$/.exec(relative) ?? [];
+    if (method === "POST" && secretAppId)
+      return change(async () => {
+        const app = requireApp(secretAppId);
+        const secret = newClientSecret();
+        const { hash, salt } = hashSecret(secret);
+        const entry = { id: randomUUID(), hash, salt, hint: secret.slice(0, 3), expiresOn: expiry() };
+        await store.transact(() => {
+          app.secrets ??= [];
+          app.secrets.push(entry);
+        });
+        json(res, 201, { id: entry.id, secret, hint: entry.hint, expiresOn: entry.expiresOn });
+      });
+
+    const [, deleteSecretAppId, secretId] = /^\/dataverse\/applications\/([^/]+)\/secrets\/([^/]+)$/.exec(relative) ?? [];
+    if (method === "DELETE" && deleteSecretAppId)
+      return change(async () => {
+        const app = requireApp(deleteSecretAppId);
+        const index = (app.secrets ?? []).findIndex((item) => item.id === decodeAdminIdentifier(secretId));
+        if (index < 0) throw error("Secret not found.", 404, "DATAVERSE_SECRET_NOT_FOUND");
+        await store.transact(() => app.secrets.splice(index, 1));
+        json(res, 204, null);
+      });
+
+    const [, certAppId] = /^\/dataverse\/applications\/([^/]+)\/certificates$/.exec(relative) ?? [];
+    if (method === "POST" && certAppId)
+      return change(async () => {
+        const app = requireApp(certAppId);
+        const body = await jsonObjectBody(req);
+        let key;
+        try {
+          key = createPublicKey(String(body.publicKeyPem ?? ""));
+        } catch {
+          throw error("publicKeyPem must be a PEM public key.");
+        }
+        // Same thumbprint the client-assertion check matches: upper-case hex SHA-1 of the DER SPKI.
+        const thumbprint = createHash("sha1").update(key.export({ type: "spki", format: "der" })).digest("hex").toUpperCase();
+        const publicKeyPem = key.export({ type: "spki", format: "pem" });
+        await store.transact(() => {
+          app.certificates ??= [];
+          app.certificates.push({ thumbprint, publicKeyPem });
+        });
+        json(res, 201, { thumbprint });
+      });
+
+    const [, removeAppId] = /^\/dataverse\/applications\/([^/]+)$/.exec(relative) ?? [];
+    if (method === "DELETE" && removeAppId)
+      return change(async () => {
+        const app = requireApp(removeAppId);
+        await store.transact(() => {
+          const userIds = new Set(userRows().filter((user) => lower(user.applicationid) === lower(app.appId)).map((user) => lower(user.systemuserid)));
+          removeRows("systemuserroles", (link) => userIds.has(lower(refId(link.systemuserid))));
+          removeRows("systemuser", (user) => userIds.has(lower(user.systemuserid)));
+          registrations().splice(registrations().indexOf(app), 1);
+        });
+        json(res, 204, null);
+      });
+
+    if (method === "POST" && relative === "/dataverse/users")
+      return change(async () => {
+        const body = await jsonObjectBody(req);
+        if (body.password !== undefined) throw NOT_AVAILABLE("Password sign-in is not available in this milestone.");
+        if (typeof body.fullname !== "string" || !body.fullname.trim()) throw error("fullname is required.");
+        if (typeof body.domainname !== "string" || !body.domainname.trim()) throw error("domainname is required.");
+        const objectId = lower(body.objectId ?? randomUUID());
+        if (!DATAVERSE_GUID.test(objectId)) throw error("objectId must be a GUID.");
+        const systemuserid = uuidV5(dataverse.organizationId, `systemuser:oid:${objectId}`);
+        if (userRows().some((user) => lower(user.systemuserid) === systemuserid)) throw error("A user with this objectId already exists.", 409, "DATAVERSE_USER_EXISTS");
+        const units = store.tableRows("businessunit");
+        const unit = body.businessUnitId ? units.find((item) => lower(item.businessunitid) === lower(body.businessUnitId)) : units.find((item) => !item.parentbusinessunitid);
+        if (!unit) throw error("Business unit not found.", 404, "DATAVERSE_BUSINESS_UNIT_NOT_FOUND");
+        const org = store.tableRows("organization").find((item) => lower(item.organizationid) === lower(dataverse.organizationId));
+        const roleIds = roleIdsFor(body.roles ?? ["Basic User"]);
+        await store.transact(() => {
+          store.insertRow("systemuser", userRows(), {
+            systemuserid, fullname: body.fullname, domainname: body.domainname, internalemailaddress: body.domainname,
+            azureactivedirectoryobjectid: objectId, accessmode: body.accessmode ?? 0, isdisabled: false,
+            businessunitid: { id: unit.businessunitid, logical_name: "businessunit", name: unit.name ?? "" },
+            organizationid: { id: dataverse.organizationId, logical_name: "organization", name: org?.name ?? "" },
+          });
+        });
+        await assignRoles(store, { systemuserid, roleIds });
+        json(res, 201, { systemuserid, azureactivedirectoryobjectid: objectId });
+      });
+
+    const [, patchUserId] = /^\/dataverse\/users\/([^/]+)$/.exec(relative) ?? [];
+    if (method === "PATCH" && patchUserId)
+      return change(async () => {
+        const systemuserid = decodeAdminIdentifier(patchUserId);
+        const body = await jsonObjectBody(req);
+        if (body.password !== undefined) throw NOT_AVAILABLE("Password sign-in is not available in this milestone.");
+        const find = () => userRows().find((user) => lower(user.systemuserid) === lower(systemuserid));
+        if (!find()) throw error("User not found.", 404, "DATAVERSE_USER_NOT_FOUND");
+        if (body.isdisabled !== undefined && typeof body.isdisabled !== "boolean") throw error("isdisabled must be a boolean.");
+        if (body.accessmode !== undefined && !Number.isInteger(body.accessmode)) throw error("accessmode must be an integer.");
+        const roleIds = body.roles === undefined ? null : roleIdsFor(body.roles);
+        await store.transact(() => {
+          const user = find();
+          if (body.isdisabled !== undefined) user.isdisabled = body.isdisabled;
+          if (body.accessmode !== undefined) user.accessmode = body.accessmode;
+        });
+        if (roleIds) {
+          await store.transact(() => removeRows("systemuserroles", (link) => lower(refId(link.systemuserid)) === lower(systemuserid)));
+          await assignRoles(store, { systemuserid, roleIds });
+        }
+        json(res, 200, userView(find()));
+      });
+
+    throw error("Admin endpoint not found.", 404);
+  };
+
   async function admin(req, res, url) {
     const relative = url.pathname.slice("/__sim/api".length);
     const method = req.method;
@@ -1926,6 +2145,7 @@ export async function createSimulator({
       });
     if (isWrite(method) && req.headers["x-sim-csrf"] !== csrf)
       throw error("Missing simulator CSRF token.", 403);
+    if (relative === "/dataverse" || relative.startsWith("/dataverse/")) return dataverseAdmin(req, res, relative);
     const operationRoute = /^\/operations\/([^/]+)$/.exec(relative);
     if (operationRoute && ['PATCH', 'DELETE'].includes(method)) return change(async () => {
       const key = decodeAdminIdentifier(operationRoute[1]);
@@ -2505,6 +2725,8 @@ export async function createSimulator({
         // Saved scenario definitions are workspace tooling and survive a reset.
         const scenarios = config().scenarios;
         if (Array.isArray(scenarios)) next.simulator = { ...next.simulator, scenarios };
+        // Dataverse registrations survive a reset. ponytail: security rows (users, role links) are not re-seeded; they return on restart.
+        if (store.state.dataverse) next.dataverse = store.state.dataverse;
         await saveState(next);
         // Advanced form sessions belong to the reset state: a reset ends them.
         webFormSessions.clear();
@@ -4073,6 +4295,14 @@ export async function createSimulator({
     state.simulator.mode='local'; state.simulator.pageMode='local'; state.simulator.live={enabled:false};
     await saveState(state);
   }
+  if (dataverseConfig.enabled)
+    dataverse = await startDataverseApi({
+      store, change, settings: dataverseConfig, host,
+      schema: () => solutionData?.schema ?? null,
+      metadataFields: (logical) => solutionMetadata?.entities?.[logical]?.fields,
+      observed,
+      log: (...args) => recordDiagnostic({ code: "DATAVERSE_API", message: String(args[0]?.message ?? args[0]) }),
+    });
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ host, port }, resolve);
@@ -4219,6 +4449,10 @@ export async function createSimulator({
     // The local identity provider of external sign-in: { available, origin, port, providers, ... }.
     get identityProvider() {
       return externalSignIn.status();
+    },
+    // The simulated Dataverse API listener (null when disabled), for tools and tests.
+    get dataverse() {
+      return dataverse ? { origin: dataverse.origin, tlsOrigin: dataverse.tlsOrigin, authority: dataverse.authority, tenantId: dataverse.tenantId, organizationId: dataverse.organizationId, requests: dataverse.requests } : null;
     },
     state: exposedState,
     applyPreset: (name) => change(() => applySelectedPreset(name)),

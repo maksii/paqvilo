@@ -85,7 +85,8 @@
     "demo": "node scripts/demo.mjs",
     "demo:evidence": "node scripts/demo.mjs --evidence",
     "lense": "node bin/paqvilo.mjs lense",
-    "check:boundary": "node scripts/project-boundary.mjs"
+    "check:boundary": "node scripts/project-boundary.mjs",
+    "test:sdk": "node --test --test-timeout=120000 mirage/test-sdk/toolkit-client/gate.test.mjs && npm --prefix mirage/test-sdk/dynamics-web-api test"
   },
   "engines": {
     "node": ">=22"

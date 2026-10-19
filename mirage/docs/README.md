@@ -18,6 +18,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | External presets, data and extension contract | [Data packs](data-packs.md) |
 | Liquid behavior and conformance | [Liquid](liquid-parity.md), [conformance](liquid-conformance.md) |
 | Queries, Web API and permissions | [Dataverse](dataverse-parity.md) |
+| Dataverse Web API, OAuth tokens and application users | [Dataverse API](dataverse-api.md) |
 | Native forms, lists and client behavior | [Forms and lists](forms-lists-parity.md) |
 | Standard PCF field and dataset controls | [Code components](code-components.md) |
 | Exported server logic, cloud flows and local mocks | [Operations](operations.md) |

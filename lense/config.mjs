@@ -1,4 +1,5 @@
 import {identityProviderSettings,identityProviderAssets} from '../mirage/lib/identity-provider-settings.mjs';
+import {dataverseSettings} from '../mirage/lib/dataverse-settings.mjs';
 // Configuration, from the most general to the most specific:
 //
 //   paqvilo.config.yml        the team's catalogue: every portal, its source folder, its
@@ -243,6 +244,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
   if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
     ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
+    ...(value.dataverse!==undefined?{dataverse:dataverseSettings(value.dataverse,'mirage.dataverse')}:{}),
     ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,
     ...(value.deploymentProfiles !== undefined ? { deploymentProfiles: resolveDeploymentProfiles(value.deploymentProfiles, configDir, {sourceRoot,sourceDir}) } : {}),

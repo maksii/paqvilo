@@ -1,9 +1,17 @@
 import { environmentOrigin, tokenProvider } from './connection.mjs';
 
+const LOOPBACK_HOSTS = ['127.0.0.1', 'localhost', '[::1]'];
+
+// Shared with connection.mjs: only loopback origins may stand in for production hosts, and only when a caller allows it.
+export function isLoopbackOrigin(value) {
+  const url = value instanceof URL ? value : new URL(value);
+  return ['http:', 'https:'].includes(url.protocol) && LOOPBACK_HOSTS.includes(url.hostname);
+}
+
 export class DataverseClient {
   constructor({ environmentUrl, token, fetchImpl = fetch, allowLoopback = false, timeoutMs = 30_000, mutationTimeoutMs = 180_000 }) {
     const url = new URL(environmentUrl);
-    const testOrigin = allowLoopback && url.protocol === 'http:' && ['127.0.0.1', '[::1]', 'localhost'].includes(url.hostname);
+    const testOrigin = allowLoopback && url.protocol === 'http:' && isLoopbackOrigin(url);
     this.origin = testOrigin ? url.origin : environmentOrigin(environmentUrl);
     this.base = `${this.origin}/api/data/v9.2/`;
     this.token = token;
@@ -79,8 +87,8 @@ export class DataverseClient {
   }
 }
 
-export function connectedClient(connection) {
-  return new DataverseClient({ environmentUrl: connection.environmentUrl, token: tokenProvider(connection) });
+export function connectedClient(connection, { allowLoopback = false } = {}) {
+  return new DataverseClient({ environmentUrl: connection.environmentUrl, token: tokenProvider(connection, { allowLoopback }), allowLoopback });
 }
 
 export function metadataId(result) {

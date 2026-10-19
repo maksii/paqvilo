@@ -490,6 +490,13 @@ test('all portal targets share resolved browser choices without sharing mutable 
   assert.equal((await load()).browser.profile, null, 'resolution does not mutate defaults or the catalogue');
 });
 
+test('Mirage dataverse simulator settings resolve from the catalogue mirage key', async () => {
+  write('paqvilo.config.local.yml', 'sites:\n  alpha:\n    mirage:\n      dataverse: { enabled: true }\n');
+  assert.equal((await load()).mirageConfig.dataverse.enabled, true);
+  write('paqvilo.config.local.yml', 'sites:\n  alpha:\n    mirage:\n      dataverse: { port: 70000 }\n');
+  await assert.rejects(load(), /mirage\.dataverse\.port must be an integer/);
+});
+
 test('Mirage settings resolve projects and data packs from the catalogue folder and Solution roots from the checkout', async () => {
   for (const site of ['alpha', 'beta']) fs.mkdirSync(path.join(dir, 'checkout', 'portals', site, 'web-files'), { recursive: true });
   write('paqvilo.config.local.yml', [

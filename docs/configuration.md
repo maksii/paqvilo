@@ -91,6 +91,7 @@ Restart running previews after configuration changes.
 | `deploymentProfiles` | Select exported environment settings; [deployment profiles](../mirage/docs/deployment-profiles.md) |
 | `personaContexts` | Bound isolated scenario copies; [persona setups](../mirage/docs/persona-catalog.md#isolated-contexts-and-scenarios) |
 | `identityProvider` | Local chooser text, layout and project assets; `newUser: auto \| always \| never` controls registration choices. `auto` follows site registration, open-registration/invitation and provider registration settings; [picker configuration](../mirage/docs/persona-catalog.md#identity-provider-and-lense-pickers) |
+| `dataverse` | Simulated Dataverse Web API on its own loopback origin, with OAuth applications and users; [Dataverse API](../mirage/docs/dataverse-api.md) |
 | `platform` | Explicit simulated platform controls; [configuration experiments](../mirage/docs/configuration-experiments.md) |
 | `compat`, `head` | Local adapters and assets, described below |
 | `observed` | Evidenced platform conventions absent from exports, described below |
