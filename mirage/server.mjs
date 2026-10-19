@@ -88,7 +88,7 @@ import { authenticationSettings } from "./lib/external-login.mjs";
 import { startDataverseApi } from './lib/dataverse-api.mjs';
 import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
 import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
-import { hashSecret, newClientSecret } from './lib/dataverse-auth.mjs';
+import { hashSecret, newClientSecret, certificateThumbprints } from './lib/dataverse-auth.mjs';
 import { ensureCertificate } from './lib/dataverse-tls.mjs';
 import { createPublicKey } from "node:crypto";
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
@@ -1871,7 +1871,7 @@ export async function createSimulator({
       appId: app.appId,
       displayName: app.displayName,
       secrets: (app.secrets ?? []).map(({ id, hint, expiresOn }) => ({ id, hint, expiresOn })),
-      certificates: (app.certificates ?? []).map(({ thumbprint }) => ({ thumbprint })),
+      certificates: (app.certificates ?? []).map(({ thumbprint, thumbprint256 }) => ({ thumbprint, thumbprint256 })),
       allowedGrants: app.allowedGrants ?? ["client_credentials", "refresh_token"],
       publicClient: app.publicClient === true,
       redirectUris: app.redirectUris ?? [],
@@ -1951,14 +1951,14 @@ export async function createSimulator({
         } catch {
           throw error("publicKeyPem must be a PEM public key.");
         }
-        // Same thumbprint the client-assertion check matches: upper-case hex SHA-1 of the DER SPKI.
-        const thumbprint = createHash("sha1").update(key.export({ type: "spki", format: "der" })).digest("hex").toUpperCase();
         const publicKeyPem = key.export({ type: "spki", format: "pem" });
+        // SHA-1 (x5t) and SHA-256 (x5t#S256) thumbprints of the DER SPKI, as the client-assertion check matches them.
+        const { thumbprint, thumbprint256 } = certificateThumbprints(publicKeyPem);
         await store.transact(() => {
           app.certificates ??= [];
-          app.certificates.push({ thumbprint, publicKeyPem });
+          app.certificates.push({ thumbprint, thumbprint256, publicKeyPem });
         });
-        json(res, 201, { thumbprint });
+        json(res, 201, { thumbprint, thumbprint256 });
       });
 
     const [, removeAppId] = /^\/dataverse\/applications\/([^/]+)$/.exec(relative) ?? [];
@@ -2746,9 +2746,14 @@ export async function createSimulator({
         // Saved scenario definitions are workspace tooling and survive a reset.
         const scenarios = config().scenarios;
         if (Array.isArray(scenarios)) next.simulator = { ...next.simulator, scenarios };
-        // Dataverse registrations survive a reset. ponytail: security rows (users, role links) are not re-seeded; they return on restart.
-        if (store.state.dataverse) next.dataverse = store.state.dataverse;
+        // Dataverse registrations survive a reset. Application users are created by the admin API, not by the settings,
+        // so their rows and role links are carried over too; reseed() then restores the settings-level security rows.
+        if (store.state.dataverse) {
+          next.dataverse = store.state.dataverse;
+          for (const table of ["systemuser", "systemuserroles"]) if (store.state.tables?.[table]) next.tables[table] = store.state.tables[table];
+        }
         await saveState(next);
+        await dataverse?.reseed();
         // Advanced form sessions belong to the reset state: a reset ends them.
         webFormSessions.clear();
         json(res, 200, exposedState());

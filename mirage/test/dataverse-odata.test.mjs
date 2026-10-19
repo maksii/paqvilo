@@ -18,6 +18,9 @@ import {
   baseHeaders,
   JSON_CONTENT_TYPE,
   orderAnnotations,
+  assertKeyText,
+  preferMalformedResponse,
+  skipTokenQueryValue,
 } from '../lib/dataverse-odata.mjs';
 
 const G1 = '00000000-0000-0000-0000-000000000001';
@@ -172,6 +175,142 @@ test('skiptoken encodes the documented paging cookie exactly and round-trips', (
   const counted = { ...state, pageNumber: 3, countOfRecords: 1 };
   assert.deepEqual(decodeSkipToken(encodeSkipToken(counted)), counted);
   assert.equal(decodeSkipToken('<cookie pagenumber="x"'), null);
+  // The query form is the cookie as the query decodes it, escaped on < > " space and % only.
+  const cookie = decodeURIComponent(annotation);
+  assert.equal(skipTokenQueryValue(cookie), sample);
+  assert.equal(decodeURIComponent(skipTokenQueryValue(cookie)), cookie);
+  assert.deepEqual(decodeSkipToken(skipTokenQueryValue(cookie)), state);
+  assert.deepEqual(decodeSkipToken(encodeURIComponent(annotation)), state);
+  assert.equal(skipTokenQueryValue('a%b<c>"d e'), 'a%25b%3Cc%3E%22d%20e');
+});
+
+test('entityUrl is header-safe: keys are percent-encoded, no CR/LF, ASCII only', () => {
+  const base = 'https://org.example';
+  assert.equal(entityUrl(base, 'v9.2', 'widgets', "code='日本'"), `${base}/api/data/v9.2/widgets(code='%E6%97%A5%E6%9C%AC')`);
+  const injected = entityUrl(base, 'v9.2', 'widgets', "code='a\r\nX-Evil: 1'");
+  assert.equal(injected, `${base}/api/data/v9.2/widgets(code='a%0D%0AX-Evil:%201')`);
+  assert.doesNotMatch(injected, /[\r\n]/);
+  assert.match(entityUrl(base, 'v9.2', 'widgets', "code='日本 é'"), /^[\x20-\x7e]+$/);
+  assert.equal(entityUrl(base, 'v9.2', 'widgets', "code='a\"<>%#?,=()'"), `${base}/api/data/v9.2/widgets(code='a%22%3C%3E%25%23%3F,=()')`);
+  assert.equal(entityUrl(base, 'v9.2', 'accounts', G1), `${base}/api/data/v9.2/accounts(${G1})`);
+});
+
+test('key text with control characters is a DataError 400 0x80060888, mapped to the Web API envelope', () => {
+  for (const text of ["code='a\r\nX-Evil: 1'", "code='a\tb'", "code='a\x7fb'"]) {
+    assert.throws(() => parseKey(text), (error) => error instanceof DataError && error.status === 400 && error.details.innerCode === '0x80060888');
+  }
+  assert.throws(() => assertKeyText('x\u0000'), DataError);
+  assert.equal(assertKeyText(G1), undefined);
+  let thrown;
+  try {
+    parseKey("code='a\r\nb'");
+  } catch (error) {
+    thrown = error;
+  }
+  const mapped = dataverseError(thrown, { requestId: 'req-3' });
+  assert.equal(mapped.status, 400);
+  assert.deepEqual(mapped.body, { error: { code: '0x80060888', message: 'Invalid URI: the key segment contains control characters.' } });
+});
+
+test('path segments longer than 260 characters are invalid requests (400)', () => {
+  assert.deepEqual(route('a'.repeat(261)), { version: 'v9.2', kind: 'invalid', status: 400, message: 'Bad Request - Invalid URL' });
+  assert.equal(route('a'.repeat(260)).kind, 'collection');
+  assert.equal(route(`accounts(${G1})/${'b'.repeat(261)}`).status, 400);
+});
+
+test('parsePrefer flags a backslash outside a quoted-string and unterminated quotes; preferMalformedResponse shape', () => {
+  const raw = 'odata.include-annotations=\\"*\\"';
+  const bad = parsePrefer(raw);
+  assert.deepEqual(bad.malformed, {
+    preference: 'odata.include-annotations',
+    position: 26,
+    detail: "the escape character '\\' is not inside a quoted-string",
+    raw,
+  });
+  const response = preferMalformedResponse(bad.malformed);
+  assert.equal(response.status, 400);
+  assert.equal(response.body.ErrorCode, '0x80097303');
+  assert.equal(
+    response.body.Message,
+    "Error identified on the 'odata.include-annotations' value inside the 'Prefer' header. Refer to the following link for more details: https://go.microsoft.com/fwlink/?linkid=2300109. See exception message for more details 'An error occurred when parsing the HTTP header 'Prefer'. The header value '" +
+      raw + "' is incorrect at position '26' because the escape character '\\' is not inside a quoted-string.'.",
+  );
+
+  const unterminated = parsePrefer('odata.maxpagesize=2, odata.include-annotations="*');
+  assert.deepEqual(unterminated.malformed, {
+    preference: 'odata.include-annotations',
+    position: 47,
+    detail: 'the quoted-string is not terminated',
+    raw: 'odata.maxpagesize=2, odata.include-annotations="*',
+  });
+  assert.match(preferMalformedResponse(unterminated.malformed).body.Message, /because the quoted-string is not terminated\.'\.$/);
+
+  assert.equal('malformed' in parsePrefer('odata.include-annotations="*"'), false);
+  assert.equal('malformed' in parsePrefer('odata.include-annotations="a\\b"'), false);
+  assert.deepEqual(parsePrefer('odata.include-annotations="a\\b"').annotations, ['a\\b']);
+});
+
+test('preferenceApplied echoes only applied preferences; continue-on-error only for a batch', () => {
+  const all = parsePrefer('odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error, odata.track-changes, respond-async');
+  assert.equal(preferenceApplied(all, { paged: true }), 'odata.include-annotations="*", odata.maxpagesize=2, return=representation');
+  assert.equal(preferenceApplied(all, { paged: true, batch: true }), 'odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error');
+  assert.equal(preferenceApplied(parsePrefer('odata.track-changes, respond-async'), { batch: true }), null);
+  assert.equal(preferenceApplied(parsePrefer('odata.continue-on-error')), null);
+  assert.equal(preferenceApplied(parsePrefer('odata.continue-on-error'), { batch: true }), 'odata.continue-on-error');
+});
+
+test('CDS error annotations follow code and message, match each name, and survive orderAnnotations', () => {
+  const error = new DataError('Record not found', 404, 'NotFound', { id: G1 });
+  const annotated = dataverseError(error, { logical: 'account', id: G1, prefer: parsePrefer('odata.include-annotations="*"') });
+  const keys = [
+    'code',
+    'message',
+    '@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus',
+    '@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode',
+    '@Microsoft.PowerApps.CDS.HelpLink',
+    '@Microsoft.PowerApps.CDS.TraceText',
+    '@Microsoft.PowerApps.CDS.InnerError.Message',
+  ];
+  assert.deepEqual(Object.keys(annotated.body.error), keys);
+  assert.deepEqual(Object.keys(orderAnnotations(annotated.body).error), keys);
+
+  const names = (pattern) =>
+    Object.keys(dataverseError(error, { logical: 'account', id: G1, prefer: parsePrefer(`odata.include-annotations="${pattern}"`) }).body.error)
+      .filter((key) => key.startsWith('@'));
+  assert.deepEqual(names('Microsoft.PowerApps.CDS.ErrorDetails*'), [
+    '@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus',
+    '@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode',
+  ]);
+  assert.deepEqual(names('Microsoft.PowerApps.CDS.HelpLink'), ['@Microsoft.PowerApps.CDS.HelpLink']);
+  assert.deepEqual(names('Microsoft.PowerApps.CDS.InnerError.Message'), ['@Microsoft.PowerApps.CDS.InnerError.Message']);
+  assert.equal(names('Microsoft.PowerApps.CDS.*').length, 5);
+  assert.equal(names('*').length, 5);
+  assert.deepEqual(names('Microsoft.Dynamics.CRM.*'), []);
+});
+
+test('413 maps to PayloadTooLarge (and its alias); InvalidBatch maps to 0x80048d19', () => {
+  for (const code of ['PayloadTooLarge', 'RequestEntityTooLarge']) {
+    const mapped = dataverseError(new DataError('too large', 413, code), { requestId: 'req-4' });
+    assert.equal(mapped.status, 413);
+    assert.equal(mapped.body.error.code, '0x8004418a');
+  }
+  assert.equal(dataverseError(new DataError('bad batch', 400, 'InvalidBatch'), { requestId: 'req-4' }).body.error.code, '0x80048d19');
+});
+
+test('duplicate entity key maps to 0x80060892 with the entity key message when key details are present', () => {
+  const duplicate = new DataError('A record that has the attribute values W3 already exists.', 412, 'DuplicateRecord', {
+    keyName: 'widget_code',
+    columns: ['code', 'region'],
+    innerCode: '0x80040237',
+  });
+  assert.deepEqual(dataverseError(duplicate, { requestId: 'req-5' }).body, {
+    error: {
+      code: '0x80060892',
+      message: 'Entity Key widget_code violated. A record with the same value for code, region already exists. A duplicate record cannot be created. Select one or more unique values and try again.',
+    },
+  });
+  const plain = dataverseError(new DataError('duplicate', 412, 'DuplicateRecord'), { requestId: 'req-5' });
+  assert.deepEqual(plain.body, { error: { code: '0x80060892', message: 'duplicate' } });
 });
 
 test('dataverseError maps store codes to Dataverse status, code and message', () => {

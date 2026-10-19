@@ -1,4 +1,5 @@
 import { parseKeySegment } from "./data.mjs";
+import { DataError } from "./data-error.mjs";
 import { annotationMatcher } from "./webapi-handler.mjs";
 
 export { annotationMatcher };
@@ -20,6 +21,10 @@ const GUID = /^\{?([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})
 const HEAD_ANNOTATIONS = ["@odata.context", "@odata.count", "@odata.etag", "@odata.type"];
 const TAIL_ANNOTATIONS = ["@odata.nextLink", "@odata.deltaLink"];
 const MAX_PAGE_SIZE = 5000;
+const MAX_SEGMENT_LENGTH = 260;
+const CONTROL_CHARACTER = /[\x00-\x1f\x7f]/;
+// Marks an error object whose key order is already final (orderAnnotations must not move its annotations).
+const KEEP_ORDER = Symbol("keepOrder");
 
 // Store code (DataError.code) -> [status, Dataverse error code].
 const CODE_MAP = {
@@ -39,6 +44,9 @@ const CODE_MAP = {
   NumericMetadataRequired: [501, "0x80040216"],
   ODataPermissionQueryUnsupported: [501, "0x80040216"],
   ServiceProtection: [429, "0x80072322"],
+  PayloadTooLarge: [413, "0x8004418a"],
+  RequestEntityTooLarge: [413, "0x8004418a"],
+  InvalidBatch: [400, "0x80048d19"],
 };
 // Inner codes recognised from details.innerCode (the code is the inner code itself).
 const INNER_STATUS = {
@@ -55,6 +63,7 @@ const INNER_STATUS = {
   "0x80060888": 400,
   "0x80040265": 400,
   "0x80072322": 429,
+  "0x8004418a": 413,
   "0x80072560": 401,
   "0x80040225": 401,
   "0x8004032c": 401,
@@ -166,13 +175,24 @@ export function parseDataverseRoute(pathname) {
   const data = DATA_PATH.exec(path);
   if (!data || !VERSIONS.includes(data[1])) return null;
   const version = data[1];
+  if ((data[2] ?? "").split("/").some((part) => part.length > MAX_SEGMENT_LENGTH)) {
+    return { version, kind: "invalid", status: 400, message: "Bad Request - Invalid URL" };
+  }
   const rest = decode(data[2] ?? "");
   if (rest === null) return { version, kind: "invalid", message: "The request URI is not valid." };
   return { version, ...resource(rest, path) };
 }
 
+/** Key text is echoed in headers (Location, OData-EntityId), so control characters are a 400. */
+export function assertKeyText(text) {
+  if (CONTROL_CHARACTER.test(String(text ?? ""))) {
+    throw new DataError("Invalid URI: the key segment contains control characters.", 400, "InvalidRequest", { innerCode: "0x80060888" });
+  }
+}
+
 /** Key predicate text: GUID -> { id }, alternate key pairs -> { alternate }, otherwise null. */
 export function parseKey(text) {
+  assertKeyText(text);
   const value = String(text ?? "").trim();
   const guid = GUID.exec(value);
   if (guid) return { id: guid[1].toLowerCase() };
@@ -228,7 +248,25 @@ export function parseFunctionParameters(text, searchParams) {
   return params;
 }
 
-/** Prefer header (string or array; comma or semicolon separated). */
+/** First backslash outside a quoted-string, or an unterminated quote; null when the header is well formed. */
+function preferMalformed(text) {
+  const nameAt = (start) => /^\s*([A-Za-z][\w.-]*)/.exec(text.slice(start))?.[1] ?? null;
+  let start = 0; // where the current preference begins
+  let quote = null; // { at, preference } while inside a quoted-string
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (quote) {
+      if (ch === '"') quote = null;
+      continue;
+    }
+    if (ch === '"') quote = { at: i, preference: nameAt(start) };
+    else if (ch === "\\") return { preference: nameAt(start), position: i, detail: "the escape character '\\' is not inside a quoted-string" };
+    else if (ch === "," || ch === ";") start = i + 1;
+  }
+  return quote && { preference: quote.preference, position: quote.at, detail: "the quoted-string is not terminated" };
+}
+
+/** Prefer header (string or array; comma or semicolon separated). A malformed header gets prefer.malformed. */
 export function parsePrefer(header) {
   const text = Array.isArray(header) ? header.join(",") : String(header ?? "");
   const prefer = {
@@ -265,11 +303,28 @@ export function parsePrefer(header) {
         break;
     }
   }
+  const malformed = preferMalformed(text);
+  if (malformed) prefer.malformed = { ...malformed, raw: text };
   return prefer;
 }
 
-/** Preference-Applied echo; maxpagesize only when the response is paged and the size is within 5,000. */
-export function preferenceApplied(prefer = {}, { paged = false } = {}) {
+/** 400 envelope for a malformed Prefer header (from parsePrefer(...).malformed). */
+export function preferMalformedResponse(malformed) {
+  const { preference, position, detail, raw } = malformed;
+  return {
+    status: 400,
+    body: {
+      Message: `Error identified on the '${preference ?? ""}' value inside the 'Prefer' header. Refer to the following link for more details: https://go.microsoft.com/fwlink/?linkid=2300109. See exception message for more details 'An error occurred when parsing the HTTP header 'Prefer'. The header value '${raw}' is incorrect at position '${position}' because ${detail}.'.`,
+      ErrorCode: "0x80097303",
+    },
+  };
+}
+
+/**
+ * Preference-Applied echo: only what the response actually applied. maxpagesize needs a paged response
+ * (size up to 5,000); continue-on-error only on a batch. track-changes and respond-async are never echoed.
+ */
+export function preferenceApplied(prefer = {}, { paged = false, batch = false } = {}) {
   const applied = [];
   if (prefer.annotations) {
     const list = Array.isArray(prefer.annotations) ? prefer.annotations.join(",") : prefer.annotations;
@@ -277,9 +332,7 @@ export function preferenceApplied(prefer = {}, { paged = false } = {}) {
   }
   if (paged && prefer.maxPageSize > 0 && prefer.maxPageSize <= MAX_PAGE_SIZE) applied.push(`odata.maxpagesize=${prefer.maxPageSize}`);
   if (prefer.representation) applied.push("return=representation");
-  if (prefer.continueOnError) applied.push("odata.continue-on-error");
-  if (prefer.trackChanges) applied.push("odata.track-changes");
-  if (prefer.respondAsync) applied.push("respond-async");
+  if (batch && prefer.continueOnError) applied.push("odata.continue-on-error");
   return applied.length ? applied.join(", ") : null;
 }
 
@@ -287,8 +340,10 @@ export function contextUrl(origin, version, suffix) {
   return `${origin}/api/data/${version}/$metadata#${suffix}`;
 }
 
+/** Header-safe: encodeURI leaves ' = , ( ) as they are, and # and ? would end the path, so they are encoded too. */
 export function entityUrl(origin, version, set, keyText) {
-  return `${origin}/api/data/${version}/${set}(${keyText})`;
+  const key = encodeURI(String(keyText ?? "").toWellFormed()).replace(/#/g, "%23").replace(/\?/g, "%3F");
+  return `${origin}/api/data/${version}/${set}(${key})`;
 }
 
 const upperGuid = (id) => String(id).replace(/[{}]/g, "").toUpperCase();
@@ -300,6 +355,16 @@ export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOf
   const inner = `<cookie page="${pageNumber - 1}"${count}><${idColumn} last="{${upperGuid(lastId)}}" first="{${upperGuid(firstId)}}" /></cookie>`;
   const paging = encodeURIComponent(encodeURIComponent(inner)).replace(/%25([0-9A-F]{2})/g, (escape, hex) => `%25${hex.toLowerCase()}`);
   return `<cookie pagenumber="${pageNumber}" pagingcookie="${paging}" istracking="False" />`;
+}
+
+const QUERY_ESCAPES = { "%": "%25", "<": "%3C", ">": "%3E", '"': "%22", " ": "%20" };
+
+/**
+ * nextLink $skiptoken value (the research sample form). Escapes only % < > " and space.
+ * Pass the cookie as the query decodes it: decodeURIComponent(encodeSkipToken(state)).
+ */
+export function skipTokenQueryValue(token) {
+  return String(token ?? "").replace(/[%<>" ]/g, (ch) => QUERY_ESCAPES[ch]);
 }
 
 /** Accepts the raw cookie or its single percent-encoded form (as in an @odata.nextLink query). */
@@ -329,7 +394,32 @@ export function fetchXmlPagingCookie(state) {
   return encodeSkipToken(state);
 }
 
-const annotationText = (prefer) => (Array.isArray(prefer?.annotations) ? prefer.annotations.join(",") : (prefer?.annotations ?? ""));
+/** Prefer annotation names as annotationMatcher reads them; a trailing * (ErrorDetails*) becomes a .* prefix. */
+const annotationPatterns = (prefer) => {
+  const names = Array.isArray(prefer?.annotations) ? prefer.annotations : String(prefer?.annotations ?? "").split(",");
+  return names
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => (name.endsWith("*") && name !== "*" && !name.endsWith(".*") ? `${name.slice(0, -1)}.*` : name))
+    .join(",");
+};
+
+/** The CDS error annotations the Prefer header asks for, each matched by its own name. */
+function cdsErrorAnnotations(prefer, code, message) {
+  const matches = annotationMatcher(annotationPatterns(prefer));
+  const all = {
+    "Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus": "0",
+    "Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode": "-2146233088",
+    "Microsoft.PowerApps.CDS.HelpLink": `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`,
+    "Microsoft.PowerApps.CDS.TraceText": "",
+    "Microsoft.PowerApps.CDS.InnerError.Message": message,
+  };
+  return Object.fromEntries(
+    Object.entries(all)
+      .filter(([name]) => matches(name))
+      .map(([name, value]) => [`@${name}`, value]),
+  );
+}
 
 /** Store error -> { status, body, headers }. Dataverse innerCode wins, then the store code, then the status. */
 export function dataverseError(error, { prefer, logical, requestId, origin, tenantId, id } = {}) {
@@ -345,23 +435,21 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
       },
     };
   }
-  const [status, code] = resolveError(error);
+  // A duplicate of an entity (alternate) key carries its own Dataverse code and message whatever the inner code says.
+  const keyViolation = error?.code === "DuplicateRecord" && details.keyName != null && details.columns != null;
+  const [status, code] = keyViolation ? [412, "0x80060892"] : resolveError(error);
   let message = error?.message ?? "An unexpected error occurred.";
   const recordId = id ?? details.id;
   if (status === 500) message = "An unexpected error occurred.";
-  else if (code === "0x80040217" && logical && recordId != null) message = `${logical} With Id = ${recordId} Does Not Exist`;
+  else if (keyViolation) {
+    const columns = [details.columns].flat().join(", ");
+    message = `Entity Key ${details.keyName} violated. A record with the same value for ${columns} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`;
+  } else if (code === "0x80040217" && logical && recordId != null) message = `${logical} With Id = ${recordId} Does Not Exist`;
   else if (code === "0x8006088a" && details.segment) message = `Resource not found for the segment '${details.segment}'.`;
   else if (code === "0x80072322") message = "Number of requests exceeded the limit of 6000 over time window of 300 seconds.";
-  const body = { error: { code, message } };
-  if (annotationMatcher(annotationText(prefer))("Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus")) {
-    Object.assign(body.error, {
-      "@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus": "0",
-      "@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode": "-2146233088",
-      "@Microsoft.PowerApps.CDS.HelpLink": `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`,
-      "@Microsoft.PowerApps.CDS.TraceText": "",
-      "@Microsoft.PowerApps.CDS.InnerError.Message": message,
-    });
-  }
+  // code and message come first, then the annotations; orderAnnotations must leave this object alone.
+  const body = { error: { code, message, ...cdsErrorAnnotations(prefer, code, message) } };
+  Object.defineProperty(body.error, KEEP_ORDER, { value: true });
   const headers = { ...baseHeaders(requestId), "Content-Type": JSON_CONTENT_TYPE };
   if (status === 429) headers["Retry-After"] = String(details.retryAfter ?? 300);
   return { status, body, headers };
@@ -393,7 +481,7 @@ export function baseHeaders(requestId) {
 /** Puts each p@annotation before its property p; @odata.context first and @odata.nextLink/deltaLink last. */
 export function orderAnnotations(object) {
   if (Array.isArray(object)) return object.map(orderAnnotations);
-  if (!object || typeof object !== "object") return object;
+  if (!object || typeof object !== "object" || object[KEEP_ORDER]) return object;
   const keys = Object.keys(object);
   const out = {};
   const seen = new Set();

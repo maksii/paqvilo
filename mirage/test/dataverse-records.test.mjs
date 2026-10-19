@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { createPrincipals, ensureSecurityModel } from "../lib/dataverse-security.mjs";
-import { parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
+import { encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
 import { createRecordHandlers } from "../lib/dataverse-records.mjs";
 
 const ORIGIN = "http://127.0.0.1:5555";
@@ -40,7 +40,10 @@ function fixtureState() {
     },
     fields: {
       name: text, code: text, price: { dataverseType: "money" }, status: { dataverseType: "picklist" },
-      statecode: { dataverseType: "int" }, statuscode: { dataverseType: "int" }, ownerid: lookup,
+      statecode: { dataverseType: "int" },
+      statuscode: { dataverseType: "picklist", options: [{ value: 1, label: "Active", state: 0 }, { value: 2, label: "Inactive", state: 1 }] },
+      ownerid: lookup, owninguser: lookup, owningteam: lookup, owningbusinessunit: lookup,
+      createdby: lookup, createdonbehalfby: lookup, modifiedby: lookup, modifiedonbehalfby: lookup,
     },
   };
   state.mappings.gadget = {
@@ -63,7 +66,7 @@ async function setup() {
   const handlers = createRecordHandlers({ store, change: (fn) => fn(), principals, metadataFields: () => undefined });
   const admin = principals.byObjectId(ADMIN_OID);
   const basic = principals.byObjectId(BASIC_OID);
-  const send = async (method, path, { user = admin, body, headers = {} } = {}) => {
+  const send = async (method, path, { user = admin, caller = user, body, headers = {} } = {}) => {
     const url = new URL(path, ORIGIN);
     const lowered = Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
     return handlers.handle({
@@ -76,7 +79,7 @@ async function setup() {
       headers: lowered,
       body,
       user,
-      caller: user,
+      caller,
       identity: { admin: true, id: user.systemuserid, systemUserId: user.systemuserid },
       requestId: "test",
     });
@@ -363,4 +366,175 @@ test("Basic User sees only owned widgets and is denied others and unprivileged t
   const noPrivilege = await failure(t.send("POST", `/api/data/${VERSION}/tags`, { body: { name: "x" }, user: t.basic }));
   assert.equal(noPrivilege.status, 403);
   assert.equal(noPrivilege.details.innerCode, "0x80040220");
+});
+
+const businessUnitOf = (user) => String(user.businessunitid?.id ?? user.businessunitid).toLowerCase();
+
+test("unknown payload properties answer 400 0x0 on create and update, and nothing is written", async () => {
+  const t = await setup();
+  const created = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "x", bogus: 1 } }));
+  assert.equal(created.status, 400);
+  assert.equal(created.details.innerCode, "0x0");
+  assert.equal(
+    created.message,
+    "An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property 'bogus' was found in entity 'Microsoft.Dynamics.CRM.widget'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.",
+  );
+  assert.equal(t.store.state.tables.widget.length, 0);
+  const id = await create(t, "widgets", { name: "Real" });
+  const patched = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { nonsense: "x" } }));
+  assert.equal(patched.details.innerCode, "0x0");
+  assert.match(patched.message, /Invalid property 'nonsense'/);
+  const dangling = await failure(t.send("POST", `/api/data/${VERSION}/gadgets`, { body: { name: "g", "nope@odata.bind": `/widgets(${id})` } }));
+  assert.equal(dangling.status, 400);
+  assert.equal(dangling.details.innerCode, "0x80048d19");
+  assert.match(dangling.message, /An undeclared property 'nope'/);
+});
+
+test("unknown $filter, $orderby and $expand properties answer 400 0x0 while declared ones pass", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Known" });
+  const expected = (name) => `Could not find a property named '${name}' on type 'Microsoft.Dynamics.CRM.widget'.`;
+  const filter = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$filter=bogus eq 1`));
+  assert.equal(filter.details.innerCode, "0x0");
+  assert.equal(filter.message, expected("bogus"));
+  const order = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$orderby=bogus`));
+  assert.equal(order.details.innerCode, "0x0");
+  assert.equal(order.message, expected("bogus"));
+  const expand = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$expand=bogus`));
+  assert.equal(expand.details.innerCode, "0x0");
+  assert.equal(expand.message, expected("bogus"));
+  const ok = await t.send("GET", `/api/data/${VERSION}/widgets?$filter=name eq 'Known' and _ownerid_value ne null&$orderby=name desc&$expand=widget_gadgets`);
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.value.length, 1);
+});
+
+test("logical table names do not route; only entity set names do", async () => {
+  const t = await setup();
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widget`));
+  assert.equal(error.status, 404);
+  assert.equal(error.details.innerCode, "0x8006088a");
+  assert.equal(error.message, "Resource not found for the segment 'widget'.");
+});
+
+test("skiptokens for pages below 2 answer 400 0x80060888, and next links keep the cookie escaping", async () => {
+  const t = await setup();
+  const first = encodeSkipToken({ pageNumber: 1, lastId: MISSING, firstId: MISSING, idColumn: "widgetid" });
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$skiptoken=${encodeURIComponent(first)}`));
+  assert.equal(error.status, 400);
+  assert.equal(error.details.innerCode, "0x80060888");
+  assert.equal(error.message, "The $skiptoken is not valid.");
+  for (let i = 0; i < 3; i += 1) await create(t, "widgets", { name: `S${i}` });
+  const page = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.maxpagesize=2" } });
+  assert.match(page.body["@odata.nextLink"], /%253c/i);
+  assert.doesNotMatch(page.body["@odata.nextLink"], /%25253c/i);
+});
+
+test("assigning an org-owned row answers 400 0x80048d19 before any assign privilege is checked", async () => {
+  const t = await setup();
+  const id = await create(t, "tags", { name: "red" });
+  const error = await failure(t.send("PATCH", `/api/data/${VERSION}/tags(${id})`, {
+    body: { "ownerid@odata.bind": `/systemusers(${t.admin.systemuserid})` },
+  }));
+  assert.equal(error.status, 400);
+  assert.equal(error.details.innerCode, "0x80048d19");
+  assert.match(error.message, /An undeclared property 'ownerid'/);
+});
+
+test("owner columns follow ownerid on create and are recomputed when ownerid is reassigned", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Owned" }, t.basic);
+  let row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.owninguser), t.basic.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.owningbusinessunit), businessUnitOf(t.basic));
+  const moved = await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
+    body: { "ownerid@odata.bind": `/systemusers(${t.admin.systemuserid})` },
+  });
+  assert.equal(moved.status, 204);
+  row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.ownerid), t.admin.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.owninguser), t.admin.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.owningbusinessunit), businessUnitOf(t.admin));
+});
+
+test("an impersonating caller is recorded in createdonbehalfby and modifiedonbehalfby", async () => {
+  const t = await setup();
+  const created = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Imp" }, user: t.basic, caller: t.admin });
+  assert.equal(created.status, 204);
+  const id = /\(([^()]+)\)$/.exec(created.headers["OData-EntityId"])[1];
+  let row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.createdby), t.basic.systemuserid.toLowerCase());
+  assert.equal(lowerId(row.createdonbehalfby), t.admin.systemuserid.toLowerCase());
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Imp2" }, user: t.admin, caller: t.basic });
+  row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(lowerId(row.modifiedonbehalfby), t.basic.systemuserid.toLowerCase());
+  const plain = await create(t, "widgets", { name: "Plain" });
+  const plainRow = t.store.state.tables.widget.find((item) => item.widgetid === plain);
+  assert.equal(plainRow.createdonbehalfby, undefined);
+});
+
+test("create defaults statecode to 0 and statuscode to the state-0 status, keeping explicit values", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Defaults" });
+  const row = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(row.statecode, 0);
+  assert.equal(row.statuscode, 1);
+  const explicit = await create(t, "widgets", { name: "Explicit", statecode: 1, statuscode: 2 });
+  const kept = t.store.state.tables.widget.find((item) => item.widgetid === explicit);
+  assert.equal(kept.statecode, 1);
+  assert.equal(kept.statuscode, 2);
+});
+
+test("create answers 204 with OData-EntityId only; a 201 representation has no entity id or Location", async () => {
+  const t = await setup();
+  const created = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "H" } });
+  assert.equal(created.status, 204);
+  assert.match(created.headers["OData-EntityId"], /\/widgets\([0-9a-f-]{36}\)$/);
+  assert.equal(created.headers.Location, undefined);
+  const shown = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "S" }, headers: { prefer: "return=representation" } });
+  assert.equal(shown.status, 201);
+  assert.equal(shown.headers["OData-EntityId"], undefined);
+  assert.equal(shown.headers.Location, undefined);
+  assert.equal(shown.headers["Preference-Applied"], "return=representation");
+});
+
+test("a duplicate alternate key answers 412 0x80060892 with the key name and columns", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a", code: "D1" });
+  const error = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "b", code: "D1" } }));
+  assert.equal(error.status, 412);
+  assert.equal(error.details.innerCode, "0x80060892");
+  assert.equal(error.details.keyName, "widget_code");
+  assert.deepEqual(error.details.columns, ["code"]);
+  assert.equal(
+    error.message,
+    "Entity Key widget_code violated. A record with the same value for code already exists. A duplicate record cannot be created. Select one or more unique values and try again.",
+  );
+});
+
+test("304 answers carry the JSON content type and OData-Version", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Tagged" });
+  const etag = (await t.send("GET", `/api/data/${VERSION}/widgets(${id})`)).headers.ETag;
+  const again = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: { "if-none-match": etag } });
+  assert.equal(again.status, 304);
+  assert.equal(again.headers["Content-Type"], "application/json; odata.metadata=minimal");
+  assert.equal(again.headers["OData-Version"], "4.0");
+});
+
+test("lookups to the owner carry their navigation name when annotations are requested", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Owned" });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, {
+    headers: annotate("Microsoft.Dynamics.CRM.associatednavigationproperty"),
+  });
+  assert.equal(res.body["_ownerid_value@Microsoft.Dynamics.CRM.associatednavigationproperty"], "ownerid");
+});
+
+test("money formatted values carry the currency symbol, $ by default", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Priced", price: 12.5 });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`, {
+    headers: annotate("OData.Community.Display.V1.FormattedValue"),
+  });
+  assert.equal(res.body.value[0]["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
 });

@@ -1,14 +1,19 @@
 // Entra ID (AAD) authority for the Dataverse simulator: RS256 signing key, OIDC metadata, client
 // authentication, client_credentials, authorization_code (PKCE), device_code, password (ROPC),
 // on-behalf-of and refresh_token grants, the interactive user pages, and AADSTS error envelopes.
-import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+import { constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+import { GRANT_TYPES, grantAllowed } from "./dataverse-settings.mjs";
 
 const DATAVERSE_APP_ID = "00000007-0000-0000-c000-000000000000";
 const CLIENT_CREDENTIALS = "client_credentials";
 const AUTH_CODE = "authorization_code";
-const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
-const JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer";
-const SUPPORTED_GRANTS = [CLIENT_CREDENTIALS, "refresh_token", AUTH_CODE, DEVICE_GRANT, "password", JWT_BEARER];
+const DEVICE_GRANT = GRANT_TYPES.device_code;
+const JWT_BEARER = GRANT_TYPES.on_behalf_of;
+const SUPPORTED_GRANTS = Object.values(GRANT_TYPES);
+const ASSERTION_ALGS = ["RS256", "PS256"];
+const NON_INTERACTIVE = 4; // systemuser accessmode NonInteractive
+// Live Entra responses omit error_uri for these codes.
+const NO_ERROR_URI = new Set([70003, 7000014, 50059]);
 const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const SKEW_SECONDS = 300;
 const REFRESH_LIFETIME_MS = 24 * 60 * 60 * 1000;
@@ -30,6 +35,7 @@ const AAD_ERRORS = {
   50011: ["invalid_request", 400],
   50034: ["invalid_grant", 400],
   50126: ["invalid_grant", 400],
+  50059: ["invalid_request", 400],
   54005: ["invalid_grant", 400],
   65001: ["invalid_grant", 400],
   70008: ["invalid_grant", 400],
@@ -48,6 +54,7 @@ const AAD_ERRORS = {
   500011: ["invalid_resource", 400],
   900144: ["invalid_request", 400],
   9002313: ["invalid_grant", 400],
+  9002325: ["invalid_request", 400],
 };
 const CLAIMS_SUPPORTED = ["sub", "iss", "cloud_instance_name", "cloud_instance_host_name", "cloud_graph_host_name", "msgraph_host", "aud", "exp", "iat", "auth_time", "acr", "nonce", "preferred_username", "name", "tid", "ver", "at_hash", "c_hash", "email"];
 
@@ -62,13 +69,34 @@ const safeDecode = (value) => {
   }
 };
 const digest = (salt, secret) => createHash("sha256").update(salt).update(String(secret)).digest();
-const verifies = (data, signature, key) => {
+// RS256 is PKCS#1 v1.5; PS256 is RSASSA-PSS with a 32-byte salt.
+const verifies = (data, signature, key, alg = "RS256") => {
   try {
-    return verify("sha256", Buffer.from(data), key, Buffer.from(signature, "base64url"));
+    const options = alg === "PS256" ? { key, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 } : key;
+    return verify("sha256", Buffer.from(data), options, Buffer.from(signature, "base64url"));
   } catch {
     return false;
   }
 };
+// Both certificate thumbprints (upper-case hex) of a PEM public key, over its DER SPKI bytes.
+export function certificateThumbprints(publicKeyPem) {
+  const der = createPublicKey(publicKeyPem).export({ type: "spki", format: "der" });
+  return {
+    thumbprint: createHash("sha1").update(der).digest("hex").toUpperCase(),
+    thumbprint256: createHash("sha256").update(der).digest("hex").toUpperCase(),
+  };
+}
+// Matches a registered certificate by header x5t (SHA-1) or x5t#S256 (SHA-256); thumbprints absent from a record are derived.
+const certificateMatches = (cert, header) => {
+  const hexOf = (value) => Buffer.from(String(value), "base64url").toString("hex").toUpperCase();
+  const x5t = header.x5t ? hexOf(header.x5t) : null;
+  const x5tS256 = header["x5t#S256"] ? hexOf(header["x5t#S256"]) : null;
+  if (!x5t && !x5tS256) return false;
+  const stored = cert.thumbprint && cert.thumbprint256 ? cert : certificateThumbprints(cert.publicKeyPem);
+  return (x5t !== null && stored.thumbprint.toUpperCase() === x5t) || (x5tS256 !== null && stored.thumbprint256.toUpperCase() === x5tS256);
+};
+// Numeric dates as JSON numbers or numeric strings (MSAL.NET serialises nbf and exp as strings).
+const numeric = (value) => (typeof value === "number" || (typeof value === "string" && /^\d+(\.\d+)?$/.test(value)) ? Number(value) : NaN);
 // Object id in UUID v5 layout, derived from a seed (service principal ids are deterministic per app).
 const guid = (seed) => {
   const bytes = createHash("sha1").update(seed).digest().subarray(0, 16);
@@ -144,7 +172,7 @@ export function aadError(code, { status, description = "", origin, traceId = ran
       timestamp: time,
       trace_id: traceId,
       correlation_id: correlationId,
-      ...(origin ? { error_uri: `${origin}/error?code=${code}` } : {}),
+      ...(origin && !NO_ERROR_URI.has(code) ? { error_uri: `${origin}/error?code=${code}` } : {}),
     },
   };
 }
@@ -159,8 +187,8 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
   const devices = new Map();
   const knownTenant = (segment) => ["common", "organizations", "consumers", tenantId.toLowerCase()].includes(String(segment).toLowerCase());
   const findApp = (clientId) => applications().find((item) => item.appId.toLowerCase() === String(clientId).toLowerCase());
-  // Interactive users only: application users and disabled rows cannot sign in.
-  const interactive = (row) => (row && !row.applicationid && row.isdisabled !== true ? row : null);
+  // Interactive users only: application users, non-interactive, disabled and oid-less rows cannot sign in or be picked.
+  const interactive = (row) => (row && !row.applicationid && row.isdisabled !== true && row.accessmode !== NON_INTERACTIVE && row.azureactivedirectoryobjectid ? row : null);
   const interactiveUser = (oid) => interactive(oid ? users.byObjectId(oid) : null);
   const interactiveUsers = () => (users.list?.() ?? []).filter((row) => interactive(row));
 
@@ -219,26 +247,32 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     return token;
   };
 
+  // expires_in is one second short of the token's exp - iat (Entra reports 3599 for a 3600-second token).
   const tokenBody = ({ version, access, now, audience, scope, refresh }) => {
     const iat = Math.floor(now / 1000);
     const refreshField = refresh ? { refresh_token: refresh } : {};
+    const expiresIn = accessTokenLifetimeSeconds - 1;
     if (version === "v1.0") {
-      return { token_type: "Bearer", expires_in: String(accessTokenLifetimeSeconds), ext_expires_in: String(accessTokenLifetimeSeconds), expires_on: String(iat + accessTokenLifetimeSeconds), not_before: String(iat), resource: audience, access_token: access, ...refreshField };
+      return { token_type: "Bearer", expires_in: String(expiresIn), ext_expires_in: String(expiresIn), expires_on: String(iat + accessTokenLifetimeSeconds), not_before: String(iat), resource: audience, access_token: access, ...refreshField };
     }
-    return { token_type: "Bearer", ...(scope ? { scope } : {}), expires_in: accessTokenLifetimeSeconds, ext_expires_in: accessTokenLifetimeSeconds, access_token: access, ...refreshField };
+    return { token_type: "Bearer", ...(scope ? { scope } : {}), expires_in: expiresIn, ext_expires_in: expiresIn, access_token: access, ...refreshField };
   };
 
   // The one token response shared by every grant that acts for a user (app-only refresh reuses it without a user).
-  const delegatedReply = ({ origin, app, user, resource, scope, nonce, appidacr, version, now, reply }) => {
+  const delegatedReply = ({ origin, app, user, resource, scope, nonce, appidacr, version, now, reply, form = {} }) => {
     const access = issueAccessToken({ origin, appId: app.appId, audience: resource, user, appidacr, now });
     const refresh = issueRefreshToken({ appId: app.appId, userOid: user?.azureactivedirectoryobjectid ?? null, resource, scope, now });
     const body = tokenBody({ version, access, now, audience: resource, scope, refresh });
     if (user && hasToken(scope, "openid")) body.id_token = issueIdToken({ origin, app, user, nonce, now });
+    if (user && String(form.client_info) === "1") body.client_info = b64json({ uid: user.azureactivedirectoryobjectid, utid: tenantId });
     return reply({ status: 200, body });
   };
 
+  // jti values of accepted client assertions, each kept until the assertion's own expiry window closes.
+  const seenAssertions = new Map();
+
   const verifyAssertion = (app, form, { origin, tenantSegment, now }) => {
-    const reject = (description) => ({ code: 700027, description });
+    const reject = (description, code = 700027) => ({ code, description });
     if (form.client_assertion_type !== ASSERTION_TYPE || !form.client_assertion) return reject(`The client assertion must be of type ${ASSERTION_TYPE}.`);
     const [head, body, signature] = String(form.client_assertion).split(".");
     let header;
@@ -249,16 +283,26 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     } catch {
       return reject("The client assertion is not a JSON Web Token.");
     }
-    const x5t = Buffer.from(String(header.x5t ?? ""), "base64url").toString("hex").toUpperCase();
-    const cert = (app.certificates ?? []).find((item) => item.thumbprint.toUpperCase() === x5t);
-    if (header.alg !== "RS256" || !cert) return reject("The client assertion is not signed with a registered certificate.");
-    if (!verifies(`${head}.${body}`, signature, cert.publicKeyPem)) return reject("The client assertion signature is invalid.");
+    if (!header || typeof header !== "object" || !claims || typeof claims !== "object") return reject("The client assertion is not a JSON Web Token.");
+    const cert = (app.certificates ?? []).find((item) => certificateMatches(item, header));
+    if (!cert) return reject("The client assertion is not signed with a registered certificate.");
+    if (!ASSERTION_ALGS.includes(header.alg) || !verifies(`${head}.${body}`, signature, cert.publicKeyPem, header.alg)) return reject("The client assertion signature is invalid.");
     const subject = app.appId.toLowerCase();
     if (String(claims.iss).toLowerCase() !== subject || String(claims.sub).toLowerCase() !== subject) return reject("The client assertion's iss and sub must be the client_id.");
     const endpoints = [tenantSegment, tenantId].flatMap((segment) => [`${origin}/${segment}/oauth2/v2.0/token`, `${origin}/${segment}/oauth2/token`]);
     if (![claims.aud].flat().some((item) => endpoints.includes(item))) return reject("The client assertion's audience is not this token endpoint.");
     const nowSeconds = now / 1000;
-    if (!(Number(claims.exp) > nowSeconds - SKEW_SECONDS) || Number(claims.exp) > nowSeconds + 600) return reject("The client assertion has expired or lasts longer than 10 minutes.");
+    const exp = numeric(claims.exp);
+    const nbf = claims.nbf === undefined ? 0 : numeric(claims.nbf);
+    if (!Number.isFinite(exp) || Number.isNaN(nbf)) return reject("The client assertion's nbf and exp must be numeric dates.");
+    if (nbf > nowSeconds + SKEW_SECONDS) return reject("The client assertion is not yet valid.");
+    if (exp <= nowSeconds - SKEW_SECONDS || exp > nowSeconds + 600) return reject("The client assertion has expired or lasts longer than 10 minutes.");
+    if (claims.jti !== undefined) {
+      const jti = String(claims.jti);
+      for (const [id, until] of seenAssertions) if (until <= now) seenAssertions.delete(id);
+      if (seenAssertions.has(jti)) return reject("Assertion replay detected.", 9002313);
+      seenAssertions.set(jti, (exp + SKEW_SECONDS) * 1000);
+    }
     return { appidacr: "2" };
   };
 
@@ -295,6 +339,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (!redirectAllowed(app, input.redirect_uri)) return { page: errorPage(origin, now, 50011, `The reply URL specified in the request does not match the reply URLs configured for the application: '${app.appId}'.`) };
     if (!hasToken(input.response_type, "code")) return { page: htmlPage(400, "Sign-in error", "unsupported_response_type: response_type must include code.") };
     if (!scopeResource(input.scope, origin, false)) return { page: errorPage(origin, now, 70011, INVALID_SCOPE) };
+    if (app.publicClient && !input.code_challenge) return { page: errorPage(origin, now, 9002325, "Proof Key for Code Exchange is required for cross-origin authorization code redemption.") };
     return { app };
   };
 
@@ -381,7 +426,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (entry.expiresAt <= now) return failure(700082, "The refresh token has expired due to inactivity.");
     const user = entry.userOid ? interactiveUser(entry.userOid) : null;
     if (entry.userOid && !user) return failure(9002313, MALFORMED);
-    return delegatedReply({ origin, app, user, resource: entry.resource, scope: entry.scope, appidacr: auth.appidacr, version, now, reply });
+    return delegatedReply({ origin, app, user, resource: entry.resource, scope: entry.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const redeemCode = ({ origin, app, auth, form, version, now, reply, failure }) => {
@@ -389,13 +434,13 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     const entry = codes.get(form.code);
     if (!entry || entry.clientId !== app.appId.toLowerCase()) return failure(9002313, MALFORMED);
     if (entry.used) return failure(54005, "The provided authorization code or refresh token has already been redeemed. Authorization codes are single use.");
+    entry.used = true; // any redemption attempt spends the code, so a wrong verifier or redirect_uri cannot be retried
     if (entry.expiresAt <= now) return failure(70008, "The provided authorization code or refresh token is expired. Please re-authenticate.");
     if (form.redirect_uri !== entry.redirectUri) return failure(9002313, MALFORMED);
     if (entry.challenge && !pkceMatches(entry, form.code_verifier)) return failure(9002313, "The code_verifier does not match the code_challenge supplied in the authorization request.");
     const user = interactiveUser(entry.oid);
     if (!user) return failure(9002313, MALFORMED);
-    entry.used = true; // spent only by a successful redemption, so a failed attempt can be retried
-    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, nonce: entry.nonce, appidacr: auth.appidacr, version, now, reply });
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, nonce: entry.nonce, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const redeemDevice = ({ origin, app, auth, form, version, now, reply, failure }) => {
@@ -417,7 +462,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     devices.delete(form.device_code);
     const user = interactiveUser(entry.oid);
     if (!user) return failure(9002313, MALFORMED);
-    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, appidacr: auth.appidacr, version, now, reply });
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const passwordGrant = ({ origin, app, auth, form, version, now, reply, failure }) => {
@@ -428,7 +473,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     const user = interactive(users.byDomainName(form.username));
     if (!user) return failure(50034, `The user account '${form.username}' does not exist in the directory '${tenantId}'.`);
     if (users.verifyPassword?.(user, form.password) !== true) return failure(50126, "Error validating credentials due to invalid username or password.");
-    return delegatedReply({ origin, app, user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply });
+    return delegatedReply({ origin, app, user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   // Returns { user } or { description } for an assertion that is not a user token signed by this authority.
@@ -455,7 +500,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     if (!verdict.user) return failure(9002313, verdict.description);
     const resource = scopeResource(form.scope, origin, false);
     if (!resource) return failure(70011, INVALID_SCOPE);
-    return delegatedReply({ origin, app, user: verdict.user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply });
+    return delegatedReply({ origin, app, user: verdict.user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply, form });
   };
 
   const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = "v2.0" }) => {
@@ -474,7 +519,7 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
       if (form.grant_type === JWT_BEARER) return failure(65001, `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`);
       return failure(700016, `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`);
     }
-    if (!(app.allowedGrants ?? SUPPORTED_GRANTS).includes(form.grant_type)) return failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`);
+    if (!grantAllowed(app, form.grant_type)) return failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`);
     const auth = authenticateClient(app, form, basic, { origin, tenantSegment, now });
     if (auth.code) return failure(auth.code, auth.description);
 

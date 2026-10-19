@@ -490,7 +490,9 @@ function dispatch(t) {
 function resolveSet(store, set) {
   // The entity set name wins over a table whose logical name happens to equal it (a
   // table named x_products doesn't shadow the x_products set of x_product).
-  const owner = Object.entries(store.state?.mappings ?? {}).find(([, value]) => value?.entitySet === set);
+  // Mappings seeded by the simulated Dataverse API (dataverseOnly) are invisible here, so
+  // enabling that API never changes which sets the portal recognises.
+  const owner = Object.entries(store.state?.mappings ?? {}).find(([, value]) => value?.entitySet === set && !value?.dataverseOnly);
   if (owner) return store.resolveMapping(owner[0]);
   let mapping = null;
   try {
@@ -498,7 +500,7 @@ function resolveSet(store, set) {
   } catch (error) {
     if (!(error.status === 404 || error.code === "UnknownEntity")) throw error;
   }
-  if (mapping?.entitySet === set) return mapping;
+  if (mapping?.entitySet === set && !mapping.dataverseOnly) return mapping;
   const table = POWER_PAGES_TABLES.get(set);
   if (table)
     throw new DataError(`Resource not found for the segment '${set}'.`, 404, "WebApiTableNotEnabled", {

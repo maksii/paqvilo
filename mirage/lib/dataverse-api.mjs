@@ -3,6 +3,7 @@
 import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { DataError } from "./data-error.mjs";
 import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
 import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
@@ -18,6 +19,8 @@ import {
   parseFunctionParameters,
   parseKey,
   parsePrefer,
+  preferMalformedResponse,
+  preferenceApplied,
 } from "./dataverse-odata.mjs";
 import { stringifyExactJson } from "./exact-numeric.mjs";
 
@@ -32,7 +35,8 @@ const STS_PATH = new RegExp(
 );
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "*",
+  // Explicit names first: the Fetch spec does not let "*" cover Authorization.
+  "Access-Control-Allow-Headers": "Authorization, Content-Type, Accept, Prefer, If-Match, If-None-Match, OData-Version, OData-MaxVersion, MSCRMCallerID, CallerObjectId, *",
   "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
   "Access-Control-Expose-Headers": "OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location",
 };
@@ -47,6 +51,17 @@ const ROUTER_BOUND = new Set(["RetrieveUserPrivileges", "RetrievePrincipalAccess
 const BODY_LIMIT = 8 * 1024 * 1024;
 const WINDOW_MS = 300000;
 const RING_SIZE = 500;
+// Header block limit for both listeners; a URL up to MAX_URL_LENGTH must fit in it.
+const MAX_HEADER_SIZE = 65536;
+const MAX_URL_LENGTH = 32768;
+const PLAIN_INVALID_URL = "Bad Request - Invalid URL";
+// MSCRM headers that need prvBypassCustomPlugins. The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName,
+// MergeLabels) and Consistency are accepted no-ops: the simulator has no duplicate detection, solution layers or consistency levels.
+const BYPASS_HEADERS = ["mscrm.bypasscustompluginexecution", "mscrm.bypassbusinesslogicexecution"];
+// ponytail: prvBypassCustomPlugins is not seeded, so these system roles stand in for it.
+const BYPASS_ROLES = new Set(["System Administrator", "System Customizer"]);
+// Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
+const inBatch = new AsyncLocalStorage();
 
 // Settings name grants by short name; the token endpoint matches OAuth grant_type values.
 const GRANT_TYPES = { device_code: "urn:ietf:params:oauth:grant-type:device_code", on_behalf_of: "urn:ietf:params:oauth:grant-type:jwt-bearer" };
@@ -136,8 +151,14 @@ function remember(requests, entry) {
   if (requests.length > RING_SIZE) requests.splice(0, requests.length - RING_SIZE);
 }
 
-function send(res, result, requestId) {
-  const merged = { ...CORS, ...baseHeaders(requestId), ...(result.headers ?? {}) };
+// Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
+function send(res, result, requestId, clientRequestId) {
+  const merged = {
+    ...CORS,
+    ...baseHeaders(requestId),
+    ...(clientRequestId ? { "x-ms-client-request-id": clientRequestId } : {}),
+    ...(result.headers ?? {}),
+  };
   const headers = {};
   for (const [name, value] of Object.entries(merged)) if (value !== undefined && value !== null) headers[name.toLowerCase()] = value;
   let payload;
@@ -292,9 +313,18 @@ function unboundFunction(d, c, route, common) {
         },
       };
     case "RetrieveVersion":
-      return { status: 200, body: { Version: d.settings.version } };
+      return {
+        status: 200,
+        body: { "@odata.context": contextUrl(c.origin, route.version, "Microsoft.Dynamics.CRM.RetrieveVersionResponse"), Version: d.settings.version },
+      };
     case "RetrieveCurrentOrganization":
-      return { status: 200, body: { Detail: organizationDetail(d, c.origin) } };
+      return {
+        status: 200,
+        body: {
+          "@odata.context": contextUrl(c.origin, route.version, "Microsoft.Dynamics.CRM.RetrieveCurrentOrganizationResponse"),
+          Detail: organizationDetail(d, c.origin),
+        },
+      };
     case "RetrieveTotalRecordCount":
       return { status: 200, body: listParamTotals(d, c, route) };
     case "RetrieveMetadataChanges":
@@ -373,6 +403,7 @@ function metadataRead(c, metadata, route) {
   const listed = (items, segmentName) => shape(items ?? missing(segmentName));
 
   if (set === "GlobalOptionSetDefinitions") {
+    if (c.url.searchParams.has("$filter")) throw new DataError("The $filter query option is not supported for GlobalOptionSetDefinitions.", 400, "InvalidRequest");
     if (key == null) return collection(shape(metadata.globalOptionSets()), set);
     const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
     const found = name ? metadata.globalOptionSet(name) : null;
@@ -434,10 +465,35 @@ async function recordCall(d, route, common) {
   return result ?? { status: 204 };
 }
 
+// Full privilege-denied text, as the security module words it for entity access (without the entity clause).
+function privilegeDenied(d, user, name) {
+  const id = user.systemuserid;
+  const roleCount = d.principals.roles(user).length;
+  const privilegeCount = d.principals.privileges(user).size;
+  return new DataError(
+    `Principal user (Id=${id}, type=${SYSTEMUSER_TYPE}, roleCount=${roleCount}, privilegeCount=${privilegeCount}, accessMode=${user.accessmode ?? 0}), is missing ${name} privilege (Id=${privilegeId(d.organizationId, name)}). context.Caller=${id}. Consider adding missing privilege to one of the principal (user/team) roles for the request to succeed.`,
+    403,
+    "PermissionDenied",
+    { innerCode: "0x80040220" },
+  );
+}
+
+const disabledEnvelope = (user, requestId) =>
+  envelope(
+    401,
+    "0x80040225",
+    `The specified user(Id = ${user.systemuserid}) is disabled. Consider enabling this user. Additional Details: The user is disabled in Dataverse.`,
+    requestId,
+  );
+
 async function dataApi(d, c, route) {
   const { req, origin, requestId, meta } = c;
   if (route.kind === "unknown") return envelope(404, "", route.message, requestId);
-  if (route.kind === "invalid") throw new DataError(route.message, 400, "InvalidRequest");
+  if (route.kind === "invalid") {
+    // An over-long key segment answers as plain text; other malformed URIs use the JSON envelope.
+    if (route.message === PLAIN_INVALID_URL) return { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" }, body: PLAIN_INVALID_URL };
+    return envelope(400, "0x80060888", route.message, requestId);
+  }
   if (!METHODS.has(req.method)) return methodNotAllowed(c);
 
   const verdict = d.authority.verifyBearer(req.headers.authorization, { origin, tenantId: d.tenantId });
@@ -445,14 +501,7 @@ async function dataApi(d, c, route) {
   meta.appId = verdict.claims.appid ?? null;
   const resolved = d.principals.resolve(verdict.claims);
   if (!resolved.user) return envelope(401, "0x80072560", "The user is not a member of the organization.", requestId);
-  if (resolved.reason === "disabled") {
-    return envelope(
-      401,
-      "0x80040225",
-      `The specified user(Id = ${resolved.user.systemuserid}) is disabled. Consider enabling this user. Additional Details: The user is disabled in Dataverse.`,
-      requestId,
-    );
-  }
+  if (resolved.reason === "disabled") return disabledEnvelope(resolved.user, requestId);
   const caller = resolved.user;
   meta.userId = caller.systemuserid;
 
@@ -472,17 +521,10 @@ async function dataApi(d, c, route) {
   const byObjectId = req.headers.callerobjectid;
   const byId = req.headers.mscrmcallerid;
   if (byObjectId || byId) {
-    if (!d.principals.canImpersonate(caller)) {
-      const privilege = privilegeId(d.organizationId, "prvActOnBehalfOfAnotherUser");
-      return envelope(
-        403,
-        "0x80040220",
-        `Principal user (Id=${caller.systemuserid}, type=${SYSTEMUSER_TYPE}), is missing prvActOnBehalfOfAnotherUser privilege (Id=${privilege})`,
-        requestId,
-      );
-    }
+    if (!d.principals.canImpersonate(caller)) throw privilegeDenied(d, caller, "prvActOnBehalfOfAnotherUser");
     user = byObjectId ? d.principals.byObjectId(byObjectId) : d.principals.byId(byId);
     if (!user) return envelope(400, "0x80040203", "Invalid argument.", requestId);
+    if (user.isdisabled === true) return disabledEnvelope(user, requestId);
   }
 
   const identity = {
@@ -501,6 +543,10 @@ async function dataApi(d, c, route) {
 async function handleDataRequest(d, { method, url, route, headers = {}, bodyText, user, caller, identity, prefer, origin, requestId }) {
   const req = { method, headers };
   const c = { req, method, url, origin, requestId, prefer, meta: {} };
+  const bypassing = BYPASS_HEADERS.some((name) => ["true", "1"].includes(String(headers[name] ?? "").trim().toLowerCase()));
+  if (bypassing && !(d.principals.privileges(caller).has("prvBypassCustomPlugins") || d.principals.roles(caller).some((role) => BYPASS_ROLES.has(role.name)))) {
+    throw privilegeDenied(d, caller, "prvBypassCustomPlugins");
+  }
   let body;
   if (bodyText && BODY_METHODS.has(method) && /json/i.test(headers["content-type"] ?? "")) {
     try {
@@ -547,7 +593,7 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
 async function batchCall(d, c, common) {
   if (c.method !== "POST") return methodNotAllowed(c);
   const parsed = parseBatch(c.req.headers["content-type"], common.bodyText);
-  const dispatch = async ({ method, url, headers, body }) => {
+  const runPart = async ({ method, url, headers, body }) => {
     const target = new URL(url);
     const route = parseDataverseRoute(target.pathname);
     if (!route || route.kind === "unknown") return envelope(404, "", `No HTTP resource was found that matches the request URI '${target.href}'.`, c.requestId);
@@ -570,6 +616,24 @@ async function batchCall(d, c, common) {
       requestId: c.requestId,
     });
   };
+  // A part fails with the same envelope as a top-level response, and its body is serialized here: executeBatch
+  // would otherwise JSON.stringify it without the annotation ordering or exact numerics.
+  const dispatch = async (part) => {
+    let result;
+    try {
+      result = await runPart(part);
+    } catch (error) {
+      result = dataverseError(error, {
+        prefer: parsePrefer(part.headers?.prefer),
+        requestId: c.requestId,
+        origin: c.origin,
+        tenantId: d.tenantId,
+        logical: error?.details?.logical,
+      });
+    }
+    const body = result.body ?? undefined;
+    return { ...result, body: body === undefined || typeof body === "string" ? body : stringifyExactJson(orderAnnotations(body)) };
+  };
   // ponytail: snapshot and restore, because store.transact is not re-entrant and each part writes through its own transact.
   dispatch.transaction = async (fn) => {
     const snapshot = d.store.snapshot();
@@ -581,56 +645,105 @@ async function batchCall(d, c, common) {
     }
   };
   const continueOnError = common.prefer.continueOnError;
-  const result = await executeBatch(parsed, { dispatch, origin: c.origin, continueOnError, requestId: c.requestId });
-  return continueOnError ? { ...result, headers: { ...result.headers, "Preference-Applied": "odata.continue-on-error" } } : result;
+  // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands between a changeset's
+  // snapshot and its restore. Ceiling: a long batch holds writers back; split the batch if that matters.
+  const result = await d.change(() => inBatch.run(true, () => executeBatch(parsed, { dispatch, origin: c.origin, continueOnError, requestId: c.requestId })));
+  const applied = preferenceApplied(common.prefer, { batch: true });
+  return applied ? { ...result, headers: { ...result.headers, "Preference-Applied": applied } } : result;
 }
 
 async function route(d, c) {
   const path = c.url.pathname;
   const sts = await stsRoute(d, c);
-  if (sts) return sts;
-  if (path === "/api/discovery/v2.0" || path === "/api/discovery/v2.0/") return discoveryService(c);
+  if (sts) {
+    c.meta.kind = "sts";
+    return sts;
+  }
+  // A malformed Prefer is answered before any routing, as Dataverse does for every Web API request.
+  if (c.prefer.malformed) return preferMalformedResponse(c.prefer.malformed);
+  if (path === "/api/discovery/v2.0" || path === "/api/discovery/v2.0/") {
+    c.meta.kind = "discovery";
+    return discoveryService(c);
+  }
   const parsed = parseDataverseRoute(path);
   if (!parsed) {
     const parts = path.split("/").filter(Boolean);
     throw new DataError(`Resource not found for the segment '${parts[3] ?? parts.at(-1) ?? ""}'.`, 404, "UnknownEntity", { segment: parts[3] ?? parts.at(-1) ?? "" });
   }
-  if (parsed.kind === "discovery") return discoveryInstances(d, c, parsed);
-  if (parsed.kind === "soap") return soap(c);
+  if (parsed.kind === "discovery") {
+    c.meta.kind = "discovery";
+    return discoveryInstances(d, c, parsed);
+  }
+  if (parsed.kind === "soap") {
+    c.meta.kind = "soap";
+    return soap(c);
+  }
   return dataApi(d, c, parsed);
 }
 
+// Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
+// becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
 export function createDataverseHandler(deps) {
-  const d = { ...deps, throttle: new Map(), requests: deps.requests ?? [] };
+  const d = { ...deps, change: deps.change ?? ((fn) => fn()), throttle: new Map(), requests: deps.requests ?? [] };
   const log = deps.log ?? (() => {});
-  return async function handle(req, res) {
+  const serve = async (req, res) => {
     const requestId = randomUUID();
     const started = d.clock();
+    const clientRequestId = req.headers["x-ms-client-request-id"];
     const origin = originOf(req, d.host);
-    const url = new URL(req.url ?? "/", origin);
-    const meta = { appId: null, userId: null, grant: null };
+    const meta = { appId: null, userId: null, grant: null, kind: "data" };
     const prefer = parsePrefer(req.headers.prefer);
-    const c = { req, url, origin, requestId, meta, prefer, method: req.method === "HEAD" ? "GET" : req.method };
+    const c = { req, url: null, origin, requestId, meta, prefer, method: req.method === "HEAD" ? "GET" : req.method };
     res.on("finish", () =>
       remember(d.requests, {
         at: started,
         method: req.method,
-        path: url.pathname,
+        path: c.url?.pathname ?? "",
         status: res.statusCode,
         ms: d.clock() - started,
         appId: meta.appId,
         userId: meta.userId,
         grant: meta.grant,
+        kind: meta.kind,
       }),
     );
+    const reply = (result) => send(res, result, requestId, clientRequestId);
     let result;
     try {
-      result = req.method === "OPTIONS" ? { status: 204 } : await route(d, c);
+      if (String(req.url ?? "").length > MAX_URL_LENGTH) {
+        result = envelope(400, "0x80060888", "Invalid URI: The Uri string is too long.", requestId);
+      } else {
+        c.url = new URL(req.url ?? "/", origin);
+        if (req.method === "OPTIONS") {
+          meta.kind = "options";
+          result = { status: 204 };
+        } else result = await route(d, c);
+      }
     } catch (error) {
       result = dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, logical: error?.details?.logical });
-      log("dataverse request failed", { requestId, path: url.pathname, status: result.status, message: error?.message });
+      log("dataverse request failed", { requestId, path: c.url?.pathname, status: result.status, message: error?.message });
     }
-    send(res, result, requestId);
+    try {
+      reply(result);
+    } catch (error) {
+      log("dataverse response failed", { requestId, message: error?.message });
+      try {
+        reply(dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId }));
+      } catch {
+        res.destroy();
+      }
+    }
+  };
+  // serve never rejects here: whatever escapes it still gets an answer or a dropped connection.
+  return function handle(req, res) {
+    return serve(req, res).catch((error) => {
+      try {
+        if (res.headersSent) res.destroy();
+        else send(res, dataverseError(error, {}), undefined);
+      } catch {
+        res.destroy();
+      }
+    });
   };
 }
 
@@ -695,23 +808,22 @@ export async function startDataverseApi({
   const environmentId = `Default-${tenantId}`;
   const applications = settings.applications ?? [];
 
-  await change(() => store.transact(() => seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock)));
-  await change(() =>
-    ensureSecurityModel(
-      store,
-      {
-        organizationId,
-        tenantId,
-        uniqueName: settings.uniqueName,
-        friendlyName: settings.friendlyName,
-        version: settings.version,
-        applications: applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
-        // Settings rows use domainname/fullname; the security model reads upn/displayName.
-        users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),
-      },
-      { schema },
-    ),
-  );
+  const securitySettings = {
+    organizationId,
+    tenantId,
+    uniqueName: settings.uniqueName,
+    friendlyName: settings.friendlyName,
+    version: settings.version,
+    applications: applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
+    // Settings rows use domainname/fullname; the security model reads upn/displayName.
+    users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),
+  };
+  const registerApplications = () => store.transact(() => seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock));
+  const seedSecurity = () => ensureSecurityModel(store, securitySettings, { schema });
+  await change(registerApplications);
+  await change(seedSecurity);
+  // Record writes from inside a $batch skip `change` (see inBatch); other record writes use the caller's change.
+  const recordChange = (fn) => (inBatch.getStore() ? fn() : change(fn));
 
   const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf });
   const metadata = createMetadataService({
@@ -736,11 +848,12 @@ export async function startDataverseApi({
   });
   const recordHandlers =
     records ??
-    (await import("./dataverse-records.mjs")).createRecordHandlers({ store, change, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock });
+    (await import("./dataverse-records.mjs")).createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock });
 
   const requests = [];
   const handle = createDataverseHandler({
     store,
+    change,
     settings,
     authority,
     principals,
@@ -755,13 +868,13 @@ export async function startDataverseApi({
     requests,
   });
 
-  const httpServer = http.createServer(handle);
+  const httpServer = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle);
   const servers = [httpServer];
   await listen(httpServer, settings.port ?? 0, host);
   const origin = listenerOrigin("http", host, httpServer.address().port);
   let tlsOrigin = null;
   if (tls) {
-    const httpsServer = https.createServer(tls, handle);
+    const httpsServer = https.createServer({ ...tls, maxHeaderSize: MAX_HEADER_SIZE }, handle);
     servers.push(httpsServer);
     await listen(httpsServer, settings.tlsPort ?? 0, host);
     tlsOrigin = listenerOrigin("https", host, httpsServer.address().port);
@@ -774,6 +887,12 @@ export async function startDataverseApi({
     tenantId,
     organizationId,
     servers,
+    // Re-seeds the registrations and security rows after a store reset. Runs store transactions only, never `change`,
+    // so it can be called from inside the server's change queue (its /reset handler does).
+    reseed: async () => {
+      await registerApplications();
+      await seedSecurity();
+    },
     requests: () => requests.map((entry) => ({ ...entry })),
     close: () =>
       Promise.all(

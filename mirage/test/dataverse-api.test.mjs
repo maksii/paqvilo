@@ -37,6 +37,8 @@ describe("dataverse API router", () => {
     const records = {
       handle: async (ctx) => {
         recordCalls.push(ctx);
+        // A header value outside Latin-1 cannot be written; the router must still answer JSON.
+        if (ctx.url.searchParams.has("badheader")) return { status: 204, headers: { "OData-EntityId": "https://example.test/日本" } };
         return { status: 200, body: { echo: ctx.route.kind, user: ctx.user.systemuserid } };
       },
     };
@@ -113,20 +115,59 @@ describe("dataverse API router", () => {
     assert.ok(body.error.message.includes("No HTTP resource was found"));
   });
 
-  it("answers RetrieveVersion", async () => {
+  it("answers RetrieveVersion with its response context", async () => {
     const response = await get(apiPath("RetrieveVersion"));
     assert.equal(response.status, 200);
-    assert.equal((await response.json()).Version, "9.2.25041.00000");
+    const body = await response.json();
+    assert.equal(body.Version, "9.2.25041.00000");
+    assert.ok(body["@odata.context"].endsWith("#Microsoft.Dynamics.CRM.RetrieveVersionResponse"));
+    assert.equal(Object.keys(body)[0], "@odata.context");
   });
 
-  it("answers RetrieveCurrentOrganization with the endpoint dictionary", async () => {
+  it("answers RetrieveCurrentOrganization with the endpoint dictionary and its response context", async () => {
     const response = await get(apiPath("RetrieveCurrentOrganization(AccessType='Default')"));
     assert.equal(response.status, 200);
-    const { Detail } = await response.json();
+    const body = await response.json();
+    const { Detail } = body;
+    assert.ok(body["@odata.context"].endsWith("#Microsoft.Dynamics.CRM.RetrieveCurrentOrganizationResponse"));
     assert.equal(Detail.OrganizationId, organizationId);
     assert.deepEqual(Detail.Endpoints.Keys, ["OrganizationService", "OrganizationDataService", "WebApplication"]);
     assert.equal(Detail.Endpoints.Values.length, 3);
     assert.equal(Detail.Endpoints.Values[2], `${origin}/`);
+  });
+
+  it("answers a URL over 32,768 characters with 400 0x80060888", async () => {
+    const response = await get(apiPath(`widgets?$filter=${"x".repeat(40 * 1024)}`));
+    assert.equal(response.status, 400);
+    const { error } = await response.json();
+    assert.equal(error.code, "0x80060888");
+    assert.equal(error.message, "Invalid URI: The Uri string is too long.");
+  });
+
+  it("accepts a 20 KB URL without 431", async () => {
+    const response = await get(apiPath(`widgets?pad=${"a".repeat(20 * 1024)}`));
+    assert.equal(response.status, 200);
+  });
+
+  it("echoes x-ms-client-request-id as a response header", async () => {
+    const response = await get(apiPath("widgets"), { "x-ms-client-request-id": "client-req-42" });
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("x-ms-client-request-id"), "client-req-42");
+  });
+
+  it("answers a header that cannot be written with a 500 JSON envelope instead of hanging", async () => {
+    const response = await fetch(`${origin}${apiPath("widgets?badheader=1")}`, { headers: auth(), signal: AbortSignal.timeout(5000) });
+    assert.equal(response.status, 500);
+    assert.equal(response.headers.get("content-type").split(";")[0], "application/json");
+    assert.ok((await response.json()).error.code.startsWith("0x"));
+  });
+
+  it("answers a malformed Prefer header with 400 0x80097303 before routing", async () => {
+    const response = await get(apiPath("widgets"), { prefer: 'odata.include-annotations=\\"*\\"' });
+    assert.equal(response.status, 400);
+    const body = await response.json();
+    assert.equal(body.ErrorCode, "0x80097303");
+    assert.ok(body.Message.includes("'Prefer' header"));
   });
 
   it("answers RetrieveTotalRecordCount for a table", async () => {
@@ -163,10 +204,12 @@ describe("dataverse API router", () => {
   });
 
   it("lists owner attributes including ownerid", async () => {
-    const response = await get(apiPath("EntityDefinitions(LogicalName='widget')/Attributes/Microsoft.Dynamics.CRM.OwnerAttributeMetadata"));
+    const response = await get(apiPath("EntityDefinitions(LogicalName='widget')/Attributes/Microsoft.Dynamics.CRM.LookupAttributeMetadata"));
     assert.equal(response.status, 200);
     const { value } = await response.json();
-    assert.ok(value.some((item) => item.LogicalName === "ownerid"));
+    const owner = value.find((item) => item.LogicalName === "ownerid");
+    assert.ok(owner, "expected ownerid in the lookup attributes");
+    assert.equal(owner.AttributeType, "Owner");
   });
 
   it("returns the user privileges wrapped as RolePrivileges", async () => {
@@ -221,6 +264,13 @@ describe("dataverse API router", () => {
     assert.equal(response.status, 204);
     assert.equal(response.headers.get("access-control-allow-origin"), "*");
     assert.equal(response.headers.get("access-control-allow-methods"), "GET,POST,PATCH,PUT,DELETE,OPTIONS");
+    // Authorization is listed explicitly: a browser preflight does not treat "*" as covering it.
+    assert.match(response.headers.get("access-control-allow-headers"), /^Authorization, Content-Type, Accept, Prefer, If-Match/);
+  });
+
+  it("records the kind of each request", async () => {
+    const kinds = new Set(api.requests().map((entry) => entry.kind));
+    for (const kind of ["sts", "data", "discovery", "soap", "options"]) assert.ok(kinds.has(kind), `expected a ${kind} entry`);
   });
 
   it("closes all listeners", async () => {
@@ -237,6 +287,16 @@ const VERIFIER = "pkce-verifier-0123456789-abcdefghijklmnopqrstuvwxyz";
 const PASSWORD = "Pass!23";
 const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
 const WIDGET_ID = "aaaaaaaa-0000-0000-0000-000000000001";
+
+// Mirrors the server's mutation queue: not re-entrant, so a nested change call would wait on itself.
+const serialChange = () => {
+  let queue = Promise.resolve();
+  return (fn) => {
+    const next = queue.then(fn);
+    queue = next.catch(() => {});
+    return next;
+  };
+};
 
 const multipart = (boundary, parts) => `${parts.map((part) => `--${boundary}${CRLF}${part}`).join(CRLF)}${CRLF}--${boundary}--`;
 // `raw` sends a body verbatim, for a request that must fail to parse.
@@ -288,7 +348,7 @@ describe("dataverse API batch, metadata and sign-in", () => {
       ],
       users: [{ domainname: "maker@example.test", fullname: "Maker User", objectId: MAKER_OID, roles: [] }],
     });
-    api = await startDataverseApi({ store, change: (fn) => fn(), settings, clock: () => now, log: () => {} });
+    api = await startDataverseApi({ store, change: serialChange(), settings, clock: () => now, log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
     organizationId = api.organizationId;
@@ -307,7 +367,8 @@ describe("dataverse API batch, metadata and sign-in", () => {
   });
 
   const bearer = (value) => ({ authorization: `Bearer ${value}` });
-  const send = (path, init = {}) => fetch(`${origin}${path}`, init);
+  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
+  const send = (path, init = {}) => fetch(`${origin}${path}`, { signal: AbortSignal.timeout(10_000), ...init });
   const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
   const count = () => store.tableRows("widget").length;
   const batch = (boundary, parts, headers = {}) =>
@@ -510,5 +571,91 @@ describe("dataverse API batch, metadata and sign-in", () => {
     const wrong = await tokenRequest({ ...fields, password: "not-the-password" });
     assert.equal(wrong.status, 400);
     assert.ok(wrong.body.error_description.startsWith("AADSTS50126"));
+  });
+
+  it("answers an alternate key with non-Latin text as JSON, never a hang", async () => {
+    const response = await send(apiPath("widgets(code='日本')"), {
+      method: "PATCH",
+      headers: { ...bearer(token), "content-type": "application/json" },
+      body: JSON.stringify({ name: "x" }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (response.status === 204) {
+      // Any id header must be a plain ASCII value that Node could send.
+      assert.match(response.headers.get("odata-entityid") ?? "", /^[\x20-\x7e]*$/);
+    } else {
+      assert.ok(response.status >= 400);
+      assert.equal(response.headers.get("content-type").split(";")[0], "application/json");
+      assert.ok(JSON.parse(await response.text()).error.code !== undefined);
+    }
+  });
+
+  it("reports Dataverse error codes inside batch parts", async () => {
+    const response = await batch("batch_codes", [httpPart({ method: "GET", path: apiPath("widgets(aaaaaaaa-0000-0000-0000-0000000000ff)") })]);
+    const text = await response.text();
+    assert.match(text, /"code":"0x80040217"/);
+    assert.ok(!text.includes('"code":"NotFound"'));
+  });
+
+  it("rejects $filter on GlobalOptionSetDefinitions with 400 0x80060888", async () => {
+    const query = new URLSearchParams({ $filter: "Name eq 'x'" });
+    const response = await send(apiPath(`GlobalOptionSetDefinitions?${query}`), { headers: bearer(token) });
+    assert.equal(response.status, 400);
+    const { error } = await response.json();
+    assert.equal(error.code, "0x80060888");
+    assert.equal(error.message, "The $filter query option is not supported for GlobalOptionSetDefinitions.");
+  });
+
+  it("requires prvBypassCustomPlugins for the MSCRM bypass header", async () => {
+    const patch = (value, headers) =>
+      send(apiPath(`widgets(${WIDGET_ID})`), {
+        method: "PATCH",
+        headers: { ...bearer(value), "content-type": "application/json", ...headers },
+        body: JSON.stringify({ name: "bypassed" }),
+      });
+    const allowed = await patch(token, { "MSCRM.BypassCustomPluginExecution": "true" });
+    assert.equal(allowed.status, 204);
+    const denied = await patch(userToken, { "MSCRM.BypassCustomPluginExecution": "true" });
+    assert.equal(denied.status, 403);
+    const { error } = await denied.json();
+    assert.equal(error.code, "0x80040220");
+    assert.ok(error.message.includes("is missing prvBypassCustomPlugins privilege"));
+    assert.ok(error.message.includes(`context.Caller=${makerUserId}`));
+  });
+
+  it("answers impersonation of an unknown target with 400 0x80040203 and a caller without the privilege with the full 403", async () => {
+    const unknown = await send(apiPath("WhoAmI"), { headers: { ...bearer(token), MSCRMCallerID: "99999999-9999-4999-8999-999999999999" } });
+    assert.equal(unknown.status, 400);
+    assert.equal((await unknown.json()).error.code, "0x80040203");
+    const denied = await send(apiPath("WhoAmI"), { headers: { ...bearer(userToken), MSCRMCallerID: makerUserId } });
+    assert.equal(denied.status, 403);
+    const { error } = await denied.json();
+    assert.equal(error.code, "0x80040220");
+    assert.ok(error.message.includes("roleCount=") && error.message.includes("privilegeCount=") && error.message.includes("accessMode="));
+    assert.ok(error.message.includes("is missing prvActOnBehalfOfAnotherUser privilege"));
+    assert.ok(error.message.includes(`context.Caller=${makerUserId}`));
+  });
+
+  it("answers impersonation of a disabled user with 401 0x80040225", async () => {
+    await store.transact(() => {
+      store.tableRows("systemuser").find((row) => row.systemuserid === makerUserId).isdisabled = true;
+    });
+    const response = await send(apiPath("WhoAmI"), { headers: { ...bearer(token), MSCRMCallerID: makerUserId } });
+    assert.equal(response.status, 401);
+    const { error } = await response.json();
+    assert.equal(error.code, "0x80040225");
+    assert.ok(error.message.includes(`(Id = ${makerUserId}) is disabled`));
+  });
+
+  it("re-seeds the SYSTEM user and the application registrations through reseed()", async () => {
+    const systemId = uuidV5(organizationId, "systemuser:SYSTEM");
+    await store.transact(() => {
+      store.state.tables.systemuser = [];
+    });
+    await api.reseed();
+    assert.ok(store.tableRows("systemuser").some((row) => row.systemuserid === systemId));
+    const response = await send(apiPath("WhoAmI"), { headers: bearer(token) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).UserId, uuidV5(organizationId, `systemuser:app:${APP_ID}`));
   });
 });

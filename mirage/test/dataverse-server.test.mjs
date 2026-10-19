@@ -3,6 +3,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import https from "node:https";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -121,6 +122,55 @@ test("reset keeps application registrations", async (t) => {
   assert.equal(reset.status, 200);
   const listing = await admin("/dataverse");
   assert.ok(listing.body.applications.some((item) => item.appId === APP_ID));
+});
+
+test("reset re-seeds the security rows so an application created before it still authenticates", async (t) => {
+  const { app, admin } = await start(t, { dataverse: { enabled: true } });
+  const created = await createApplication(admin);
+  const reset = await fetch(`${app.url}/_sim/api/reset`, { method: "POST", headers: { "x-sim-csrf": app.state().csrf } });
+  assert.equal(reset.status, 200);
+  const issued = await clientCredentials(app.dataverse, created.secret);
+  assert.equal(issued.status, 200);
+  const whoami = await fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`, {
+    headers: { authorization: `Bearer ${issued.body.access_token}` },
+  });
+  assert.equal(whoami.status, 200);
+  assert.equal((await whoami.json()).UserId, created.systemuserid);
+  const listing = await admin("/dataverse");
+  assert.equal(listing.body.users.filter((user) => user.fullname === "SYSTEM").length, 1);
+  assert.equal(listing.body.roles.length, 3);
+});
+
+test("a registered certificate reports its SHA-1 and SHA-256 thumbprints", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  await createApplication(admin);
+  const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const der = publicKey.export({ type: "spki", format: "der" });
+  const created = await admin(`/dataverse/applications/${APP_ID}/certificates`, {
+    method: "POST",
+    body: { publicKeyPem: publicKey.export({ type: "spki", format: "pem" }) },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.thumbprint, createHash("sha1").update(der).digest("hex").toUpperCase());
+  assert.equal(created.body.thumbprint256, createHash("sha256").update(der).digest("hex").toUpperCase());
+  const listing = await admin("/dataverse");
+  const entry = listing.body.applications.find((item) => item.appId === APP_ID);
+  assert.deepEqual(entry.certificates, [{ thumbprint: created.body.thumbprint, thumbprint256: created.body.thumbprint256 }]);
+});
+
+test("enabling Dataverse leaves the portal Web API answers unchanged", async (t) => {
+  const plain = await start(t);
+  const withDataverse = await start(t, { dataverse: { enabled: true } });
+  for (const route of ["/_api/systemusers?$select=fullname", "/_api/accounts?$select=name"]) {
+    const answers = [];
+    for (const { app } of [plain, withDataverse]) {
+      const response = await fetch(`${app.url}${route}`);
+      const body = await response.json().catch(() => null);
+      answers.push({ status: response.status, code: body?.error?.code ?? null });
+    }
+    assert.deepEqual(answers[1], answers[0], route);
+    assert.notEqual(answers[0].code, null, route);
+  }
 });
 
 test("the portal origin does not answer Dataverse Web API routes", async (t) => {

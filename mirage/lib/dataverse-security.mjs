@@ -22,7 +22,7 @@ const nn = (target, from, to, via) => ({ entity: target, from, to, many: true, i
 const TABLE_DEFS = {
   organization: { set: 'organizations', id: 'organizationid', name: 'name', schemaName: 'Organization', fields: { organizationid: GUID, name: TEXT, uniquename: TEXT, friendlyname: TEXT } },
   businessunit: { set: standardTable('businessunit').entitySet, id: 'businessunitid', name: 'name', schemaName: 'BusinessUnit', fields: { businessunitid: GUID, name: TEXT, parentbusinessunitid: LOOKUP, organizationid: LOOKUP } },
-  systemuser: { set: standardTable('systemuser').entitySet, id: 'systemuserid', name: 'fullname', schemaName: 'SystemUser', fields: { systemuserid: GUID, fullname: TEXT, domainname: TEXT, applicationid: GUID, azureactivedirectoryobjectid: GUID, accessmode: INT, isdisabled: BOOL, businessunitid: LOOKUP, organizationid: LOOKUP }, relationships: { systemuserroles_association: nn('role', 'systemuserid', 'roleid', 'systemuserroles') } },
+  systemuser: { set: standardTable('systemuser').entitySet, id: 'systemuserid', name: 'fullname', schemaName: 'SystemUser', fields: { systemuserid: GUID, fullname: TEXT, domainname: TEXT, internalemailaddress: TEXT, applicationid: GUID, azureactivedirectoryobjectid: GUID, accessmode: INT, isdisabled: BOOL, businessunitid: LOOKUP, organizationid: LOOKUP }, relationships: { systemuserroles_association: nn('role', 'systemuserid', 'roleid', 'systemuserroles') } },
   team: { set: standardTable('team').entitySet, id: 'teamid', name: 'name', schemaName: 'Team', fields: { teamid: GUID, name: TEXT, businessunitid: LOOKUP, organizationid: LOOKUP }, relationships: { teammembership_association: nn('systemuser', 'teamid', 'systemuserid', 'teammembership'), teamroles_association: nn('role', 'teamid', 'roleid', 'teamroles') } },
   role: { set: 'roles', id: 'roleid', name: 'name', schemaName: 'Role', fields: { roleid: GUID, name: TEXT, businessunitid: LOOKUP, organizationid: LOOKUP }, relationships: { roleprivileges_association: nn('privilege', 'roleid', 'privilegeid', 'roleprivileges') } },
   systemuserroles: { set: 'systemuserrolescollection', id: 'systemuserroleid', schemaName: 'SystemUserRoles', fields: { systemuserroleid: GUID, systemuserid: LOOKUP, roleid: LOOKUP } },
@@ -37,6 +37,12 @@ const sameId = (a, b) => key(a) === key(b);
 const refId = (value) => (value !== null && typeof value === 'object' ? value.id : value) ?? undefined;
 const capitalize = (text) => text.charAt(0).toUpperCase() + text.slice(1);
 const rootId = (organizationId) => uuidV5(organizationId, 'businessunit:root');
+// Impersonation: the caller differs from the user the write is made as.
+const onBehalf = (user, caller) => Boolean(caller) && key(caller.systemuserid) !== key(user.systemuserid);
+// Keeps only the keys a mapping declares, when it declares fields at all.
+const declaredOnly = (values, mapping) => (mapping?.fields
+  ? Object.fromEntries(Object.entries(values).filter(([name]) => Object.hasOwn(mapping.fields, name)))
+  : values);
 
 /** RFC 4122 version 5 (SHA-1, name-based) GUID, lowercase. */
 export function uuidV5(namespace, name) {
@@ -68,10 +74,16 @@ function ownershipKind(value) {
 }
 
 /** 'user' | 'org'. Table object ownership, then mapping ownership, then an ownerid field marks user-owned. */
-function ownershipOf(logical, table, mapping) {
+export function ownershipOf(logical, table, mapping) {
   if (TABLE_DEFS[logical]) return 'org';
   return ownershipKind(table?.ownership) ?? ownershipKind(mapping?.ownership)
     ?? (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : 'org');
+}
+
+/** Dataverse OwnershipType name for metadata: the ten security tables report BusinessOwned like the platform. */
+export function ownershipTypeName(logical, table, mapping) {
+  if (TABLE_DEFS[logical]) return 'BusinessOwned';
+  return ownershipOf(logical, table, mapping) === 'user' ? 'UserOwned' : 'OrganizationOwned';
 }
 
 const schemaNameOf = (logical, table) => table?.schemaName ?? TABLE_DEFS[logical]?.schemaName ?? capitalize(logical);
@@ -83,6 +95,8 @@ function mappingFor(logical, def) {
     idColumn: def.id,
     ...(def.name ? { nameColumn: def.name } : {}),
     userConfigured: true,
+    // Seeded for the Dataverse API only: the portal Web API resolver ignores these sets (webapi-handler resolveSet).
+    dataverseOnly: true,
     fields: Object.fromEntries(Object.entries(def.fields).map(([field, type]) => [field, { dataverseType: type }])),
     relationships: def.relationships ?? {},
   };
@@ -95,13 +109,31 @@ function insertMissing(rows, idColumn, row) {
   if (!rows.some((r) => sameId(r[idColumn], row[idColumn]))) rows.push(row);
 }
 
-function lookupRow(store, logical, id) {
+function rowOf(store, logical, id) {
   const def = TABLE_DEFS[logical];
   // Accept a stored lookup object as well as a bare id (systemuser.businessunitid is a lookup).
   id = refId(id);
   const row = store.tableRows(logical).find((r) => sameId(r[def.id], id));
   if (!row) throw new DataError(`${logical} ${id} does not exist.`, 404, 'NotFound');
-  return { id: row[def.id], logical_name: logical, name: row[def.name] ?? '' };
+  return row;
+}
+
+function lookupRow(store, logical, id) {
+  const row = rowOf(store, logical, id);
+  return { id: row[TABLE_DEFS[logical].id], logical_name: logical, name: row[TABLE_DEFS[logical].name] ?? '' };
+}
+
+/** Owner columns for a row owned by a systemuser or team: ownerid, the matching owning column (the other null) and the owner's business unit. */
+export function ownerColumns(store, ownerRef) {
+  const logical = ownerRef?.logical_name;
+  if (logical !== 'systemuser' && logical !== 'team') throw new DataError(`Owner must be a systemuser or team, not ${logical}.`, 400, 'InvalidRequest');
+  const ref = lookupRow(store, logical, ownerRef.id);
+  return {
+    ownerid: ref,
+    owninguser: logical === 'systemuser' ? ref : null,
+    owningteam: logical === 'team' ? ref : null,
+    owningbusinessunit: lookupRow(store, 'businessunit', rowOf(store, logical, ownerRef.id).businessunitid),
+  };
 }
 
 // Roles are given by built-in name or by GUID.
@@ -148,13 +180,33 @@ function applicationUser(store, settings, app) {
   }, app.roles ?? []);
 }
 
+// Same fixed namespace dataverse-settings.mjs uses for its default objectId.
+const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
+
+// A settings user without objectId gets a stable id from the tenant (or organization) GUID and its domain name;
+// without a GUID namespace the fixed namespace above is used, so this never throws for a missing GUID.
+function interactiveObjectId(settings, user) {
+  if (user.objectId) return user.objectId;
+  const domain = (user.domainname ?? user.upn ?? '').toLowerCase();
+  if (!domain) throw new DataError('A settings user needs an objectId, domainname or upn.', 400, 'InvalidRequest');
+  const tenant = settings.tenantId ?? settings.organizationId;
+  return GUID_RE.test(tenant ?? '') ? uuidV5(tenant, `user:${domain}`) : uuidV5(USER_NAMESPACE, `paqvilo-dataverse-user:${domain}`);
+}
+
 function interactiveUser(store, settings, user) {
-  return addUser(store, settings.organizationId, uuidV5(settings.organizationId, `systemuser:oid:${user.objectId}`), {
-    fullname: user.displayName ?? user.upn ?? user.objectId,
-    domainname: user.upn ?? '',
-    azureactivedirectoryobjectid: user.objectId,
-    accessmode: ACCESS_MODE.ReadWrite,
+  const oid = interactiveObjectId(settings, user), domain = user.domainname ?? user.upn ?? '';
+  return addUser(store, settings.organizationId, uuidV5(settings.organizationId, `systemuser:oid:${oid}`), {
+    fullname: user.fullname ?? user.displayName ?? user.upn ?? oid,
+    domainname: domain,
+    internalemailaddress: domain,
+    azureactivedirectoryobjectid: oid,
+    accessmode: user.accessmode ?? ACCESS_MODE.ReadWrite,
   }, user.roles ?? []);
+}
+
+/** Picker eligibility: an enabled, non-application user with an Entra object id (SYSTEM has none). */
+export function isInteractiveUser(row) {
+  return Boolean(!row.applicationid && row.accessmode !== ACCESS_MODE.NonInteractive && !row.isdisabled && row.azureactivedirectoryobjectid);
 }
 
 /** Table list for privilege generation: mapped tables, the ten security tables and schema tables. */
@@ -191,7 +243,10 @@ function seedSecurity(store, settings, schema) {
       roleid: roleIds[role], name: role, businessunitid: lookupRow(store, 'businessunit', root), organizationid: lookupRow(store, 'organization', org),
     });
   }
-  const privileges = [{ right: null, name: 'prvActOnBehalfOfAnotherUser', own: null }];
+  const privileges = [
+    { right: null, name: 'prvActOnBehalfOfAnotherUser', own: null },
+    { right: null, name: 'prvBypassCustomPlugins', own: null },
+  ];
   for (const table of tableInfo(store, schema)) {
     for (const right of Object.keys(ACCESS_RIGHTS)) {
       if (table.own === 'user' || !ORGANIZATION_EXCLUDED.has(right)) privileges.push({ right, name: privilegeName(right, table.schemaName), own: table.own });
@@ -216,7 +271,7 @@ function seedSecurity(store, settings, schema) {
   const systemUserId = addUser(store, org, uuidV5(org, 'systemuser:SYSTEM'), { fullname: 'SYSTEM', accessmode: ACCESS_MODE.NonInteractive }, []);
   const userIds = {};
   for (const app of settings.applications ?? []) userIds[app.appId] = applicationUser(store, settings, app);
-  for (const user of settings.users ?? []) userIds[user.objectId] = interactiveUser(store, settings, user);
+  for (const user of settings.users ?? []) userIds[interactiveObjectId(settings, user)] = interactiveUser(store, settings, user);
   return { organizationId: org, rootBusinessUnitId: root, systemUserId, roleIds, userIds };
 }
 
@@ -246,10 +301,10 @@ const indexes = new WeakMap();
 
 function buildIndex(store) {
   const idx = {
-    users: new Map(), byOid: new Map(), byApp: new Map(), byDomain: new Map(),
+    users: new Map(), teamRows: new Map(), byOid: new Map(), byApp: new Map(), byDomain: new Map(),
     roles: new Map(), privNames: new Map(), privIds: new Map(), grants: new Map(),
     direct: new Map(), teams: new Map(), teamRoles: new Map(), children: new Map(),
-    roleSets: new Map(), privSets: new Map(), chains: new Map(),
+    roleSets: new Map(), grantSets: new Map(), chains: new Map(),
   };
   const add = (map, k, v) => {
     if (!map.has(k)) map.set(k, []);
@@ -261,6 +316,7 @@ function buildIndex(store) {
     if (u.applicationid) idx.byApp.set(key(u.applicationid), u);
     if (u.domainname) idx.byDomain.set(key(u.domainname), u);
   }
+  for (const t of store.tableRows('team')) idx.teamRows.set(key(t.teamid), t);
   for (const r of store.tableRows('role')) idx.roles.set(key(r.roleid), r);
   for (const p of store.tableRows('privilege')) {
     idx.privNames.set(key(p.privilegeid), p.name);
@@ -287,6 +343,7 @@ function indexOf(store) {
 
 const teamsOf = (idx, uid) => idx.teams.get(uid) ?? [];
 
+/** Role ids of the user's direct roles and of the teams it belongs to. */
 function rolesOf(idx, uid) {
   if (!idx.roleSets.has(uid)) {
     const set = new Set(idx.direct.get(uid) ?? []);
@@ -296,19 +353,41 @@ function rolesOf(idx, uid) {
   return idx.roleSets.get(uid);
 }
 
-/** Map privilege name -> highest depth mask over direct and team roles. */
-function privilegesOf(idx, uid) {
-  if (!idx.privSets.has(uid)) {
-    const map = new Map();
-    for (const role of rolesOf(idx, uid)) {
+/**
+ * Privilege grants of a user, kept apart by source. direct: privilege name -> highest depth mask over the
+ * user's direct roles. team: privilege name -> one entry per team grant ({ id, bu, depth }), where bu is the team's business unit.
+ */
+function grantsOf(idx, uid) {
+  if (!idx.grantSets.has(uid)) {
+    const direct = new Map(), team = new Map();
+    for (const role of idx.direct.get(uid) ?? []) {
       for (const g of idx.grants.get(role) ?? []) {
         const name = idx.privNames.get(g.privilegeId);
-        if (name) map.set(name, Math.max(map.get(name) ?? 0, g.mask));
+        if (name) direct.set(name, Math.max(direct.get(name) ?? 0, g.mask));
       }
     }
-    idx.privSets.set(uid, map);
+    for (const teamId of teamsOf(idx, uid)) {
+      const bu = key(refId(idx.teamRows.get(teamId)?.businessunitid));
+      for (const role of idx.teamRoles.get(teamId) ?? []) {
+        for (const g of idx.grants.get(role) ?? []) {
+          const name = idx.privNames.get(g.privilegeId);
+          if (!name) continue;
+          if (!team.has(name)) team.set(name, []);
+          team.get(name).push({ id: teamId, bu, depth: g.mask });
+        }
+      }
+    }
+    idx.grantSets.set(uid, { direct, team });
   }
-  return idx.privSets.get(uid);
+  return idx.grantSets.get(uid);
+}
+
+/** Privilege name -> depth as RetrieveUserPrivileges reports it: the direct depth, or Basic for team-only grants. */
+function privilegeMapOf(idx, uid) {
+  const { direct, team } = grantsOf(idx, uid);
+  const map = new Map(direct);
+  for (const name of team.keys()) map.set(name, Math.max(map.get(name) ?? 0, DEPTH.Basic));
+  return map;
 }
 
 function chainOf(idx, root) {
@@ -325,26 +404,75 @@ function chainOf(idx, root) {
   return idx.chains.get(root);
 }
 
-/** Row-level check for a depth below Global. Rows without an owner or business unit are visible. */
-function visible(idx, user, depth, row) {
+/**
+ * Business unit of a row: its owningbusinessunit, else the business unit of its owner (systemuser or team).
+ * Returns a lowercase id, or '' when neither exists.
+ */
+function rowBusinessUnit(idx, row) {
+  const explicit = refId(row.owningbusinessunit);
+  if (explicit) return key(explicit);
+  const owner = key(refId(row.ownerid));
+  return key(refId((idx.users.get(owner) ?? idx.teamRows.get(owner))?.businessunitid));
+}
+
+// Business unit scope: Local = the same unit, Deep = the unit and its children. An unknown unit admits nothing.
+function buAdmits(idx, depth, rowBu, anchorBu) {
+  if (!rowBu || !anchorBu) return false;
+  return depth >= DEPTH.Deep ? chainOf(idx, anchorBu).has(rowBu) : rowBu === anchorBu;
+}
+
+// A direct grant admits a row: Basic = the user's own rows and rows owned by its teams; Local/Deep = by the user's business unit; Global = all.
+function directAdmits(idx, user, depth, row) {
   if (depth >= DEPTH.Global) return true;
   const uid = key(user.systemuserid), owner = key(refId(row.ownerid));
-  if (depth < DEPTH.Local) return !owner || owner === uid || teamsOf(idx, uid).includes(owner);
-  const bu = key(refId(row.owningbusinessunit)), userBu = key(refId(user.businessunitid));
-  if (!bu) return true;
-  return depth >= DEPTH.Deep ? chainOf(idx, userBu).has(bu) : bu === userBu;
+  if (depth < DEPTH.Local) return owner === uid || teamsOf(idx, uid).includes(owner);
+  return buAdmits(idx, depth, rowBusinessUnit(idx, row), key(refId(user.businessunitid)));
 }
+
+// A team grant admits a row: Basic = rows owned by the team; Local/Deep/Global = by geometry, whoever owns the row
+// (inherited team privileges are evaluated as if the team were the caller, so a member's own row passes too).
+function teamAdmits(idx, team, row) {
+  const owner = key(refId(row.ownerid));
+  if (team.depth >= DEPTH.Global) return true;
+  if (team.depth < DEPTH.Local) return owner === team.id;
+  return buAdmits(idx, team.depth, rowBusinessUnit(idx, row), team.bu);
+}
+
+/** Each grant the user holds for one privilege, with its row test. */
+function grantsNamed(idx, user, name) {
+  const uid = key(user.systemuserid), { direct, team } = grantsOf(idx, uid), out = [];
+  if (direct.has(name)) {
+    const depth = direct.get(name);
+    out.push({ depth, direct: true, admits: (row) => directAdmits(idx, user, depth, row) });
+  }
+  for (const grant of team.get(name) ?? []) {
+    out.push({ depth: grant.depth, direct: false, admits: (row) => teamAdmits(idx, grant, row) });
+  }
+  return out;
+}
+
+const deepest = (grants) => grants.reduce((max, g) => Math.max(max, g.depth), 0);
 
 const depthName = (mask) => DEPTH_NAMES.find((name) => mask & DEPTH[name]) ?? 'Basic';
 
-function privilegeDenied(idx, settings, user, logical, name, schema) {
-  const uid = user.systemuserid, uidKey = key(uid);
-  const otc = settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC;
-  const label = schema?.displayName ?? logical;
+/** The PrivilegeDenied (0x80040220) error for a user without a privilege on an entity. Counts default to 0. */
+export function privilegeDeniedError(user, name, entity, { roleCount = 0, privilegeCount = 0, objectTypeCode = DEFAULT_OTC, displayName = entity } = {}) {
+  const uid = user.systemuserid, orgId = refId(user.organizationid);
+  const privId = orgId ? privilegeId(orgId, name) : '';
   return new DataError(
-    `Principal user (Id=${uid}, type=8, roleCount=${rolesOf(idx, uidKey).size}, privilegeCount=${privilegesOf(idx, uidKey).size}, accessMode=${user.accessmode ?? 0}), is missing ${name} privilege (Id=${idx.privIds.get(name) ?? ''}) on OTC=${otc} for entity '${logical}' (LocalizedName='${label}'). context.Caller=${uid}. Consider adding missing privilege to one of the principal (user/team) roles for the request to succeed.`,
-    403, 'PrivilegeDenied', { innerCode: '0x80040220', privilege: name, entity: logical },
+    `Principal user (Id=${uid}, type=8, roleCount=${roleCount}, privilegeCount=${privilegeCount}, accessMode=${user.accessmode ?? 0}), is missing ${name} privilege (Id=${privId}) on OTC=${objectTypeCode} for entity '${entity}' (LocalizedName='${displayName}'). context.Caller=${uid}. Consider adding missing privilege to one of the principal (user/team) roles for the request to succeed.`,
+    403, 'PrivilegeDenied', { innerCode: '0x80040220', privilege: name, entity },
   );
+}
+
+function privilegeDenied(idx, settings, user, logical, name, schema) {
+  const uid = key(user.systemuserid);
+  return privilegeDeniedError(user, name, logical, {
+    roleCount: rolesOf(idx, uid).size,
+    privilegeCount: privilegeMapOf(idx, uid).size,
+    objectTypeCode: settings?.objectTypeCode?.(logical) ?? DEFAULT_OTC,
+    displayName: schema?.displayName ?? logical,
+  });
 }
 
 function accessDenied(user, operation, row, idColumn, logical) {
@@ -360,16 +488,16 @@ export function createPrincipals(store, settings = {}) {
   const idx = () => indexOf(store);
   const uidOf = (user) => key(typeof user === 'string' ? user : user?.systemuserid);
 
-  // Returns the depth on success, throws PrivilegeDenied or AccessDenied otherwise.
-  function check(user, entity, operation, { row, mapping, schema } = {}) {
+  // Grants that pass the privilege check. A user-owned row is tested against each grant; org-owned rows need no row test.
+  function gate(user, entity, operation, { row, mapping, schema } = {}) {
     const m = mapping ?? store.resolveMapping(entity), logical = m.logicalName, index = idx();
     const name = privilegeName(operation, schemaNameOf(logical, schema));
-    const depth = privilegesOf(index, key(user.systemuserid)).get(name);
-    if (!depth) throw privilegeDenied(index, settings, user, logical, name, schema);
-    if (row && depth < DEPTH.Global && ownershipOf(logical, schema, m) === 'user' && !visible(index, user, depth, row)) {
-      throw accessDenied(user, operation, row, m.idColumn ?? `${logical}id`, logical);
-    }
-    return depth;
+    const grants = grantsNamed(index, user, name);
+    if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
+    if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
+    const admitting = grants.filter((g) => g.admits(row));
+    if (!admitting.length) throw accessDenied(user, operation, row, m.idColumn ?? `${logical}id`, logical);
+    return { m, grants: admitting, depth: deepest(admitting) };
   }
 
   return {
@@ -395,64 +523,79 @@ export function createPrincipals(store, settings = {}) {
     },
 
     privileges(user) {
-      return new Map(privilegesOf(idx(), uidOf(user)));
+      return privilegeMapOf(idx(), uidOf(user));
     },
 
     businessUnitChain(businessUnitId) {
       return new Set(chainOf(idx(), key(businessUnitId)));
     },
 
+    /** Business unit of a row as a lookup: its owningbusinessunit, else its owner's. null when neither exists. */
+    ownerBusinessUnit(row) {
+      const id = rowBusinessUnit(idx(), row);
+      return id ? lookupRow(store, 'businessunit', id) : null;
+    },
+
     /** Throws PrivilegeDenied (0x80040220) or AccessDenied (0x80048306); returns the depth. */
     authorize(options) {
-      return check(options.user, options.entity, options.operation, options);
+      return gate(options.user, options.entity, options.operation, options).depth;
     },
 
-    /** null when no row filter is needed (Global depth or organization-owned table). */
+    /** null when no row filter is needed (Global direct depth or organization-owned table). */
     readFilter({ user, entity, mapping, schema } = {}) {
-      const depth = check(user, entity, 'read', { mapping, schema });
-      const m = mapping ?? store.resolveMapping(entity);
-      if (depth >= DEPTH.Global || ownershipOf(m.logicalName, schema, m) === 'org') return null;
-      const index = idx();
-      return (row) => visible(index, user, depth, row);
+      const { m, grants } = gate(user, entity, 'read', { mapping, schema });
+      if (ownershipOf(m.logicalName, schema, m) === 'org') return null;
+      if (grants.some((g) => g.direct && g.depth >= DEPTH.Global)) return null;
+      return (row) => grants.some((g) => g.admits(row));
     },
 
-    ownershipDefaults({ user, mapping, schema } = {}) {
+    ownershipDefaults({ user, caller, mapping, schema } = {}) {
       const ref = lookupRow(store, 'systemuser', user.systemuserid);
       const defaults = { createdby: ref, modifiedby: ref };
+      if (onBehalf(user, caller)) defaults.createdonbehalfby = lookupRow(store, 'systemuser', caller.systemuserid);
       if (ownershipOf(mapping.logicalName, schema, mapping) === 'user') {
-        Object.assign(defaults, { ownerid: ref, owninguser: ref, owningbusinessunit: lookupRow(store, 'businessunit', user.businessunitid) });
+        Object.assign(defaults, ownerColumns(store, { id: user.systemuserid, logical_name: 'systemuser' }));
       }
-      return defaults;
+      return declaredOnly(defaults, mapping);
     },
 
-    modifiedBy({ user }) {
-      return { modifiedby: lookupRow(store, 'systemuser', user.systemuserid) };
+    modifiedBy({ user, caller }) {
+      const values = { modifiedby: lookupRow(store, 'systemuser', user.systemuserid) };
+      if (onBehalf(user, caller)) values.modifiedonbehalfby = lookupRow(store, 'systemuser', caller.systemuserid);
+      return values;
     },
 
     canImpersonate(user) {
-      return privilegesOf(idx(), uidOf(user)).has('prvActOnBehalfOfAnotherUser');
+      return privilegeMapOf(idx(), uidOf(user)).has('prvActOnBehalfOfAnotherUser');
     },
 
-    /** One entry per role-privilege grant of the user's direct and team roles. */
+    /** One entry per role-privilege grant: direct roles at their depth, team roles at Basic; de-duplicated by privilege, business unit and depth. */
     retrieveUserPrivileges(userId) {
-      const index = idx(), out = [];
-      for (const roleId of rolesOf(index, uidOf(userId))) {
+      const index = idx(), uid = uidOf(userId), out = [], seen = new Set();
+      const emit = (roleId, fromTeam) => {
         const businessUnitId = refId(index.roles.get(roleId)?.businessunitid) ?? null;
         for (const g of index.grants.get(roleId) ?? []) {
           const name = index.privNames.get(g.privilegeId);
-          if (name) out.push({ Depth: depthName(g.mask), PrivilegeId: g.privilegeId, BusinessUnitId: businessUnitId, PrivilegeName: name, RecordFilterId: null, RecordFilterUniqueName: null });
+          if (!name) continue;
+          const Depth = fromTeam ? 'Basic' : depthName(g.mask);
+          const dedupe = `${g.privilegeId}|${businessUnitId}|${Depth}`;
+          if (seen.has(dedupe)) continue;
+          seen.add(dedupe);
+          out.push({ Depth, PrivilegeId: g.privilegeId, BusinessUnitId: businessUnitId, PrivilegeName: name, RecordFilterId: null, RecordFilterUniqueName: null });
         }
-      }
+      };
+      for (const roleId of index.direct.get(uid) ?? []) emit(roleId, false);
+      for (const teamId of teamsOf(index, uid)) for (const roleId of index.teamRoles.get(teamId) ?? []) emit(roleId, true);
       return out;
     },
 
     /** Comma-separated AccessRights flags, or 'None'. Create is table-level and needs no row. */
     principalAccess({ user, entity, row, mapping, schema } = {}) {
-      const index = idx(), m = mapping ?? store.resolveMapping(entity), granted = privilegesOf(index, uidOf(user)), flags = [];
+      const index = idx(), m = mapping ?? store.resolveMapping(entity), owned = ownershipOf(m.logicalName, schema, m) === 'user', flags = [];
       for (const right of Object.keys(ACCESS_RIGHTS)) {
-        const depth = granted.get(privilegeName(right, schemaNameOf(m.logicalName, schema)));
-        if (!depth) continue;
-        if (right === 'Create' || !row || ownershipOf(m.logicalName, schema, m) === 'org' || visible(index, user, depth, row)) flags.push(`${right}Access`);
+        const grants = grantsNamed(index, user, privilegeName(right, schemaNameOf(m.logicalName, schema)));
+        if (!grants.length) continue;
+        if (right === 'Create' || !row || !owned || grants.some((g) => g.admits(row))) flags.push(`${right}Access`);
       }
       return flags.length ? flags.join(', ') : 'None';
     },

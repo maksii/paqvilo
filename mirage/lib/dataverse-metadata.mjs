@@ -6,6 +6,7 @@ import { createHash } from "node:crypto";
 import { attributeMetadata } from "./attribute-metadata.mjs";
 import { tableFields } from "./solution-schema.mjs";
 import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
+import { ownershipOf, ownershipTypeName } from "./dataverse-security.mjs";
 
 const PREFIX = /^[a-z0-9]+_/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -25,8 +26,9 @@ const TYPES = {
   money: ["Money", "Money", "MoneyType"],
   bit: ["Boolean", "Boolean", "BooleanType"], boolean: ["Boolean", "Boolean", "BooleanType"],
   datetime: ["DateTime", "DateTime", "DateTimeType"],
-  lookup: ["Lookup", "Lookup", "LookupType"], customer: ["Customer", "Customer", "CustomerType"],
-  owner: ["Owner", "Owner", "OwnerType"],
+  // Owner and customer are LookupAttributeMetadata with their own AttributeType and AttributeTypeName.
+  lookup: ["Lookup", "Lookup", "LookupType"], customer: ["Customer", "Lookup", "CustomerType"],
+  owner: ["Owner", "Lookup", "OwnerType"],
   picklist: ["Picklist", "Picklist", "PicklistType"], state: ["State", "State", "StateType"],
   status: ["Status", "Status", "StatusType"],
   multiselectpicklist: ["Virtual", "MultiSelectPicklist", "MultiSelectPicklistType"],
@@ -37,6 +39,7 @@ const TYPES = {
 const REQUIRED = { none: "None", systemrequired: "SystemRequired", applicationrequired: "ApplicationRequired", required: "ApplicationRequired" };
 const READ_ONLY = new Set(["createdon", "modifiedon", "createdby", "modifiedby", "versionnumber"]);
 // Columns every standard table has (solution exports omit them); owner columns only for user-owned tables.
+// Principal tables (systemuser, team) inherit the ownerid key from the mscrm.principal base type.
 const SYSTEM_COLUMNS = {
   createdon: { dataverseType: "datetime", label: "Created On", schemaName: "CreatedOn" },
   modifiedon: { dataverseType: "datetime", label: "Modified On", schemaName: "ModifiedOn" },
@@ -49,8 +52,10 @@ const SYSTEM_COLUMNS = {
 const OWNER_COLUMNS = {
   ownerid: { dataverseType: "owner", targets: ["systemuser", "team"], label: "Owner", schemaName: "OwnerId" },
   owninguser: { dataverseType: "lookup", targets: ["systemuser"], label: "Owning User", schemaName: "OwningUser" },
+  owningteam: { dataverseType: "lookup", targets: ["team"], label: "Owning Team", schemaName: "OwningTeam" },
   owningbusinessunit: { dataverseType: "lookup", targets: ["businessunit"], label: "Owning Business Unit", schemaName: "OwningBusinessUnit" },
 };
+const PRINCIPAL_TABLES = new Set(["systemuser", "team"]);
 const FILTER_KEYWORDS = new Set(["and", "or", "not", "eq", "ne", "true", "false", "null"]);
 
 const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1) : text);
@@ -74,13 +79,12 @@ const DESCRIPTION = "Org.OData.Core.V1.Description";
 const COMPUTED = "Org.OData.Core.V1.Computed";
 // Edm primitive per AttributeMetadata type stem (attribute-metadata.mjs mapping); lookups are Guids behind _<name>_value.
 const EDM = {
-  UniqueIdentifier: "Edm.Guid", Lookup: "Edm.Guid", Customer: "Edm.Guid", Owner: "Edm.Guid",
+  UniqueIdentifier: "Edm.Guid", Lookup: "Edm.Guid",
   String: "Edm.String", Memo: "Edm.String", EntityName: "Edm.String", MultiSelectPicklist: "Edm.String",
   Integer: "Edm.Int32", Picklist: "Edm.Int32", State: "Edm.Int32", Status: "Edm.Int32",
   BigInt: "Edm.Int64", Decimal: "Edm.Decimal", Money: "Edm.Decimal", Double: "Edm.Double",
   Boolean: "Edm.Boolean", DateTime: "Edm.DateTimeOffset",
 };
-const LOOKUP_STEMS = new Set(["Lookup", "Customer", "Owner"]);
 const stemOf = (attribute) => attribute["@odata.type"].replace(/^#Microsoft\.Dynamics\.CRM\./, "").replace(/AttributeMetadata$/, "");
 // Version stamp = digest of the whole metadata set plus a fixed date: the simulator keeps no change clock.
 const STAMP_DATE = "01/01/2026 00:00:00";
@@ -279,8 +283,17 @@ const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
 </ComplexType>
 <ComplexType Name="OrganizationDetail">
   <Property Name="OrganizationId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="UniqueName" Type="Edm.String" />
   <Property Name="FriendlyName" Type="Edm.String" />
+  <Property Name="OrganizationVersion" Type="Edm.String" />
+  <Property Name="EnvironmentId" Type="Edm.Guid" />
+  <Property Name="DatacenterId" Type="Edm.Guid" />
+  <Property Name="Geo" Type="Edm.String" />
+  <Property Name="TenantId" Type="Edm.Guid" />
+  <Property Name="UrlName" Type="Edm.String" />
+  <Property Name="UniqueName" Type="Edm.String" />
+  <Property Name="OrganizationType" Type="mscrm.OrganizationType" />
+  <Property Name="SchemaType" Type="mscrm.SchemaType" />
+  <Property Name="State" Type="mscrm.OrganizationState" />
   <Property Name="Endpoints" Type="mscrm.EndpointCollection" />
 </ComplexType>
 <ComplexType Name="RetrieveCurrentOrganizationResponse">
@@ -303,6 +316,8 @@ const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
   <Property Name="PrivilegeId" Type="Edm.Guid" Nullable="false" />
   <Property Name="BusinessUnitId" Type="Edm.Guid" Nullable="false" />
   <Property Name="PrivilegeName" Type="Edm.String" />
+  <Property Name="RecordFilterId" Type="Edm.Guid" Nullable="true" />
+  <Property Name="RecordFilterUniqueName" Type="Edm.String" />
 </ComplexType>
 <ComplexType Name="RetrieveUserPrivilegesResponse">
   <Property Name="RolePrivileges" Type="Collection(mscrm.RolePrivilege)" />
@@ -314,7 +329,93 @@ const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
   <Member Name="Default" Value="0" />
   <Member Name="Internet" Value="1" />
   <Member Name="Intranet" Value="2" />
-</EnumType>`;
+</EnumType>
+<EnumType Name="OrganizationType">
+  <Member Name="Default" />
+</EnumType>
+<EnumType Name="SchemaType">
+  <Member Name="Standard" />
+  <Member Name="Core" />
+  <Member Name="Full" />
+  <Member Name="Uno" />
+</EnumType>
+<EnumType Name="OrganizationState">
+  <Member Name="Enabled" />
+  <Member Name="Disabled" />
+</EnumType>
+<EnumType Name="DeletedMetadataFilters">
+  <Member Name="Default" />
+  <Member Name="Entity" />
+  <Member Name="Attribute" />
+  <Member Name="Relationship" />
+  <Member Name="Label" />
+  <Member Name="OptionSet" />
+  <Member Name="All" />
+</EnumType>
+<ComplexType Name="MetadataPropertiesExpression">
+  <Property Name="AllProperties" Type="Edm.Boolean" Nullable="false" />
+  <Property Name="PropertyNames" Type="Collection(Edm.String)" />
+</ComplexType>
+<ComplexType Name="MetadataConditionValue">
+  <Property Name="Type" Type="Edm.String" />
+  <Property Name="Value" Type="Edm.String" />
+</ComplexType>
+<ComplexType Name="MetadataConditionExpression">
+  <Property Name="PropertyName" Type="Edm.String" />
+  <Property Name="ConditionOperator" Type="Edm.String" />
+  <Property Name="Value" Type="mscrm.MetadataConditionValue" />
+</ComplexType>
+<ComplexType Name="MetadataFilterExpression">
+  <Property Name="FilterOperator" Type="Edm.String" />
+  <Property Name="Conditions" Type="Collection(mscrm.MetadataConditionExpression)" />
+</ComplexType>
+<ComplexType Name="MetadataQueryExpression">
+  <Property Name="Properties" Type="mscrm.MetadataPropertiesExpression" />
+  <Property Name="Criteria" Type="mscrm.MetadataFilterExpression" />
+</ComplexType>
+<ComplexType Name="LabelQueryExpression">
+  <Property Name="FilterLanguages" Type="Collection(Edm.Int32)" />
+  <Property Name="MissingLabelBehavior" Type="Edm.Int32" />
+</ComplexType>
+<ComplexType Name="EntityQueryExpression">
+  <Property Name="Properties" Type="mscrm.MetadataPropertiesExpression" />
+  <Property Name="Criteria" Type="mscrm.MetadataFilterExpression" />
+  <Property Name="AttributeQuery" Type="mscrm.MetadataQueryExpression" />
+  <Property Name="RelationshipQuery" Type="mscrm.MetadataQueryExpression" />
+  <Property Name="KeyQuery" Type="mscrm.MetadataQueryExpression" />
+  <Property Name="LabelQuery" Type="mscrm.LabelQueryExpression" />
+</ComplexType>
+<ComplexType Name="DeletedMetadataCollection">
+  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
+  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
+  <Property Name="Keys" Type="Collection(Edm.String)" />
+  <Property Name="Values" Type="Collection(Edm.String)" />
+</ComplexType>
+<ComplexType Name="ComplexAttributeMetadata">
+  <Property Name="LogicalName" Type="Edm.String" />
+  <Property Name="SchemaName" Type="Edm.String" />
+  <Property Name="MetadataId" Type="Edm.Guid" />
+  <Property Name="AttributeType" Type="Edm.String" />
+  <Property Name="HasChanged" Type="Edm.Boolean" />
+</ComplexType>
+<ComplexType Name="ComplexEntityMetadata">
+  <Property Name="LogicalName" Type="Edm.String" />
+  <Property Name="SchemaName" Type="Edm.String" />
+  <Property Name="MetadataId" Type="Edm.Guid" />
+  <Property Name="HasChanged" Type="Edm.Boolean" />
+  <Property Name="Attributes" Type="Collection(mscrm.ComplexAttributeMetadata)" />
+</ComplexType>
+<ComplexType Name="RetrieveMetadataChangesResponse">
+  <Property Name="ServerVersionStamp" Type="Edm.String" />
+  <Property Name="DeletedMetadata" Type="mscrm.DeletedMetadataCollection" />
+  <Property Name="EntityMetadata" Type="Collection(mscrm.ComplexEntityMetadata)" />
+</ComplexType>`;
+
+// Bound to the role table, so emitted only when that table exists.
+const CSDL_ROLE_ACTIONS = `<Action Name="AddPrivilegesRole" IsBound="true">
+  <Parameter Name="entity" Type="mscrm.role" Nullable="false" />
+  <Parameter Name="Privileges" Type="Collection(mscrm.RolePrivilege)" />
+</Action>`;
 
 // Bound to the systemuser table, so emitted only when that table exists.
 const CSDL_USER_FUNCTIONS = `<Function Name="RetrieveUserPrivileges" IsBound="true">
@@ -329,6 +430,12 @@ const CSDL_USER_FUNCTIONS = `<Function Name="RetrieveUserPrivileges" IsBound="tr
 
 const CSDL_OPERATIONS = `<Function Name="WhoAmI">
   <ReturnType Type="mscrm.WhoAmIResponse" Nullable="false" />
+</Function>
+<Function Name="RetrieveMetadataChanges">
+  <Parameter Name="Query" Type="mscrm.EntityQueryExpression" />
+  <Parameter Name="ClientVersionStamp" Type="Edm.String" />
+  <Parameter Name="DeletedMetadataFilters" Type="mscrm.DeletedMetadataFilters" Nullable="false" />
+  <ReturnType Type="mscrm.RetrieveMetadataChangesResponse" Nullable="false" />
 </Function>
 <Function Name="RetrieveVersion">
   <ReturnType Type="mscrm.RetrieveVersionResponse" Nullable="false" />
@@ -362,6 +469,7 @@ const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" Incl
 <FunctionImport Name="RetrieveVersion" Function="mscrm.RetrieveVersion" IncludeInServiceDocument="false" />
 <FunctionImport Name="RetrieveCurrentOrganization" Function="mscrm.RetrieveCurrentOrganization" IncludeInServiceDocument="false" />
 <FunctionImport Name="RetrieveTotalRecordCount" Function="mscrm.RetrieveTotalRecordCount" IncludeInServiceDocument="false" />
+<FunctionImport Name="RetrieveMetadataChanges" Function="mscrm.RetrieveMetadataChanges" IncludeInServiceDocument="false" />
 <ActionImport Name="GrantAccess" Action="mscrm.GrantAccess" />`;
 
 export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables }) {
@@ -386,14 +494,15 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const m = mapping ?? virtual?.mapping ?? null;
     if (!s && !m) return null;
     const std = standardTable(logical);
-    const ownership = s?.ownership ?? m?.ownership ?? "";
     return {
       logical,
       s,
       m,
       lcid,
       isVirtual: s ? Boolean(s.isVirtual) : !mapping,
-      organizationOwned: /organization/i.test(ownership),
+      // One ownership answer per table, shared with the security model: 'user' | 'org'.
+      ownership: ownershipOf(logical, s, m),
+      ownershipType: ownershipTypeName(logical, s, m),
       entitySet: s?.entitySetName ?? m?.entitySet ?? std?.entitySet ?? pluralizeEntitySetName(logical),
       idColumn: s?.primaryIdAttribute ?? m?.idColumn ?? std?.primaryIdAttribute ?? `${logical}id`,
       primaryName: s?.primaryNameAttribute ?? m?.nameColumn ?? std?.primaryNameAttribute ?? null,
@@ -422,7 +531,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       PrimaryIdAttribute: src.idColumn,
       PrimaryNameAttribute: src.primaryName,
       ObjectTypeCode: objectTypeCode(src.logical),
-      OwnershipType: src.organizationOwned ? "OrganizationOwned" : "UserOwned",
+      OwnershipType: src.ownershipType,
       IsCustomEntity: PREFIX.test(src.logical),
       IsActivity: Boolean(src.s?.isActivity),
       IsIntersect: Boolean(src.s?.isIntersect || src.m?.intersect),
@@ -470,7 +579,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
         DateTimeBehavior: { Value: def.dateTimeBehavior ?? "UserLocal" },
       });
     }
-    if (["Lookup", "Customer", "Owner"].includes(attrType)) meta.Targets = def.targets ?? def.lookupTargets ?? [];
+    if (["Lookup", "Customer", "Owner"].includes(attrType)) {
+      const defaults = { Owner: ["systemuser", "team"], Customer: ["account", "contact"] }[attrType] ?? [];
+      meta.Targets = def.targets ?? def.lookupTargets ?? defaults;
+    }
     if (["picklist", "multiselectpicklist", "state", "status"].includes(type)) meta.OptionSet = optionSetOf(src, name, type, def);
     return meta;
   }
@@ -492,7 +604,8 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   // Full AttributeMetadata from exported column facts when present, else the compact shape from the field.
   function attributeOf(src, name, def) {
     const id = name === src.idColumn;
-    const type = id ? "primarykey" : String(def.columnMetadata?.type ?? def.dataverseType ?? "nvarchar").toLowerCase();
+    // ownerid is the owner lookup whatever type the export or mapping gives it.
+    const type = id ? "primarykey" : name === "ownerid" ? "owner" : String(def.columnMetadata?.type ?? def.dataverseType ?? "nvarchar").toLowerCase();
     const [attrType, stem, typeName] = TYPES[type] ?? TYPES.nvarchar;
     const exported = def.columnMetadata ? attributeMetadata(src.logical, name, def, { primaryName: src.primaryName, lcid }) : null;
     const meta = exported ?? synthesize(src, name, def, { attrType, typeName, type, id });
@@ -504,7 +617,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   }
 
   function attributesOf(src) {
-    const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.organizationOwned ? {} : OWNER_COLUMNS) };
+    const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === "user" ? OWNER_COLUMNS : {}) };
     const all = { [src.idColumn]: { dataverseType: "primarykey" }, ...defaults, ...src.fields };
     return Object.entries(all).map(([name, def]) => attributeOf(src, name, def));
   }
@@ -652,7 +765,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const tables = new Map(names.map((logical) => {
       const src = source(logical);
       const attributes = attributesOf(src);
-      return [logical, { src, attributes, lookups: attributes.filter((a) => LOOKUP_STEMS.has(stemOf(a))) }];
+      return [logical, { src, attributes, lookups: attributes.filter((a) => stemOf(a) === "Lookup") }];
     }));
     const lookupOf = (logical, name) => tables.get(logical)?.lookups.find((a) => a.LogicalName === name);
     // Single-valued navigation is named after its lookup; a polymorphic lookup adds the target table.
@@ -662,6 +775,11 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const navs = new Map(names.map((logical) => [logical, []]));
     for (const [logical, { lookups }] of tables) {
       for (const lookup of lookups) {
+        // Owner points at the abstract principal: one ownerid navigation; principal tables inherit it.
+        if (lookup.AttributeType === "Owner") {
+          if (!PRINCIPAL_TABLES.has(logical)) navs.get(logical).push({ name: lookup.LogicalName, target: null, type: "mscrm.principal", lookup: lookup.LogicalName, partner: null });
+          continue;
+        }
         for (const target of lookup.Targets ?? []) {
           if (!known.has(target)) continue;
           const rel = oneToMany.find((r) => r.referencingEntity === logical && r.referencingAttribute === lookup.LogicalName && r.referencedEntity === target);
@@ -694,25 +812,28 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const { src, attributes } = tables.get(logical);
       const entity = entityOf(src);
       const properties = attributes.map((a) => {
-        const lookup = LOOKUP_STEMS.has(stemOf(a));
+        const lookup = stemOf(a) === "Lookup";
         const id = a.LogicalName === src.idColumn;
         return { name: lookup ? `_${a.LogicalName}_value` : a.LogicalName, type: edm(a), id, scale: ["Decimal", "Money"].includes(stemOf(a)), computed: lookup || id, label: labelText(a.DisplayName) };
       }).sort(byName).map((p) => xmlElement("Property", { Name: p.name, Type: p.type, Nullable: p.id ? "false" : null, Scale: p.scale ? "Variable" : null },
         annotations && p.label ? xmlElement("Annotation", { Term: DESCRIPTION, String: p.label }) : [],
         annotations && p.computed ? xmlElement("Annotation", { Term: COMPUTED, Bool: "true" }) : []));
       const navigation = navs.get(logical).sort(byName).map((n) => xmlElement("NavigationProperty", { Name: n.name, Type: n.type, Partner: n.partner },
-        n.lookup ? xmlElement("ReferentialConstraint", { Property: `_${n.lookup}_value`, ReferencedProperty: tables.get(n.target).src.idColumn }) : []));
+        n.lookup ? xmlElement("ReferentialConstraint", { Property: `_${n.lookup}_value`, ReferencedProperty: n.target ? tables.get(n.target).src.idColumn : "ownerid" }) : []));
       const label = labelText(entity.DisplayName);
-      return xmlElement("EntityType", { Name: logical, BaseType: ["systemuser", "team"].includes(logical) ? "mscrm.principal" : "mscrm.crmbaseentity" },
-        xmlElement("Key", {}, xmlElement("PropertyRef", { Name: src.idColumn })),
+      // A principal derives its key from mscrm.principal (ownerid); a derived type may not redeclare one.
+      const principal = PRINCIPAL_TABLES.has(logical);
+      return xmlElement("EntityType", { Name: logical, BaseType: principal ? "mscrm.principal" : "mscrm.crmbaseentity" },
+        principal ? [] : xmlElement("Key", {}, xmlElement("PropertyRef", { Name: src.idColumn })),
         annotations && label ? xmlElement("Annotation", { Term: DESCRIPTION, String: label }) : [],
         annotations ? alternateKeys(src) : [],
         properties, navigation);
     });
+    // Polymorphic owner navigation has no entity set; only concrete targets are bound.
     const sets = names.map((logical) => xmlElement("EntitySet", { Name: tables.get(logical).src.entitySet, EntityType: `mscrm.${logical}` },
-      navs.get(logical).map((n) => xmlElement("NavigationPropertyBinding", { Path: n.name, Target: tables.get(n.target).src.entitySet }))));
+      navs.get(logical).filter((n) => n.target).map((n) => xmlElement("NavigationPropertyBinding", { Path: n.name, Target: tables.get(n.target).src.entitySet }))));
     const schemaLines = xmlElement("Schema", { Namespace: "Microsoft.Dynamics.CRM", Alias: "mscrm", xmlns: "http://docs.oasis-open.org/odata/ns/edm" },
-      xmlFixed(CSDL_TYPES), typeLines, known.has("systemuser") ? xmlFixed(CSDL_USER_FUNCTIONS) : [], xmlFixed(CSDL_OPERATIONS),
+      xmlFixed(CSDL_TYPES), typeLines, known.has("systemuser") ? xmlFixed(CSDL_USER_FUNCTIONS) : [], known.has("role") ? xmlFixed(CSDL_ROLE_ACTIONS) : [], xmlFixed(CSDL_OPERATIONS),
       xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(CSDL_IMPORTS)));
     return ['<?xml version="1.0" encoding="utf-8"?>', ...xmlElement("edmx:Edmx", { Version: "4.0", "xmlns:edmx": "http://docs.oasis-open.org/odata/ns/edmx" }, xmlElement("edmx:DataServices", {}, schemaLines))].join("\n") + "\n";
   }

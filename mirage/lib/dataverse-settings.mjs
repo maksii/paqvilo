@@ -1,5 +1,18 @@
+import { uuidV5 } from './dataverse-security.mjs';
+
 const GUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const GRANTS = ['client_credentials', 'authorization_code', 'device_code', 'refresh_token', 'password', 'on_behalf_of'];
+// Setting names mapped to their wire form on the token endpoint (grant_type values).
+export const GRANT_TYPES = {
+  client_credentials: 'client_credentials',
+  authorization_code: 'authorization_code',
+  device_code: 'urn:ietf:params:oauth:grant-type:device_code',
+  refresh_token: 'refresh_token',
+  password: 'password',
+  on_behalf_of: 'urn:ietf:params:oauth:grant-type:jwt-bearer',
+};
+const GRANTS = Object.keys(GRANT_TYPES);
+// Namespace for the default user objectId (the RFC 4122 DNS namespace).
+const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection'];
 const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants'];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
@@ -16,6 +29,16 @@ function knownKeys(value, keys, label) {
 function required(value, label) {
   if (value === undefined) throw new Error(`${label} is required`);
   return value;
+}
+
+// The setting name for a grant given as its name or its URN wire form; null when unknown.
+const grantName = (value) => GRANTS.find((name) => name === value || GRANT_TYPES[name] === value) ?? null;
+
+// True when the application may use the grant (a missing allowedGrants list allows all); names and URN forms both match.
+export function grantAllowed(app, grantType) {
+  const wanted = grantName(grantType);
+  if (wanted === null) return false;
+  return (app.allowedGrants ?? GRANTS).some((grant) => grantName(grant) === wanted);
 }
 
 function guid(value, label) {
@@ -61,7 +84,7 @@ function application(value, label) {
     if (!['http:', 'https:'].includes(url.protocol)) throw new Error(`${label}.redirectUris[${index}] must be an http(s) URL`);
   });
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
-  if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => !GRANTS.includes(grant))) throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
+  if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null)) throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
   const secretEnvironmentVariable = text(value.secretEnvironmentVariable, `${label}.secretEnvironmentVariable`, null, /^[A-Z_][A-Z0-9_]*$/);
   return {
     appId: guid(required(value.appId, `${label}.appId`), `${label}.appId`),
@@ -70,17 +93,19 @@ function application(value, label) {
     roles: textList(value.roles, `${label}.roles`, ['System Administrator']),
     publicClient: boolean(value.publicClient, `${label}.publicClient`, false),
     redirectUris: [...redirectUris],
-    allowedGrants: [...allowedGrants],
+    allowedGrants: [...new Set(allowedGrants.map(grantName))],
   };
 }
 
 function user(value, label) {
   plainObject(value, label);
   knownKeys(value, USER_KEYS, label);
+  const domainname = text(required(value.domainname, `${label}.domainname`), `${label}.domainname`, null, /^[^\s@]+@[^\s@]+$/);
   return {
-    domainname: text(required(value.domainname, `${label}.domainname`), `${label}.domainname`, null, /^[^\s@]+@[^\s@]+$/),
+    domainname,
     fullname: text(required(value.fullname, `${label}.fullname`), `${label}.fullname`, null),
-    objectId: guid(value.objectId, `${label}.objectId`),
+    // Deterministic per domain name, so the same configuration always yields the same Entra object id.
+    objectId: guid(value.objectId, `${label}.objectId`) ?? uuidV5(USER_NAMESPACE, `paqvilo-dataverse-user:${domainname.toLowerCase()}`),
     roles: textList(value.roles, `${label}.roles`, ['Basic User']),
   };
 }

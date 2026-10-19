@@ -74,6 +74,16 @@ Notes for specific clients:
 - **MSAL libraries** need an https authority: set `tls: true` and point the authority at `<tlsOrigin>/<tenantId>` with instance discovery disabled. `@azure/msal-node`: `knownAuthorities` containing the tlsOrigin host. MSAL Python: `validate_authority=False, instance_discovery=False`. .NET: `WithInstanceDiscovery(false)`. Trust the CA as described above; .NET clients that read only the OS store need their own trust configuration. Microsoft's Python Dataverse SDK takes `tlsOrigin` as `base_url`.
 - **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. SOAP `IOrganizationService` calls receive a SOAP fault, because only the Web API is simulated.
 
+## Token behaviour
+
+- `expires_in` is 3599 for a token with a 3600-second lifetime.
+- `client_info` is returned when the request asks for it.
+- Certificate assertions accept RS256 and PS256 and match a registered certificate by `x5t` or `x5t#S256`. A reused `jti` is rejected as a replay.
+- Public clients must send PKCE with `authorization_code`.
+- An authorization code is spent on any redemption attempt.
+- The sign-in pickers list only interactive, enabled users with an Entra object id. SYSTEM and application users never appear.
+- A configured `users` entry without `objectId` gets a deterministic object id.
+
 ## Users, roles and privileges
 
 On start, the simulator seeds the security tables for the organization:
@@ -101,6 +111,51 @@ Privilege depth decides which rows a caller can read or change:
 
 Portal table permissions and web roles never apply to this API. Security roles never apply to the portal. The two access models are independent, so a test of one says nothing about the other.
 
+## Ownership
+
+User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusinessunit` on create and when `ownerid` is reassigned. Only the columns the mapping declares are filled. `statecode` and `statuscode` take their defaults on create.
+
+- Privilege depth for a user-owned row is evaluated against the owner's business unit.
+- Team-inherited privileges apply as if the team were the caller. Basic covers team-owned rows. Local, Deep and Global are evaluated against the team's business unit. `RetrieveUserPrivileges` reports team grants as Basic.
+- A row without an owner on a user-owned table is visible only at Global depth.
+
+## Request handling
+
+### Validation
+
+- An unknown payload property answers 400, error code `0x0`, with the documented "Invalid property" message.
+- An unknown property in `$select`, `$filter`, `$orderby` or `$expand` answers 400, `0x0`, "Could not find a property named ...".
+- Entity sets are matched case-sensitively by set name. A logical name answers 404 `0x8006088a`.
+- `$skip`, `$search` and `$format` answer 400 `0x80060888`.
+- URLs up to 32,768 characters are accepted. A longer URL answers 400 `0x80060888`, "Invalid URI: The Uri string is too long."
+- A path segment over 260 characters answers 400 "Bad Request - Invalid URL".
+- Alternate-key values containing control characters are rejected.
+- A malformed `Prefer` header answers 400 with the envelope `{ "Message", "ErrorCode": "0x80097303" }`.
+
+### Headers
+
+- `Preference-Applied` echoes only the preferences that were applied: `odata.include-annotations`, `odata.maxpagesize`, `return=representation`, and `odata.continue-on-error` inside `$batch`.
+- `odata.track-changes` and `respond-async` are accepted but not applied. No `@odata.deltaLink` is returned.
+- `MSCRM.BypassCustomPluginExecution` and `MSCRM.BypassBusinessLogicExecution` require the `prvBypassCustomPlugins` privilege, which System Administrator and System Customizer hold. They are then accepted as no-ops, because the simulated API runs no plug-ins.
+- `MSCRM.SuppressDuplicateDetection`, `MSCRM.SolutionUniqueName`, `MSCRM.MergeLabels` and `Consistency` are accepted as no-ops.
+- `x-ms-client-request-id` is echoed.
+- Every response carries `x-ms-service-request-id`, `REQ_ID`, the rate-limit headers and `x-ms-dop-hint`.
+
+### Impersonation
+
+`CallerObjectId` and `MSCRMCallerID` require `prvActOnBehalfOfAnotherUser`. Rows record `createdonbehalfby` and `modifiedonbehalfby` when the mapping declares them. A disabled or unknown target is refused.
+
+### Batch
+
+`$batch` part errors use the Dataverse error envelope. A change set runs under the runtime's single mutation queue and is rolled back as a whole on failure (snapshot and restore). This is a local atomicity model, not transaction isolation for readers.
+
+## Metadata
+
+- `ownerid` and customer columns are `LookupAttributeMetadata` with `AttributeType` `Owner` or `Customer`.
+- `OwnershipType` is `UserOwned`, `OrganizationOwned` or `BusinessOwned`. The security tables report `BusinessOwned`.
+- `$metadata` declares the response complex types `OrganizationDetail`, `RolePrivilege` and `RetrieveMetadataChanges`, and a single `ownerid` navigation typed `principal`.
+- `GlobalOptionSetDefinitions` rejects `$filter`.
+
 ## Administration endpoints
 
 These endpoints live under the local administration API (`/_sim/`).
@@ -120,10 +175,12 @@ These endpoints live under the local administration API (`/_sim/`).
 
 Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets appear only in the create responses above. Subsequent reads show `hint` and `expiresOn`. A `password` is 8 to 256 characters, stored hashed, and never returned; reads show only `passwordSet`. The request log never contains tokens.
 
+`POST /_sim/api/reset` keeps registrations and re-seeds the security tables. The security tables it seeds (`systemuser`, `role`, `businessunit` and the others) are marked as Dataverse-only mappings in the shared local state: the portal `/_api/` resolver ignores them, so enabling the API does not change which entity sets the portal recognises. Liquid FetchXML on the portal can still query those tables, subject to the portal's table permissions, exactly as it can on a live site.
+
 ## Supported surface
 
 - Service document, and entity sets with create, read, update, delete.
-- Query options `$select`, `$filter`, `$orderby`, `$top`, `$expand`, `$count` and annotations. `$skip`, `$search` and `$format` are not supported.
+- Query options `$select`, `$filter`, `$orderby`, `$top`, `$expand`, `$count` and annotations. `$skip`, `$search` and `$format` are not supported. `$apply` aggregation is passed through to the local query engine.
 - Paging with the `odata.maxpagesize` preference and `$skiptoken`.
 - `fetchXml` queries.
 - Navigation properties and `$ref` associations.
@@ -145,11 +202,7 @@ Not simulated, by design:
 - Solution import and export, plug-in registration through the API, the `pac` CLI.
 - Metadata writes (`EntityDefinitions` POST and PUT).
 - Browser-based MSAL.js sign-in beyond the minimal picker.
-
-Not available in this build:
-
-- `$apply`.
-- Bound functions and bulk actions.
+- Bound functions and actions other than `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`; `GrantAccess`, `Merge`, `WinOpportunity`, `ExecuteWorkflow` and `DeleteMultiple` answer 501.
 
 ## Evidence
 
@@ -161,5 +214,8 @@ The local behaviour is a simulation. Parity claims rest on the SDK gates under `
 | `dynamics-web-api` | `dynamics-web-api` 2.5.1 with `@azure/msal-node` 7.1.0 | client_credentials over `authorityMetadata` (http) and over OpenID Connect discovery on the TLS listener, CRUD, `$select`/`$filter`/`$expand`/`$count`, paging, alternate keys, FetchXML paging cookies, `$batch` change sets, error codes |
 | `python-dataverse` | Microsoft `PowerPlatform-Dataverse-Client` 1.1.0 with `msal` 1.39.0 | TLS `base_url`, OpenID Connect discovery with `instance_discovery=False`, picklist label resolution through `EntityDefinitions` and `OptionSet` expansion, CRUD, query builder, `CreateMultiple`, `$batch`, 400 and 404 error details |
 | `webapi-samples` | Microsoft `PowerApps-Samples` WebAPIService (C#, pinned commit) | Microsoft's own request shapes: `WhoAmI`, create with `OData-EntityId`, retrieve, update, `RetrieveMultiple`, delete, `$batch` change set, `x-ms-dop-hint` |
+| `serviceclient` | `Microsoft.PowerPlatform.Dataverse.Client` 1.2.27 (C#, token-provider constructor) | Port 80 (ServiceClient drops the port), `RetrieveCurrentOrganization` on v9.0 with the `Endpoints` dictionary and the version switch to v9.2, `ExecuteWebRequest` CRUD, `WhoAmI` over the Web API, and a clean `FaultException` for the SOAP `IOrganizationService` call |
+
+`npm run test:sdk` runs all five gates, and all five pass.
 
 Gate dependencies stay out of the package: Node packages install under `mirage/test-sdk/<gate>/node_modules`, the Python environment and the cloned sample repository live under the ignored `.paqvilo/sdk-gates/`. A passing SDK gate shows that the client could authenticate and receive the documented shapes. It does not show that every live environment behaves identically.

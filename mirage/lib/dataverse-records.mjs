@@ -5,10 +5,13 @@
 import { DataError } from "./data-error.mjs";
 import { parseEntityReference } from "./data.mjs";
 import { webApiPagingCookie } from "./fetchxml-engine.mjs";
-import { parseExpand, parseSelect } from "./odata-query.mjs";
-import { createWebApiFormatter } from "./webapi-format.mjs";
+import { expressionPaths, parseExpand, parseODataExpression, parseOrderBy, parseSelect } from "./odata-query.mjs";
+import { NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
+import { ownershipOf } from "./dataverse-security.mjs";
 import {
+  JSON_CONTENT_TYPE,
   annotationMatcher,
+  skipTokenQueryValue,
   contextUrl,
   decodeSkipToken,
   encodeSkipToken,
@@ -18,6 +21,9 @@ import {
 } from "./dataverse-odata.mjs";
 
 const PAGE_CAP = 5000;
+// Control annotations a write may carry; other @ annotations are dropped by payload().
+const CONTROL = new Set(["@odata.type", "@odata.context", "@odata.id", "@odata.etag"]);
+const OWNER_FIELDS = ["ownerid", "owninguser", "owningteam"];
 const BIND = "@odata.bind";
 const ALLOWED_QUERY = new Set([
   "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$id",
@@ -53,8 +59,9 @@ function pageOffset(url, pageSize) {
   const text = url.searchParams.get("$skiptoken");
   if (text == null) return 0;
   const token = decodeSkipToken(text);
-  if (!token) throw invalid("The $skiptoken is not valid.", "0x80060888");
-  return (token.pageNumber - 1) * pageSize;
+  const offset = token && Number.isInteger(token.pageNumber) && token.pageNumber >= 2 ? (token.pageNumber - 1) * pageSize : -1;
+  if (offset < 0) throw invalid("The $skiptoken is not valid.", "0x80060888");
+  return offset;
 }
 
 // The primary id always travels with $select so paging and etags have it; the context URL keeps the caller's list.
@@ -83,11 +90,35 @@ function refOf(value) {
   return ref;
 }
 
+// The token is passed to skipTokenQueryValue after one decode: its inner pagingcookie stays percent-encoded.
 function nextLinkOf(c, base, token) {
   const query = new URLSearchParams(c.url.searchParams);
   query.delete("$skiptoken");
   const text = query.toString().replace(/%24/g, "$");
-  return `${base}?${text ? `${text}&` : ""}$skiptoken=${encodeURIComponent(token)}`;
+  return `${base}?${text ? `${text}&` : ""}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
+}
+
+const refKey = (id) => String(id ?? "").toLowerCase();
+const refIdOf = (value) => (value && typeof value === "object" ? (value.id ?? null) : (value ?? null));
+
+function withKeyViolation(mapping, data, fn) {
+  try {
+    return fn();
+  } catch (error) {
+    if (error?.code !== "DuplicateRecord" || !String(error.message).startsWith("A record that has the attribute values")) throw error;
+    const attributesOf = (key) => key.attributes ?? key.keyAttributes ?? [];
+    const keys = mapping.alternateKeys ?? [];
+    const key = keys.find((item) => attributesOf(item).every((name) => name in data)) ?? keys[0];
+    if (!key) throw error;
+    const columns = attributesOf(key);
+    const keyName = key.name ?? columns.join("_");
+    throw new DataError(
+      `Entity Key ${keyName} violated. A record with the same value for ${columns.join(", ")} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`,
+      412,
+      "DuplicateRecord",
+      { innerCode: "0x80060892", keyName, columns },
+    );
+  }
 }
 
 export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined }) {
@@ -107,16 +138,75 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     throw invalid(`Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : A request body is required.`, "0x80048d19");
   };
 
+  // Entity set names are case-sensitive; logical names do not route (Dataverse 404 0x8006088a).
   function mappingForSet(set) {
     const owner = Object.keys(store.state.mappings).find((name) => store.state.mappings[name]?.entitySet === set);
-    try {
-      return store.resolveMapping(owner ?? set);
-    } catch {
-      throw unknownSet(set);
-    }
+    if (owner) return store.resolveMapping(owner);
+    const virtual = store.virtualTable(set)?.mapping;
+    if (virtual?.entitySet === set) return virtual;
+    throw unknownSet(set);
   }
 
   const navigationOf = (mapping, segment) => mapping.relationships?.[segment] ?? null;
+  const isMember = (mapping, name) =>
+    name === mapping.idColumn || Boolean(navigationOf(mapping, name)) || Boolean(store.fieldDefinition(mapping.logicalName, name, metadataFields));
+  const undeclared = (set, nav) =>
+    invalid(
+      `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: An undeclared property '${nav}' which only has property annotations in the payload but no property value was found in the payload. In OData, only declared navigation properties and declared named streams can be represented as properties without values`,
+      "0x80048d19",
+    );
+  const onBehalfOf = (c) =>
+    c.caller && c.user && refKey(c.caller.systemuserid) !== refKey(c.user.systemuserid)
+      ? principals.modifiedBy({ user: c.caller }).modifiedby
+      : null;
+
+  // Every key of a write must be a property, the id, a navigation or a nav@odata.bind on one (Dataverse 0x0 / 0x80048d19).
+  function assertPayload(mapping, body) {
+    for (const key of Object.keys(body)) {
+      if (CONTROL.has(key) || (key.includes("@") && !key.endsWith(BIND))) continue;
+      if (key.endsWith(BIND)) {
+        const nav = key.slice(0, -BIND.length);
+        if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
+        continue;
+      }
+      if (!isMember(mapping, key)) {
+        throw new DataError(
+          `An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property '${key}' was found in entity 'Microsoft.Dynamics.CRM.${mapping.logicalName}'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.`,
+          400,
+          "InvalidRequest",
+          { innerCode: "0x0" },
+        );
+      }
+    }
+  }
+
+  // $filter, $orderby and $expand roots must name a property (or a navigation for $expand); unknown ones are 0x0.
+  function assertQueryMembers(mapping, params) {
+    const aliases = Object.fromEntries([...params].filter(([name]) => name.startsWith("@")));
+    const filter = params.get("$filter");
+    if (filter) {
+      for (const [head] of expressionPaths(parseODataExpression(filter, { dialect: "dataverse", aliases }))) {
+        if (head && !head.startsWith("@") && !navigationOf(mapping, head)) assertProperty(mapping, head);
+      }
+    }
+    for (const spec of parseOrderBy(params.get("$orderby"))) {
+      const head = spec.path[0];
+      if (!navigationOf(mapping, head)) assertProperty(mapping, head);
+    }
+    for (const item of parseExpand(params.get("$expand"))) {
+      if (!navigationOf(mapping, item.navigation)) assertProperty(mapping, item.navigation);
+    }
+  }
+
+  // Formats one row and adds the owner navigation annotation the formatter leaves out.
+  function formatRow(c, mapping, row, options) {
+    const formatted = c.formatter.formatEntity(row, mapping, options);
+    for (const field of OWNER_FIELDS) {
+      const key = `_${field}_value`;
+      if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined) formatted[`${key}${NAVIGATION}`] = field;
+    }
+    return formatted;
+  }
 
   function rowOf(c, mapping, id) {
     return String(id).includes("=") ? (store.findByKey(mapping, id) ?? null) : (store.get(mapping.logicalName, id, c.identity) ?? null);
@@ -144,6 +234,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     params.delete("$skiptoken");
     if (c.prefer.maxPageSize != null) params.delete("$top");
     assertSelect(mapping, params.get("$select"));
+    assertQueryMembers(mapping, params);
     const select = withIdSelect(params.get("$select"), mapping.idColumn);
     if (select != null) params.set("$select", select);
     return params;
@@ -162,6 +253,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       if (name === "$expand" || name === "$select" || name.startsWith("@")) params.append(name, value);
     }
     assertSelect(mapping, params.get("$select"));
+    assertQueryMembers(mapping, params);
     const select = withIdSelect(params.get("$select"), mapping.idColumn);
     if (select != null) params.set("$select", select);
     return params;
@@ -171,7 +263,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const result = store.query(mapping.logicalName, params, c.identity, undefined, queryOptions({ id }));
     const projected = result.value[0];
     if (!projected) throw notFoundRecord(mapping.logicalName, id);
-    const formatted = c.formatter.formatEntity(projected, mapping, { etag: true, expand: parseExpand(params.get("$expand")) });
+    const formatted = formatRow(c, mapping, projected, { etag: true, expand: parseExpand(params.get("$expand")) });
     return { "@odata.context": contextFor(c, `${suffixFor(c, mapping)}/$entity`), ...keepAnnotations(formatted, c.include) };
   }
 
@@ -192,7 +284,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (c.include?.(RECORD_COUNT)) body[`@${RECORD_COUNT}`] = counted ? Math.min(total, PAGE_CAP) : -1;
     if (c.include?.(RECORD_LIMIT)) body[`@${RECORD_LIMIT}`] = counted ? total > PAGE_CAP : false;
     const expand = parseExpand(url.searchParams.get("$expand"));
-    body.value = rows.map((row) => keepAnnotations(c.formatter.formatEntity(row, mapping, { etag: true, expand }), c.include));
+    body.value = rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand }), c.include));
     if (result.paging?.moreRecords) {
       const idColumn = mapping.idColumn;
       const token = encodeSkipToken({
@@ -204,13 +296,14 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       const base = nextBase ?? `${c.origin}/api/data/${c.version}/${mapping.entitySet}`;
       body["@odata.nextLink"] = nextLinkOf(c, base, token);
     }
-    const applied = preferenceApplied(prefer, { paged: true });
+    const applied = preferenceApplied(prefer, { paged: true, batch: false });
     return { status: 200, headers: applied ? { "Preference-Applied": applied } : {}, body };
   }
 
   function applyPage(c, mapping, readFilter) {
+    assertQueryMembers(mapping, c.url.searchParams);
     const result = store.query(mapping.logicalName, new URLSearchParams(c.url.searchParams), c.identity, undefined, queryOptions(filterOptions(readFilter)));
-    const value = result.value.map((row) => keepAnnotations(c.formatter.formatEntity(row, mapping, { etag: false }), c.include));
+    const value = result.value.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: false }), c.include));
     return { status: 200, body: { "@odata.context": contextFor(c, mapping.entitySet), ...(result["@odata.count"] !== undefined ? { "@odata.count": result["@odata.count"] } : {}), value } };
   }
 
@@ -252,6 +345,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const params = new URLSearchParams();
     if (url.searchParams.has("$filter")) params.set("$filter", url.searchParams.get("$filter"));
     params.set("$select", mapping.idColumn);
+    assertQueryMembers(mapping, params);
     const result = store.query(mapping.logicalName, params, c.identity, undefined, queryOptions(filterOptions(filterOf(c, mapping))));
     return { status: 200, body: String(Math.min(result.value.length, PAGE_CAP)) };
   }
@@ -265,16 +359,29 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const etag = body["@odata.etag"];
     const match = c.headers["if-none-match"];
     if (etag && match && !c.url.searchParams.has("$expand") && c.include == null && String(match).split(",").map((item) => item.trim()).includes(etag)) {
-      return { status: 304, headers: { ETag: etag } };
+      return { status: 304, headers: { ETag: etag, "Content-Type": JSON_CONTENT_TYPE, "OData-Version": "4.0" } };
     }
     return { status: 200, headers: etagOf(body), body };
   }
 
   // Payload as the store receives it: plain columns and nav@odata.bind, every other annotation dropped.
-  function payload(body) {
+  function payload(mapping, body) {
+    assertPayload(mapping, body);
     const data = {};
     for (const [key, value] of Object.entries(body)) if (!key.includes("@") || key.endsWith(BIND)) data[key] = value;
     return data;
+  }
+
+  // Owner columns that follow an ownerid bind: the user's or team's business unit, owninguser for users, owningteam for teams.
+  function ownerColumns(mapping, target, row) {
+    if (ownershipOf(mapping.logicalName, undefined, mapping) !== "user") return {};
+    const buId = refIdOf(row.businessunitid);
+    const bu = buId ? store.tableRows("businessunit").find((item) => sameId(item.businessunitid, buId)) : null;
+    const buRef = bu ? { id: bu.businessunitid, logical_name: "businessunit", name: bu.name ?? "" } : null;
+    const columns = target.logicalName === "team"
+      ? { owninguser: null, owningteam: { id: row.teamid, logical_name: "team", name: row.name ?? "" }, owningbusinessunit: buRef }
+      : { owninguser: principals.ownershipDefaults({ user: { systemuserid: row.systemuserid, businessunitid: buId }, mapping }).owninguser, owningteam: null, owningbusinessunit: buRef };
+    return Object.fromEntries(Object.entries(columns).filter(([name]) => store.fieldDefinition(mapping.logicalName, name, metadataFields)));
   }
 
   // Authorizes each bind (appendto on the bound row, assign for ownerid) and normalises it to /set(key).
@@ -282,7 +389,10 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     for (const key of Object.keys(data)) {
       if (!key.endsWith(BIND)) continue;
       const nav = key.slice(0, -BIND.length);
-      if (nav === "ownerid") authorize(c, mapping.logicalName, "assign", mapping, existing ?? undefined);
+      if (nav === "ownerid") {
+        if (!isMember(mapping, nav)) throw undeclared(mapping.entitySet, nav);
+        authorize(c, mapping.logicalName, "assign", mapping, existing ?? undefined);
+      }
       if (data[key] === null) continue;
       const ref = refOf(data[key]);
       const target = mappingForSet(ref.set);
@@ -290,14 +400,16 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       if (!row) throw notFoundRecord(target.logicalName, ref.id);
       authorize(c, target.logicalName, "appendto", target, row);
       data[key] = `/${ref.set}(${ref.id})`;
+      if (nav === "ownerid") Object.assign(data, ownerColumns(mapping, target, row));
     }
     return data;
   }
 
-  // ponytail: ownership defaults only fill columns the mapping declares, so tables without ownerid get no owner column.
+  // ponytail: ownership and state defaults only fill columns the mapping declares, so tables without ownerid get no owner column.
   function createData(c, mapping, body) {
-    const data = payload(body);
+    const data = payload(mapping, body);
     const logical = mapping.logicalName;
+    const declared = (name) => Boolean(store.fieldDefinition(logical, name, metadataFields));
     authorize(c, logical, "create", mapping);
     if (Object.keys(data).some((key) => key.endsWith(BIND))) authorize(c, logical, "append", mapping);
     bindsOf(c, mapping, data, null);
@@ -306,17 +418,35 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const defaults = principals.ownershipDefaults({ user: owner, mapping });
     for (const [name, value] of Object.entries(defaults)) {
       if (name in data || `${name}${BIND}` in data) continue;
-      if (store.fieldDefinition(logical, name, metadataFields)) data[name] = value;
+      if (declared(name)) data[name] = value;
     }
+    // A new row is active (statecode 0) with the default status of that state.
+    if (!("statecode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) data.statecode = 0;
+    if (!("statuscode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) {
+      const status = defaultStatus(mapping);
+      if (status !== undefined) data.statuscode = status;
+    }
+    const caller = onBehalfOf(c);
+    if (caller && !("createdonbehalfby" in data) && declared("createdonbehalfby")) data.createdonbehalfby = caller;
     return data;
   }
 
+  // The state-0 status: the mapping's own default first, else the first status option whose state is 0.
+  function defaultStatus(mapping) {
+    const fromMapping = mapping.stateStatusDefaults?.[0];
+    if (fromMapping !== undefined) return fromMapping;
+    const definition = store.fieldDefinition(mapping.logicalName, "statuscode", metadataFields);
+    return (definition?.statuses ?? definition?.options ?? []).find((option) => String(option?.state) === "0")?.value;
+  }
+
   function updateData(c, mapping, body, existing) {
-    const data = bindsOf(c, mapping, payload(body), existing);
+    const data = bindsOf(c, mapping, payload(mapping, body), existing);
     delete data[mapping.idColumn];
     for (const [name, value] of Object.entries(principals.modifiedBy({ user: c.user }))) {
       if (store.fieldDefinition(mapping.logicalName, name, metadataFields)) data[name] = value;
     }
+    const caller = onBehalfOf(c);
+    if (caller && store.fieldDefinition(mapping.logicalName, "modifiedonbehalfby", metadataFields)) data.modifiedonbehalfby = caller;
     return data;
   }
 
@@ -330,28 +460,30 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (key.row) {
       authorize(c, logical, "update", mapping, key.row);
       const data = updateData(c, mapping, body, key.row);
-      store.updateRecord(logical, key.row[mapping.idColumn], data, c.identity, writeOptions({ ifMatch, ifNoneMatch }));
+      withKeyViolation(mapping, data, () => store.updateRecord(logical, key.row[mapping.idColumn], data, c.identity, writeOptions({ ifMatch, ifNoneMatch })));
       return { created: false, id: key.row[mapping.idColumn] };
     }
     const data = createData(c, mapping, body);
     if (key.alternate) Object.assign(data, key.alternate);
     else data[mapping.idColumn] = key.id;
-    const row = store.createRecord(logical, data, c.identity, writeOptions({ ifNoneMatch }));
+    const row = withKeyViolation(mapping, data, () => store.createRecord(logical, data, c.identity, writeOptions({ ifNoneMatch })));
     return { created: true, id: row[mapping.idColumn] };
   }
 
   async function createEntity(c) {
     const { mapping } = c;
     const body = bodyOf(mapping.entitySet, c.body);
-    const row = await runWrite(() =>
-      store.createRecord(mapping.logicalName, createData(c, mapping, body), c.identity, writeOptions({ ifNoneMatch: c.headers["if-none-match"] })),
-    );
+    const row = await runWrite(() => {
+      const data = createData(c, mapping, body);
+      return withKeyViolation(mapping, data, () =>
+        store.createRecord(mapping.logicalName, data, c.identity, writeOptions({ ifNoneMatch: c.headers["if-none-match"] })),
+      );
+    });
     const id = row[mapping.idColumn];
-    const location = entityUrl(c.origin, c.version, mapping.entitySet, id);
-    const headers = { "OData-EntityId": location, Location: location };
-    if (!c.prefer.representation) return { status: 204, headers };
+    // 204 names the new row in OData-EntityId; a 201 representation carries the row itself.
+    if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": entityUrl(c.origin, c.version, mapping.entitySet, id) } };
     const represented = entityBody(c, mapping, id, entityParams(c, mapping));
-    return { status: 201, headers: { ...headers, ...etagOf(represented), "Preference-Applied": "return=representation" }, body: represented };
+    return { status: 201, headers: { ...etagOf(represented), "Preference-Applied": "return=representation" }, body: represented };
   }
 
   async function patchEntity(c) {
@@ -362,9 +494,9 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       upsertNow(c, mapping, key, body, { ifMatch: c.headers["if-match"], ifNoneMatch: c.headers["if-none-match"] }),
     );
     const location = entityUrl(c.origin, c.version, mapping.entitySet, key.alternate ? key.text : outcome.id);
-    const headers = { "OData-EntityId": location };
-    if (!c.prefer.representation) return { status: 204, headers };
+    if (!c.prefer.representation) return { status: 204, headers: { "OData-EntityId": location } };
     const represented = entityBody(c, mapping, outcome.id, entityParams(c, mapping));
+    const headers = outcome.created ? {} : { "OData-EntityId": location };
     return { status: outcome.created ? 201 : 200, headers: { ...headers, ...etagOf(represented), "Preference-Applied": "return=representation" }, body: represented };
   }
 
@@ -530,7 +662,10 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (route.name === "CreateMultiple") {
       const targets = targetsOf(c);
       const rows = await runWrite(() =>
-        targets.map((target) => store.createRecord(mapping.logicalName, createData(c, mapping, target), c.identity, writeOptions())),
+        targets.map((target) => {
+          const data = createData(c, mapping, target);
+          return withKeyViolation(mapping, data, () => store.createRecord(mapping.logicalName, data, c.identity, writeOptions()));
+        }),
       );
       return {
         status: 200,
@@ -585,7 +720,13 @@ export function createRecordHandlers({ store, change, principals, metadataFields
         ...ctx,
         mapping,
         include: ctx.prefer.annotations == null ? null : annotationMatcher(ctx.prefer.annotations),
-        formatter: createWebApiFormatter({ store, identity: ctx.identity, metadata: metadataFields, formatting: store.state.settings }),
+        // Money formatted values carry the organization currency symbol, "$" when none is configured.
+        formatter: createWebApiFormatter({
+          store,
+          identity: ctx.identity,
+          metadata: metadataFields,
+          formatting: { ...store.state.settings, currencySymbol: store.state.settings?.currencySymbol ?? "$" },
+        }),
       };
       return dispatch(c);
     },

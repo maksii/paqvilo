@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
+import { constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from "node:crypto";
 import { test } from "node:test";
-import { createAuthority, hashSecret, newClientSecret, verifySecret } from "../lib/dataverse-auth.mjs";
+import { certificateThumbprints, createAuthority, hashSecret, newClientSecret, verifySecret } from "../lib/dataverse-auth.mjs";
 
 // Invented identifiers and a loopback origin only.
 const ORIGIN = "https://127.0.0.1:9443";
@@ -23,10 +23,15 @@ const SECRET = newClientSecret();
 
 const TEST_USER = { systemuserid: "2c3d4e5f-6a7b-4c8d-9e0f-1a2b3c4d5e6f", azureactivedirectoryobjectid: USER_OID, fullname: "Test User", domainname: "test.user@example.test", firstname: "Test", lastname: "User", isdisabled: false };
 const APP_USER = { systemuserid: "3d4e5f6a-7b8c-4d9e-8f0a-2b3c4d5e6f7a", applicationid: APP_ID, azureactivedirectoryobjectid: APP_USER_OID, fullname: "Invented app user", domainname: `${APP_ID}@${TENANT}`, isdisabled: false };
+// Rows the picker and every sign-in path must refuse.
+const NON_INTERACTIVE_USER = { systemuserid: "4e5f6a7b-8c9d-4e0f-9a1b-3c4d5e6f7a8b", azureactivedirectoryobjectid: "5f6a7b8c-9d0e-4f1a-8b2c-4d5e6f7a8b9c", accessmode: 4, fullname: "Invented non-interactive", domainname: "noninteractive@example.test", isdisabled: false };
+const DISABLED_USER = { systemuserid: "6a7b8c9d-0e1f-4a2b-8c3d-5e6f7a8b9c0d", azureactivedirectoryobjectid: "7b8c9d0e-1f2a-4b3c-9d4e-6f7a8b9c0d1e", fullname: "Invented disabled", domainname: "disabled@example.test", isdisabled: true };
+const NO_OID_USER = { systemuserid: "8c9d0e1f-2a3b-4c4d-8e5f-7a8b9c0d1e2f", azureactivedirectoryobjectid: null, fullname: "Invented without oid", domainname: "no.oid@example.test", isdisabled: false };
+const ALL_ROWS = [TEST_USER, APP_USER, NON_INTERACTIVE_USER, DISABLED_USER, NO_OID_USER];
 const users = {
-  byObjectId: (oid) => [TEST_USER, APP_USER].find((row) => row.azureactivedirectoryobjectid === oid) ?? null,
-  byDomainName: (name) => [TEST_USER, APP_USER].find((row) => row.domainname === name) ?? null,
-  list: () => [TEST_USER, APP_USER],
+  byObjectId: (oid) => ALL_ROWS.find((row) => row.azureactivedirectoryobjectid === oid) ?? null,
+  byDomainName: (name) => ALL_ROWS.find((row) => row.domainname === name) ?? null,
+  list: () => ALL_ROWS,
   verifyPassword: (row, password) => row === TEST_USER && password === TEST_PASSWORD,
 };
 
@@ -71,6 +76,24 @@ function clientAssertion(privateKey, x5t, nowMs) {
   const body = b64({ aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: Math.floor(nowMs / 1000), exp: Math.floor(nowMs / 1000) + 300, jti: "test-jti-1" });
   return `${head}.${body}.${sign("sha256", Buffer.from(`${head}.${body}`), privateKey).toString("base64url")}`;
 }
+
+// Any header and claims, signed RS256 or PS256 (32-byte salt) with the given private key.
+function signedAssertion(privateKey, { alg = "RS256", header = {}, claims }) {
+  const head = b64({ alg, typ: "JWT", ...header });
+  const body = b64(claims);
+  const options = alg === "PS256" ? { key: privateKey, padding: constants.RSA_PKCS1_PSS_PADDING, saltLength: 32 } : privateKey;
+  return `${head}.${body}.${sign("sha256", Buffer.from(`${head}.${body}`), options).toString("base64url")}`;
+}
+
+// Registers a certificate record with only its public key: the authority derives both thumbprints from it.
+function registerKeyOnly(app) {
+  const pair = generateKeyPairSync("rsa", { modulusLength: 2048 });
+  const der = pair.publicKey.export({ type: "spki", format: "der" });
+  app.certificates = [{ publicKeyPem: pair.publicKey.export({ type: "spki", format: "pem" }) }];
+  return { privateKey: pair.privateKey, x5tS256: createHash("sha256").update(der).digest("base64url"), der };
+}
+
+const assertionForm = (assertion) => ({ grant_type: "client_credentials", client_id: APP_ID, client_assertion_type: ASSERTION_TYPE, client_assertion: assertion, scope: `${ORIGIN}/.default` });
 
 test("JWKS publishes one RS256 key whose n and e verify the authority's tokens", () => {
   const { auth } = fixture();
@@ -124,8 +147,8 @@ test("client_credentials with the correct secret issues a v1-format app token", 
   assert.equal(res.headers.pragma, "no-cache");
   const { body } = res;
   assert.equal(body.token_type, "Bearer");
-  assert.equal(body.expires_in, 3600);
-  assert.equal(body.ext_expires_in, 3600);
+  assert.equal(body.expires_in, 3599);
+  assert.equal(body.ext_expires_in, 3599);
   const claims = claimsOf(body.access_token);
   assert.equal(claims.ver, "1.0");
   assert.equal(claims.appid, APP_ID);
@@ -205,7 +228,7 @@ test("the v1 token endpoint takes resource= and answers v1 fields", () => {
   assert.equal(res.body.resource, ORIGIN);
   assert.equal(typeof res.body.expires_on, "string");
   assert.equal(typeof res.body.not_before, "string");
-  assert.equal(res.body.expires_in, "3600");
+  assert.equal(res.body.expires_in, "3599");
   assert.equal(claimsOf(res.body.access_token).aud, ORIGIN);
 });
 
@@ -241,6 +264,51 @@ test("a client_assertion with a bad signature answers invalid_client with AADSTS
   assert.equal(res.status, 400);
   assert.equal(res.body.error, "invalid_client");
   assert.deepEqual(res.body.error_codes, [700027]);
+});
+
+test("a PS256 assertion matched by x5t#S256 (no x5t, an x5c header ignored) issues appidacr 2 with string dates", () => {
+  const { auth, applications, state } = fixture();
+  const { privateKey, x5tS256, der } = registerKeyOnly(applications[0]);
+  assert.equal(certificateThumbprints(applications[0].certificates[0].publicKeyPem).thumbprint256, createHash("sha256").update(der).digest("hex").toUpperCase());
+  const sec = Math.floor(state.now / 1000);
+  const assertion = signedAssertion(privateKey, { alg: "PS256", header: { "x5t#S256": x5tS256, x5c: "invented-cert-der" }, claims: { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: String(sec), exp: String(sec + 300), jti: "ps-jti-1" } });
+  const res = call(auth, assertionForm(assertion));
+  assert.equal(res.status, 200);
+  assert.equal(claimsOf(res.body.access_token).appidacr, "2");
+});
+
+test("a PS256 assertion whose x5t#S256 matches no certificate answers 700027, as does a bad PS256 signature", () => {
+  const { auth, applications, state } = fixture();
+  const { privateKey } = registerKeyOnly(applications[0]);
+  const sec = Math.floor(state.now / 1000);
+  const claims = { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "ps-jti-2" };
+  const wrongThumbprint = signedAssertion(privateKey, { alg: "PS256", header: { "x5t#S256": Buffer.alloc(32, 7).toString("base64url") }, claims });
+  const unmatched = call(auth, assertionForm(wrongThumbprint));
+  assert.equal(unmatched.status, 400);
+  assert.deepEqual(unmatched.body.error_codes, [700027]);
+  const stranger = generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey;
+  const registeredS256 = Buffer.from(certificateThumbprints(applications[0].certificates[0].publicKeyPem).thumbprint256, "hex").toString("base64url");
+  const forged = signedAssertion(stranger, { alg: "PS256", header: { "x5t#S256": registeredS256 }, claims: { ...claims, jti: "ps-jti-3" } });
+  const badSignature = call(auth, assertionForm(forged));
+  assert.deepEqual(badSignature.body.error_codes, [700027]);
+  assert.match(badSignature.body.error_description, /signature is invalid/);
+});
+
+test("a client assertion's jti is single use: a replay answers invalid_grant AADSTS9002313", () => {
+  const { auth, applications, state } = fixture();
+  const { privateKey, x5t } = registerCertificate(applications[0]);
+  const sec = Math.floor(state.now / 1000);
+  const first = signedAssertion(privateKey, { header: { x5t }, claims: { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "replay-jti" } });
+  assert.equal(call(auth, assertionForm(first)).status, 200);
+  const replay = call(auth, assertionForm(first));
+  assert.equal(replay.status, 400);
+  assert.equal(replay.body.error, "invalid_grant");
+  assert.deepEqual(replay.body.error_codes, [9002313]);
+  assert.match(replay.body.error_description, /Assertion replay detected/);
+  const fresh = signedAssertion(privateKey, { header: { x5t }, claims: { aud: TOKEN_V2, iss: APP_ID, sub: APP_ID, nbf: sec, exp: sec + 300, jti: "other-jti" } });
+  assert.equal(call(auth, assertionForm(fresh)).status, 200);
+  state.now += 600 * 1000;
+  assert.equal(call(auth, assertionForm(first)).body.error_codes[0], 700027);
 });
 
 test("verifyBearer accepts a fresh token and reports each rejection reason", () => {
@@ -340,8 +408,9 @@ test("authorization_code with PKCE: GET lists the interactive user, POST redirec
 
 test("a public client redeems a code without a secret; a confidential client without one gets AADSTS7000218", () => {
   const { auth } = fixture();
-  const publicCode = codeOf(submitAuthorize(auth, baseAuthorize({ client_id: PUBLIC_APP_ID })));
-  const pub = call(auth, { grant_type: "authorization_code", client_id: PUBLIC_APP_ID, code: publicCode, redirect_uri: REDIRECT, scope: SCOPE });
+  const { verifier, challenge } = pkce();
+  const publicCode = codeOf(submitAuthorize(auth, baseAuthorize({ client_id: PUBLIC_APP_ID, code_challenge: challenge, code_challenge_method: "S256" })));
+  const pub = call(auth, { grant_type: "authorization_code", client_id: PUBLIC_APP_ID, code: publicCode, redirect_uri: REDIRECT, scope: SCOPE, code_verifier: verifier });
   assert.equal(pub.status, 200);
   assert.equal(claimsOf(pub.body.access_token).appidacr, "0");
 
@@ -351,7 +420,7 @@ test("a public client redeems a code without a secret; a confidential client wit
   assert.deepEqual(missing.body.error_codes, [7000218]);
 });
 
-test("a wrong code_verifier or redirect_uri is invalid_grant and leaves the code redeemable", () => {
+test("a wrong code_verifier or redirect_uri is invalid_grant and spends the code: the retry is AADSTS54005", () => {
   const { auth } = fixture();
   const { verifier, challenge } = pkce();
   const code = codeOf(submitAuthorize(auth, baseAuthorize({ code_challenge: challenge, code_challenge_method: "S256" })));
@@ -360,9 +429,62 @@ test("a wrong code_verifier or redirect_uri is invalid_grant and leaves the code
   assert.equal(badVerifier.status, 400);
   assert.equal(badVerifier.body.error, "invalid_grant");
   assert.deepEqual(badVerifier.body.error_codes, [9002313]);
-  const badRedirect = exchange({ code_verifier: verifier, redirect_uri: "https://app.example.test/other" });
+  assert.deepEqual(exchange({ code_verifier: verifier }).body.error_codes, [54005]);
+
+  const second = codeOf(submitAuthorize(auth, baseAuthorize({ code_challenge: challenge, code_challenge_method: "S256" })));
+  const badRedirect = call(auth, { grant_type: "authorization_code", ...DELEGATED_CLIENT, code: second, redirect_uri: "https://app.example.test/other", code_verifier: verifier });
   assert.equal(badRedirect.body.error, "invalid_grant");
-  assert.equal(exchange({ code_verifier: verifier }).status, 200);
+  assert.deepEqual(call(auth, { grant_type: "authorization_code", ...DELEGATED_CLIENT, code: second, redirect_uri: REDIRECT, code_verifier: verifier }).body.error_codes, [54005]);
+});
+
+test("a public client must send code_challenge on authorize (AADSTS9002325), on the GET and on the POST", () => {
+  const { auth } = fixture();
+  const params = baseAuthorize({ client_id: PUBLIC_APP_ID });
+  const page = auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(params), method: "GET" });
+  assert.equal(page.status, 400);
+  assert.match(page.body, /AADSTS9002325: Proof Key for Code Exchange is required for cross-origin authorization code redemption\./);
+  const posted = submitAuthorize(auth, params);
+  assert.equal(posted.status, 400);
+  assert.match(posted.body, /AADSTS9002325/);
+});
+
+test("the picker and the device page offer only interactive users", () => {
+  const { auth } = fixture();
+  const page = auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(baseAuthorize()), method: "GET" });
+  assert.match(page.body, new RegExp(`value="${USER_OID}"`));
+  for (const row of [APP_USER, NON_INTERACTIVE_USER, DISABLED_USER, NO_OID_USER]) {
+    assert.equal(page.body.includes(row.fullname), false, row.fullname);
+  }
+  const device = auth.handleDeviceVerification({ origin: ORIGIN, url: deviceUrl, method: "GET" });
+  assert.equal(device.body.includes(NON_INTERACTIVE_USER.fullname), false);
+  assert.match(device.body, new RegExp(`value="${USER_OID}"`));
+  const refused = submitAuthorize(auth, baseAuthorize(), NON_INTERACTIVE_USER.azureactivedirectoryobjectid);
+  assert.equal(refused.status, 400);
+  assert.match(refused.body, /AADSTS50034/);
+});
+
+test("delegated responses carry client_info only when the form asks for it", () => {
+  const { auth } = fixture();
+  const withInfo = call(auth, { ...ROPC, client_info: "1" });
+  assert.equal(withInfo.status, 200);
+  assert.deepEqual(JSON.parse(Buffer.from(withInfo.body.client_info, "base64url").toString("utf8")), { uid: USER_OID, utid: TENANT });
+  assert.equal("client_info" in call(auth, ROPC).body, false);
+  assert.equal("client_info" in call(auth, ccForm({ client_info: "1" })).body, false);
+});
+
+test("error_uri is omitted for AADSTS70003, 7000014 and 50059 and kept for the rest", () => {
+  const { auth } = fixture();
+  assert.equal("error_uri" in call(auth, ccForm({ grant_type: "foo" })).body, false);
+  assert.equal("error_uri" in call(auth, { grant_type: DEVICE_GRANT, ...DELEGATED_CLIENT, device_code: "not-a-device-code" }).body, false);
+  assert.match(call(auth, ccForm({ scope: "https://other.example.test/.default" })).body.error_uri, /\/error\?code=70011$/);
+  assert.match(auth.handleToken({ origin: ORIGIN, tenantSegment: UNKNOWN_TENANT, form: ccForm() }).body.error_uri, /\/error\?code=90002$/);
+});
+
+test("an application's allowedGrants gates each grant, given as a name or as its URN", () => {
+  const { auth, applications } = fixture();
+  applications[0].allowedGrants = ["client_credentials", DEVICE_GRANT];
+  assert.deepEqual(call(auth, { ...ROPC }).body.error_codes, [700016]);
+  assert.deepEqual(call(auth, { grant_type: DEVICE_GRANT, ...DELEGATED_CLIENT, device_code: "not-a-device-code" }).body.error_codes, [7000014]);
 });
 
 test("authorize answers an AADSTS error page for an unknown client or an unlisted redirect_uri", () => {
@@ -374,7 +496,7 @@ test("authorize answers an AADSTS error page for an unknown client or an unliste
   assert.equal(unlisted.status, 400);
   assert.match(unlisted.body, /AADSTS50011/);
   // Loopback redirects are accepted for public clients only.
-  const loopback = { client_id: PUBLIC_APP_ID, redirect_uri: "http://localhost:5555/cb" };
+  const loopback = { client_id: PUBLIC_APP_ID, redirect_uri: "http://localhost:5555/cb", code_challenge: pkce().challenge, code_challenge_method: "S256" };
   assert.equal(auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(baseAuthorize(loopback)), method: "GET" }).status, 200);
   assert.match(auth.handleAuthorize({ origin: ORIGIN, tenantSegment: TENANT, url: authorizeUrl(baseAuthorize({ ...loopback, client_id: APP_ID })), method: "GET" }).body, /AADSTS50011/);
 });

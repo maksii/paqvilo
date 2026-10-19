@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { dataverseSettings, dataverseStatus } from "../lib/dataverse-settings.mjs";
+import { GRANT_TYPES, dataverseSettings, dataverseStatus, grantAllowed } from "../lib/dataverse-settings.mjs";
+import { uuidV5 } from "../lib/dataverse-security.mjs";
 
 const APP = "22222222-2222-2222-2222-222222222222";
 const USER_OBJECT = "33333333-3333-3333-3333-333333333333";
@@ -67,6 +68,50 @@ test("application secrets are never accepted from configuration", () => {
     /dataverse\.applications\[0\]\.secret: secrets must come from secretEnvironmentVariable, never from configuration$/,
   );
   assert.throws(() => dataverseSettings({ applications: [{ appId: APP, displayName: "x", clientSecret: "abc" }] }), /secrets must come from secretEnvironmentVariable/);
+});
+
+test("a user without objectId gets a deterministic UUID v5 from its lowercased domain name", () => {
+  const upper = dataverseSettings({ users: [{ domainname: "Maker@Example.test", fullname: "Maker" }] }).users[0].objectId;
+  const lower = dataverseSettings({ users: [{ domainname: "maker@example.test", fullname: "Renamed" }] }).users[0].objectId;
+  assert.equal(upper, lower);
+  assert.equal(upper, uuidV5("6ba7b811-9dad-11d1-80b4-00c04fd430c8", "paqvilo-dataverse-user:maker@example.test"));
+  assert.match(upper, /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+  const [first, second] = dataverseSettings({ users: [{ domainname: "a@example.test", fullname: "A" }, { domainname: "b@example.test", fullname: "B" }] }).users;
+  assert.notEqual(first.objectId, second.objectId);
+  assert.equal(dataverseSettings({ users: [{ domainname: "a@example.test", fullname: "A", objectId: USER_OBJECT }] }).users[0].objectId, USER_OBJECT);
+});
+
+test("allowedGrants accept names and URN forms and normalise to names, without duplicates", () => {
+  const settings = dataverseSettings({
+    applications: [{ appId: APP, displayName: "x", allowedGrants: ["client_credentials", "urn:ietf:params:oauth:grant-type:device_code", "urn:ietf:params:oauth:grant-type:jwt-bearer", "device_code", "refresh_token"] }],
+  });
+  assert.deepEqual(settings.applications[0].allowedGrants, ["client_credentials", "device_code", "on_behalf_of", "refresh_token"]);
+  assert.throws(
+    () => dataverseSettings({ applications: [{ appId: APP, displayName: "x", allowedGrants: ["urn:ietf:params:oauth:grant-type:saml2-bearer"] }] }),
+    /allowedGrants must be a subset of client_credentials, authorization_code, device_code, refresh_token, password, on_behalf_of/,
+  );
+});
+
+test("GRANT_TYPES maps setting names to their token endpoint forms", () => {
+  assert.deepEqual(GRANT_TYPES, {
+    client_credentials: "client_credentials",
+    authorization_code: "authorization_code",
+    device_code: "urn:ietf:params:oauth:grant-type:device_code",
+    refresh_token: "refresh_token",
+    password: "password",
+    on_behalf_of: "urn:ietf:params:oauth:grant-type:jwt-bearer",
+  });
+});
+
+test("grantAllowed matches names and URN forms; a missing list allows every grant", () => {
+  const app = dataverseSettings({ applications: [{ appId: APP, displayName: "x", allowedGrants: ["device_code", "on_behalf_of"] }] }).applications[0];
+  assert.equal(grantAllowed(app, GRANT_TYPES.device_code), true);
+  assert.equal(grantAllowed(app, "device_code"), true);
+  assert.equal(grantAllowed(app, GRANT_TYPES.on_behalf_of), true);
+  assert.equal(grantAllowed(app, "password"), false);
+  assert.equal(grantAllowed(app, "urn:ietf:params:oauth:grant-type:unknown"), false);
+  assert.equal(grantAllowed({ allowedGrants: [GRANT_TYPES.device_code] }, "device_code"), true);
+  assert.equal(grantAllowed({}, "password"), true);
 });
 
 test("status exposes runtime and derived identity without secrets", () => {

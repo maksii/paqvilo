@@ -78,6 +78,23 @@ const mapped = createMetadataService({ organizationId: ORG, schema: () => null, 
 const solution = createMetadataService({ organizationId: ORG, schema: () => SCHEMA, mappings: () => ({}) });
 const names = (items) => items.map((item) => item.LogicalName);
 
+// Kept apart from MAPPINGS so the table lists above stay fixed: owner/customer lookups, ownership and principal tables.
+const EXTENDED = {
+  ...MAPPINGS,
+  ticket: {
+    entitySet: "tickets", idColumn: "ticketid", nameColumn: "title",
+    fields: {
+      title: { dataverseType: "nvarchar" },
+      customerid: { dataverseType: "customer", label: "Customer" },
+      ownerid: { dataverseType: "owner", label: "Owner" },
+    },
+  },
+  orgbox: { entitySet: "orgboxes", idColumn: "orgboxid", nameColumn: "name", ownership: "OrganizationOwned", fields: { name: { dataverseType: "nvarchar" } } },
+  systemuser: { entitySet: "systemusers", idColumn: "systemuserid", nameColumn: "fullname", fields: { fullname: { dataverseType: "nvarchar" } } },
+  role: { entitySet: "roles", idColumn: "roleid", nameColumn: "name", fields: { name: { dataverseType: "nvarchar" } } },
+};
+const extended = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => EXTENDED });
+
 test("metadata ids are deterministic per organization and kind", () => {
   const again = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => MAPPINGS });
   const id = mapped.metadataId("entity", "widget");
@@ -337,4 +354,65 @@ test("RetrieveMetadataChanges: null query returns every table, nested keys inclu
   assert.equal(widgetKeys[0].LogicalName, "widget_code");
   assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: all.ServerVersionStamp }).EntityMetadata.length, 0);
   assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: "1!01/01/1999 00:00:00" }).EntityMetadata.length, 3);
+});
+
+test("owner and customer lookups are LookupAttributeMetadata with their own AttributeType and targets", () => {
+  const lookups = extended.attributes("ticket", { cast: "LookupAttributeMetadata" });
+  const byName = Object.fromEntries(lookups.map((a) => [a.LogicalName, a]));
+  assert.equal(byName.ownerid["@odata.type"], "#Microsoft.Dynamics.CRM.LookupAttributeMetadata");
+  assert.equal(byName.ownerid.AttributeType, "Owner");
+  assert.equal(byName.ownerid.AttributeTypeName.Value, "OwnerType");
+  assert.deepEqual(byName.ownerid.Targets, ["systemuser", "team"]);
+  assert.equal(byName.customerid["@odata.type"], "#Microsoft.Dynamics.CRM.LookupAttributeMetadata");
+  assert.equal(byName.customerid.AttributeType, "Customer");
+  assert.equal(byName.customerid.AttributeTypeName.Value, "CustomerType");
+  assert.deepEqual(byName.customerid.Targets, ["account", "contact"]);
+  assert.ok(mapped.attributes("widget", { cast: "LookupAttributeMetadata" }).some((a) => a.LogicalName === "ownerid"));
+  assert.equal(extended.attributes("ticket", { cast: "OwnerAttributeMetadata" }).length, 0);
+  assert.equal(extended.attributes("ticket", { cast: "CustomerAttributeMetadata" }).length, 0);
+});
+
+test("OwnershipType and owner columns come from one ownership answer per table", () => {
+  assert.equal(extended.entity("widget").OwnershipType, "UserOwned");
+  assert.equal(extended.entity("orgbox").OwnershipType, "OrganizationOwned");
+  assert.equal(extended.entity("systemuser").OwnershipType, "BusinessOwned");
+  const columnsOf = (table) => extended.attributes(table).map((a) => a.LogicalName);
+  for (const column of ["ownerid", "owninguser", "owningteam", "owningbusinessunit"]) assert.ok(columnsOf("widget").includes(column), `widget has ${column}`);
+  for (const table of ["orgbox", "systemuser"]) {
+    for (const column of ["ownerid", "owninguser", "owningteam", "owningbusinessunit"]) assert.ok(!columnsOf(table).includes(column), `${table} has no ${column}`);
+  }
+});
+
+// The body of one ComplexType, from its opening tag to its close.
+const complexBlock = (xml, name) => {
+  const start = xml.indexOf(`<ComplexType Name="${name}"`);
+  return xml.slice(start, xml.indexOf("</ComplexType>", start));
+};
+
+test("csdl: owner has one principal navigation, principal tables carry no key", () => {
+  const xml = extended.csdl("https://org.example");
+  assertWellFormed(xml);
+  assert.match(block(xml, "ticket"), /<NavigationProperty Name="ownerid" Type="mscrm\.principal">\s*<ReferentialConstraint Property="_ownerid_value" ReferencedProperty="ownerid" \/>/);
+  assert.match(block(xml, "ticket"), /<Property Name="_ownerid_value" Type="Edm\.Guid" \/>/);
+  assert.ok(!xml.includes("ownerid_systemuser") && !xml.includes("ownerid_team"), "no per-target owner navigations");
+  assert.match(block(xml, "systemuser"), /BaseType="mscrm\.principal"/);
+  assert.ok(!block(xml, "systemuser").includes("<Key>"), "systemuser has no Key");
+  assert.match(block(xml, "systemuser"), /<Property Name="systemuserid" Type="Edm\.Guid" Nullable="false" \/>/);
+  assert.ok(!block(xml, "systemuser").includes('<NavigationProperty Name="ownerid"'), "systemuser gets no owner navigation");
+  assert.match(block(xml, "widget"), /<PropertyRef Name="widgetid" \/>/, "non-principal tables keep their Key");
+});
+
+test("csdl: OrganizationDetail, RolePrivilege, metadata changes and the role action", () => {
+  const xml = extended.csdl("https://org.example");
+  assertWellFormed(xml);
+  assert.equal(complexBlock(xml, "OrganizationDetail").match(/<Property /g).length, 13);
+  assert.match(xml, /<EnumType Name="OrganizationType">/);
+  assert.match(xml, /<EnumType Name="SchemaType">/);
+  assert.match(xml, /<EnumType Name="OrganizationState">/);
+  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterId" Type="Edm\.Guid" Nullable="true" \/>/);
+  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterUniqueName" Type="Edm\.String" \/>/);
+  assert.match(xml, /<Function Name="RetrieveMetadataChanges">\s*<Parameter Name="Query" Type="mscrm\.EntityQueryExpression" \/>/);
+  assert.match(xml, /<FunctionImport Name="RetrieveMetadataChanges" Function="mscrm\.RetrieveMetadataChanges"/);
+  assert.match(xml, /<Action Name="AddPrivilegesRole" IsBound="true">\s*<Parameter Name="entity" Type="mscrm\.role" Nullable="false" \/>\s*<Parameter Name="Privileges" Type="Collection\(mscrm\.RolePrivilege\)" \/>/);
+  assert.ok(!mapped.csdl("https://org.example").includes("AddPrivilegesRole"), "the role action needs a role table");
 });
