@@ -1077,3 +1077,27 @@ footer {
 .role-picker .checkbox-line {
   margin-top: 9px;
 }
+.one-time-secret code {
+  display: block;
+  padding: 12px 14px;
+  border: 1px solid #f1e5ca;
+  border-radius: 7px;
+  background: #fffdf7;
+  font-size: 13px;
+  word-break: break-all;
+  user-select: all;
+  margin-bottom: 14px;
+}
+.dv-roles {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  align-items: center;
+}
+.dv-roles .checkbox-label {
+  margin: 0;
+  white-space: nowrap;
+}
+.form-grid .dv-roles input {
+  width: auto;
+}

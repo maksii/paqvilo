@@ -156,7 +156,11 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 - `$metadata` declares the response complex types `OrganizationDetail`, `RolePrivilege` and `RetrieveMetadataChanges`, and a single `ownerid` navigation typed `principal`.
 - `GlobalOptionSetDefinitions` rejects `$filter`.
 
-## Administration endpoints
+## Administration
+
+The **Dataverse API** view at `/_sim/#dataverse` shows the status (origins, authority, tenant and organization ids, certificate file and fingerprint), the registered applications with secret hints and certificate thumbprints, the users with roles, access mode and disabled state, and the recent requests. Its forms call the endpoints below with the runtime CSRF token: register an application, add a secret or a certificate public key, remove a secret or an application, create an interactive user with roles and an optional password, save roles, enable or disable a user, and reset the workspace. A created secret is shown once in the view with a copy button; dismissing it, leaving the view or reloading the page drops it, and no later read returns it. When the API is off the view shows "Dataverse API is disabled for this runtime".
+
+### Endpoints
 
 These endpoints live under the local administration API (`/_sim/`).
 

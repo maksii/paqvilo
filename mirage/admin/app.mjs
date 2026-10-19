@@ -24,6 +24,7 @@ const views = [
   ["mappings", "Entity mappings", "◇"],
   ["plugins", "Plugins & presets", "⌘"],
   ["access", "Identity & permissions", "♙"],
+  ["dataverse", "Dataverse API", "⬡"],
   ["scenarios", "Scenarios", "▶"],
   ["environment", "Environment", "⚙"],
   ["connection", "Live connection", "↗"],
@@ -236,6 +237,7 @@ async function loadView() {
   }
   if (activeView === "portal") await loadAccessRules();
   if (activeView === "environment") await loadEnvironment();
+  if (activeView === "dataverse") await loadDataverse();
   if (activeView === "logs") connectLogs();
   await followRoute();
 }
@@ -1562,6 +1564,138 @@ function logs() {
   );
 }
 
+// ---- Dataverse API view: /_sim/api/dataverse status, registrations, users and the request ring buffer.
+let dataverseResult,
+  dataverseError = "",
+  dataverseDisabled = false,
+  // A created secret lives only in this page until dismissed; GET payloads never carry it.
+  dataverseSecret = null;
+async function loadDataverse() {
+  try {
+    dataverseResult = await request("/dataverse");
+    dataverseError = "";
+    dataverseDisabled = false;
+  } catch (error) {
+    dataverseResult = undefined;
+    dataverseDisabled = error.details?.error?.code === "DATAVERSE_DISABLED";
+    dataverseError = dataverseDisabled ? "" : error.message;
+  }
+  if (activeView === "dataverse") render();
+}
+const ACCESS_MODES = { 0: "Read-Write", 1: "Administrative", 2: "Read", 3: "Support user", 4: "Non-interactive", 5: "Delegated admin" };
+function dataverse() {
+  const title = heading(
+    "Dataverse API",
+    "Simulated Dataverse Web API on its own loopback origin: token authority, application registrations, interactive users and recent requests. Nothing here reaches a real environment.",
+    '<button class="button" data-action="reload-dataverse">Refresh</button>',
+  );
+  if (dataverseDisabled)
+    return title + empty("Dataverse API is disabled for this runtime", "Enable it with dataverse.enabled: true under mirage in the catalogue, then restart mirage dev.");
+  if (dataverseError) return title + `<div class="notice warning">${escape(dataverseError)}</div>`;
+  const result = dataverseResult;
+  if (!result) return title + '<p role="status" class="muted">Loading Dataverse API status…</p>';
+  const roles = result.roles ?? [];
+  const value = (text) => (text ? `<code>${escape(text)}</code>` : "—");
+  const roleChoices = (prefix, selected) =>
+    `<div class="dv-roles">${roles.map((role) => `<label class="checkbox-label"><input type="checkbox" id="${escape(prefix)}-${escape(role.roleid)}" data-dv-role="${escape(role.name)}" ${selected.includes(role.name) ? "checked" : ""}> ${escape(role.name)}</label>`).join("")}</div>`;
+  const appOptions = (result.applications ?? []).map((app) => `<option value="${escape(app.appId)}">${escape(app.displayName)} (${escape(app.appId)})</option>`).join("");
+  const secretPanel = dataverseSecret
+    ? `<section class="panel section-gap one-time-secret" aria-live="polite"><div class="panel-heading"><h2>${escape(dataverseSecret.label)}</h2>${badge("Shown once", "amber")}</div><div class="notice warning">Copy this secret now. It is stored hashed and is not shown again; later listings show only its first characters.</div><code id="dv-secret">${escape(dataverseSecret.secret)}</code><div class="toolbar"><button class="button small" type="button" data-copy-text="${escape(dataverseSecret.secret)}">Copy secret</button><button class="button small quiet" type="button" data-action="dismiss-dataverse-secret">Dismiss</button></div></section>`
+    : "";
+  const status = `<section class="panel"><div class="panel-heading"><h2>Status</h2>${badge("Listening", "green")}</div><div class="detail-list">${[
+    ["Origin", result.origin],
+    ["HTTPS origin", result.tlsOrigin],
+    ["Authority", result.authority],
+    ["Tenant id", result.tenantId],
+    ["Organization id", result.organizationId],
+    ["Certificate file", result.certificateFile],
+    ["Certificate fingerprint", result.certificateFingerprint],
+  ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div></section>`;
+  const applications = `<section class="panel section-gap"><div class="panel-heading"><h2>Applications</h2>${badge(`${(result.applications ?? []).length} registered`)}</div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Secrets</th><th>Certificates</th><th>Grants</th><th>Actions</th></tr></thead><tbody>${(result.applications ?? []).map((app) => `<tr><td class="item-title">${escape(app.displayName)}<div class="row-detail"><code>${escape(app.appId)}</code></div>${app.systemuserid ? `<div class="row-detail">User ${escape(app.systemuserid)}</div>` : ""}</td><td>${(app.secrets ?? []).map((secret) => `<div class="row-detail"><code>${escape(secret.hint)}…</code> expires ${escape(String(secret.expiresOn ?? "").slice(0, 10))} <button class="button small quiet" type="button" data-dv-delete-secret="${escape(secret.id)}" data-dv-app="${escape(app.appId)}">Remove</button></div>`).join("") || "None"}</td><td>${(app.certificates ?? []).map((certificate) => `<div class="row-detail"><code>${escape(certificate.thumbprint)}</code></div>`).join("") || "None"}</td><td>${escape((app.allowedGrants ?? []).join(", "))}${app.publicClient ? ` ${badge("Public client")}` : ""}</td><td class="actions"><button class="button small" type="button" data-dv-add-secret="${escape(app.appId)}">Add secret</button><button class="button small quiet" type="button" data-dv-remove-app="${escape(app.appId)}" data-dv-name="${escape(app.displayName)}">Remove</button></td></tr>`).join("") || '<tr><td colspan="5">No application registered yet.</td></tr>'}</tbody></table></div></section>`;
+  const users = `<section class="panel section-gap"><div class="panel-heading"><h2>Users</h2>${badge(`${(result.users ?? []).length} users`)}</div><p class="muted">Security roles decide what a token holder can read or change through this API. They never apply to the portal.</p><div class="table-wrap"><table><thead><tr><th>User</th><th>Access mode</th><th>State</th><th>Roles</th><th>Actions</th></tr></thead><tbody>${(result.users ?? []).map((user) => `<tr><td class="item-title">${escape(user.fullname)}<div class="row-detail">${escape(user.domainname || (user.applicationid ? `Application ${user.applicationid}` : ""))}</div><div class="row-detail"><code>${escape(user.systemuserid)}</code></div></td><td>${escape(ACCESS_MODES[user.accessmode] ?? String(user.accessmode))}</td><td>${badge(user.isdisabled ? "Disabled" : "Enabled", user.isdisabled ? "red" : "green")}${user.passwordSet ? ` ${badge("Password set")}` : ""}</td><td><form id="dv-roles-${escape(user.systemuserid)}" class="dv-roles" data-dv-user="${escape(user.systemuserid)}">${roleChoices(`dv-roles-${user.systemuserid}`, user.roles ?? [])}<button class="button small" type="submit">Save roles</button></form></td><td class="actions"><button class="button small" type="button" data-dv-toggle-user="${escape(user.systemuserid)}" data-dv-disabled="${user.isdisabled ? "false" : "true"}">${user.isdisabled ? "Enable" : "Disable"}</button></td></tr>`).join("")}</tbody></table></div></section>`;
+  const forms = `<div class="grid-two"><section class="panel section-gap"><div class="panel-heading"><h2>Register an application</h2></div><form id="dv-app-form" class="form-grid"><div><label for="dv-app-name">Display name</label><input id="dv-app-name" required></div><div><label for="dv-app-id">Application id (optional GUID)</label><input id="dv-app-id" placeholder="Generated when empty"></div><div><label>Roles for the application user</label>${roleChoices("dv-app-role", ["System Administrator"])}</div><div><button class="button primary" type="submit">Register application</button></div></form></section><section class="panel section-gap"><div class="panel-heading"><h2>Create an interactive user</h2></div><form id="dv-user-form" class="form-grid"><div><label for="dv-user-name">Full name</label><input id="dv-user-name" required></div><div><label for="dv-user-domain">Sign-in name (domainname)</label><input id="dv-user-domain" placeholder="maker@example.test" required></div><div><label for="dv-user-object">Entra object id (optional GUID)</label><input id="dv-user-object" placeholder="Generated when empty"></div><div><label for="dv-user-password">Password for ROPC sign-in (optional, 8 to 256 characters)</label><input id="dv-user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><p class="field-help">Stored hashed and never shown. Leave empty to refuse the password grant for this user.</p></div><div><label>Roles</label>${roleChoices("dv-user-role", ["Basic User"])}</div><div><button class="button primary" type="submit">Create user</button></div></form></section></div><section class="panel section-gap"><div class="panel-heading"><h2>Add a certificate public key</h2></div><form id="dv-cert-form" class="form-grid"><div><label for="dv-cert-app">Application</label><select id="dv-cert-app" required ${appOptions ? "" : "disabled"}>${appOptions || "<option value=''>Register an application first</option>"}</select></div><div><label for="dv-cert-pem">Public key (PEM)</label><textarea id="dv-cert-pem" class="code-editor" rows="6" spellcheck="false" placeholder="-----BEGIN PUBLIC KEY-----" required></textarea><p class="field-help">Only the public key is stored. The client signs its assertion with the matching private key; the thumbprint is the SHA-1 of the DER public key.</p></div><div><button class="button" type="submit" ${appOptions ? "" : "disabled"}>Add certificate</button></div></form></section>`;
+  const requests = `<section class="panel section-gap"><div class="panel-heading"><h2>Recent requests</h2>${badge("Ring buffer")}</div><p class="muted">Last requests on the Dataverse origin. Tokens, secrets and bodies are never recorded.</p><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Status / duration</th><th>Caller</th></tr></thead><tbody>${[...(result.requests ?? [])].reverse().map((entry) => `<tr><td>${escape(new Date(entry.at).toISOString())}</td><td><strong>${escape(entry.method)}</strong> <code>${escape(entry.path)}</code></td><td>${badge(entry.status, entry.status >= 400 ? "red" : "green")}<div class="row-detail">${escape(Number(entry.ms || 0).toFixed(1))} ms</div></td><td>${escape(entry.appId || entry.userId || "Anonymous")}${entry.grant ? `<div class="row-detail">${escape(entry.grant)}</div>` : ""}</td></tr>`).join("") || '<tr><td colspan="4">No request has reached the Dataverse origin yet.</td></tr>'}</tbody></table></div></section>`;
+  const reset = `<section class="panel section-gap"><div class="panel-heading"><h2>Reset</h2>${badge("Local state change", "amber")}</div><p class="muted">Reset the workspace to its imported defaults. Application registrations and user passwords are kept; the security tables are seeded again, so runtime-created users are removed.</p><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`;
+  return title + secretPanel + status + applications + users + forms + requests + reset;
+}
+const dvRoles = (form) => [...form.querySelectorAll("[data-dv-role]:checked")].map((input) => input.dataset.dvRole);
+async function dataverseWrite(path, options, done) {
+  const result = await request(path, options);
+  await loadDataverse();
+  if (done) notify(done);
+  return result;
+}
+document.addEventListener("submit", async (event) => {
+  const form = event.target;
+  if (!/^dv-/.test(form.id ?? "")) return;
+  event.preventDefault();
+  const button = event.submitter;
+  if (button) button.disabled = true;
+  try {
+    if (form.id === "dv-app-form") {
+      const created = await dataverseWrite("/dataverse/applications", {
+        method: "POST",
+        body: JSON.stringify({ displayName: $("#dv-app-name").value.trim(), ...($("#dv-app-id").value.trim() ? { appId: $("#dv-app-id").value.trim() } : {}), roles: dvRoles(form) }),
+      });
+      dataverseSecret = { label: `Client secret for ${created.appId}`, secret: created.secret };
+      drafts.delete(form.id);
+      render();
+      notify("Application registered. Copy the secret now.");
+    } else if (form.id === "dv-user-form") {
+      const password = $("#dv-user-password").value;
+      await dataverseWrite("/dataverse/users", {
+        method: "POST",
+        body: JSON.stringify({ fullname: $("#dv-user-name").value.trim(), domainname: $("#dv-user-domain").value.trim(), ...($("#dv-user-object").value.trim() ? { objectId: $("#dv-user-object").value.trim() } : {}), roles: dvRoles(form), ...(password ? { password } : {}) }),
+      }, "User created.");
+      drafts.delete(form.id);
+      render();
+    } else if (form.id === "dv-cert-form") {
+      await dataverseWrite(`/dataverse/applications/${encodeURIComponent($("#dv-cert-app").value)}/certificates`, { method: "POST", body: JSON.stringify({ publicKeyPem: $("#dv-cert-pem").value }) }, "Certificate added.");
+      drafts.delete(form.id);
+      render();
+    } else if (form.dataset.dvUser) {
+      await dataverseWrite(`/dataverse/users/${encodeURIComponent(form.dataset.dvUser)}`, { method: "PATCH", body: JSON.stringify({ roles: dvRoles(form) }) }, "Roles saved.");
+      drafts.delete(form.id);
+      render();
+    }
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    if (button) button.disabled = false;
+  }
+});
+document.addEventListener("click", async (event) => {
+  const target = event.target.closest("button");
+  if (!target) return;
+  const data = target.dataset;
+  if (data.action === "reload-dataverse") return loadDataverse();
+  if (data.action === "dismiss-dataverse-secret") {
+    dataverseSecret = null;
+    return render();
+  }
+  if (data.dvAddSecret === undefined && data.dvDeleteSecret === undefined && data.dvToggleUser === undefined && data.dvRemoveApp === undefined) return;
+  if (data.dvRemoveApp !== undefined)
+    return askConfirmation("Remove application?", `Remove ${data.dvName} and its application user. Tokens already issued stop working.`, async () => {
+      await dataverseWrite(`/dataverse/applications/${encodeURIComponent(data.dvRemoveApp)}`, { method: "DELETE" }, "Application removed.");
+    }, "Remove application");
+  target.disabled = true;
+  try {
+    if (data.dvAddSecret !== undefined) {
+      const created = await dataverseWrite(`/dataverse/applications/${encodeURIComponent(data.dvAddSecret)}/secrets`, { method: "POST", body: "{}" });
+      dataverseSecret = { label: `New client secret for ${data.dvAddSecret}`, secret: created.secret };
+      render();
+      notify("Secret added. Copy it now.");
+    } else if (data.dvDeleteSecret !== undefined)
+      await dataverseWrite(`/dataverse/applications/${encodeURIComponent(data.dvApp)}/secrets/${encodeURIComponent(data.dvDeleteSecret)}`, { method: "DELETE" }, "Secret removed.");
+    else if (data.dvToggleUser !== undefined)
+      await dataverseWrite(`/dataverse/users/${encodeURIComponent(data.dvToggleUser)}`, { method: "PATCH", body: JSON.stringify({ isdisabled: data.dvDisabled === "true" }) }, data.dvDisabled === "true" ? "User disabled." : "User enabled.");
+  } catch (error) {
+    notify(error.message, true);
+  } finally {
+    target.disabled = false;
+  }
+});
+
 function renderView(view) {
   switch (view) {
     case 'overview': return overview();
@@ -1576,6 +1710,7 @@ function renderView(view) {
     case 'access': return access();
     case 'scenarios': return scenarios();
     case 'environment': return environment();
+    case 'dataverse': return dataverse();
     case 'connection': return connection();
     case 'runtime': return runtimeState();
     case 'evidence': return evidence();
@@ -2338,7 +2473,10 @@ window.addEventListener("hashchange", () => {
   const { view, params } = parseHash();
   if (!views.some(([id]) => id === view)) return;
   const entered = view !== activeView;
-  if (entered) drafts.clear();
+  if (entered) {
+    drafts.clear();
+    dataverseSecret = null;
+  }
   activeView = view;
   filter = "";
   applyRoute(view, params);
