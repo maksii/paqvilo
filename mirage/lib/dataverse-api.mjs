@@ -5,6 +5,7 @@ import https from "node:https";
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
+import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
 import { createPrincipals, ensureSecurityModel, privilegeId, uuidV5 } from "./dataverse-security.mjs";
 import { createMetadataService, objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
 import {
@@ -47,6 +48,8 @@ const BODY_LIMIT = 8 * 1024 * 1024;
 const WINDOW_MS = 300000;
 const RING_SIZE = 500;
 
+// Settings name grants by short name; the token endpoint matches OAuth grant_type values.
+const GRANT_TYPES = { device_code: "urn:ietf:params:oauth:grant-type:device_code", on_behalf_of: "urn:ietf:params:oauth:grant-type:jwt-bearer" };
 const refOf = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? undefined;
 const asJson = (result) => ({ ...result, headers: { "content-type": "application/json; charset=utf-8", ...(result.headers ?? {}) } });
 const envelope = (status, code, message, requestId) => ({
@@ -172,11 +175,18 @@ function organizationDetail(d, origin) {
   };
 }
 
+// Sign-in pages are HTML; everything else the authority returns is JSON.
+const stsReply = (result) =>
+  typeof result.body === "string" ? { ...result, headers: { "content-type": "text/html; charset=utf-8", ...(result.headers ?? {}) } } : asJson(result);
+
 async function stsRoute(d, c) {
   const { req, url, origin, meta } = c;
   const path = url.pathname;
   if (/^\/common\/discovery\/instance$/i.test(path)) return asJson({ status: 200, body: d.authority.instanceDiscovery(origin) });
-  if (/^\/common\/oauth2\/deviceauth$/i.test(path)) return d.authority.handleDeviceVerification({ origin, url, headers: req.headers });
+  if (/^\/common\/oauth2\/deviceauth$/i.test(path)) {
+    const verification = { origin, url, query: Object.fromEntries(url.searchParams), form: await readForm(req), method: req.method };
+    return stsReply(d.authority.handleDeviceVerification(verification));
+  }
   if (/^\/common\/userrealm\//i.test(path)) return { status: 204 };
   const match = STS_PATH.exec(path);
   if (!match) return null;
@@ -192,8 +202,11 @@ async function stsRoute(d, c) {
     const version = lower.includes("v2.0") ? "v2.0" : "v1.0";
     return asJson(await d.authority.handleToken({ origin, tenantSegment, form, headers: req.headers, version }));
   }
-  if (lower.endsWith("devicecode")) return d.authority.handleDeviceCode({ origin, tenantSegment, url, headers: req.headers });
-  if (lower.endsWith("authorize")) return d.authority.handleAuthorize({ origin, tenantSegment, url, headers: req.headers });
+  if (lower.endsWith("devicecode")) return d.authority.handleDeviceCode({ origin, tenantSegment, form: await readForm(req) });
+  if (lower.endsWith("authorize")) {
+    const request = { origin, tenantSegment, url, query: Object.fromEntries(url.searchParams), form: await readForm(req), method: req.method };
+    return stsReply(d.authority.handleAuthorize(request));
+  }
   return { status: 204 };
 }
 
@@ -285,10 +298,17 @@ function unboundFunction(d, c, route, common) {
     case "RetrieveTotalRecordCount":
       return { status: 200, body: listParamTotals(d, c, route) };
     case "RetrieveMetadataChanges":
-      throw notImplementedFeature("RetrieveMetadataChanges");
+      return { status: 200, body: metadataChanges(d, c, route) };
     default:
       return notFound(c);
   }
+}
+
+// RetrieveMetadataChanges(Query=@p1, ClientVersionStamp=@p2, DeletedMetadataFilters=@p3). The deleted-metadata filters are ignored.
+function metadataChanges(d, c, route) {
+  const params = parseFunctionParameters(route.params, c.url.searchParams);
+  const changes = d.metadata.retrieveMetadataChanges(params.Query ?? null, { clientVersionStamp: params.ClientVersionStamp ?? null });
+  return { "@odata.context": contextUrl(c.origin, route.version, "Microsoft.Dynamics.CRM.RetrieveMetadataChangesResponse"), ...changes };
 }
 
 function principalAccess(d, c, route, subjectId, common) {
@@ -327,11 +347,21 @@ function boundFunction(d, c, route, common) {
   throw notImplementedFeature(route.name);
 }
 
+// $expand names without their nested options: "OptionSet($select=Options)" becomes "OptionSet".
+function expandNames(text) {
+  let flat = String(text ?? "");
+  for (let previous = null; previous !== flat; ) {
+    previous = flat;
+    flat = flat.replace(/\([^()]*\)/g, "");
+  }
+  return flat.split(",").map((name) => name.trim()).filter(Boolean);
+}
+
 // Read-only metadata: EntityDefinitions, RelationshipDefinitions and GlobalOptionSetDefinitions.
 function metadataRead(c, metadata, route) {
   const select = c.url.searchParams.get("$select") ?? "";
   const filter = c.url.searchParams.get("$filter") ?? "";
-  const expand = c.url.searchParams.get("$expand") ?? "";
+  const expand = expandNames(c.url.searchParams.get("$expand"));
   const { set, key, segment, segmentKey, cast } = route;
   const context = (suffix) => contextUrl(c.origin, route.version, suffix);
   const collection = (items, suffix) => ({ status: 200, body: { "@odata.context": context(suffix), value: items } });
@@ -355,7 +385,7 @@ function metadataRead(c, metadata, route) {
   }
   if (key == null) {
     let entities = metadata.entities();
-    if (expand) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand }));
+    if (expand.length) entities = entities.map((entity) => metadata.entity(entity.LogicalName, { expand }));
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
   const entity = metadata.entity(key, { expand });
@@ -455,49 +485,49 @@ async function dataApi(d, c, route) {
     if (!user) return envelope(400, "0x80040203", "Invalid argument.", requestId);
   }
 
+  const identity = {
+    admin: true,
+    id: user.systemuserid,
+    systemUserId: user.systemuserid,
+    businessUnitId: refOf(user.businessunitid),
+    dataverse: { appId: verdict.claims.appid, accessMode: user.accessmode, callerId: caller.systemuserid },
+  };
+  const bodyText = BODY_METHODS.has(req.method) ? await readBody(req) : "";
+  return handleDataRequest(d, { method: c.method, url: c.url, route, headers: req.headers, bodyText, user, caller, identity, prefer: c.prefer, origin, requestId });
+}
+
+// Answers one Web API request for a caller already authenticated. The HTTP path and $batch parts both come through here,
+// and it returns a result rather than writing to the response.
+async function handleDataRequest(d, { method, url, route, headers = {}, bodyText, user, caller, identity, prefer, origin, requestId }) {
+  const req = { method, headers };
+  const c = { req, method, url, origin, requestId, prefer, meta: {} };
   let body;
-  if (BODY_METHODS.has(req.method)) {
-    const raw = await readBody(req);
-    if (raw && /json/i.test(req.headers["content-type"] ?? "")) {
-      try {
-        body = JSON.parse(raw);
-      } catch (error) {
-        const set = route.set ?? route.name ?? "";
-        throw new DataError(
-          `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
-          400,
-          "InvalidLookup",
-        );
-      }
+  if (bodyText && BODY_METHODS.has(method) && /json/i.test(headers["content-type"] ?? "")) {
+    try {
+      body = JSON.parse(bodyText);
+    } catch (error) {
+      const set = route.set ?? route.name ?? "";
+      throw new DataError(
+        `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
+        400,
+        "InvalidLookup",
+      );
     }
   }
 
-  const common = {
-    req,
-    origin,
-    requestId,
-    prefer: c.prefer,
-    method: c.method,
-    url: c.url,
-    body,
-    user,
-    caller,
-    identity: {
-      admin: true,
-      id: user.systemuserid,
-      systemUserId: user.systemuserid,
-      businessUnitId: refOf(user.businessunitid),
-      dataverse: { appId: verdict.claims.appid, accessMode: user.accessmode, callerId: caller.systemuserid },
-    },
-  };
+  const common = { req, origin, requestId, prefer, method, url, body, bodyText, user, caller, identity };
   switch (route.kind) {
     case "service":
-      return c.method === "GET" ? { status: 200, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
+      return method === "GET" ? { status: 200, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
     case "metadata":
-      if (c.method !== "GET") return methodNotAllowed(c);
-      return d.metadata.csdl();
+      if (method !== "GET") return methodNotAllowed(c);
+      return {
+        status: 200,
+        headers: { "content-type": "application/xml; charset=utf-8" },
+        body: d.metadata.csdl(origin, { annotations: url.searchParams.get("annotations") === "true" || prefer.annotations === "*" }),
+      };
     case "batch":
-      throw notImplementedFeature("$batch");
+      return batchCall(d, c, common);
     case "function":
       return unboundFunction(d, { ...c, origin, version: route.version }, route, common);
     case "boundFunction":
@@ -511,6 +541,48 @@ async function dataApi(d, c, route) {
     default:
       return recordCall(d, route, common);
   }
+}
+
+// $batch: parts run in process under the caller verified for the batch; a changeset rolls back to a snapshot on failure.
+async function batchCall(d, c, common) {
+  if (c.method !== "POST") return methodNotAllowed(c);
+  const parsed = parseBatch(c.req.headers["content-type"], common.bodyText);
+  const dispatch = async ({ method, url, headers, body }) => {
+    const target = new URL(url);
+    const route = parseDataverseRoute(target.pathname);
+    if (!route || route.kind === "unknown") return envelope(404, "", `No HTTP resource was found that matches the request URI '${target.href}'.`, c.requestId);
+    if (route.kind === "invalid") throw new DataError(route.message, 400, "InvalidRequest");
+    if (route.kind === "discovery" || route.kind === "soap" || route.kind === "batch") {
+      return envelope(400, "", `The request URI '${target.href}' is not supported inside a batch.`, c.requestId);
+    }
+    if (!METHODS.has(method)) return envelope(405, "", `The requested resource does not support http method '${method}'.`, c.requestId);
+    return handleDataRequest(d, {
+      method,
+      url: target,
+      route,
+      headers: { authorization: c.req.headers.authorization, ...headers },
+      bodyText: body ?? "",
+      user: common.user,
+      caller: common.caller,
+      identity: common.identity,
+      prefer: parsePrefer(headers?.prefer),
+      origin: c.origin,
+      requestId: c.requestId,
+    });
+  };
+  // ponytail: snapshot and restore, because store.transact is not re-entrant and each part writes through its own transact.
+  dispatch.transaction = async (fn) => {
+    const snapshot = d.store.snapshot();
+    try {
+      return await fn();
+    } catch (error) {
+      await d.store.replaceState(snapshot);
+      throw error;
+    }
+  };
+  const continueOnError = common.prefer.continueOnError;
+  const result = await executeBatch(parsed, { dispatch, origin: c.origin, continueOnError, requestId: c.requestId });
+  return continueOnError ? { ...result, headers: { ...result.headers, "Preference-Applied": "odata.continue-on-error" } } : result;
 }
 
 async function route(d, c) {
@@ -576,11 +648,16 @@ function seedRegistrations(store, settings, ids, clock) {
   });
   dv.applications ??= [];
   for (const app of settings.applications ?? []) {
+    const registration = {
+      publicClient: app.publicClient ?? false,
+      redirectUris: app.redirectUris ?? [],
+      allowedGrants: app.allowedGrants?.map((grant) => GRANT_TYPES[grant] ?? grant),
+    };
     let entry = dv.applications.find((item) => String(item.appId).toLowerCase() === app.appId);
     if (!entry) {
-      entry = { appId: app.appId, displayName: app.displayName, createdOn: new Date(clock()).toISOString(), secrets: [], certificates: [], publicClient: false, redirectUris: [] };
+      entry = { appId: app.appId, displayName: app.displayName, createdOn: new Date(clock()).toISOString(), secrets: [], certificates: [], ...registration };
       dv.applications.push(entry);
-    }
+    } else Object.assign(entry, registration);
     entry.secrets ??= [];
     const secret = app.secretEnvironmentVariable ? process.env[app.secretEnvironmentVariable] : undefined;
     if (secret && !entry.secrets.some((item) => verifySecret(secret, item))) {
@@ -629,7 +706,8 @@ export async function startDataverseApi({
         friendlyName: settings.friendlyName,
         version: settings.version,
         applications: applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
-        users: settings.users ?? [],
+        // Settings rows use domainname/fullname; the security model reads upn/displayName.
+        users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),
       },
       { schema },
     ),
@@ -645,7 +723,15 @@ export async function startDataverseApi({
   const authority = createAuthority({
     tenantId,
     applications: () => store.state.dataverse?.applications ?? [],
-    users: { byObjectId: principals.byObjectId, byDomainName: principals.byDomainName, verifyPassword: () => false },
+    users: {
+      byObjectId: principals.byObjectId,
+      byDomainName: principals.byDomainName,
+      list: () => store.tableRows("systemuser"),
+      verifyPassword: (row, password) => {
+        const record = store.state.dataverse?.passwords?.[row.systemuserid];
+        return typeof password === "string" && Boolean(record) && verifySecret(password, record);
+      },
+    },
     clock,
   });
   const recordHandlers =

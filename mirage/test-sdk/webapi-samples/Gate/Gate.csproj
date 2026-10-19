@@ -1,0 +1,16 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- Microsoft's WebAPIService sample library (net6.0), pinned via PINNED_COMMIT.txt. Consumed as-is, never edited. -->
+    <ProjectReference Include="../../../../.paqvilo/sdk-gates/PowerApps-Samples/dataverse/webapi/CSharp-NETx/WebAPIService/WebAPIService.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -247,7 +247,94 @@ test("schema table drives attributes, option labels and entity names", () => {
   assert.equal(attributes.find((a) => a.LogicalName === "ownerid"), undefined, "organization-owned tables have no owner columns");
 });
 
-test("$metadata and RetrieveMetadataChanges are milestone 2", () => {
-  assert.throws(() => mapped.csdl(), { status: 501, code: "NotImplemented" });
-  assert.throws(() => mapped.retrieveMetadataChanges(), { status: 501, code: "NotImplemented" });
+// The element body of one EntityType, from its opening tag to its close.
+const block = (xml, name) => {
+  const start = xml.indexOf(`<EntityType Name="${name}"`);
+  return xml.slice(start, xml.indexOf("</EntityType>", start));
+};
+// Cheap well-formedness: every element name opens and closes the same number of times (no XML parser in the repo).
+const balanced = (xml) => {
+  const tally = (pattern) => {
+    const counts = new Map();
+    for (const [, tag] of xml.matchAll(pattern)) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+    return JSON.stringify([...counts].sort());
+  };
+  return tally(/<([A-Za-z][\w:.]*)(?:\s[^>]*)?(?<!\/)>/g) === tally(/<\/([A-Za-z][\w:.]*)>/g);
+};
+function assertWellFormed(xml) {
+  assert.ok(xml.startsWith('<?xml version="1.0" encoding="utf-8"?>'));
+  assert.ok(balanced(xml), "tags balance");
+  const declared = new Set([...xml.matchAll(/<(?:EntityType|ComplexType|EnumType|Function|Action) Name="(\w+)"/g)].map((m) => m[1]));
+  for (const [, ref] of xml.matchAll(/="(?:Collection\()?mscrm\.(\w+)/g)) assert.ok(declared.has(ref), `unresolved mscrm.${ref}`);
+}
+
+test("csdl declares entities, navigation, the container and the functions", () => {
+  const xml = mapped.csdl("https://org.example");
+  assertWellFormed(xml);
+  assert.match(xml, /<Schema Namespace="Microsoft\.Dynamics\.CRM" Alias="mscrm"/);
+  assert.match(block(xml, "widget"), /<PropertyRef Name="widgetid" \/>/);
+  assert.match(block(xml, "widget"), /<Property Name="_ownerid_value" Type="Edm\.Guid" \/>/);
+  assert.match(block(xml, "widget"), /<NavigationProperty Name="widget_gadgets" Type="Collection\(mscrm\.gadget\)" Partner="widgetid" \/>/);
+  assert.match(block(xml, "gadget"), /<NavigationProperty Name="widgetid" Type="mscrm\.widget" Partner="widget_gadgets">\s*<ReferentialConstraint Property="_widgetid_value" ReferencedProperty="widgetid" \/>\s*<\/NavigationProperty>/);
+  assert.match(xml, /<EntityContainer Name="System">/);
+  assert.match(xml, /<EntitySet Name="widgets" EntityType="mscrm\.widget">\s*<NavigationPropertyBinding Path="widget_gadgets" Target="gadgets" \/>/);
+  assert.match(xml, /<ComplexType Name="WhoAmIResponse">/);
+  assert.match(xml, /<Function Name="WhoAmI">/);
+  assert.ok(!xml.includes("OData.Community.Keys.V1"), "annotations are opt-in");
+});
+
+test("csdl annotations add descriptions, computed values and alternate keys", () => {
+  const xml = mapped.csdl(null, { annotations: true });
+  assertWellFormed(xml);
+  assert.match(xml, /Term="Org\.OData\.Core\.V1\.Description" String="Widget"/);
+  assert.match(block(xml, "widget"), /<Property Name="_ownerid_value" Type="Edm\.Guid">[\s\S]*?Term="Org\.OData\.Core\.V1\.Computed" Bool="true"/);
+  assert.match(xml, /<Annotation Term="OData\.Community\.Keys\.V1\.AlternateKeys">/);
+  assert.match(xml, /<PropertyValue Property="Alias" String="code" \/>/);
+  assert.match(xml, /<PropertyValue Property="Name" PropertyPath="code" \/>/);
+});
+
+test("csdl follows the solution schema and leaves out systemuser-bound functions without systemuser", () => {
+  const xml = solution.csdl();
+  assertWellFormed(xml);
+  assert.match(block(xml, "gizmo"), /<Property Name="gizmoname" Type="Edm\.String" \/>/);
+  assert.match(block(xml, "gizmo"), /<Property Name="gizmocolor" Type="Edm\.Int32" \/>/);
+  assert.ok(!block(xml, "gizmo").includes("_ownerid_value"), "organization-owned tables have no owner lookup");
+  assert.ok(!xml.includes('<Function Name="RetrieveUserPrivileges"'));
+});
+
+const WIDGET_QUERY = {
+  Properties: { AllProperties: false, PropertyNames: ["SchemaName", "Attributes"] },
+  Criteria: { FilterOperator: "Or", Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: { Type: "System.String", Value: "widget" } }] },
+  AttributeQuery: {
+    Properties: { AllProperties: false, PropertyNames: ["LogicalName"] },
+    Criteria: { FilterOperator: "And", Conditions: [{ ConditionOperator: "Equals", PropertyName: "IsValidForCreate", Value: { Type: "System.Boolean", Value: "True" } }] },
+  },
+  LabelQuery: { FilterLanguages: [1033], MissingLabelBehavior: 0 },
+};
+
+test("RetrieveMetadataChanges answers the sample query with complex shapes", () => {
+  const result = mapped.retrieveMetadataChanges(WIDGET_QUERY);
+  assert.match(result.ServerVersionStamp, /^\d+!\d{2}\/\d{2}\/\d{4} \d{2}:\d{2}:\d{2}$/);
+  assert.deepEqual(result.DeletedMetadata, { Count: 0, IsReadOnly: false, Keys: [], Values: [] });
+  assert.equal(result.EntityMetadata.length, 1);
+  const [widget] = result.EntityMetadata;
+  assert.equal(widget["@odata.type"], "#Microsoft.Dynamics.CRM.ComplexEntityMetadata");
+  assert.equal(widget.SchemaName, "Widget");
+  assert.equal(widget.MetadataId, mapped.metadataId("entity", "widget"));
+  assert.equal(widget.DisplayName, undefined, "unrequested properties are left out");
+  assert.ok(widget.Attributes.length > 0);
+  for (const attribute of widget.Attributes) assert.match(attribute["@odata.type"], /^#Microsoft\.Dynamics\.CRM\.Complex\w+AttributeMetadata$/);
+  const attributeNames = widget.Attributes.map((a) => a.LogicalName);
+  assert.ok(attributeNames.includes("name"));
+  assert.ok(!attributeNames.includes("widgetid"), "AttributeQuery criteria filters the attributes");
+  assert.deepEqual(Object.keys(widget.Attributes[0]).sort(), ["@odata.type", "HasChanged", "LogicalName", "MetadataId"]);
+});
+
+test("RetrieveMetadataChanges: null query returns every table, nested keys included, and an unchanged stamp returns nothing", () => {
+  const all = mapped.retrieveMetadataChanges(null);
+  assert.deepEqual(names(all.EntityMetadata), ["gadget", "tag", "widget"]);
+  const widgetKeys = all.EntityMetadata.find((e) => e.LogicalName === "widget").Keys;
+  assert.equal(widgetKeys[0].LogicalName, "widget_code");
+  assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: all.ServerVersionStamp }).EntityMetadata.length, 0);
+  assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: "1!01/01/1999 00:00:00" }).EntityMetadata.length, 3);
 });

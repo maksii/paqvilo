@@ -14,6 +14,7 @@ import {parseExactJson,stringifyExactJson} from './lib/exact-numeric.mjs';
 import { attachODataReaderDetails, attachODataJsonSource, odataInvalidJsonDetails } from "./lib/webapi-error-details.mjs";
 import fs from "node:fs/promises";
 import path from "node:path";
+import os from "node:os";
 import { readLocalFile } from '../lense/local-file.mjs';
 import { fileURLToPath } from "node:url";
 import { randomBytes, randomUUID, createHash } from "node:crypto";
@@ -88,6 +89,7 @@ import { startDataverseApi } from './lib/dataverse-api.mjs';
 import { dataverseSettings, dataverseStatus } from './lib/dataverse-settings.mjs';
 import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
 import { hashSecret, newClientSecret } from './lib/dataverse-auth.mjs';
+import { ensureCertificate } from './lib/dataverse-tls.mjs';
 import { createPublicKey } from "node:crypto";
 // The RadCaptcha challenge resources (lib/platform.mjs captchaChallenge): a placeholder image and
 // half a second of silent 8 kHz audio. No readable challenge is simulated, so CAPTCHA saves fail closed.
@@ -300,6 +302,7 @@ export async function createSimulator({
   personaContexts: personaContextsOption = {},
   identityProvider: identityProviderOption = {},
   dataverse: dataverseOption = null,
+  dataverseCertificateFile = null,
   personaInstance = null,
   preset,
   presetMode = 'always',
@@ -534,7 +537,16 @@ export async function createSimulator({
   // Simulated Dataverse API (lib/dataverse-api.mjs): started before the portal listens, closed by close().
   const dataverseConfig = dataverseSettings(dataverseOption ?? undefined);
   let dataverse = null;
-  const dataverseSummary = () => dataverseStatus(dataverseConfig, dataverse ?? {});
+  // Per-run self-signed CA for the https listener; default file sits beside the state file (.paqvilo/).
+  const dataverseCertificatePath = dataverseCertificateFile ?? (stateFile
+    ? path.join(path.dirname(path.resolve(stateFile)), "dataverse-ca.pem")
+    : path.join(os.tmpdir(), "paqvilo-mirage-dataverse-ca.pem"));
+  let dataverseCertificate = null;
+  const dataverseSummary = () => ({
+    ...dataverseStatus(dataverseConfig, dataverse ?? {}),
+    certificateFile: dataverseCertificate?.file ?? null,
+    certificateFingerprint: dataverseCertificate?.fingerprint256 ?? null,
+  });
   portal = applyPortalOverrides(sourcePortal, store.snapshot({ sections: ["simulator"] }).simulator?.portalOverrides);
   let sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
   await replaceCompiledState(store.snapshot());
@@ -1811,6 +1823,12 @@ export async function createSimulator({
     const lower = (value) => String(value ?? "").toLowerCase();
     const refId = (value) => (value !== null && typeof value === "object" ? value.id : value);
     const registrations = () => store.state.dataverse.applications;
+    // Password sign-in (ROPC) secrets: hashed, keyed by systemuserid, never returned.
+    const passwords = () => (store.state.dataverse.passwords ??= {});
+    const checkPassword = (value) => {
+      if (value !== undefined && (typeof value !== "string" || value.length < 8 || value.length > 256))
+        throw error("password must be a string of 8 to 256 characters.");
+    };
     const roleRows = () => store.tableRows("role");
     const userRows = () => store.tableRows("systemuser");
     const requireApp = (appId) => {
@@ -1846,6 +1864,7 @@ export async function createSimulator({
       azureactivedirectoryobjectid: user.azureactivedirectoryobjectid ?? null,
       accessmode: user.accessmode,
       isdisabled: user.isdisabled === true,
+      passwordSet: Boolean(store.state.dataverse.passwords?.[user.systemuserid]),
       roles: roleNames(user.systemuserid),
     });
     const publicApp = (app) => ({
@@ -1958,7 +1977,7 @@ export async function createSimulator({
     if (method === "POST" && relative === "/dataverse/users")
       return change(async () => {
         const body = await jsonObjectBody(req);
-        if (body.password !== undefined) throw NOT_AVAILABLE("Password sign-in is not available in this milestone.");
+        checkPassword(body.password);
         if (typeof body.fullname !== "string" || !body.fullname.trim()) throw error("fullname is required.");
         if (typeof body.domainname !== "string" || !body.domainname.trim()) throw error("domainname is required.");
         const objectId = lower(body.objectId ?? randomUUID());
@@ -1977,6 +1996,7 @@ export async function createSimulator({
             businessunitid: { id: unit.businessunitid, logical_name: "businessunit", name: unit.name ?? "" },
             organizationid: { id: dataverse.organizationId, logical_name: "organization", name: org?.name ?? "" },
           });
+          if (body.password !== undefined) passwords()[systemuserid] = hashSecret(body.password);
         });
         await assignRoles(store, { systemuserid, roleIds });
         json(res, 201, { systemuserid, azureactivedirectoryobjectid: objectId });
@@ -1987,7 +2007,7 @@ export async function createSimulator({
       return change(async () => {
         const systemuserid = decodeAdminIdentifier(patchUserId);
         const body = await jsonObjectBody(req);
-        if (body.password !== undefined) throw NOT_AVAILABLE("Password sign-in is not available in this milestone.");
+        checkPassword(body.password);
         const find = () => userRows().find((user) => lower(user.systemuserid) === lower(systemuserid));
         if (!find()) throw error("User not found.", 404, "DATAVERSE_USER_NOT_FOUND");
         if (body.isdisabled !== undefined && typeof body.isdisabled !== "boolean") throw error("isdisabled must be a boolean.");
@@ -1997,6 +2017,7 @@ export async function createSimulator({
           const user = find();
           if (body.isdisabled !== undefined) user.isdisabled = body.isdisabled;
           if (body.accessmode !== undefined) user.accessmode = body.accessmode;
+          if (body.password !== undefined) passwords()[user.systemuserid] = hashSecret(body.password);
         });
         if (roleIds) {
           await store.transact(() => removeRows("systemuserroles", (link) => lower(refId(link.systemuserid)) === lower(systemuserid)));
@@ -4295,14 +4316,17 @@ export async function createSimulator({
     state.simulator.mode='local'; state.simulator.pageMode='local'; state.simulator.live={enabled:false};
     await saveState(state);
   }
-  if (dataverseConfig.enabled)
+  if (dataverseConfig.enabled) {
+    dataverseCertificate = dataverseConfig.tls ? await ensureCertificate(dataverseCertificatePath) : null;
     dataverse = await startDataverseApi({
       store, change, settings: dataverseConfig, host,
+      tls: dataverseCertificate ? { key: dataverseCertificate.key, cert: dataverseCertificate.cert } : null,
       schema: () => solutionData?.schema ?? null,
       metadataFields: (logical) => solutionMetadata?.entities?.[logical]?.fields,
       observed,
       log: (...args) => recordDiagnostic({ code: "DATAVERSE_API", message: String(args[0]?.message ?? args[0]) }),
     });
+  }
   await new Promise((resolve, reject) => {
     server.once("error", reject);
     server.listen({ host, port }, resolve);

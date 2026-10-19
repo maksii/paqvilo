@@ -32,7 +32,7 @@ mirage:
 | --- | --- |
 | `enabled` | Starts the listeners. Absent or `false` leaves the API off. |
 | `port` | HTTP listener port. `0` picks an ephemeral port. Use `80` for `Microsoft.PowerPlatform.Dataverse.Client`, which drops the port. |
-| `tls`, `tlsPort` | Accepted by validation; the `https` listener is not available in this build, so these keys have no effect yet. |
+| `tls`, `tlsPort` | `tls: true` adds an `https` listener on `tlsPort` (`0` picks an ephemeral port). Its certificate is a per-run self-signed CA written to the certificate file reported by status (`dataverse-ca.pem` beside the state file under `.paqvilo/`, reused while valid). Trust it with `NODE_EXTRA_CA_CERTS` or `REQUESTS_CA_BUNDLE`. It is never installed into the OS store. |
 | `serviceProtection` | `{ requestsPer300s: <n> }` enables service-protection limits: a caller that exceeds `n` requests in a sliding 300 second window receives 429 `0x80072322` with `Retry-After`. Unset means no limit. |
 | `tenantId` | Tenant in the token authority. Defaults to a GUID derived from the site id. |
 | `organizationId`, `uniqueName`, `friendlyName` | Organization identity returned by `WhoAmI` and `RetrieveCurrentOrganization`. |
@@ -40,15 +40,15 @@ mirage:
 | `applications[].secretEnvironmentVariable` | Name of the environment variable that holds the plain client secret. |
 | `users` | Interactive users. `objectId` is the Entra object id (`azureactivedirectoryobjectid`). `roles` lists role names. |
 
-Secrets come only from environment variables. A plain secret in YAML is not accepted. The simulator stores secrets hashed, returns a new secret once on creation, and never writes a token or secret to disk or to the request log.
+Secrets come only from environment variables. A plain secret in YAML is not accepted. The simulator stores secrets and user passwords hashed, returns a new secret once on creation, and never writes a token or secret to disk or to the request log.
 
-`mirage status` prints the org URL (origin) and the token authority. `GET /_sim/api/dataverse` returns the same values as JSON, with `tlsOrigin` when TLS is on, plus the registered applications, users, roles and recent requests.
+`mirage status` prints the org URL (origin) and the token authority. `GET /_sim/api/dataverse` returns the same values as JSON, with `tlsOrigin`, `certificateFile` and `certificateFingerprint` when TLS is on, plus the registered applications, users (with `passwordSet`), roles and recent requests.
 
 ## Connect an SDK
 
 Three values connect an SDK:
 
-- **Org URL**: the `origin` printed by `mirage status`, for example `http://127.0.0.1:53124`.
+- **Org URL**: the `origin` printed by `mirage status`, for example `http://127.0.0.1:53124`. With `tls: true`, use `tlsOrigin` instead.
 - **Authority**: `<origin>/<tenantId>`.
 - **Scope**: `<origin>/.default`.
 
@@ -71,7 +71,7 @@ curl -s "$ORIGIN/api/data/v9.2/WhoAmI" \
 
 Notes for specific clients:
 
-- **MSAL libraries require an https authority.** This build serves plain `http` only. With `@azure/msal-node`, set `auth.authorityMetadata` to a document whose `token_endpoint` is `<origin>/<tenantId>/oauth2/v2.0/token`; the https authority host is then never contacted. MSAL for Python and .NET, and Microsoft's Python Dataverse SDK (which requires an https `base_url`), cannot connect until the https listener exists.
+- **MSAL libraries** need an https authority: set `tls: true` and point the authority at `<tlsOrigin>/<tenantId>` with instance discovery disabled. `@azure/msal-node`: `knownAuthorities` containing the tlsOrigin host. MSAL Python: `validate_authority=False, instance_discovery=False`. .NET: `WithInstanceDiscovery(false)`. Trust the CA as described above; .NET clients that read only the OS store need their own trust configuration. Microsoft's Python Dataverse SDK takes `tlsOrigin` as `base_url`.
 - **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. SOAP `IOrganizationService` calls receive a SOAP fault, because only the Web API is simulated.
 
 ## Users, roles and privileges
@@ -87,6 +87,8 @@ On start, the simulator seeds the security tables for the organization:
 | `privilege`, `roleprivileges` | Privileges per role. System Administrator and System Customizer hold Global depth on every table. Basic User holds Basic depth on user-owned tables and Global Read on organization-owned tables. |
 
 Application users come from two places: the `applications` list in `mirage.dataverse`, or `POST /_sim/api/dataverse/applications` at runtime. Interactive users come from `users` or `POST /_sim/api/dataverse/users`. Their roles are ordinary `systemuserroles` rows.
+
+Interactive users sign in through the authority's local picker page at `/<tenantId>/oauth2/v2.0/authorize`, and device-code sign-in through the device page at `/common/oauth2/deviceauth`. The `password` (ROPC) grant needs a password set through the admin API (`password` on `POST` or `PATCH` users); a user without one is refused.
 
 Privilege depth decides which rows a caller can read or change:
 
@@ -105,18 +107,18 @@ These endpoints live under the local administration API (`/_sim/`).
 
 | Method and path | Effect |
 | --- | --- |
-| `GET /_sim/api/dataverse` | Status: origins, authority, tenant, applications, users, roles, requests. |
+| `GET /_sim/api/dataverse` | Status: origins (`origin`, `tlsOrigin`), certificate file and fingerprint, authority, tenant, applications, users (with `passwordSet`), roles, requests. |
 | `POST /_sim/api/dataverse/applications` | Body `{ displayName, appId?, roles?, publicClient?, redirectUris?, allowedGrants? }`. 201 `{ appId, systemuserid, secret }`. The secret is shown once. |
 | `POST /_sim/api/dataverse/applications/<appId>/secrets` | 201 `{ id, secret, hint, expiresOn }`. The secret is shown once. |
 | `DELETE /_sim/api/dataverse/applications/<appId>/secrets/<id>` | 204. |
 | `POST /_sim/api/dataverse/applications/<appId>/certificates` | Body `{ publicKeyPem }`. 201 `{ thumbprint }`. |
 | `DELETE /_sim/api/dataverse/applications/<appId>` | Removes the registration and its application user. 204. |
-| `POST /_sim/api/dataverse/users` | Body `{ fullname, domainname, objectId?, roles?, accessmode?, businessUnitId? }`. 201 `{ systemuserid, azureactivedirectoryobjectid }`. |
-| `PATCH /_sim/api/dataverse/users/<systemuserid>` | Body `{ roles?, isdisabled?, accessmode? }`. 200. |
+| `POST /_sim/api/dataverse/users` | Body `{ fullname, domainname, objectId?, roles?, accessmode?, businessUnitId?, password? }`. 201 `{ systemuserid, azureactivedirectoryobjectid }`. |
+| `PATCH /_sim/api/dataverse/users/<systemuserid>` | Body `{ roles?, isdisabled?, accessmode?, password? }`. 200. |
 | `GET /_sim/api/dataverse/requests` | Ring buffer of recent Web API requests. |
 | `POST /_sim/api/dataverse/token` | Test convenience: body `{ appId }` returns `{ access_token }` for an application user, without a secret round-trip. |
 
-Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets appear only in the create responses above. Subsequent reads show `hint` and `expiresOn`. The request log never contains tokens.
+Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets appear only in the create responses above. Subsequent reads show `hint` and `expiresOn`. A `password` is 8 to 256 characters, stored hashed, and never returned; reads show only `passwordSet`. The request log never contains tokens.
 
 ## Supported surface
 
@@ -125,12 +127,13 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 - Paging with the `odata.maxpagesize` preference and `$skiptoken`.
 - `fetchXml` queries.
 - Navigation properties and `$ref` associations.
-- Functions and actions: `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `RetrieveTotalRecordCount`, `RetrieveUserPrivileges`, `RetrievePrincipalAccess`.
-- Metadata reads: `EntityDefinitions`, `RelationshipDefinitions`, `GlobalOptionSetDefinitions`.
+- `$batch` with change sets and `$n` references.
+- Functions and actions: `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `RetrieveTotalRecordCount`, `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `RetrieveMetadataChanges`.
+- Metadata reads: the `$metadata` document, `EntityDefinitions`, `RelationshipDefinitions`, `GlobalOptionSetDefinitions`.
 - Discovery: `Instances`.
 - Documented error envelope and error codes.
 - Collection-bound `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`.
-- OAuth 2.0 `client_credentials` with a client secret, `refresh_token` rotation, OpenID Connect discovery, JWKS and instance discovery.
+- OAuth 2.0 grants: `client_credentials` (client secret or certificate assertion), `authorization_code` with PKCE, `device_code`, `password` (ROPC), on-behalf-of, and `refresh_token` rotation. OpenID Connect discovery, JWKS and instance discovery.
 - Impersonation through `CallerObjectId` or `MSCRMCallerID` for callers holding `prvActOnBehalfOfAnotherUser`.
 
 ## Not simulated
@@ -145,10 +148,18 @@ Not simulated, by design:
 
 Not available in this build:
 
-- `$batch`, `$apply` and the `$metadata` document.
-- `RetrieveMetadataChanges`, bound functions and bulk actions.
-- Delegated token flows: `authorization_code` with PKCE, `device_code`, the `password` grant, on-behalf-of, and certificate assertion for `client_credentials`.
+- `$apply`.
+- Bound functions and bulk actions.
 
 ## Evidence
 
-The local behaviour is a simulation. Parity claims rest on the SDK gates under `mirage/test-sdk/` (opt-in `npm run test:sdk`) and on the research notes. A passing SDK gate shows that the client could authenticate and receive the documented shapes. It does not show that every live environment behaves identically.
+The local behaviour is a simulation. Parity claims rest on the SDK gates under `mirage/test-sdk/` (opt-in `npm run test:sdk`) and on the research notes.
+
+| Gate | Client | Proves |
+| --- | --- | --- |
+| `toolkit-client` | `paqvilo/dataverse` `DataverseClient` and the data loader | `WhoAmI`, metadata reads the loader needs, stable-GUID upsert with `If-None-Match`, deferred lookup binds, `$ref` association, FetchXML paging, compare and query status |
+| `dynamics-web-api` | `dynamics-web-api` 2.5.1 with `@azure/msal-node` 7.1.0 | client_credentials over `authorityMetadata` (http) and over OpenID Connect discovery on the TLS listener, CRUD, `$select`/`$filter`/`$expand`/`$count`, paging, alternate keys, FetchXML paging cookies, `$batch` change sets, error codes |
+| `python-dataverse` | Microsoft `PowerPlatform-Dataverse-Client` 1.1.0 with `msal` 1.39.0 | TLS `base_url`, OpenID Connect discovery with `instance_discovery=False`, picklist label resolution through `EntityDefinitions` and `OptionSet` expansion, CRUD, query builder, `CreateMultiple`, `$batch`, 400 and 404 error details |
+| `webapi-samples` | Microsoft `PowerApps-Samples` WebAPIService (C#, pinned commit) | Microsoft's own request shapes: `WhoAmI`, create with `OData-EntityId`, retrieve, update, `RetrieveMultiple`, delete, `$batch` change set, `x-ms-dop-hint` |
+
+Gate dependencies stay out of the package: Node packages install under `mirage/test-sdk/<gate>/node_modules`, the Python environment and the cloned sample repository live under the ignored `.paqvilo/sdk-gates/`. A passing SDK gate shows that the client could authenticate and receive the documented shapes. It does not show that every live environment behaves identically.

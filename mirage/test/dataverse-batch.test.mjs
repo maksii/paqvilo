@@ -1,0 +1,243 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { parseBatch, executeBatch, reasonPhrase } from '../lib/dataverse-batch.mjs';
+
+const ORIGIN = 'http://127.0.0.1:8080';
+const B = 'batch_80dd1615-2a10-428a-bb6f-0e559792721f';
+const CRLF = '\r\n';
+
+// The request sample from webapi-contract.md section 7, with CRLF framing.
+const SAMPLE = [
+  `--${B}`,
+  'Content-Type: application/http',
+  'Content-Transfer-Encoding: binary',
+  '',
+  'POST /api/data/v9.2/tasks HTTP/1.1',
+  'Content-Type: application/json; type=entry',
+  '',
+  '{"subject": "Task 1 in batch","regardingobjectid_account_task@odata.bind": "accounts(00000000-0000-0000-0000-000000000001)"}',
+  `--${B}`,
+  'Content-Type: application/http',
+  'Content-Transfer-Encoding: binary',
+  '',
+  'GET /api/data/v9.2/accounts(00000000-0000-0000-0000-000000000001)/Account_Tasks?$select=subject HTTP/1.1',
+  '',
+  `--${B}--`,
+  '',
+].join(CRLF);
+
+const httpReq = (method, url, body) =>
+  [`${method} ${url} HTTP/1.1`, ...(body === undefined ? [] : ['Content-Type: application/json', '', body])].join(CRLF);
+const part = (boundary, contentId, request) =>
+  [`--${boundary}`, 'Content-Type: application/http', 'Content-Transfer-Encoding: binary', ...(contentId ? [`Content-ID: ${contentId}`] : []), '', request].join(CRLF);
+const changeset = (cs, items) =>
+  [`--${B}`, `Content-Type: multipart/mixed; boundary=${cs}`, '', ...items.map((i) => part(cs, i.cid, i.request)), `--${cs}--`].join(CRLF);
+const batchOf = (sections) => [...sections, `--${B}--`, ''].join(CRLF);
+const ct = `multipart/mixed; boundary="${B}"`;
+
+function fakeDispatch() {
+  const calls = [];
+  const created = [];
+  const dispatch = async (req) => {
+    calls.push(req);
+    if (req.url.includes('fail')) return { status: 400, body: { error: { code: '0x80044331', message: 'boom' } } };
+    if (req.method === 'POST') {
+      const id = randomUUID();
+      created.push(id);
+      return { status: 204, headers: { 'OData-EntityId': `${ORIGIN}/api/data/v9.2/widgets(${id})` } };
+    }
+    if (req.method === 'GET') return { status: 200, body: { value: [] } };
+    return { status: 204 };
+  };
+  return { dispatch, calls, created };
+}
+
+const run = (parsed, dispatch, options = {}) => executeBatch(parsed, { dispatch, origin: ORIGIN, ...options });
+const count = (text, pattern) => text.match(pattern)?.length ?? 0;
+
+test('parses the documented sample with quoted and bare boundaries', () => {
+  for (const type of [ct, `multipart/mixed;boundary=${B}`]) {
+    const { boundary, parts } = parseBatch(type, SAMPLE);
+    assert.equal(boundary, B);
+    assert.equal(parts.length, 2);
+    assert.deepEqual(parts[0], {
+      kind: 'request',
+      method: 'POST',
+      url: '/api/data/v9.2/tasks',
+      headers: { 'content-type': 'application/json; type=entry' },
+      body: '{"subject": "Task 1 in batch","regardingobjectid_account_task@odata.bind": "accounts(00000000-0000-0000-0000-000000000001)"}',
+    });
+    assert.equal(parts[1].method, 'GET');
+    assert.equal(parts[1].url, '/api/data/v9.2/accounts(00000000-0000-0000-0000-000000000001)/Account_Tasks?$select=subject');
+    assert.equal(parts[1].body, undefined);
+  }
+});
+
+test('tolerates a part without Content-Type, absolute URLs and LF-only bodies', () => {
+  const body = batchOf([
+    `--${B}`,
+    'POST https://crm.example.test/api/data/v9.2/leads HTTP/1.1',
+    'Content-Type: application/json',
+    '',
+    '{\n"name": "A"\n}',
+  ]);
+  const { parts } = parseBatch(ct, body);
+  assert.equal(parts[0].url, 'https://crm.example.test/api/data/v9.2/leads');
+  assert.equal(parts[0].body, '{\n"name": "A"\n}');
+});
+
+test('rejects a missing or unmatched boundary with 0x80048d19', () => {
+  const check = (error) => error.status === 400 && error.code === 'InvalidBatch' && error.details.innerCode === '0x80048d19';
+  assert.throws(() => parseBatch('application/json', SAMPLE), check);
+  assert.throws(() => parseBatch('multipart/mixed; boundary=other', SAMPLE), check);
+});
+
+test('rejects LF-only framing as an unreadable stream', () => {
+  assert.throws(() => parseBatch(ct, SAMPLE.replace(/\r\n/g, '\n')), { status: 400, message: 'Stream was not readable.' });
+});
+
+test('rejects nested change sets', () => {
+  const nested = [
+    `--${B}`,
+    'Content-Type: multipart/mixed; boundary=cs1',
+    '',
+    '--cs1',
+    'Content-Type: multipart/mixed; boundary=cs2',
+    '',
+    '--cs2',
+    'Content-Type: application/http',
+    '',
+    httpReq('POST', '/api/data/v9.2/widgets', '{}'),
+    '--cs2--',
+    '--cs1--',
+  ].join(CRLF);
+  assert.throws(() => parseBatch(ct, batchOf([nested])), { status: 400, message: 'Nested change sets are not allowed.' });
+});
+
+test('rejects GET inside a change set', () => {
+  const cs = changeset('cs1', [{ cid: '1', request: httpReq('GET', '/api/data/v9.2/widgets') }]);
+  assert.throws(() => parseBatch(ct, batchOf([cs])), { status: 400, message: 'GET requests are not allowed inside change sets.' });
+});
+
+test('rejects more than 1000 requests and accepts exactly 1000', () => {
+  const one = part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{}'));
+  const sections = (n) => batchOf(Array.from({ length: n }, () => one));
+  assert.equal(parseBatch(ct, sections(1000)).parts.length, 1000);
+  assert.throws(() => parseBatch(ct, sections(1001)), { status: 400, code: 'InvalidBatch' });
+});
+
+test('single POST response uses batchresponse framing with 204, OData-EntityId and Location', async () => {
+  const { dispatch } = fakeDispatch();
+  const parsed = parseBatch(ct, batchOf([part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}'))]));
+  const res = await run(parsed, dispatch);
+  const id = /boundary=(batchresponse_\S+)/.exec(res.headers['content-type'])[1];
+  assert.equal(res.status, 200);
+  assert.equal(res.headers['OData-Version'], '4.0');
+  assert.ok(res.body.startsWith(`--${id}${CRLF}Content-Type: application/http${CRLF}Content-Transfer-Encoding: binary${CRLF}${CRLF}HTTP/1.1 204 No Content${CRLF}`));
+  assert.match(res.body, /OData-EntityId: http:\/\/127\.0\.0\.1:8080\/api\/data\/v9\.2\/widgets\([0-9a-f-]{36}\)/);
+  assert.match(res.body, /Location: http:\/\/127\.0\.0\.1:8080\/api\/data\/v9\.2\/widgets\(/);
+  assert.ok(res.body.endsWith(`--${id}--${CRLF}`));
+  assert.equal(res.body.replace(/\r\n/g, '').includes('\n'), false);
+});
+
+test('changeset response nests a changesetresponse part that echoes Content-ID', async () => {
+  const { dispatch } = fakeDispatch();
+  const cs = changeset('changeset_1', [
+    { cid: '1', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}') },
+    { cid: '2', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"B"}') },
+  ]);
+  const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
+  assert.equal(res.status, 200);
+  assert.match(res.body, /Content-Type: multipart\/mixed; boundary=changesetresponse_/);
+  assert.equal(count(res.body, /Content-ID: 1\r\n/g), 1);
+  assert.equal(count(res.body, /Content-ID: 2\r\n/g), 1);
+  assert.equal(count(res.body, /HTTP\/1\.1 204 No Content/g), 2);
+});
+
+test('$1 references resolve in an @odata.bind body value and in a URL', async () => {
+  const { dispatch, calls, created } = fakeDispatch();
+  const cs = changeset('changeset_2', [
+    { cid: '1', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}') },
+    { cid: '2', request: httpReq('POST', '/api/data/v9.2/gadgets', '{"widgetid@odata.bind": "$1"}') },
+    { cid: '3', request: httpReq('PATCH', '$1', '{"name":"B"}') },
+  ]);
+  const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
+  assert.equal(res.status, 200);
+  assert.equal(calls[1].body, `{"widgetid@odata.bind": "/api/data/v9.2/widgets(${created[0]})"}`);
+  assert.equal(calls[2].url, `${ORIGIN}/api/data/v9.2/widgets(${created[0]})`);
+});
+
+test('forward reference returns 400 with the batch-context message', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const cs = changeset('changeset_3', [
+    { cid: '1', request: httpReq('POST', '/api/data/v9.2/gadgets', '{"widgetid@odata.bind": "$2"}') },
+    { cid: '2', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"B"}') },
+  ]);
+  const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
+  assert.equal(res.status, 400);
+  assert.match(res.body, /Content-ID Reference: '\$2' does not exist in the batch context\./);
+  assert.equal(calls.length, 0);
+});
+
+test('without continue-on-error the batch stops at the failing part with REQ_ID', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const parsed = parseBatch(ct, batchOf([
+    part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}')),
+    part(B, undefined, httpReq('POST', '/api/data/v9.2/fail', '{"name":"B"}')),
+    part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets')),
+  ]));
+  const res = await run(parsed, dispatch);
+  assert.equal(res.status, 400);
+  assert.equal(count(res.body, /HTTP\/1\.1 /g), 1);
+  assert.match(res.body, /HTTP\/1\.1 400 Bad Request/);
+  assert.match(res.body, /REQ_ID: [0-9a-f-]{36}/);
+  assert.match(res.body, /boom/);
+  assert.equal(calls.length, 2);
+});
+
+test('with continue-on-error every part runs and the batch answers 200', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const parsed = parseBatch(ct, batchOf([
+    part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}')),
+    part(B, undefined, httpReq('POST', '/api/data/v9.2/fail', '{"name":"B"}')),
+    part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets')),
+  ]));
+  const res = await run(parsed, dispatch, { continueOnError: true });
+  assert.equal(res.status, 200);
+  assert.equal(count(res.body, /HTTP\/1\.1 /g), 3);
+  assert.equal(calls.length, 3);
+});
+
+test('a failing change set runs through the transaction hook and rolls back', async () => {
+  const { dispatch: base } = fakeDispatch();
+  const log = [];
+  const dispatch = Object.assign(base, {
+    transaction: async (fn) => {
+      log.push('begin');
+      try {
+        const out = await fn();
+        log.push('commit');
+        return out;
+      } catch (error) {
+        log.push('rollback');
+        throw error;
+      }
+    },
+  });
+  const cs = changeset('changeset_4', [
+    { cid: '1', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}') },
+    { cid: '2', request: httpReq('POST', '/api/data/v9.2/fail', '{"name":"B"}') },
+  ]);
+  const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
+  assert.deepEqual(log, ['begin', 'rollback']);
+  assert.equal(res.status, 400);
+  assert.equal(res.body.includes('changesetresponse_'), false);
+});
+
+test('reasonPhrase returns standard HTTP reason phrases', () => {
+  assert.equal(reasonPhrase(200), 'OK');
+  assert.equal(reasonPhrase(201), 'Created');
+  assert.equal(reasonPhrase(204), 'No Content');
+  assert.equal(reasonPhrase(400), 'Bad Request');
+});

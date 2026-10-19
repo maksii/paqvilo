@@ -2,6 +2,7 @@
 // the token round trip and WhoAmI on the Dataverse origin, and isolation from the portal origin.
 import test from "node:test";
 import assert from "node:assert/strict";
+import https from "node:https";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -144,4 +145,93 @@ test("close stops the Dataverse listener", async (t) => {
   const origin = app.dataverse.origin;
   await app.close();
   await assert.rejects(fetch(`${origin}/api/data/v9.2/WhoAmI`));
+});
+
+// Minimal https client that trusts only the runtime's certificate file.
+function httpsRequest(url, { ca, method = "GET", headers = {}, body } = {}) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(url, { method, ca, headers }, (response) => {
+      const chunks = [];
+      response.on("data", (chunk) => chunks.push(chunk));
+      response.on("end", () => resolve({ status: response.statusCode, body: Buffer.concat(chunks).toString("utf8") }));
+    });
+    request.on("error", reject);
+    request.end(body);
+  });
+}
+
+async function certificatePath(t) {
+  const directory = await fs.mkdtemp(path.join(os.tmpdir(), "pp-dataverse-tls-"));
+  t.after(() => fs.rm(directory, { recursive: true, force: true }));
+  return path.join(directory, "dataverse-ca.pem");
+}
+
+test("the https listener serves discovery, token and WhoAmI with the certificate file", async (t) => {
+  const certificateFile = await certificatePath(t);
+  const { app, admin } = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
+  const { tlsOrigin, certificateFile: reported, certificateFingerprint } = app.state().dataverse;
+  assert.match(tlsOrigin, /^https:\/\/127\.0\.0\.1:\d+$/);
+  assert.equal(reported, certificateFile);
+  assert.match(certificateFingerprint, /^[0-9A-F]{2}(:[0-9A-F]{2})+$/i);
+  await fs.stat(certificateFile);
+  const ca = await fs.readFile(certificateFile);
+  const discovery = await httpsRequest(`${tlsOrigin}/${app.dataverse.tenantId}/v2.0/.well-known/openid-configuration`, { ca });
+  assert.equal(discovery.status, 200);
+  assert.ok(JSON.parse(discovery.body).token_endpoint.startsWith(`${tlsOrigin}/`));
+  const created = await createApplication(admin);
+  const issued = await httpsRequest(`${tlsOrigin}/${app.dataverse.tenantId}/oauth2/v2.0/token`, {
+    ca,
+    method: "POST",
+    headers: { "content-type": "application/x-www-form-urlencoded" },
+    body: new URLSearchParams({ grant_type: "client_credentials", client_id: APP_ID, client_secret: created.secret, scope: `${tlsOrigin}/.default` }).toString(),
+  });
+  assert.equal(issued.status, 200);
+  const whoami = await httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca, headers: { authorization: `Bearer ${JSON.parse(issued.body).access_token}` } });
+  assert.equal(whoami.status, 200);
+  assert.equal(JSON.parse(whoami.body).UserId, created.systemuserid);
+});
+
+test("a second runtime reuses the certificate file", async (t) => {
+  const certificateFile = await certificatePath(t);
+  const first = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
+  const second = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
+  assert.ok(first.app.state().dataverse.certificateFingerprint);
+  assert.equal(second.app.state().dataverse.certificateFingerprint, first.app.state().dataverse.certificateFingerprint);
+});
+
+test("passwords are hashed, reported as passwordSet and never echoed", async (t) => {
+  const { admin } = await start(t, { dataverse: { enabled: true } });
+  const password = "correct horse battery";
+  const created = await admin("/dataverse/users", {
+    method: "POST",
+    body: { fullname: "Password User", domainname: "password@example.test", objectId: OBJECT_ID, roles: ["Basic User"], password },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(JSON.stringify(created.body).includes(password), false);
+  const plain = await admin("/dataverse/users", { method: "POST", body: { fullname: "Plain User", domainname: "plain@example.test", roles: ["Basic User"] } });
+  assert.equal(plain.status, 201);
+  const refused = await admin("/dataverse/users", { method: "POST", body: { fullname: "Short", domainname: "short@example.test", password: "short" } });
+  assert.equal(refused.status, 400);
+  const listing = await admin("/dataverse");
+  const passwordUser = listing.body.users.find((item) => item.systemuserid === created.body.systemuserid);
+  const plainUser = listing.body.users.find((item) => item.systemuserid === plain.body.systemuserid);
+  assert.equal(passwordUser.passwordSet, true);
+  assert.equal(plainUser.passwordSet, false);
+  const serialised = JSON.stringify(listing.body);
+  assert.equal(serialised.includes(password), false);
+  assert.doesNotMatch(serialised, /"(password|hash|salt)"/);
+  const patched = await admin(`/dataverse/users/${plain.body.systemuserid}`, { method: "PATCH", body: { password: "another password" } });
+  assert.equal(patched.status, 200);
+  assert.equal(patched.body.passwordSet, true);
+  assert.equal(JSON.stringify(patched.body).includes("another password"), false);
+});
+
+test("close also stops the https listener", async (t) => {
+  const certificateFile = await certificatePath(t);
+  const { app } = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
+  const { tlsOrigin } = app.state().dataverse;
+  const ca = await fs.readFile(certificateFile);
+  await app.close();
+  await assert.rejects(httpsRequest(`${tlsOrigin}/api/data/v9.2/WhoAmI`, { ca }));
+  await assert.rejects(fetch(`${app.dataverse.origin}/api/data/v9.2/WhoAmI`));
 });

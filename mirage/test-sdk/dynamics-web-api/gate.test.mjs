@@ -4,11 +4,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import { ConfidentialClientApplication } from "@azure/msal-node";
 import { DynamicsWebApi } from "dynamics-web-api";
 import { startGate } from "../harness.mjs";
 
 const T = { timeout: 60_000 };
+const CHILD = fileURLToPath(new URL("./msal-tls-child.mjs", import.meta.url));
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const FETCH_PAGING = "Microsoft.Dynamics.CRM.fetchxmlpagingcookie";
 
@@ -186,21 +189,16 @@ test("errors: a second deleteRecord of the same id is 404", T, async () => {
   await assert.rejects(api.deleteRecord({ collection: "widgets", key: tmp }), (e) => e.status === 404);
 });
 
-test("$batch (milestone 2)", T, async () => {
-  // Milestone 2 gap: the simulator answers $batch with 501 0x80040216.
-  await assert.rejects(
-    (async () => {
-      api.startBatch();
-      api.create({ collection: "widgets", data: { name: "B1", price: 1, quantity: 1, category: 1 } });
-      api.create({ collection: "widgets", data: { name: "B2", price: 1, quantity: 1, category: 1 } });
-      await api.executeBatch();
-    })(),
-    (e) => {
-      assert.equal(e.status, 501);
-      assert.equal(e.code, "0x80040216");
-      return true;
-    },
-  );
+test("$batch executes two creates and resolves with their ids", T, async () => {
+  api.startBatch();
+  api.create({ collection: "widgets", data: { name: "B1", price: 1, quantity: 1, category: 1 } });
+  api.create({ collection: "widgets", data: { name: "B2", price: 1, quantity: 1, category: 1 } });
+  const ids = await api.executeBatch();
+  widgetTotal += 2;
+  assert.equal(ids.length, 2);
+  for (const id of ids) assert.match(id, GUID);
+  const all = await api.retrieveMultiple({ collection: "widgets", select: ["widgetid"] });
+  assert.equal(all.value.length, widgetTotal);
 });
 
 test("request log shows WhoAmI and never records an authorization header", T, async (t) => {
@@ -209,4 +207,39 @@ test("request log shows WhoAmI and never records an authorization header", T, as
   // DynamicsWebApi.callFunction sends the parameterless function with empty parentheses.
   assert.ok(log.some((entry) => entry.path === "/api/data/v9.2/WhoAmI()"), "expected WhoAmI() in the request log");
   for (const entry of log) assert.equal("authorization" in entry, false);
+});
+
+// Variant A: msal discovers the OIDC document over the simulator's TLS listener. Runs in a child process
+// so NODE_EXTRA_CA_CERTS can trust the simulator CA (the parent cannot change its own trust store).
+test("msal variant A: OIDC discovery over TLS", T, async (t) => {
+  const tls = await startGate({ tls: true });
+  t.after(() => tls.close());
+
+  const child = await new Promise((resolve, reject) => {
+    const proc = spawn(process.execPath, [CHILD], {
+      env: {
+        ...process.env,
+        NODE_EXTRA_CA_CERTS: tls.caFile,
+        SIM_TLS_ORIGIN: tls.tlsOrigin,
+        SIM_TENANT: tls.tenantId,
+        SIM_CLIENT_ID: tls.clientId,
+        SIM_CLIENT_SECRET: tls.clientSecret,
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    proc.stdout.on("data", (chunk) => { stdout += chunk; });
+    proc.stderr.on("data", (chunk) => { stderr += chunk; });
+    proc.on("error", reject);
+    proc.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+
+  const result = JSON.parse(child.stdout.trim().split("\n").at(-1));
+  assert.equal(result.ok, true, `child exited ${child.code}: ${result.error ?? child.stderr}`);
+  assert.equal(result.appid, tls.clientId);
+
+  const paths = tls.requests().map((entry) => entry.path);
+  assert.ok(paths.includes(`/${tls.tenantId}/v2.0/.well-known/openid-configuration`), "expected OIDC discovery request");
+  assert.ok(paths.includes(`/${tls.tenantId}/oauth2/v2.0/token`), "expected token request");
 });

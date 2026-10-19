@@ -1,30 +1,53 @@
 // Entra ID (AAD) authority for the Dataverse simulator: RS256 signing key, OIDC metadata, client
-// authentication, client_credentials and refresh_token grants, AADSTS error envelopes.
-// Milestone 1: authorization_code, device_code, password and on-behalf-of answer AADSTS70003, and the
-// interactive endpoints answer 501 until milestone 2.
-import { createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+// authentication, client_credentials, authorization_code (PKCE), device_code, password (ROPC),
+// on-behalf-of and refresh_token grants, the interactive user pages, and AADSTS error envelopes.
+import { createHash, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
 
 const DATAVERSE_APP_ID = "00000007-0000-0000-c000-000000000000";
-const SUPPORTED_GRANTS = ["client_credentials", "refresh_token"];
+const CLIENT_CREDENTIALS = "client_credentials";
+const AUTH_CODE = "authorization_code";
+const DEVICE_GRANT = "urn:ietf:params:oauth:grant-type:device_code";
+const JWT_BEARER = "urn:ietf:params:oauth:grant-type:jwt-bearer";
+const SUPPORTED_GRANTS = [CLIENT_CREDENTIALS, "refresh_token", AUTH_CODE, DEVICE_GRANT, "password", JWT_BEARER];
 const ASSERTION_TYPE = "urn:ietf:params:oauth:client-assertion-type:jwt-bearer";
 const SKEW_SECONDS = 300;
 const REFRESH_LIFETIME_MS = 24 * 60 * 60 * 1000;
+const CODE_LIFETIME_MS = 10 * 60 * 1000;
+const DEVICE_LIFETIME_SECONDS = 900;
+const DEVICE_INTERVAL_SECONDS = 5;
 const OIDC_SCOPES = new Set(["openid", "profile", "offline_access"]);
 const TOKEN_HEADERS = { "content-type": "application/json; charset=utf-8", "cache-control": "no-store", pragma: "no-cache" };
+const HTML_HEADERS = { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" };
+const AUTHORIZE_FIELDS = ["client_id", "redirect_uri", "scope", "state", "nonce", "response_type", "response_mode", "code_challenge", "code_challenge_method", "prompt", "login_hint"];
+const USER_CODE_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // 32 symbols: no I, O, 0 or 1
+const LOOPBACK_REDIRECT = /^http:\/\/localhost(:\d+)?(\/|$)/i;
+const NATIVE_CLIENT_REDIRECT = "https://login.microsoftonline.com/common/oauth2/nativeclient";
+const MALFORMED = "Invalid request. Request is malformed or invalid.";
+const INVALID_SCOPE = "The provided value for the input parameter 'scope' isn't valid. The scope must name exactly one resource (the organization URL with /user_impersonation or /.default).";
+const ENTITIES = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" };
 // AADSTS code -> [error, HTTP status]. Every code answers 400 except a wrong client secret (401).
 const AAD_ERRORS = {
-  90002: ["invalid_request", 400],
-  500011: ["invalid_resource", 400],
+  50011: ["invalid_request", 400],
+  50034: ["invalid_grant", 400],
+  50126: ["invalid_grant", 400],
+  54005: ["invalid_grant", 400],
+  65001: ["invalid_grant", 400],
+  70008: ["invalid_grant", 400],
+  70003: ["unsupported_grant_type", 400],
+  70011: ["invalid_scope", 400],
+  70016: ["authorization_pending", 400],
+  70019: ["expired_token", 400],
   700016: ["unauthorized_client", 400],
   700027: ["invalid_client", 400],
   700082: ["invalid_grant", 400],
-  70003: ["unsupported_grant_type", 400],
-  70011: ["invalid_scope", 400],
-  900144: ["invalid_request", 400],
-  9002313: ["invalid_grant", 400],
+  7000014: ["invalid_grant", 400],
   7000215: ["invalid_client", 401],
   7000218: ["invalid_client", 400],
   7000222: ["invalid_client", 400],
+  90002: ["invalid_request", 400],
+  500011: ["invalid_resource", 400],
+  900144: ["invalid_request", 400],
+  9002313: ["invalid_grant", 400],
 };
 const CLAIMS_SUPPORTED = ["sub", "iss", "cloud_instance_name", "cloud_instance_host_name", "cloud_graph_host_name", "msgraph_host", "aud", "exp", "iat", "auth_time", "acr", "nonce", "preferred_username", "name", "tid", "ver", "at_hash", "c_hash", "email"];
 
@@ -73,11 +96,28 @@ const scopeResource = (scope, origin, defaultOnly) => {
   }
   return resource;
 };
-const notImplemented = () => ({ status: 501, body: "Not implemented in this milestone", headers: { "content-type": "text/plain" } });
-
-export const handleAuthorize = notImplemented;
-export const handleDeviceCode = notImplemented;
-export const handleDeviceVerification = notImplemented;
+const hasToken = (value, token) => String(value ?? "").split(/\s+/).includes(token);
+const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ENTITIES[ch]);
+const htmlPage = (status, title, body) => ({
+  status,
+  headers: { ...HTML_HEADERS },
+  body: `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>${esc(title)}</title></head><body><h1>${esc(title)}</h1>${body}</body></html>`,
+});
+const formPost = (action, fields) =>
+  htmlPage(200, "Signing you in", `<form id="f" method="post" action="${esc(action)}">${Object.entries(fields)
+    .filter(([, value]) => value !== undefined)
+    .map(([name, value]) => `<input type="hidden" name="${name}" value="${esc(value)}">`)
+    .join("")}<noscript><button type="submit">Continue</button></noscript></form><script>document.getElementById("f").submit();</script>`);
+// Query and form fields merged; form (POST body) wins. Accepts a URL, a query object or a string.
+const fieldsOf = ({ url, query, form }) => ({ ...Object.fromEntries(new URLSearchParams(query ?? url?.searchParams ?? "")), ...(form ?? {}) });
+const normalizeUserCode = (value) => String(value ?? "").replace(/[\s-]/g, "").toUpperCase();
+const pkceMatches = (entry, verifier) => {
+  if (!verifier) return false;
+  const expected = entry.challengeMethod === "S256" ? createHash("sha256").update(String(verifier)).digest("base64url") : String(verifier);
+  return expected === entry.challenge;
+};
+const redirectAllowed = (app, uri) =>
+  (app.redirectUris ?? []).includes(uri) || (Boolean(app.publicClient) && (LOOPBACK_REDIRECT.test(String(uri)) || uri === NATIVE_CLIENT_REDIRECT));
 
 export function hashSecret(secret, salt = randomBytes(16)) {
   return { hash: digest(salt, secret).toString("base64url"), salt: salt.toString("base64url") };
@@ -115,7 +155,14 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
   // kid doubles as x5t: base64url of the SHA-1 of the DER SPKI (no X.509 certificate exists for this key).
   const kid = createHash("sha1").update(publicKey.export({ type: "spki", format: "der" })).digest("base64url");
   const refreshTokens = new Map();
+  const codes = new Map();
+  const devices = new Map();
   const knownTenant = (segment) => ["common", "organizations", "consumers", tenantId.toLowerCase()].includes(String(segment).toLowerCase());
+  const findApp = (clientId) => applications().find((item) => item.appId.toLowerCase() === String(clientId).toLowerCase());
+  // Interactive users only: application users and disabled rows cannot sign in.
+  const interactive = (row) => (row && !row.applicationid && row.isdisabled !== true ? row : null);
+  const interactiveUser = (oid) => interactive(oid ? users.byObjectId(oid) : null);
+  const interactiveUsers = () => (users.list?.() ?? []).filter((row) => interactive(row));
 
   const signJwt = (claims) => {
     const head = b64json({ typ: "JWT", alg: "RS256", kid, x5t: kid });
@@ -145,9 +192,30 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     });
   };
 
-  const issueRefreshToken = ({ appId, oid, resource, scope, now = clock() }) => {
+  const issueIdToken = ({ origin, app, user, nonce, now }) => {
+    const iat = Math.floor(now / 1000);
+    const oid = user.azureactivedirectoryobjectid;
+    return signJwt({
+      iss: `${origin}/${tenantId}/v2.0`,
+      aud: app.appId,
+      iat,
+      exp: iat + accessTokenLifetimeSeconds,
+      nonce,
+      preferred_username: user.domainname,
+      name: user.fullname,
+      given_name: user.firstname,
+      family_name: user.lastname,
+      oid,
+      sub: oid,
+      tid: tenantId,
+      ver: "2.0",
+    });
+  };
+
+  // userOid is null for application-only refresh tokens; those rebuild app tokens.
+  const issueRefreshToken = ({ appId, userOid = null, resource, scope, now = clock() }) => {
     const token = randomBytes(36).toString("base64url");
-    refreshTokens.set(token, { appId: appId.toLowerCase(), oid, resource, scope, expiresAt: now + REFRESH_LIFETIME_MS });
+    refreshTokens.set(token, { appId: appId.toLowerCase(), userOid, resource, scope, expiresAt: now + REFRESH_LIFETIME_MS });
     return token;
   };
 
@@ -158,6 +226,15 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
       return { token_type: "Bearer", expires_in: String(accessTokenLifetimeSeconds), ext_expires_in: String(accessTokenLifetimeSeconds), expires_on: String(iat + accessTokenLifetimeSeconds), not_before: String(iat), resource: audience, access_token: access, ...refreshField };
     }
     return { token_type: "Bearer", ...(scope ? { scope } : {}), expires_in: accessTokenLifetimeSeconds, ext_expires_in: accessTokenLifetimeSeconds, access_token: access, ...refreshField };
+  };
+
+  // The one token response shared by every grant that acts for a user (app-only refresh reuses it without a user).
+  const delegatedReply = ({ origin, app, user, resource, scope, nonce, appidacr, version, now, reply }) => {
+    const access = issueAccessToken({ origin, appId: app.appId, audience: resource, user, appidacr, now });
+    const refresh = issueRefreshToken({ appId: app.appId, userOid: user?.azureactivedirectoryobjectid ?? null, resource, scope, now });
+    const body = tokenBody({ version, access, now, audience: resource, scope, refresh });
+    if (user && hasToken(scope, "openid")) body.id_token = issueIdToken({ origin, app, user, nonce, now });
+    return reply({ status: 200, body });
   };
 
   const verifyAssertion = (app, form, { origin, tenantSegment, now }) => {
@@ -199,6 +276,188 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     return { appidacr: "1" };
   };
 
+  const userPicker = (hint) => {
+    const rows = interactiveUsers();
+    if (!rows.length) return '<p><label>User object id <input name="oid" required></label></p>';
+    return rows
+      .map((row) => {
+        const checked = hint && String(row.domainname).toLowerCase() === String(hint).toLowerCase() ? " checked" : "";
+        return `<p><label><input type="radio" name="oid" value="${esc(row.azureactivedirectoryobjectid)}" required${checked}> ${esc(row.fullname)} (${esc(row.domainname)})</label></p>`;
+      })
+      .join("");
+  };
+  const errorPage = (origin, now, code, description) => htmlPage(400, "Sign-in error", esc(aadError(code, { description, origin, now }).body.error_description));
+
+  // Shared by GET and POST of /authorize: the client, redirect_uri, response_type and scope must all check out.
+  const checkAuthorize = (origin, now, input) => {
+    const app = findApp(input.client_id);
+    if (!app) return { page: errorPage(origin, now, 700016, `Application with identifier '${input.client_id}' was not found in the directory '${tenantId}'.`) };
+    if (!redirectAllowed(app, input.redirect_uri)) return { page: errorPage(origin, now, 50011, `The reply URL specified in the request does not match the reply URLs configured for the application: '${app.appId}'.`) };
+    if (!hasToken(input.response_type, "code")) return { page: htmlPage(400, "Sign-in error", "unsupported_response_type: response_type must include code.") };
+    if (!scopeResource(input.scope, origin, false)) return { page: errorPage(origin, now, 70011, INVALID_SCOPE) };
+    return { app };
+  };
+
+  const handleAuthorize = ({ origin, tenantSegment, url, query, form = {}, method = "GET" }) => {
+    const now = clock();
+    if (!knownTenant(tenantSegment)) return errorPage(origin, now, 90002, `Tenant '${tenantSegment}' not found. Check to make sure you have the correct tenant ID and are signing into the correct cloud.`);
+    const input = fieldsOf({ url, query, form });
+    const checked = checkAuthorize(origin, now, input);
+    if (checked.page) return checked.page;
+    if (String(method).toUpperCase() !== "POST") {
+      const hidden = AUTHORIZE_FIELDS.filter((name) => input[name] !== undefined)
+        .map((name) => `<input type="hidden" name="${name}" value="${esc(input[name])}">`)
+        .join("");
+      return htmlPage(200, "Pick an account", `<form method="post">${hidden}${userPicker(input.login_hint)}<button type="submit">Continue</button></form>`);
+    }
+    const user = interactiveUser(input.oid);
+    if (!user) return errorPage(origin, now, 50034, `The user with object id '${input.oid}' was not found in the directory '${tenantId}'.`);
+    const code = randomBytes(32).toString("base64url");
+    codes.set(code, {
+      clientId: checked.app.appId.toLowerCase(),
+      redirectUri: input.redirect_uri,
+      scope: input.scope,
+      oid: user.azureactivedirectoryobjectid,
+      nonce: input.nonce,
+      challenge: input.code_challenge,
+      challengeMethod: input.code_challenge_method ?? "plain",
+      expiresAt: now + CODE_LIFETIME_MS,
+      used: false,
+    });
+    const fields = { code, state: input.state, session_state: randomUUID() };
+    if (input.response_mode === "form_post") return formPost(input.redirect_uri, fields);
+    const target = new URL(input.redirect_uri);
+    for (const [name, value] of Object.entries(fields)) if (value !== undefined) target.searchParams.set(name, value);
+    return { status: 302, body: "", headers: { location: target.href, "cache-control": "no-store" } };
+  };
+
+  const handleDeviceCode = ({ origin, tenantSegment, form = {} }) => {
+    const now = clock();
+    const json = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
+    const fail = (code, description) => json(aadError(code, { description, origin, now }));
+    if (!knownTenant(tenantSegment)) return fail(90002, `Tenant '${tenantSegment}' not found. Check to make sure you have the correct tenant ID and are signing into the correct cloud.`);
+    if (!form.client_id) return fail(900144, "The request body must contain the following parameter: 'client_id'.");
+    const app = findApp(form.client_id);
+    if (!app) return fail(700016, `Application with identifier '${form.client_id}' was not found in the directory '${tenantId}'.`);
+    if (!scopeResource(form.scope, origin, false)) return fail(70011, INVALID_SCOPE);
+    const userCode = Array.from(randomBytes(9), (byte) => USER_CODE_ALPHABET[byte % USER_CODE_ALPHABET.length]).join("");
+    const deviceCode = randomBytes(36).toString("base64url");
+    devices.set(deviceCode, { clientId: app.appId.toLowerCase(), scope: form.scope, userCode, expiresAt: now + DEVICE_LIFETIME_SECONDS * 1000, lastPoll: null, oid: null });
+    const verificationUri = `${origin}/common/oauth2/deviceauth`;
+    return json({
+      status: 200,
+      body: {
+        user_code: userCode,
+        device_code: deviceCode,
+        verification_uri: verificationUri,
+        expires_in: DEVICE_LIFETIME_SECONDS,
+        interval: DEVICE_INTERVAL_SECONDS,
+        message: `To sign in, use a web browser to open the page ${verificationUri} and enter the code ${userCode} to authenticate.`,
+      },
+    });
+  };
+
+  // /common/oauth2/deviceauth: the user types the code and picks an account; POST approves the pending device code.
+  const handleDeviceVerification = ({ origin, url, query, form = {}, method = "GET" }) => {
+    const now = clock();
+    const input = fieldsOf({ url, query, form });
+    if (String(method).toUpperCase() !== "POST") {
+      return htmlPage(200, "Enter code", `<form method="post"><p><label>Code <input name="otc" value="${esc(input.otc ?? "")}" required></label></p>${userPicker()}<button type="submit">Continue</button></form>`);
+    }
+    const userCode = normalizeUserCode(input.otc);
+    const entry = [...devices.values()].find((item) => item.userCode === userCode);
+    if (!entry || entry.expiresAt <= now) return htmlPage(400, "Code not recognised", "<p>The code is unknown or has expired. Start the sign-in again.</p>");
+    const user = interactiveUser(input.oid);
+    if (!user) return htmlPage(400, "Account not found", "<p>Choose an account that can sign in interactively.</p>");
+    entry.oid = user.azureactivedirectoryobjectid;
+    return htmlPage(200, "Device connected", "<p>You can close this window and return to the application.</p>");
+  };
+
+  const refreshGrant = ({ app, auth, form, origin, version, now, reply, failure }) => {
+    if (!form.refresh_token) return failure(900144, "The request body must contain the following parameter: 'refresh_token'.");
+    const entry = refreshTokens.get(form.refresh_token);
+    if (!entry || entry.appId !== app.appId.toLowerCase()) return failure(9002313, MALFORMED);
+    refreshTokens.delete(form.refresh_token);
+    if (entry.expiresAt <= now) return failure(700082, "The refresh token has expired due to inactivity.");
+    const user = entry.userOid ? interactiveUser(entry.userOid) : null;
+    if (entry.userOid && !user) return failure(9002313, MALFORMED);
+    return delegatedReply({ origin, app, user, resource: entry.resource, scope: entry.scope, appidacr: auth.appidacr, version, now, reply });
+  };
+
+  const redeemCode = ({ origin, app, auth, form, version, now, reply, failure }) => {
+    if (!form.code) return failure(900144, "The request body must contain the following parameter: 'code'.");
+    const entry = codes.get(form.code);
+    if (!entry || entry.clientId !== app.appId.toLowerCase()) return failure(9002313, MALFORMED);
+    if (entry.used) return failure(54005, "The provided authorization code or refresh token has already been redeemed. Authorization codes are single use.");
+    if (entry.expiresAt <= now) return failure(70008, "The provided authorization code or refresh token is expired. Please re-authenticate.");
+    if (form.redirect_uri !== entry.redirectUri) return failure(9002313, MALFORMED);
+    if (entry.challenge && !pkceMatches(entry, form.code_verifier)) return failure(9002313, "The code_verifier does not match the code_challenge supplied in the authorization request.");
+    const user = interactiveUser(entry.oid);
+    if (!user) return failure(9002313, MALFORMED);
+    entry.used = true; // spent only by a successful redemption, so a failed attempt can be retried
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, nonce: entry.nonce, appidacr: auth.appidacr, version, now, reply });
+  };
+
+  const redeemDevice = ({ origin, app, auth, form, version, now, reply, failure }) => {
+    if (!form.device_code) return failure(900144, "The request body must contain the following parameter: 'device_code'.");
+    const entry = devices.get(form.device_code);
+    if (!entry || entry.clientId !== app.appId.toLowerCase()) return failure(7000014, "The provided value for the input parameter 'device_code' is not valid.");
+    if (entry.expiresAt <= now) {
+      devices.delete(form.device_code);
+      return failure(70019, "Verification code expired. Have the user retry the sign-in.");
+    }
+    const hurried = entry.lastPoll !== null && now - entry.lastPoll < DEVICE_INTERVAL_SECONDS * 1000;
+    entry.lastPoll = now;
+    if (hurried) {
+      const slow = aadError(70016, { description: "Polling too frequently. Wait for the interval before polling again.", origin, now });
+      slow.body.error = "slow_down";
+      return reply(slow);
+    }
+    if (!entry.oid) return failure(70016, "OAuth 2.0 device flow error. Authorization is pending. Continue polling.");
+    devices.delete(form.device_code);
+    const user = interactiveUser(entry.oid);
+    if (!user) return failure(9002313, MALFORMED);
+    return delegatedReply({ origin, app, user, resource: scopeResource(entry.scope, origin, false), scope: entry.scope, appidacr: auth.appidacr, version, now, reply });
+  };
+
+  const passwordGrant = ({ origin, app, auth, form, version, now, reply, failure }) => {
+    if (form.username === undefined) return failure(900144, "The request body must contain the following parameter: 'username'.");
+    if (form.password === undefined) return failure(900144, "The request body must contain the following parameter: 'password'.");
+    const resource = scopeResource(form.scope, origin, false);
+    if (!resource) return failure(70011, INVALID_SCOPE);
+    const user = interactive(users.byDomainName(form.username));
+    if (!user) return failure(50034, `The user account '${form.username}' does not exist in the directory '${tenantId}'.`);
+    if (users.verifyPassword?.(user, form.password) !== true) return failure(50126, "Error validating credentials due to invalid username or password.");
+    return delegatedReply({ origin, app, user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply });
+  };
+
+  // Returns { user } or { description } for an assertion that is not a user token signed by this authority.
+  const userFromAssertion = (assertion, now) => {
+    const [head, body, signature] = String(assertion).split(".");
+    let header;
+    let claims;
+    try {
+      header = fromB64json(head);
+      claims = fromB64json(body);
+    } catch {
+      return { description: "The assertion is not a JSON Web Token." };
+    }
+    if (header.alg !== "RS256" || !verifies(`${head}.${body}`, signature, publicKey)) return { description: "Assertion failed signature validation." };
+    if (Number(claims.exp) + SKEW_SECONDS < now / 1000) return { description: "The assertion has expired." };
+    if (claims.idtyp !== "user") return { description: "The assertion must be a user token." };
+    const user = interactiveUser(claims.oid);
+    return user ? { user } : { description: "The assertion's user is not an interactive user in this directory." };
+  };
+
+  const onBehalfOf = ({ origin, app, auth, form, version, now, reply, failure }) => {
+    if (!form.assertion) return failure(900144, "The request body must contain the following parameter: 'assertion'.");
+    const verdict = userFromAssertion(form.assertion, now);
+    if (!verdict.user) return failure(9002313, verdict.description);
+    const resource = scopeResource(form.scope, origin, false);
+    if (!resource) return failure(70011, INVALID_SCOPE);
+    return delegatedReply({ origin, app, user: verdict.user, resource, scope: form.scope, appidacr: auth.appidacr, version, now, reply });
+  };
+
   const handleToken = ({ origin, tenantSegment, form = {}, headers = {}, version = "v2.0" }) => {
     const now = clock();
     const reply = (result) => ({ ...result, headers: { ...TOKEN_HEADERS } });
@@ -209,24 +468,18 @@ export function createAuthority({ tenantId, applications, users, clock = () => D
     const basic = parseBasic(headers.authorization);
     const clientId = form.client_id ?? basic?.clientId;
     if (!clientId) return failure(900144, "The request body must contain the following parameter: 'client_id'.");
-    const app = applications().find((item) => item.appId.toLowerCase() === String(clientId).toLowerCase());
-    if (!app) return failure(700016, `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`);
+    const app = findApp(clientId);
+    if (!app) {
+      // An unregistered client on the on-behalf-of grant is reported as no consent (AADSTS65001), per the milestone 2 contract.
+      if (form.grant_type === JWT_BEARER) return failure(65001, `The user or administrator has not consented to use the application with ID '${clientId}'. Send an interactive authorization request for this user and resource.`);
+      return failure(700016, `Application with identifier '${clientId}' was not found in the directory '${tenantId}'. This can happen if the application has not been installed by the administrator of the tenant or consented to by any user in the tenant. You may have sent your authentication request to the wrong tenant.`);
+    }
     if (!(app.allowedGrants ?? SUPPORTED_GRANTS).includes(form.grant_type)) return failure(700016, `The client is not permitted to use the grant type '${form.grant_type}'.`);
     const auth = authenticateClient(app, form, basic, { origin, tenantSegment, now });
     if (auth.code) return failure(auth.code, auth.description);
 
-    if (form.grant_type === "refresh_token") {
-      if (!form.refresh_token) return failure(900144, "The request body must contain the following parameter: 'refresh_token'.");
-      const entry = refreshTokens.get(form.refresh_token);
-      if (!entry || entry.appId !== app.appId.toLowerCase()) return failure(9002313, "Invalid request. Request is malformed or invalid.");
-      refreshTokens.delete(form.refresh_token);
-      if (entry.expiresAt <= now) return failure(700082, "The refresh token has expired due to inactivity.");
-      const user = users.byObjectId(entry.oid);
-      if (!user) return failure(9002313, "Invalid request. Request is malformed or invalid.");
-      const refresh = issueRefreshToken({ appId: app.appId, oid: entry.oid, resource: entry.resource, scope: entry.scope, now });
-      const access = issueAccessToken({ origin, appId: app.appId, audience: entry.resource, user, appidacr: auth.appidacr, now });
-      return reply({ status: 200, body: tokenBody({ version, access, now, audience: entry.resource, scope: entry.scope, refresh }) });
-    }
+    const grant = { refresh_token: refreshGrant, [AUTH_CODE]: redeemCode, [DEVICE_GRANT]: redeemDevice, password: passwordGrant, [JWT_BEARER]: onBehalfOf }[form.grant_type];
+    if (grant) return grant({ origin, app, auth, form, version, now, reply, failure });
 
     let resource;
     if (version === "v1.0") {

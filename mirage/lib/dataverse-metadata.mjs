@@ -1,7 +1,7 @@
 // Dataverse metadata for the simulated Web API: EntityDefinitions, Attributes, Keys,
 // RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
 // store mapping of the same name; virtual tables are read-only fallbacks. Shapes follow
-// webapi-contract.md section 8. $metadata (CSDL) and RetrieveMetadataChanges are milestone 2.
+// webapi-contract.md section 1 ($metadata CSDL) and section 8 (RetrieveMetadataChanges).
 import { createHash } from "node:crypto";
 import { attributeMetadata } from "./attribute-metadata.mjs";
 import { tableFields } from "./solution-schema.mjs";
@@ -59,7 +59,35 @@ const listOf = (value) => (value == null ? [] : (Array.isArray(value) ? value : 
 const castName = (cast) => String(cast).replace(/^#/, "").replace(/^Microsoft\.Dynamics\.CRM\./, "");
 const keyName = (text) => /^(?:LogicalName|SchemaName)=['"]?([^'")]+)['"]?$/i.exec(String(text))?.[1]?.toLowerCase() ?? null;
 const unsupported = (message) => Object.assign(new Error(message), { status: 400, code: "UnsupportedQuery" });
-const notImplemented = () => Object.assign(new Error("$metadata document is not implemented in this milestone"), { status: 501, code: "NotImplemented" });
+const xmlEscape = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
+// csdl writer: xmlElement(tag, attrs, ...children) returns indented lines; null attributes are skipped, children may nest.
+function xmlElement(tag, attrs, ...children) {
+  const text = Object.entries(attrs).filter(([, v]) => v != null).map(([k, v]) => ` ${k}="${xmlEscape(v)}"`).join("");
+  const body = children.flat(Infinity);
+  return body.length ? [`<${tag}${text}>`, ...body.map((line) => `  ${line}`), `</${tag}>`] : [`<${tag}${text} />`];
+}
+const xmlFixed = (text) => text.split("\n").filter(Boolean);
+const labelText = (block) => block?.UserLocalizedLabel?.Label ?? null;
+const byName = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+const KEYS = "OData.Community.Keys.V1";
+const DESCRIPTION = "Org.OData.Core.V1.Description";
+const COMPUTED = "Org.OData.Core.V1.Computed";
+// Edm primitive per AttributeMetadata type stem (attribute-metadata.mjs mapping); lookups are Guids behind _<name>_value.
+const EDM = {
+  UniqueIdentifier: "Edm.Guid", Lookup: "Edm.Guid", Customer: "Edm.Guid", Owner: "Edm.Guid",
+  String: "Edm.String", Memo: "Edm.String", EntityName: "Edm.String", MultiSelectPicklist: "Edm.String",
+  Integer: "Edm.Int32", Picklist: "Edm.Int32", State: "Edm.Int32", Status: "Edm.Int32",
+  BigInt: "Edm.Int64", Decimal: "Edm.Decimal", Money: "Edm.Decimal", Double: "Edm.Double",
+  Boolean: "Edm.Boolean", DateTime: "Edm.DateTimeOffset",
+};
+const LOOKUP_STEMS = new Set(["Lookup", "Customer", "Owner"]);
+const stemOf = (attribute) => attribute["@odata.type"].replace(/^#Microsoft\.Dynamics\.CRM\./, "").replace(/AttributeMetadata$/, "");
+// Version stamp = digest of the whole metadata set plus a fixed date: the simulator keeps no change clock.
+const STAMP_DATE = "01/01/2026 00:00:00";
+// Change responses keep these base keys; each expansion is filtered by the query section named here.
+const CHANGE_KEYS = new Set(["@odata.type", "MetadataId", "LogicalName", "HasChanged"]);
+const NESTED = { Attributes: "AttributeQuery", Keys: "KeyQuery", OneToManyRelationships: "RelationshipQuery", ManyToOneRelationships: "RelationshipQuery", ManyToManyRelationships: "RelationshipQuery" };
+const ALIASES = { AttributeTypeCode: "AttributeType" };
 
 function uuidV5(namespace, name) {
   const text = String(namespace ?? "");
@@ -181,6 +209,160 @@ function evaluate(node, item) {
   const same = equal(value, node.value);
   return node.op === "eq" ? same : !same;
 }
+
+// RetrieveMetadataChanges conditions: Value.Type picks the coercion; Guid and enum text compare through equal().
+function coerceValue(value) {
+  const type = String(value?.Type ?? "");
+  const raw = value?.Value ?? null;
+  if (type.endsWith("[]")) return listOf(raw);
+  if (/Boolean$/.test(type)) return String(raw).toLowerCase() === "true";
+  if (/(Int16|Int32|Int64|Decimal|Double)$/.test(type)) return Number(raw);
+  return raw;
+}
+
+// Nested Value properties (RequiredLevel/Value style) compare by their Value.
+const unwrap = (value) => (value !== null && typeof value === "object" && !Array.isArray(value) && "Value" in value ? value.Value : value);
+
+function matchesAll(item, criteria) {
+  const conditions = criteria?.Conditions ?? [];
+  if (!conditions.length) return true;
+  const results = conditions.map((c) => {
+    const actual = unwrap(item[ALIASES[c.PropertyName] ?? c.PropertyName]);
+    const want = coerceValue(c.Value);
+    switch (c.ConditionOperator) {
+      case "Equals": return equal(actual, want);
+      case "NotEquals": return !equal(actual, want);
+      case "In": return [want].flat().some((v) => equal(actual, v));
+      case "NotIn": return ![want].flat().some((v) => equal(actual, v));
+      case "GreaterThan": return actual > want;
+      case "LessThan": return actual < want;
+      default: throw unsupported(`Unsupported metadata condition: ${c.ConditionOperator}`);
+    }
+  });
+  return String(criteria.FilterOperator ?? "And").toLowerCase() === "or" ? results.some(Boolean) : results.every(Boolean);
+}
+
+// One requested item: null when its Criteria fails; else the base keys plus the requested properties (all when none are named).
+function projectChange(item, section) {
+  if (!matchesAll(item, section?.Criteria)) return null;
+  const props = section?.Properties ?? { AllProperties: true };
+  const names = listOf(props.PropertyNames);
+  const out = {};
+  for (const [key, value] of Object.entries(item)) {
+    if (CHANGE_KEYS.has(key) || props.AllProperties === true || names.includes(key)) out[key] = value;
+  }
+  if (typeof out["@odata.type"] === "string") out["@odata.type"] = out["@odata.type"].replace("#Microsoft.Dynamics.CRM.", "#Microsoft.Dynamics.CRM.Complex");
+  return out;
+}
+
+const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
+<EntityType Name="crmmodelbaseentity" Abstract="true" />
+<EntityType Name="principal" BaseType="mscrm.crmbaseentity" Abstract="true">
+  <Key>
+    <PropertyRef Name="ownerid" />
+  </Key>
+  <Property Name="ownerid" Type="Edm.Guid" Nullable="false" />
+</EntityType>
+<ComplexType Name="WhoAmIResponse">
+  <Property Name="BusinessUnitId" Type="Edm.Guid" Nullable="false" />
+  <Property Name="UserId" Type="Edm.Guid" Nullable="false" />
+  <Property Name="OrganizationId" Type="Edm.Guid" Nullable="false" />
+</ComplexType>
+<ComplexType Name="RetrieveVersionResponse">
+  <Property Name="Version" Type="Edm.String" />
+</ComplexType>
+<ComplexType Name="EndpointCollection">
+  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
+  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
+  <Property Name="Keys" Type="Collection(Edm.String)" />
+  <Property Name="Values" Type="Collection(Edm.String)" />
+</ComplexType>
+<ComplexType Name="OrganizationDetail">
+  <Property Name="OrganizationId" Type="Edm.Guid" Nullable="false" />
+  <Property Name="UniqueName" Type="Edm.String" />
+  <Property Name="FriendlyName" Type="Edm.String" />
+  <Property Name="Endpoints" Type="mscrm.EndpointCollection" />
+</ComplexType>
+<ComplexType Name="RetrieveCurrentOrganizationResponse">
+  <Property Name="Detail" Type="mscrm.OrganizationDetail" />
+</ComplexType>
+<ComplexType Name="EntityRecordCountCollection">
+  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
+  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
+  <Property Name="Keys" Type="Collection(Edm.String)" />
+  <Property Name="Values" Type="Collection(Edm.Int64)" />
+</ComplexType>
+<ComplexType Name="RetrieveTotalRecordCountResponse">
+  <Property Name="EntityRecordCountCollection" Type="mscrm.EntityRecordCountCollection" />
+</ComplexType>
+<ComplexType Name="RetrievePrincipalAccessResponse">
+  <Property Name="AccessRights" Type="Edm.String" />
+</ComplexType>
+<ComplexType Name="RolePrivilege">
+  <Property Name="Depth" Type="Edm.String" />
+  <Property Name="PrivilegeId" Type="Edm.Guid" Nullable="false" />
+  <Property Name="BusinessUnitId" Type="Edm.Guid" Nullable="false" />
+  <Property Name="PrivilegeName" Type="Edm.String" />
+</ComplexType>
+<ComplexType Name="RetrieveUserPrivilegesResponse">
+  <Property Name="RolePrivileges" Type="Collection(mscrm.RolePrivilege)" />
+</ComplexType>
+<ComplexType Name="CreateMultipleResponse">
+  <Property Name="Ids" Type="Collection(Edm.Guid)" />
+</ComplexType>
+<EnumType Name="EndpointAccessType">
+  <Member Name="Default" Value="0" />
+  <Member Name="Internet" Value="1" />
+  <Member Name="Intranet" Value="2" />
+</EnumType>`;
+
+// Bound to the systemuser table, so emitted only when that table exists.
+const CSDL_USER_FUNCTIONS = `<Function Name="RetrieveUserPrivileges" IsBound="true">
+  <Parameter Name="entity" Type="mscrm.systemuser" Nullable="false" />
+  <ReturnType Type="mscrm.RetrieveUserPrivilegesResponse" Nullable="false" />
+</Function>
+<Function Name="RetrievePrincipalAccess" IsBound="true">
+  <Parameter Name="entity" Type="mscrm.systemuser" Nullable="false" />
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <ReturnType Type="mscrm.RetrievePrincipalAccessResponse" Nullable="false" />
+</Function>`;
+
+const CSDL_OPERATIONS = `<Function Name="WhoAmI">
+  <ReturnType Type="mscrm.WhoAmIResponse" Nullable="false" />
+</Function>
+<Function Name="RetrieveVersion">
+  <ReturnType Type="mscrm.RetrieveVersionResponse" Nullable="false" />
+</Function>
+<Function Name="RetrieveCurrentOrganization">
+  <Parameter Name="AccessType" Type="mscrm.EndpointAccessType" Nullable="false" />
+  <ReturnType Type="mscrm.RetrieveCurrentOrganizationResponse" Nullable="false" />
+</Function>
+<Function Name="RetrieveTotalRecordCount">
+  <Parameter Name="EntityNames" Type="Collection(Edm.String)" />
+  <ReturnType Type="mscrm.RetrieveTotalRecordCountResponse" Nullable="false" />
+</Function>
+<Action Name="CreateMultiple" IsBound="true">
+  <Parameter Name="entityset" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <Parameter Name="Targets" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <ReturnType Type="mscrm.CreateMultipleResponse" Nullable="false" />
+</Action>
+<Action Name="UpdateMultiple" IsBound="true">
+  <Parameter Name="entityset" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <Parameter Name="Targets" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+</Action>
+<Action Name="UpsertMultiple" IsBound="true">
+  <Parameter Name="entityset" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <Parameter Name="Targets" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+</Action>
+<Action Name="GrantAccess">
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+</Action>`;
+
+const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" IncludeInServiceDocument="false" />
+<FunctionImport Name="RetrieveVersion" Function="mscrm.RetrieveVersion" IncludeInServiceDocument="false" />
+<FunctionImport Name="RetrieveCurrentOrganization" Function="mscrm.RetrieveCurrentOrganization" IncludeInServiceDocument="false" />
+<FunctionImport Name="RetrieveTotalRecordCount" Function="mscrm.RetrieveTotalRecordCount" IncludeInServiceDocument="false" />
+<ActionImport Name="GrantAccess" Action="mscrm.GrantAccess" />`;
 
 export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables }) {
   const read = (source) => (typeof source === "function" ? source() : source) ?? null;
@@ -463,6 +645,101 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     return GUID.test(String(key)) && String(item.MetadataId).toLowerCase() === String(key).toLowerCase();
   };
 
+  // $metadata: EDMX 4.0 from the same tables as the metadata shapes. Annotations are opt-in.
+  function csdlDocument(annotations) {
+    const names = logicalNames();
+    const known = new Set(names);
+    const tables = new Map(names.map((logical) => {
+      const src = source(logical);
+      const attributes = attributesOf(src);
+      return [logical, { src, attributes, lookups: attributes.filter((a) => LOOKUP_STEMS.has(stemOf(a))) }];
+    }));
+    const lookupOf = (logical, name) => tables.get(logical)?.lookups.find((a) => a.LogicalName === name);
+    // Single-valued navigation is named after its lookup; a polymorphic lookup adds the target table.
+    const singleNav = (lookup, target) => ((lookup.Targets ?? []).length > 1 ? `${lookup.LogicalName}_${target}` : lookup.LogicalName);
+    const oneToMany = relationshipRecords().filter((r) => r.type === "1:N" && known.has(r.referencingEntity) && known.has(r.referencedEntity));
+    const manyToMany = relationshipRecords().filter((r) => r.type === "N:N" && known.has(r.entity1) && known.has(r.entity2));
+    const navs = new Map(names.map((logical) => [logical, []]));
+    for (const [logical, { lookups }] of tables) {
+      for (const lookup of lookups) {
+        for (const target of lookup.Targets ?? []) {
+          if (!known.has(target)) continue;
+          const rel = oneToMany.find((r) => r.referencingEntity === logical && r.referencingAttribute === lookup.LogicalName && r.referencedEntity === target);
+          navs.get(logical).push({ name: singleNav(lookup, target), target, type: `mscrm.${target}`, lookup: lookup.LogicalName, partner: rel?.schemaName ?? null });
+        }
+      }
+    }
+    // Collection navigation sits on the referenced table, named by its relationship; N:N uses the schema name on both sides.
+    for (const r of oneToMany) {
+      const lookup = lookupOf(r.referencingEntity, r.referencingAttribute);
+      navs.get(r.referencedEntity).push({ name: r.schemaName, target: r.referencingEntity, type: `Collection(mscrm.${r.referencingEntity})`, partner: lookup ? singleNav(lookup, r.referencedEntity) : r.referencingAttribute });
+    }
+    for (const r of manyToMany) {
+      navs.get(r.entity1).push({ name: r.schemaName, target: r.entity2, type: `Collection(mscrm.${r.entity2})`, partner: r.schemaName });
+      navs.get(r.entity2).push({ name: r.schemaName, target: r.entity1, type: `Collection(mscrm.${r.entity1})`, partner: r.schemaName });
+    }
+    const edm = (a) => (a.Format === "DateOnly" && stemOf(a) === "DateTime" ? "Edm.Date" : (EDM[stemOf(a)] ?? "Edm.String"));
+    const alternateKeys = (src) => {
+      const keys = keysOf(src);
+      if (!keys.length) return [];
+      const records = keys.map((k) => {
+        const refs = k.KeyAttributes.map((attr) => xmlElement("Record", { Type: `${KEYS}.PropertyRef` },
+          xmlElement("PropertyValue", { Property: "Alias", String: attr }),
+          xmlElement("PropertyValue", { Property: "Name", PropertyPath: attr })));
+        return xmlElement("Record", { Type: `${KEYS}.AlternateKey` }, xmlElement("PropertyValue", { Property: "Key" }, xmlElement("Collection", {}, refs)));
+      });
+      return xmlElement("Annotation", { Term: `${KEYS}.AlternateKeys` }, xmlElement("Collection", {}, records));
+    };
+    const typeLines = names.map((logical) => {
+      const { src, attributes } = tables.get(logical);
+      const entity = entityOf(src);
+      const properties = attributes.map((a) => {
+        const lookup = LOOKUP_STEMS.has(stemOf(a));
+        const id = a.LogicalName === src.idColumn;
+        return { name: lookup ? `_${a.LogicalName}_value` : a.LogicalName, type: edm(a), id, scale: ["Decimal", "Money"].includes(stemOf(a)), computed: lookup || id, label: labelText(a.DisplayName) };
+      }).sort(byName).map((p) => xmlElement("Property", { Name: p.name, Type: p.type, Nullable: p.id ? "false" : null, Scale: p.scale ? "Variable" : null },
+        annotations && p.label ? xmlElement("Annotation", { Term: DESCRIPTION, String: p.label }) : [],
+        annotations && p.computed ? xmlElement("Annotation", { Term: COMPUTED, Bool: "true" }) : []));
+      const navigation = navs.get(logical).sort(byName).map((n) => xmlElement("NavigationProperty", { Name: n.name, Type: n.type, Partner: n.partner },
+        n.lookup ? xmlElement("ReferentialConstraint", { Property: `_${n.lookup}_value`, ReferencedProperty: tables.get(n.target).src.idColumn }) : []));
+      const label = labelText(entity.DisplayName);
+      return xmlElement("EntityType", { Name: logical, BaseType: ["systemuser", "team"].includes(logical) ? "mscrm.principal" : "mscrm.crmbaseentity" },
+        xmlElement("Key", {}, xmlElement("PropertyRef", { Name: src.idColumn })),
+        annotations && label ? xmlElement("Annotation", { Term: DESCRIPTION, String: label }) : [],
+        annotations ? alternateKeys(src) : [],
+        properties, navigation);
+    });
+    const sets = names.map((logical) => xmlElement("EntitySet", { Name: tables.get(logical).src.entitySet, EntityType: `mscrm.${logical}` },
+      navs.get(logical).map((n) => xmlElement("NavigationPropertyBinding", { Path: n.name, Target: tables.get(n.target).src.entitySet }))));
+    const schemaLines = xmlElement("Schema", { Namespace: "Microsoft.Dynamics.CRM", Alias: "mscrm", xmlns: "http://docs.oasis-open.org/odata/ns/edm" },
+      xmlFixed(CSDL_TYPES), typeLines, known.has("systemuser") ? xmlFixed(CSDL_USER_FUNCTIONS) : [], xmlFixed(CSDL_OPERATIONS),
+      xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(CSDL_IMPORTS)));
+    return ['<?xml version="1.0" encoding="utf-8"?>', ...xmlElement("edmx:Edmx", { Version: "4.0", "xmlns:edmx": "http://docs.oasis-open.org/odata/ns/edmx" }, xmlElement("edmx:DataServices", {}, schemaLines))].join("\n") + "\n";
+  }
+
+  // Full metadata of one table: the source of every RetrieveMetadataChanges answer.
+  const fullEntity = (logical) => {
+    const src = source(logical);
+    return {
+      "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata",
+      ...entityOf(src),
+      Attributes: attributesOf(src),
+      Keys: keysOf(src),
+      OneToManyRelationships: oneToManyOf(logical),
+      ManyToOneRelationships: manyToOneOf(logical),
+      ManyToManyRelationships: manyToManyOf(logical),
+    };
+  };
+  const stampOf = () => `${createHash("sha1").update(JSON.stringify(logicalNames().map(fullEntity))).digest().readUInt32BE(0)}!${STAMP_DATE}`;
+  function changeOf(logical, query) {
+    const item = projectChange(fullEntity(logical), query);
+    if (!item) return null;
+    for (const [key, section] of Object.entries(NESTED)) {
+      if (Array.isArray(item[key])) item[key] = item[key].map((child) => projectChange(child, query?.[section])).filter(Boolean);
+    }
+    return item;
+  }
+
   return {
     metadataId: metadataIdOf,
 
@@ -534,12 +811,18 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
 
     selectMetadata,
 
-    csdl() {
-      throw notImplemented();
+    csdl(_origin, { annotations = false } = {}) {
+      return csdlDocument(annotations);
     },
 
-    retrieveMetadataChanges() {
-      throw notImplemented();
+    retrieveMetadataChanges(query = null, { clientVersionStamp = null } = {}) {
+      const serverVersionStamp = stampOf();
+      const unchanged = clientVersionStamp != null && String(clientVersionStamp) === serverVersionStamp;
+      return {
+        ServerVersionStamp: serverVersionStamp,
+        DeletedMetadata: { Count: 0, IsReadOnly: false, Keys: [], Values: [] },
+        EntityMetadata: unchanged ? [] : logicalNames().map((name) => changeOf(name, query)).filter(Boolean),
+      };
     },
   };
 }

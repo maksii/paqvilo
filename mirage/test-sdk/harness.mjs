@@ -6,6 +6,12 @@ import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
 import { newClientSecret } from "../lib/dataverse-auth.mjs";
+import { ensureCertificate } from "../lib/dataverse-tls.mjs";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+// Certificates live under the ignored .paqvilo/ tree: Mirage fingerprints every other directory at startup.
+const CA_FILE = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../.paqvilo/sdk-gates/dataverse-ca.pem");
 
 export const GATE_APP_ID = "11111111-1111-1111-1111-111111111111";
 const SECRET_VARIABLE = "PAQVILO_SDK_GATE_SECRET";
@@ -43,7 +49,8 @@ export function gateState() {
 }
 
 /** Start the simulator; returns connection facts plus the one-time client secret. */
-export async function startGate({ port = 0, tls = null, state = gateState(), serviceProtection = null } = {}) {
+export async function startGate({ port = 0, tls = false, state = gateState(), serviceProtection = null } = {}) {
+  const certificate = tls ? await ensureCertificate(CA_FILE) : null;
   const secret = newClientSecret();
   process.env[SECRET_VARIABLE] = secret;
   const store = new DataStore({ state });
@@ -53,11 +60,12 @@ export async function startGate({ port = 0, tls = null, state = gateState(), ser
     applications: [{ appId: GATE_APP_ID, displayName: "SDK gate client", secretEnvironmentVariable: SECRET_VARIABLE, roles: ["System Administrator"] }],
     ...(serviceProtection ? { serviceProtection } : {}),
   });
-  const api = await startDataverseApi({ store, settings, tls });
+  const api = await startDataverseApi({ store, settings, tls: certificate ? { key: certificate.key, cert: certificate.cert } : null });
   delete process.env[SECRET_VARIABLE];
   return {
     api, store,
     origin: api.origin, tlsOrigin: api.tlsOrigin, tenantId: api.tenantId, organizationId: api.organizationId,
+    caFile: certificate?.file ?? null, caPem: certificate?.cert ?? null,
     authority: api.authority, clientId: GATE_APP_ID, clientSecret: secret,
     scope: `${api.origin}/.default`,
     requests: () => api.requests(),
