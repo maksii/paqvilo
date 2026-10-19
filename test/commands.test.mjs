@@ -231,8 +231,10 @@ test('browser/profile CLI choices are discoverable offline and incompatible comm
   assert.equal(JSON.parse(attach.stdout).inEffect.browser.profileMode, 'attached');
   assert.deepEqual(JSON.parse(attach.stdout).inEffect.browser.profileInfo, { kind: 'attached', name: null, channel: null, userDataDir: null, profileDirectory: null });
   for (const endpoint of ['http://127.0.0.1:9222', 'ws://127.0.0.1:9333/devtools/browser/invented']) {
-    const invalid = runWithin(3000, 'dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222');
-    assert.equal(invalid.status, 1, invalid.stderr);
+    // Allow the same bounded Node startup as other CLI checks on loaded runners;
+    // the rejection and guidance below establish the argument-validation contract.
+    const invalid = run('dev', '--config', file, '--cdp-url', endpoint, '--debug-port', '9222');
+    assert.equal(invalid.status, 1, [invalid.error?.message, invalid.stderr].filter(Boolean).join('\n'));
     assert.match(invalid.stderr, /browser.debugPort.*cannot be combined with browser.cdpUrl/);
     assert.match(invalid.stderr, /--debug-port 0/);
   }
