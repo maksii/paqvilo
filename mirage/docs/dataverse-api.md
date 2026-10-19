@@ -94,10 +94,13 @@ On start, the simulator seeds the security tables for the organization:
 | `businessunit` | The root business unit of the organization. |
 | `systemuser` | `SYSTEM` (non-interactive) and each configured user. |
 | `role` | `System Administrator`, `System Customizer`, `Basic User`. |
-| `privilege`, `roleprivileges` | Privileges per role. System Administrator and System Customizer hold Global depth on every table. Basic User holds Basic depth on user-owned tables and Global Read on organization-owned tables. |
+| `privilege`, `roleprivileges` | Privileges per role. System Administrator and System Customizer hold Global depth on every table. Basic User holds Basic depth on user-owned tables and Global Read on organization-owned tables, except the share table. |
 | `transactioncurrency` | The organization's base currency (`Base currency`). Its symbol comes from the simulator setting `currencySymbol`, default `$`. |
+| `principalobjectaccess` | Empty at start. `GrantAccess`, `ModifyAccess` and `RevokeAccess` write one row per shared record and principal. Only the administrator roles can read it. |
 
 Application users come from two places: the `applications` list in `mirage.dataverse`, or `POST /_sim/api/dataverse/applications` at runtime. Interactive users come from `users` or `POST /_sim/api/dataverse/users`. Their roles are ordinary `systemuserroles` rows.
+
+Every write through this API stamps `createdby` and `modifiedby`, and `createdonbehalfby` and `modifiedonbehalfby` when the caller impersonates another user. User-owned tables also receive `ownerid`, `owninguser`, `owningteam` and `owningbusinessunit`; an `ownerid@odata.bind` reassignment recomputes the owning user, team and business unit. These columns are written whether or not the export declares them, so depth checks always have an owner and a business unit to evaluate.
 
 Interactive users sign in through the authority's local picker page at `/<tenantId>/oauth2/v2.0/authorize`, and device-code sign-in through the device page at `/common/oauth2/deviceauth`. The `password` (ROPC) grant needs a password set through the admin API (`password` on `POST` or `PATCH` users); a user without one is refused.
 
@@ -109,6 +112,8 @@ Privilege depth decides which rows a caller can read or change:
 | Local | Rows in the caller's business unit. |
 | Deep | Rows in the caller's business unit and its child business units. |
 | Global | All rows in the organization. |
+
+Sharing adds to depth: a row shared with the caller, or with one of the caller's teams, is accessible for the rights in the share's mask. The table privilege is still required, so a share never opens a table the caller's roles do not grant. `POST GrantAccess` and `POST ModifyAccess` take `{ Target, PrincipalAccess: { AccessMask, Principal } }`. `GrantAccess` ORs its mask into an existing share of the same record and principal; `ModifyAccess` replaces the mask. `POST RevokeAccess` takes `{ Target, Revokee }`. `Target`, `Principal` and `Revokee` are entity parameters (`{ "widgetid": "<guid>", "@odata.type": "Microsoft.Dynamics.CRM.widget" }`), and `AccessMask` is a comma-separated list such as `ReadAccess, WriteAccess`. The caller needs the Share privilege on the target. `RetrievePrincipalAccess` reports shared rights together with the rights the roles grant.
 
 Portal table permissions and web roles never apply to this API. Security roles never apply to the portal. The two access models are independent, so a test of one says nothing about the other.
 
@@ -135,8 +140,8 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 
 ### Headers
 
-- `Preference-Applied` echoes only the preferences that were applied: `odata.include-annotations`, `odata.maxpagesize`, `return=representation`, and `odata.continue-on-error` inside `$batch`.
-- `odata.track-changes` and `respond-async` are accepted but not applied. No `@odata.deltaLink` is returned.
+- `Preference-Applied` echoes only the preferences that were applied: `odata.include-annotations`, `odata.maxpagesize`, `odata.track-changes` (on a tracked collection), `return=representation`, and `odata.continue-on-error` inside `$batch`.
+- `respond-async` is accepted but not applied.
 - `MSCRM.BypassCustomPluginExecution` and `MSCRM.BypassBusinessLogicExecution` require the `prvBypassCustomPlugins` privilege, which System Administrator and System Customizer hold. They are then accepted as no-ops, because the simulated API runs no plug-ins.
 - `MSCRM.SuppressDuplicateDetection`, `MSCRM.SolutionUniqueName`, `MSCRM.MergeLabels` and `Consistency` are accepted as no-ops.
 - `x-ms-client-request-id` is echoed.
@@ -149,6 +154,25 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 ### Batch
 
 `$batch` part errors use the Dataverse error envelope. A change set runs under the runtime's single mutation queue and is rolled back as a whole on failure (snapshot and restore). This is a local atomicity model, not transaction isolation for readers.
+
+### Change tracking
+
+`Prefer: odata.track-changes` on a collection read is applied and echoed in `Preference-Applied`. The last page carries `@odata.deltaLink`, a link whose `$deltatoken` names the store revision of that page. Following the link answers `…/$delta` with:
+
+- the rows changed since that revision, with the selected columns;
+- one `…/$deletedEntity` entry per deleted row, with `id` and `reason: "deleted"`;
+- a new `@odata.deltaLink`.
+
+The change log is in memory and keeps the last 10,000 changes. It is reset by a restart and by `POST /_sim/api/reset`.
+
+| Case | Answer |
+| --- | --- |
+| Token from before a restart or a reset, trimmed out of the log, or not issued by this simulator | 400, `0x80044352` (ExpiredVersionStamp), "Please perform a full sync." The client starts over with a full read. |
+| Malformed `$deltatoken` | 400, `0x80060888`, "The $deltatoken is not valid." |
+| `$filter`, `$orderby`, `$expand` or `$top` with track-changes or `$deltatoken` | 400, `0x80060888`, "isn't supported when Change Tracking is enabled." |
+| `fetchXml` or `$apply` with track-changes or `$deltatoken` | 400, `0x80060888`, the same message. |
+| Table whose metadata sets `ChangeTrackingEnabled` to false | 400, `0x80072491`, "Entity … isn't enabled for change tracking." |
+| Caller without organization-level read on the table | 403, privilege error for `prvRead<Table>` (`0x80040220`). The delta includes deleted ids, so a limited reader is refused. |
 
 ## Metadata
 
@@ -187,10 +211,11 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 - Service document, and entity sets with create, read, update, delete.
 - Query options `$select`, `$filter`, `$orderby`, `$top`, `$expand`, `$count` and annotations. `$skip`, `$search` and `$format` are not supported. `$apply` aggregation is passed through to the local query engine.
 - Paging with the `odata.maxpagesize` preference and `$skiptoken`.
+- Change tracking on collections, described under Request handling.
 - `fetchXml` queries.
 - Navigation properties and `$ref` associations.
 - `$batch` with change sets and `$n` references.
-- Functions and actions: `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `RetrieveTotalRecordCount`, `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `RetrieveMetadataChanges`.
+- Functions and actions: `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `RetrieveTotalRecordCount`, `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `RetrieveMetadataChanges`, `GrantAccess`, `ModifyAccess`, `RevokeAccess`.
 - Metadata reads: the `$metadata` document, `EntityDefinitions`, `RelationshipDefinitions`, `GlobalOptionSetDefinitions`.
 - Discovery: `Instances`.
 - Documented error envelope and error codes.
@@ -208,7 +233,18 @@ Not simulated, by design:
 - Solution import and export, plug-in registration through the API, the `pac` CLI.
 - Metadata writes (`EntityDefinitions` POST and PUT).
 - Browser-based MSAL.js sign-in beyond the minimal picker.
-- Bound functions and actions other than `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`; `GrantAccess`, `Merge`, `WinOpportunity`, `ExecuteWorkflow` and `DeleteMultiple` answer 501.
+- Sharing with an `organization` principal (`GrantAccess`, `ModifyAccess`, `RevokeAccess`): answers 400 `InvalidKey`. Only `systemuser` and `team` principals are simulated.
+- Bound functions and actions other than `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`; `Merge`, `WinOpportunity`, `ExecuteWorkflow` and `DeleteMultiple` answer 501.
+
+### Unverified against a live tenant
+
+These details follow the research notes rather than a live capture, and stay as they are until one exists:
+
+- `error_uri` (`https://login.microsoftonline.com/error?code=<n>`) is returned on every AADSTS error. A live probe showed it absent for 50059, 70003 and 7000014.
+- `invalid_client` for AADSTS7000218, 700027 and 7000222 answers 400; only 7000215 (wrong secret) was observed live as 401.
+- The HTTP status and body of a `DELETE` with `If-Match: *` on a missing row, and the `0x80060882` code on an `If-Match` mismatch (the documented sample shows an empty code).
+- `GrantAccess` ORs its mask into an existing share. Microsoft's documentation describes the share, not the merge, and no live tenant has confirmed it.
+- The change-tracking codes and messages (`0x80044352`, `0x80072491`) follow Microsoft's error-code reference, not a live capture.
 
 ## Evidence
 

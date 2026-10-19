@@ -2643,6 +2643,9 @@ export class DataStore {
     const { input, nested, collectionBinds } = this.splitDeepInsert(m, data);
     const row = { ...this.normalizeRecord(m, input) };
     if (options.coerce) this.coerceRecord(m, row, options);
+    // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
+    const systemColumns = this.systemColumnsFor(options.systemColumns, m, input);
+    if (systemColumns) Object.assign(row, systemColumns);
     const pluginTarget = clone(row), changedAttributes = Object.keys(pluginTarget);
     for (const [key, value] of Object.entries(m.recordDefaults ?? {}))
       if (key !== "statuscode" && !own(row, key))
@@ -2725,7 +2728,7 @@ export class DataStore {
       for (const value of Array.isArray(item.value) ? item.value : [item.value]) {
         if (item.rel.intersect) {
           const child = this.createRecord(target.logicalName, value, identity, options);
-          this.changeAssociationRecord(m.logicalName, row[m.idColumn], item.navigation, child[target.idColumn], identity, true);
+          this.changeAssociationRecord(m.logicalName, row[m.idColumn], item.navigation, child[target.idColumn], identity, true, options);
         } else
           this.createRecord(
             target.logicalName,
@@ -2754,7 +2757,7 @@ export class DataStore {
             400,
             "InvalidLookup",
           );
-        this.changeAssociationRecord(m.logicalName, row[m.idColumn], bind.navigation, reference.id, identity, true);
+        this.changeAssociationRecord(m.logicalName, row[m.idColumn], bind.navigation, reference.id, identity, true, options);
       }
     this.exportedPluginPhase(m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options);
     this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
@@ -2776,11 +2779,12 @@ export class DataStore {
     this.assertAllowed(m.logicalName, "update", rows[index], identity);
     const changes = this.normalizeRecord(m, data);
     if (options.coerce) this.coerceRecord(m, changes, options);
-    const row = this.touchRow(rows[index], {
+    const input = {
       ...rows[index],
       ...changes,
       [m.idColumn]: rows[index][m.idColumn],
-    });
+    };
+    const row = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, m, input));
     if (own(data, "statecode") && !own(data, "statuscode")) {
       const status = m.stateStatusDefaults?.[scalar(row.statecode)];
       if (status !== undefined) row.statuscode = clone(status);
@@ -2790,13 +2794,18 @@ export class DataStore {
     this.validateBindings(m, data, row, identity, rows[index]);
     return this.commitUpdate(m, rows, index, row, identity, changes, options, data);
   }
+  /** The systemColumns option: a plain object, or a function (mapping, row) => columns evaluated per row. */
+  systemColumnsFor(option, mapping, row) {
+    return typeof option === "function" ? option(mapping, row) : option;
+  }
   /**
    * Concurrency metadata that every Dataverse update sets: modifiedon is now and a
    * stored versionnumber advances, so earlier ETags stop matching (rows without a
    * stored version have a content-derived ETag, which changes with the row anyway).
    */
-  touchRow(previous, row) {
+  touchRow(previous, row, systemColumns = null) {
     row.modifiedon = isoUtc(Date.now());
+    if (systemColumns) Object.assign(row, systemColumns);
     if(isExactNumeric(previous.versionnumber)){
       const version=sumNumeric([previous.versionnumber,1],'Int64');
       if(compareNumeric(version,'9223372036854775807')>0)throw new DataError('Stored row version exceeds Int64.',500,'NumericVersionOverflow');
@@ -2938,9 +2947,10 @@ export class DataStore {
         const rows = this.state.tables[reference.entity];
         const index = rows.findIndex((item) => equal(item[childMapping.idColumn], child[childMapping.idColumn]));
         if (index < 0) continue;
-        if (behaviour === "Cascade") this.deleteRow(childMapping, rows[index], identity, deleting);
+        if (behaviour === "Cascade") this.deleteRow(childMapping, rows[index], identity, deleting, { systemColumns: options.systemColumns });
         else {
-          const next = this.touchRow(rows[index], { ...rows[index], [reference.column]: null });
+          const input = { ...rows[index], [reference.column]: null };
+          const next = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, childMapping, input));
           this.commitUpdate(childMapping, rows, index, next, identity);
         }
       }
@@ -3005,7 +3015,7 @@ export class DataStore {
   cascadeDiagnostics() {
     return [...(this.defaultedCascades?.values() ?? [])];
   }
-  async associate(entity, id, navigation, targetId, identity = {}) {
+  async associate(entity, id, navigation, targetId, identity = {}, options = {}) {
     return this.changeAssociation(
       entity,
       id,
@@ -3013,9 +3023,10 @@ export class DataStore {
       targetId,
       identity,
       true,
+      options,
     );
   }
-  async disassociate(entity, id, navigation, targetId, identity = {}) {
+  async disassociate(entity, id, navigation, targetId, identity = {}, options = {}) {
     return this.changeAssociation(
       entity,
       id,
@@ -3023,6 +3034,7 @@ export class DataStore {
       targetId,
       identity,
       false,
+      options,
     );
   }
   async changeAssociation(
@@ -3032,13 +3044,14 @@ export class DataStore {
     targetId,
     identity,
     associate,
+    options = {},
   ) {
     return this.transact(() =>
-      this.changeAssociationRecord(entity, id, navigation, targetId, identity, associate),
+      this.changeAssociationRecord(entity, id, navigation, targetId, identity, associate, options),
       { incremental: true },
     );
   }
-  changeAssociationRecord(entity, id, navigation, targetId, identity, associate) {
+  changeAssociationRecord(entity, id, navigation, targetId, identity, associate, options = {}) {
     const mapping = this.resolveMapping(entity);
     const relationship = mapping.relationships[safeName(navigation)];
     if (!relationship)
@@ -3133,7 +3146,8 @@ export class DataStore {
         // A one-to-many association sets or clears the referencing row's lookup: an
         // update of that row through the update pipeline (version, modifiedon, plugins).
         const rows = this.state.tables[targetMapping.logicalName];
-        const next = this.touchRow(target, { ...target, [relationship.to]: value });
+        const input = { ...target, [relationship.to]: value };
+        const next = this.touchRow(target, input, this.systemColumnsFor(options.systemColumns, targetMapping, input));
         this.assertAllowed(targetMapping.logicalName, "update", next, identity);
         this.commitUpdate(targetMapping, rows, rows.indexOf(target), next, identity);
       }

@@ -14,6 +14,10 @@ import {
   ownerColumns,
   privilegeDeniedError,
   privilegeId,
+  grantAccess,
+  modifyAccess,
+  parseAccessMask,
+  revokeAccess,
   uuidV5,
 } from "../lib/dataverse-security.mjs";
 
@@ -70,10 +74,12 @@ test("ensureSecurityModel seeds organization, root unit, roles, SYSTEM user and 
   assert.equal(t.businessunit[0].businessunitid, ROOT);
   assert.deepEqual(t.role.map((r) => r.name).sort(), ["Basic User", "System Administrator", "System Customizer"]);
   assert.ok(t.systemuser.some((u) => u.fullname === "SYSTEM" && u.systemuserid === uuidV5(ORG, "systemuser:SYSTEM")));
-  // widget: 8 user-owned rights; region: 6 org-owned rights; eleven security tables: 6 each; plus prvActOnBehalfOfAnotherUser and prvBypassCustomPlugins.
-  assert.equal(t.privilege.length, 8 + 6 + 66 + 2);
-  // Admins: every privilege at Global (2 x 82). Basic User: 8 widget rights + Global Read on 12 org-owned tables.
-  assert.equal(t.roleprivileges.length, 164 + 8 + 12);
+  // widget: 8 user-owned rights; region: 6 org-owned rights; twelve security tables: 6 each; plus prvActOnBehalfOfAnotherUser and prvBypassCustomPlugins.
+  assert.equal(t.privilege.length, 8 + 6 + 72 + 2);
+  // Admins: every privilege at Global (2 x 88). Basic User: 8 widget rights + Global Read on 12 org-owned tables
+  // (13 less principalobjectaccess, which lists every share in the organization).
+  assert.equal(t.roleprivileges.length, 176 + 8 + 12);
+  assert.ok(!t.roleprivileges.some((rp) => rp.roleid.id === uuidV5(ORG, "role:Basic User") && rp.privilegeid.id === privilegeId(ORG, "prvReadPrincipalObjectAccess")));
   assert.equal(t.transactioncurrency.length, 1);
   assert.equal(t.transactioncurrency[0].currencysymbol, "$");
   assert.equal(store.state.mappings.systemuser.userConfigured, true);
@@ -210,7 +216,7 @@ test("retrieveUserPrivileges and principalAccess report depths and access flags"
   const theirs = { widgetid: "w-theirs", ownerid: lookupOf(admin) };
 
   const privs = p.retrieveUserPrivileges(basic.systemuserid);
-  assert.equal(privs.length, 20);
+  assert.equal(privs.length, 20, "8 widget rights and Global Read on the 12 organization tables, without the share table");
   const read = privs.find((x) => x.PrivilegeName === "prvReadWidget");
   assert.equal(read.Depth, "Basic");
   assert.equal(read.BusinessUnitId, ROOT);
@@ -226,6 +232,66 @@ test("retrieveUserPrivileges and principalAccess report depths and access flags"
   assert.equal(p.principalAccess({ user: norole, entity: "widget", row: mine }), "None");
   assert.equal(p.canImpersonate(admin), true);
   assert.equal(p.canImpersonate(basic), false);
+});
+
+test("shares open a row for the rights in the mask, directly or through a team, until revoked", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  const admin = p.resolve({ oid: ADMIN_OID }).user;
+  const theirs = { widgetid: "aaaaaaaa-0000-4000-8000-00000000c0de", ownerid: lookupOf(admin) };
+  const target = { logical: "widget", id: theirs.widgetid };
+  const denied = denial("AccessDenied", "0x80048306");
+  assert.throws(() => p.authorize({ user: basic, entity: "widget", operation: "read", row: theirs }), denied);
+  assert.equal(parseAccessMask("ReadAccess, WriteAccess"), ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Write);
+  assert.throws(() => parseAccessMask("FlyAccess"), (e) => e.status === 400);
+
+  await grantAccess(store, { target, principal: { id: basic.systemuserid, logical_name: "systemuser" }, mask: parseAccessMask("ReadAccess, WriteAccess") });
+  assert.equal(p.authorize({ user: basic, entity: "widget", operation: "read", row: theirs }), 1);
+  assert.equal(p.authorize({ user: basic, entity: "widget", operation: "update", row: theirs }), 1);
+  assert.throws(() => p.authorize({ user: basic, entity: "widget", operation: "delete", row: theirs }), denied);
+  assert.equal(p.readFilter({ user: basic, entity: "widget" })(theirs), true);
+  assert.equal(p.principalAccess({ user: basic, entity: "widget", row: theirs }), "ReadAccess, WriteAccess, CreateAccess");
+  // GrantAccess ORs into the existing share: still one row, Read stays with Write.
+  await grantAccess(store, { target, principal: { id: basic.systemuserid, logical_name: "systemuser" }, mask: ACCESS_RIGHTS.Read });
+  assert.equal(store.state.tables.principalobjectaccess.length, 1);
+  assert.equal(p.principalAccess({ user: basic, entity: "widget", row: theirs }), "ReadAccess, WriteAccess, CreateAccess");
+  // ModifyAccess replaces the mask.
+  await modifyAccess(store, { target, principal: { id: basic.systemuserid, logical_name: "systemuser" }, mask: ACCESS_RIGHTS.Read });
+  assert.equal(store.state.tables.principalobjectaccess.length, 1);
+  assert.equal(p.principalAccess({ user: basic, entity: "widget", row: theirs }), "ReadAccess, CreateAccess");
+
+  assert.equal(await revokeAccess(store, { target, principal: { id: basic.systemuserid, logical_name: "systemuser" } }), true);
+  assert.equal(await revokeAccess(store, { target, principal: { id: basic.systemuserid, logical_name: "systemuser" } }), false);
+  assert.throws(() => p.authorize({ user: basic, entity: "widget", operation: "read", row: theirs }), denied);
+
+  // A share with a team reaches its members.
+  const teamId = "bbbbbbbb-0000-4000-8000-000000000001";
+  await store.transact(() => {
+    store.state.tables.team.push({ teamid: teamId, name: "Sharers", businessunitid: null, organizationid: null });
+    store.state.tables.teammembership.push({ teammembershipid: "bbbbbbbb-0000-4000-8000-000000000002", systemuserid: lookupOf(basic), teamid: { id: teamId, logical_name: "team", name: "Sharers" } });
+  });
+  await grantAccess(store, { target, principal: { id: teamId, logical_name: "team" }, mask: ACCESS_RIGHTS.Read });
+  assert.equal(store.state.tables.principalobjectaccess[0].principalid.logical_name, "team");
+  assert.equal(p.authorize({ user: basic, entity: "widget", operation: "read", row: theirs }), 1);
+  assert.throws(() => p.authorize({ user: basic, entity: "widget", operation: "update", row: theirs }), denied);
+});
+
+test("parseAccessMask accepts known bits and rejects unknown bits, non-integers and empty lists", () => {
+  assert.equal(parseAccessMask(ACCESS_RIGHTS.Read | ACCESS_RIGHTS.Share), 1 | 262144);
+  assert.equal(parseAccessMask(3), 3);
+  for (const bad of [-1, 0, 1.5, NaN, 8, 2 ** 40, "", " , ", "None", "1", undefined])
+    assert.throws(() => parseAccessMask(bad), (e) => e.status === 400, String(bad));
+});
+
+test("Basic User cannot read the share table, so it cannot list the organization's shares", async () => {
+  const store = await seeded();
+  const p = createPrincipals(store, SETTINGS);
+  const basic = p.resolve({ oid: BASIC_OID }).user;
+  assert.throws(
+    () => p.authorize({ user: basic, entity: "principalobjectaccess", operation: "read", row: { principalobjectaccessid: "p1" } }),
+    (e) => denial("PrivilegeDenied", "0x80040220")(e) && e.details.privilege === "prvReadPrincipalObjectAccess",
+  );
 });
 
 test("uuidV5 matches the RFC 4122 example and the access right values are stable", () => {

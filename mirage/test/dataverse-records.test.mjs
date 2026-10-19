@@ -4,9 +4,10 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
-import { createPrincipals, ensureSecurityModel } from "../lib/dataverse-security.mjs";
+import { ACCESS_RIGHTS, createPrincipals, ensureSecurityModel, grantAccess } from "../lib/dataverse-security.mjs";
 import { encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
 import { createRecordHandlers } from "../lib/dataverse-records.mjs";
+import { createChangeLog } from "../lib/dataverse-changes.mjs";
 import { stringifyExactJson } from "../lib/exact-numeric.mjs";
 
 const ORIGIN = "http://127.0.0.1:5555";
@@ -49,8 +50,9 @@ function fixtureState() {
     },
   };
   state.mappings.gadget = {
-    logicalName: "gadget", entitySet: "gadgets", idColumn: "gadgetid", nameColumn: "name",
-    relationships: { widgetid: { entity: "widget", from: "widgetid", to: "widgetid", many: false } },
+    // User-owned without declaring any owner or audit column.
+    logicalName: "gadget", entitySet: "gadgets", idColumn: "gadgetid", nameColumn: "name", ownership: "UserOwned",
+    relationships: { widgetid: { entity: "widget", from: "widgetid", to: "widgetid", many: false, cascade: { delete: "RemoveLink" } } },
     fields: { name: text, widgetid: lookup },
   };
   state.mappings.tag = { logicalName: "tag", entitySet: "tags", idColumn: "tagid", nameColumn: "name", fields: { name: text } };
@@ -61,11 +63,12 @@ function fixtureState() {
   return state;
 }
 
-async function setup() {
+async function setup(options = {}) {
   const store = new DataStore({ state: fixtureState() });
   await ensureSecurityModel(store, SETTINGS);
   const principals = createPrincipals(store, SETTINGS);
-  const handlers = createRecordHandlers({ store, change: (fn) => fn(), principals, metadataFields: () => undefined });
+  const changes = createChangeLog(store);
+  const handlers = createRecordHandlers({ store, change: (fn) => fn(), principals, metadataFields: () => undefined, changes, ...options });
   const admin = principals.byObjectId(ADMIN_OID);
   const basic = principals.byObjectId(BASIC_OID);
   const send = async (method, path, { user = admin, caller = user, body, headers = {} } = {}) => {
@@ -86,7 +89,7 @@ async function setup() {
       requestId: "test",
     });
   };
-  return { store, principals, send, admin, basic };
+  return { store, principals, send, admin, basic, handlers, changes };
 }
 
 // POST a row and return its id from OData-EntityId.
@@ -165,6 +168,55 @@ test("maxpagesize pages through rows with $skiptoken until no nextLink remains",
   }
   assert.equal(res.body["@odata.nextLink"], undefined, "the last page has no nextLink");
   assert.deepEqual(seen.sort(), ids.sort());
+});
+
+test("change tracking: a delta link follows the full read, and the delta reports changed and deleted rows", async () => {
+  const t = await setup();
+  const first = await create(t, "widgets", { name: "First" });
+  const second = await create(t, "widgets", { name: "Second" });
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  assert.equal(full.status, 200);
+  assert.equal(full.headers["Preference-Applied"], "odata.track-changes");
+  assert.equal(full.body.value.length, 2);
+  const link = full.body["@odata.deltaLink"];
+  assert.ok(link.startsWith(`${ORIGIN}/api/data/${VERSION}/widgets?$select=name&$deltatoken=`), link);
+  assert.match(link, /\$deltatoken=\d+%21\d\d%2f\d\d%2f\d{4}%20\d\d%3a\d\d%3a\d\d$/);
+  const nothing = await t.send("GET", link, { headers: { prefer: "odata.track-changes" } });
+  assert.equal(nothing.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(name)/$delta`);
+  assert.deepEqual(nothing.body.value, []);
+  assert.equal(nothing.headers["Preference-Applied"], "odata.track-changes");
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${first})`, { body: { name: "Changed" } });
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${second})`);
+  const third = await create(t, "widgets", { name: "Third" });
+  const delta = await t.send("GET", link);
+  const changed = delta.body.value.filter((item) => !item.reason);
+  assert.deepEqual(changed.map((row) => row.widgetid).sort(), [first, third].sort());
+  assert.equal(changed.find((row) => row.widgetid === first).name, "Changed");
+  assert.deepEqual(delta.body.value.filter((item) => item.reason), [
+    { "@odata.context": `${ORIGIN}/api/data/${VERSION}/$metadata#widgets/$deletedEntity`, id: second, reason: "deleted" },
+  ]);
+  assert.notEqual(delta.body["@odata.deltaLink"], link, "the delta carries a newer token");
+  assert.equal(delta.headers["Preference-Applied"], undefined, "no echo without the preference");
+  const fourth = await create(t, "widgets", { name: "Fourth" });
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${fourth})`);
+  const again = await t.send("GET", delta.body["@odata.deltaLink"]);
+  assert.deepEqual(again.body.value.map((item) => [item.id, item.reason]), [[fourth, "deleted"]], "created then deleted inside the window reports deleted only");
+});
+
+test("change tracking rejects the unsupported query options and a bad token", async () => {
+  const t = await setup();
+  for (const option of ["$filter=name eq 'x'", "$orderby=name", "$top=1", "$expand=widget_gadgets"]) {
+    const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?${option}`, { headers: { prefer: "odata.track-changes" } }));
+    assert.equal(error.status, 400);
+    assert.equal(error.message, `The "${option.split("=")[0]}" query parameter isn't supported when Change Tracking is enabled.`);
+  }
+  const bad = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$deltatoken=nope`));
+  assert.equal(bad.status, 400);
+  assert.equal(bad.message, "The $deltatoken is not valid.");
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$top=1`);
+  assert.equal(plain.status, 200, "without the preference the options still work");
+  assert.equal(plain.body["@odata.deltaLink"], undefined);
+  assert.equal(plain.headers["Preference-Applied"], undefined);
 });
 
 test("unsupported query options are rejected", async () => {
@@ -308,6 +360,38 @@ test("collection navigation and $ref cover N:N associate, list and disassociate"
   const removed = await t.send("DELETE", `/api/data/${VERSION}/widgets(${widget})/widget_tags(${tag})/$ref`);
   assert.equal(removed.status, 204);
   assert.deepEqual((await t.send("GET", `/api/data/${VERSION}/widgets(${widget})/widget_tags/$ref`)).body.value, []);
+});
+
+test("$ref associate and disassociate stamp modifiedby with the calling user, not the creator", async () => {
+  const t = await setup();
+  // basic creates both rows; admin associates and then disassociates the child.
+  const widget = await create(t, "widgets", { name: "Parent" }, t.basic);
+  const gadget = await create(t, "gadgets", { name: "Child" }, t.basic);
+  const row = () => t.store.state.tables.gadget.find((item) => item.gadgetid === gadget);
+  const associated = await t.send("POST", `/api/data/${VERSION}/widgets(${widget})/widget_gadgets/$ref`, {
+    body: { "@odata.id": `${ORIGIN}/api/data/${VERSION}/gadgets(${gadget})` },
+  });
+  assert.equal(associated.status, 204);
+  assert.equal(lowerId(row().widgetid), widget);
+  assert.equal(lowerId(row().modifiedby), t.admin.systemuserid);
+  assert.equal(lowerId(row().createdby), t.basic.systemuserid, "createdby never changes on update");
+  const removed = await t.send("DELETE", `/api/data/${VERSION}/widgets(${widget})/widget_gadgets(${gadget})/$ref`);
+  assert.equal(removed.status, 204);
+  assert.equal(row().widgetid, null);
+  assert.equal(lowerId(row().modifiedby), t.admin.systemuserid);
+});
+
+test("deleting a parent whose child cascades RemoveLink stamps the child's modifiedby with the deleting user", async () => {
+  const t = await setup();
+  const widget = await create(t, "widgets", { name: "Parent" }, t.basic);
+  const gadget = await create(t, "gadgets", { name: "Child", "widgetid@odata.bind": `/widgets(${widget})` }, t.basic);
+  const row = () => t.store.state.tables.gadget.find((item) => item.gadgetid === gadget);
+  assert.equal(lowerId(row().modifiedby), t.basic.systemuserid);
+  const deleted = await t.send("DELETE", `/api/data/${VERSION}/widgets(${widget})`);
+  assert.equal(deleted.status, 204);
+  assert.equal(row().widgetid, null, "the child link is removed, not the child");
+  assert.equal(lowerId(row().modifiedby), t.admin.systemuserid);
+  assert.equal(lowerId(row().createdby), t.basic.systemuserid, "createdby never changes on update");
 });
 
 test("DELETE removes the row, then GET answers 404", async () => {
@@ -471,7 +555,7 @@ test("an impersonating caller is recorded in createdonbehalfby and modifiedonbeh
   assert.equal(lowerId(row.modifiedonbehalfby), t.basic.systemuserid.toLowerCase());
   const plain = await create(t, "widgets", { name: "Plain" });
   const plainRow = t.store.state.tables.widget.find((item) => item.widgetid === plain);
-  assert.equal(plainRow.createdonbehalfby, undefined);
+  assert.equal(plainRow.createdonbehalfby, null);
 });
 
 test("create defaults statecode to 0 and statuscode to the state-0 status, keeping explicit values", async () => {
@@ -541,6 +625,20 @@ test("money formatted values carry the currency symbol, $ by default", async () 
   assert.equal(res.body.value[0]["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
 });
 
+test("Basic-depth reads include rows shared with the caller", async () => {
+  const t = await setup();
+  const shared = await create(t, "widgets", { name: "Shared" });
+  await create(t, "widgets", { name: "Private" });
+  const mine = await create(t, "widgets", { name: "Mine" }, t.basic);
+  await grantAccess(t.store, { target: { logical: "widget", id: shared }, principal: { id: t.basic.systemuserid, logical_name: "systemuser" }, mask: ACCESS_RIGHTS.Read });
+  const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name&$orderby=name`, { user: t.basic });
+  assert.deepEqual(list.body.value.map((row) => row.widgetid), [mine, shared]);
+  const single = await t.send("GET", `/api/data/${VERSION}/widgets(${shared})`, { user: t.basic });
+  assert.equal(single.status, 200);
+  const write = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${shared})`, { body: { name: "Changed" }, user: t.basic }));
+  assert.equal(write.details.innerCode, "0x80048306", "a Read share does not grant Write");
+});
+
 test("money columns serialize with four decimals, a currency symbol and the base currency lookup", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Priced", price: 12.5 });
@@ -557,4 +655,163 @@ test("money columns serialize with four decimals, a currency symbol and the base
   const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`);
   assert.equal(list.body.value[0][CURRENCY], currency.transactioncurrencyid);
   assert.ok(!Object.keys(list.body.value[0]).some((key) => key.includes("@") && !key.startsWith("@odata.")), "annotations stay opt-in");
+});
+
+test("system columns are written whether or not the mapping declares them, and follow an owner reassignment", async () => {
+  const t = await setup();
+  const root = t.store.state.tables.businessunit[0].businessunitid;
+  // gadget declares neither owner nor audit columns.
+  const id = await create(t, "gadgets", { name: "Owned" }, t.basic);
+  const row = () => t.store.state.tables.gadget.find((item) => item.gadgetid === id);
+  assert.equal(lowerId(row().ownerid), t.basic.systemuserid);
+  assert.equal(lowerId(row().owninguser), t.basic.systemuserid);
+  assert.equal(row().owningteam, null);
+  assert.equal(lowerId(row().owningbusinessunit), root);
+  assert.equal(lowerId(row().createdby), t.basic.systemuserid);
+  assert.equal(lowerId(row().modifiedby), t.basic.systemuserid);
+  assert.equal(row().createdonbehalfby, null);
+  const assign = await t.send("PATCH", `/api/data/${VERSION}/gadgets(${id})`, { body: { "ownerid@odata.bind": `/systemusers(${t.admin.systemuserid})` } });
+  assert.equal(assign.status, 204);
+  assert.equal(lowerId(row().ownerid), t.admin.systemuserid);
+  assert.equal(lowerId(row().owninguser), t.admin.systemuserid);
+  assert.equal(lowerId(row().modifiedby), t.admin.systemuserid);
+  assert.equal(lowerId(row().createdby), t.basic.systemuserid, "createdby never changes on update");
+  // tags are organization-owned: audit columns only.
+  const tag = await create(t, "tags", { name: "Org" });
+  const tagRow = t.store.state.tables.tag.find((item) => item.tagid === tag);
+  assert.equal(lowerId(tagRow.createdby), t.admin.systemuserid);
+  assert.ok(!("ownerid" in tagRow) && !("owningbusinessunit" in tagRow));
+});
+
+test("an impersonated write records the caller in createdonbehalfby and modifiedonbehalfby", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "On behalf" }, t.basic);
+  const impersonated = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Delegated" }, user: t.basic, caller: t.admin });
+  assert.equal(impersonated.status, 204);
+  const other = /\(([^()]+)\)$/.exec(impersonated.headers["OData-EntityId"])[1];
+  const row = t.store.state.tables.widget.find((item) => item.widgetid === other);
+  assert.equal(lowerId(row.createdby), t.basic.systemuserid);
+  assert.equal(lowerId(row.createdonbehalfby), t.admin.systemuserid);
+  assert.equal(lowerId(row.modifiedonbehalfby), t.admin.systemuserid);
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Direct" }, user: t.basic });
+  const direct = t.store.state.tables.widget.find((item) => item.widgetid === id);
+  assert.equal(direct.modifiedonbehalfby, null);
+});
+
+test("undeclared system lookups read as null _x_value and can be selected and filtered", async () => {
+  const t = await setup();
+  const id = await create(t, "gadgets", { name: "Plain" });
+  const plain = await t.send("GET", `/api/data/${VERSION}/gadgets(${id})`);
+  assert.equal(plain.status, 200);
+  assert.equal(plain.body._createdonbehalfby_value, null);
+  assert.ok(!("createdonbehalfby" in plain.body));
+  const owner = t.admin.systemuserid;
+  const selected = await t.send("GET", `/api/data/${VERSION}/gadgets?$select=_ownerid_value`);
+  assert.equal(selected.status, 200);
+  assert.equal(lowerId(selected.body.value[0]._ownerid_value), owner.toLowerCase());
+  const filtered = await t.send("GET", `/api/data/${VERSION}/gadgets?$filter=_ownerid_value eq ${owner}`);
+  assert.equal(filtered.status, 200);
+  assert.deepEqual(filtered.body.value.map((row) => row.gadgetid), [id]);
+});
+
+test("a deep-inserted org-owned child gets audit columns only", async () => {
+  const t = await setup();
+  const res = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Parent", widget_tags: [{ name: "child-tag" }] } });
+  assert.equal(res.status, 204);
+  const tag = t.store.state.tables.tag.find((row) => row.name === "child-tag");
+  assert.ok(tag, "the child row was written");
+  assert.equal(lowerId(tag.createdby), t.admin.systemuserid.toLowerCase());
+  for (const column of ["ownerid", "owninguser", "owningteam", "owningbusinessunit"]) assert.ok(!(column in tag), column);
+});
+
+test("change tracking answers only organization-level readers, and a limited reader's delta leaks no deleted id", async () => {
+  const t = await setup();
+  const own = await create(t, "widgets", { name: "Admin's" });
+  const denied = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { user: t.basic, headers: { prefer: "odata.track-changes" } }));
+  assert.equal(denied.status, 403);
+  assert.equal(denied.details.innerCode, "0x80040220");
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  const link = full.body["@odata.deltaLink"];
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${own})`);
+  const limited = await failure(t.send("GET", link, { user: t.basic }));
+  assert.equal(limited.status, 403);
+  const delta = await t.send("GET", link);
+  assert.deepEqual(delta.body.value.map((item) => [item.id, item.reason]), [[own, "deleted"]]);
+});
+
+test("a paged tracked read keeps changes made between its pages", async () => {
+  const t = await setup();
+  for (let i = 0; i < 3; i += 1) await create(t, "widgets", { name: `Q${i}` });
+  const headers = { prefer: "odata.maxpagesize=2, odata.track-changes" };
+  const first = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers });
+  assert.ok(first.body["@odata.nextLink"], "the first page has a nextLink");
+  const onFirstPage = first.body.value[0].widgetid;
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${onFirstPage})`, { body: { name: "Edited" } });
+  const next = new URL(first.body["@odata.nextLink"]);
+  const last = await t.send("GET", next.pathname + next.search, { headers });
+  assert.equal(last.body["@odata.nextLink"], undefined);
+  const delta = await t.send("GET", last.body["@odata.deltaLink"]);
+  assert.deepEqual(delta.body.value.map((row) => row.widgetid), [onFirstPage]);
+});
+
+test("delta rows carry only the annotations the caller asked for", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Priced", price: 2 });
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets`, { headers: { prefer: "odata.track-changes" } });
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Again", price: 3 } });
+  const delta = await t.send("GET", full.body["@odata.deltaLink"]);
+  const row = delta.body.value.find((item) => !item.reason);
+  assert.ok(row, "the changed row is in the delta");
+  assert.deepEqual(Object.keys(row).filter((key) => key.includes("@") && key !== "@odata.etag"), []);
+});
+
+test("$count with a delta token counts the changed and deleted rows", async () => {
+  const t = await setup();
+  const a = await create(t, "widgets", { name: "a" });
+  const b = await create(t, "widgets", { name: "b" });
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${a})`, { body: { name: "a2" } });
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${b})`);
+  const count = await t.send("GET", full.body["@odata.deltaLink"].replace("/widgets?", "/widgets/$count?"));
+  assert.deepEqual(count, { status: 200, body: "2" });
+});
+
+test("a delta never echoes maxpagesize, because it is not paged", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a" });
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  const delta = await t.send("GET", full.body["@odata.deltaLink"], { headers: { prefer: "odata.maxpagesize=2, odata.track-changes" } });
+  assert.equal(delta.headers["Preference-Applied"], "odata.track-changes");
+});
+
+test("tables whose metadata disables change tracking refuse it with 0x80072491", async () => {
+  const t = await setup({ changeTrackingEnabled: (logical) => (logical === "tag" ? false : undefined) });
+  const refused = await failure(t.send("GET", `/api/data/${VERSION}/tags?$select=name`, { headers: { prefer: "odata.track-changes" } }));
+  assert.equal(refused.status, 400);
+  assert.equal(refused.details.innerCode, "0x80072491");
+  assert.equal(refused.message, "Entity tag isn't enabled for change tracking.");
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/tags?$select=name`)).status, 200, "without the preference the table reads");
+  const widgets = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  assert.equal(widgets.status, 200, "tables without the flag keep tracking");
+});
+
+test("change tracking with FetchXML or $apply answers 400 instead of ignoring the preference", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "x" });
+  const xml = encodeURIComponent('<fetch><entity name="widget"><attribute name="name"/></entity></fetch>');
+  const fetched = await failure(t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${xml}`, { headers: { prefer: "odata.track-changes" } }));
+  assert.equal(fetched.status, 400);
+  assert.equal(fetched.details.innerCode, "0x80060888");
+  const applied = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$apply=groupby((name))`, { headers: { prefer: "odata.track-changes" } }));
+  assert.equal(applied.status, 400);
+  assert.equal(applied.message, 'The "$apply" query parameter isn\'t supported when Change Tracking is enabled.');
+});
+
+test("close() unsubscribes the change log from the store", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "before" });
+  assert.equal((await t.changes.since("widget", 0)).changed.length, 1);
+  t.handlers.close();
+  await create(t, "widgets", { name: "after" });
+  assert.equal((await t.changes.since("widget", 0)).changed.length, 1, "a closed log records nothing new");
 });

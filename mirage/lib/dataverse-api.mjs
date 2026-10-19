@@ -7,7 +7,8 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import { DataError } from "./data-error.mjs";
 import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
 import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
-import { createPrincipals, ensureSecurityModel, privilegeId, uuidV5 } from "./dataverse-security.mjs";
+import { createChangeLog } from "./dataverse-changes.mjs";
+import { createPrincipals, ensureSecurityModel, grantAccess, modifyAccess, parseAccessMask, privilegeId, revokeAccess, uuidV5 } from "./dataverse-security.mjs";
 import { createMetadataService, objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
 import {
   JSON_CONTENT_TYPE,
@@ -48,6 +49,8 @@ const SOAP_FAULT =
 const METHODS = new Set(["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"]);
 const BODY_METHODS = new Set(["POST", "PATCH", "PUT"]);
 const ROUTER_BOUND = new Set(["RetrieveUserPrivileges", "RetrievePrincipalAccess"]);
+const SHARE_ACTIONS = { GrantAccess: grantAccess, ModifyAccess: modifyAccess, RevokeAccess: revokeAccess };
+const CRM_TYPE = /^Microsoft\.Dynamics\.CRM\.([A-Za-z_]\w*)$/;
 const BODY_LIMIT = 8 * 1024 * 1024;
 const WINDOW_MS = 300000;
 const RING_SIZE = 500;
@@ -63,8 +66,6 @@ const BYPASS_ROLES = new Set(["System Administrator", "System Customizer"]);
 // Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
 const inBatch = new AsyncLocalStorage();
 
-// Settings name grants by short name; the token endpoint matches OAuth grant_type values.
-const GRANT_TYPES = { device_code: "urn:ietf:params:oauth:grant-type:device_code", on_behalf_of: "urn:ietf:params:oauth:grant-type:jwt-bearer" };
 const refOf = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? undefined;
 const asJson = (result) => ({ ...result, headers: { "content-type": "application/json; charset=utf-8", ...(result.headers ?? {}) } });
 const envelope = (status, code, message, requestId) => ({
@@ -377,6 +378,42 @@ function boundFunction(d, c, route, common) {
   throw notImplementedFeature(route.name);
 }
 
+const invalidArgument = () => new DataError("Invalid argument.", 400, "InvalidKey");
+
+// Action parameter entity: { "<idattribute>": "<guid>", "@odata.type": "Microsoft.Dynamics.CRM.<logical>" }.
+function entityParameter(d, value) {
+  const logical = CRM_TYPE.exec(String(value?.["@odata.type"] ?? ""))?.[1];
+  if (!logical) throw invalidArgument();
+  let mapping;
+  try {
+    mapping = d.store.resolveMapping(logical);
+  } catch {
+    throw invalidArgument();
+  }
+  const id = parseKey(value[mapping.idColumn])?.id;
+  if (!id) throw invalidArgument();
+  return { logical: mapping.logicalName, mapping, id };
+}
+
+// GrantAccess / ModifyAccess / RevokeAccess: the caller needs Share on the target; the principal is a systemuser or team.
+async function shareAction(d, c, route, common) {
+  const body = common.body ?? {};
+  const target = entityParameter(d, body.Target);
+  const row = d.store.get(target.logical, target.id, common.identity);
+  if (!row) throw new DataError(`${target.logical} With Id = ${target.id} Does Not Exist`, 404, "NotFound", { id: target.id });
+  // Sharing needs Read on the row as well as Share (security-access-rights, dependencies between access rights).
+  d.principals.authorize({ user: common.user, entity: target.logical, operation: "read", row, mapping: target.mapping });
+  d.principals.authorize({ user: common.user, entity: target.logical, operation: "share", row, mapping: target.mapping });
+  const principal = entityParameter(d, route.name === "RevokeAccess" ? body.Revokee : body.PrincipalAccess?.Principal);
+  if (!["systemuser", "team"].includes(principal.logical) || !d.store.get(principal.logical, principal.id, common.identity)) throw invalidArgument();
+  const share = { target: { logical: target.logical, id: target.id }, principal: { id: principal.id, logical_name: principal.logical } };
+  if (route.name !== "RevokeAccess") share.mask = parseAccessMask(body.PrincipalAccess?.AccessMask);
+  const run = () => SHARE_ACTIONS[route.name](d.store, share);
+  // Inside a $batch the batch already holds the change slot (see inBatch); a nested change call would wait on itself.
+  await (inBatch.getStore() ? run() : d.change(run));
+  return { status: 204 };
+}
+
 // $expand names without their nested options: "OptionSet($select=Options)" becomes "OptionSet".
 function expandNames(text) {
   let flat = String(text ?? "");
@@ -575,6 +612,7 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
     case "batch":
       return batchCall(d, c, common);
     case "function":
+      if (method === "POST" && Object.hasOwn(SHARE_ACTIONS, route.name)) return shareAction(d, c, route, common);
       return unboundFunction(d, { ...c, origin, version: route.version }, route, common);
     case "boundFunction":
       return boundFunction(d, { ...c, origin, version: route.version }, route, common);
@@ -637,10 +675,14 @@ async function batchCall(d, c, common) {
   // ponytail: snapshot and restore, because store.transact is not re-entrant and each part writes through its own transact.
   dispatch.transaction = async (fn) => {
     const snapshot = d.store.snapshot();
+    const revision = d.store.revision;
     try {
       return await fn();
     } catch (error) {
       await d.store.replaceState(snapshot);
+      // The rolled-back parts' committed events must not survive in the change log (a DELETE would read as deleted).
+      await d.store.flushCommittedEvents?.();
+      d.changes?.rewind(revision);
       throw error;
     }
   };
@@ -764,7 +806,8 @@ function seedRegistrations(store, settings, ids, clock) {
     const registration = {
       publicClient: app.publicClient ?? false,
       redirectUris: app.redirectUris ?? [],
-      allowedGrants: app.allowedGrants?.map((grant) => GRANT_TYPES[grant] ?? grant),
+      // Stored as configured (short names); dataverse-settings grantAllowed maps them at the token endpoint.
+      allowedGrants: app.allowedGrants,
     };
     let entry = dv.applications.find((item) => String(item.appId).toLowerCase() === app.appId);
     if (!entry) {
@@ -847,9 +890,11 @@ export async function startDataverseApi({
     },
     clock,
   });
+  // One change log per API: the record handlers read it, a rolled-back changeset rewinds it and a reset expires its tokens.
+  const changes = createChangeLog(store, { clock });
   const recordHandlers =
     records ??
-    (await import("./dataverse-records.mjs")).createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock });
+    (await import("./dataverse-records.mjs")).createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes });
 
   const requests = [];
   const handle = createDataverseHandler({
@@ -860,6 +905,7 @@ export async function startDataverseApi({
     principals,
     metadata,
     recordHandlers,
+    changes,
     tenantId,
     organizationId,
     environmentId,
@@ -893,10 +939,15 @@ export async function startDataverseApi({
     reseed: async () => {
       await registerApplications();
       await seedSecurity();
+      // The seeding writes are not changes a client should see: flush them, then expire every token issued before the reset.
+      await store.flushCommittedEvents?.();
+      changes.reset();
     },
     requests: () => requests.map((entry) => ({ ...entry })),
-    close: () =>
-      Promise.all(
+    close: () => {
+      recordHandlers.close?.();
+      changes.close();
+      return Promise.all(
         servers.map(
           (server) =>
             new Promise((resolve) => {
@@ -904,7 +955,8 @@ export async function startDataverseApi({
               server.close(() => resolve());
             }),
         ),
-      ).then(() => undefined),
+      ).then(() => undefined);
+    },
     handle,
   };
 }

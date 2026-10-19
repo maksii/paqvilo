@@ -322,9 +322,10 @@ export function preferMalformedResponse(malformed) {
 
 /**
  * Preference-Applied echo: only what the response actually applied. maxpagesize needs a paged response
- * (size up to 5,000); continue-on-error only on a batch. track-changes and respond-async are never echoed.
+ * (size up to 5,000); continue-on-error only on a batch; track-changes only when a delta link was issued.
+ * respond-async is never echoed.
  */
-export function preferenceApplied(prefer = {}, { paged = false, batch = false } = {}) {
+export function preferenceApplied(prefer = {}, { paged = false, batch = false, tracked = false } = {}) {
   const applied = [];
   if (prefer.annotations) {
     const list = Array.isArray(prefer.annotations) ? prefer.annotations.join(",") : prefer.annotations;
@@ -333,6 +334,7 @@ export function preferenceApplied(prefer = {}, { paged = false, batch = false } 
   if (paged && prefer.maxPageSize > 0 && prefer.maxPageSize <= MAX_PAGE_SIZE) applied.push(`odata.maxpagesize=${prefer.maxPageSize}`);
   if (prefer.representation) applied.push("return=representation");
   if (batch && prefer.continueOnError) applied.push("odata.continue-on-error");
+  if (tracked && prefer.trackChanges) applied.push("odata.track-changes");
   return applied.length ? applied.join(", ") : null;
 }
 

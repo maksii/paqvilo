@@ -7,9 +7,10 @@ import { parseEntityReference } from "./data.mjs";
 import { webApiPagingCookie } from "./fetchxml-engine.mjs";
 import { expressionPaths, parseExpand, parseODataExpression, parseOrderBy, parseSelect } from "./odata-query.mjs";
 import { FORMATTED, NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
-import { ownershipOf } from "./dataverse-security.mjs";
+import { ownershipOf, privilegeDeniedError, privilegeName } from "./dataverse-security.mjs";
 import { fieldKind } from "./dataverse-values.mjs";
 import { fixedScaleNumeric } from "./exact-numeric.mjs";
+import { createChangeLog, encodeDeltaToken } from "./dataverse-changes.mjs";
 import {
   JSON_CONTENT_TYPE,
   annotationMatcher,
@@ -26,11 +27,15 @@ const PAGE_CAP = 5000;
 // Control annotations a write may carry; other @ annotations are dropped by payload().
 const CONTROL = new Set(["@odata.type", "@odata.context", "@odata.id", "@odata.etag"]);
 const OWNER_FIELDS = ["ownerid", "owninguser", "owningteam"];
+// System lookups every table carries (audit always, owner columns on user-owned tables), with their targets.
+const SYSTEM_AUDIT = { createdby: ["systemuser"], modifiedby: ["systemuser"], createdonbehalfby: ["systemuser"], modifiedonbehalfby: ["systemuser"] };
+const SYSTEM_OWNER = { ownerid: ["systemuser", "team"], owninguser: ["systemuser"], owningteam: ["team"], owningbusinessunit: ["businessunit"] };
 const BIND = "@odata.bind";
 const ALLOWED_QUERY = new Set([
-  "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$id",
+  "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$deltatoken", "$id",
   "fetchXml", "fetchxml", "savedQuery", "userQuery",
 ]);
+const TRACKING_REJECTS = ["$filter", "$orderby", "$expand", "$top"];
 const MONEY_SCALE = 4;
 const CURRENCY = "_transactioncurrencyid_value";
 const RECORD_COUNT = "Microsoft.Dynamics.CRM.totalrecordcount";
@@ -68,6 +73,9 @@ function pageOffset(url, pageSize) {
   return offset;
 }
 
+// The delta token a tracked page's $skiptoken carries (see collectionPage); null when the token has none.
+const carriedDelta = (url) => /\sdeltatoken="([^"]*)"/.exec(url.searchParams.get("$skiptoken") ?? "")?.[1] ?? null;
+
 // The primary id always travels with $select so paging and etags have it; the context URL keeps the caller's list.
 function withIdSelect(select, idColumn) {
   if (select == null || select === "*" || (parseSelect(select) ?? []).includes(idColumn)) return select;
@@ -94,16 +102,17 @@ function refOf(value) {
   return ref;
 }
 
-// The token is passed to skipTokenQueryValue after one decode: its inner pagingcookie stays percent-encoded.
-function nextLinkOf(c, base, token) {
+// The caller's query without paging tokens, followed by one token parameter.
+function linkOf(c, base, name, token) {
   const query = new URLSearchParams(c.url.searchParams);
   query.delete("$skiptoken");
+  query.delete("$deltatoken");
   const text = query.toString().replace(/%24/g, "$");
-  return `${base}?${text ? `${text}&` : ""}$skiptoken=${skipTokenQueryValue(decodeURIComponent(token))}`;
+  return `${base}?${text ? `${text}&` : ""}${name}=${token}`;
 }
-
-const refKey = (id) => String(id ?? "").toLowerCase();
-const refIdOf = (value) => (value && typeof value === "object" ? (value.id ?? null) : (value ?? null));
+// The token is passed to skipTokenQueryValue after one decode: its inner pagingcookie stays percent-encoded.
+const nextLinkOf = (c, base, token) => linkOf(c, base, "$skiptoken", skipTokenQueryValue(decodeURIComponent(token)));
+const deltaLinkOf = (c, base, token) => linkOf(c, base, "$deltatoken", encodeDeltaToken(token));
 
 function withKeyViolation(mapping, data, fn) {
   try {
@@ -125,12 +134,21 @@ function withKeyViolation(mapping, data, fn) {
   }
 }
 
-export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined }) {
+// changeTrackingEnabled(logical) is false only when the table's metadata says so; undefined keeps tracking allowed.
+export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined, clock = () => Date.now(), changes = createChangeLog(store, { clock }), changeTrackingEnabled = () => undefined }) {
   const authorize = (c, entity, operation, mapping, row) => principals.authorize({ user: c.user, entity, operation, row, mapping });
   const filterOf = (c, mapping) => principals.readFilter({ user: c.user, entity: mapping.logicalName, mapping }) ?? null;
   const filterOptions = (readFilter) => (readFilter ? { backendRowFilter: readFilter } : {});
-  const queryOptions = (extra = {}) => ({ dialect: "dataverse", metadata: metadataFields, includeKeys: true, ...extra });
-  const writeOptions = (extra = {}) => ({ coerce: true, metadata: metadataFields, ...extra });
+  // Field metadata as this layer reads it: the system lookups are always declared, so a null lookup serializes as _x_value.
+  const systemFields = (logical) => {
+    let m;
+    try { m = store.resolveMapping(logical); } catch { return {}; }
+    const names = ownershipOf(m.logicalName, undefined, m) === "user" ? { ...SYSTEM_AUDIT, ...SYSTEM_OWNER } : SYSTEM_AUDIT;
+    return Object.fromEntries(Object.entries(names).map(([n, targets]) => [n, { dataverseType: n === "ownerid" ? "owner" : "lookup", targets }]));
+  };
+  const fieldsOf = (logical) => ({ ...systemFields(logical), ...(metadataFields(logical) ?? {}) });
+  const queryOptions = (extra = {}) => ({ dialect: "dataverse", metadata: fieldsOf, includeKeys: true, ...extra });
+  const writeOptions = (extra = {}) => ({ coerce: true, metadata: fieldsOf, ...extra });
   const runWrite = (fn) => change(() => store.transact(fn, { incremental: true }));
   const contextFor = (c, suffix) => contextUrl(c.origin, c.version, suffix);
   const suffixFor = (c, mapping) => {
@@ -143,7 +161,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   };
   // The organization's base currency seeded by the security model; null when the Dataverse tables are absent.
   const baseCurrency = () => store.state.tables.transactioncurrency?.[0] ?? null;
-  const isMoney = (mapping, key) => fieldKind(store.fieldDefinition(mapping.logicalName, key, metadataFields)) === "money";
+  const isMoney = (mapping, key) => fieldKind(store.fieldDefinition(mapping.logicalName, key, fieldsOf)) === "money";
 
   // Money columns serialize with four-decimal lexemes, and a row that carries one reports the base currency lookup.
   function shapeMoney(mapping, out) {
@@ -173,17 +191,12 @@ export function createRecordHandlers({ store, change, principals, metadataFields
 
   const navigationOf = (mapping, segment) => mapping.relationships?.[segment] ?? null;
   const isMember = (mapping, name) =>
-    name === mapping.idColumn || Boolean(navigationOf(mapping, name)) || Boolean(store.fieldDefinition(mapping.logicalName, name, metadataFields));
+    name === mapping.idColumn || Boolean(navigationOf(mapping, name)) || Boolean(store.fieldDefinition(mapping.logicalName, name, fieldsOf));
   const undeclared = (set, nav) =>
     invalid(
       `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: An undeclared property '${nav}' which only has property annotations in the payload but no property value was found in the payload. In OData, only declared navigation properties and declared named streams can be represented as properties without values`,
       "0x80048d19",
     );
-  const onBehalfOf = (c) =>
-    c.caller && c.user && refKey(c.caller.systemuserid) !== refKey(c.user.systemuserid)
-      ? principals.modifiedBy({ user: c.caller }).modifiedby
-      : null;
-
   // Every key of a write must be a property, the id, a navigation or a nav@odata.bind on one (Dataverse 0x0 / 0x80048d19).
   function assertPayload(mapping, body) {
     for (const key of Object.keys(body)) {
@@ -256,6 +269,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   function collectionParams(c, mapping) {
     const params = new URLSearchParams(c.url.searchParams);
     params.delete("$skiptoken");
+    params.delete("$deltatoken");
     if (c.prefer.maxPageSize != null) params.delete("$top");
     assertSelect(mapping, params.get("$select"));
     assertQueryMembers(mapping, params);
@@ -291,11 +305,49 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return { "@odata.context": contextFor(c, `${suffixFor(c, mapping)}/$entity`), ...keepAnnotations(formatted, c.include) };
   }
 
+  const collectionBase = (c, mapping) => `${c.origin}/api/data/${c.version}/${mapping.entitySet}`;
+  const tracking = (c) => c.prefer.trackChanges || c.url.searchParams.has("$deltatoken");
+
+  // Change tracking refuses the query options Dataverse refuses; the message is the documented one.
+  function assertTrackable(c) {
+    for (const name of TRACKING_REJECTS) {
+      if (c.url.searchParams.has(name)) throw invalid(`The "${name}" query parameter isn't supported when Change Tracking is enabled.`, "0x80060888");
+    }
+  }
+
+  // The changes after a $deltatoken's revision; the token is parsed by the change log and never inspected here.
+  async function deltaChanges(c, mapping) {
+    const token = changes.parse(c.url.searchParams.get("$deltatoken"));
+    if (!token) throw invalid("The $deltatoken is not valid.", "0x80060888");
+    return changes.since(mapping.logicalName, token.revision);
+  }
+
+  // Delta read: rows changed after the token's revision, then one $deletedEntity entry per deleted row, and a fresh delta link.
+  async function deltaPage(c, mapping, readFilter) {
+    // Minted before the read: a commit that lands during it shows up in the next delta, not lost between the two.
+    const next = changes.token();
+    const { changed, deleted } = await deltaChanges(c, mapping);
+    const params = collectionParams(c, mapping);
+    const options = queryOptions({ ids: changed, ...filterOptions(readFilter) });
+    const rows = changed.length ? store.query(mapping.logicalName, params, c.identity, undefined, options).value : [];
+    const body = { "@odata.context": contextFor(c, `${suffixFor(c, mapping)}/$delta`) };
+    body.value = [
+      ...rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand: [] }), c.include)),
+      ...deleted.map((id) => ({ "@odata.context": contextFor(c, `${mapping.entitySet}/$deletedEntity`), id, reason: "deleted" })),
+    ];
+    body["@odata.deltaLink"] = deltaLinkOf(c, collectionBase(c, mapping), next);
+    // A delta is one page, so maxpagesize is not applied and not echoed.
+    const applied = preferenceApplied(c.prefer, { tracked: true });
+    return { status: 200, headers: applied ? { "Preference-Applied": applied } : {}, body };
+  }
+
   // Collection page with Dataverse paging: maxpagesize (cap 5000) or the default page; $skiptoken names the next page.
-  function collectionPage(c, mapping, { ids = null, readFilter = null, nextBase = null }) {
+  function collectionPage(c, mapping, { ids = null, readFilter = null, nextBase = null, tracked = false }) {
     const { url, prefer } = c;
     const pageSize = Math.min(prefer.maxPageSize ?? PAGE_CAP, PAGE_CAP);
     const offset = pageOffset(url, pageSize);
+    // Tracked paging: the token minted on the first page travels in the $skiptoken, so the delta link starts there.
+    const delta = tracked ? (carriedDelta(url) ?? changes.token()) : null;
     const params = collectionParams(c, mapping);
     const paging = { params, offset, pageSize, preferenceApplied: null, nextLink: () => null };
     const options = queryOptions({ ...(ids ? { ids } : {}), ...filterOptions(readFilter) });
@@ -311,16 +363,18 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     body.value = rows.map((row) => keepAnnotations(formatRow(c, mapping, row, { etag: true, expand }), c.include));
     if (result.paging?.moreRecords) {
       const idColumn = mapping.idColumn;
-      const token = encodeSkipToken({
+      const cookie = encodeSkipToken({
         pageNumber: offset / pageSize + 2,
         lastId: rows.at(-1)[idColumn],
         firstId: rows[0][idColumn],
         idColumn,
       });
-      const base = nextBase ?? `${c.origin}/api/data/${c.version}/${mapping.entitySet}`;
+      // An extra attribute on the cookie carries the delta token; decodeSkipToken reads the paging attributes around it.
+      const token = tracked ? cookie.replace(" />", ` deltatoken="${delta}" />`) : cookie;
+      const base = nextBase ?? collectionBase(c, mapping);
       body["@odata.nextLink"] = nextLinkOf(c, base, token);
-    }
-    const applied = preferenceApplied(prefer, { paged: true, batch: false });
+    } else if (tracked) body["@odata.deltaLink"] = deltaLinkOf(c, collectionBase(c, mapping), delta);
+    const applied = preferenceApplied(prefer, { paged: true, tracked });
     return { status: 200, headers: applied ? { "Preference-Applied": applied } : {}, body };
   }
 
@@ -338,7 +392,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       throw invalid(`The entity set name '${mapping.entitySet}' does not match the FetchXml entity '${root}'.`, "0x80060888");
     }
     const fetched = store.fetchXml(xml, c.identity, {
-      metadata: metadataFields,
+      metadata: fieldsOf,
       backendRowsFilter: readFilter ? (name, row) => name !== logical || readFilter(row) : undefined,
     });
     const info = fetched.columns;
@@ -353,19 +407,51 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return { status: 200, body };
   }
 
+  // A tracked table: enabled in its metadata (when the metadata says), and read at organization level, since the delta
+  // includes the ids of deleted rows. Anything less answers the privilege error Dataverse gives for a limited reader.
+  function assertTableTracking(c, mapping, readFilter) {
+    const logical = mapping.logicalName;
+    if (changeTrackingEnabled(logical) === false) {
+      throw new DataError(`Entity ${logical} isn't enabled for change tracking.`, 400, "InvalidRequest", { innerCode: "0x80072491" });
+    }
+    if (readFilter !== null) {
+      // ponytail: the privilege name assumes the schema name is the logical name capitalized; use the solution schema name when it matters.
+      const schemaName = logical.charAt(0).toUpperCase() + logical.slice(1);
+      throw privilegeDeniedError(c.user, privilegeName("read", schemaName), logical);
+    }
+  }
+
+  // Change tracking answers only a plain collection (or a delta of one): no FetchXml, no $apply, and the query options it refuses.
+  function assertTracking(c, mapping, readFilter) {
+    for (const name of ["fetchXml", "fetchxml", "$apply"]) {
+      if (c.url.searchParams.has(name)) throw invalid(`The "${name}" query parameter isn't supported when Change Tracking is enabled.`, "0x80060888");
+    }
+    assertTableTracking(c, mapping, readFilter);
+    assertTrackable(c);
+  }
+
   function collection(c) {
     const { mapping, url } = c;
     authorize(c, mapping.logicalName, "read", mapping);
     const readFilter = filterOf(c, mapping);
+    if (tracking(c)) {
+      assertTracking(c, mapping, readFilter);
+      if (url.searchParams.has("$deltatoken")) return deltaPage(c, mapping, readFilter);
+    }
     const xml = url.searchParams.get("fetchXml") ?? url.searchParams.get("fetchxml");
     if (xml != null) return fetchXmlPage(c, mapping, readFilter, xml);
     if (url.searchParams.has("$apply")) return applyPage(c, mapping, readFilter);
-    return collectionPage(c, mapping, { readFilter });
+    return collectionPage(c, mapping, { readFilter, tracked: tracking(c) });
   }
 
-  function countRecords(c) {
+  async function countRecords(c) {
     const { mapping, url } = c;
     authorize(c, mapping.logicalName, "read", mapping);
+    if (url.searchParams.has("$deltatoken")) {
+      assertTableTracking(c, mapping, filterOf(c, mapping));
+      const { changed, deleted } = await deltaChanges(c, mapping);
+      return { status: 200, body: String(changed.length + deleted.length) };
+    }
     const params = new URLSearchParams();
     if (url.searchParams.has("$filter")) params.set("$filter", url.searchParams.get("$filter"));
     params.set("$select", mapping.idColumn);
@@ -396,18 +482,6 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return data;
   }
 
-  // Owner columns that follow an ownerid bind: the user's or team's business unit, owninguser for users, owningteam for teams.
-  function ownerColumns(mapping, target, row) {
-    if (ownershipOf(mapping.logicalName, undefined, mapping) !== "user") return {};
-    const buId = refIdOf(row.businessunitid);
-    const bu = buId ? store.tableRows("businessunit").find((item) => sameId(item.businessunitid, buId)) : null;
-    const buRef = bu ? { id: bu.businessunitid, logical_name: "businessunit", name: bu.name ?? "" } : null;
-    const columns = target.logicalName === "team"
-      ? { owninguser: null, owningteam: { id: row.teamid, logical_name: "team", name: row.name ?? "" }, owningbusinessunit: buRef }
-      : { owninguser: principals.ownershipDefaults({ user: { systemuserid: row.systemuserid, businessunitid: buId }, mapping }).owninguser, owningteam: null, owningbusinessunit: buRef };
-    return Object.fromEntries(Object.entries(columns).filter(([name]) => store.fieldDefinition(mapping.logicalName, name, metadataFields)));
-  }
-
   // Authorizes each bind (appendto on the bound row, assign for ownerid) and normalises it to /set(key).
   function bindsOf(c, mapping, data, existing) {
     for (const key of Object.keys(data)) {
@@ -424,34 +498,36 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       if (!row) throw notFoundRecord(target.logicalName, ref.id);
       authorize(c, target.logicalName, "appendto", target, row);
       data[key] = `/${ref.set}(${ref.id})`;
-      if (nav === "ownerid") Object.assign(data, ownerColumns(mapping, target, row));
     }
     return data;
   }
 
-  // ponytail: ownership and state defaults only fill columns the mapping declares, so tables without ownerid get no owner column.
+  // Owner of a write as { id, logical_name }: the ownerid bind on a create, or the ownerid lookup the store holds on an update.
+  function ownerOf(data) {
+    const bind = data[`ownerid${BIND}`];
+    if (bind == null) return data.ownerid?.id ? { id: data.ownerid.id, logical_name: data.ownerid.logical_name } : null;
+    const ref = refOf(bind);
+    return { id: ref.id, logical_name: mappingForSet(ref.set).logicalName };
+  }
+  // Audit and ownership columns are written by the store after coercion, whether or not the mapping declares them.
+  // The store calls this per row it writes, so a deep-inserted child gets the columns of its own table.
+  const systemColumns = (c, create) => (mapping, input) => principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create });
+  const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true) });
+  const updateOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, false) });
+
   function createData(c, mapping, body) {
     const data = payload(mapping, body);
     const logical = mapping.logicalName;
-    const declared = (name) => Boolean(store.fieldDefinition(logical, name, metadataFields));
+    const declared = (name) => Boolean(store.fieldDefinition(logical, name, fieldsOf));
     authorize(c, logical, "create", mapping);
     if (Object.keys(data).some((key) => key.endsWith(BIND))) authorize(c, logical, "append", mapping);
     bindsOf(c, mapping, data, null);
-    // ownershipDefaults wants the business unit as an id; the stored systemuser row keeps it as a lookup.
-    const owner = { ...c.user, businessunitid: c.user.businessunitid?.id ?? c.user.businessunitid };
-    const defaults = principals.ownershipDefaults({ user: owner, mapping });
-    for (const [name, value] of Object.entries(defaults)) {
-      if (name in data || `${name}${BIND}` in data) continue;
-      if (declared(name)) data[name] = value;
-    }
     // A new row is active (statecode 0) with the default status of that state.
     if (!("statecode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) data.statecode = 0;
     if (!("statuscode" in data) && (mapping.stateStatusDefaults || declared("statecode") || declared("statuscode"))) {
       const status = defaultStatus(mapping);
       if (status !== undefined) data.statuscode = status;
     }
-    const caller = onBehalfOf(c);
-    if (caller && !("createdonbehalfby" in data) && declared("createdonbehalfby")) data.createdonbehalfby = caller;
     return data;
   }
 
@@ -459,18 +535,13 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   function defaultStatus(mapping) {
     const fromMapping = mapping.stateStatusDefaults?.[0];
     if (fromMapping !== undefined) return fromMapping;
-    const definition = store.fieldDefinition(mapping.logicalName, "statuscode", metadataFields);
+    const definition = store.fieldDefinition(mapping.logicalName, "statuscode", fieldsOf);
     return (definition?.statuses ?? definition?.options ?? []).find((option) => String(option?.state) === "0")?.value;
   }
 
   function updateData(c, mapping, body, existing) {
     const data = bindsOf(c, mapping, payload(mapping, body), existing);
     delete data[mapping.idColumn];
-    for (const [name, value] of Object.entries(principals.modifiedBy({ user: c.user }))) {
-      if (store.fieldDefinition(mapping.logicalName, name, metadataFields)) data[name] = value;
-    }
-    const caller = onBehalfOf(c);
-    if (caller && store.fieldDefinition(mapping.logicalName, "modifiedonbehalfby", metadataFields)) data.modifiedonbehalfby = caller;
     return data;
   }
 
@@ -484,13 +555,13 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (key.row) {
       authorize(c, logical, "update", mapping, key.row);
       const data = updateData(c, mapping, body, key.row);
-      withKeyViolation(mapping, data, () => store.updateRecord(logical, key.row[mapping.idColumn], data, c.identity, writeOptions({ ifMatch, ifNoneMatch })));
+      withKeyViolation(mapping, data, () => store.updateRecord(logical, key.row[mapping.idColumn], data, c.identity, updateOptions(c, { ifMatch, ifNoneMatch })));
       return { created: false, id: key.row[mapping.idColumn] };
     }
     const data = createData(c, mapping, body);
     if (key.alternate) Object.assign(data, key.alternate);
     else data[mapping.idColumn] = key.id;
-    const row = withKeyViolation(mapping, data, () => store.createRecord(logical, data, c.identity, writeOptions({ ifNoneMatch })));
+    const row = withKeyViolation(mapping, data, () => store.createRecord(logical, data, c.identity, createOptions(c, { ifNoneMatch })));
     return { created: true, id: row[mapping.idColumn] };
   }
 
@@ -500,7 +571,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const row = await runWrite(() => {
       const data = createData(c, mapping, body);
       return withKeyViolation(mapping, data, () =>
-        store.createRecord(mapping.logicalName, data, c.identity, writeOptions({ ifNoneMatch: c.headers["if-none-match"] })),
+        store.createRecord(mapping.logicalName, data, c.identity, createOptions(c, { ifNoneMatch: c.headers["if-none-match"] })),
       );
     });
     const id = row[mapping.idColumn];
@@ -530,7 +601,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (!key.row) throw notFoundRecord(mapping.logicalName, key.text);
     authorize(c, mapping.logicalName, "delete", mapping, key.row);
     await runWrite(() =>
-      store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, writeOptions({ ifMatch: c.headers["if-match"] })),
+      store.removeRecord(mapping.logicalName, key.row[mapping.idColumn], c.identity, updateOptions(c, { ifMatch: c.headers["if-match"] })),
     );
     return { status: 204 };
   }
@@ -541,7 +612,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const readFilter = filterOf(c, target);
     const wanted = segmentKey ? parseKey(segmentKey)?.id : null;
     const rows = store
-      .queryContext(c.identity, { metadata: metadataFields })
+      .queryContext(c.identity, { metadata: fieldsOf })
       .related(row, rel)
       .filter((item) => (!wanted || sameId(item[target.idColumn], wanted)) && (!readFilter || readFilter(item)));
     return { target, rows };
@@ -561,7 +632,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
 
   // The store does not reject unknown $select columns on the by-id path, so the property name is checked here.
   function assertProperty(mapping, segment) {
-    if (segment === mapping.idColumn || store.fieldDefinition(mapping.logicalName, segment, metadataFields)) return;
+    if (segment === mapping.idColumn || store.fieldDefinition(mapping.logicalName, segment, fieldsOf)) return;
     throw invalid(`Could not find a property named '${segment}' on type 'Microsoft.Dynamics.CRM.${mapping.logicalName}'.`, "0x0");
   }
 
@@ -592,7 +663,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const { mapping } = c;
     const key = parentRow(c, mapping, "update");
     const data = updateData(c, mapping, { [segment]: value }, key.row);
-    await runWrite(() => store.updateRecord(mapping.logicalName, key.row[mapping.idColumn], data, c.identity, writeOptions()));
+    await runWrite(() => store.updateRecord(mapping.logicalName, key.row[mapping.idColumn], data, c.identity, updateOptions(c)));
     return { status: 204 };
   }
 
@@ -637,7 +708,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const child = rowOf(c, target, ref.id);
     if (!child) throw notFoundRecord(target.logicalName, ref.id);
     authorize(c, target.logicalName, "append", target, child);
-    await change(() => store.associate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity));
+    await change(() => store.associate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, updateOptions(c)));
     return { status: 204 };
   }
 
@@ -648,7 +719,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const ref = refOf(bodyOf(mapping.entitySet, c.body)["@odata.id"]);
     const parent = parentRow(c, mapping, "update");
     const data = updateData(c, mapping, { [`${route.segment}${BIND}`]: `/${ref.set}(${ref.id})` }, parent.row);
-    await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, writeOptions()));
+    await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c)));
     return { status: 204 };
   }
 
@@ -659,7 +730,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (rel.many === false) {
       const parent = parentRow(c, mapping, "update");
       const data = updateData(c, mapping, { [`${route.segment}${BIND}`]: null }, parent.row);
-      await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, writeOptions()));
+      await runWrite(() => store.updateRecord(mapping.logicalName, parent.row[mapping.idColumn], data, c.identity, updateOptions(c)));
       return { status: 204 };
     }
     const parent = parentRow(c, mapping, "appendto");
@@ -668,7 +739,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const child = rowOf(c, target, childId);
     if (!child) throw notFoundRecord(target.logicalName, childId);
     authorize(c, target.logicalName, "append", target, child);
-    await change(() => store.disassociate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity));
+    await change(() => store.disassociate(mapping.logicalName, parent.row[mapping.idColumn], route.segment, child[target.idColumn], c.identity, updateOptions(c)));
     return { status: 204 };
   }
 
@@ -688,7 +759,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
       const rows = await runWrite(() =>
         targets.map((target) => {
           const data = createData(c, mapping, target);
-          return withKeyViolation(mapping, data, () => store.createRecord(mapping.logicalName, data, c.identity, writeOptions()));
+          return withKeyViolation(mapping, data, () => store.createRecord(mapping.logicalName, data, c.identity, createOptions(c)));
         }),
       );
       return {
@@ -748,11 +819,13 @@ export function createRecordHandlers({ store, change, principals, metadataFields
         formatter: createWebApiFormatter({
           store,
           identity: ctx.identity,
-          metadata: metadataFields,
+          metadata: fieldsOf,
           formatting: { ...store.state.settings, currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? "$" },
         }),
       };
       return dispatch(c);
     },
+    // Unsubscribes the change log from the store; the API calls it when it closes.
+    close: () => changes.close(),
   };
 }

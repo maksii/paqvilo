@@ -13,6 +13,7 @@ const MAKER_OID = "33333333-3333-3333-3333-333333333333";
 
 describe("dataverse API router", () => {
   let api;
+  let store;
   let origin;
   let tenantId;
   let organizationId;
@@ -28,7 +29,7 @@ describe("dataverse API router", () => {
       widget: { entitySet: "widgets", idColumn: "widgetid", fields: { name: { dataverseType: "nvarchar" }, ownerid: { dataverseType: "owner" } } },
     };
     state.tables = { widget: [{ widgetid: "aaaaaaaa-0000-0000-0000-000000000001", name: "one" }, { widgetid: "aaaaaaaa-0000-0000-0000-000000000002", name: "two" }] };
-    const store = await new DataStore({ state }).init();
+    store = await new DataStore({ state }).init();
     const settings = dataverseSettings({
       enabled: true,
       applications: [{ appId: APP_ID, displayName: "Gate app", secretEnvironmentVariable: SECRET_VAR, roles: ["System Administrator"] }],
@@ -237,6 +238,31 @@ describe("dataverse API router", () => {
     assert.equal(body.user, makerUserId);
     assert.equal(recordCalls.at(-1).user.systemuserid, makerUserId);
     assert.equal(recordCalls.at(-1).caller.systemuserid, appUserId);
+  });
+
+  it("shares a row with GrantAccess, reports it through RetrievePrincipalAccess and removes it with RevokeAccess", async () => {
+    const widgetId = "aaaaaaaa-0000-0000-0000-000000000001";
+    const target = { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" };
+    const principal = { systemuserid: makerUserId, "@odata.type": "Microsoft.Dynamics.CRM.systemuser" };
+    const post = (name, body) => fetch(`${origin}${apiPath(name)}`, { method: "POST", headers: { ...auth(), "content-type": "application/json" }, body: JSON.stringify(body) });
+    const granted = await post("GrantAccess", { Target: target, PrincipalAccess: { AccessMask: "ReadAccess, WriteAccess", Principal: principal } });
+    assert.equal(granted.status, 204);
+    const share = store.state.tables.principalobjectaccess.find((row) => row.objectid === widgetId);
+    assert.equal(share.accessrightsmask, 3);
+    assert.equal(share.principalid.id, makerUserId);
+    // The maker holds no role: a share never substitutes for the table privilege.
+    const access = await get(apiPath(`systemusers(${makerUserId})/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@p1)?@p1={'@odata.id':'widgets(${widgetId})'}`));
+    assert.equal((await access.json()).AccessRights, "None");
+    const modified = await post("ModifyAccess", { Target: target, PrincipalAccess: { AccessMask: "ReadAccess", Principal: principal } });
+    assert.equal(modified.status, 204);
+    assert.equal(store.state.tables.principalobjectaccess.find((row) => row.objectid === widgetId).accessrightsmask, 1);
+    const revoked = await post("RevokeAccess", { Target: target, Revokee: principal });
+    assert.equal(revoked.status, 204);
+    assert.ok(!store.state.tables.principalobjectaccess.some((row) => row.objectid === widgetId));
+    const bad = await post("GrantAccess", { Target: { "@odata.type": "Microsoft.Dynamics.CRM.nope", nopeid: widgetId }, PrincipalAccess: { AccessMask: "ReadAccess", Principal: principal } });
+    assert.equal(bad.status, 400);
+    const unknownRight = await post("GrantAccess", { Target: target, PrincipalAccess: { AccessMask: "FlyAccess", Principal: principal } });
+    assert.equal(unknownRight.status, 400);
   });
 
   it("answers an unknown route with 404 0x8006088a", async () => {
@@ -657,5 +683,166 @@ describe("dataverse API batch, metadata and sign-in", () => {
     const response = await send(apiPath("WhoAmI"), { headers: bearer(token) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).UserId, uuidV5(organizationId, `systemuser:app:${APP_ID}`));
+  });
+});
+
+// Change tracking and shares inside batches. No `records` fixture here, so delta tokens come from the real record handlers.
+describe("dataverse API change tracking and shares inside batches", () => {
+  const TWO_ID = "aaaaaaaa-0000-0000-0000-000000000002";
+  const OWNED_ID = "aaaaaaaa-0000-0000-0000-0000000000a3";
+  const TRACK = { prefer: "odata.track-changes" };
+  let api;
+  let store;
+  let settings;
+  let now;
+  let token;
+  let makerUserId;
+  let appUserId;
+
+  const tokenFrom = async (instance) => {
+    const response = await fetch(`${instance.origin}/${instance.tenantId}/oauth2/v2.0/token`, {
+      method: "POST",
+      headers: form,
+      body: new URLSearchParams({ grant_type: "client_credentials", client_id: APP_ID, client_secret: process.env[SECRET_VAR], scope: `${instance.origin}/.default` }),
+    });
+    return (await response.json()).access_token;
+  };
+
+  before(async () => {
+    process.env[SECRET_VAR] = "test-secret-value";
+    now = Date.parse("2026-10-19T12:00:00Z");
+    const state = emptyState();
+    state.mappings = {
+      widget: { entitySet: "widgets", idColumn: "widgetid", fields: { name: { dataverseType: "nvarchar" }, ownerid: { dataverseType: "owner" } } },
+    };
+    state.tables = { widget: [{ widgetid: WIDGET_ID, name: "one" }, { widgetid: TWO_ID, name: "two" }] };
+    store = await new DataStore({ state }).init();
+    settings = dataverseSettings({
+      enabled: true,
+      applications: [{ appId: APP_ID, displayName: "Gate app", secretEnvironmentVariable: SECRET_VAR, roles: ["System Administrator"] }],
+      users: [{ domainname: "maker@example.test", fullname: "Maker User", objectId: MAKER_OID, roles: ["Basic User"] }],
+    });
+    api = await startDataverseApi({ store, change: serialChange(), settings, clock: () => now, log: () => {} });
+    const organizationId = api.organizationId;
+    appUserId = uuidV5(organizationId, `systemuser:app:${APP_ID}`);
+    makerUserId = uuidV5(organizationId, `systemuser:oid:${MAKER_OID}`);
+    // Owned by the application user: the maker, a Basic User, has no read on it through its role.
+    await store.transact(() => {
+      store.state.tables.widget.push({ widgetid: OWNED_ID, name: "owned", ownerid: { id: appUserId, logical_name: "systemuser" } });
+    });
+    token = await tokenFrom(api);
+  });
+
+  after(async () => {
+    delete process.env[SECRET_VAR];
+    await api?.close();
+  });
+
+  const bearer = (value) => ({ authorization: `Bearer ${value}` });
+  // A timeout turns a hung response (or a batch waiting on its own change slot) into a failure.
+  const send = (url, init = {}) => fetch(url, { signal: AbortSignal.timeout(10_000), ...init });
+  const apiPath = (suffix) => `/api/data/v9.2/${suffix}`;
+  const read = (path, headers = {}) => send(`${api.origin}${path}`, { headers: { ...bearer(token), ...headers } });
+  const batch = (boundary, parts) =>
+    send(`${api.origin}${apiPath("$batch")}`, {
+      method: "POST",
+      headers: { ...bearer(token), "content-type": `multipart/mixed; boundary=${boundary}` },
+      body: `${multipart(boundary, parts)}${CRLF}`,
+    });
+  const shareBody = (target, mask, principalId = makerUserId) => ({
+    Target: { widgetid: target, "@odata.type": "Microsoft.Dynamics.CRM.widget" },
+    PrincipalAccess: { AccessMask: mask, Principal: { systemuserid: principalId, "@odata.type": "Microsoft.Dynamics.CRM.systemuser" } },
+  });
+  const sharesOf = (target) => store.state.tables.principalobjectaccess.filter((row) => row.objectid === target);
+  const deletedIn = (body) => body.value.filter((item) => String(item["@odata.context"] ?? "").endsWith("$deletedEntity"));
+
+  it("runs GrantAccess inside a changeset: the part answers 204, the share exists and a later request is served", async () => {
+    const response = await batch("batch_share", [
+      changesetPart("cs_share", [httpPart({ contentId: "1", method: "POST", path: apiPath("GrantAccess"), json: shareBody(WIDGET_ID, "ReadAccess") })]),
+    ]);
+    assert.equal(response.status, 200);
+    assert.match(await response.text(), /HTTP\/1\.1 204/);
+    assert.equal(sharesOf(WIDGET_ID).length, 1);
+    const later = await read(apiPath("widgets"));
+    assert.equal(later.status, 200);
+  });
+
+  it("rolls back a share granted earlier in a changeset that fails", async () => {
+    const response = await batch("batch_share_bad", [
+      changesetPart("cs_share_bad", [
+        httpPart({ contentId: "1", method: "POST", path: apiPath("GrantAccess"), json: shareBody(TWO_ID, "ReadAccess") }),
+        httpPart({ contentId: "2", method: "POST", path: apiPath("widgets"), raw: '{"name":' }),
+      ]),
+    ]);
+    assert.equal(response.status, 400);
+    assert.equal(sharesOf(TWO_ID).length, 0);
+  });
+
+  it("answers a delta with no $deletedEntity for a row that a failed changeset deleted, and reports a later committed delete", async () => {
+    const start = await read(apiPath("widgets?$select=name"), TRACK);
+    const link = (await start.json())["@odata.deltaLink"];
+    const response = await batch("batch_delete", [
+      changesetPart("cs_delete", [
+        httpPart({ contentId: "1", method: "DELETE", path: apiPath(`widgets(${TWO_ID})`) }),
+        httpPart({ contentId: "2", method: "POST", path: apiPath("widgets"), raw: '{"name":' }),
+      ]),
+    ]);
+    assert.equal(response.status, 400);
+    assert.ok(store.tableRows("widget").some((row) => row.widgetid === TWO_ID));
+    const delta = await send(link, { headers: { ...bearer(token), ...TRACK } });
+    assert.equal(delta.status, 200);
+    const body = await delta.json();
+    assert.equal(deletedIn(body).length, 0);
+    const removed = await send(`${api.origin}${apiPath(`widgets(${TWO_ID})`)}`, { method: "DELETE", headers: bearer(token) });
+    assert.equal(removed.status, 204);
+    const next = await (await send(body["@odata.deltaLink"], { headers: { ...bearer(token), ...TRACK } })).json();
+    assert.ok(deletedIn(next).some((item) => String(item.id).includes(TWO_ID)));
+  });
+
+  it("answers a forged delta token with 400 0x80044352", async () => {
+    const forged = await read(apiPath(`widgets?$deltatoken=${encodeURIComponent("0!01/01/2000 00:00:00")}`), TRACK);
+    assert.equal(forged.status, 400);
+    assert.equal((await forged.json()).error.code, "0x80044352");
+  });
+
+  it("answers a delta token from before a restart with 400 0x80044352", async () => {
+    const link = (await (await read(apiPath("widgets?$select=name"), TRACK)).json())["@odata.deltaLink"];
+    const restarted = await startDataverseApi({ store, change: serialChange(), settings, clock: () => now, log: () => {} });
+    try {
+      const url = new URL(link);
+      const response = await send(`${restarted.origin}${url.pathname}${url.search}`, { headers: { ...bearer(await tokenFrom(restarted)), ...TRACK } });
+      assert.equal(response.status, 400);
+      assert.equal((await response.json()).error.code, "0x80044352");
+    } finally {
+      await restarted.close();
+    }
+  });
+
+  it("denies GrantAccess without Read on the row with 403 0x80048306", async () => {
+    const granted = await send(`${api.origin}${apiPath("GrantAccess")}`, {
+      method: "POST",
+      headers: { ...bearer(token), "content-type": "application/json" },
+      body: JSON.stringify(shareBody(OWNED_ID, "ShareAccess")),
+    });
+    assert.equal(granted.status, 204);
+    // The maker holds Share on the row through that grant but no Read, so the share is refused.
+    const denied = await send(`${api.origin}${apiPath("GrantAccess")}`, {
+      method: "POST",
+      headers: { ...bearer(token), "content-type": "application/json", MSCRMCallerID: makerUserId },
+      body: JSON.stringify(shareBody(OWNED_ID, "ReadAccess", appUserId)),
+    });
+    assert.equal(denied.status, 403);
+    assert.equal((await denied.json()).error.code, "0x80048306");
+    assert.equal(sharesOf(OWNED_ID).length, 1);
+  });
+
+  it("expires the tokens issued before a reseed (the /_sim/ reset path)", async () => {
+    const link = (await (await read(apiPath("widgets?$select=name"), TRACK)).json())["@odata.deltaLink"];
+    await api.reseed();
+    token = await tokenFrom(api);
+    const url = new URL(link);
+    const expired = await read(`${url.pathname}${url.search}`, TRACK);
+    assert.equal(expired.status, 400);
+    assert.equal((await expired.json()).error.code, "0x80044352");
   });
 });

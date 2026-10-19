@@ -2,6 +2,15 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { GRANT_TYPES, dataverseSettings, dataverseStatus, grantAllowed } from "../lib/dataverse-settings.mjs";
 import { uuidV5 } from "../lib/dataverse-security.mjs";
+test("grantAllowed maps short grant names onto OAuth grant_type values and accepts both spellings", () => {
+  assert.equal(grantAllowed({}, "client_credentials"), true, "unset allows every grant");
+  assert.equal(grantAllowed({ allowedGrants: ["client_credentials"] }, "client_credentials"), true);
+  assert.equal(grantAllowed({ allowedGrants: ["client_credentials"] }, "password"), false);
+  assert.equal(grantAllowed({ allowedGrants: ["device_code"] }, "urn:ietf:params:oauth:grant-type:device_code"), true);
+  assert.equal(grantAllowed({ allowedGrants: ["on_behalf_of"] }, "urn:ietf:params:oauth:grant-type:jwt-bearer"), true);
+  assert.equal(grantAllowed({ allowedGrants: ["urn:ietf:params:oauth:grant-type:device_code"] }, "urn:ietf:params:oauth:grant-type:device_code"), true);
+  assert.equal(grantAllowed({ allowedGrants: [] }, "client_credentials"), false);
+});
 
 const APP = "22222222-2222-2222-2222-222222222222";
 const USER_OBJECT = "33333333-3333-3333-3333-333333333333";

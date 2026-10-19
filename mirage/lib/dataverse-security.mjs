@@ -30,6 +30,7 @@ const TABLE_DEFS = {
   teamroles: { set: 'teamrolescollection', id: 'teamroleid', schemaName: 'TeamRoles', fields: { teamroleid: GUID, teamid: LOOKUP, roleid: LOOKUP } },
   roleprivileges: { set: 'roleprivilegescollection', id: 'roleprivilegeid', schemaName: 'RolePrivileges', fields: { roleprivilegeid: GUID, roleid: LOOKUP, privilegeid: LOOKUP, privilegedepthmask: INT } },
   privilege: { set: 'privileges', id: 'privilegeid', name: 'name', schemaName: 'Privilege', fields: { privilegeid: GUID, name: TEXT, accessright: INT, canbebasic: BOOL, canbelocal: BOOL, canbedeep: BOOL, canbeglobal: BOOL, canbeentityreference: BOOL, canbeparententityreference: BOOL, canberecordfilter: BOOL } },
+  principalobjectaccess: { set: 'principalobjectaccessset', id: 'principalobjectaccessid', schemaName: 'PrincipalObjectAccess', fields: { principalobjectaccessid: GUID, principalid: LOOKUP, objectid: GUID, objecttypecode: TEXT, accessrightsmask: INT, inheritedaccessrightsmask: INT } },
   transactioncurrency: { set: 'transactioncurrencies', id: 'transactioncurrencyid', name: 'currencyname', schemaName: 'TransactionCurrency', fields: { transactioncurrencyid: GUID, currencyname: TEXT, isocurrencycode: TEXT, currencysymbol: TEXT, currencyprecision: INT, exchangerate: 'decimal', organizationid: LOOKUP } },
 };
 
@@ -46,7 +47,6 @@ const onBehalf = (user, caller) => Boolean(caller) && key(caller.systemuserid) !
 const declaredOnly = (values, mapping) => (mapping?.fields
   ? Object.fromEntries(Object.entries(values).filter(([name]) => Object.hasOwn(mapping.fields, name)))
   : values);
-
 /** RFC 4122 version 5 (SHA-1, name-based) GUID, lowercase. */
 export function uuidV5(namespace, name) {
   const hex = String(namespace).replace(/[{}-]/g, '');
@@ -131,11 +131,12 @@ export function ownerColumns(store, ownerRef) {
   const logical = ownerRef?.logical_name;
   if (logical !== 'systemuser' && logical !== 'team') throw new DataError(`Owner must be a systemuser or team, not ${logical}.`, 400, 'InvalidRequest');
   const ref = lookupRow(store, logical, ownerRef.id);
+  const row = rowOf(store, logical, ownerRef.id);
   return {
     ownerid: ref,
     owninguser: logical === 'systemuser' ? ref : null,
     owningteam: logical === 'team' ? ref : null,
-    owningbusinessunit: lookupRow(store, 'businessunit', rowOf(store, logical, ownerRef.id).businessunitid),
+    owningbusinessunit: refId(row.businessunitid) ? lookupRow(store, 'businessunit', row.businessunitid) : null,
   };
 }
 
@@ -229,7 +230,8 @@ function templateGrants(p) {
   const admins = [['System Administrator', DEPTH.Global], ['System Customizer', DEPTH.Global]];
   if (!p.right) return admins;
   if (p.own === 'user') return [...admins, ['Basic User', DEPTH.Basic]];
-  return p.right === 'Read' ? [...admins, ['Basic User', DEPTH.Global]] : admins;
+  // Every share in the organization is listed here, so Basic User gets no Global Read on it.
+  return p.right === 'Read' && p.table !== 'principalobjectaccess' ? [...admins, ['Basic User', DEPTH.Global]] : admins;
 }
 
 function seedSecurity(store, settings, schema) {
@@ -257,7 +259,7 @@ function seedSecurity(store, settings, schema) {
   ];
   for (const table of tableInfo(store, schema)) {
     for (const right of Object.keys(ACCESS_RIGHTS)) {
-      if (table.own === 'user' || !ORGANIZATION_EXCLUDED.has(right)) privileges.push({ right, name: privilegeName(right, table.schemaName), own: table.own });
+      if (table.own === 'user' || !ORGANIZATION_EXCLUDED.has(right)) privileges.push({ right, name: privilegeName(right, table.schemaName), own: table.own, table: table.logical });
     }
   }
   for (const p of privileges) {
@@ -303,6 +305,64 @@ export function assignRoles(store, { systemuserid, roleIds = [] }) {
   });
 }
 
+const ALL_RIGHTS = Object.values(ACCESS_RIGHTS).reduce((mask, right) => mask | right, 0);
+
+/** 'ReadAccess, WriteAccess' or a positive integer made of known bits -> AccessRights mask; throws on an unknown name or bit, or an empty list. */
+export function parseAccessMask(value) {
+  const invalid = (text) => new DataError(`Invalid access mask ${text}.`, 400, 'InvalidRequest', { innerCode: '0x80040203' });
+  if (typeof value === 'number') {
+    if (Number.isInteger(value) && value > 0 && value <= ALL_RIGHTS && (value & ~ALL_RIGHTS) === 0) return value;
+    throw invalid(value);
+  }
+  let mask = 0;
+  for (const name of String(value ?? '').split(',').map((part) => part.trim()).filter(Boolean)) {
+    const right = ACCESS_RIGHTS[name.replace(/Access$/, '')];
+    if (!right || name === 'None') throw new DataError(`Invalid access right '${name}'.`, 400, 'InvalidRequest', { innerCode: '0x80040203' });
+    mask |= right;
+  }
+  if (!mask) throw invalid(`'${value ?? ''}'`);
+  return mask;
+}
+
+const shareOf = (store, target, principal) =>
+  rowsOf(store, 'principalobjectaccess').find((r) => sameId(r.objectid, target.id) && key(r.objecttypecode) === key(target.logical) && sameId(refId(r.principalid), principal.id));
+
+/**
+ * Share `target` ({ logical, id }) with `principal` ({ id, logical_name: systemuser | team }) at `mask`.
+ * GrantAccess ORs the mask into an existing share; ModifyAccess (replace) sets it.
+ */
+export function grantAccess(store, { target, principal, mask }, { replace = false } = {}) {
+  return store.transact(() => {
+    const existing = shareOf(store, target, principal);
+    if (existing) {
+      existing.accessrightsmask = replace ? mask : Number(existing.accessrightsmask) | mask;
+      return existing;
+    }
+    const logical = key(principal.logical_name) === 'team' ? 'team' : 'systemuser';
+    const row = {
+      principalobjectaccessid: uuidV5(target.id, `share:${logical}:${principal.id}`),
+      principalid: lookupRow(store, logical, principal.id),
+      objectid: String(target.id).toLowerCase(),
+      objecttypecode: target.logical,
+      accessrightsmask: mask,
+      inheritedaccessrightsmask: 0,
+    };
+    rowsOf(store, 'principalobjectaccess').push(row);
+    return row;
+  });
+}
+
+export const modifyAccess = (store, args) => grantAccess(store, args, { replace: true });
+
+export function revokeAccess(store, { target, principal }) {
+  return store.transact(() => {
+    const rows = rowsOf(store, 'principalobjectaccess');
+    const index = rows.indexOf(shareOf(store, target, principal));
+    if (index >= 0) rows.splice(index, 1);
+    return index >= 0;
+  });
+}
+
 // Derived indexes, rebuilt wholesale when store.dataRevision() changes.
 // ponytail: whole-state rebuild per committed change; per-table indexes if tables grow large.
 const indexes = new WeakMap();
@@ -312,7 +372,7 @@ function buildIndex(store) {
     users: new Map(), teamRows: new Map(), byOid: new Map(), byApp: new Map(), byDomain: new Map(),
     roles: new Map(), privNames: new Map(), privIds: new Map(), grants: new Map(),
     direct: new Map(), teams: new Map(), teamRoles: new Map(), children: new Map(),
-    roleSets: new Map(), grantSets: new Map(), chains: new Map(),
+    roleSets: new Map(), grantSets: new Map(), chains: new Map(), shares: new Map(),
   };
   const add = (map, k, v) => {
     if (!map.has(k)) map.set(k, []);
@@ -337,7 +397,21 @@ function buildIndex(store) {
   for (const b of store.tableRows('businessunit')) {
     if (refId(b.parentbusinessunitid)) add(idx.children, key(refId(b.parentbusinessunitid)), key(b.businessunitid));
   }
+  for (const s of store.tableRows('principalobjectaccess')) add(idx.shares, key(s.objectid), { principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
   return idx;
+}
+
+/** Rights shared with the user directly or through a team membership, as an AccessRights mask. */
+function sharedMask(idx, uid, rowId) {
+  const principals = new Set([uid, ...teamsOf(idx, uid)]);
+  let mask = 0;
+  for (const share of idx.shares.get(key(rowId)) ?? []) if (principals.has(share.principal)) mask |= share.mask;
+  return mask;
+}
+
+/** Whether a share gives the user `right` on the row, keyed by `idColumn`. */
+function sharedWith(idx, uid, row, idColumn, right) {
+  return row[idColumn] != null && (sharedMask(idx, uid, row[idColumn]) & ACCESS_RIGHTS[right]) !== 0;
 }
 
 function indexOf(store) {
@@ -503,9 +577,11 @@ export function createPrincipals(store, settings = {}) {
     const grants = grantsNamed(index, user, name);
     if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
     if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
+    const idColumn = m.idColumn ?? `${logical}id`;
     const admitting = grants.filter((g) => g.admits(row));
-    if (!admitting.length) throw accessDenied(user, operation, row, m.idColumn ?? `${logical}id`, logical);
-    return { m, grants: admitting, depth: deepest(admitting) };
+    if (admitting.length) return { m, grants: admitting, depth: deepest(admitting) };
+    if (!sharedWith(index, key(user.systemuserid), row, idColumn, OPERATION_RIGHT[operation] ?? operation)) throw accessDenied(user, operation, row, idColumn, logical);
+    return { m, grants, depth: deepest(grants) };
   }
 
   return {
@@ -554,7 +630,24 @@ export function createPrincipals(store, settings = {}) {
       const { m, grants } = gate(user, entity, 'read', { mapping, schema });
       if (ownershipOf(m.logicalName, schema, m) === 'org') return null;
       if (grants.some((g) => g.direct && g.depth >= DEPTH.Global)) return null;
-      return (row) => grants.some((g) => g.admits(row));
+      const index = idx(), uid = uidOf(user), idColumn = m.idColumn ?? `${m.logicalName}id`;
+      return (row) => grants.some((g) => g.admits(row)) || sharedWith(index, uid, row, idColumn, 'Read');
+    },
+
+    /**
+     * Store system columns for a write: audit lookups, the impersonating caller (null when none) and,
+     * on user-owned tables, the owner trio for `owner` ({ id, logical_name } of a systemuser or team),
+     * the caller on create. These are written whether or not the mapping declares the columns.
+     */
+    systemColumns({ user, caller = null, mapping, schema, owner = null, create = true } = {}) {
+      const userRef = lookupRow(store, 'systemuser', user.systemuserid);
+      const callerRef = caller && !sameId(caller.systemuserid, user.systemuserid) ? lookupRow(store, 'systemuser', caller.systemuserid) : null;
+      const columns = create
+        ? { createdby: userRef, modifiedby: userRef, createdonbehalfby: callerRef, modifiedonbehalfby: callerRef }
+        : { modifiedby: userRef, modifiedonbehalfby: callerRef };
+      if (ownershipOf(mapping.logicalName, schema, mapping) !== 'user') return columns;
+      if (owner || create) Object.assign(columns, ownerColumns(store, owner ?? { id: user.systemuserid, logical_name: 'systemuser' }));
+      return columns;
     },
 
     ownershipDefaults({ user, caller, mapping, schema } = {}) {
@@ -597,13 +690,14 @@ export function createPrincipals(store, settings = {}) {
       return out;
     },
 
-    /** Comma-separated AccessRights flags, or 'None'. Create is table-level and needs no row. */
+    /** Comma-separated AccessRights flags, or 'None'. Create is table-level and needs no row; shares count per right. */
     principalAccess({ user, entity, row, mapping, schema } = {}) {
       const index = idx(), m = mapping ?? store.resolveMapping(entity), owned = ownershipOf(m.logicalName, schema, m) === 'user', flags = [];
+      const idColumn = m.idColumn ?? `${m.logicalName}id`, uid = uidOf(user);
       for (const right of Object.keys(ACCESS_RIGHTS)) {
         const grants = grantsNamed(index, user, privilegeName(right, schemaNameOf(m.logicalName, schema)));
         if (!grants.length) continue;
-        if (right === 'Create' || !row || !owned || grants.some((g) => g.admits(row))) flags.push(`${right}Access`);
+        if (right === 'Create' || !row || !owned || grants.some((g) => g.admits(row)) || sharedWith(index, uid, row, idColumn, right)) flags.push(`${right}Access`);
       }
       return flags.length ? flags.join(', ') : 'None';
     },
