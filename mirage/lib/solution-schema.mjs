@@ -13,6 +13,7 @@ import {
 } from "./solution-xml.mjs";
 import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
 import { parsePluginDocument } from './exported-plugins.mjs';
+import { parseAppDefinitions, embeddedAppComponents } from './model-driven/solution.mjs';
 import {
   standardTable,
   standardOptionSet,
@@ -23,12 +24,12 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@12";
+export const SCHEMA_PARSER_ID = "schema@14";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
 // Directories of an unpacked solution tree that carry table metadata.
-const TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
+const TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
 // Every standard Dataverse table owns these columns; a definition that exports its
 // primary key and all of them is a full table export rather than a column patch.
 const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
@@ -52,6 +53,7 @@ const deepText = (node, name) => childText(node, name) ?? descendants(node, name
 export function classifySolutionPath(relative) {
   const p = String(relative).replace(/\\/g, "/");
   let m;
+  if (/(?:^|\/)(?:AppModules|AppModuleSiteMaps|SiteMaps)\/.+\.xml$/i.test(p)) return { kind: 'app' };
   if (/(?:^|\/)(?:PluginAssemblies|PluginTypes|SdkMessageProcessingSteps|SdkMessages)\/.+\.xml$/i.test(p)) return { kind: 'plugin' };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/Entity\.xml$/i.exec(p))) return { kind: "entity", entityDir: m[1] };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/FormXml\/.+\.xml$/i.exec(p))) return { kind: "form", entityDir: m[1] };
@@ -66,7 +68,7 @@ export function classifySolutionPath(relative) {
     return { kind: "envvalue", envDir: m[1] };
   return null;
 }
-const SCHEMA_KINDS = new Set(["entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
+const SCHEMA_KINDS = new Set(["app", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
 
 async function manifestOf(dir) {
   let entries;
@@ -440,6 +442,8 @@ export function parseSchemaDocument(text, info = {}) {
   }
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("XML external declarations are not supported");
   const root = parseSolutionXml(text, { recover: true });
+  Object.assign(facts, parseAppDefinitions(root));
+  facts.appComponents = embeddedAppComponents(root, { entity: info.entityDir });
   if (/<(?:PluginAssembly|PluginType|SdkMessageProcessingStep|SdkMessage)[\s>]/i.test(text)) facts.plugins = parsePluginDocument(text);
   if (root.recovered) facts.recovered = root.recovered;
   if (info.kind === "solution" || root.name === "ImportExportXml" && child(root, "SolutionManifest"))
@@ -498,7 +502,7 @@ export function readSolutionZip(buffer) {
     if (name.startsWith("/") || name.split("/").includes("..") || /^[a-z]:/i.test(name))
       throw new Error("Solution ZIP contains a traversal path.");
     const classified = classifySolutionPath(name);
-    if (!classified || !SCHEMA_KINDS.has(classified.kind)) continue;
+    if (!classified || !SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind)) continue;
     if (flags & 1) throw new Error("Encrypted solution XML entries are not supported.");
     if (uncompressed > XML_LIMIT || size > XML_LIMIT || localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50)
       throw new Error("Invalid or oversized solution XML entry.");

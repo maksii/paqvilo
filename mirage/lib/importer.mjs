@@ -263,7 +263,7 @@ const localized = (value, lcid = 1033) => {
  */
 export async function importPortal(
   sourceDir,
-  { languageId, lcid = 1033, deploymentProfile, deploymentProfileFile, dataModel: requestedDataModel, cache = null, git = gitQueries } = {},
+  { languageId, lcid = 1033, deploymentProfile, deploymentProfileFile, dataModel: requestedDataModel, cache = null, git = gitQueries, recordOverrides = {} } = {},
 ) {
   if (requestedDataModel != null && !DATA_MODELS.includes(requestedDataModel))
     throw new Error(`dataModel must be standard or enhanced, not ${JSON.stringify(requestedDataModel)}`);
@@ -610,6 +610,36 @@ export async function importPortal(
       }
     }
   }
+  // Local model-driven edits are record overlays. Reuse the normal compiler so page
+  // hierarchy, language, forms and templates stay consistent without rewriting exports.
+  const overlayRecord = (previous, patch, kind, recordId) => {
+    const record = { ...previous, kind, id: recordId,
+      _file: previous._file ?? path.join(sourceDir, '.paqvilo-overlay', kind, recordId + '.yml'),
+      _profileFields: { ...previous._profileFields } };
+    for (const [name, value] of Object.entries(patch)) {
+      if (name.startsWith('_') || ['kind', 'id'].includes(name)) continue;
+      const bare = name.replace(/^(?:adx|mspp)_/, '');
+      // A sparse edit replaces this field's source spelling, preserving siblings
+      // and language/record identity. Untouched sidecars still come from source.
+      delete record[`adx_${bare}`]; delete record[`mspp_${bare}`];
+      record[bare] = value; record._profileFields[bare] = value;
+    }
+    record.name = field(record, 'name', record.name ?? '');
+    return record;
+  };
+  for (const [key, patch] of Object.entries(recordOverrides)) {
+    const [kind, recordId] = key.split('/');
+    if (!kind || !recordId || key.split('/').length !== 2) throw new Error('Invalid local record overlay identity.');
+    if (kind === 'website' && recordId === String(website.id ?? field(website, 'websiteid'))) {
+      if (patch) website = overlayRecord(website, patch, kind, recordId);
+      continue;
+    }
+    const index = records.findIndex(record => record.kind === kind && record.id === recordId);
+    if (patch === null) { if (index >= 0) records.splice(index, 1); continue; }
+    const previous = index >= 0 ? records[index] : {};
+    const record = overlayRecord(previous, patch, kind, recordId);
+    if (index >= 0) records[index] = record; else records.push(record);
+  }
   const live = records.filter(active);
   const byKind = (kind) => live.filter((r) => r.kind === kind);
   const language = id(languageId ?? field(website, "defaultlanguage"));
@@ -656,7 +686,7 @@ export async function importPortal(
       return String(localized(record._profileFields[fallbackField], lcid));
     if (enhanced)
       return String(localized(field(record, fallbackField, ""), lcid));
-    const stem = record._file.replace(/\.ya?ml$/i, "");
+    const stem = String(record._file ?? '').replace(/\.ya?ml$/i, "");
     return (
       (await read(`${stem}.${suffix}`, contents)) ||
       String(localized(field(record, fallbackField, ""), lcid))

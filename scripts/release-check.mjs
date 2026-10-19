@@ -12,6 +12,7 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
+const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'catalogue.mjs', 'controls.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
 // Reusable campaign sources only. Native recordings, configuration snapshots,
 // bridge credentials and local invocation manifests stay outside the package.
 const COMPANY_QUALIFICATION_SOURCES = new Set([
@@ -75,6 +76,7 @@ export const PROJECT_TEMPLATE_FILES = [
 ].map(name => `templates/project/${name}`);
 
 export const REQUIRED_RELEASE_FILES = [
+  ...MODEL_DRIVEN_FILES, 'mirage/docs/model-driven-apps.md',
   'lense/commands/setup.mjs', 'lense/setup/store.mjs', 'lense/setup/server.mjs', 'lense/setup/app.mjs',
   'lense/setup/index.html', 'lense/setup/style.css', 'docs/setup.md',
   'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',
@@ -148,7 +150,7 @@ export function validateReleaseFiles(files) {
   const paths = new Set(files.map((file) => file.path));
   // Allow only named product illustrations, never arbitrary screenshots or evidence.
   // npm masks GUIDs as *** in pack's JSON output; the archive retains the real filenames.
-  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
+  for (const name of paths) if (!allowed.test(name) && !SETUP_ASSETS.has(name) && !MODEL_DRIVEN_FILES.has(name) && !templates.has(name) && !provisioningSources.test(name) && !COMPANY_QUALIFICATION_SOURCES.has(name) && !designDocuments.has(name) && name!=='mirage/lib/plugin-clr-host.cs' && !demoSources.test(name.replaceAll('***', 'redacted-id')) && !demoPluginSources.test(name) && !demoPluginAssembly.test(name.replaceAll('***', 'redacted-id')) && !demoArtifacts.has(name) && !demoEditorFiles.has(name) && name !== 'examples/project/pack/fixtures.json' && name !== SAMPLE_COMPONENT_LICENSE && !DOCUMENTATION_ASSETS.has(name)) throw new Error(`Unexpected release file: ${name}`);
   for (const name of REQUIRED_RELEASE_FILES) if (!paths.has(name)) throw new Error(`Required release file is missing: ${name}`);
   return paths.size;
 }

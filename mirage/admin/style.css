@@ -931,6 +931,7 @@ footer {
   .top-actions {
     width: 100%;
     justify-content: space-between;
+    flex-wrap: wrap;
   }
   main {
     padding: 24px 18px;

@@ -77,6 +77,9 @@ import { pageAccess } from "./lib/page-access.mjs";
 import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
+import { appCatalogue, solutionApps } from './lib/model-driven/catalogue.mjs';
+import { createModelDrivenData } from './lib/model-driven/data.mjs';
+import { createModelDrivenHandler } from './lib/model-driven/http.mjs';
 import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
 import { scanSolutionSources, buildSolutionSchema } from "./lib/solution-schema.mjs";
 import { SolutionFileCache, sourceDirectoryDigest } from "./lib/solution-cache.mjs";
@@ -374,11 +377,11 @@ export async function createSimulator({
   // Portal imports keep duplicate-copy commit lookups beside the state file
   // (cache/portal-sources.json), so a restart does not ask git again for unchanged files.
   const portalCacheFile = stateFile ? path.join(path.dirname(path.resolve(stateFile)), "cache", "portal-sources.json") : null;
-  const importSource = async () => {
+  const importSource = async (recordOverrides = {}) => {
     const cache = await SolutionFileCache.open(portalCacheFile);
     const imported = applyObserved(await importPortal(sourceDir, {
       deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile,
-      deploymentProfileFile: activeProfiles.pagesFile, dataModel, cache,
+      deploymentProfileFile: activeProfiles.pagesFile, dataModel, cache, recordOverrides,
     }), observed);
     await cache.save();
     bootstrapTimings.portalCache = { ...cache.stats, file: portalCacheFile };
@@ -421,9 +424,10 @@ export async function createSimulator({
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
     codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
-      importSolutionMetadata(solutionRoots, { portal, scan, schema, observed }),
+      importSolutionMetadata(solutionRoots, { portal, entities: Object.keys(schema.tables), scan, schema, observed }),
       reuseImported && importedSources?.solutionData && importedSources.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema }),
     ]);
+    solutionMetadata.modelDrivenApps = solutionApps(scan);
     await cache.save();
     bootstrapTimings.solutionsMs = Math.round(performance.now() - started);
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
@@ -520,6 +524,9 @@ export async function createSimulator({
   // Validate new state before init writes it, and loaded state before any enrichment saves.
   if (!stateExisted) validateStartupConfiguration();
   await store.init();
+  if (Object.keys(store.state.simulator?.modelDriven?.records ?? {}).length) {
+    sourcePortal = await importSource(store.state.simulator.modelDriven.records);
+  }
   store.state.simulator.contentPolicySource = policyOrigin(store.state.simulator.contentPolicySource);
   if (stateExisted) validateStartupConfiguration();
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
@@ -1332,9 +1339,10 @@ export async function createSimulator({
     const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets };
     const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
     try {
-      if (pinChanged) {
+      const recordsChanged = !isDeepStrictEqual(state.simulator?.modelDriven?.records, config().modelDriven?.records);
+      if (pinChanged || recordsChanged) {
         activeProfiles = await loadDeploymentProfiles(profileConfig, state.simulator?.deploymentProfilePin ?? null);
-        sourcePortal = await importSource();
+        sourcePortal = await importSource(state.simulator?.modelDriven?.records);
         if (requirePortalSource) assertPortalSource(sourcePortal);
       }
       portal = applyPortalOverrides(sourcePortal, state.simulator?.portalOverrides);
@@ -3006,6 +3014,25 @@ export async function createSimulator({
     renderPage: renderAccountPage,
     readBody: rawBody,
   });
+  let modelDrivenCache;
+  const modelDrivenCatalogue = () => {
+    if (modelDrivenCache?.portal !== portal || modelDrivenCache?.metadata !== solutionMetadata || modelDrivenCache?.storeRevision !== store.revision) {
+      modelDrivenCache = { portal, metadata: solutionMetadata, storeRevision: store.revision,
+        value: appCatalogue({ portal, metadata: solutionMetadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings }) };
+    }
+    return modelDrivenCache.value;
+  };
+  const modelDrivenData = createModelDrivenData({ store, catalogue: modelDrivenCatalogue, portal: () => portal,
+    saveOverlay: async (key, value) => {
+      const state = store.snapshot();
+      state.simulator.modelDriven ??= {};
+      state.simulator.modelDriven.records = { ...state.simulator.modelDriven.records,
+        [key]: value === null ? null : { ...state.simulator.modelDriven.records?.[key], ...value } };
+      await saveState(state);
+    },
+  });
+  const modelDrivenHandler = createModelDrivenHandler({ catalogue: modelDrivenCatalogue, data: modelDrivenData,
+    csrf: () => csrf, json, readBody: jsonObjectBody, change });
   async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -3019,6 +3046,7 @@ export async function createSimulator({
     if (req.headers["sec-fetch-site"] === "cross-site" && isWrite(req.method))
       throw error("Cross-site writes are not allowed.", 403);
     const url = requestTargetUrl(req.url, localOrigin);
+    if (await modelDrivenHandler(req, res, url)) return;
     if(req.headers['x-paqvilo-local-only']==='true'&&(config().mode==='live'||config().pageMode==='live'||(config().endpoints??[]).some(endpoint=>endpoint.enabled!==false&&endpoint.path===url.pathname&&endpoint.mode==='live')))
       throw error('This visitor requires local Mirage execution.',409,'LocalRuntimeRequired');
     if (frameReadiness.handle(req, res, url)) return;
@@ -4120,7 +4148,7 @@ export async function createSimulator({
           const changed = [...changedPaths].sort();
           changedPaths.clear();
           activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
-          sourcePortal = await importSource();
+          sourcePortal = await importSource(config().modelDriven?.records);
           if (requirePortalSource) assertPortalSource(sourcePortal);
           portal = applyPortalOverrides(sourcePortal, config().portalOverrides);
           sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };
