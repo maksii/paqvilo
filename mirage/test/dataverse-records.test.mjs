@@ -7,6 +7,7 @@ import { DataStore, emptyState } from "../lib/data.mjs";
 import { createPrincipals, ensureSecurityModel } from "../lib/dataverse-security.mjs";
 import { encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
 import { createRecordHandlers } from "../lib/dataverse-records.mjs";
+import { stringifyExactJson } from "../lib/exact-numeric.mjs";
 
 const ORIGIN = "http://127.0.0.1:5555";
 const VERSION = "v9.2";
@@ -14,6 +15,7 @@ const ORG = "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
 const ADMIN_OID = "aaaaaaaa-0000-4000-8000-000000000001";
 const BASIC_OID = "aaaaaaaa-0000-4000-8000-000000000002";
 const MISSING = "00000000-0000-4000-8000-0000000000ff";
+const CURRENCY = "_transactioncurrencyid_value";
 const SETTINGS = {
   organizationId: ORG,
   tenantId: "tenant-test",
@@ -537,4 +539,22 @@ test("money formatted values carry the currency symbol, $ by default", async () 
     headers: annotate("OData.Community.Display.V1.FormattedValue"),
   });
   assert.equal(res.body.value[0]["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
+});
+
+test("money columns serialize with four decimals, a currency symbol and the base currency lookup", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Priced", price: 12.5 });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
+  assert.equal(res.status, 200);
+  const currency = t.store.state.tables.transactioncurrency[0];
+  assert.equal(res.body[CURRENCY], currency.transactioncurrencyid);
+  assert.equal(res.body[`${CURRENCY}@OData.Community.Display.V1.FormattedValue`], "Base currency");
+  assert.equal(res.body[`${CURRENCY}@Microsoft.Dynamics.CRM.lookuplogicalname`], "transactioncurrency");
+  assert.equal(res.body["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
+  assert.match(stringifyExactJson(res.body), /"price":12\.5000[,}]/);
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`);
+  assert.ok(!(CURRENCY in plain.body.value[0]), "rows without a money column carry no currency");
+  const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`);
+  assert.equal(list.body.value[0][CURRENCY], currency.transactioncurrencyid);
+  assert.ok(!Object.keys(list.body.value[0]).some((key) => key.includes("@") && !key.startsWith("@odata.")), "annotations stay opt-in");
 });

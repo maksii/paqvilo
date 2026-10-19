@@ -95,6 +95,7 @@ On start, the simulator seeds the security tables for the organization:
 | `systemuser` | `SYSTEM` (non-interactive) and each configured user. |
 | `role` | `System Administrator`, `System Customizer`, `Basic User`. |
 | `privilege`, `roleprivileges` | Privileges per role. System Administrator and System Customizer hold Global depth on every table. Basic User holds Basic depth on user-owned tables and Global Read on organization-owned tables. |
+| `transactioncurrency` | The organization's base currency (`Base currency`). Its symbol comes from the simulator setting `currencySymbol`, default `$`. |
 
 Application users come from two places: the `applications` list in `mirage.dataverse`, or `POST /_sim/api/dataverse/applications` at runtime. Interactive users come from `users` or `POST /_sim/api/dataverse/users`. Their roles are ordinary `systemuserroles` rows.
 
@@ -193,6 +194,7 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 - Metadata reads: the `$metadata` document, `EntityDefinitions`, `RelationshipDefinitions`, `GlobalOptionSetDefinitions`.
 - Discovery: `Instances`.
 - Documented error envelope and error codes.
+- Money columns: JSON values with four decimals (`12.5000`), formatted values with the base currency symbol (`$12.50`), and `_transactioncurrencyid_value` (with its lookup annotations) on every row that returns a money column. The simulator has one currency, so every money row reports the base currency.
 - Collection-bound `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`.
 - OAuth 2.0 grants: `client_credentials` (client secret or certificate assertion), `authorization_code` with PKCE, `device_code`, `password` (ROPC), on-behalf-of, and `refresh_token` rotation. OpenID Connect discovery, JWKS and instance discovery.
 - Impersonation through `CallerObjectId` or `MSCRMCallerID` for callers holding `prvActOnBehalfOfAnotherUser`.

@@ -814,6 +814,7 @@ export async function startDataverseApi({
     uniqueName: settings.uniqueName,
     friendlyName: settings.friendlyName,
     version: settings.version,
+    currencySymbol: store.state.settings?.currencySymbol,
     applications: applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
     // Settings rows use domainname/fullname; the security model reads upn/displayName.
     users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),

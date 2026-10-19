@@ -30,7 +30,10 @@ const TABLE_DEFS = {
   teamroles: { set: 'teamrolescollection', id: 'teamroleid', schemaName: 'TeamRoles', fields: { teamroleid: GUID, teamid: LOOKUP, roleid: LOOKUP } },
   roleprivileges: { set: 'roleprivilegescollection', id: 'roleprivilegeid', schemaName: 'RolePrivileges', fields: { roleprivilegeid: GUID, roleid: LOOKUP, privilegeid: LOOKUP, privilegedepthmask: INT } },
   privilege: { set: 'privileges', id: 'privilegeid', name: 'name', schemaName: 'Privilege', fields: { privilegeid: GUID, name: TEXT, accessright: INT, canbebasic: BOOL, canbelocal: BOOL, canbedeep: BOOL, canbeglobal: BOOL, canbeentityreference: BOOL, canbeparententityreference: BOOL, canberecordfilter: BOOL } },
+  transactioncurrency: { set: 'transactioncurrencies', id: 'transactioncurrencyid', name: 'currencyname', schemaName: 'TransactionCurrency', fields: { transactioncurrencyid: GUID, currencyname: TEXT, isocurrencycode: TEXT, currencysymbol: TEXT, currencyprecision: INT, exchangerate: 'decimal', organizationid: LOOKUP } },
 };
+
+export const baseCurrencyId = (organizationId) => uuidV5(organizationId, 'transactioncurrency:base');
 
 const key = (value) => String(value ?? '').toLowerCase();
 const sameId = (a, b) => key(a) === key(b);
@@ -235,6 +238,11 @@ function seedSecurity(store, settings, schema) {
   insertMissing(rowsOf(store, 'organization'), 'organizationid', { organizationid: org, name, uniquename: settings.uniqueName, friendlyname: name });
   insertMissing(rowsOf(store, 'businessunit'), 'businessunitid', {
     businessunitid: root, name: settings.uniqueName, parentbusinessunitid: null, organizationid: lookupRow(store, 'organization', org),
+  });
+  // The organization's base currency: money columns report it as _transactioncurrencyid_value.
+  insertMissing(rowsOf(store, 'transactioncurrency'), 'transactioncurrencyid', {
+    transactioncurrencyid: baseCurrencyId(org), currencyname: 'Base currency', isocurrencycode: null,
+    currencysymbol: settings.currencySymbol ?? '$', currencyprecision: 2, exchangerate: 1, organizationid: lookupRow(store, 'organization', org),
   });
   const roleIds = {};
   for (const role of ROLE_NAMES) {

@@ -81,7 +81,14 @@ export function parseExactJson(text){
  });
 }
 export function stringifyExactJson(value){
- return JSON.stringify(value,(key,item)=>isExactNumeric(item)?JSON.rawJSON(decimalText(decimalParts(item))):item);
+ return JSON.stringify(value,(key,item)=>isExactNumeric(item)?JSON.rawJSON(typeof item.lexeme==='string'?item.lexeme:decimalText(decimalParts(item))):item);
+}
+// Exact numeric whose JSON lexeme keeps a fixed scale (Dataverse writes money with four decimals).
+export function fixedScaleNumeric(value,scale,numericType='Money'){
+ const parts=decimalParts(value);if(!parts)failure('Invalid exact numeric literal.');
+ if(parts.scale>scale)return fixedScaleNumeric(roundNumeric(value,scale,numericType),scale,numericType);
+ const text=decimalText(parts),[whole,fraction='']=text.split('.');
+ return {$type:marker,numericType,value:text,lexeme:scale?whole+'.'+fraction.padEnd(scale,'0'):whole};
 }
 export function formatExactNumeric(value,digits){
  const rounded=roundNumeric(value,digits),text=isExactNumeric(rounded)?rounded.value:String(rounded),[whole,fraction='']=text.split('.');

@@ -6,8 +6,10 @@ import { DataError } from "./data-error.mjs";
 import { parseEntityReference } from "./data.mjs";
 import { webApiPagingCookie } from "./fetchxml-engine.mjs";
 import { expressionPaths, parseExpand, parseODataExpression, parseOrderBy, parseSelect } from "./odata-query.mjs";
-import { NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
+import { FORMATTED, NAVIGATION, createWebApiFormatter } from "./webapi-format.mjs";
 import { ownershipOf } from "./dataverse-security.mjs";
+import { fieldKind } from "./dataverse-values.mjs";
+import { fixedScaleNumeric } from "./exact-numeric.mjs";
 import {
   JSON_CONTENT_TYPE,
   annotationMatcher,
@@ -29,6 +31,8 @@ const ALLOWED_QUERY = new Set([
   "$select", "$filter", "$expand", "$orderby", "$top", "$count", "$apply", "$skiptoken", "$id",
   "fetchXml", "fetchxml", "savedQuery", "userQuery",
 ]);
+const MONEY_SCALE = 4;
+const CURRENCY = "_transactioncurrencyid_value";
 const RECORD_COUNT = "Microsoft.Dynamics.CRM.totalrecordcount";
 const RECORD_LIMIT = "Microsoft.Dynamics.CRM.totalrecordcountlimitexceeded";
 const MORE_RECORDS = "Microsoft.Dynamics.CRM.morerecords";
@@ -137,6 +141,26 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (body && typeof body === "object" && !Array.isArray(body)) return body;
     throw invalid(`Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : A request body is required.`, "0x80048d19");
   };
+  // The organization's base currency seeded by the security model; null when the Dataverse tables are absent.
+  const baseCurrency = () => store.state.tables.transactioncurrency?.[0] ?? null;
+  const isMoney = (mapping, key) => fieldKind(store.fieldDefinition(mapping.logicalName, key, metadataFields)) === "money";
+
+  // Money columns serialize with four-decimal lexemes, and a row that carries one reports the base currency lookup.
+  function shapeMoney(mapping, out) {
+    let money = false;
+    for (const key of Object.keys(out)) {
+      if (key.includes("@") || !isMoney(mapping, key)) continue;
+      money = true;
+      if (out[key] != null) out[key] = fixedScaleNumeric(out[key], MONEY_SCALE);
+    }
+    const currency = money ? baseCurrency() : null;
+    if (!currency || CURRENCY in out) return out;
+    out[`${CURRENCY}${FORMATTED}`] = currency.currencyname;
+    out[`${CURRENCY}@Microsoft.Dynamics.CRM.associatednavigationproperty`] = "transactioncurrencyid";
+    out[`${CURRENCY}@Microsoft.Dynamics.CRM.lookuplogicalname`] = "transactioncurrency";
+    out[CURRENCY] = currency.transactioncurrencyid;
+    return out;
+  }
 
   // Entity set names are case-sensitive; logical names do not route (Dataverse 404 0x8006088a).
   function mappingForSet(set) {
@@ -198,14 +222,14 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     }
   }
 
-  // Formats one row and adds the owner navigation annotation the formatter leaves out.
+  // Formats one row, adds the owner navigation annotation the formatter leaves out and shapes money columns.
   function formatRow(c, mapping, row, options) {
     const formatted = c.formatter.formatEntity(row, mapping, options);
     for (const field of OWNER_FIELDS) {
       const key = `_${field}_value`;
       if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined) formatted[`${key}${NAVIGATION}`] = field;
     }
-    return formatted;
+    return shapeMoney(mapping, formatted);
   }
 
   function rowOf(c, mapping, id) {
@@ -321,7 +345,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const columns = (info.columns ?? []).filter((col) => col.alias == null && !col.aliased && !col.aggregate).map((col) => col.attribute);
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.unshift(mapping.idColumn);
     const body = { "@odata.context": contextFor(c, `${mapping.entitySet}(${columns.join(",")})`) };
-    body.value = fetched.entities.map((row) => withoutNulls(keepAnnotations(c.formatter.formatFetchRow(row, info), c.include)));
+    body.value = fetched.entities.map((row) => withoutNulls(keepAnnotations(shapeMoney(mapping, c.formatter.formatFetchRow(row, info)), c.include)));
     if (fetched.more_records && c.include?.(MORE_RECORDS)) body[`@${MORE_RECORDS}`] = true;
     if (fetched.more_records && fetched.paging_cookie && c.include?.(PAGING_COOKIE)) {
       body[`@${PAGING_COOKIE}`] = webApiPagingCookie(fetched.paging_cookie, Number(info.page ?? 1));
@@ -725,7 +749,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
           store,
           identity: ctx.identity,
           metadata: metadataFields,
-          formatting: { ...store.state.settings, currencySymbol: store.state.settings?.currencySymbol ?? "$" },
+          formatting: { ...store.state.settings, currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? "$" },
         }),
       };
       return dispatch(c);

@@ -70,10 +70,12 @@ test("ensureSecurityModel seeds organization, root unit, roles, SYSTEM user and 
   assert.equal(t.businessunit[0].businessunitid, ROOT);
   assert.deepEqual(t.role.map((r) => r.name).sort(), ["Basic User", "System Administrator", "System Customizer"]);
   assert.ok(t.systemuser.some((u) => u.fullname === "SYSTEM" && u.systemuserid === uuidV5(ORG, "systemuser:SYSTEM")));
-  // widget: 8 user-owned rights; region: 6 org-owned rights; ten security tables: 6 each; plus prvActOnBehalfOfAnotherUser and prvBypassCustomPlugins.
-  assert.equal(t.privilege.length, 8 + 6 + 60 + 2);
-  // Admins: every privilege at Global (2 x 76). Basic User: 8 widget rights + Global Read on 11 org-owned tables.
-  assert.equal(t.roleprivileges.length, 152 + 8 + 11);
+  // widget: 8 user-owned rights; region: 6 org-owned rights; eleven security tables: 6 each; plus prvActOnBehalfOfAnotherUser and prvBypassCustomPlugins.
+  assert.equal(t.privilege.length, 8 + 6 + 66 + 2);
+  // Admins: every privilege at Global (2 x 82). Basic User: 8 widget rights + Global Read on 12 org-owned tables.
+  assert.equal(t.roleprivileges.length, 164 + 8 + 12);
+  assert.equal(t.transactioncurrency.length, 1);
+  assert.equal(t.transactioncurrency[0].currencysymbol, "$");
   assert.equal(store.state.mappings.systemuser.userConfigured, true);
   assert.equal(store.state.mappings.widget.userConfigured, undefined);
 });
@@ -208,7 +210,7 @@ test("retrieveUserPrivileges and principalAccess report depths and access flags"
   const theirs = { widgetid: "w-theirs", ownerid: lookupOf(admin) };
 
   const privs = p.retrieveUserPrivileges(basic.systemuserid);
-  assert.equal(privs.length, 19);
+  assert.equal(privs.length, 20);
   const read = privs.find((x) => x.PrivilegeName === "prvReadWidget");
   assert.equal(read.Depth, "Basic");
   assert.equal(read.BusinessUnitId, ROOT);
@@ -513,7 +515,7 @@ test("privilegeDeniedError builds the same message as the denial, with the count
   assert.equal(built.message, thrown.message);
   assert.equal(built.status, 403);
   assert.equal(built.details.innerCode, "0x80040220");
-  assert.ok(built.message.includes(`roleCount=1, privilegeCount=19, accessMode=0)`), built.message);
+  assert.ok(built.message.includes(`roleCount=1, privilegeCount=20, accessMode=0)`), built.message);
   assert.ok(built.message.includes(`(Id=${privilegeId(ORG, "prvCreateRegion")})`), built.message);
   assert.ok(built.message.includes(`context.Caller=${basic.systemuserid}.`), built.message);
 });
