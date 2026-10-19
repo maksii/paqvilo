@@ -105,6 +105,26 @@ Lense interactions use the live portal's backend and can change live data. Mirag
 | Check support and common questions | [Coverage](https://github.com/maksii/paqvilo/blob/main/docs/coverage.md), [FAQ](https://github.com/maksii/paqvilo/blob/main/docs/faq.md) |
 | Contribute | [Contributing](https://github.com/maksii/paqvilo/blob/main/CONTRIBUTING.md) |
 
+> **Microsoft notice:** Paqvilo is independent and is not affiliated with, sponsored or endorsed by Microsoft. Microsoft, Dataverse, Power Pages, Power Platform and other Microsoft names referenced here are trademarks of the Microsoft group of companies ([guidelines](https://www.microsoft.com/en-us/legal/intellectualproperty/trademarks)). Other trademarks belong to their respective owners.
+
 ## About and license
 
 Paqvilo combines PAC, Virtual and Local. Its original code uses [GNU AGPLv3](https://github.com/maksii/paqvilo/blob/main/LICENSE), with third-party notices in [NOTICE](https://github.com/maksii/paqvilo/blob/main/NOTICE). Your independent portal sources retain their own licensing.
+
+### License FAQ
+
+**Why AGPLv3?** To keep shared improvements open. Paqvilo is for local development and testing, not replacing Power Pages or Dataverse or bypassing Microsoft licensing. Users must comply with applicable Microsoft terms. AGPLv3 permits self-hosting, subject to the conditions below.
+
+**Will it stay free?** Yes. Paqvilo will remain free of charge for the community; its current baseline functionality and core features will not move behind a paywall.
+
+**Commercial, company or customer use?** Yes, free of charge, including internal development and paid customer services. Microsoft licensing costs remain separate.
+
+**Must I publish my portal or business data?** No, merely developing or testing independent portals with Paqvilo does not require this. Incorporating Paqvilo code can bring software under AGPLv3.
+
+**When do conditions apply?** Mainly when you:
+
+- **Distribute Paqvilo:** preserve its license, notices and recipients' rights; provide corresponding source as required. Modified versions must identify changes and remain under AGPLv3.
+- **Modify Paqvilo and let others use its interface or API remotely:** this includes colleagues or customers over LAN, VPN or internet. Prominently offer free access to the running version's complete corresponding source, including changes and required build/install/run scripts, e.g. through a **Source** download link. Waiting for requests is insufficient ([section 13](https://www.gnu.org/licenses/agpl-3.0.html#section13)). Solely personal local use does not trigger this requirement.
+- **Distribute a combined program incorporating Paqvilo code:** the covered work must use AGPLv3; independent tools used alongside it retain their licenses.
+
+Summary only; [LICENSE](LICENSE) governs. See the [GNU license FAQ](https://www.gnu.org/licenses/gpl-faq.en.html).
