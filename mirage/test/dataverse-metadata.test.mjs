@@ -416,3 +416,165 @@ test("csdl: OrganizationDetail, RolePrivilege, metadata changes and the role act
   assert.match(xml, /<Action Name="AddPrivilegesRole" IsBound="true">\s*<Parameter Name="entity" Type="mscrm\.role" Nullable="false" \/>\s*<Parameter Name="Privileges" Type="Collection\(mscrm\.RolePrivilege\)" \/>/);
   assert.ok(!mapped.csdl("https://org.example").includes("AddPrivilegesRole"), "the role action needs a role table");
 });
+
+test("uncast RelationshipDefinitions return base properties only; a cast returns the derived shape", () => {
+  const plain = mapped.relationships();
+  assert.ok(plain.length > 0);
+  for (const r of plain) {
+    assert.ok(!("ReferencedEntity" in r) && !("Entity1LogicalName" in r), "derived properties need a cast");
+    assert.ok("SchemaName" in r && "RelationshipType" in r);
+  }
+  const oneToMany = mapped.relationships({ cast: "Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata" });
+  assert.equal(oneToMany.length, 1);
+  assert.equal(oneToMany[0].ReferencedEntity, "widget");
+  const manyToMany = mapped.relationships({ cast: "#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata" });
+  assert.deepEqual(manyToMany.map((r) => r.IntersectEntityName), ["widget_tag"]);
+});
+
+test("attribute option sets: OptionSet and GlobalOptionSet sub-paths, and an unknown global set is absent", () => {
+  const local = solution.attributeOptionSet("gizmo", "gizmocolor", { select: "Options" });
+  assert.deepEqual(Object.keys(local).sort(), ["MetadataId", "Options"]);
+  assert.deepEqual(local.Options.map((o) => o.Label.UserLocalizedLabel.Label), ["Red", "Blue"]);
+  assert.equal(solution.attributeOptionSet("gizmo", "gizmoname"), null);
+  assert.equal(solution.attributeOptionSet("nope", "gizmocolor"), null);
+
+  const withGlobal = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({ widget: { ...MAPPINGS.widget, fields: { ...MAPPINGS.widget.fields, tone: { dataverseType: "picklist", globalOptionSet: "sample_tone" } } } }),
+    globalOptionSets: () => ({ sample_tone: { Name: "sample_tone", DisplayName: "Tone", Options: [{ Value: 727000000, Label: "Warm" }] } }),
+  });
+  const global = withGlobal.attributeOptionSet("widget", "tone", { global: true, select: "Options" });
+  assert.equal(global.Options[0].Label.UserLocalizedLabel.Label, "Warm");
+  assert.equal(withGlobal.attributeOptionSet("widget", "status", { global: true }), null, "a local-only picklist has no global set");
+});
+
+test("LabelLanguages keeps only the requested LocalizedLabels", () => {
+  const bilingual = createMetadataService({
+    organizationId: ORG,
+    schema: () => ({ ...SCHEMA, tables: { gizmo: { ...SCHEMA.tables.gizmo, labels: { 1033: "Gizmo", 1036: "Gadget" } } } }),
+    mappings: () => ({}),
+  });
+  const all = bilingual.entity("gizmo");
+  assert.deepEqual(all.DisplayName.LocalizedLabels.map((l) => l.LanguageCode), [1033, 1036]);
+  const fr = bilingual.entity("gizmo", { labelLanguages: "1036" });
+  assert.deepEqual(fr.DisplayName.LocalizedLabels.map((l) => [l.LanguageCode, l.Label]), [[1036, "Gadget"]]);
+  const attrs = bilingual.attributes("gizmo", { labelLanguages: 1033 });
+  assert.ok(attrs.every((a) => a.DisplayName.LocalizedLabels.every((l) => l.LanguageCode === 1033)));
+  assert.equal(bilingual.entity("gizmo").DisplayName.LocalizedLabels.length, 2, "no option means no filter");
+});
+
+test("file and image columns carry their type names, size and image flags", () => {
+  const media = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({
+      album: {
+        entitySet: "albums", idColumn: "albumid", nameColumn: "name",
+        fields: {
+          name: { dataverseType: "nvarchar" },
+          cover: { dataverseType: "image", columnMetadata: { type: "image", maxSizeInKB: 2048, canStoreFullImage: true } },
+          banner: { dataverseType: "image", label: "Banner" },
+          score: { dataverseType: "file", columnMetadata: { type: "file", maxSizeInKB: 512 } },
+        },
+      },
+    }),
+  });
+  const byName = Object.fromEntries(media.attributes("album").map((a) => [a.LogicalName, a]));
+  assert.equal(byName.score["@odata.type"], "#Microsoft.Dynamics.CRM.FileAttributeMetadata");
+  assert.equal(byName.score.AttributeTypeName.Value, "FileType");
+  assert.equal(byName.score.MaxSizeInKB, 512);
+  assert.equal(byName.cover["@odata.type"], "#Microsoft.Dynamics.CRM.ImageAttributeMetadata");
+  assert.equal(byName.cover.AttributeTypeName.Value, "ImageType");
+  assert.equal(byName.cover.MaxSizeInKB, 2048);
+  assert.equal(byName.cover.CanStoreFullImage, true);
+  assert.equal(byName.cover.IsPrimaryImage, false, "two image columns: no default primary");
+  assert.equal(byName.banner.MaxSizeInKB, 10240, "image default is 10 MB");
+  assert.equal(byName.banner.CanStoreFullImage, false);
+  assert.equal(byName.name.AttributeTypeName.Value, "StringType", "other columns keep their own type");
+  assert.equal(media.attributes("album", { cast: "Microsoft.Dynamics.CRM.ImageAttributeMetadata" }).length, 2);
+
+  const single = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({ album: { entitySet: "albums", idColumn: "albumid", fields: { photo: { dataverseType: "image" } } } }),
+  });
+  assert.equal(single.attributes("album").find((a) => a.LogicalName === "photo").IsPrimaryImage, true, "the only image column is primary");
+});
+
+test("IsSecured, IsAuditEnabled and dataverseMetadata overrides come from the mapping", () => {
+  const overridden = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({
+      vault: {
+        entitySet: "vaults", idColumn: "vaultid", nameColumn: "code", label: "Vault",
+        dataverseMetadata: { IsAuditEnabled: true, ObjectTypeCode: 10500, MetadataId: "ignored" },
+        fields: {
+          code: { dataverseType: "nvarchar", dataverseMetadata: { IsAuditEnabled: false } },
+          pin: { dataverseType: "nvarchar", columnMetadata: { isSecured: true } },
+          note: { dataverseType: "nvarchar", dataverseMetadata: { IsSecured: true } },
+        },
+      },
+    }),
+  });
+  const entity = overridden.entity("vault");
+  assert.deepEqual(entity.IsAuditEnabled, { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "isauditenabled" });
+  assert.equal(entity.ObjectTypeCode, 10500);
+  assert.equal(entity.MetadataId, overridden.metadataId("entity", "vault"), "identity keys are never overridden");
+  const byName = Object.fromEntries(overridden.attributes("vault").map((a) => [a.LogicalName, a]));
+  assert.equal(byName.pin.IsSecured, true);
+  assert.equal(byName.note.IsSecured, true);
+  assert.equal(byName.code.IsSecured, false);
+  assert.equal(byName.code.IsAuditEnabled.Value, false, "a column override wins");
+  assert.equal(byName.note.IsAuditEnabled.Value, false, "unset audit defaults to off");
+  assert.equal(entity.IsAuditEnabled.Value, true);
+});
+
+test("globalOptionSets also reads the Web API sets; the Solution set wins on a name clash", () => {
+  const stored = createMetadataService({
+    organizationId: ORG,
+    schema: () => ({ ...SCHEMA, optionSets: { sample_colors: { name: "sample_colors", displayLabels: { 1033: "Schema Colors" }, type: "picklist", options: [{ value: 1, labels: { 1033: "Solution Red" } }] } } }),
+    mappings: () => ({}),
+    globalOptionSets: () => ({
+      sample_colors: { Name: "sample_colors", DisplayName: "Colors", Options: [{ Value: 727000000, Label: "Red" }] },
+      sample_tone: { Name: "sample_tone", DisplayName: "Tone", OptionSetType: "Picklist", Options: [{ Value: 727000000, Label: "Warm" }] },
+      broken: { DisplayName: "No name" },
+    }),
+  });
+  assert.deepEqual(stored.globalOptionSets().map((s) => s.Name), ["sample_colors", "sample_tone"]);
+  assert.equal(stored.globalOptionSet("sample_colors").DisplayName.UserLocalizedLabel.Label, "Schema Colors");
+  const tone = stored.globalOptionSet("sample_tone");
+  assert.equal(tone.IsGlobal, true);
+  assert.equal(tone.DisplayName.UserLocalizedLabel.Label, "Tone");
+  assert.equal(tone.Options[0].Label.UserLocalizedLabel.Label, "Warm");
+  assert.equal(tone.MetadataId, stored.metadataId("optionset", "sample_tone"));
+  assert.equal(stored.globalOptionSet("broken"), null);
+});
+
+test("RetrieveEntity builder: EntityFilters choose the collections, RetrieveAttribute by name or MetadataId", () => {
+  const entityOnly = mapped.retrieveEntityResponse("widget", undefined);
+  assert.equal(entityOnly.EntityMetadata.LogicalName, "widget");
+  assert.equal(entityOnly.EntityMetadata["@odata.type"], "#Microsoft.Dynamics.CRM.EntityMetadata");
+  assert.equal("Attributes" in entityOnly.EntityMetadata, false);
+  assert.equal("OneToManyRelationships" in entityOnly.EntityMetadata, false);
+
+  const attrs = mapped.retrieveEntityResponse(`LogicalName='widget'`, "Attributes").EntityMetadata;
+  assert.ok(attrs.Attributes.some((a) => a.LogicalName === "price"));
+  assert.equal("OneToManyRelationships" in attrs, false);
+
+  const everything = mapped.retrieveEntityResponse(mapped.metadataId("entity", "widget"), "Microsoft.Dynamics.CRM.EntityFilters'All'").EntityMetadata;
+  assert.ok(everything.Attributes.length > 0 && everything.OneToManyRelationships.length === 1 && everything.ManyToManyRelationships.length === 1);
+  assert.equal(mapped.retrieveEntityResponse(mapped.metadataId("entity", "widget"), "2").EntityMetadata.Attributes.length, everything.Attributes.length);
+  assert.equal(mapped.retrieveEntityResponse("nope", "All"), null);
+  assert.throws(() => mapped.retrieveEntityResponse("widget", "Bogus"), (error) => error.code === "UnsupportedQuery");
+
+  const price = mapped.retrieveAttributeResponse("widget", "price");
+  assert.equal(price.AttributeMetadata.LogicalName, "price");
+  assert.equal(price.AttributeMetadata["@odata.type"], "#Microsoft.Dynamics.CRM.MoneyAttributeMetadata");
+  const byId = mapped.retrieveAttributeResponse(null, mapped.metadataId("attribute", "widget", "price"));
+  assert.equal(byId.AttributeMetadata.LogicalName, "price");
+  assert.equal(mapped.retrieveAttributeResponse(null, "price"), null, "a name needs its table");
+  assert.equal(mapped.retrieveAttributeResponse("widget", "nope"), null);
+  assert.equal(mapped.retrieveAttributeResponse("widget", "price", { labelLanguages: 1036 }).AttributeMetadata.DisplayName.LocalizedLabels.length, 0);
+});

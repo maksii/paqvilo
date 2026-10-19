@@ -87,10 +87,50 @@ test('tolerates a part without Content-Type, absolute URLs and LF-only bodies', 
   assert.equal(parts[0].body, '{\n"name": "A"\n}');
 });
 
-test('rejects a missing or unmatched boundary with 0x80048d19', () => {
+test('rejects a missing boundary with 0x80048d19', () => {
   const check = (error) => error.status === 400 && error.code === 'InvalidBatch' && error.details.innerCode === '0x80048d19';
-  assert.throws(() => parseBatch('application/json', SAMPLE), check);
-  assert.throws(() => parseBatch('multipart/mixed; boundary=other', SAMPLE), check);
+  assert.throws(() => parseBatch('multipart/mixed', SAMPLE), check);
+});
+
+test('a JSON batch is rejected with 0x80048d19 and the payload message', () => {
+  assert.throws(() => parseBatch('application/json', SAMPLE), {
+    status: 400,
+    code: 'InvalidBatch',
+    details: { innerCode: '0x80048d19' },
+    message: /^Error identified in Payload provided by the user for Entity :''.*multipart\/mixed/,
+  });
+});
+
+test('parts for an unmatched boundary are skipped and the batch answers 200 with nothing run', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const parsed = parseBatch('multipart/mixed; boundary=other', SAMPLE);
+  assert.deepEqual(parsed.parts, []);
+  const res = await run(parsed, dispatch);
+  assert.equal(res.status, 200);
+  assert.equal(calls.length, 0);
+});
+
+test('an inner URL over 65,536 characters answers 400 0x80060888 for that part and runs nothing', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const prefix = '/api/data/v9.2/widgets?$filter=';
+  const exact = prefix + 'a'.repeat(65536 - prefix.length);
+  const tooLong = prefix + 'a'.repeat(65537 - prefix.length);
+  assert.equal(exact.length, 65536);
+  const res = await run(parseBatch(ct, batchOf([part(B, undefined, httpReq('GET', tooLong))])), dispatch);
+  assert.equal(res.status, 400);
+  assert.match(res.body, /0x80060888/);
+  assert.match(res.body, /Invalid URI: The Uri string is too long\./);
+  assert.equal(calls.length, 0);
+  const ok = await run(parseBatch(ct, batchOf([part(B, undefined, httpReq('GET', exact))])), dispatch);
+  assert.equal(ok.status, 200);
+  assert.equal(calls.length, 1);
+});
+
+test('a $batch request inside a batch is rejected with 400', () => {
+  for (const url of ['/api/data/v9.2/$batch', '$batch?x=1']) {
+    assert.throws(() => parseBatch(ct, batchOf([part(B, undefined, httpReq('POST', url, '{}'))])), { status: 400, message: 'Nested $batch requests are not allowed.' });
+  }
+  assert.equal(parseBatch(ct, batchOf([part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets?$filter=x/$batch'))])).parts[0].method, 'GET');
 });
 
 test('rejects LF-only framing as an unreadable stream', () => {

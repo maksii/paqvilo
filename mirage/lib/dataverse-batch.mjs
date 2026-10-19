@@ -9,6 +9,10 @@ const JSON_TYPE = "application/json; odata.metadata=minimal; odata.streaming=tru
 const FRAME_CODE = "0x80048d19";
 const REFERENCE_CODE = "0x80040203";
 const FRAME_ERROR = "Stream was not readable.";
+// unverified: wording after "InnerException" is not confirmed; the code 0x80048d19 and the prefix are from the task brief.
+const JSON_BATCH = "Error identified in Payload provided by the user for Entity :''  ---->  InnerException : Batch content must be multipart/mixed.";
+const MAX_URL = 65536; // unverified: whether the limit counts the path and query only (as here) or the absolute URL
+const URL_CODE = "0x80060888";
 const ROLLBACK = Symbol("rollback");
 // Matches "name@odata.bind": "$1" and "name@odata.id": "$1" values; group 3 is the Content-ID.
 const REFERENCE = /("[^"\n]*@odata\.(bind|id)"\s*:\s*)"\$([^"/\s]+)"/g;
@@ -21,13 +25,19 @@ function invalid(message) {
 
 function boundaryOf(contentType) {
   const match = /^multipart\/mixed\s*;\s*boundary=(?:"([^"]+)"|([^;\s"]+))/i.exec(contentType ?? "");
-  if (!match) throw invalid("Batch boundary is missing or invalid.");
+  if (!match) throw invalid(/^application\/json/i.test(contentType ?? "") ? JSON_BATCH : "Batch boundary is missing or invalid.");
   return match[1] ?? match[2];
 }
 
 // Splits on CRLF-delimited boundary lines and returns the text after each delimiter line.
+// Docs: only payload items that use the batch identifier are executed; a batch with none succeeds with nothing run.
 function sections(text, boundary) {
-  const chunks = `\r\n${text}`.split(`\r\n--${boundary}`);
+  const framed = `\r\n${text}`;
+  const chunks = framed.split(`\r\n--${boundary}`);
+  if (chunks.length === 1) {
+    if (framed.includes("\r\n--")) return []; // parts for another boundary: skipped, batch answers 200
+    throw invalid(FRAME_ERROR); // no CRLF framing at all
+  }
   const out = [];
   for (const chunk of chunks.slice(1)) {
     const eol = chunk.indexOf("\r\n");
@@ -76,6 +86,8 @@ function parseSection(section, inChangeset) {
   }
   const request = httpRequest(mime.rest);
   if (inChangeset && request.method === "GET") throw invalid("GET requests are not allowed inside change sets.");
+  // unverified: message and whole-batch (not per-part) answer; docs say batches cannot contain other batch requests.
+  if (/(^|\/)\$batch$/i.test(request.url.split("?")[0])) throw invalid("Nested $batch requests are not allowed.");
   const contentId = mime.headers["content-id"];
   return { kind: "request", ...(contentId ? { contentId } : {}), ...request };
 }
@@ -105,6 +117,9 @@ async function execute(request, { dispatch, origin }, refs) {
     const target = refs.get(head[1]);
     if (!target) return badReference(head[1]);
     url = target + url.slice(head[0].length);
+  }
+  if (url.length > MAX_URL) {
+    return { status: 400, body: { error: { code: URL_CODE, message: "Invalid URI: The Uri string is too long." } } };
   }
   let body = request.body;
   if (body !== undefined) {

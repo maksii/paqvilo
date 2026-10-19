@@ -35,7 +35,17 @@ const TYPES = {
   primarykey: ["Uniqueidentifier", "UniqueIdentifier", "UniqueidentifierType"],
   uniqueidentifier: ["Uniqueidentifier", "UniqueIdentifier", "UniqueidentifierType"],
   entityname: ["EntityName", "EntityName", "EntityNameType"],
+  // File and image columns: FileAttributeMetadata / ImageAttributeMetadata. attribute-metadata.mjs is portal-visible, so they live here.
+  file: ["File", "File", "FileType"], image: ["Image", "Image", "ImageType"],
 };
+// Columns built from the compact shape even when exported (no file/image branch in attribute-metadata.mjs).
+const COMPACT_TYPES = new Set(["file", "image"]);
+// EntityFilters flags (RetrieveEntity): Default and Entity are 1, All is 15.
+const ENTITY_FILTERS = { default: 1, entity: 1, attributes: 2, privileges: 4, relationships: 8, all: 15 };
+// RelationshipMetadataBase properties: what an uncast RelationshipDefinitions query returns. // unverified: IsCustomRelationship and IsManaged are assumed base properties.
+const RELATIONSHIP_BASE = ["MetadataId", "HasChanged", "SchemaName", "RelationshipType", "IsCustomRelationship", "IsManaged"];
+// Shape keys a mapping's dataverseMetadata may not replace.
+const OVERRIDE_SKIP = new Set(["@odata.type", "MetadataId", "LogicalName", "EntityLogicalName", "AttributeType", "AttributeTypeName", "HasChanged", "IsAuditEnabled", "IsSecured"]);
 const REQUIRED = { none: "None", systemrequired: "SystemRequired", applicationrequired: "ApplicationRequired", required: "ApplicationRequired" };
 const READ_ONLY = new Set(["createdon", "modifiedon", "createdby", "modifiedby", "versionnumber"]);
 // Columns every standard table has (solution exports omit them); owner columns only for user-owned tables.
@@ -112,6 +122,43 @@ function labelBlock(labels, fallback, lcid) {
   const label = ([code, text]) => ({ Label: text, LanguageCode: code, IsManaged: false, MetadataId: null, HasChanged: null });
   const user = entries.find(([code]) => code === lcid) ?? entries[0];
   return { LocalizedLabels: entries.map(label), UserLocalizedLabel: user ? label(user) : null };
+}
+
+// LabelLanguages=<lcid,...>: keeps only those LocalizedLabels entries, anywhere in the shape. No languages = unchanged.
+function limitLabels(value, languages) {
+  const wanted = listOf(languages).map(Number);
+  if (!wanted.length) return value;
+  const walk = (node) => {
+    if (Array.isArray(node)) return node.map(walk);
+    if (node === null || typeof node !== "object") return node;
+    const out = {};
+    for (const [key, child] of Object.entries(node)) {
+      out[key] = key === "LocalizedLabels" && Array.isArray(child) ? child.filter((label) => wanted.includes(label.LanguageCode)) : walk(child);
+    }
+    return out;
+  };
+  return walk(value);
+}
+
+// EntityFilters: a number, a flag name list ("Attributes,Relationships") or the enum form Microsoft.Dynamics.CRM.EntityFilters'All'.
+function entityFilterBits(value) {
+  if (value == null || value === "") return ENTITY_FILTERS.entity;
+  if (/^\d+$/.test(String(value))) return Number(value);
+  let bits = 0;
+  for (const part of String(value).split(/[,|+\s]+/).filter(Boolean)) {
+    const bit = ENTITY_FILTERS[part.replace(/^Microsoft\.Dynamics\.CRM\.EntityFilters/i, "").replace(/'/g, "").toLowerCase()];
+    if (!bit) throw unsupported(`Unknown EntityFilters value '${part}'.`);
+    bits |= bit;
+  }
+  return bits;
+}
+
+const auditFlag = (value, canBeChanged, name) => ({ Value: Boolean(value), CanBeChanged: canBeChanged, ManagedPropertyLogicalName: name });
+
+// Mapping dataverseMetadata: a key the shape already has takes the mapping's value (identity keys excluded).
+function withOverrides(shape, overrides) {
+  for (const [key, value] of Object.entries(overrides ?? {})) if (!OVERRIDE_SKIP.has(key) && Object.hasOwn(shape, key)) shape[key] = value;
+  return shape;
 }
 
 const optionOf = (o, lcid) => ({
@@ -472,7 +519,7 @@ const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" Incl
 <FunctionImport Name="RetrieveMetadataChanges" Function="mscrm.RetrieveMetadataChanges" IncludeInServiceDocument="false" />
 <ActionImport Name="GrantAccess" Action="mscrm.GrantAccess" />`;
 
-export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables }) {
+export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables, globalOptionSets }) {
   const read = (source) => (typeof source === "function" ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
   const mappingRoot = () => read(mappings) ?? {};
@@ -522,7 +569,8 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   }
 
   function entityOf(src) {
-    return {
+    const dm = src.m?.dataverseMetadata ?? {};
+    const shape = {
       MetadataId: metadataIdOf("entity", src.logical),
       LogicalName: src.logical,
       SchemaName: src.s?.schemaName ?? capitalize(src.logical),
@@ -538,10 +586,13 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       IsValidForAdvancedFind: true,
       IsPrivate: false,
       HasChanged: null,
-      DisplayName: labelBlock(src.s?.labels, src.m?.label ?? capitalize(src.logical), lcid),
+      // unverified: dataverseMetadata.labels (written by 1.9) is read as the display-name labels when the schema has none.
+      DisplayName: labelBlock(src.s?.labels ?? dm.labels, src.m?.label ?? capitalize(src.logical), lcid),
       DisplayCollectionName: labelBlock(src.s?.collectionLabels, src.m?.collectionLabel ?? capitalize(src.entitySet), lcid),
       Description: labelBlock(null, null, lcid),
+      IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? false, true, "isauditenabled"), // unverified: table default when the mapping says nothing
     };
+    return withOverrides(shape, dm);
   }
 
   function synthesize(src, name, def, { attrType, typeName, type, id }) {
@@ -607,9 +658,19 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     // ownerid is the owner lookup whatever type the export or mapping gives it.
     const type = id ? "primarykey" : name === "ownerid" ? "owner" : String(def.columnMetadata?.type ?? def.dataverseType ?? "nvarchar").toLowerCase();
     const [attrType, stem, typeName] = TYPES[type] ?? TYPES.nvarchar;
-    const exported = def.columnMetadata ? attributeMetadata(src.logical, name, def, { primaryName: src.primaryName, lcid }) : null;
-    const meta = exported ?? synthesize(src, name, def, { attrType, typeName, type, id });
-    return Object.assign(meta, {
+    const facts = def.columnMetadata ?? {};
+    const compact = COMPACT_TYPES.has(type);
+    const exported = def.columnMetadata && !compact ? attributeMetadata(src.logical, name, def, { primaryName: src.primaryName, lcid }) : null;
+    const meta = exported ?? synthesize(src, name, compact ? { ...def, labels: def.labels ?? facts.labels, requiredLevel: def.requiredLevel ?? facts.requiredLevel } : def, { attrType, typeName, type, id });
+    const custom = PREFIX.test(name);
+    const dm = def.dataverseMetadata ?? {};
+    // unverified: file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are assumed, not documented.
+    if (type === "file") meta.MaxSizeInKB = facts.maxSizeInKB ?? null;
+    if (type === "image") Object.assign(meta, { MaxSizeInKB: facts.maxSizeInKB ?? 10240, CanStoreFullImage: facts.canStoreFullImage ?? false, IsPrimaryImage: facts.isPrimaryImage ?? null });
+    meta.IsSecured = Boolean(dm.IsSecured ?? facts.isSecured ?? meta.IsSecured ?? false);
+    meta.IsAuditEnabled = { CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyauditsettings", ...meta.IsAuditEnabled, Value: Boolean(dm.IsAuditEnabled ?? meta.IsAuditEnabled?.Value ?? false) };
+    if (def.globalOptionSet) meta.GlobalOptionSet = globalNamed(def.globalOptionSet);
+    return Object.assign(withOverrides(meta, dm), {
       "@odata.type": `#Microsoft.Dynamics.CRM.${stem}AttributeMetadata`,
       MetadataId: metadataIdOf("attribute", src.logical, name),
       AttributeType: attrType,
@@ -619,7 +680,18 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   function attributesOf(src) {
     const defaults = src.isVirtual ? {} : { ...SYSTEM_COLUMNS, ...(src.ownership === "user" ? OWNER_COLUMNS : {}) };
     const all = { [src.idColumn]: { dataverseType: "primarykey" }, ...defaults, ...src.fields };
-    return Object.entries(all).map(([name, def]) => attributeOf(src, name, def));
+    const list = Object.entries(all).map(([name, def]) => attributeOf(src, name, def));
+    // Without an explicit value, the only image column of a table is its primary image.
+    const images = list.filter((a) => a["@odata.type"] === "#Microsoft.Dynamics.CRM.ImageAttributeMetadata");
+    for (const image of images) image.IsPrimaryImage ??= images.length === 1;
+    return list;
+  }
+
+  // One column by logical name or MetadataId text; null when the table has none.
+  function attributeIn(src, key) {
+    const text = String(key ?? "").trim();
+    const named = keyName(text) ?? (GUID.test(text) ? null : text.toLowerCase());
+    return attributesOf(src).find((a) => (named ? a.LogicalName === named : String(a.MetadataId).toLowerCase() === text.toLowerCase())) ?? null;
   }
 
   function keysOf(src) {
@@ -739,7 +811,33 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     HasChanged: null,
   });
 
-  const globalSets = () => Object.values(schemaRoot()?.optionSets ?? {}).map(globalOptionSetOf);
+  // Solution global sets first, then the sets created through the Web API (state.dataverse.globalOptionSets) that the schema does not name.
+  // unverified: stored shape assumed as 1.10 writes it: Name, DisplayName/Description (string or label block), OptionSetType, Options [{ Value, Label }].
+  const storedSetOf = (set) => {
+    const block = (value, fallback) => (value && typeof value === "object" ? value : labelBlock(null, value ?? fallback, lcid));
+    return {
+      "@odata.type": "#Microsoft.Dynamics.CRM.OptionSetMetadata",
+      MetadataId: set.MetadataId ?? metadataIdOf("optionset", set.Name),
+      Name: set.Name,
+      DisplayName: block(set.DisplayName, set.Name),
+      Description: block(set.Description, null),
+      OptionSetType: set.OptionSetType ?? "Picklist",
+      IsGlobal: true,
+      IsCustomOptionSet: true,
+      IsManaged: false,
+      Options: (set.Options ?? []).map((o) => (o.Label && typeof o.Label === "object" ? o : optionOf({ value: o.Value, label: o.Label ?? String(o.Value) }, lcid))),
+      HasChanged: null,
+    };
+  };
+  const globalSets = () => {
+    const schemaSets = Object.values(schemaRoot()?.optionSets ?? {}).map(globalOptionSetOf);
+    const names = new Set(schemaSets.map((set) => set.Name.toLowerCase()));
+    const stored = Object.values(read(globalOptionSets) ?? {})
+      .filter((set) => set?.Name && !names.has(String(set.Name).toLowerCase()))
+      .map(storedSetOf);
+    return [...schemaSets, ...stored];
+  };
+  const globalNamed = (name) => globalSets().find((set) => set.Name.toLowerCase() === String(name).toLowerCase()) ?? null;
   function selectMetadata(item, select) {
     const names = listOf(select);
     if (!names.length) return item;
@@ -870,22 +968,53 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       return logicalNames().map((name) => entityOf(source(name)));
     },
 
-    entity(key, { expand } = {}) {
+    entity(key, { expand, labelLanguages } = {}) {
       const src = sourceFor(key);
       if (!src) return null;
       const out = entityOf(src);
       for (const nav of listOf(expand)) if (EXPANSIONS[nav]) out[nav] = EXPANSIONS[nav](src);
-      return out;
+      return limitLabels(out, labelLanguages);
     },
 
-    attributes(name, { cast, key, select, expand } = {}) {
+    attributes(name, { cast, key, select, expand, labelLanguages } = {}) {
       const src = sourceFor(name);
       if (!src) return null;
       let list = attributesOf(src);
       if (cast) list = list.filter((a) => a["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`);
       if (key) list = list.filter((a) => matchKey(a, key));
       const keep = listOf(select).length ? [...listOf(select), ...listOf(expand)] : null;
-      return keep ? list.map((a) => selectMetadata(a, keep)) : list;
+      return limitLabels(keep ? list.map((a) => selectMetadata(a, keep)) : list, labelLanguages);
+    },
+
+    // Attributes(...)/Microsoft.Dynamics.CRM.<Type>AttributeMetadata/OptionSet (or /GlobalOptionSet) → OptionSetMetadata; null when absent.
+    attributeOptionSet(entityKey, attributeKey, { global = false, select, labelLanguages } = {}) {
+      const src = sourceFor(entityKey);
+      const attribute = src && attributeIn(src, attributeKey);
+      const set = attribute ? (global ? attribute.GlobalOptionSet : attribute.OptionSet) : null;
+      return set ? limitLabels(selectMetadata(set, select), labelLanguages) : null;
+    },
+
+    // RetrieveEntity(EntityFilters=@f,LogicalName=@n,MetadataId=@m,RetrieveAsIfPublished=@r) → { EntityMetadata }; key is a name, Name= text or MetadataId.
+    // The filter bits pick the collections: Attributes (+ Keys), Relationships. // unverified: Keys under the Attributes bit.
+    // Privileges (bit 4) are not modelled and are left out.
+    retrieveEntityResponse(key, entityFilters, { labelLanguages } = {}) {
+      const src = sourceFor(key);
+      if (!src) return null;
+      const bits = entityFilterBits(entityFilters);
+      const out = { "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata", ...entityOf(src) };
+      if (bits & 2) Object.assign(out, { Attributes: attributesOf(src), Keys: keysOf(src) });
+      if (bits & 8) Object.assign(out, { OneToManyRelationships: oneToManyOf(src.logical), ManyToOneRelationships: manyToOneOf(src.logical), ManyToManyRelationships: manyToManyOf(src.logical) });
+      return { EntityMetadata: limitLabels(out, labelLanguages) };
+    },
+
+    // RetrieveAttribute(EntityLogicalName=@e,LogicalName=@n,MetadataId=@m,...) → { AttributeMetadata }; without an entity only a MetadataId can resolve.
+    retrieveAttributeResponse(entityKey, attributeKey, { labelLanguages } = {}) {
+      const sources = entityKey != null ? [sourceFor(entityKey)] : GUID.test(String(attributeKey ?? "")) ? logicalNames().map((n) => source(n)) : [];
+      for (const src of sources) {
+        const hit = src && attributeIn(src, attributeKey);
+        if (hit) return { AttributeMetadata: limitLabels(hit, labelLanguages) };
+      }
+      return null;
     },
 
     keys(name) {
@@ -905,14 +1034,17 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
 
     relationships({ cast } = {}) {
       const all = relationshipRecords().map(relationshipShape);
-      return cast ? all.filter((r) => r["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`) : all;
+      if (cast) return all.filter((r) => r["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`);
+      // Uncast RelationshipDefinitions are typed RelationshipMetadataBase: only its properties.
+      return all.map((r) => Object.fromEntries(RELATIONSHIP_BASE.filter((k) => k in r).map((k) => [k, r[k]])));
     },
 
-    globalOptionSets: () => globalSets(),
+    globalOptionSets: ({ labelLanguages } = {}) => limitLabels(globalSets(), labelLanguages),
 
-    globalOptionSet(name) {
+    globalOptionSet(name, { labelLanguages } = {}) {
       const wanted = String(name).toLowerCase();
-      return globalSets().find((set) => set.Name.toLowerCase() === wanted) ?? null;
+      const hit = globalSets().find((set) => set.Name.toLowerCase() === wanted) ?? null;
+      return limitLabels(hit, labelLanguages);
     },
 
     serviceDocument(origin, version) {
@@ -936,13 +1068,13 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       return csdlDocument(annotations);
     },
 
-    retrieveMetadataChanges(query = null, { clientVersionStamp = null } = {}) {
+    retrieveMetadataChanges(query = null, { clientVersionStamp = null, labelLanguages = null } = {}) {
       const serverVersionStamp = stampOf();
       const unchanged = clientVersionStamp != null && String(clientVersionStamp) === serverVersionStamp;
       return {
         ServerVersionStamp: serverVersionStamp,
         DeletedMetadata: { Count: 0, IsReadOnly: false, Keys: [], Values: [] },
-        EntityMetadata: unchanged ? [] : logicalNames().map((name) => changeOf(name, query)).filter(Boolean),
+        EntityMetadata: unchanged ? [] : limitLabels(logicalNames().map((name) => changeOf(name, query)).filter(Boolean), labelLanguages),
       };
     },
   };
