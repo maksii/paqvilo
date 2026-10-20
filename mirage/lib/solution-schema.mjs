@@ -1201,7 +1201,7 @@ export function fieldDefinition(schema, tableName, attribute, { lcid = schema.lc
   const defaultValue =
     type === "bit" && /^[01]$/.test(appDefault ?? "")
       ? appDefault === "1"
-      : ["picklist", "multiselectpicklist"].includes(type) && /^-?\d+$/.test(appDefault ?? "") && appDefault !== "-1"
+      : ["picklist", "multiselectpicklist", "state", "status"].includes(type) && /^-?\d+$/.test(appDefault ?? "") && appDefault !== "-1"
         ? Number(appDefault)
         : undefined;
   const optionSetType = attribute.optionSet

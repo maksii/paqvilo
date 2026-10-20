@@ -175,12 +175,14 @@ test('model-driven shell supports solution navigation, editable grids and local 
   await page.getByRole('searchbox', { name: 'Filter by keyword' }).fill('');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   await page.getByRole('button', { name: 'Edit columns' }).click();
-  await page.getByRole('checkbox', { name: 'Quantity', exact: true }).uncheck();
+  await page.getByRole('button', { name: 'Quantity column options', exact: true }).click();
+  await page.getByRole('menuitem', { name: 'Remove', exact: true }).click();
   await page.getByRole('button', { name: 'Apply', exact: true }).click();
   await page.waitForFunction(() => !document.querySelector('thead')?.textContent.includes('Quantity'));
   await page.getByRole('button', { name: 'Edit filters' }).click();
   await page.getByRole('button', { name: 'Add condition' }).click();
-  await page.getByLabel('Filter 1 column').selectOption('x_quantity'); await page.getByLabel('Filter 1 operator').selectOption('ge'); await page.getByLabel('Filter 1 value').fill('5');
+  await page.getByRole('button', { name: 'Filter 1 column', exact: true }).click(); await page.getByRole('menuitemradio', { name: 'Quantity', exact: true }).click();
+  await page.getByRole('button', { name: 'Filter 1 operator', exact: true }).click(); await page.getByRole('menuitemradio', { name: 'Greater than or equal', exact: true }).click(); await page.getByLabel('Filter 1 value').fill('5');
   await page.getByRole('button', { name: 'Apply', exact: true }).click();
   await page.waitForFunction(() => document.querySelector('tbody')?.textContent.includes('Silver') && !document.querySelector('tbody')?.textContent.includes('Copper'));
   await page.getByRole('button', { name: 'Clear filters' }).click();

@@ -1,0 +1,43 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+
+test('multiselect search preserves typed terms and keyboard selection cannot toggle hidden choices', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.goto(origin + '/main.aspx');
+  await page.evaluate(async () => {
+    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    window.control = renderControl({ name: 'x_tags', label: 'Tags', type: 'multiselect', options: [{ value: 1, label: 'Red' }, { value: 2, label: 'Blue' }, { value: 3, label: 'Black' }] }, [1]);
+    document.body.replaceChildren(control.element);
+  });
+  const input = page.getByRole('combobox', { name: 'Tags', exact: true });
+  await input.focus(); await page.keyboard.press('Control+A'); await page.keyboard.type('B');
+  assert.equal(await input.inputValue(), 'B');
+  assert.deepEqual(await page.getByRole('option').allTextContents(), ['Select all3 items', 'Blue', 'Black']);
+  await input.fill('Blue');
+  const active = await input.getAttribute('aria-activedescendant');
+  assert.equal(await page.locator(`[id="${active}"]`).getAttribute('aria-label'), 'Blue');
+  await input.press('ArrowDown');
+  assert.equal(await input.inputValue(), 'Blue');
+  await input.press('Enter');
+  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2], 'keyboard selection must select the visible match while preserving Red');
+  assert.equal(await input.inputValue(), 'Blue');
+  await input.fill('no matches');
+  assert.equal(await input.getAttribute('aria-activedescendant'), null);
+  await input.press('Enter');
+  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2]);
+  await input.press('Escape');
+  assert.equal(await input.inputValue(), 'Red; Blue');
+  assert.equal(await input.getAttribute('aria-activedescendant'), null);
+  await input.click(); await input.fill('Black');
+  await page.getByRole('option', { name: 'Black', exact: true }).click();
+  assert.deepEqual(await page.evaluate(() => control.read()), [1, 2, 3]);
+  await page.evaluate(() => control.setDisabled(true));
+  assert.equal(await input.getAttribute('aria-expanded'), 'false');
+  assert.equal(await input.getAttribute('aria-activedescendant'), null);
+  assert.equal(await input.isDisabled(), true);
+});

@@ -1,0 +1,133 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+import { chromium } from 'playwright-core';
+import { browserLaunchOptions } from '../lib/browser-launch.mjs';
+import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
+
+async function fixture(t, { timezoneId = 'America/New_York' } = {}) {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage({ timezoneId, viewport: { width: 1200, height: 900 } }); page.setDefaultTimeout(5000);
+  await page.goto(origin + '/main.aspx');
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  await page.evaluate(async () => {
+    const { renderControl } = await import('/_apps/assets/controls.mjs');
+    document.body.replaceChildren(); const form = document.createElement('form'); form.style.width = '900px'; form.style.margin = '80px 40px';
+    window.fields = {}; window.submits = 0; form.addEventListener('submit', event => { event.preventDefault(); submits++; });
+    for (const [name, label, behavior, value] of [['due', 'Due date', 'DateOnly', '2024-01-31'], ['independent', 'Independent', 'TimeZoneIndependent', '2026-06-15T14:30:00Z'], ['local', 'Local', 'UserLocal', '2026-06-15T14:30:00Z']]) {
+      const field = { name, label, type: 'date', dateTimeBehavior: behavior, required: name === 'due' };
+      const control = renderControl(field, value), wrapper = document.createElement('div'); wrapper.className = 'field'; wrapper.style.marginBottom = '20px';
+      const caption = document.createElement('label'); caption.htmlFor = `field-${name}`; caption.textContent = label; wrapper.append(caption, control.element); form.append(wrapper); fields[name] = control;
+    }
+    const outside = document.createElement('button'); outside.type = 'button'; outside.textContent = 'Outside'; form.append(outside); document.body.append(form);
+  });
+  return page;
+}
+
+test('calendar matches the observed two-pane geometry and selects leap days without submitting the form', async t => {
+  const page = await fixture(t);
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
+  const calendar = page.getByRole('dialog', { name: 'Calendar', exact: true });
+  const geometry = await calendar.evaluate(element => { const rect = element.getBoundingClientRect(), style = getComputedStyle(element); return { width: rect.width, height: rect.height, radius: style.borderRadius, background: style.backgroundColor, shadow: style.boxShadow }; });
+  assert.deepEqual(geometry, { width: 442, height: 254, radius: '4px', background: 'rgb(255, 255, 255)', shadow: 'rgba(0, 0, 0, 0.12) 0px 0px 2px 0px, rgba(0, 0, 0, 0.14) 0px 8px 16px 0px' });
+  assert.equal(await calendar.getByRole('button', { name: 'January', exact: true }).evaluate(node => node.getBoundingClientRect().width), 40);
+  await calendar.getByRole('button', { name: 'Navigate to next month February', exact: true }).click();
+  const leap = calendar.getByRole('button', { name: '29, February, 2024', exact: true });
+  assert.deepEqual(await leap.evaluate(node => [node.getBoundingClientRect().width, node.getBoundingClientRect().height, getComputedStyle(node).fontSize]), [24, 24, '12px']);
+  await leap.click();
+  assert.equal(await page.getByRole('combobox', { name: 'Due date', exact: true }).inputValue(), '2/29/2024');
+  assert.equal(await page.evaluate(() => fields.due.read()), '2024-02-29');
+  assert.equal(await page.evaluate(() => submits), 0);
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Navigate to previous year 2023', exact: true }).click();
+  await calendar.getByRole('button', { name: 'February', exact: true }).click();
+  assert.equal(await calendar.getByRole('button', { name: '29, February, 2023', exact: true }).count(), 0);
+  await calendar.getByRole('button', { name: '28, February, 2023', exact: true }).click();
+  assert.equal(await page.evaluate(() => fields.due.read()), '2023-02-28');
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Month picker for year 2023, select to switch to year picker', exact: true }).click();
+  await calendar.getByRole('button', { name: 'Year picker 2023 - 2034, select to switch to month picker', exact: true }).waitFor();
+  await calendar.getByRole('button', { name: 'Navigate to next year range 2035 - 2046', exact: true }).click();
+  await calendar.getByRole('button', { name: '2036', exact: true }).click(); await calendar.getByRole('button', { name: 'February', exact: true }).click();
+  await calendar.getByRole('button', { name: '29, February, 2036', exact: true }).click();
+  assert.equal(await page.evaluate(() => fields.due.read()), '2036-02-29');
+});
+
+test('calendar keyboard month/year navigation clamps dates and Escape restores focus without changes', async t => {
+  const page = await fixture(t);
+  const input = page.getByRole('combobox', { name: 'Due date', exact: true });
+  await input.focus(); await page.keyboard.press('ArrowDown');
+  await page.keyboard.press('PageDown');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.date), '2024-02-29');
+  await page.keyboard.press('Shift+PageDown');
+  assert.equal(await page.evaluate(() => document.activeElement.dataset.date), '2025-02-28');
+  await page.keyboard.press('Home'); assert.equal(await page.evaluate(() => document.activeElement.dataset.date), '2025-02-23');
+  await page.keyboard.press('End'); assert.equal(await page.evaluate(() => document.activeElement.dataset.date), '2025-03-01');
+  await page.keyboard.press('Escape');
+  assert.equal(await input.evaluate(node => node === document.activeElement), true);
+  assert.equal(await input.getAttribute('aria-expanded'), 'false'); assert.equal(await page.evaluate(() => fields.due.read()), '2024-01-31');
+  await page.keyboard.press('Enter'); assert.equal(await page.evaluate(() => submits), 0);
+});
+
+test('calendar validates typed dates, clears optional values and rejects disabled or disposed selections', async t => {
+  const page = await fixture(t);
+  const input = page.getByRole('combobox', { name: 'Due date', exact: true });
+  await input.fill('2/29/2023'); await page.getByRole('button', { name: 'Outside', exact: true }).click();
+  assert.equal(await input.evaluate(node => node.checkValidity()), false);
+  for (const value of ['2026-02-28Tgarbage', '2026-02-28T12:30', '4/31/2024']) { await input.fill(value); await page.getByRole('button', { name: 'Outside', exact: true }).click(); assert.equal(await input.evaluate(node => node.checkValidity()), false); }
+  await input.fill('2024-02-29'); await page.getByRole('button', { name: 'Outside', exact: true }).click();
+  assert.equal(await input.inputValue(), '2/29/2024'); assert.equal(await input.evaluate(node => node.checkValidity()), true);
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
+  await page.evaluate(() => { window.retainedDate = document.querySelector('[data-date="2024-02-28"]'); fields.due.setDisabled(true); });
+  await page.evaluate(() => retainedDate.click()); assert.equal(await page.evaluate(() => fields.due.read()), '2024-02-29');
+  assert.equal(await input.isDisabled(), true); assert.equal(await input.getAttribute('aria-expanded'), 'false');
+  await page.evaluate(() => { fields.due.setDisabled(false); fields.due.destroy(); });
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click(); assert.equal(await input.getAttribute('aria-expanded'), 'false');
+  const local = page.getByRole('combobox', { name: 'Local', exact: true }); await local.fill(''); await page.getByRole('button', { name: 'Outside', exact: true }).click();
+  assert.equal(await page.evaluate(() => fields.local.read()), null); assert.equal(await page.getByRole('textbox', { name: 'Local Time', exact: true }).isVisible(), false);
+});
+
+test('calendar clamps its actual responsive width into the viewport in either form column', async t => {
+  const page = await fixture(t); await page.setViewportSize({ width: 390, height: 900 });
+  await page.evaluate(() => { const form = document.querySelector('form'); form.style.width = '350px'; form.style.margin = '20px'; const wrappers = [...form.querySelectorAll('.field')]; for (const wrapper of wrappers) { wrapper.style.display = 'block'; wrapper.style.width = '140px'; } wrappers[1].style.marginLeft = '210px'; });
+  for (const name of ['Due date', 'Independent']) {
+    await page.getByRole('button', { name: `Open calendar for ${name}`, exact: true }).click();
+    const rect = await page.getByRole('dialog', { name: 'Calendar', exact: true }).evaluate(node => { const rect = node.getBoundingClientRect(); return { left: rect.left, right: rect.right, width: rect.width }; });
+    assert.equal(rect.width, 222); assert.ok(rect.left >= 8 && rect.right <= 382, JSON.stringify(rect));
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth), 390);
+    await page.keyboard.press('Escape');
+  }
+});
+
+test('date-time controls preserve independent wall time, convert user-local values and validate time edits', async t => {
+  const page = await fixture(t);
+  assert.equal(await page.getByRole('textbox', { name: 'Independent Time', exact: true }).inputValue(), '2:30 PM');
+  assert.equal(await page.getByRole('textbox', { name: 'Local Time', exact: true }).inputValue(), '10:30 AM');
+  assert.deepEqual(await page.evaluate(() => [fields.independent.read(), fields.local.read()]), ['2026-06-15T14:30:00.000Z', '2026-06-15T14:30:00.000Z']);
+  const local = page.getByRole('combobox', { name: 'Local', exact: true }), time = page.getByRole('textbox', { name: 'Local Time', exact: true });
+  await local.fill('2/29/2024'); await time.fill('23:45'); await time.press('Enter');
+  assert.equal(await time.inputValue(), '11:45 PM'); assert.equal(await page.evaluate(() => fields.local.read()), '2024-03-01T04:45:00.000Z');
+  await time.fill('24:00'); await time.press('Tab'); assert.equal(await time.evaluate(node => node.checkValidity()), false);
+  await time.fill('12:00 AM'); await time.press('Enter'); assert.equal(await page.evaluate(() => fields.local.read()), '2024-02-29T05:00:00.000Z');
+  await page.evaluate(() => fields.independent.setValue('2024-02-29T23:45:00Z'));
+  assert.equal(await page.getByRole('combobox', { name: 'Independent', exact: true }).inputValue(), '2/29/2024');
+  assert.equal(await page.evaluate(() => fields.independent.read()), '2024-02-29T23:45:00.000Z'); assert.equal(await page.evaluate(() => submits), 0);
+});
+
+test('calendar stays inside a scrolled record body below its pinned header and dismisses before scrolling under it', async t => {
+  const page = await fixture(t); await page.setViewportSize({ width: 1280, height: 720 });
+  await page.evaluate(() => {
+    const form = document.querySelector('form'), scroll = document.createElement('div'), header = document.createElement('div');
+    scroll.id = 'record-test'; scroll.className = 'record-content'; Object.assign(scroll.style, { height: '560px', width: '1100px', overflow: 'auto', marginTop: '160px', padding: '0' });
+    header.className = 'record-card'; header.style.height = '120px'; header.textContent = 'Pinned record header';
+    form.style.margin = '0'; form.style.width = '100%'; form.querySelector('.field').style.paddingTop = '170px';
+    const spacer = document.createElement('div'); spacer.style.height = '1000px'; scroll.append(header, form, spacer); document.body.replaceChildren(scroll);
+  });
+  await page.getByRole('button', { name: 'Open calendar for Due date', exact: true }).click();
+  const calendar = page.getByRole('dialog', { name: 'Calendar', exact: true });
+  const bounds = await calendar.evaluate(node => { const root = document.querySelector('#record-test'), header = root.querySelector('.record-card'), popup = node.getBoundingClientRect(); return { top: popup.top, bottom: popup.bottom, header: header.getBoundingClientRect().bottom, content: root.getBoundingClientRect().bottom, scroll: root.scrollTop }; });
+  assert.ok(bounds.top >= bounds.header && bounds.bottom <= bounds.content, JSON.stringify(bounds)); assert.ok(bounds.scroll > 0, 'opening at the midpoint scrolls enough to fit a whole calendar');
+  await page.evaluate(() => { document.querySelector('#record-test').scrollTop += 300; });
+  await calendar.waitFor({ state: 'hidden' });
+  assert.equal(await page.getByRole('combobox', { name: 'Due date', exact: true }).getAttribute('aria-expanded'), 'false');
+});

@@ -1,3 +1,4 @@
+import { createLookupDialog } from './lookup-dialog.mjs';
 import { renderControl, hasControl } from './controls.mjs';
 import { icon, navigationIcon } from './icons.mjs';
 import { createFormClientRuntime, evaluateRibbonRules } from './client-runtime.mjs';
@@ -13,10 +14,10 @@ let catalogue, app, table, current, query = {}, selected = new Set(), record, re
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
 let clientRuntime, clientReady = Promise.resolve(), clientChanges = Promise.resolve(), requestingSave = false;
-let gridSearchTimer, dialogLifetime, formLifetime;
+let gridSearchTimer, dialogLifetime, formLifetime, dismissPicker;
 const clientControlState = new Map();
 const disposeControls = () => { for (const entry of controls) entry.control.destroy?.(); controls = []; };
-function disposeClient() { clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
+function disposeClient() { dismissPicker?.(false); clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); $('#form-notifications')?.remove(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 function contentLoading(text) {
   document.documentElement.dataset.mirageAppState = 'loading';
@@ -34,7 +35,9 @@ function loadFailed(error, retry) {
 }
 async function api(path = '', options = {}) {
   const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
-  const body = await response.json(); if (!response.ok) throw new Error(body.error?.message ?? `Request failed (${response.status}).`); return body;
+  const body = await response.json();
+  if (!response.ok) { const code = body.error?.code, errorCode = typeof code === 'number' ? code : /^0x[\da-f]+$/i.test(code ?? '') ? Number.parseInt(code, 16) : undefined; throw Object.assign(new Error(body.error?.message ?? `Request failed (${response.status}).`), { status: response.status, code, ...(Number.isFinite(errorCode) ? { errorCode } : {}) }); }
+  return body;
 }
 async function staffRequest(options = {}) {
   const response = await fetch('/_sim/api/dataverse/session', { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf } });
@@ -97,10 +100,12 @@ async function runButton(element, action) {
 }
 async function run(action) { try { await action(); } catch (error) { notice(error.message, true); } }
 function dialog(title, content, actions) {
+  dismissPicker?.(false);
   dialogLifetime?.abort(); dialogLifetime = new AbortController();
   const lifetime = dialogLifetime;
-  const element = $('#dialog'); if (element.open) element.close(); element.replaceChildren();
+  const element = $('#dialog'); if (element.open) element.close(); element.className = ''; element.replaceChildren();
   element.addEventListener('cancel', () => queueMicrotask(() => lifetime.abort()), { once: true, signal: lifetime.signal });
+  element.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); closeDialog(); } }, { signal: lifetime.signal });
   const heading = document.createElement('h2'); heading.id = 'dialog-title'; heading.textContent = title;
   const body = document.createElement('div'); body.className = 'dialog-body'; if (typeof content === 'string') body.innerHTML = content; else body.append(content);
   const footer = document.createElement('div'); footer.className = 'dialog-actions';
@@ -108,7 +113,75 @@ function dialog(title, content, actions) {
   for (const [name, action, primary] of actions) footer.append(button(name, action, { className: primary ? 'primary' : 'secondary' }));
   element.showModal(); return element;
 }
-const closeDialog = () => { dialogLifetime?.abort(); $('#dialog').close(); };
+const closeDialog = () => { dismissPicker?.(false); dialogLifetime?.abort(); $('#dialog').close(); };
+// Pickers are anchored to the activating control and release document listeners on
+// dismissal or route changes. The menu uses roving focus rather than a browser select.
+function picker(trigger, choices, { label, selected, choose, search = false, menuClass = '' } = {}) {
+  dismissPicker?.(false);
+  const lifetime = new AbortController(), menu = document.createElement('div');
+  menu.className = `shell-picker ${menuClass}`; menu.id = 'shell-picker'; menu.setAttribute('role', menuClass === 'column-picker' ? 'menu' : 'dialog'); menu.setAttribute('aria-label', search ? 'View Options' : label);
+  trigger.setAttribute('aria-expanded', 'true'); trigger.setAttribute('aria-controls', menu.id);
+  const close = (focus = true) => { lifetime.abort(); menu.remove(); trigger.setAttribute('aria-expanded', 'false'); trigger.removeAttribute('aria-controls'); if (dismissPicker === close) dismissPicker = undefined; if (focus && trigger.isConnected) trigger.focus(); };
+  dismissPicker = close;
+  const list = document.createElement('div'); list.className = 'picker-options'; list.setAttribute('role', menuClass === 'column-picker' ? 'presentation' : 'menu'); if (menuClass !== 'column-picker') list.setAttribute('aria-label', search ? 'Views' : label); menu.append(list);
+  const render = (term = '') => {
+    list.replaceChildren();
+    for (const entry of choices.filter(entry => entry.label.toLocaleLowerCase().includes(term.toLocaleLowerCase()))) {
+      const item = button(entry.label, async () => { close(); await choose(entry.value); }, { className: (entry.value === selected ? 'selected ' : '') + (entry.separatorBefore ? 'picker-separator' : ''), disabled: entry.disabled, title: entry.reason });
+      item.setAttribute('role', entry.role ?? 'menuitemradio'); if (entry.role !== 'menuitem') item.setAttribute('aria-checked', String(entry.value === selected)); item.tabIndex = -1;
+      item.insertAdjacentHTML('afterbegin', `<span class="picker-check">${entry.value === selected ? icon('check', 'picker-item-icon') : ''}</span>${entry.iconName ? icon(entry.iconName) : ''}`); if (entry.isDefault) item.insertAdjacentHTML('beforeend', '<small>Default</small>'); list.append(item);
+    }
+    if (!list.children.length) { const empty = document.createElement('p'); empty.className = 'picker-empty'; empty.textContent = 'No results found'; list.append(empty); }
+  };
+  let input;
+  if (search) { const box = document.createElement('div'); box.className = 'picker-search'; box.innerHTML = icon('search'); input = document.createElement('input'); input.type = 'search'; input.placeholder = 'Search views'; input.setAttribute('aria-label', 'Search views'); input.addEventListener('input', () => render(input.value)); box.append(input); menu.prepend(box); }
+  render(); if (search) { const actions = document.createElement('div'); actions.className = 'picker-actions'; actions.setAttribute('role', 'menu'); actions.setAttribute('aria-label', 'View Actions'); const manage = button('Manage and share views', null, { disabled: true, iconName: 'settings', title: 'View sharing and management are not supported locally.' }); manage.setAttribute('role', 'menuitem'); actions.append(manage); menu.append(actions); } ($('#dialog').open ? $('#dialog') : document.body).append(menu);
+  const position = () => { const rect = trigger.getBoundingClientRect(); menu.style.minWidth = `${Math.min(Math.max(rect.width, 280), innerWidth - 24)}px`; menu.style.maxHeight = `${Math.max(100, innerHeight - rect.bottom - 12)}px`; menu.style.left = `${Math.max(12, Math.min(rect.left, innerWidth - menu.offsetWidth - 12))}px`; menu.style.top = `${rect.bottom}px`; };
+  position();
+  menu.addEventListener('keydown', event => {
+    const items = [...list.querySelectorAll('button:not(:disabled)')], index = items.indexOf(document.activeElement);
+    if (['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) { event.preventDefault(); const next = event.key === 'Home' ? 0 : event.key === 'End' ? items.length - 1 : (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[next]?.focus(); }
+    else if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); }
+    else if (event.key === 'Tab') close(false);
+  });
+  document.addEventListener('pointerdown', event => { if (!menu.contains(event.target) && !trigger.contains(event.target)) close(false); }, { signal: lifetime.signal });
+  window.addEventListener('resize', () => close(false), { signal: lifetime.signal });
+  (input ?? list.querySelector('[aria-checked="true"]') ?? list.querySelector('button'))?.focus();
+}
+function pickerButton(label, choices, options) {
+  const trigger = button(label, () => { if (trigger.getAttribute('aria-expanded') === 'true') dismissPicker?.(); else picker(trigger, choices, options); }, { chevron: true, className: options.className ?? '' });
+  trigger.setAttribute('aria-label', options.label); trigger.setAttribute('aria-haspopup', 'dialog'); trigger.setAttribute('aria-expanded', 'false');
+  trigger.addEventListener('keydown', event => { if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); picker(trigger, choices, options); } });
+  return trigger;
+}
+function chooseApplication() {
+  if (!catalogue?.apps?.length) return;
+  const body = document.createElement('div'); body.className = 'app-picker-content';
+  const toolbar = document.createElement('div'); toolbar.className = 'app-picker-toolbar';
+  const searchBox = document.createElement('div'); searchBox.className = 'app-picker-search'; searchBox.innerHTML = icon('search');
+  const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search my apps...'; search.setAttribute('aria-label', 'Search my apps'); searchBox.append(search); toolbar.append(searchBox);
+  toolbar.append(button('Create new App', null, { disabled: true, iconName: 'add', title: 'App authoring is not supported locally.' }), button('Refresh', async () => { catalogue = await api(); render(); }, { iconName: 'refresh' }), button('Filter', null, { disabled: true, iconName: 'filter', title: 'Additional application filters are not supported locally.' }));
+  const heading = document.createElement('h3'); heading.className = 'app-picker-section';
+  const list = document.createElement('div'); list.className = 'app-cards'; list.setAttribute('aria-label', 'Published Apps');
+  const status = document.createElement('p'); status.className = 'app-picker-empty'; status.setAttribute('role', 'status');
+  const render = () => {
+    list.replaceChildren();
+    for (const application of catalogue.apps.filter(application => (application.name ?? application.uniqueName ?? application.id).toLocaleLowerCase().includes(search.value.toLocaleLowerCase()))) {
+      const card = button('', async () => { closeDialog(); await navigate(firstEntity(application), { application }); }, { className: 'app-card' });
+      const name = application.name ?? application.uniqueName ?? application.id;
+      card.setAttribute('aria-label', name); if (application.id === app?.id) card.setAttribute('aria-current', 'true');
+      card.innerHTML = `<span class="app-card-art">${application.iconUrl?.startsWith('/_apps/resources/') ? `<img src="${esc(application.iconUrl)}" alt="">` : icon('pageGrid')}</span><span class="app-card-info"><strong>${esc(name)}</strong>${application.description ? `<span class="app-card-description">${esc(application.description)}</span>` : ''}<span class="app-card-footer">UNIFIED INTERFACE</span></span>`;
+      list.append(card);
+    }
+    heading.textContent = `Published Apps (${list.children.length})`; status.textContent = list.children.length ? '' : 'No apps found'; status.hidden = Boolean(list.children.length);
+  };
+  const editing = document.createElement('h3'); editing.className = 'app-picker-section'; editing.textContent = 'Apps Being Edited (0)'; editing.title = 'Local app authoring is not supported.';
+  search.addEventListener('input', render); body.append(toolbar, heading, list, status, editing); render();
+  const element = dialog('Apps', body, []); element.className = 'app-picker-dialog';
+  const close = button('Close', closeDialog, { iconName: 'close', iconOnly: true, className: 'app-picker-close' }); element.prepend(close);
+  const expand = button('Expand', () => { element.classList.toggle('expanded'); }, { iconName: 'open', iconOnly: true, className: 'app-picker-expand' }); element.prepend(expand);
+  $('#apps').setAttribute('aria-expanded', 'true'); dialogLifetime.signal.addEventListener('abort', () => $('#apps').setAttribute('aria-expanded', 'false'), { once: true }); search.focus();
+}
 // Replacing a modal must settle the old caller as a dismissal as well as remove
 // its listeners. Successful actions settle first, before closing their modal.
 const onDialogCancel = (_element, listener) => dialogLifetime.signal.addEventListener('abort', listener, { once: true });
@@ -137,17 +210,19 @@ function remember(entry) {
 }
 function renderNavigation() {
   const nav = $('#navigation'); nav.replaceChildren();
-  nav.append(button('⌂  Home', () => navigate(firstEntity(app)), { className: 'quick' }));
+  const home = button('⌂  Home', () => navigate(firstEntity(app)), { className: 'quick', title: 'Home' }); home.setAttribute('aria-label', 'Home'); nav.append(home);
   for (const [label, entries] of [['Recent', recent], ['Pinned', pinned]]) {
-    const details = document.createElement('details'), summary = document.createElement('summary'); summary.innerHTML = icon(label === 'Recent' ? 'recent' : 'pin') + `<span>${label}</span>` + icon('chevron', 'chevron'); details.append(summary);
-    for (const entry of entries.filter(entry => entry.app === app.uniqueName)) details.append(button(entry.label, async () => { if (!await canLeave()) return; history.pushState({}, '', entry.url); await loadRoute(); }));
-    if (!details.querySelector('button')) { const empty = document.createElement('p'); empty.textContent = 'No items yet'; empty.className = 'source-info'; details.append(empty); }
+    const details = document.createElement('details'), summary = document.createElement('summary'); summary.setAttribute('aria-label', label); summary.title = label; summary.innerHTML = icon(label === 'Recent' ? 'recent' : 'pin') + `<span>${label}</span>` + icon('chevron', 'chevron'); details.append(summary);
+    const history = document.createElement('div'); history.className = 'navigation-history'; details.append(history);
+    for (const entry of entries.filter(entry => entry.app === app.uniqueName)) history.append(button(entry.label, async () => { if (!await canLeave()) return; window.history.pushState({}, '', entry.url); await loadRoute(); }));
+    if (!history.querySelector('button')) { const empty = document.createElement('p'); empty.textContent = 'No items yet'; empty.className = 'source-info'; history.append(empty); }
     nav.append(details);
   }
   for (const area of app.navigation) for (const group of area.groups) {
     const heading = document.createElement('h2'); heading.textContent = group.title; if (!nav.querySelector('h2')) heading.className = 'first-group'; nav.append(heading);
     for (const item of group.items) {
       const entry = button(item.title, () => navigate(item.entity), { iconName: navigationIcon(item), disabled: !item.supported, title: item.reason ?? item.title, className: item.entity === table?.entity ? 'active' : '' });
+      entry.setAttribute('aria-label', item.title);
       if (item.entity === table?.entity) entry.setAttribute('aria-current', 'page'); nav.append(entry);
     }
   }
@@ -188,7 +263,7 @@ function refreshCommandRules(mode) {
   }
 }
 const preferenceKey = () => `view.${app.uniqueName}.${table.entity}.${query.view}`;
-function savePreferences() { storage.set(preferenceKey(), { columns: query.columns, filters: query.filters }); }
+function savePreferences() { storage.set(preferenceKey(), { columns: query.columns, filters: query.filters, widths: query.widths }); }
 function display(value, field, row, name) {
   const formatted = row?.[name + '@OData.Community.Display.V1.FormattedValue']; if (formatted !== undefined) return String(formatted);
   if (value == null) return '';
@@ -211,10 +286,8 @@ function renderGrid() {
   document.title = `${table.label} ${table.views.find(view => view.id === query.view)?.name ?? ''} - ${app.name} · Mirage`;
   const content = $('#content'); content.replaceChildren(); content.className = 'grid-content';
   const header = document.createElement('div'); header.className = 'grid-header';
-  const views = document.createElement('select'); views.className = 'view-select'; views.setAttribute('aria-label', 'View');
+  const views = pickerButton(appViews().find(view => view.id === query.view)?.name ?? 'Select a view', appViews().map(view => ({ label: view.name, value: view.id, isDefault: view.isDefault })), { label: 'View', selected: query.view, choose: view => navigate(table.entity, { view }), search: true, className: 'view-select', menuClass: 'view-picker' });
   views.title = table.views.find(view => view.id === query.view)?.source === 'solution' ? 'Exported solution view' : 'Generated from available metadata';
-  for (const view of appViews()) views.add(new Option(view.name, view.id)); views.value = query.view;
-  views.addEventListener('change', () => run(() => navigate(table.entity, { view: views.value })));
   header.append(views, button('▥ Edit columns', editColumns), button('▽ Edit filters', editFilters));
   const search = document.createElement('input'); search.type = 'search'; search.className = 'search'; search.placeholder = 'Filter by keyword'; search.setAttribute('aria-label', 'Filter by keyword'); search.value = query.search ?? '';
   const searchGeneration = generation;
@@ -228,13 +301,13 @@ function renderGrid() {
   const columnGroup = document.createElement('colgroup'), selectionColumn = document.createElement('col'); selectionColumn.className = 'selection-column'; columnGroup.append(selectionColumn);
   const viewWidths = table.views.find(view => view.id === query.view)?.fields ?? [];
   const weights = current.columns.map(name => viewWidths.find(field => field.name === name)?.width ?? 150), totalWidth = weights.reduce((sum, width) => sum + width, 0);
-  for (const width of weights) { const column = document.createElement('col'); column.style.width = ((width / totalWidth) * 100) + '%'; columnGroup.append(column); } grid.append(columnGroup);
+  for (const [index, width] of weights.entries()) { const column = document.createElement('col'); column.style.width = query.widths?.[current.columns[index]] ? `${query.widths[current.columns[index]]}px` : ((width / totalWidth) * 100) + '%'; columnGroup.append(column); } grid.append(columnGroup);
   const head = document.createElement('thead'), headings = document.createElement('tr'), selection = document.createElement('th'); selection.className = 'selection';
   const all = document.createElement('input'); all.type = 'checkbox'; all.setAttribute('aria-label', 'Select all records'); all.addEventListener('change', () => { selected = new Set(all.checked ? current.rows.map(row => String(row[table.idColumn])) : []); renderRows(); renderCommands('grid'); }); selection.append(all); headings.append(selection);
   for (const name of current.columns) {
     const th = document.createElement('th'); th.scope = 'col';
     const direction = current.sort === name ? current.direction === 'desc' ? ' ↓' : ' ↑' : '';
-    th.append(button((table.fields[name]?.label ?? name) + direction, () => { query.direction = query.sort === name && query.direction !== 'desc' ? 'desc' : 'asc'; query.sort = name; query.page = 1; return loadGrid(); }, { disabled: !table.fields[name], chevron: true }));
+    const heading = button((table.fields[name]?.label ?? name) + direction, () => columnMenu(heading, name), { disabled: !table.fields[name], chevron: true }); heading.setAttribute('aria-haspopup', 'menu'); heading.setAttribute('aria-expanded', 'false'); th.append(heading);
     if (current.sort === name) th.setAttribute('aria-sort', current.direction === 'desc' ? 'descending' : 'ascending'); headings.append(th);
   }
   head.append(headings); grid.append(head, document.createElement('tbody')); scroll.append(grid); content.append(scroll);
@@ -252,7 +325,12 @@ function renderGrid() {
       }
       body.append(tr);
     }
-    if (!current.rows.length) { const tr = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = current.columns.length + 1; cell.className = 'empty-state'; cell.innerHTML = '<strong>No records available</strong>Change your filters or create a local record.'; tr.append(cell); body.append(tr); }
+    grid.classList.toggle('empty-grid', !current.rows.length);
+    if (!current.rows.length) {
+      const tr = document.createElement('tr'), cell = document.createElement('td'); cell.colSpan = current.columns.length + 1; cell.className = 'empty-state';
+      cell.innerHTML = `<div class="empty-grid-panel"><svg viewBox="0 0 200 200" width="200" height="200" aria-hidden="true"><circle cx="100" cy="100" r="100" fill="#c9c9c9"/><g fill="#f7f7f7" stroke="#e6e6e6">${[50, 86, 122].flatMap(y => [37, 81, 125].map(x => `<rect x="${x}" y="${y}" width="39" height="32" rx="1"/>`)).join('')}</g><g fill="#f7f7f7"><path d="m100 12 3 5 5 2-5 3-3 5-3-5-5-3 5-2zm13 12 4 7 7 4-7 4-4 7-4-7-7-4 7-4zm-25 0 2 4 4 2-4 2-2 4-2-4-4-2 4-2z"/></g></svg><p>We didn't find anything to show here</p></div>`;
+      tr.append(cell); body.append(tr);
+    }
   }
   renderRows();
   const footer = document.createElement('div'); footer.className = 'grid-footer';
@@ -263,60 +341,91 @@ function renderGrid() {
   if (current.more || current.page > 1 || current.total > 25) footer.append(info, size, button('‹ Previous', () => { query.page--; return loadGrid(); }, { disabled: current.page <= 1 }), button('Next ›', () => { query.page++; return loadGrid(); }, { disabled: !current.more })); content.append(footer);
 }
 function editColumns() {
-  const chosen = [...current.columns], other = Object.keys(table.fields).filter(name => !chosen.includes(name)), order = [...chosen, ...other];
-  const body = document.createElement('div'), filter = document.createElement('input'); filter.type = 'search'; filter.placeholder = 'Find a column'; filter.setAttribute('aria-label', 'Find a column'); body.append(filter); const list = document.createElement('div'); body.append(list);
+  let chosen = [...current.columns], resetWidths = false, dragged;
+  const body = document.createElement('div'), toolbar = document.createElement('div'); toolbar.className = 'columns-toolbar';
+  const list = document.createElement('div'); list.className = 'columns-list'; list.setAttribute('aria-label', 'View columns'); body.append(toolbar, list);
+  let apply, reset;
+  const defaults = (table.views.find(view => view.id === query.view)?.fields ?? []).map(field => field.name);
+  const changed = () => { if (apply) apply.disabled = !resetWidths && JSON.stringify(chosen) === JSON.stringify(current.columns); if (reset) reset.disabled = JSON.stringify(chosen) === JSON.stringify(defaults) && (!query.widths || resetWidths); };
+  const move = (name, offset) => { const index = chosen.indexOf(name), next = index + offset; if (next < 0 || next >= chosen.length) return; [chosen[index], chosen[next]] = [chosen[next], chosen[index]]; render(); };
   function render() {
     list.replaceChildren();
-    for (const name of order.filter(name => (table.fields[name]?.label ?? name).toLowerCase().includes(filter.value.toLowerCase()))) {
-      const row = document.createElement('div'); row.className = 'column-row'; const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.id = 'column-' + name; checkbox.checked = chosen.includes(name); const label = document.createElement('label'); label.htmlFor = checkbox.id; label.textContent = table.fields[name]?.label ?? name;
-      checkbox.addEventListener('change', () => { if (checkbox.checked) chosen.push(name); else chosen.splice(chosen.indexOf(name), 1); });
-      const move = offset => { const index = order.indexOf(name), next = index + offset; if (next < 0 || next >= order.length) return; [order[index], order[next]] = [order[next], order[index]]; render(); };
-      row.append(checkbox, label, button('↑', () => move(-1), { title: `Move ${label.textContent} up` }), button('↓', () => move(1), { title: `Move ${label.textContent} down` })); list.append(row);
+    for (const [index, name] of chosen.entries()) {
+      const label = table.fields[name]?.label ?? name, row = document.createElement('div'); row.className = 'column-card'; row.draggable = true; row.tabIndex = 0;
+      row.innerHTML = `${icon(table.fields[name]?.type === 'date' ? 'calendar' : table.fields[name]?.type === 'number' ? 'number' : 'text')}<span>${esc(label)}</span>`;
+      row.addEventListener('dragstart', event => { dragged = name; event.dataTransfer.setData('text/plain', name); });
+      row.addEventListener('dragover', event => { if (dragged && dragged !== name) event.preventDefault(); });
+      row.addEventListener('drop', event => { event.preventDefault(); if (!dragged || dragged === name) return; chosen.splice(chosen.indexOf(dragged), 1); chosen.splice(index, 0, dragged); dragged = undefined; render(); });
+      row.addEventListener('dragend', () => { dragged = undefined; });
+      row.addEventListener('keydown', event => { if (event.altKey && ['ArrowUp', 'ArrowDown'].includes(event.key)) { event.preventDefault(); move(name, event.key === 'ArrowUp' ? -1 : 1); list.children[chosen.indexOf(name)]?.focus(); } });
+      const more = button(`${label} column options`, () => picker(more, [{ label: 'Move up', value: 'up', role: 'menuitem', disabled: index === 0, iconName: 'sortUp' }, { label: 'Move down', value: 'down', role: 'menuitem', disabled: index === chosen.length - 1, iconName: 'sortDown' }, { label: 'Remove', value: 'remove', role: 'menuitem', disabled: chosen.length === 1, iconName: 'delete' }], { label: `${label} column options`, menuClass: 'column-picker', choose: value => { if (value === 'remove') { chosen = chosen.filter(column => column !== name); render(); } else move(name, value === 'up' ? -1 : 1); } }), { iconName: 'more', iconOnly: true }); more.setAttribute('aria-haspopup', 'menu'); more.setAttribute('aria-expanded', 'false'); row.append(more); list.append(row);
     }
+    changed();
   }
-  filter.addEventListener('input', render); render();
-  dialog('Edit columns', body, [['Cancel', closeDialog], ['Reset', async () => { query.columns = undefined; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }], ['Apply', async () => { const columns = order.filter(name => chosen.includes(name)); if (!columns.length) { filter.setCustomValidity('Select at least one column.'); filter.reportValidity(); return; } query.columns = columns; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true]]);
+  toolbar.append(button('Add columns', () => {
+    const panel = document.createElement('dialog'); panel.className = 'add-column-browser'; panel.setAttribute('aria-labelledby', 'add-columns-title'); const title = document.createElement('h3'); title.id = 'add-columns-title'; title.textContent = 'Add columns';
+    const close = () => { lifetime.signal.removeEventListener('abort', close); panel.close(); panel.remove(); }; const lifetime = dialogLifetime; lifetime.signal.addEventListener('abort', close, { once: true });
+    panel.addEventListener('keydown', event => { if (event.key === 'Escape') { event.preventDefault(); event.stopPropagation(); close(); } });
+    panel.addEventListener('cancel', event => { event.preventDefault(); close(); });
+    const tabs = document.createElement('div'); tabs.className = 'add-column-tabs'; tabs.setAttribute('role', 'tablist'); const primary = button(table.singular, null); primary.setAttribute('role', 'tab'); primary.setAttribute('aria-selected', 'true'); const related = button('Related', null, { disabled: true, title: 'Adding columns from related tables is not supported locally.' }); related.setAttribute('role', 'tab'); related.setAttribute('aria-selected', 'false'); tabs.append(primary, related);
+    const searchBox = document.createElement('div'); searchBox.className = 'add-column-search'; const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search'; search.setAttribute('aria-label', 'Search columns'); searchBox.append(search, button('All', null, { disabled: true, chevron: true, title: 'All available local columns are shown.' }));
+    const options = document.createElement('div'); options.className = 'add-column-options'; const renderOptions = () => { options.replaceChildren(); for (const field of Object.values(table.fields).filter(field => field.validForGrid !== false && !chosen.includes(field.name) && (field.label ?? field.name).toLocaleLowerCase().includes(search.value.toLocaleLowerCase())).sort((left, right) => (left.label ?? left.name).localeCompare(right.label ?? right.name))) options.append(button(field.label ?? field.name, () => { chosen.push(field.name); render(); renderOptions(); }, { iconName: field.type === 'date' ? 'calendar' : field.type === 'number' ? 'number' : 'text' })); };
+    const footer = document.createElement('div'); footer.className = 'add-column-footer'; footer.append(button('Close', close, { className: 'secondary' }));
+    search.addEventListener('input', renderOptions); panel.append(title, button('Close', close, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }), tabs, searchBox, options, footer); $('#dialog').append(panel); renderOptions(); panel.showModal(); search.focus();
+  }, { iconName: 'add' }), reset = button('Reset to default', () => { chosen = [...defaults]; resetWidths = Boolean(query.widths); render(); }, { iconName: 'reset' }), button('Download LayoutXML', null, { iconName: 'download', disabled: true, title: 'Downloading an edited view definition is not supported locally.' }));
+  render();
+  const element = dialog(`Edit columns: ${table.label}`, body, [['Apply', async () => { query.columns = chosen; if (resetWidths) query.widths = undefined; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true], ['Cancel', closeDialog]]);
+  element.classList.add('side-panel', 'columns-panel'); const close = button('Close', closeDialog, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }); element.prepend(close); apply = element.querySelector('.primary'); changed();
 }
-function editFilters() {
-  const filters = structuredClone(query.filters ?? []), body = document.createElement('div'), intro = document.createElement('p'); intro.textContent = 'Show records matching all of these conditions.'; body.append(intro);
-  const list = document.createElement('div'); body.append(list);
+function columnMenu(trigger, name) {
+  const index = current.columns.indexOf(name), choices = [
+    { label: 'A to Z', value: 'asc', iconName: 'sortUp' }, { label: 'Z to A', value: 'desc', iconName: 'sortDown' },
+    { label: 'Group by', value: 'group', role: 'menuitem', separatorBefore: true, disabled: true, iconName: 'group', reason: 'Grouping records is not supported locally.' },
+    { label: 'Filter by', value: 'filter', role: 'menuitem', iconName: 'filter' },
+    { label: 'Column width', value: 'width', role: 'menuitem', separatorBefore: true, iconName: 'columns' },
+    { label: 'Move right', value: 'right', role: 'menuitem', iconName: 'arrowRight', disabled: index === current.columns.length - 1 },
+  ];
+  picker(trigger, choices, { label: `${table.fields[name]?.label ?? name} column options`, selected: current.sort === name ? current.direction ?? 'asc' : undefined, menuClass: 'column-picker', choose: async value => {
+    if (value === 'asc' || value === 'desc') { query.sort = name; query.direction = value; query.page = 1; await loadGrid(); }
+    else if (value === 'filter') editFilters(name);
+    else if (value === 'right') { query.columns = [...current.columns]; [query.columns[index], query.columns[index + 1]] = [query.columns[index + 1], query.columns[index]]; savePreferences(); await loadGrid(); }
+    else if (value === 'width') { const body = document.createElement('label'); body.textContent = 'Width (pixels)'; const input = document.createElement('input'); input.type = 'number'; input.min = '40'; input.max = '2000'; input.value = String(query.widths?.[name] ?? Math.round(trigger.closest('th').getBoundingClientRect().width)); input.setAttribute('aria-label', 'Width (pixels)'); body.append(input); dialog('Column width', body, [['Cancel', closeDialog], ['Apply', async () => { if (!input.reportValidity()) return; query.widths = { ...query.widths, [name]: Number(input.value) }; savePreferences(); closeDialog(); await loadGrid(); }, true]]); }
+  } });
+}
+function editFilters(initialField) {
+  const filters = structuredClone(query.filters ?? []), body = document.createElement('div');
+  if (initialField && !filters.some(filter => filter.field === initialField)) filters.push({ field: initialField, operator: 'eq', value: '' });
+  const toolbar = document.createElement('div'); toolbar.className = 'filters-toolbar'; toolbar.append(button('Reset to default', () => { filters.splice(0); render(); }, { iconName: 'reset' }), button('Download FetchXML', null, { disabled: true, iconName: 'download', title: 'Downloading an edited query definition is not supported locally.' }), button('Delete all filters', () => { filters.splice(0); render(); }, { iconName: 'filter' }));
+  const dataMode = document.createElement('div'); dataMode.className = 'filter-data-mode'; dataMode.append(document.createTextNode('Showing local data'), button('Change to retained data', null, { disabled: true, title: 'Retained Dataverse data is not available in the local simulator.' })); dataMode.insertAdjacentHTML('beforeend', icon('info'));
+  const headings = document.createElement('div'); headings.className = 'filter-headings'; headings.innerHTML = '<span>Field</span><span>Operator</span><span>Value</span>';
+  const group = button('AND', null, { disabled: true, chevron: true, title: 'All local conditions must match.' }); group.className = 'filter-group';
+  const list = document.createElement('div'); list.className = 'filter-conditions'; body.append(toolbar, dataMode, group, headings, list);
   const operators = [['eq', 'Equals'], ['ne', 'Does not equal'], ['like', 'Contains (% wildcards)'], ['not-like', 'Does not contain (% wildcards)'], ['gt', 'Greater than'], ['ge', 'Greater than or equal'], ['lt', 'Less than'], ['le', 'Less than or equal'], ['null', 'Does not contain data'], ['not-null', 'Contains data']];
   function render() {
     list.replaceChildren();
     for (const [index, filter] of filters.entries()) {
       const row = document.createElement('div'); row.className = 'filter-row';
-      const field = document.createElement('select'); field.setAttribute('aria-label', `Filter ${index + 1} column`); for (const definition of Object.values(table.fields)) field.add(new Option(definition.label ?? definition.name, definition.name)); field.value = filter.field; field.addEventListener('change', () => { filter.field = field.value; });
-      const operator = document.createElement('select'); operator.setAttribute('aria-label', `Filter ${index + 1} operator`); for (const [value, label] of operators) operator.add(new Option(label, value)); operator.value = filter.operator;
-      const value = document.createElement('input'); value.setAttribute('aria-label', `Filter ${index + 1} value`); value.value = filter.value ?? ''; value.disabled = ['null', 'not-null'].includes(filter.operator); value.addEventListener('input', () => { filter.value = value.value; }); operator.addEventListener('change', () => { filter.operator = operator.value; value.disabled = ['null', 'not-null'].includes(filter.operator); });
-      row.append(field, operator, value, button('×', () => { filters.splice(index, 1); render(); }, { title: 'Remove condition' })); list.append(row);
+      const field = pickerButton(table.fields[filter.field]?.label ?? filter.field, Object.values(table.fields).map(definition => ({ label: definition.label ?? definition.name, value: definition.name })), { label: `Filter ${index + 1} column`, selected: filter.field, choose: name => { filter.field = name; render(); }, className: 'filter-picker' });
+      const operator = pickerButton(operators.find(([value]) => value === filter.operator)?.[1] ?? filter.operator, operators.map(([value, label]) => ({ label, value })), { label: `Filter ${index + 1} operator`, selected: filter.operator, choose: value => { filter.operator = value; render(); }, className: 'filter-picker' });
+      const value = document.createElement('input'); value.setAttribute('aria-label', `Filter ${index + 1} value`); value.value = filter.value ?? ''; value.disabled = ['null', 'not-null'].includes(filter.operator); value.addEventListener('input', () => { filter.value = value.value; });
+      row.append(field, operator, value, button('Remove condition', () => { filters.splice(index, 1); render(); }, { title: 'Remove condition', iconName: 'delete', iconOnly: true })); list.append(row);
     }
   }
-  body.append(button('＋ Add condition', () => { filters.push({ field: table.nameColumn, operator: 'eq', value: '' }); render(); })); render();
-  dialog('Edit filters', body, [['Cancel', closeDialog], ['Apply', async () => { query.filters = filters; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true]]);
+  const addRow = () => { filters.push({ field: table.nameColumn, operator: 'eq', value: '' }); render(); };
+  const split = document.createElement('div'); split.className = 'add-filter-split'; const add = button('Add', addRow, { iconName: 'add' }); add.setAttribute('aria-label', 'Add condition');
+  const more = button('Add options', () => picker(more, [{ label: 'Add row', value: 'row', role: 'menuitem', iconName: 'add' }, { label: 'Add group', value: 'group', role: 'menuitem', disabled: true, reason: 'Nested filter groups are not supported locally.' }], { label: 'Add filter options', menuClass: 'column-picker', choose: addRow }), { chevron: true, iconOnly: true }); split.append(add, more); body.append(split); render();
+  const element = dialog(`Edit filters: ${table.label}`, body, [['Apply', async () => { query.filters = filters; query.page = 1; savePreferences(); closeDialog(); await loadGrid(); }, true], ['Cancel', closeDialog]]);
+  element.classList.add('side-panel', 'filters-panel'); element.prepend(button('Close', closeDialog, { iconName: 'close', iconOnly: true, className: 'side-panel-close' }));
 }
-async function lookup(field) {
-  const targets = field.targets.filter(entity => catalogue.tables[entity]); if (!targets.length) return null;
-  return new Promise(resolve => {
-    const body = document.createElement('div'), target = document.createElement('select'); target.setAttribute('aria-label', 'Lookup table'); for (const entity of targets) target.add(new Option(catalogue.tables[entity].label, entity));
-    const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search records'; search.setAttribute('aria-label', 'Search lookup records');
-    const results = document.createElement('div'); results.className = 'lookup-results'; body.append(target, search, results);
-    const element = dialog(`Look up ${field.label}`, body, [['Cancel', () => { resolve(null); closeDialog(); }]]); onDialogCancel(element, () => resolve(null));
-    let timer, sequence = 0; const lifetime = dialogLifetime;
-    lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); sequence++; }, { once: true });
-    async function load() {
-      if (lifetime.signal.aborted || !results.isConnected) return;
-      const token = ++sequence, destination = catalogue.tables[target.value];
-      results.setAttribute('aria-busy', 'true'); results.textContent = 'Searching local records…';
-      try {
-        const found = await api(tablePath(target.value) + '?query=' + encodeURIComponent(JSON.stringify({ search: search.value, columns: [destination.nameColumn], pageSize: 50, view: destination.views.find(view => view.id === 'all')?.id })));
-        if (token !== sequence || lifetime.signal.aborted) return; results.replaceChildren();
-        for (const row of found.rows) results.append(button(display(row[destination.nameColumn]) || '(No name)', () => { resolve({ id: row[destination.idColumn], entity: destination.entity, name: display(row[destination.nameColumn]) }); closeDialog(); }));
-        if (!found.rows.length) results.textContent = 'No matching local records.';
-      } catch (error) { if (token === sequence && !lifetime.signal.aborted) { results.textContent = error.message + ' '; results.append(button('Try again', load)); } }
-      finally { if (token === sequence && !lifetime.signal.aborted) results.setAttribute('aria-busy', 'false'); }
-    }
-    target.addEventListener('change', () => run(load)); search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(load), 250); }); run(load);
-  });
+function lookup(field) { return createLookupDialog(field, { tables: catalogue.tables, api, tablePath, display, dialog, closeDialog, onDialogCancel, pickerButton, getLifetime: () => dialogLifetime }); }
+async function lookupSuggestions(field, search, { signal } = {}) {
+  const targets = (field.targets ?? []).filter(entity => Object.hasOwn(catalogue.tables, entity));
+  const results = await Promise.all(targets.map(async entity => {
+    const destination = catalogue.tables[entity], view = (destination.lookupViews ?? destination.views)?.[0];
+    const found = await api(tablePath(entity) + '?query=' + encodeURIComponent(JSON.stringify({ search, columns: [destination.nameColumn], ...(view?.id ? { view: view.id } : { scope: 'table' }), pageSize: 5 })), { signal });
+    return found.rows.map(row => ({ id: row[destination.idColumn], entity, name: display(row[destination.nameColumn], destination.fields[destination.nameColumn], row, destination.nameColumn) }));
+  }));
+  return results.flat().slice(0, 5);
 }
 async function loadRecord(id) {
   const token = ++generation; contentLoading(id ? 'Loading record and form…' : 'Preparing new record…');
@@ -324,6 +433,10 @@ async function loadRecord(id) {
     const result = id ? await api(tablePath(table.entity, id)) : { row: Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, field.defaultValue])) };
     if (token !== generation) return; record = result.row; touchedFields = new Set(); recordCapabilities = result.capabilities ?? table.capabilities;
     if (!id) {
+      const principal = staffSession?.current, principalId = principal?.principalId ?? principal?.id;
+      if (principalId && Object.hasOwn(catalogue.tables, 'systemuser')) for (const field of Object.values(table.fields)) {
+        if (field.dataverseType === 'owner' && field.defaultValue === undefined && !Object.hasOwn(record, field.name) && field.targets?.includes('systemuser')) record[field.name] = { id: principalId, entity: 'systemuser', name: principal.name ?? principalId };
+      }
       const defaults = new Map(new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? ''));
       const initialValues = Object.values(table.fields)
         .filter(field => defaults.has(field.name) && !field.isPrimaryId && field.validForCreate !== false && hasControl(field))
@@ -354,15 +467,21 @@ async function renderRecord() {
   recordCard.append(header);
   const availableForms = appForms();
   let selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
-  if (availableForms.length > 1) { const chooser = document.createElement('select'); chooser.setAttribute('aria-label', 'Record form'); chooser.className = 'form-chooser'; for (const form of availableForms) chooser.add(new Option(form.name, form.id)); chooser.value = selectedForm.id; chooser.addEventListener('change', () => run(async () => { captureDraft(); disposeClient(); formId = chooser.value; await renderRecord(); })); header.append(chooser); }
+  if (availableForms.length > 1) header.append(pickerButton(selectedForm.name, availableForms.map(form => ({ label: form.name, value: form.id })), { label: 'Record form', selected: selectedForm.id, className: 'form-chooser', choose: async id => { captureDraft(); disposeClient(); formId = id; await renderRecord(); } }));
   if (selectedForm.hasScripts) { const warning = document.createElement('span'); warning.className = 'script-indicator'; warning.textContent = catalogue.clientExtensions?.trusted ? 'Local Solution scripts' : 'Local scripts disabled'; warning.title = catalogue.clientExtensions?.trusted ? 'Explicitly trusted exported scripts execute against the bounded local client API.' : 'Trust local Solution client extensions in configuration to run exported form events.'; header.append(warning); }
   const tabs = document.createElement('div'); tabs.className = 'tabs'; tabs.setAttribute('role', 'tablist');
   const availableTabs = selectedForm.tabs.filter(tab => tab.visible !== false);
   activeTab = availableTabs.some(tab => tab.id === activeTab) ? activeTab : availableTabs[0]?.id;
-  const chooseTab = async tab => { captureDraft(); activeTab = tab.id; await renderRecord(); };
-  for (const tab of availableTabs) { const tabButton = button(tab.label, () => chooseTab(tab)); tabButton.setAttribute('role', 'tab'); tabButton.setAttribute('aria-selected', String(tab.id === activeTab)); tabs.append(tabButton); }
+  const chooseTab = async (tab, focus = false) => { captureDraft(); activeTab = tab.id; await renderRecord(); if (focus) $('#content [role="tab"][aria-selected="true"]')?.focus(); };
+  for (const [index, tab] of availableTabs.entries()) { const tabButton = button(tab.label, () => chooseTab(tab)); tabButton.id = `record-tab-${index}`; tabButton.setAttribute('role', 'tab'); tabButton.setAttribute('aria-controls', 'record-form'); tabButton.setAttribute('aria-selected', String(tab.id === activeTab)); tabButton.tabIndex = tab.id === activeTab ? 0 : -1; tabs.append(tabButton); }
   const tabButtons = [...tabs.children];
-  const moreTabs = button('More tabs', () => { const list = document.createElement('div'); list.className = 'lookup-results'; for (const tab of availableTabs) list.append(button(tab.label, () => { closeDialog(); chooseTab(tab); })); dialog('Record tabs', list, [['Close', closeDialog]]); }, { iconName: 'more', iconOnly: true }); moreTabs.hidden = true;
+  const moreTabs = button('More tabs', () => picker(moreTabs, availableTabs.map(tab => ({ label: tab.label, value: tab.id })), { label: 'Record tabs', selected: activeTab, choose: id => chooseTab(availableTabs.find(tab => tab.id === id), true) }), { iconName: 'more', iconOnly: true }); moreTabs.setAttribute('aria-haspopup', 'dialog'); moreTabs.setAttribute('aria-expanded', 'false'); moreTabs.hidden = true;
+  tabs.addEventListener('keydown', event => {
+    if (event.target.getAttribute('role') !== 'tab' || !['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(event.key)) return;
+    event.preventDefault(); const index = availableTabs.findIndex(tab => tab.id === activeTab);
+    const next = event.key === 'Home' ? 0 : event.key === 'End' ? availableTabs.length - 1 : (index + (event.key === 'ArrowRight' ? 1 : -1) + availableTabs.length) % availableTabs.length;
+    run(() => chooseTab(availableTabs[next], true));
+  });
   const assist = button('Form assist', null, { iconName: 'pageForm', disabled: true, className: 'form-assist', title: 'Form assist is not supported locally.' });
   tabs.append(moreTabs, assist); recordCard.append(tabs);
   tabObserver = new ResizeObserver(() => {
@@ -374,6 +493,7 @@ async function renderRecord() {
     moreTabs.hidden = !overflow;
   }); tabObserver.observe(tabs);
   const form = document.createElement('form'); form.id = 'record-form'; form.className = 'form-layout';
+  form.setAttribute('role', 'tabpanel'); form.setAttribute('aria-labelledby', `record-tab-${availableTabs.findIndex(tab => tab.id === activeTab)}`);
   form.addEventListener('submit', event => { event.preventDefault(); run(() => saveRecord(false)); });
   const tab = availableTabs.find(tab => tab.id === activeTab);
   const widths = tab?.columnWidths?.length ? tab.columnWidths : [100];
@@ -412,8 +532,10 @@ async function renderRecord() {
   renderCommands('form');
 }
 function renderFieldControl(cell, field, disabled) {
-  return renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup,
+  return renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup, lookupSuggestions,
+    readOnlyText: cell.readOnlyText,
     pcf: cell.pcf, clientExtensions: catalogue.clientExtensions, record, fields: table.fields, entity: table.entity, recordId: record[table.idColumn], webAPI: () => clientRuntime?.Xrm.WebApi,
+    user: staffSession?.current ? { id: staffSession.current.principalId ?? staffSession.current.id, name: staffSession.current.name } : undefined,
     formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'], logicalName: record[field.name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] });
 }
 function applyControlState(name, key, value) {
@@ -439,6 +561,7 @@ function createShellClient(selectedForm) {
   const cells = selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(cell => cell.name && cell.supported);
   const controlName = cell => cell.sourceControl?.id ?? cell.name;
   const runtime = createFormClientRuntime({ table, tables: catalogue.tables, form: selectedForm, record: record ?? {}, extensions: catalogue.clientExtensions,
+    user: staffSession?.current ? { id: staffSession.current.principalId ?? staffSession.current.id, name: staffSession.current.name } : undefined,
     read: name => { const entry = controls.find(entry => entry.name === name); return entry?.control.supported ? entry.control.read() : record?.[name]; },
     write: (name, value) => {
       const field = table.fields[name], cell = cells.find(cell => cell.name === name), mode = record?.[table.idColumn] ? 'update' : 'create';
@@ -455,7 +578,14 @@ function createShellClient(selectedForm) {
     required: (name, value) => { const cell = cells.find(cell => cell.name === name), entry = controls.find(entry => entry.name === name), primary = entry?.control.primary ?? entry?.control.element; if (value !== undefined && cell) { const states = clientControlState.get(controlName(cell)) ?? new Map(); states.set('required', value); clientControlState.set(controlName(cell), states); applyControlState(controlName(cell), 'required', value); } const configured = cell && clientControlState.get(controlName(cell))?.get('required'); return configured !== undefined ? configured === 'required' : primary?.required ?? table.fields[name]?.required; },
     controlNames: name => cells.filter(cell => !name || cell.name === name).map(controlName), controlField: name => cells.find(cell => controlName(cell) === name)?.name,
     controlState: (name, key, value) => { const entry = controls.find(entry => entry.controlName === name); if (value === undefined) return clientControlState.get(name)?.get(key) ?? (key === 'disabled' ? entry?.disabled : key === 'hidden' ? entry?.wrapper.hidden : key === 'label' ? entry?.label.textContent : undefined); const states = clientControlState.get(name) ?? new Map(); states.set(key, value); clientControlState.set(name, states); applyControlState(name, key, value); return true; },
-    notification: (message, level, id) => { let element = [...document.querySelectorAll('[data-form-notification]')].find(element => element.dataset.formNotification === id); if (message == null) { element?.remove(); return; } if (!element) { element = document.createElement('p'); element.dataset.formNotification = id; element.setAttribute('role', 'status'); $('#content').prepend(element); } element.className = level === 'ERROR' ? 'unsupported' : 'source-info'; element.textContent = message; },
+    notification: (message, level, id) => {
+      let host = $('#form-notifications'), element = [...host?.children ?? []].find(element => element.dataset.formNotification === id);
+      if (message == null) { element?.remove(); return; }
+      if (!host) { host = document.createElement('div'); host.id = 'form-notifications'; $('#commands').before(host); }
+      if (!element) { element = document.createElement('p'); element.dataset.formNotification = id; element.setAttribute('role', 'status'); host.append(element); }
+      element.className = level === 'ERROR' ? 'error' : level === 'WARNING' ? 'warning' : 'info'; element.replaceChildren();
+      const glyph = document.createElement('span'); glyph.innerHTML = icon('info'); glyph.setAttribute('aria-hidden', 'true'); element.append(glyph, document.createTextNode(message));
+    },
     request: async (entity, id, options = {}) => { if (!Object.hasOwn(catalogue.tables, entity)) throw new Error(`Table ${entity} is not imported.`); return api(tablePath(entity, id ? String(id).replace(/[{}]/g, '') : undefined) + (options.query ? '?query=' + encodeURIComponent(JSON.stringify(options.query)) : ''), { method: options.method ?? 'GET', ...(options.etag ? { headers: { 'if-match': options.etag } } : {}), ...(options.data ? { body: JSON.stringify(options.data) } : {}) }); },
     save: close => saveRecord(close), refresh: () => loadRoute(), close: () => navigate(table.entity),
     openForm: options => { if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.'); if (options.useQuickCreateForm || options.openInNewWindow) throw new Error('Quick create and separate form windows are not supported locally.'); return navigate(options.entityName, { id: options.entityId ?? 'new' }); },
@@ -604,7 +734,7 @@ async function loadRoute() {
   const params = new URLSearchParams(location.search), application = params.get('appname') ?? params.get('appid');
   app = application ? catalogue.apps.find(app => app.id === application || app.uniqueName === application) : catalogue.apps.find(app => app.id === catalogue.defaultApp);
   if (!app) throw new Error('This application is not imported. Choose an available application above.');
-  $('#apps').value = app.uniqueName ?? app.id; $('#source-label').textContent = app.name ?? app.uniqueName;
+  $('#apps').innerHTML = `<span>${esc(app.name ?? app.uniqueName)}</span>${icon('chevron', 'chevron')}`; $('#apps').title = 'Select an app'; $('#source-label').textContent = app.name ?? app.uniqueName;
   const entity = params.get('etn') ?? firstEntity(app); table = catalogue.tables[entity];
   if (!table) throw new Error('No table metadata is available for this application. Import its solution and local mappings.');
   renderNavigation(); record = null; recordCapabilities = undefined; current = null; etag = null;
@@ -618,7 +748,7 @@ async function loadRoute() {
 }
 $('#collapse').addEventListener('click', () => { $('#sidebar').classList.toggle('collapsed'); $('#collapse').setAttribute('aria-expanded', String(!$('#sidebar').classList.contains('collapsed'))); });
 for (const element of document.querySelectorAll('[data-icon]')) element.innerHTML = icon(element.dataset.icon);
-$('#apps').addEventListener('change', () => run(async () => { const destination = catalogue.apps.find(app => (app.uniqueName ?? app.id) === $('#apps').value); await navigate(firstEntity(destination), { application: destination }); }));
+$('#apps').addEventListener('click', chooseApplication);
 window.addEventListener('popstate', () => run(async () => { if (await canLeave()) await loadRoute(); else history.forward(); }));
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
 $('#staff-profile').addEventListener('click', () => runButton($('#staff-profile'), staffProfile));
@@ -642,8 +772,7 @@ async function initialize() {
     const response = await fetch('/_sim/api/status');
     if (response.ok) { const status = await response.json(); const portal = $('#open-portal'); portal.hidden = status.capabilities?.powerPages === false; if (status.links?.powerPages) portal.href = status.links.powerPages; }
     catalogue = await api();
-    $('#apps').replaceChildren();
-    for (const application of catalogue.apps) $('#apps').add(new Option(application.name ?? application.uniqueName, application.uniqueName ?? application.id));
+    $('#apps').disabled = !catalogue.apps.length;
     await loadRoute();
   } catch (error) { loadFailed(error, initialize); }
 }

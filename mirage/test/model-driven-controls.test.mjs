@@ -8,6 +8,8 @@ test('control capabilities preserve explicit write restrictions and unknown plac
   assert.equal(controlDescriptor({ type: 'text', isPrimaryId: true }).create, false);
   assert.deepEqual(controlDescriptor({ type: 'unknown' }), { type: 'unknown', supported: false, create: false, update: false });
   assert.deepEqual(controlDescriptor({ type: 'text', dataverseType: 'file' }), { type: 'unsupported', supported: false, create: false, update: false });
+  assert.deepEqual(controlDescriptor({ type: 'text', dataverseType: 'multiselectpicklist' }), { type: 'multiselect', supported: true, create: true, update: true });
+  assert.equal(controlDescriptor({ type: 'multiselect', validForUpdate: false }).update, false);
 });
 
 test('supported scalar, lookup and choice controls have no unsupported reason; unresolved controls explain their boundary', () => {

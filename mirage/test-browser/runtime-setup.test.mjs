@@ -129,8 +129,11 @@ test('polymorphic lookup keeps the second target across save and unrelated edits
   await page.locator('tbody').getByRole('button', { name: 'Visible local row', exact: true }).click();
   await page.getByRole('tab', { name: 'Customer details', exact: true }).click();
   await page.getByRole('button', { name: 'Look up Customer', exact: true }).click();
-  await page.getByLabel('Lookup table', { exact: true }).selectOption('x_targetb');
-  await page.getByRole('button', { name: 'Second target', exact: true }).click();
+  await page.getByRole('button', { name: 'Advanced', exact: true }).click();
+  await page.getByRole('button', { name: 'Lookup table', exact: true }).click();
+  await page.getByRole('menuitemradio', { name: 'X Targetb', exact: true }).click();
+  await page.getByRole('radio', { name: 'Select Second target', exact: true }).check();
+  await page.getByRole('button', { name: 'Done', exact: true }).click();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.locator('#notice').filter({ hasText: 'Record saved locally.' }).waitFor();
   const read = async () => (await page.request.get(sim.url + '/_apps/api/tables/x_item/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa').then(response => response.json())).row;
@@ -147,7 +150,7 @@ test('polymorphic lookup keeps the second target across save and unrelated edits
   await page.getByLabel('Name', { exact: true }).fill('Ambiguous manual input');
   await page.getByRole('tab', { name: 'Customer details', exact: true }).click();
   await page.getByLabel('Customer', { exact: true }).fill('bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb');
-  assert.match(await page.getByLabel('Customer', { exact: true }).evaluate(input => input.validationMessage), /target table/);
+  assert.match(await page.getByLabel('Customer', { exact: true }).evaluate(input => input.validationMessage), /Select a record from the lookup results/);
   let writes = 0; page.on('request', request => { if (request.method() === 'POST' && request.url().includes('/_apps/api/tables/x_item')) writes++; });
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   assert.equal(writes, 0);

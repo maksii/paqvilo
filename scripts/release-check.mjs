@@ -12,7 +12,7 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
-const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'catalogue.mjs', 'control-descriptors.mjs', 'controls.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'providers.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
+const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'catalogue.mjs', 'control-descriptors.mjs', 'controls.mjs', 'controls.css', 'choice-control.mjs', 'date-control.mjs', 'date-control.css', 'duration-control.mjs', 'duration-control.css', 'lookup-control.mjs', 'lookup-dialog.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'providers.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
 // Reusable campaign sources only. Native recordings, configuration snapshots,
 // bridge credentials and local invocation manifests stay outside the package.
 const COMPANY_QUALIFICATION_SOURCES = new Set([

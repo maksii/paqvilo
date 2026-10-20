@@ -6,7 +6,41 @@ import { modelDrivenFixture } from './model-driven-fixture.mjs';
 import { importSolutionMetadata } from '../lib/solution-metadata.mjs';
 import { scanSolutionSources } from '../lib/solution-schema.mjs';
 import { solutionApps, appCatalogue } from '../lib/model-driven/catalogue.mjs';
-import { compileForm } from '../lib/model-driven/solution.mjs';
+import { compileForm, parseAppDefinitions } from '../lib/model-driven/solution.mjs';
+import { parseSolutionXml } from '../lib/solution-xml.mjs';
+
+test('application cards retain exported localized descriptions and icon identities', () => {
+  const source = parseSolutionXml('<AppModule><UniqueName>x_inventory</UniqueName><Descriptions><Description description="Invented inventory" languagecode="1033"/><Description description="Invented translated inventory" languagecode="1036"/></Descriptions><WebResourceId>{77777777-7777-4777-8777-777777777777}</WebResourceId></AppModule>');
+  const application = parseAppDefinitions(source, { lcid: 1036 }).apps[0];
+  assert.equal(application.description, 'Invented translated inventory');
+  assert.equal(application.descriptionLabels['1033'], 'Invented inventory');
+  assert.equal(application.iconResourceId, '77777777-7777-4777-8777-777777777777');
+});
+
+test('exported collection-name tags localize table labels even when a provider already defines the table', async t => {
+  const { solutionDir } = await modelDrivenFixture(t);
+  const entityFile = path.join(solutionDir, 'Entities/x_item/Entity.xml');
+  await fs.writeFile(entityFile, (await fs.readFile(entityFile, 'utf8')).replace('<PrimaryIdAttribute>', '<LocalizedCollectionNames><LocalizedCollectionName description="Invented items" languagecode="1033"/><LocalizedCollectionName description="Translated invented items" languagecode="1036"/></LocalizedCollectionNames><PrimaryIdAttribute>'));
+  const scan = await scanSolutionSources([solutionDir]), metadata = await importSolutionMetadata([solutionDir], { scan, lcid: 1036 });
+  assert.equal(metadata.entities.x_item.collectionLabel, 'Translated invented items');
+  const catalogue = appCatalogue({ metadata, providers: [{ tables: { x_item: { entity: 'x_item', label: 'Old provider plural', singular: 'Old provider singular', idColumn: 'x_itemid', nameColumn: 'x_name', fields: metadata.entities.x_item.fields } } }] });
+  assert.equal(catalogue.tables.x_item.label, 'Translated invented items');
+  assert.equal(catalogue.tables.x_item.singular, 'Item');
+});
+
+test('view ordering and add-column eligibility follow exported defaults and column facts', () => {
+  const catalogue = appCatalogue({ providers: [{ tables: { x_sample: { entity: 'x_sample', label: 'Samples', singular: 'Sample', idColumn: 'x_sampleid', nameColumn: 'x_name', fields: {
+    x_name: { type: 'text', columnMetadata: { displayMask: 'PrimaryName|ValidForGrid|ValidForForm' } },
+    x_formonly: { type: 'text', columnMetadata: { displayMask: 'ValidForForm' } },
+    x_logical: { type: 'text', columnMetadata: { isLogical: true, displayMask: 'ValidForGrid' } },
+    x_unknown: { type: 'text' },
+  } } } }], metadata: { views: [{ entity: 'x_sample', queryType: 0, id: 'alpha', name: 'Alpha' }, { entity: 'x_sample', queryType: 0, id: 'zulu', name: 'Zulu', isDefault: true }, { entity: 'x_sample', queryType: 0, id: 'beta', name: 'Beta' }] } });
+  assert.deepEqual(catalogue.tables.x_sample.views.map(view => view.id), ['zulu', 'alpha', 'beta']);
+  assert.equal(catalogue.tables.x_sample.fields.x_name.validForGrid, true);
+  assert.equal(catalogue.tables.x_sample.fields.x_formonly.validForGrid, false);
+  assert.equal(catalogue.tables.x_sample.fields.x_logical.validForGrid, false);
+  assert.equal(catalogue.tables.x_sample.fields.x_unknown.validForGrid, undefined);
+});
 
 test('form layout retains exported columns, hidden sections, row positions and spanning fields', () => {
   const form = compileForm({ id: 'layout', xml: '<form><tabs><tab name="general"><columns><column width="70%"><sections><section columns="11" showlabel="false"><rows><row><cell><control datafieldname="x_name"/></cell><cell><control datafieldname="x_quantity"/></cell></row><row><cell colspan="2"><control datafieldname="x_notes"/></cell></row></rows></section></sections></column><column width="30%"><sections><section visible="false"><rows><row><cell><control datafieldname="x_name"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, { x_name: {}, x_quantity: {}, x_notes: {} });
@@ -14,6 +48,14 @@ test('form layout retains exported columns, hidden sections, row positions and s
   assert.equal(tab.sections[0].showLabel, false); assert.equal(tab.sections[0].columns, 2);
   assert.deepEqual(tab.sections[0].fields.map(({ row, column, colspan }) => ({ row, column, colspan })), [{ row: 0, column: 0, colspan: 1 }, { row: 0, column: 1, colspan: 1 }, { row: 1, column: 0, colspan: 2 }]);
   assert.equal(tab.sections[1].column, 1); assert.equal(tab.sections[1].visible, false);
+});
+
+test('state labels honor the exported text control without disabling state choice controls', () => {
+  const form = compileForm({ id: 'state-layout', xml: '<form><tabs><tab name="general"><columns><column><sections><section><rows><row><cell><control datafieldname="x_state" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell><cell><control datafieldname="x_state" classid="{3EF39988-22BB-4F0B-BBBE-64B5A3748AEE}"/></cell><cell><control datafieldname="x_name" classid="{4273EDBD-AC1D-40D3-9FB2-095C621B552D}"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }, { x_state: { dataverseType: 'state' }, x_name: { dataverseType: 'nvarchar' } });
+  const fields = form.tabs[0].sections[0].fields;
+  assert.equal(fields[0].readOnlyText, true); assert.equal(fields[0].disabled, true);
+  assert.equal(fields[1].readOnlyText, undefined); assert.equal(fields[1].disabled, false);
+  assert.equal(fields[2].readOnlyText, undefined); assert.equal(fields[2].disabled, false);
 });
 
 test('model-driven app catalogue imports solution navigation, forms and views alongside the default management app', async t => {

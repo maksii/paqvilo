@@ -209,7 +209,7 @@ export async function createStandaloneRuntime(options = {}) {
     const data = createModelDrivenData({ store, catalogue, recordService,
       readMetadata: fn => overlay.withReadEpoch(fn, { valid: () => store.isUnmodifiedRead() }) });
     const model = createModelDrivenHandler({ catalogue, data, csrf: () => csrf, json, readBody, change, read: fn => organization.read(() => overlay.withReadEpoch(fn)), principal: req => sessions.resolve(req),
-      clientAssets: () => modelDriven.trustedExtensions ? sources.clientResources.assets : new Map() });
+      clientAssets: () => modelDriven.trustedExtensions ? sources.clientResources.assets : new Map([...sources.clientResources.assets].filter(([, asset]) => asset.passive === true)) });
     const dataverseAdmin = createDataverseAdmin({ store, getDataverse: () => dataverse ?? { ...organization, requests: () => [] },
       dataverseConfig: settings, dataverseSummary: dvSummary, managedIdentitySummary, managedIdentityList, json, jsonObjectBody: readBody, change });
     const admin = createRuntimeAdminRouter({ store, json, jsonObjectBody: readBody, change, csrf: () => csrf, status, state: exposed,

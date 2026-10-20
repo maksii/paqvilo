@@ -31,8 +31,9 @@ export function createModelDrivenRecordService({ organization, store = organizat
   const request = (method, entity, id, options = {}, body) => {
     const mapping = store.resolveMapping(entity), url = new URL(`/api/data/v9.2/${mapping.entitySet}${id ? `(${id})` : ''}`, origin());
     if (options.fetchXml) url.searchParams.set('fetchXml', options.fetchXml);
+    if (options.query) url.search = options.query;
     return records.handle({ method, url, origin: url.origin, version: 'v9.2', route: parseDataverseRoute(url.pathname),
-      prefer: parsePrefer('return=representation,odata.include-annotations="*"'),
+      prefer: parsePrefer('return=representation,odata.include-annotations="*"' + (options.pageSize ? `,odata.maxpagesize=${options.pageSize}` : '')),
       headers: { ...(options.etag ? { 'if-match': options.etag } : {}) }, body,
       ...context(options), requestId: randomUUID() });
   };
@@ -40,10 +41,19 @@ export function createModelDrivenRecordService({ organization, store = organizat
     const response = await request('GET', entity, id, options);
     return { row: rowOf(response.body), etag: response.body?.['@odata.etag'] };
   });
+  const retrieve = (entity, id, query, options = {}) => read(async () => (await request('GET', entity, id, { ...options, query })).body);
   const query = (entity, fetchXml, options = {}) => read(async () => {
     const response = await request('GET', entity, null, { ...options, fetchXml });
     return { rows: (response.body?.value ?? []).map(rowOf), total: response.body?.['@odata.count'] ?? -1,
       more: response.body?.['@Microsoft.Dynamics.CRM.morerecords'] === true || Boolean(response.body?.['@odata.nextLink']) };
+  });
+  // Reuse the organization's OData/FetchXML implementation for Solution code.
+  // The shell's selected view must not narrow a script's table query.
+  const list = (entity, query, options = {}) => read(async () => {
+    const response = await request('GET', entity, null, { ...options, query });
+    return { entities: response.body?.value ?? [],
+      ...(response.body?.['@odata.nextLink'] ? { nextLink: response.body['@odata.nextLink'] } : {}),
+      ...(response.body?.['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'] ? { fetchXmlPagingCookie: response.body['@Microsoft.Dynamics.CRM.fetchxmlpagingcookie'] } : {}) };
   });
   const capabilities = (entity, options = {}, { id, fields = {} } = {}) => {
     const { user } = context(options), mapping = store.resolveMapping(entity);
@@ -103,5 +113,5 @@ export function createModelDrivenRecordService({ organization, store = organizat
     return remove ? { deleted: true } : { id: id ?? response.body?.[mapping.idColumn], row: rowOf(response.body), etag: response.body?.['@odata.etag'] };
   };
   // Callable write preserves the original embedded administration contract.
-  return Object.assign(write, { write, get, query, capabilities });
+  return Object.assign(write, { write, get, retrieve, query, list, capabilities });
 }

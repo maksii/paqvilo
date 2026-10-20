@@ -24,7 +24,7 @@ export function solutionApps(scan, { lcid = 1033 } = {}) {
   const navigation = areas => (areas ?? []).map(area => ({ ...area, title: pickLabel(area.titleLabels, lcid) ?? area.title,
     groups: area.groups.map(group => ({ ...group, title: pickLabel(group.titleLabels, lcid) ?? group.title,
       items: group.items.map(item => ({ ...item, title: pickLabel(item.titleLabels, lcid) ?? item.title })) })) }));
-  return [...apps.values()].map(app => ({ ...app, name: pickLabel(app.nameLabels, lcid) ?? app.name, navigation: navigation(app.navigation) }));
+  return [...apps.values()].map(app => ({ ...app, name: pickLabel(app.nameLabels, lcid) ?? app.name, description: pickLabel(app.descriptionLabels, lcid) ?? app.description, navigation: navigation(app.navigation) }));
 }
 
 /** Stable JSON contract consumed by the shell and future control/command registries. */
@@ -38,8 +38,17 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
       fields: { ...(mapping.fieldMetadata ?? mapping.fields), ...exported?.fields }, source: exported ? 'solution' : 'local-mapping', projected: false };
   }
   for (const table of Object.values(tables)) {
+    const exported = metadata.entities?.[table.entity];
+    if (exported?.collectionLabel != null) table.label = exported.collectionLabel;
+    if (exported?.label != null) table.singular = exported.label;
+    const mapping = mappings[table.entity];
+    if (mapping?.entitySet) table.entitySet = mapping.entitySet;
+    if (mapping?.relationships) table.relationships = structuredClone(mapping.relationships);
     table.fields = Object.fromEntries(Object.entries(table.fields).map(([name, field]) => [name, typeof field === 'object' && field ? { name, ...field } : { name, label: friendly(name), type: 'text', dataverseType: field }]));
-    for (const field of Object.values(table.fields)) { field.control = controlDescriptor(field); field.type = field.control.type; }
+    for (const field of Object.values(table.fields)) { field.control = controlDescriptor(field); field.type = field.control.type;
+      const mask = String(field.columnMetadata?.displayMask ?? '').trim();
+      if (field.columnMetadata?.isLogical === true || mask) field.validForGrid = field.columnMetadata?.isLogical !== true && /(?:^|\|)\s*ValidForGrid\s*(?:\||$)/i.test(mask);
+    }
     table.fields[table.idColumn] ??= { name: table.idColumn, label: 'ID', type: 'text', isPrimaryId: true, validForCreate: false, validForUpdate: false };
     table.fields[table.nameColumn] ??= { name: table.nameColumn, label: 'Name', type: 'text' };
     const forms = (metadata.forms ?? []).filter(form => form.entity === table.entity && form.active !== false && (form.systemFormType === undefined || form.systemFormType === 2) && (!form.formType || form.formType === 'main'));
@@ -50,8 +59,10 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
     table.commands = [...new Map(table.commands.map(command => [command.id, command])).values()];
     if (!table.forms.length) table.forms = [{ id: 'generated', name: 'Information', source: 'generated', tabs: [{ id: 'general', label: 'General', visible: true, sections: [{ label: '', fields: Object.values(table.fields).filter(field => !field.isPrimaryId).map(field => ({ name: field.name, label: field.label, supported: true, visible: true })) }] }] }];
     table.views = (metadata.views ?? []).filter(view => view.entity === table.entity && view.queryType === 0).map(view => ({ id: view.id, name: view.name, isDefault: view.isDefault, fields: view.fields, fetchXml: view.fetchXml, source: 'solution' }));
+    table.lookupViews = (metadata.views ?? []).filter(view => view.entity === table.entity && view.queryType === 64).map(view => ({ id: view.id, name: view.name, isDefault: view.isDefault, fields: view.fields, fetchXml: view.fetchXml, source: 'solution' }));
     if (!table.views.length) table.views = [{ id: 'active', name: `Active ${table.label}`, isDefault: true, source: 'generated', state: 0 }, { id: 'all', name: `All ${table.label}`, source: 'generated' }, { id: 'inactive', name: `Inactive ${table.label}`, source: 'generated', state: 1 }];
-    for (const view of table.views) view.fields ??= [table.nameColumn, ...Object.keys(table.fields).filter(name => ![table.nameColumn, table.idColumn].includes(name)).slice(0, 5)].map(name => ({ name, width: 180 }));
+    for (const definitions of [table.views, table.lookupViews]) definitions.sort((left, right) => Number(Boolean(right.isDefault)) - Number(Boolean(left.isDefault)) || String(left.name ?? left.id).localeCompare(String(right.name ?? right.id), undefined, { sensitivity: 'base', numeric: true }));
+    for (const view of [...table.views, ...table.lookupViews]) view.fields ??= [table.nameColumn, ...Object.keys(table.fields).filter(name => ![table.nameColumn, table.idColumn].includes(name)).slice(0, 5)].map(name => ({ name, width: 180 }));
     yield;
   }
   const imported = structuredClone(metadata.modelDrivenApps ?? []);
@@ -66,6 +77,8 @@ function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = por
     : apps.find(app => app.id === providerDefault) ?? apps[0];
   if (selectedDefault && !defaultApp) throw new Error(`Default application '${selectedDefault}' is not imported.`);
   for (const app of apps) {
+    const image = app.iconResourceId && clientExtensions?.resources?.find(resource => resource.type === 'image' && resource.id === app.iconResourceId);
+    if (image) app.iconUrl = image.url;
     if (!app.navigation?.length) {
       const names = app.components?.filter(component => component.type === 1).map(component => component.entity).filter(Boolean) ?? [];
       app.navigation = [{ id: 'main', title: app.name ?? app.uniqueName, groups: [{ id: 'tables', title: 'Tables', items: names.map(entity => ({ id: entity, entity, title: tables[entity]?.label ?? entity, supported: Boolean(tables[entity]) })) }] }];

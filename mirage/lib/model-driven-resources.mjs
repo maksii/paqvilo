@@ -120,7 +120,7 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
           const unpacked = /^webresources\//i.test(entry.name) && /\.data\.xml$/i.test(entry.name)
             && entry.name.replace(/^webresources\//i, '').replace(/\.data\.xml$/i, '') === name ? entry.name.replace(/\.data\.xml$/i, '') : null;
           const id = childText(node, 'WebResourceId') ?? childText(node, 'webresourceid');
-          if (name && [2, 3].includes(type)) definitions.push({ name, type, file, unpacked, id });
+          if (name && [2, 3, 5, 6, 7, 11].includes(type)) definitions.push({ name, type, file, unpacked, id });
         }
       } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_CLIENT_XML_INVALID', source: entry.name, message: error.message }); }
     }
@@ -135,8 +135,9 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
         if (!entry) throw new Error('Declared WebResource file is missing or oversized.');
         const data = await readEntry(entry);
         if (data.length > limit) throw new Error('Declared WebResource file is missing or oversized.');
-        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: definition.type === 3 ? 'script' : 'style', source: entry.file ?? `${layer.dir}!/${entry.name}` });
-        assets.set(url, { data, mime: definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', file: entry.file, name: definition.name });
+        const imageMime = { 5: 'image/png', 6: 'image/jpeg', 7: 'image/gif', 11: 'image/svg+xml' }[definition.type];
+        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: imageMime ? 'image' : definition.type === 3 ? 'script' : 'style', source: entry.file ?? `${layer.dir}!/${entry.name}` });
+        assets.set(url, { data, mime: imageMime ?? (definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'), ...(imageMime ? { passive: true } : {}), file: entry.file, name: definition.name });
       } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_WEBRESOURCE_UNRESOLVED', name: definition.name, message: error.message }); }
     }
   }

@@ -9,7 +9,7 @@ function runtimeFixture(overrides = {}) {
     form: { clientEvents: [] }, extensions: { trusted: false }, read: name => record[name], write: (name, value) => { record[name] = value; writes.push({ name, value }); }, isDirty: name => name ? writes.some(write => write.name === name) : writes.length > 0,
     controlNames: name => name ? [name] : ['x_name', 'x_quantity'], controlField: name => name,
     controlState: (name, key, value) => value === undefined ? state.get(name + key) : state.set(name + key, value), notification: (...args) => notices.push(args),
-    request: async (entity, id, options = {}) => { requests.push({ entity, id, options }); return { row: record, rows: [record], etag: 'W/"1"', more: false }; }, save: async close => writes.push({ save: close }), refresh() {}, close() {}, openForm() {}, alert: async () => {}, confirm: async () => true,
+    request: async (entity, id, options = {}) => { requests.push({ entity, id, options }); return options.query?.scope === 'odata' ? id ? record : { entities: [record] } : { row: record, rows: [record], etag: 'W/"1"', more: false }; }, save: async close => writes.push({ save: close }), refresh() {}, close() {}, openForm() {}, alert: async () => {}, confirm: async () => true,
     environment: { location: { origin: 'http://127.0.0.1:1234', href: 'http://127.0.0.1:1234/main.aspx' } }, ...overrides };
   return { runtime: createFormClientRuntime(host), record, writes, requests, notices, state, host };
 }
@@ -41,15 +41,27 @@ test('client attribute types and choice labels derive from exported metadata', (
   assert.deepEqual(runtime.formContext.getAttribute('x_choice').getOption('One'), { text: 'One', value: 1 });
 });
 
-test('WebApi maps local logical names and typed bounded query options through the staff adapter', async () => {
+test('global context reports the selected local staff without inventing security role identifiers', () => {
+  const { runtime } = runtimeFixture({ user: { id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', name: 'Invented staff', roles: ['Basic User'] } });
+  const settings = runtime.Xrm.Utility.getGlobalContext().userSettings;
+  assert.equal(settings.userId, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa'); assert.equal(settings.userName, 'Invented staff');
+  assert.throws(() => settings.securityRoles, /does not support/);
+});
+
+test('WebApi sends query options unchanged to the canonical local staff query engine', async () => {
   const { runtime, requests } = runtimeFixture();
   const result = await runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', "?$select=x_name,x_quantity&$filter=x_quantity ge 2 and x_name ne 'Gold'&$orderby=x_quantity desc&$top=5");
   assert.equal(result.entities.length, 1);
-  assert.deepEqual(requests[0].options.query, { columns: ['x_name', 'x_quantity'], filters: [{ field: 'x_quantity', operator: 'ge', value: 2 }, { field: 'x_name', operator: 'ne', value: 'Gold' }], sort: 'x_quantity', direction: 'desc', pageSize: 5, scope: 'table' });
+  assert.deepEqual(requests[0].options.query, { scope: 'odata', options: "?$select=x_name,x_quantity&$filter=x_quantity ge 2 and x_name ne 'Gold'&$orderby=x_quantity desc&$top=5" });
   await runtime.Xrm.WebApi.updateRecord('x_item', 'id', { x_name: 'Gold' });
   assert.equal(requests.at(-1).options.etag, 'W/"1"'); assert.equal(requests.at(-1).options.method, 'PATCH');
-  await assert.rejects(runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', '?$expand=anything'), /does not support/);
-  await assert.rejects(runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', '?$filter=contains(x_name,\'A\')'), /does not support/);
+  await runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', "?$filter=contains(x_name,'A')", 25);
+  assert.deepEqual(requests.at(-1).options.query, { scope: 'odata', options: "?$filter=contains(x_name,'A')", pageSize: 25 });
+  await assert.rejects(runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', 'https://example.invalid/api/data/v9.2/x_items?$skiptoken=ignored'), /local imported table/);
+  await assert.rejects(runtime.Xrm.WebApi.retrieveMultipleRecords('x_item', '', 5001), /maxPageSize/);
+  assert.equal((await runtime.Xrm.WebApi.online.retrieveRecord('x_item', 'id', '?$select=x_name')).x_name, 'Copper');
+  const online = runtime.Xrm.WebApi.online; runtime.destroy();
+  assert.throws(() => online.retrieveRecord('x_item', 'id'), /disposed/);
 });
 
 test('exported script loading requires explicit trust and local resource admission', async () => {
@@ -70,6 +82,39 @@ test('unsupported WebApi lookup bindings fail before any record request or parti
   await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_item', record.x_itemid, { x_name: 'Must not write', 'x_parentid@odata.bind': '/x_items(aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa)' }), /does not support Xrm.WebApi lookup binding/);
   await assert.rejects(runtime.Xrm.WebApi.createRecord('x_item', { x_name: 'Must not create', 'x_parentid@odata.bind': null }), /lookup binding/);
   assert.deepEqual(requests, []); assert.deepEqual(record, before);
+});
+
+test('WebApi binds imported single-valued relationships without guessing entity sets or navigation names', async () => {
+  const table = { entity: 'x_child', idColumn: 'x_childid', fields: { x_parentid: { type: 'lookup', targets: ['x_item', 'x_other'] } },
+    relationships: { x_Parent: { many: false, from: 'x_parentid', entity: 'x_item' } } };
+  const { runtime, requests } = runtimeFixture({ tables: { x_child: table, x_item: { entitySet: 'x_inventory' }, x_other: { entitySet: 'x_others' } } });
+  const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+  await runtime.Xrm.WebApi.updateRecord('x_child', id, { 'x_Parent@odata.bind': `/x_inventory(${id})` });
+  assert.deepEqual(requests.at(-1).options, { method: 'PATCH', data: { x_parentid: { id, entity: 'x_item' } }, etag: 'W/"1"' });
+  await runtime.Xrm.WebApi.updateRecord('x_child', id, { 'x_Parent@odata.bind': null });
+  assert.deepEqual(requests.at(-1).options.data, { x_parentid: null });
+  const count = requests.length;
+  for (const value of [`https://example.invalid/x_inventory(${id})`, `/x_others(${id})`, `/x_inventory(${id})?secret=value`]) {
+    await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_child', id, { 'x_Parent@odata.bind': value }), /local entity-set|imported target/);
+  }
+  await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_child', id, { x_parentid: null, 'x_Parent@odata.bind': `/x_inventory(${id})` }), /conflicting/);
+  await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_child', id, { 'x_parentid@odata.bind': `/x_inventory(${id})` }), /exported navigation-property/);
+  assert.equal(requests.length, count, 'invalid bindings fail before even reading the target record');
+});
+
+test('multiselect form values expose numeric arrays and Xrm writes translate native choice strings', async () => {
+  const field = { name: 'x_choices', type: 'multiselect', options: [{ value: 1, label: 'One' }, { value: 2, label: 'Two' }] };
+  const table = { entity: 'x_item', idColumn: 'x_itemid', fields: { x_choices: field } };
+  const { runtime, record, requests } = runtimeFixture({ table, tables: { x_item: table } });
+  record.x_choices = '1,2';
+  const attribute = runtime.formContext.getAttribute('x_choices');
+  assert.equal(attribute.getAttributeType(), 'multiselectoptionset');
+  assert.deepEqual(attribute.getValue(), [1, 2]); assert.deepEqual(attribute.getText(), ['One', 'Two']);
+  attribute.getValue().push(3); assert.equal(record.x_choices, '1,2', 'read values cannot mutate the form draft');
+  attribute.setValue([2]); assert.deepEqual(attribute.getText(), ['Two']);
+  await runtime.Xrm.WebApi.updateRecord('x_item', record.x_itemid, { x_choices: '2, 1' });
+  assert.deepEqual(requests.at(-1).options.data, { x_choices: [2, 1] });
+  await assert.rejects(runtime.Xrm.WebApi.updateRecord('x_item', record.x_itemid, { x_choices: '2,,1' }), /comma-separated/);
 });
 
 test('disposing a form during WebApi preflight prevents follow-up mutations and stale read results', async () => {

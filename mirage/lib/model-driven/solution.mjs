@@ -35,6 +35,9 @@ export function parseAppDefinitions(root, { lcid = 1033 } = {}) {
     uniqueName: childText(node, 'UniqueName') ?? childText(node, 'uniquename') ?? node.attrs.UniqueName,
     name: label(child(node, 'LocalizedNames'), lcid) ?? childText(node, 'Name') ?? childText(node, 'name'),
     nameLabels: labelsOf(child(node, 'LocalizedNames')),
+    description: (() => { const descriptions = descendants(child(node, 'Descriptions'), 'Description'); return (descriptions.find(row => Number(row.attrs.languagecode) === Number(lcid)) ?? descriptions[0])?.attrs.description ?? childText(node, 'Description') ?? childText(node, 'description'); })(),
+    descriptionLabels: Object.fromEntries(descendants(child(node, 'Descriptions'), 'Description').filter(row => row.attrs.languagecode && row.attrs.description != null).map(row => [row.attrs.languagecode, row.attrs.description])),
+    iconResourceId: id(childText(node, 'WebResourceId') ?? childText(node, 'webresourceid')) || undefined,
     components: [...descendants(node, 'AppModuleComponent'), ...descendants(node, 'appmodulecomponent')].map(component => ({
       type: Number(component.attrs.type ?? component.attrs.componenttype),
       id: id(component.attrs.id ?? component.attrs.objectid),
@@ -118,8 +121,12 @@ export function compileForm(form, fields, lcid = 1033) {
         const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
         const pcf = isCustom ? pcfBinding(control) : undefined;
         const supported = Boolean(name && fields[name] && (!isCustom || pcf));
+        // A state bound to the standard text control is a read-only label. A
+        // state choice control retains its own exported behavior.
+        const readOnlyText = fields[name]?.dataverseType === 'state' && id(control.attrs.classid) === '4273edbd-ac1d-40d3-9fb2-095c621b552d' && !pcf;
         return [{ ...position, sourceControl: sourceControl(control), name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
-          visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true',
+          visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true' || readOnlyText,
+          ...(readOnlyText ? { readOnlyText: true } : {}),
           ...(pcf ? { pcf } : {}), supported,
           ...(!supported ? { reason: !name ? 'This control is not supported locally yet.' : !fields[name] ? 'Column metadata is unavailable.' : 'This custom control is not supported locally yet.' } : {}) }];
       }),

@@ -1,3 +1,10 @@
+@import url('./controls.css');
+@import url('./duration-control.css');
+#form-notifications { flex:none; margin:-7px -15px 10px -7px; }
+#form-notifications:empty { display:none; }
+#form-notifications p { display:flex; align-items:center; gap:16px; min-height:32px; padding:6px 12px; margin:0; background:#edebe9; font-size:13px; }
+#form-notifications .error { background:#fde7e9; color:#a4262c; }
+#form-notifications .warning { background:#fff4ce; }
 :root{
   font-family:"Segoe UI",Arial,sans-serif;
   color:#242424;
@@ -57,14 +64,14 @@
                     .chevron{
                       width:12px;
                       height:12px}
-                      input,select,textarea{
+                      input:not(.model-driven-pcf *),select:not(.model-driven-pcf *),textarea:not(.model-driven-pcf *){
                         border:1px solid #8a8886;
                         border-radius:2px;
                         padding:5px 10px;
                         background:white;
                         color:#242424;
                         min-height:32px}
-                        input:focus,select:focus,textarea:focus{
+                        input:focus:not(.model-driven-pcf *),select:focus:not(.model-driven-pcf *),textarea:focus:not(.model-driven-pcf *){
                           outline:2px solid #0078d4;
                           outline-offset:1px}
                           textarea{
@@ -490,19 +497,19 @@
                                                                                                                                                                                                                   position:relative;
                                                                                                                                                                                                                   padding-right:12px;
                                                                                                                                                                                                                   overflow-wrap:anywhere}
-                                                                                                                                                                                                                  .field input,.field textarea,.field select{
+                                                                                                                                                                                                                  .field input:not(:where(.model-driven-pcf *)),.field textarea:not(:where(.model-driven-pcf *)),.field select:not(:where(.model-driven-pcf *)){
                                                                                                                                                                                                                     width:100%;
                                                                                                                                                                                                                     min-width:0;
                                                                                                                                                                                                                     background:#f5f5f5;
                                                                                                                                                                                                                     border:1px solid transparent;
                                                                                                                                                                                                                     border-radius:4px}
-                                                                                                                                                                                                                    .field input:hover,.field select:hover,.field textarea:hover{
+                                                                                                                                                                                                                    .field input:not(:where(.model-driven-pcf *)):hover,.field select:not(:where(.model-driven-pcf *)):hover,.field textarea:not(:where(.model-driven-pcf *)):hover{
                                                                                                                                                                                                                       border-color:#d2d0ce}
                                                                                                                                                                                                                       .field .required{
                                                                                                                                                                                                                         color:#a4262c;
                                                                                                                                                                                                                         position:absolute;
                                                                                                                                                                                                                         right:0}
-                                                                                                                                                                                                                        .field input:disabled,.field select:disabled,.field textarea:disabled{
+                                                                                                                                                                                                                        .field input:not(:where(.model-driven-pcf *)):disabled,.field select:not(:where(.model-driven-pcf *)):disabled,.field textarea:not(:where(.model-driven-pcf *)):disabled{
                                                                                                                                                                                                                           color:#605e5c;
                                                                                                                                                                                                                           background:#f5f5f5}
                                                                                                                                                                                                                           .lookup{
@@ -855,3 +862,143 @@ button[aria-busy="true"]::after { margin-left:6px; }
 .lookup-results[aria-busy="true"], .related-results[aria-busy="true"] { opacity:.65; }
 @keyframes app-spin { to { transform:rotate(360deg); } }
 @media(prefers-reduced-motion:reduce) { .app-loading::before, button[aria-busy="true"]::after { animation:none; } }
+
+/* Sizes measured from the native app and view selectors. */
+.global #apps { width:auto; max-width:420px; padding:0 8px; gap:12px; font-size:14px; font-weight:400; justify-content:flex-start; }
+.global #apps>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.global #apps .chevron { width:12px; height:12px; }
+.global #apps:hover:enabled, .global #apps[aria-expanded="true"] { background:#5b1e5b; }
+.grid-header .view-select { color:#242424; min-width:0; display:flex; justify-content:flex-start; gap:8px; }
+.view-select>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.shell-picker { position:fixed; z-index:20; max-width:min(460px,calc(100vw - 24px)); overflow:auto; background:#fff; border:1px solid #edebe9; border-radius:2px; box-shadow:0 2px 8px #0003; padding:4px 0; color:#242424; font-size:14px; }
+.shell-picker.view-picker { width:312px; }
+.picker-options { padding:0 4px; }
+.picker-options button { width:100%; height:37px; min-height:37px; justify-content:flex-start; text-align:left; padding:4px; border-radius:2px; gap:4px; }
+.picker-options button.selected { background:#ebebeb; }
+.picker-options button:focus-visible { outline:2px solid #0078d4; outline-offset:-2px; background:#ebebeb; }
+.picker-options button>span:not(.picker-check) { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.picker-options button small { margin-left:auto; padding:0 20px; font-size:12px; color:#605e5c; font-weight:400; }
+.picker-check { width:16px; height:16px; flex:none; }
+.picker-item-icon { width:14px; height:14px; }
+.picker-search { display:flex; gap:8px; align-items:center; margin:3px 12px 8px; border:1px solid #8a8886; border-radius:2px; padding:0 10px; height:32px; }
+.picker-search input { border:0; min-width:0; width:100%; padding:4px 0; height:30px; min-height:30px; }
+.picker-search:focus-within { border-color:#0078d4; }
+.picker-search input:focus { outline:0; }
+.picker-empty { margin:12px 16px; color:#605e5c; }
+.picker-actions { border-top:1px solid #f3f2f1; margin:0 4px; }
+.picker-actions button { height:37px; min-height:37px; width:100%; justify-content:flex-start; padding:0 8px; }
+.app-picker-dialog { width:90vw; height:90vh; max-width:none; max-height:90vh; padding:0; border:0; border-radius:8px; box-shadow:none; overflow:hidden; }
+.app-picker-dialog.expanded { width:100vw; height:100vh; max-height:100vh; border-radius:0; }
+.app-picker-dialog::backdrop { background:#0008; }
+.app-picker-dialog h2 { margin:0; height:53px; padding:13px 11px; font-size:16px; line-height:26px; font-weight:600; background:white; }
+.app-picker-dialog .dialog-body { padding:0; height:calc(100% - 53px); max-height:none; background:#e9e9e9; overflow:auto; }
+.app-picker-dialog .dialog-actions { display:none; }
+.app-picker-close,.app-picker-expand { position:absolute; top:10px; right:11px; width:32px; height:32px; min-height:32px; padding:0; }
+.app-picker-expand { right:45px; }
+.app-picker-close .icon,.app-picker-expand .icon { width:12px; height:12px; }
+.app-picker-content { padding:16px 27px; color:#605e5c; }
+.app-picker-toolbar { display:flex; align-items:center; gap:0; min-height:44px; margin-bottom:20px; }
+.app-picker-toolbar button { min-height:32px; font-size:12px; padding:0 10px; gap:4px; }
+.app-picker-search { margin-right:auto; width:272px; display:flex; align-items:center; gap:2px; }
+.app-picker-search input { min-width:0; width:254px; border:1px solid transparent; background:transparent; height:21px; min-height:21px; padding:1px 2px; font-size:12px; }
+.app-picker-search input:focus { outline:2px solid #242424; outline-offset:-2px; border-radius:3px; }
+.app-picker-section { display:flex; align-items:center; gap:4px; margin:0 0 12px; font-weight:600; font-size:16px; }
+.app-picker-section::before { content:''; border-left:6px solid transparent; border-right:6px solid transparent; border-top:6px solid #666; }
+.app-cards { display:flex; flex-wrap:wrap; gap:12px; margin-bottom:28px; align-content:start; }
+.app-card { position:relative; display:flex; flex-direction:column; align-items:stretch; text-align:left; justify-content:flex-start; width:218px; height:238px; padding:0; border:1px solid #797775; border-radius:0; gap:0; background:white; color:#444; }
+.app-card:hover:enabled { box-shadow:0 3px 8px #0003; background:#fff; border-color:#242424; }
+.app-card-art { width:100%; height:98px; background:#00164b; color:#e6d7ef; display:grid; place-items:center; flex:none; }
+.app-card-art .icon { width:44px; height:44px; }
+.app-card-info { display:flex; flex-direction:column; gap:8px; min-width:0; padding:20px 12px 16px; flex:1; }
+.app-card-info strong { font-size:16px; font-weight:400; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }
+.app-card-description { font-size:12px; line-height:17px; display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:2; overflow:hidden; }
+.app-card-footer { position:absolute; bottom:0; left:12px; display:block; width:max-content; background:#666; color:white; padding:2px 4px; font-size:9px; font-weight:600; }
+.app-picker-empty { padding:24px 0; color:#605e5c; }
+@media(max-width:650px) { .app-picker-dialog { width:calc(100vw - 24px); height:calc(100vh - 24px); max-height:calc(100vh - 24px); } .app-picker-content { padding:12px; } .app-picker-toolbar { gap:4px; flex-wrap:wrap; } .app-picker-search { width:100%; margin-bottom:12px; } .global #apps { max-width:calc(100vw - 260px); } .app-cards { justify-content:center; } }.empty-grid { height:100%; }
+.empty-grid thead { height:42px; }
+.empty-grid .empty-state { padding:0; border:0; color:#242424; vertical-align:middle; }
+.empty-grid-panel { display:flex; flex-direction:column; align-items:center; justify-content:center; padding:30px; }
+.empty-grid-panel p { margin:24px 0 0; font-size:14px; }
+.column-picker { width:180px; min-width:180px!important; padding:0; }
+.column-picker .picker-options { padding:0; }
+.column-picker .picker-options button { height:36px; min-height:36px; padding:0 8px 0 4px; gap:8px; }
+.column-picker .picker-options button.selected { background:white; }
+.column-picker .picker-options button:hover:enabled { background:#f3f2f1; }
+.column-picker .picker-options button.picker-separator { border-top:1px solid #f0f0f0; border-radius:0; }
+.column-picker .picker-check { width:16px; }
+.side-panel { position:fixed; inset:0 0 0 auto; margin:0; width:458px; max-width:100vw; height:100vh; max-height:100vh; border:0; border-radius:0; padding:0; box-shadow:-8px 0 24px #0002; display:flex; flex-direction:column; }
+.side-panel:not([open]) { display:none; }
+.side-panel::backdrop { background:#fff3; }
+.side-panel h2 { font-size:20px; font-weight:600; margin:0; min-height:56px; padding:20px 48px 8px 24px; }
+.side-panel .dialog-body { flex:1; overflow:auto; padding:0 16px; max-height:none; }
+.side-panel .dialog-actions { border-top:1px solid #edebe9; min-height:56px; padding:10px 16px; margin:0; gap:20px; }
+.side-panel .dialog-actions button { min-width:80px; }
+.side-panel-close { position:absolute; right:4px; top:16px; width:32px; height:32px; padding:0; }
+.columns-toolbar { display:flex; align-items:center; margin:0 -8px 16px; gap:0; white-space:nowrap; }
+.columns-toolbar button { padding:0 4px; gap:6px; font-size:14px; }
+.columns-toolbar button .icon { width:16px; }
+.column-card { display:flex; align-items:center; gap:16px; height:36px; margin:8px 0; padding:0 8px; background:#f7f7f7; border-radius:3px; color:#605e5c; }
+.column-card>span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.column-card>button { width:32px; height:32px; padding:0; margin-left:auto; }
+.column-card>button .icon { transform:rotate(90deg); }
+.column-card>button:not(:focus) { opacity:0; }
+.column-card:hover>button,.column-card:focus-within>button { opacity:1; }
+.add-column-browser h3 { font-size:18px; font-weight:600; }
+.add-column-browser>input { width:100%; margin-bottom:16px; }
+.add-column-browser>div label { display:flex; align-items:center; gap:12px; min-height:36px; }
+.app-card-art img { width:44px; height:44px; object-fit:contain; }
+.side-panel { width:470px; }
+.filters-panel { width:976px; }
+.filters-panel h2 { min-height:50px; padding-top:18px; }
+.filters-panel .dialog-body { padding:0 24px; position:relative; }
+.filters-toolbar { display:flex; align-items:center; gap:0; margin:0 -8px; height:48px; }
+.filters-toolbar button { padding:0 8px; color:#0066b8; }
+.filter-data-mode { height:52px; margin:0 -24px 16px; padding:0 18px; display:flex; align-items:center; gap:8px; border-block:1px solid #d2d0ce; }
+.filter-data-mode button { border:1px solid #0078d4; color:#0078d4; padding:0 8px; }
+.filter-data-mode>.icon { color:#0078d4; }
+.filter-group { position:absolute; top:116px; left:24px; width:65px; padding:0 8px; background:#f3f2f1; }
+.filter-headings { display:grid; grid-template-columns:200px 200px minmax(0,1fr); gap:10px; margin:0 8px 14px 86px; padding-top:6px; font-weight:600; }
+.filter-conditions { margin-left:86px; }
+.filters-panel .filter-row { display:grid; grid-template-columns:200px 200px minmax(0,1fr) 32px; gap:10px; margin:8px 0; }
+.filter-picker { border:1px solid #8a8886; height:32px; justify-content:space-between; gap:4px; min-width:0; padding:0 8px; background:white; }
+.filter-picker span { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.filters-panel .filter-row>input { min-width:0; width:100%; }
+.filters-panel .filter-row>button:last-child { padding:0; }
+.add-filter-split { display:flex; align-items:center; width:max-content; margin:10px 0 0 51px; border:1px solid #d2d0ce; }
+.add-filter-split button { min-height:30px; height:30px; border:0; border-radius:0; }
+.add-filter-split button:last-child { width:30px; padding:0; border-left:1px solid #edebe9; }
+.filters-panel .dialog-actions { min-height:65px; padding:15px 29px; gap:10px; }
+@media(max-width:750px) { .filter-headings { display:none; } .filter-group { position:static; margin-bottom:12px; } .filter-conditions { margin-left:0; } .filters-panel .filter-row { grid-template-columns:minmax(0,1fr) minmax(0,1fr); } .filters-toolbar { flex-wrap:wrap; height:auto; min-height:48px; } }
+dialog.add-column-browser { position:fixed; inset:0 0 0 auto; margin:0; width:340px; max-width:100vw; height:100vh; max-height:100vh; padding:0 18px 0 16px; border:0; border-radius:0; box-shadow:-4px 0 12px #0002; display:flex; flex-direction:column; }
+dialog.add-column-browser:not([open]) { display:none; }
+dialog.add-column-browser::backdrop { background:#fff9; }
+.add-column-browser h3 { margin:20px 8px 12px; font-size:20px; font-weight:600; }
+.add-column-tabs { display:flex; height:36px; margin:0 8px 4px; gap:26px; }
+.add-column-tabs button { padding:0; border-bottom:2px solid transparent; border-radius:0; }
+.add-column-tabs [aria-selected=true] { border-bottom-color:#0078d4; font-weight:600; }
+.add-column-search { display:flex; margin-bottom:12px; }
+.add-column-search input { width:180px; min-width:0; border-radius:0; }
+.add-column-search button { border:1px solid #8a8886; border-left:0; border-radius:0; width:100px; justify-content:space-between; }
+.add-column-options { flex:1; overflow:auto; border-top:1px solid #d2d0ce; }
+.add-column-options button { display:flex; justify-content:flex-start; width:100%; height:29px; min-height:29px; padding:0; gap:6px; }
+.add-column-footer { height:38px; padding:2px 12px; display:flex; justify-content:flex-end; margin:0 -18px 0 -16px; border-top:1px solid #edebe9; }
+.add-column-footer button { width:80px; min-height:32px; }
+/* Component styles retain ownership of descendants of a PCF host. */
+aside.collapsed { overflow:visible; }
+aside.collapsed nav { display:block; }
+aside.collapsed nav>h2 { display:none; }
+aside.collapsed nav>button,aside.collapsed nav summary { width:53px; padding:0; justify-content:center; gap:0; }
+aside.collapsed nav>button>span,aside.collapsed nav summary>span,aside.collapsed nav summary>.chevron { display:none; }
+aside.collapsed nav details { position:relative; }
+aside.collapsed .navigation-history { position:absolute; z-index:8; left:53px; top:0; width:240px; background:#fff; border:1px solid #edebe9; box-shadow:0 4px 12px #0003; padding:4px 0; }
+aside.collapsed .navigation-history button { padding:0 16px; height:35px; }
+aside.collapsed .navigation-history p { padding:8px 16px; }
+[hidden] { display:none!important; }
+.field input[type="number"]:not(:where(.model-driven-pcf *)) { appearance:textfield; -moz-appearance:textfield; }
+.field input[type="number"]:not(:where(.model-driven-pcf *))::-webkit-inner-spin-button,.field input[type="number"]:not(:where(.model-driven-pcf *))::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+/* Keep the record identity and tab strip visible as exported sections scroll. */
+.record-content { isolation:isolate; }
+.record-content>.record-card { position:sticky; top:0; z-index:2; }
+.record-content>.form-layout { position:relative; z-index:1; }
+.grid-header .view-select>span { font-size:20px; line-height:20px; font-weight:600; }
+.grid-header .view-select>.chevron { color:#616161; }

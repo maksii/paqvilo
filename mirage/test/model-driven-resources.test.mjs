@@ -290,3 +290,27 @@ test('standalone HTTP denies untrusted code and only serves declared assets afte
     } finally { await sim.close(); }
   }
 });
+
+test('application icons use passive declared image resources without enabling Solution code', async t => {
+  const id = '77777777-7777-4777-8777-777777777777';
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M1 1h22v22H1z"/></svg>';
+  const root = await fixture(t, {
+    'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedIcons</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+    'AppModules/x_inventory/AppModule.xml': `<AppModule><UniqueName>x_inventory</UniqueName><LocalizedNames><LocalizedName description="Inventory" languagecode="1033"/></LocalizedNames><WebResourceId>{${id}}</WebResourceId></AppModule>`,
+    'WebResources/x_icon.svg': svg,
+    'WebResources/x_icon.svg.data.xml': `<WebResource><WebResourceId>{${id}}</WebResourceId><Name>x_/icon.svg</Name><WebResourceType>11</WebResourceType><FileName>WebResources/x_icon.svg</FileName></WebResource>`,
+    'WebResources/x_events.js': 'window.MustStayDisabled = true;',
+    'WebResources/x_events.js.data.xml': descriptor('x_/events.js', 'WebResources/x_events.js'),
+  });
+  const sim = await createSimulator({ runtime: { kind: 'model-driven' }, simulation: { level: 'dry-run' }, solutionRoots: [root], modelDriven: { trustedExtensions: false }, watch: false });
+  t.after(() => sim.close());
+  const catalogue = await (await fetch(sim.url + '/_apps/api')).json();
+  assert.equal(catalogue.clientExtensions.trusted, false);
+  const icon = catalogue.clientExtensions.resources.find(resource => resource.type === 'image');
+  assert.equal(catalogue.apps.find(app => app.uniqueName === 'x_inventory').iconUrl, icon.url);
+  const response = await fetch(sim.url + icon.url); assert.equal(response.status, 200);
+  assert.equal(response.headers.get('content-type'), 'image/svg+xml'); assert.match(response.headers.get('content-security-policy'), /default-src 'none'/);
+  assert.equal(await response.text(), svg);
+  const script = catalogue.clientExtensions.resources.find(resource => resource.type === 'script'); assert.equal((await fetch(sim.url + script.url)).status, 404);
+  assert.equal((await fetch(sim.url + icon.url + '?external=1')).status, 404);
+});

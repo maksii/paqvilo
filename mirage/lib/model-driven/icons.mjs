@@ -50,6 +50,15 @@ const paths = {
   help: '<path d="M4 4a4 4 0 0 1 8 0c0 3-4 3-4 6M8 13v2"/>',
   check: '<path d="m2 8 4 4L14 3"/>',
   close: '<path d="m3 3 10 10M13 3 3 13"/>',
+  sortUp: '<path d="M8 15V1M3 6l5-5 5 5"/>',
+  sortDown: '<path d="M8 1v14M3 10l5 5 5-5"/>',
+  arrowRight: '<path d="M1 8h14M9 2l6 6-6 6"/>',
+  group: '<path d="M1 2h5M1 5h5M3 5v7h4M9 2h5v4H9zM9 10h5v4H9z"/>',
+  calendar: '<path d="M1 3h14v12H1zM1 6h14M4 1v4M12 1v4M4 9h2m2 0h2m2 0h1M4 12h2m2 0h2"/>',
+  text: '<path d="M1 3h14v10H1zM3 10l1.5-4L6 10M3.5 9h2M8 6v4m0-2c3-3 3 4 0 1m5-2c-3-2-3 4 0 2"/>',
+  number: '<path d="M6 1 4 15M12 1l-2 14M1 6h14M1 10h14"/>',
+  reset: '<path d="M1 7a6 6 0 1 1 2 6M1 2v5h5"/>',
+  download: '<path d="M8 1v10M4 7l4 4 4-4M2 12v3h12v-3"/>',
 };
 export const icon = (name, className = '') => `<svg class="icon icon-${name} ${className}" viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width=".85" stroke-linecap="square" stroke-linejoin="round" aria-hidden="true" focusable="false">${paths[name] ?? paths.page}</svg>`;
 export const navigationIcon = item => ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', basicform: 'edit', entityform: 'edit', list: 'list', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', advancedform: 'pageForm', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', tablepermission: 'shield', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.id] ?? ({ website: 'globe', pagetemplate: 'page', redirect: 'redirect', sitemarker: 'marker', sitesetting: 'siteSettings', setting: 'settings', contentsnippet: 'pageCode', entityform: 'edit', entitylist: 'list', shortcut: 'shortcut', webfile: 'file', webform: 'pageForm', weblinkset: 'lines', webpage: 'pages', webtemplate: 'template', websitelanguage: 'language', contact: 'person', entitypermission: 'shield', columnpermissionprofile: 'shield', invitation: 'invitation', publishingstatetransitionrule: 'transition', webpageaccesscontrolrule: 'shield', webrole: 'person', websiteaccess: 'key' })[item.entity?.replace(/^.*?_/, '')] ?? 'page';

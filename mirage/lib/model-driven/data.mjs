@@ -6,6 +6,10 @@ import { controlDescriptor } from './control-descriptors.mjs';
 const invalid = (message, status = 400) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const node = (name, attrs = {}, children = []) => ({ name, attrs, children, text: '' });
 const admin = Object.freeze({ admin: true });
+function validateWebApiQuery(input) {
+  if (typeof input.options !== 'string' || input.options.length > 65536 || input.options && !input.options.startsWith('?') || /[\r\n#]/.test(input.options)) throw invalid('Provide local WebApi query options.');
+  if (input.pageSize !== undefined && (!Number.isInteger(input.pageSize) || input.pageSize < 1 || input.pageSize > 5000)) throw invalid('WebApi page size must be between 1 and 5000.');
+}
 export function writableField(field, operation) {
   return controlDescriptor(field)[operation === 'create' ? 'create' : 'update'];
 }
@@ -15,16 +19,20 @@ export function validateValues(table, values, operation) {
   for (const [name, value] of Object.entries(values)) {
     const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
     if (!field || !writableField(field, operation)) throw invalid(`Column ${name} is unavailable for ${operation}.`);
-    if (field.required && (value == null || value === '')) throw invalid(`${field.label} is required.`);
+    if (field.required && (value == null || value === '' || Array.isArray(value) && !value.length)) throw invalid(`${field.label} is required.`);
     if (value != null) {
       if (field.type === 'boolean' && typeof value !== 'boolean') throw invalid(`${field.label} requires a boolean.`);
       if (field.type === 'number' && (typeof value !== 'number' || !Number.isFinite(value))) throw invalid(`${field.label} requires a finite number.`);
       if (field.type === 'date' && (typeof value !== 'string' || !Number.isFinite(Date.parse(value)))) throw invalid(`${field.label} requires a date.`);
       if (['text', 'textarea', 'lookup'].includes(field.type ?? 'text') && typeof value !== 'string' && !(field.type === 'lookup' && typeof value === 'object' && value.id)) throw invalid(`${field.label} requires text or a lookup reference.`);
       if (field.maxLength && String(value).length > field.maxLength) throw invalid(`${field.label} exceeds ${field.maxLength} characters.`);
-      if (field.options?.length && !field.options.some(option => String(option.value) === String(value))) throw invalid(`${field.label} has an invalid choice.`);
+      if (field.type === 'multiselect') {
+        if (!Array.isArray(value) || value.length > 150 || value.some(option => !Number.isInteger(option) || !field.options?.some(known => known.value === option))) throw invalid(`${field.label} requires an array of known choice values.`);
+      } else if (field.options?.length && !field.options.some(option => String(field.type === 'boolean' ? Number(option.value) : option.value) === String(field.type === 'boolean' ? Number(value) : value))) throw invalid(`${field.label} has an invalid choice.`);
     }
-    result[name] = value;
+    // The form API uses numeric arrays; the shared Dataverse record pipeline
+    // accepts the native Web API's comma-separated representation.
+    result[name] = field.type === 'multiselect' && Array.isArray(value) ? value.length ? [...new Set(value)].join(',') : null : value;
   }
   if (operation === 'create') for (const field of Object.values(table.fields)) {
     // Dataverse supplies omitted system-required values (owner, state and audit
@@ -81,10 +89,15 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
     async list(entity, input = {}, actor = {}) {
       return readOperation(async () => {
       const table = tableFor(entity);
+      if (input.scope === 'odata') {
+        if (!recordService?.list) throw invalid('Organization queries are unavailable.', 501);
+        validateWebApiQuery(input);
+        return recordService.list(entity, input.options, { ...actor, pageSize: input.pageSize });
+      }
       if (input.scope !== undefined && input.scope !== 'table') throw invalid('Unsupported query scope.');
       if (input.scope === 'table' && input.view) throw invalid('A table query cannot select a saved view.');
       const view = input.scope === 'table' ? { id: null, fields: Object.keys(table.fields).map(name => ({ name })) }
-        : table.views.find(view => view.id === input.view) ?? (!input.view ? table.views.find(view => view.isDefault) ?? table.views[0] : null);
+        : [...table.views, ...(table.lookupViews ?? [])].find(view => view.id === input.view) ?? (!input.view ? table.views.find(view => view.isDefault) ?? table.views[0] : null);
       if (!view) throw invalid('View not found.', 404);
       const fields = input.columns ?? view.fields.map(field => field.name);
       if (!Array.isArray(fields) || !fields.length || fields.length > 100 || fields.some(name => !table.fields[name] && !view.fields.some(field => field.name === name))) throw invalid('Select known columns.');
@@ -126,9 +139,14 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
         sort: order?.attrs.attribute, direction: order?.attrs.descending === 'true' ? 'desc' : 'asc' };
       });
     },
-    async get(entity, id, actor = {}) {
+    async get(entity, id, actor = {}, input = {}) {
       return readOperation(async () => {
       const table = tableFor(entity), db = backend(table);
+      if (input.scope === 'odata') {
+        if (!recordService?.retrieve) throw invalid('Organization queries are unavailable.', 501);
+        validateWebApiQuery(input);
+        return recordService.retrieve(entity, id, input.options, actor);
+      }
       if (recordService) return { ...await recordService.get(entity, id, actor), capabilities: capabilities(entity, actor, id) };
       const row = db === store ? db.get(entity, id, admin) : await db.readOperation(() => db.get(entity, id, admin));
       if (!row) throw invalid('Record not found.', 404);

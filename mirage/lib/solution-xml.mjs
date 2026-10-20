@@ -130,10 +130,11 @@ export const descendants = (node, name) => {
 export const child = (node, name) => node?.children.find((c) => c.name === name);
 export const childText = (node, name) => child(node, name)?.text.trim();
 
-/** Labels of a node keyed by LCID (label, LocalizedName and displayname rows). */
+/** Labels of a node keyed by LCID, including exported collection names. */
 export function labelsOf(node) {
   const rows = descendants(node, "label").concat(
     descendants(node, "LocalizedName"),
+    descendants(node, "LocalizedCollectionName"),
     descendants(node, "displayname"),
   );
   const labels = {};
@@ -149,6 +150,7 @@ export function labelsOf(node) {
 export function label(node, lcid = 1033) {
   const rows = descendants(node, "label").concat(
     descendants(node, "LocalizedName"),
+    descendants(node, "LocalizedCollectionName"),
     descendants(node, "displayname"),
   );
   return (

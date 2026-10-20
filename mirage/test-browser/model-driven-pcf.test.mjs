@@ -25,7 +25,7 @@ async function fixture(t) {
     if (req.url === '/slow.js') { setTimeout(() => { res.setHeader('content-type', 'text/javascript'); res.end(bundle); }, 50); return; }
     if (req.url.startsWith('/assets/')) {
       const name = req.url.slice('/assets/'.length);
-      if (!['pcf-runtime.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs'].includes(name)) { res.writeHead(404); res.end(); return; }
+      if (!['pcf-runtime.mjs', 'controls.mjs', 'choice-control.mjs', 'lookup-control.mjs', 'date-control.mjs', 'duration-control.mjs', 'control-descriptors.mjs', 'icons.mjs'].includes(name)) { res.writeHead(404); res.end(); return; }
       res.setHeader('content-type', 'text/javascript'); res.end(await fs.readFile(new URL(`../lib/model-driven/${name}`, import.meta.url))); return;
     }
     res.setHeader('content-type', 'text/html'); res.end('<!doctype html><html><head></head><body><main></main></body></html>');
@@ -47,7 +47,10 @@ async function fixture(t) {
 
 test('trusted standard PCF uses compiled exports, typed context, dirty outputs and deterministic cleanup', async t => {
   const { page, errors, scriptCount } = await fixture(t);
+  await page.evaluate(() => { const style = document.createElement('style'); style.textContent = '.Input{width:20px}'; document.head.append(style); });
   await page.evaluate(() => mount());
+  assert.deepEqual(await page.locator('.model-driven-pcf').evaluate(element => ['customControl', 'Invented', 'Input', 'Invented.Input'].map(name => element.classList.contains(name))), [true, true, true, true]);
+  assert.ok(await page.locator('.model-driven-pcf').evaluate(element => element.getBoundingClientRect().width > 100), 'native host width must fill the field when a constructor class has checkbox-sized CSS');
   await page.getByLabel('PCF value').fill('Changed');
   assert.equal(await page.evaluate(() => control.read()), 'Changed');
   assert.equal(await page.evaluate(() => changes > 0), true);
@@ -70,6 +73,21 @@ test('trusted standard PCF uses compiled exports, typed context, dirty outputs a
   await page.evaluate(() => mount());
   assert.equal(scriptCount(), 1); // Constructor resources load once; each form owns its instance.
   assert.deepEqual(errors, []);
+});
+
+test('PCF date-only raw values preserve local calendar dates and choices expose exported formatted labels', async t => {
+  const { page, errors } = await fixture(t);
+  const values = await page.evaluate(async () => {
+    const definition = structuredClone(extensions.pcf.controls[0]); definition.properties = [{ name: 'value', ofType: 'DateAndTime.DateOnly', usage: 'bound' }];
+    control = render({ ...field, type: 'date', format: 'dateonly', dateTimeBehavior: 'DateOnly' }, '2026-06-15', { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
+    document.querySelector('main').append(control.element); await control.ready;
+    const date = pcfContext.parameters.value.raw, calendar = [date.getFullYear(), date.getMonth() + 1, date.getDate(), date.getHours()]; control.destroy();
+    definition.properties = [{ name: 'value', ofType: 'OptionSet', usage: 'bound' }];
+    control = render({ ...field, type: 'number', options: [{ value: 7, label: 'Exported label' }] }, 7, { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } });
+    document.querySelector('main').append(control.element); await control.ready;
+    return { calendar, formatted: pcfContext.parameters.value.formatted };
+  });
+  assert.deepEqual(values, { calendar: [2026, 6, 15, 0], formatted: 'Exported label' }); assert.deepEqual(errors, []);
 });
 
 test('namespace and registerControl compiled exports use the same bounded standard host', async t => {
@@ -112,6 +130,26 @@ test('PCF optional Web API uses the configured local staff adapter and unsupport
   assert.match(await page.evaluate(() => { try { pcfContext.utils.hasEntityPrivilege('x_item', 1); } catch (error) { return error.message; } }), /not supported/);
   await page.evaluate(() => control.destroy());
   assert.match(await page.evaluate(async () => { try { await pcfContext.webAPI.retrieveRecord('x_item', 'invented'); } catch (error) { return error.message; } }), /not supported/);
+  assert.deepEqual(errors, []);
+});
+
+test('required PCF WebAPI feature admits the configured staff adapter and rejects missing or unsupported host features', async t => {
+  const { page, errors, scriptCount } = await fixture(t);
+  await page.evaluate(async () => {
+    const definition = structuredClone(extensions.pcf.controls[0]); definition.features = [{ name: 'WebAPI', required: 'true' }];
+    window.requiredOptions = { ...options, clientExtensions: { trusted: true, pcf: { controls: [definition] } } };
+    await mount(requiredOptions);
+  });
+  assert.equal(await page.evaluate(() => control.supported), false); assert.equal(scriptCount(), 0);
+  await page.evaluate(async () => {
+    control.destroy(); window.webApiCalls = [];
+    await mount({ ...requiredOptions, webAPI: () => ({ retrieveMultipleRecords: async (...args) => { webApiCalls.push(args); return { entities: [{ x_name: 'Local only' }] }; } }) });
+  });
+  assert.equal(await page.evaluate(() => control.supported), true);
+  assert.deepEqual(await page.evaluate(() => pcfContext.webAPI.retrieveMultipleRecords('x_item', '?$select=x_name&$filter=x_quantity gt 1')), { entities: [{ x_name: 'Local only' }] });
+  assert.deepEqual(await page.evaluate(() => webApiCalls), [['x_item', '?$select=x_name&$filter=x_quantity gt 1']]);
+  await page.evaluate(() => control.destroy());
+  assert.match(await page.evaluate(async () => { try { await pcfContext.webAPI.retrieveMultipleRecords('x_item'); } catch (error) { return error.message; } }), /not supported/);
   assert.deepEqual(errors, []);
 });
 
@@ -179,7 +217,7 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   const controlDir = path.join(source.solutionDir, 'Controls', 'publisher.InventedInput'); await fs.mkdir(controlDir, { recursive: true });
   await fs.writeFile(path.join(controlDir, 'ControlManifest.xml'), '<manifest><control namespace="Invented" constructor="Input" version="1.0.0" control-type="standard"><property name="value" of-type="SingleLine.Text" usage="bound" required="true"/><resources><code path="bundle.js" order="1"/></resources></control></manifest>');
   await fs.writeFile(path.join(controlDir, 'ControlManifest.xml.data.xml'), '<CustomControl><Name>publisher.InventedInput</Name></CustomControl>');
-  await fs.writeFile(path.join(controlDir, 'bundle.js'), bundle.replaceAll("window.lifecycle.push", "(window.lifecycle??=[]).push"));
+  await fs.writeFile(path.join(controlDir, 'bundle.js'), bundle.replaceAll("window.lifecycle.push", "(window.lifecycle??=[]).push").replace('container.append(this.input);', 'container.append(this.input); var checkbox=document.createElement("input"); checkbox.type="checkbox"; checkbox.setAttribute("aria-label","PCF checkbox"); checkbox.style.width="20px"; checkbox.style.height="20px"; container.append(checkbox);'));
   const formFile = path.join(source.solutionDir, 'Entities/x_item/FormXml/main/item.xml');
   const xml = (await fs.readFile(formFile, 'utf8')).replace('<control datafieldname="x_name"/>', '<control id="x_name" uniqueid="pcf-name" datafieldname="x_name"/>').replace('</form>', '<controlDescriptions><controlDescription forControl="pcf-name"><customControl name="publisher.InventedInput" formFactor="0"><parameters><value type="SingleLine.Text">x_name</value></parameters></customControl></controlDescription></controlDescriptions></form>');
   await fs.writeFile(formFile, xml);
@@ -190,6 +228,11 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   await page.goto(`${origin}/main.aspx?appname=x_example&pagetype=entityrecord&etn=x_item&id=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa`);
   await page.getByLabel('PCF value').waitFor();
   assert.equal(await page.getByLabel('PCF value').inputValue(), 'Copper');
+  assert.deepEqual(await page.getByLabel('PCF checkbox').evaluate(element => { const rect = element.getBoundingClientRect(); return [rect.width, rect.height]; }), [20, 20], 'shell field styles must not override a component checkbox');
+  await page.getByLabel('PCF checkbox').focus();
+  assert.notEqual(await page.getByLabel('PCF checkbox').evaluate(element => getComputedStyle(element).outlineColor), 'rgb(0, 120, 212)', 'the shell focus rule must not restyle component inputs');
+  const session = await (await page.request.get(origin + '/_sim/api/dataverse/session')).json();
+  assert.deepEqual(await page.evaluate(() => ({ id: pcfContext.userSettings.userId, name: pcfContext.userSettings.userName })), { id: session.current.principalId, name: session.current.name });
   await page.getByLabel('PCF value').fill('PCF updated');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   try { await page.waitForFunction(() => document.querySelector('h1')?.textContent === 'PCF updated' || !document.querySelector('#notice')?.hidden, null, { timeout: 5000 }); }
@@ -198,5 +241,12 @@ test('an exported Solution PCF edits and saves through the actual model-driven s
   assert.equal((await saved.json()).row.x_name, 'PCF updated');
   await page.reload(); await page.getByLabel('PCF value').waitFor();
   assert.equal(await page.getByLabel('PCF value').inputValue(), 'PCF updated');
+  const created = await page.request.post(origin + '/_sim/api/dataverse/users', { headers: { 'x-sim-csrf': sim.state().csrf }, data: { fullname: 'Invented component staff', domainname: 'component-staff@example.test', roles: ['System Administrator'] } });
+  assert.equal(created.status(), 201); const staff = await created.json();
+  await page.getByRole('button', { name: 'Staff profile', exact: true }).click();
+  await page.getByLabel('Organization staff', { exact: true }).selectOption(staff.systemuserid);
+  await page.getByRole('button', { name: 'Use identity', exact: true }).click();
+  await page.waitForFunction(id => window.pcfContext?.userSettings.userId === id, staff.systemuserid);
+  assert.deepEqual(await page.evaluate(() => ({ id: pcfContext.userSettings.userId, name: pcfContext.userSettings.userName })), { id: staff.systemuserid, name: 'Invented component staff' });
   assert.deepEqual(errors, []);
 });

@@ -42,19 +42,32 @@ commands disabled with an explanation.
 | Form data | Entity ID/name/primary name, attributes, dirty state, add/remove OnSave, save and refresh |
 | Form UI | Create/existing form type, control collection, form notifications, close |
 | Navigation | Alert and confirmation dialogs; opening another imported local form |
-| Global context | Local client URL, Web client and online state |
-| WebApi | Retrieve one/multiple records and scalar create/update/delete through the local staff pipeline |
+| Global context | Local client URL, selected staff ID/name, Web client and online state |
+| WebApi | Retrieve one/multiple records, scalar and multiselect writes, imported single-valued lookup bindings, create/update/delete through the local staff pipeline |
 
-WebApi multiple-record reads use table scope rather than the currently selected
-saved view. Queries support `$select`, `$top`, one-column `$orderby`, and simple
-`and` comparisons (`eq`, `ne`, `gt`, `ge`, `lt`, `le`, including `eq/ne null`).
-Continuation paging, `$expand`, FetchXML and query functions are unsupported in
-this browser adapter. They can be tested through the separate Dataverse HTTP API.
+WebApi reads use the canonical organization query engine and current staff
+identity, including when the public Dataverse HTTP listener is disabled.
+Multiple-record reads use table scope rather than the currently selected saved
+view. `$select`, `$filter`, `$orderby`, `$expand`, FetchXML and continuation
+paging have the same supported semantics as the local Dataverse record API.
+`retrieveMultipleRecords` returns `entities`, an optional `nextLink`, and an
+optional FetchXML paging cookie. A continuation URL must belong to this local
+runtime and imported table; callers can also pass its query string. Record
+reads preserve native lookup properties such as `_parentid_value`.
+The same record methods are available through `Xrm.WebApi.online`. Unsupported
+execution/action APIs and offline APIs still fail explicitly.
 
-WebApi navigation-property writes using `@odata.bind` are explicitly rejected
-before a record request. Use a supported form lookup control for local form edits,
-or the Dataverse HTTP API for integration tests requiring navigation bindings.
-The browser adapter does not guess navigation-property names from column names.
+WebApi navigation-property writes using `@odata.bind` resolve imported
+single-valued relationships and exact target entity-set names from the local
+catalogue. Values must be `/entityset(guid)` paths or `null` to clear the lookup.
+Unknown relationships, conflicting values and external URLs fail before a record
+request. The browser adapter does not guess navigation-property names or plural
+entity sets. Many-to-many associations and deep inserts remain unsupported.
+
+Multiselect form attributes expose numeric arrays and label arrays through
+`getValue` and `getText`, and report `multiselectoptionset` as their type. WebApi
+writes accept the native comma-separated choice representation; the shell
+normalizes selections before the shared Dataverse pipeline validates them.
 
 Saving recursively from an active form lifecycle handler is rejected; finish the
 event before saving. Ribbon commands may call `PrimaryControl.data.save()`.

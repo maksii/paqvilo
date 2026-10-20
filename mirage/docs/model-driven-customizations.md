@@ -50,12 +50,12 @@ silently pretending to succeed.
 See the [client API capability matrix](model-driven-client-api.md) for supported
 methods, event semantics and the remaining limits.
 
-The bounded `Xrm.WebApi` adapter supports scalar CRUD and simple table queries
-(`$select`, `$top`, one `$orderby`, and scalar AND filters). Table queries do not
-inherit a saved view's filter. Unsupported query expressions, continuation paging
-and relationship writes using `@odata.bind` fail explicitly; they do not perform a
-partial mutation. Use the organization API for integrations needing its broader
-OData surface.
+The `Xrm.WebApi` adapter supports scalar CRUD, multiselect writes and imported
+single-valued lookup bindings using `@odata.bind`. Reads use the shared
+organization engine for supported OData expressions, lookup expansion, FetchXML
+and continuation paging. Table queries do not inherit a saved view's filter.
+Unknown relationships and external binding or continuation URLs fail before a
+record request. Many-to-many writes and deep inserts remain unsupported.
 
 Scripts use the local organization through the shell's data adapter. Staff roles,
 row access, field permissions, write capability, simulation level and optimistic
@@ -132,6 +132,10 @@ property types remain explicit placeholders. A component's output is checked
 against its bound property and the normal record pipeline. Instances are destroyed
 on form/tab replacement or navigation, including an instance that finishes loading
 after navigation. This is a development host, not the complete licensed client.
+The host preserves the native component namespace classes so exported component
+styles apply without Mirage's field styles overriding them. Components declaring
+required WebAPI access can use the configured local staff adapter; required
+unimplemented host features still prevent the component from executing.
 
 Command support is similarly bounded. Power Fx commands, dashboards, business
 process flow UI, arbitrary external URLs, unsupported rule types and unimplemented

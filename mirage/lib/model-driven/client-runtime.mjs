@@ -52,24 +52,29 @@ export function loadClientLibrary(name, extensions, { document = globalThis.docu
   return loadedLibraries.get(url.href);
 }
 
-function queryOptions(options = '') {
-  const params = new URLSearchParams(String(options).replace(/^\?/, '')), result = {};
-  for (const key of params.keys()) if (!['$select', '$top', '$orderby', '$filter'].includes(key)) unsupported(`Xrm.WebApi query ${key}`);
-  if (params.has('$select')) { result.columns = params.get('$select').split(',').map(name => name.trim()); if (result.columns.some(name => !/^[\w]+$/.test(name))) unsupported('Xrm.WebApi $select expression'); }
-  if (params.has('$top')) { const count = Number(params.get('$top')); if (!Number.isInteger(count) || count < 1 || count > 5000) throw new Error('Xrm.WebApi $top must be between 1 and 5000.'); result.pageSize = count; }
-  if (params.has('$orderby')) { const order = /^([\w]+)(?:\s+(asc|desc))?$/.exec(params.get('$orderby')); if (!order) unsupported('Xrm.WebApi $orderby expression'); result.sort = order[1]; result.direction = order[2] ?? 'asc'; }
-  if (params.has('$filter')) result.filters = params.get('$filter').split(/\s+and\s+/).map(clause => {
-    const match = /^([\w]+)\s+(eq|ne|gt|ge|lt|le)\s+('(?:[^']|'')*'|true|false|null|-?\d+(?:\.\d+)?)$/.exec(clause.trim());
-    if (!match) unsupported('Xrm.WebApi $filter expression');
-    if (match[3] === 'null') { if (!['eq', 'ne'].includes(match[2])) unsupported('Xrm.WebApi null comparison'); return { field: match[1], operator: match[2] === 'eq' ? 'null' : 'not-null' }; }
-    return { field: match[1], operator: match[2], value: match[3].startsWith("'") ? match[3].slice(1, -1).replace(/''/g, "'") : JSON.parse(match[3]) };
-  });
-  return result;
-}
-function writeData(data) {
+function writeData(data, table, tables) {
   if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Xrm.WebApi requires a record values object.');
-  if (Object.keys(data).some(key => /@odata\.bind$/i.test(key))) unsupported('Xrm.WebApi lookup binding; use a supported form lookup control or the Dataverse HTTP API');
-  return data;
+  const values = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (blockedNames.has(key)) throw new Error('Xrm.WebApi column name is invalid.');
+    if (key.endsWith('@odata.bind')) {
+      const navigation = key.slice(0, -11), relationship = table?.relationships?.[navigation];
+      const name = relationship?.many === false ? relationship.from : navigation;
+      const field = table?.fields?.[name];
+      if (field?.type !== 'lookup' || relationship?.many === true) unsupported(`Xrm.WebApi lookup binding ${navigation}; import its single-valued relationship metadata`);
+      if (!relationship && Object.values(table?.relationships ?? {}).some(candidate => candidate.many === false && candidate.from === name)) unsupported(`Xrm.WebApi lookup binding ${navigation}; use its exported navigation-property name`);
+      const match = value === null ? null : typeof value === 'string' && /^\/([A-Za-z][\w]*)\(([a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12})\)$/i.exec(value);
+      if (value !== null && !match) throw new Error('Xrm.WebApi lookup binding requires a local entity-set record path.');
+      const targets = (field.targets ?? []).filter(entity => tables[entity]?.entitySet === match?.[1] && (!relationship?.entity || relationship.entity === entity));
+      if (value !== null && targets.length !== 1) throw new Error(`Xrm.WebApi lookup binding ${navigation} does not resolve an imported target.`);
+      if (Object.hasOwn(values, name) || Object.hasOwn(data, name)) throw new Error(`Xrm.WebApi provides conflicting values for ${name}.`);
+      values[name] = value === null ? null : { id: match[2].toLowerCase(), entity: targets[0] };
+    } else if (table?.fields?.[key]?.type === 'multiselect' && typeof value === 'string') {
+      if (!/^\s*[+-]?\d+(?:\s*,\s*[+-]?\d+)*\s*$/.test(value)) throw new Error(`Xrm.WebApi ${key} requires comma-separated choice values.`);
+      values[key] = value.split(',').map(Number);
+    } else values[key] = value;
+  }
+  return values;
 }
 
 export function createFormClientRuntime(host) {
@@ -86,6 +91,7 @@ export function createFormClientRuntime(host) {
     if (value == null) return null;
     const field = host.table.fields[name];
     if (field.type === 'date') return new Date(value);
+    if (field.type === 'multiselect') return Array.isArray(value) ? [...value] : String(value).split(',').filter(part => part.trim()).map(Number);
     if (field.type === 'lookup') return [{ id: `{${String(value.id ?? value).replace(/[{}]/g, '')}}`, name: value.name ?? '', entityType: value.entity ?? value.logicalName ?? field.targets?.[0] }];
     return value;
   };
@@ -93,10 +99,10 @@ export function createFormClientRuntime(host) {
     const name = field.name;
     return client({ getName: () => name, getValue: () => clientValue(name, fieldValue(name)), getInitialValue: () => clientValue(name, initial[name]),
       setValue: value => { assertLive(); const next = field.type === 'date' && value instanceof Date ? value.toISOString() : field.type === 'lookup' && Array.isArray(value) ? value.length ? { id: String(value[0].id).replace(/[{}]/g, ''), entity: value[0].entityType, name: value[0].name } : null : value; host.write(name, next); },
-      getIsDirty: () => host.isDirty(name), getAttributeType: () => ({ text: 'string', textarea: 'memo', number: field.options?.length ? 'optionset' : ({ decimal: 'decimal', money: 'money', double: 'double', float: 'double' }[field.dataverseType] ?? 'integer'), date: 'datetime' }[field.type] ?? field.type),
+      getIsDirty: () => host.isDirty(name), getAttributeType: () => ({ text: 'string', textarea: 'memo', number: field.options?.length ? 'optionset' : ({ decimal: 'decimal', money: 'money', double: 'double', float: 'double' }[field.dataverseType] ?? 'integer'), date: 'datetime', multiselect: 'multiselectoptionset' }[field.type] ?? field.type),
       getOptions: () => (field.options ?? []).map(option => ({ text: option.label, value: option.value })),
       getOption: value => { const option = (field.options ?? []).find(option => typeof value === 'number' ? option.value === value : option.label === value); return option ? { text: option.label, value: option.value } : null; },
-      getText: () => field.options?.find(option => option.value === fieldValue(name))?.label ?? null,
+      getText: () => field.type === 'multiselect' ? clientValue(name, fieldValue(name))?.map(value => field.options?.find(option => option.value === value)?.label).filter(value => value !== undefined) ?? null : field.options?.find(option => option.value === fieldValue(name))?.label ?? null,
       getRequiredLevel: () => host.required?.(name) ? 'required' : 'none', setRequiredLevel: value => { if (!['none', 'required', 'recommended'].includes(value)) throw new Error('Invalid required level.'); host.required?.(name, value); },
       getSubmitMode: () => 'dirty', setSubmitMode: mode => { if (mode !== 'dirty') unsupported(`attribute.setSubmitMode(${mode})`); },
       addOnChange: callback => add(`onchange:${name}`, callback), removeOnChange: callback => remove(`onchange:${name}`, callback), fireOnChange: () => dispatch('onchange', name),
@@ -156,18 +162,28 @@ export function createFormClientRuntime(host) {
   // changed while a read was in flight. In particular, never send a follow-up
   // PATCH/DELETE from a context revoked during its ETag preflight.
   const request = async (...args) => { assertLive(); const result = await host.request(...args); assertLive(); return result; };
-  const webApi = client({
-    retrieveRecord: async (entity, id, options) => { const query = queryOptions(options); if (Object.keys(query).some(key => key !== 'columns')) unsupported('Xrm.WebApi.retrieveRecord query'); const result = await request(entity, id); return query.columns ? Object.fromEntries(query.columns.filter(name => Object.hasOwn(result.row, name)).map(name => [name, result.row[name]])) : result.row; },
-    retrieveMultipleRecords: async (entity, options, maxPageSize) => { const query = queryOptions(options), hasTop = query.pageSize !== undefined; if (maxPageSize !== undefined && (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)) throw new Error('Xrm.WebApi maxPageSize must be between 1 and 5000.'); if (maxPageSize && !query.pageSize) query.pageSize = maxPageSize; query.scope = 'table'; const result = await request(entity, undefined, { query }); if (result.more && !hasTop) unsupported('Xrm.WebApi continuation paging; narrow the query or increase the page size'); return { entities: result.rows }; },
-    createRecord: async (entity, data) => { writeData(data); const result = await request(entity, undefined, { method: 'POST', data }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
-    updateRecord: async (entity, id, data) => { writeData(data); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data, etag: current.etag }); return { id, entityType: entity }; },
+  const onlineWebApi = client({
+    retrieveRecord: async (entity, id, options = '') => { if (typeof options !== 'string' || options && !options.startsWith('?')) throw new Error('Xrm.WebApi query options must start with ?.'); return request(entity, id, { query: { scope: 'odata', options } }); },
+    retrieveMultipleRecords: async (entity, options = '', maxPageSize) => {
+      if (maxPageSize !== undefined && (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)) throw new Error('Xrm.WebApi maxPageSize must be between 1 and 5000.');
+      if (typeof options !== 'string') throw new Error('Xrm.WebApi query options must be text.');
+      if (options && !options.startsWith('?')) {
+        const location = host.environment?.location ?? globalThis.location, next = new URL(options, location.href);
+        if (next.origin !== location.origin || next.pathname !== `/api/data/v9.2/${host.tables[entity]?.entitySet}` || next.hash) throw new Error('Xrm.WebApi continuation must target this local imported table.');
+        options = next.search;
+      }
+      return request(entity, undefined, { query: { scope: 'odata', options, ...(maxPageSize === undefined ? {} : { pageSize: maxPageSize }) } });
+    },
+    createRecord: async (entity, data) => { const values = writeData(data, host.tables[entity], host.tables); const result = await request(entity, undefined, { method: 'POST', data: values }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
+    updateRecord: async (entity, id, data) => { const values = writeData(data, host.tables[entity], host.tables); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data: values, etag: current.etag }); return { id, entityType: entity }; },
     deleteRecord: async (entity, id) => { const current = await request(entity, id); await request(entity, id, { method: 'DELETE', etag: current.etag }); return { id, entityType: entity }; },
   }, 'Xrm.WebApi');
+  const webApi = client({ ...onlineWebApi, online: onlineWebApi }, 'Xrm.WebApi');
   const Xrm = client({ Page: formContext, WebApi: webApi,
     Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'), openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),
     }, 'Xrm.Navigation'),
     Utility: client({ getGlobalContext: () => client({ getClientUrl: () => (host.environment?.location ?? globalThis.location).origin,
-      userSettings: host.user ?? {}, client: client({ getClient: () => 'Web', getClientState: () => 'Online' }, 'globalContext.client'),
+      userSettings: client({ userId: host.user?.userId ?? host.user?.principalId ?? host.user?.id ?? '', userName: host.user?.userName ?? host.user?.name ?? '' }, 'globalContext.userSettings'), client: client({ getClient: () => 'Web', getClientState: () => 'Online' }, 'globalContext.client'),
     }, 'globalContext') }, 'Xrm.Utility'),
   }, 'Xrm');
   return { formContext, Xrm, dispatch,

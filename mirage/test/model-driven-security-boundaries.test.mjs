@@ -53,6 +53,12 @@ test('portal MDA keeps canonical staff security and source record versions with 
   const made = await json(await request('/_apps/api/tables/new_business', { method: 'POST', cookie: one, body: { new_name: 'Headless owned record' } }), 201);
   assert.equal((await json(await request(`/_apps/api/tables/new_business/${made.id}`, { cookie: one }))).row.new_name, 'Headless owned record');
   assert.ok([403, 404].includes((await request(`/_apps/api/tables/new_business/${made.id}`, { cookie: two })).status));
+  await json(await request(`/_apps/api/tables/new_business/${made.id}`, { method: 'PATCH', etag: made.etag, body: { new_secret: 'Invented protected value' } }));
+  const query = '/_apps/api/tables/new_business?query=' + encodeURIComponent(JSON.stringify({ scope: 'odata', options: '?$select=new_name,new_secret&$filter=contains(new_name,\'owned\')' }));
+  const ownerQuery = await json(await request(query, { cookie: one }));
+  assert.deepEqual(ownerQuery.entities.map(row => row.new_name), ['Headless owned record']);
+  assert.equal(ownerQuery.entities[0].new_secret ?? null, null);
+  assert.deepEqual((await json(await request(query, { cookie: two }))).entities, [], 'canonical script queries retain staff row access');
   const setting = await json(await request('/_apps/api/tables/adx_sitesetting', { method: 'POST', body: { adx_name: 'Example/Created', adx_value: 'Created', adx_websiteid: guid(10) } }), 201);
   await json(await request(`/_apps/api/tables/adx_sitesetting/${setting.id}`, { method: 'DELETE', etag: setting.etag }));
 });

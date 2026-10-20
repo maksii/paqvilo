@@ -10,6 +10,10 @@ present. This is not an inventory of the connected organization.
 A [standalone model-driven runtime](standalone-organization.md) imports Solution apps without a portal or website. Its organization core remains available when the public HTTP API is disabled. Configure the runtime surface, default imported app and [simulation level](simulation-levels.md) in `/_setup/`; restart to apply changes.
 
 App definitions from configured `solutionRoots` appear in the application picker.
+The picker opens an application-card dialog with search and keyboard navigation.
+Exported application names and descriptions populate its cards; switching apps
+retains the unsaved-change check. View and form choices use anchored menus with
+search for views, and overflowing form tabs stay available through the tab menu.
 The importer reads `AppModules/**.xml`, `AppModuleSiteMaps/**.xml`, and app
 components embedded in `Customizations.xml`, including solution archives. Later
 selected solution layers win. Forms and saved queries come from the same metadata
@@ -27,9 +31,13 @@ GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID
   columns, and combine filter conditions with AND. Exported FetchXML remains the
   base query, including its filters and joins. View preferences, recent items and
   pins belong to the local browser and are keyed by application/table/view.
-- Create, read, edit and delete local records. Scalar, choice, boolean, date,
-  multiline, JSON and lookup fields use a control registry. Lookup selection
-  reads local target tables. Record updates/deletes require a current ETag.
+- Create, read, edit and delete local records. Scalar, choice, multiselect,
+  boolean, date, multiline, JSON and lookup fields use a control registry.
+  Choice controls expose labelled options and keyboard selection. Date-only,
+  timezone-independent and user-local fields retain their distinct values.
+  Lookup suggestions and Advanced lookup read local target tables, including
+  exported lookup views. Advanced lookup stages a selection until Done; Cancel
+  leaves the field unchanged. Record updates/deletes require a current ETag.
 - Render exported main-form tabs, sections, labels and field layouts. Missing
   forms/views get explicitly labelled metadata-generated defaults. Unsupported
   controls and script/event dependencies remain visible as limitations.
@@ -104,6 +112,20 @@ column widths, section columns, row positions, spans and visibility. Overflowing
 tabs stay available through the tab menu. Responsive rules preserve local
 administration on smaller screens. The local-environment notice and disabled
 unsupported commands remain explicit.
+
+The app chooser uses a searchable card modal; view, form, tab and column choices
+use anchored menus. Grid columns and filters have separate drawers. Source-typed
+fields include searchable choices, checkbox multiselects, inline and advanced
+lookups, a two-pane date calendar and duration choices with editable units. Date
+and time values retain their source behavior; a separate native time-picker
+appearance has not been verified. Unsupported file, image and dataset controls
+retain visible reasons instead of accepting edits.
+
+Trusted scalar PCF controls receive the selected local staff identity and use the
+same bounded record adapters as form scripts. Record queries share the local
+organization query engine, including supported expansion, FetchXML and paging;
+lookup bindings resolve imported navigation properties and entity-set names.
+These adapters preserve local permissions, CSRF checks and concurrency tokens.
 
 ## Validation
 

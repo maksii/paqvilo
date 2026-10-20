@@ -92,7 +92,10 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   assert.match(output, /startup\s+source discovery and Solution resources/);
   assert.match(output, /startup\s+document navigation/);
   assert.match(output, /startup\s+page resources/);
-  assert.match(output, /Sign-in and native application readiness remain unverified/);
+  // A watched reload may keep initial resource settling pending until this
+  // bounded session ends. Both progress and settled states must avoid claiming
+  // sign-in or application readiness from an installed resource overlay.
+  assert.match(output, /(?:Sign-in and native application readiness remain|application readiness is) unverified/);
   assert.doesNotMatch(output, /Model-driven overlay ready\.|application and initial view usable/);
   const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
   assert.ok(report.applied >= 3); assert.equal(report.revision >= 3, true); assert.equal(report.resources[0].name, 'x_script.js');

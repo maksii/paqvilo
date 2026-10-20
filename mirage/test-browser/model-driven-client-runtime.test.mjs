@@ -55,9 +55,13 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   assert.equal(await page.evaluate(() => clientLoads), 1);
   await page.getByRole('tab', { name: 'Related items', exact: true }).click();
   await page.getByRole('button', { name: 'Copper child', exact: true }).waitFor();
+  assert.equal(await page.getByText('Exported OnLoad completed', { exact: true }).isVisible(), true, 'form notifications persist across tab changes');
   await page.getByRole('tab', { name: 'General', exact: true }).click();
   await page.getByLabel('Calculated quantity', { exact: true }).waitFor();
   assert.equal(await page.evaluate(() => clientLoads), 1, 'tab switches do not replay OnLoad');
+  const notificationTop = await page.locator('#form-notifications').evaluate(node => node.getBoundingClientRect().top);
+  const commandTop = await page.getByRole('toolbar', { name: 'Commands', exact: true }).evaluate(node => node.getBoundingClientRect().top);
+  assert.ok(notificationTop < commandTop, 'source notifications sit above the command bar');
   await page.getByLabel('Name', { exact: true }).fill('BLOCK');
   await page.getByLabel('Calculated quantity', { exact: true }).click();
   await page.waitForFunction(() => document.querySelector('[name=x_quantity]').value === '5');
@@ -69,6 +73,7 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   await page.waitForFunction(() => document.querySelector('[name=x_quantity]').value === '12');
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await page.getByRole('heading', { name: 'Silver local', exact: true }).waitFor();
+  assert.equal(await page.getByText('Choose a different name', { exact: true }).count(), 0, 'clearing the notification removes its persisted banner');
   await page.getByRole('button', { name: 'Mark reviewed', exact: true }).click();
   await page.getByRole('heading', { name: 'Reviewed 12', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Unsupported remote action', exact: true }).isDisabled(), true);
@@ -80,6 +85,7 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   await page.getByRole('button', { name: 'Refresh', exact: true }).click();
   await page.getByRole('heading', { name: 'Copper child', exact: true }).waitFor();
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Copper child');
+  assert.equal(await page.getByText('Exported OnLoad completed', { exact: true }).count(), 0, 'navigation disposes the previous form notifications');
   assert.match(await page.evaluate(() => { try { priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
 });
@@ -149,9 +155,11 @@ test('application form and view components select the authored surface before ge
   const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close()); const page = await browser.newPage();
   await page.goto((sim.origin ?? sim.url) + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
-  assert.deepEqual(await page.getByRole('combobox', { name: 'View', exact: true }).locator('option').allTextContents(), ['Stocked items']);
+  await page.getByRole('button', { name: 'View', exact: true }).click();
+  assert.deepEqual(await page.getByRole('menuitemradio').evaluateAll(nodes => nodes.map(node => node.querySelector('span:not(.picker-check)').textContent)), ['Stocked items']);
+  await page.keyboard.press('Escape');
   await page.locator('tbody').getByRole('button', { name: 'Copper', exact: true }).click();
   await page.getByLabel('Name', { exact: true }).waitFor();
-  assert.equal(await page.getByRole('combobox', { name: 'Record form', exact: true }).count(), 0);
+  assert.equal(await page.getByRole('button', { name: 'Record form', exact: true }).count(), 0);
   assert.equal(await page.getByLabel('Excluded name', { exact: true }).count(), 0);
 });

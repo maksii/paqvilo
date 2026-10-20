@@ -1,7 +1,7 @@
 import fs from 'node:fs/promises';
 import { setImmediate } from 'node:timers/promises';
 
-const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
+const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'date-control.mjs': 'text/javascript; charset=utf-8', 'date-control.css': 'text/css; charset=utf-8', 'duration-control.mjs': 'text/javascript; charset=utf-8', 'duration-control.css': 'text/css; charset=utf-8', 'choice-control.mjs': 'text/javascript; charset=utf-8', 'lookup-dialog.mjs': 'text/javascript; charset=utf-8', 'lookup-control.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8', 'controls.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const metadataOnly = async (catalogue, data, actor, res) => {
   const tables = {};
@@ -60,13 +60,11 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       const [, entity, encodedId] = route, id = encodedId ? decodeURIComponent(encodedId) : null;
       if (id && (!/^[\w{}-]{1,128}$/.test(id))) throw fail('Invalid record ID.', 400);
       if (method === 'GET') {
-        if (id) json(res, 200, await data.get(entity, id, actor));
-        else {
-          let query;
-          try { query = JSON.parse(url.searchParams.get('query') ?? '{}'); } catch { throw fail('Invalid grid query JSON.', 400); }
-          if (!query || typeof query !== 'object' || Array.isArray(query)) throw fail('Provide a grid query object.', 400);
-          json(res, 200, await data.list(entity, query, actor));
-        }
+        let query;
+        try { query = JSON.parse(url.searchParams.get('query') ?? '{}'); } catch { throw fail('Invalid grid query JSON.', 400); }
+        if (!query || typeof query !== 'object' || Array.isArray(query)) throw fail('Provide a grid query object.', 400);
+        if (id) json(res, 200, await data.get(entity, id, actor, query));
+        else json(res, 200, await data.list(entity, query, actor));
       } else {
         if (method === 'POST' && id || method !== 'POST' && !id) throw fail('Invalid record operation.', 405);
         const values = method === 'DELETE' ? {} : await readBody(req);

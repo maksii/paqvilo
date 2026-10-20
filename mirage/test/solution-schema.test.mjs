@@ -7,6 +7,7 @@ import {
   scanSolutionSources,
   buildSolutionSchema,
   tableFields,
+  fieldDefinition,
   classifySolutionPath,
 } from "../lib/solution-schema.mjs";
 import { importSolutionData, applySolutionData, solutionSeedRows, sourceRecordId } from "../lib/solution-data.mjs";
@@ -17,6 +18,14 @@ import { DataStore } from "../lib/data.mjs";
 import { bootstrapReport, formatReport, resolveReportInputs } from "../bootstrap-report.mjs";
 
 const STANDARD = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
+
+test('state and status defaults retain exported numeric application values', () => {
+  const schema = { tables: { sample_item: {} }, optionSets: {}, targets: {} };
+  for (const type of ['state', 'status']) {
+    assert.equal(fieldDefinition(schema, 'sample_item', { name: `sample_${type}`, type, appDefaultValue: '0' }).defaultValue, 0);
+    assert.equal(fieldDefinition(schema, 'sample_item', { name: `sample_${type}`, type, appDefaultValue: '-1' }).defaultValue, undefined);
+  }
+});
 const attribute = (name, type, extra = "") =>
   `<attribute PhysicalName="${name}"><Type>${type}</Type><Name>${name}</Name><LogicalName>${name.toLowerCase()}</LogicalName>${extra}</attribute>`;
 const label = (text) => `<labels><label description="${text}" languagecode="1033" /><label description="${text} (fr)" languagecode="1036" /></labels>`;

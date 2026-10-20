@@ -69,8 +69,8 @@ test('source-only public dev closes owned browser/runtime, preserves reused runt
     const browser = await chromium.connectOverCDP(`http://127.0.0.1:${debugPort}`); browsers.push(browser);
     const page = await eventually(() => browser.contexts()[0].pages().find(page => page.url().startsWith(url + '/main.aspx')), 'dedicated browser did not navigate to the local model app');
     await page.getByLabel('Application', { exact: true }).waitFor();
-    await page.waitForFunction(() => document.querySelector('#apps')?.value === 'x_workspace');
-    assert.equal(await page.getByLabel('Application', { exact: true }).inputValue(), 'x_workspace');
+    await page.waitForFunction(() => document.querySelector('#apps')?.textContent.includes('Dedicated local workspace'));
+    assert.equal(await page.getByLabel('Application', { exact: true }).textContent(), 'Dedicated local workspace');
     await page.locator('#content table').waitFor();
     assert.equal(await page.getByRole('link', { name: 'Project setup', exact: true }).count(), 0);
     return { url, browser, child, exited };

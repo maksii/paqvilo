@@ -1,66 +1,51 @@
 // Controls are registered by supported metadata type. Unknown controls are explicit
 // read-only placeholders. Trusted Solution PCF bundles use a separate lifecycle.
-import { icon, navigationIcon } from './icons.mjs';
+import { renderLookup } from './lookup-control.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
 import { renderPcfControl } from './pcf-runtime.mjs';
+import { renderChoice } from './choice-control.mjs';
+import { renderDate } from './date-control.mjs';
+import { renderDuration } from './duration-control.mjs';
 const registry = new Map();
 export const registerControl = (type, render) => registry.set(type, render);
-export const hasControl = field => controlDescriptor(field).supported && registry.has(field.type ?? 'text');
+export const hasControl = field => registry.has(controlDescriptor(field).type);
 const input = (type, field, value) => {
   const control = document.createElement('input'); control.type = type;
-  control.value = value ?? ''; if (field.maxLength) control.maxLength = field.maxLength;
+  control.value = value ?? ''; control.placeholder = '---'; if (field.maxLength) control.maxLength = field.maxLength;
   if (field.minValue !== undefined) control.min = field.minValue;
   if (field.maxValue !== undefined) control.max = field.maxValue;
   return { element: control, read: () => control.value === '' ? null : control.value };
 };
-registerControl('text', (field, value) => input(field.format === 'email' ? 'email' : field.format === 'url' ? 'url' : 'text', field, value));
+registerControl('text', (field, value) => input(field.format === 'email' ? 'email' : field.format === 'url' ? 'url' : field.format === 'phone' ? 'tel' : 'text', field, value));
 registerControl('textarea', (field, value) => { const control = document.createElement('textarea'); control.rows = /source|copy|javascript|css/.test(field.name) ? 12 : 5; control.value = value ?? ''; if (field.maxLength) control.maxLength = field.maxLength; return { element: control, read: () => control.value || null }; });
 registerControl('json', (field, value) => { const control = document.createElement('textarea'); control.rows = 5; control.value = value == null ? '' : JSON.stringify(value, null, 2); return { element: control, read: () => control.value.trim() ? JSON.parse(control.value) : null }; });
 registerControl('number', (field, value) => {
+  if (String(field.format).toLowerCase() === 'duration') return renderDuration(field, value);
   if (field.options?.length) {
-    const select = document.createElement('select'); select.add(new Option('— Select —', ''));
-    for (const option of field.options) select.add(new Option(option.label, String(option.value)));
-    select.value = value == null ? '' : String(value);
-    return { element: select, read: () => select.value === '' ? null : Number(select.value) };
+    return renderChoice(field, value);
   }
   const control = input('number', field, value); control.element.step = /int|bigint/.test(field.dataverseType ?? '') ? '1' : 'any';
   return { element: control.element, read: () => control.element.value === '' ? null : Number(control.element.value) };
 });
 registerControl('boolean', (field, value) => {
-  const select = document.createElement('select'); select.add(new Option('— Select —', '')); select.add(new Option('Yes', 'true')); select.add(new Option('No', 'false')); select.value = value == null ? '' : String(Boolean(value));
-  return { element: select, read: () => select.value === '' ? null : select.value === 'true' };
+  const choices = field.options?.length ? field.options.map(option => ({ ...option, value: Boolean(Number(option.value)) })) : [{ label: 'No', value: false }, { label: 'Yes', value: true }];
+  return renderChoice(field, value == null ? null : value === true || value === 1 || value === 'true' || value === '1', { options: choices, allowEmpty: false });
 });
-registerControl('date', (field, value) => {
-  const dateOnly = field.format === 'dateonly' || field.dateTimeBehavior === 'DateOnly';
-  const date = value ? new Date(value) : null;
-  const text = date && Number.isFinite(date.getTime()) ? dateOnly ? String(value).slice(0, 10) : new Date(date.getTime() - date.getTimezoneOffset() * 60000).toISOString().slice(0, 16) : '';
-  const control = input(dateOnly ? 'date' : 'datetime-local', field, text);
-  return { element: control.element, read: () => control.element.value ? dateOnly ? control.element.value : new Date(control.element.value).toISOString() : null };
-});
-registerControl('lookup', (field, value, context) => {
-  const wrapper = document.createElement('div'); wrapper.className = 'lookup';
-  let selectedId = value?.id ?? value?.value ?? value;
-  let selectedName = context.formatted ?? value?.name;
-  let selectedEntity = value?.entity ?? value?.logical_name ?? value?.logicalName ?? context.logicalName ?? (field.targets?.length === 1 ? field.targets[0] : undefined);
-  const control = input('text', field, selectedName ?? selectedId); control.element.setAttribute('aria-label', field.label);
-  const badge = document.createElement('span'); badge.className = 'lookup-kind';
-  const clear = document.createElement('button'); clear.type = 'button'; clear.className = 'lookup-clear'; clear.innerHTML = icon('close'); clear.setAttribute('aria-label', `Clear ${field.label}`);
-  const selection = () => { wrapper.classList.toggle('has-selection', Boolean(selectedId)); clear.hidden = !selectedId; badge.hidden = !selectedId; badge.innerHTML = icon(navigationIcon({ entity: selectedEntity })); control.element.style.width = selectedId ? `${Math.max(40, String(control.element.value).length * 7.2 + 16)}px` : ''; control.element.setCustomValidity(control.element.value && !selectedEntity ? `Choose a target table using Look up ${field.label}; a record ID alone is ambiguous.` : ''); };
-  control.element.addEventListener('input', () => { selectedId = null; selectedName = null; selectedEntity = field.targets?.length === 1 ? field.targets[0] : undefined; selection(); });
-  clear.addEventListener('click', () => { selectedId = null; selectedName = null; selectedEntity = undefined; control.element.value = ''; selection(); wrapper.dispatchEvent(new Event('change', { bubbles: true })); });
-  const find = document.createElement('button'); find.type = 'button'; find.innerHTML = icon('search'); find.setAttribute('aria-label', `Look up ${field.label}`);
-  find.disabled = !field.targets?.some(entity => context.tables[entity]); find.title = find.disabled ? 'Target table metadata is unavailable; enter a local record ID.' : 'Choose a local record';
-  find.addEventListener('click', async () => { const selected = await context.lookup(field); if (selected) { selectedId = selected.id; selectedName = selected.name; selectedEntity = selected.entity; control.element.value = selectedName ?? selectedId; selection(); wrapper.dispatchEvent(new Event('change', { bubbles: true })); } });
-  wrapper.append(badge, control.element, clear, find); selection(); return { element: wrapper, primary: control.element, read: () => { const id = selectedId ?? control.read(); if (id == null) return null; if (!selectedEntity) throw new Error(`Choose a target table for ${field.label} using its lookup.`); return { id, entity: selectedEntity, ...(selectedName ? { name: selectedName } : {}) }; } };
-});
+registerControl('multiselect', (field, value) => renderChoice(field, value, { multiple: true }));
+registerControl('date', renderDate);
+registerControl('lookup', renderLookup);
 export function renderControl(field, value, context = {}) {
-  const renderer = registry.get(field.type ?? 'text');
+  const renderer = registry.get(controlDescriptor(field).type);
   if (!controlDescriptor(field).supported || !renderer) { const element = document.createElement('p'); element.className = 'unsupported'; element.textContent = 'This control is not supported locally yet.'; return { element, read: () => value, supported: false }; }
   if (context.pcf) return renderPcfControl(field, value, context);
-  const rendered = renderer(field, value, context), primary = rendered.primary ?? rendered.element;
+  const rendered = context.readOnlyText ? (() => {
+    let raw = value; const display = () => raw == null ? '' : field.options?.find(option => String(option.value) === String(raw))?.label ?? String(raw);
+    const control = input('text', field, display());
+    return { element: control.element, read: () => raw, setValue(next) { raw = next; control.element.value = display(); }, setDisabled() { control.element.disabled = true; } };
+  })() : renderer(field, value, context), primary = rendered.primary ?? rendered.element;
   primary.name = field.name; primary.id = `field-${field.name}`;
   primary.setAttribute('aria-label', field.label ?? field.name);
-  primary.required = Boolean(field.required); primary.disabled = Boolean(context.disabled);
+  primary.required = Boolean(field.required); primary.disabled = Boolean(context.disabled || context.readOnlyText);
   if (context.disabled) for (const control of rendered.element.querySelectorAll('button,input,select,textarea')) control.disabled = true;
   return { ...rendered, supported: true };
 }

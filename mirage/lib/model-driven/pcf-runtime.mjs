@@ -6,6 +6,18 @@ let registrationInstalled = false;
 const safeName = value => /^[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*$/.test(value ?? '') && !String(value).split('.').some(part => ['__proto__', 'prototype', 'constructor'].includes(part));
 const unsupported = name => { throw new Error(`PCF ${name} is not supported by the local standard field host.`); };
 const scalarType = type => /^(?:SingleLine\.(?:Text|TextArea|Email|Phone|URL|Ticker)|Multiple|Whole\.(?:None|Duration|TimeZone|Language)|Decimal|FP|Currency|Enum|OptionSet|TwoOptions|DateAndTime\.(?:DateAndTime|DateOnly))$/i.test(type ?? '');
+const dateOnly = field => String(field?.format).toLowerCase() === 'dateonly' || field?.dateTimeBehavior === 'DateOnly';
+const pad = value => String(value).padStart(2, '0');
+const wallDate = date => `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+function rawDate(source, field) {
+  // The native field host gives date-only/independent components wall-clock
+  // Dates. Parsing midnight as UTC shifts a reused date-only component west of UTC.
+  if (typeof source === 'string' && /^\d{4}-\d{2}-\d{2}/.test(source) && (dateOnly(field) || field?.dateTimeBehavior === 'TimeZoneIndependent')) {
+    const [year, month, day, hour = 0, minute = 0, second = 0] = source.match(/\d+/g).map(Number);
+    return new Date(year, month - 1, day, dateOnly(field) ? 0 : hour, dateOnly(field) ? 0 : minute, dateOnly(field) ? 0 : second);
+  }
+  return new Date(source);
+}
 
 function resource(url, kind) {
   const parsed = new URL(url, location.href);
@@ -43,7 +55,9 @@ function typed(value, property, field) {
   if (/DateAndTime/i.test(type) || field?.type === 'date') {
     const date = value instanceof Date ? value : new Date(value);
     if (!Number.isFinite(date.getTime())) throw new Error(`PCF output ${property.name} must be a valid date.`);
-    return field?.format === 'dateonly' || field?.dateTimeBehavior === 'DateOnly' ? date.toISOString().slice(0, 10) : date.toISOString();
+    if (dateOnly(field)) return value instanceof Date ? wallDate(date) : String(value).slice(0, 10);
+    if (field?.dateTimeBehavior === 'TimeZoneIndependent' && value instanceof Date) return `${wallDate(date)}T${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${String(date.getMilliseconds()).padStart(3, '0')}Z`;
+    return date.toISOString();
   }
   if (/Lookup|MultiSelectOptionSet|Object/i.test(type) || ['lookup', 'json'].includes(field?.type)) unsupported(`property type ${type || field.type}`);
   if (typeof value !== 'string') throw new Error(`PCF output ${property.name} must be text.`);
@@ -51,12 +65,12 @@ function typed(value, property, field) {
   return value;
 }
 
-export function pcfDescriptor(binding, extensions) {
+export function pcfDescriptor(binding, extensions, { webAPI } = {}) {
   const definition = extensions?.pcf?.controls?.find(control => control.name === binding?.name);
   if (extensions?.trusted !== true) return { reason: 'Trust local Solution code in model-driven configuration to run this component.' };
   if (!definition) return { reason: `The exported PCF component ${binding?.name ?? ''} is unavailable.` };
   if ((definition.controlType ?? definition.type) && (definition.controlType ?? definition.type) !== 'standard' || definition.dataset || definition.datasets?.length || definition.libraries?.length || definition.supported === false) return { reason: definition.reason ?? 'Only standard scalar field PCF components are supported locally.' };
-  const requiredFeatures = (definition.features ?? []).filter(feature => ['true', '1'].includes(String(feature.required).toLowerCase()));
+  const requiredFeatures = (definition.features ?? []).filter(feature => ['true', '1'].includes(String(feature.required).toLowerCase()) && !(String(feature.name).toLowerCase() === 'webapi' && webAPI));
   if (requiredFeatures.length) return { reason: `This PCF requires host features that are not implemented locally: ${requiredFeatures.map(feature => feature.name).join(', ')}.` };
   const unknown = (definition.properties ?? []).find(property => !scalarType(property.ofType ?? property['of-type']));
   if (unknown) return { reason: `PCF property ${unknown.name} uses unsupported type ${unknown.ofType ?? unknown['of-type'] ?? '(unknown)'}.` };
@@ -66,9 +80,9 @@ export function pcfDescriptor(binding, extensions) {
 }
 
 export function renderPcfControl(field, initialValue, options = {}) {
-  const element = document.createElement('div'); element.className = 'model-driven-pcf'; element.setAttribute('role', 'group'); element.setAttribute('aria-label', field.label ?? field.name);
+  const element = document.createElement('div'); element.className = 'model-driven-pcf'; element.style.width = '100%'; element.setAttribute('role', 'group'); element.setAttribute('aria-label', field.label ?? field.name);
   const status = document.createElement('p'); status.className = 'unsupported';
-  const binding = options.pcf, admission = pcfDescriptor(binding, options.clientExtensions);
+  const binding = options.pcf, admission = pcfDescriptor(binding, options.clientExtensions, options);
   let value = initialValue, disabled = Boolean(options.disabled), instance, destroyed = false, failed = false, observer, updateQueued = false, state = {};
   const cleanup = () => { observer?.disconnect(); observer = undefined; const current = instance; instance = undefined; try { current?.destroy?.(); } catch (error) { console.warn('Local PCF cleanup failed:', error.message); } };
   const showError = error => { failed = true; cleanup(); status.textContent = error.message; element.replaceChildren(status); element.dataset.pcfState = 'unsupported'; };
@@ -99,7 +113,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
     navigation: new Proxy({}, { get: (_, name) => () => unsupported(`navigation.${String(name)}`) }),
     webAPI: new Proxy({}, { get: (_, name) => (...args) => {
       const api = typeof options.webAPI === 'function' ? options.webAPI() : options.webAPI;
-      if (!destroyed && typeof api?.[name] === 'function') return api[name](...args);
+      if (!destroyed && !failed && typeof api?.[name] === 'function') return api[name](...args);
       return Promise.reject(new Error(`PCF webAPI.${String(name)} is not supported by the configured local model-driven client API.`));
     } }),
     utils: { hasEntityPrivilege: () => unsupported('utils.hasEntityPrivilege'), getEntityMetadata: () => Promise.reject(new Error('PCF entity metadata API is not supported.')), lookupObjects: () => Promise.reject(new Error('PCF lookup dialog API is not supported.')) },
@@ -120,8 +134,9 @@ export function renderPcfControl(field, initialValue, options = {}) {
         if (/^(Whole|Decimal|FP|Currency|Enum|OptionSet)/i.test(propertyType)) source = Number(source);
         if (/TwoOptions/i.test(propertyType)) { if (![true, false, 'true', 'false', '1', '0'].includes(source)) throw new Error(`PCF input ${property.name} must be a boolean.`); source = source === true || source === 'true' || source === '1'; }
       }
-      const raw = /DateAndTime/i.test(propertyType) && source != null ? new Date(source) : source;
-      context.parameters[property.name] = { raw, formatted: source == null ? '' : String(source), error: false, errorMessage: '',
+      const raw = /DateAndTime/i.test(propertyType) && source != null ? rawDate(source, field) : source;
+      const formatted = source == null ? '' : /OptionSet|TwoOptions/i.test(propertyType) ? field.options?.find(option => String(option.value) === String(typeof source === 'boolean' ? Number(source) : source))?.label ?? String(source) : String(source);
+      context.parameters[property.name] = { raw, formatted, error: false, errorMessage: '',
         attributes: { LogicalName: link?.field ?? '', DisplayName: link?.field === field.name ? field.label ?? field.name : link?.field ?? property.name, RequiredLevel: field.required ? 2 : 0,
           ...(field.maxLength ? { MaxLength: field.maxLength } : {}), ...(field.options ? { Options: field.options.map(option => ({ Value: option.value, Label: option.label })) } : {}) }, security: { editable: !disabled, readable: true, secured: false }, type: property.ofType ?? property['of-type'] };
     }
@@ -146,6 +161,8 @@ export function renderPcfControl(field, initialValue, options = {}) {
       if (!compatible(bound[0])) throw new Error(`PCF bound property ${bound[0].name} is incompatible with column ${field.name}.`);
       const constructorName = Object.hasOwn(definition, 'constructor') ? definition.constructor : definition.name;
       if (!safeName(constructorName)) throw new Error('Invalid PCF constructor namespace.');
+      const namespace = constructorName.includes('.') ? constructorName.slice(0, constructorName.lastIndexOf('.')) : null;
+      element.classList.add('customControl', ...(namespace ? [namespace] : []), constructorName.split('.').at(-1), constructorName);
       if (!registrationInstalled) {
         registrationInstalled = true;
         const framework = window.ComponentFramework = window.ComponentFramework ?? {}, prior = framework.registerControl;

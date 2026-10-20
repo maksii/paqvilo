@@ -3214,7 +3214,7 @@ async function createPowerPagesSimulator({
   };
   const modelDrivenData = createModelDrivenData({ store, catalogue: modelDrivenCatalogue, portal: () => portal,
     readMetadata: fn => solutionMetadataOverlay.withReadEpoch(fn, { valid: () => store.isUnmodifiedRead() }),
-    recordService: { get: (...args) => organizationRecords.get(...args), query: (...args) => organizationRecords.query(...args), write: input => organizationRecords.write(input), capabilities: (...args) => organizationRecords.capabilities(...args) },
+    recordService: { get: (...args) => organizationRecords.get(...args), retrieve: (...args) => organizationRecords.retrieve(...args), query: (...args) => organizationRecords.query(...args), list: (...args) => organizationRecords.list(...args), write: input => organizationRecords.write(input), capabilities: (...args) => organizationRecords.capabilities(...args) },
     writeRecord: dataverseConfig.enabled ? input => dataverse.writeLocalRecord(input) : null,
     saveOverlay: async (key, value) => {
       const state = store.snapshot();
@@ -3225,7 +3225,7 @@ async function createPowerPagesSimulator({
     },
   });
   const modelDrivenHandler = createModelDrivenHandler({ catalogue: modelDrivenCatalogue, data: modelDrivenData,
-    clientAssets: () => modelDrivenSettingsValue.trustedExtensions ? clientResources.assets : new Map(),
+    clientAssets: () => modelDrivenSettingsValue.trustedExtensions ? clientResources.assets : new Map([...clientResources.assets].filter(([, asset]) => asset.passive === true)),
     csrf: () => csrf, json, readBody: jsonObjectBody, change, read: fn => store.readOperation(() => solutionMetadataOverlay.withReadEpoch(fn)),
     principal: req => staffSessions.resolve(req) });
   async function handle(req, res) {
