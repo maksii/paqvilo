@@ -82,6 +82,7 @@ jobs:
           PACKAGE_VERSION: ${{ inputs.package_version }}
         run: node scripts/release-version.mjs stamp
       - name: Install locked dependencies
+        if: needs.changes.outputs.runtime == 'true'
         run: |
           npm ci --ignore-scripts
           npm ci --prefix mirage --ignore-scripts
