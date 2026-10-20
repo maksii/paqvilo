@@ -111,7 +111,7 @@ test('PAC unpack pairs WebResource metadata with source and keeps apps distinct 
   assert.equal(first.clientResources.resources[0].name, 'x_/events.js');
   assert.equal(first.clientResources.appActions[0].supported, true);
   assert.equal(first.clientResources.appActions[0].sourceKind, 'appaction');
-  assert.equal(first.clientResources.appActions[0].source, path.join(root, 'appactions/x_review/appaction.xml'));
+  assert.equal(first.clientResources.appActions[0].source, await fs.realpath(path.join(root, 'appactions/x_review/appaction.xml')));
   assert.equal(first.clientResources.appActions[0].actions[0].library, 'x_/events.js');
   assert.deepEqual(first.clientResources.diagnostics, []);
 });

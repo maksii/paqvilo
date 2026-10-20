@@ -145,7 +145,7 @@ describe('plug-in registration over HTTP', () => {
       assert.equal(facts.SubjectDN, cert.subject);
       assert.equal(facts.IsSelfSigned, true);
       assert.equal(facts.CertificateSegment, cert.raw.toString('base64'));
-      assert.equal(facts.CertificateHash, createHash('sha1').update(cert.raw).digest('hex').toUpperCase());
+      assert.equal(facts.CertificateHash, cert.fingerprint.replaceAll(':', ''));
     } finally { registration.content = previous; }
   });
 

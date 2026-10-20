@@ -5,6 +5,7 @@ import { describe, it, before, after } from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import tls from "node:tls";
+import { createSelfSignedCertificate } from "../lib/dataverse-tls.mjs";
 import { pathToFileURL } from "node:url";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { dataverseSettings } from "../lib/dataverse-settings.mjs";
@@ -27,6 +28,8 @@ const REDIRECT = "http://localhost:1/cb";
 const VERSION = "v9.2";
 const ERROR = 0xaa;
 const DONE = 0xfd;
+// Trust only this loopback fixture, including hostname verification.
+const testCertificate = createSelfSignedCertificate();
 
 const text = { dataverseType: "nvarchar" };
 // User-owned, so a Basic User can create rows and reads only the rows it owns.
@@ -82,7 +85,7 @@ function sqlBatch(sql) {
 
 // Hand-built TDS 8 client (TLS first, ALPN tds/8.0). Replies are read whole: the assertions search their bytes.
 async function connect(port) {
-  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], rejectUnauthorized: false });
+  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], ca: testCertificate.cert });
   socket.on("error", () => {});
   await once(socket, "secureConnect");
   const queue = [];
@@ -136,7 +139,7 @@ describe("TDS endpoint wired into the Dataverse API", () => {
       ],
       users: [{ domainname: "basic@example.test", fullname: "Basic", objectId: BASIC_OID, roles: ["Basic User"] }],
     });
-    api = await startDataverseApi({ store, settings, log: () => {} });
+    api = await startDataverseApi({ store, settings, tls: testCertificate, log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
     await store.transact(() => {
@@ -228,7 +231,7 @@ describe("TDS endpoint wired into the Dataverse API", () => {
     const state = emptyState();
     const store = await new DataStore({ state }).init();
     const settings = dataverseSettings({ enabled: true, organizationId: ORG_ID, tds: { enabled: false } });
-    const off = await startDataverseApi({ store, settings, log: () => {} });
+    const off = await startDataverseApi({ store, settings, tls: testCertificate, log: () => {} });
     try {
       assert.ok(Number.isInteger(off.tdsPort) && off.tdsPort > 0, "the endpoint stays reachable");
       const { client, reply } = await login(off.tdsPort, "not-a-token");
@@ -276,7 +279,7 @@ describe("TDS query paging and service protection", () => {
       applications: [{ appId: APP_ID, displayName: "TDS test app", secretEnvironmentVariable: SECRET_VAR, roles: ["System Administrator"] }],
       serviceProtection,
     });
-    return startDataverseApi({ store, settings, log: () => {}, extensions: [...EXTENSIONS, { install }] });
+    return startDataverseApi({ store, settings, tls: testCertificate, log: () => {}, extensions: [...EXTENSIONS, { install }] });
   }
 
   async function appTokenOf(api) {
@@ -399,7 +402,7 @@ describe("TDS endpoint with tedious", { skip }, () => {
       organizationId: ORG_ID,
       applications: [{ appId: APP_ID, displayName: "TDS test app", secretEnvironmentVariable: SECRET_VAR, roles: ["System Administrator"] }],
     });
-    api = await startDataverseApi({ store, settings, log: () => {} });
+    api = await startDataverseApi({ store, settings, tls: testCertificate, log: () => {} });
     origin = api.origin;
     tenantId = api.tenantId;
   });

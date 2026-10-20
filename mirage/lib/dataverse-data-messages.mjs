@@ -72,7 +72,7 @@ export function binRows(store, logical) {
     .flatMap((ref) => snapshotsOf(store, ref)).filter((entry) => entry.logicalName === logical).map((entry) => structuredClone(entry.row));
 }
 export const retainedRows = (store, logical) => structuredClone(store.state.dataverse?.retained?.[logical] ?? []);
-const eligible = (mapping) => !NEVER_RECYCLED.has(mapping.logicalName) && !/^elastic|virtual$/i.test(mapping.tableType ?? "") && !mapping.isVirtual;
+const eligible = (mapping) => !NEVER_RECYCLED.has(mapping.logicalName) && !/^(?:elastic|virtual)$/i.test(mapping.tableType ?? "") && !mapping.isVirtual;
 const targetRef = (store, target) => {
   const type = String(target?.["@odata.type"] ?? "").replace(/^#?Microsoft\.Dynamics\.CRM\./, "");
   if (type) {

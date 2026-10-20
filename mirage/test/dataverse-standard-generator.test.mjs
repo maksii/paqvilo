@@ -126,7 +126,8 @@ test("unmapped Learn types are reported as problems, not guessed", () => {
 test("loadPages fetches a missing page once and reads the cache afterwards", async () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "standard-tables-"));
   const urls = [];
-  const fetchFn = async (url) => {
+  const fetchFn = async (url, options) => {
+    assert.equal(options.redirect, 'error', 'Pinned reference downloads cannot redirect to another origin.');
     urls.push(url);
     return { ok: true, text: async () => fixture };
   };
@@ -144,6 +145,14 @@ test("loadPages fetches a missing page once and reads the cache afterwards", asy
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
   }
+});
+
+test('loadPages rejects path-bearing commits and table names before any cache write', async () => {
+  const cacheRoot = path.join(os.tmpdir(), `standard-tables-invalid-${process.pid}-${Date.now()}`);
+  const fetchFn = () => { throw Error('Invalid cache names must not reach the network.'); };
+  await assert.rejects(loadPages('../elsewhere', { cacheRoot, fetchFn, tables: ['fx_widget'] }), /commit SHA/);
+  await assert.rejects(loadPages(COMMIT, { cacheRoot, fetchFn, tables: ['../elsewhere'] }), /logical identifiers/);
+  assert.equal(fs.existsSync(cacheRoot), false);
 });
 
 test("the checked-in standard file is pinned to the commit and covers the 161 tables and the 6 allow-listed prefixed tables", () => {

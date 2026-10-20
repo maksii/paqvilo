@@ -152,9 +152,12 @@ const stemOf = (attribute) => attribute["@odata.type"].replace(/^#Microsoft\.Dyn
 const CHANGE_KEYS = new Set(["@odata.type", "MetadataId", "LogicalName", "HasChanged"]);
 const NESTED = { Attributes: "AttributeQuery", Keys: "KeyQuery", OneToManyRelationships: "RelationshipQuery", ManyToOneRelationships: "RelationshipQuery", ManyToManyRelationships: "RelationshipQuery" };
 const ALIASES = { AttributeTypeCode: "AttributeType" };
+const ENTITY_CHILD_COLLECTIONS = new Set([...Object.keys(NESTED), "Keys", "Privileges"]);
 
 function uuidV5(namespace, name) {
   const text = String(namespace ?? "");
+  // Identifier derivation only. Retain the historical fallback namespace and RFC 4122 UUIDv5 SHA-1
+  // so exported metadata IDs stay stable; these digests never authenticate or protect data.
   const ns = GUID.test(text) ? Buffer.from(text.replace(/-/g, ""), "hex") : createHash("sha1").update(text).digest().subarray(0, 16);
   const hash = createHash("sha1").update(ns).update(String(name), "utf8").digest();
   hash[6] = (hash[6] & 0x0f) | 0x50;
@@ -357,6 +360,13 @@ function matchesAll(item, criteria) {
   ];
   const or = String(criteria.FilterOperator ?? "And").toLowerCase() === "or" || String(criteria.FilterOperator) === "1";
   return or ? results.some(Boolean) : results.every(Boolean);
+}
+
+// Scalar entity criteria can reject a table before its columns and relationships are expanded.
+// Preserve the full evaluation path for criteria that explicitly inspect a child collection.
+function criteriaNeedsChildren(criteria) {
+  return nodesOf(criteria?.Conditions).some((condition) => ENTITY_CHILD_COLLECTIONS.has(condition.PropertyName))
+    || nodesOf(criteria?.Filters).some(criteriaNeedsChildren);
 }
 
 // ManagedProperty<T> members (MANAGED_MEMBERS, the table the SOAP writer shares) are objects in the JSON too: a plain value
@@ -869,9 +879,9 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   const relationshipShape = (r) => (r.type === "N:N" ? manyToManyShape(r) : oneToManyShape(r));
   // Uncast RelationshipDefinitions are typed RelationshipMetadataBase: only its properties.
   const relationshipBase = (r) => Object.fromEntries(RELATIONSHIP_BASE.filter((k) => k in r).map((k) => [k, r[k]]));
-  const oneToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencedEntity === logical).map(oneToManyShape);
-  const manyToOneOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencingEntity === logical).map(oneToManyShape);
-  const manyToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "N:N" && (r.entity1 === logical || r.entity2 === logical)).map(manyToManyShape);
+  const oneToManyOf = (logical, records = relationshipRecords()) => records.filter((r) => r.type === "1:N" && r.referencedEntity === logical).map(oneToManyShape);
+  const manyToOneOf = (logical, records = relationshipRecords()) => records.filter((r) => r.type === "1:N" && r.referencingEntity === logical).map(oneToManyShape);
+  const manyToManyOf = (logical, records = relationshipRecords()) => records.filter((r) => r.type === "N:N" && (r.entity1 === logical || r.entity2 === logical)).map(manyToManyShape);
 
   const EXPANSIONS = {
     Attributes: (src) => attributesOf(src),
@@ -1056,16 +1066,15 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   }
 
   // Full metadata of one table: the source of every RetrieveMetadataChanges answer.
-  const fullEntity = (logical) => {
-    const src = source(logical);
+  const fullEntity = (src, entity, getRelationships) => {
+    const records = getRelationships();
     return {
-      "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata",
-      ...entityOf(src),
+      ...entity,
       Attributes: attributesOf(src),
       Keys: keysOf(src),
-      OneToManyRelationships: oneToManyOf(logical),
-      ManyToOneRelationships: manyToOneOf(logical),
-      ManyToManyRelationships: manyToManyOf(logical),
+      OneToManyRelationships: oneToManyOf(src.logical, records),
+      ManyToOneRelationships: manyToOneOf(src.logical, records),
+      ManyToManyRelationships: manyToManyOf(src.logical, records),
       Privileges: privilegesOf(src),
     };
   };
@@ -1124,10 +1133,13 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   // One table's item. A changed table returns its own properties with HasChanged true, and all children with their own flag.
   // An unchanged table whose children changed returns those children with HasChanged true and HasChanged false on itself.
   // Null when nothing changed, unless its Privileges were named in the query (they are returned regardless of the stamp).
-  function changeOf(logical, query, index, wantsPrivileges) {
-    const item = fullEntity(logical);
+  function changeOf(logical, query, index, wantsPrivileges, getRelationships) {
     const full = index.full;
     const own = full || index.entities.has(logical);
+    const src = source(logical);
+    const entity = { "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata", ...entityOf(src), HasChanged: own };
+    if (!criteriaNeedsChildren(query?.Criteria) && !matchesAll(entity, query?.Criteria)) return null;
+    const item = fullEntity(src, entity, getRelationships);
     const attrChanged = (a) => full || index.attributes.has(`${logical}.${a.LogicalName}`)
       || (a.GlobalOptionSet != null && index.optionSets.has(String(a.GlobalOptionSet.Name).toLowerCase()));
     const relChanged = (r) => full || index.relationships.has(String(r.SchemaName).toLowerCase());
@@ -1336,7 +1348,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const index = changeIndex(since);
       // Privileges come back whenever they are named, even for an unchanged table (Microsoft Learn retrieve-detect-changes-metadata).
       const wantsPrivileges = listOf(query?.Properties?.PropertyNames).includes("Privileges");
-      const EntityMetadata = logicalNames().map((name) => changeOf(name, query, index, wantsPrivileges)).filter(Boolean);
+      // Mutable metadata is normalized once per request, never cached across schema updates.
+      let relationships;
+      const getRelationships = () => relationships ??= relationshipRecords();
+      const EntityMetadata = logicalNames().map((name) => changeOf(name, query, index, wantsPrivileges, getRelationships)).filter(Boolean);
       // LabelQuery.FilterLanguages limits the labels of every returned item (the argument wins when a caller passes one).
       const languages = labelLanguages ?? query?.LabelQuery?.FilterLanguages ?? null;
       return {
@@ -1357,5 +1372,6 @@ export function relationshipSchemaName(logical, nav, rel) {
 export function objectTypeCode(logical) {
   const name = String(logical).toLowerCase();
   if (Object.hasOwn(OBJECT_TYPE_CODES, name)) return OBJECT_TYPE_CODES[name];
+  // Compatibility identifier only: changing the digest would renumber existing table object types.
   return 10000 + (createHash("sha1").update(name).digest().readUInt32BE(0) % 50000);
 }

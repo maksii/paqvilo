@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { once } from 'node:events';
 import { publishTransactionalFiles, recoverTransactionalFiles } from '../lib/transactional-files.mjs';
@@ -125,4 +125,60 @@ test('recovery refuses a changed physical parent path before restoring or reclai
   await assert.rejects(recoverTransactionalFiles({ journalFile: f.journalFile, files: f.files, io }), { code: 'PersistenceRecoveryRequired' });
   assert.equal(JSON.parse(await fs.readFile(f.files[0], 'utf8')).value, 'Changed 0');
   assert.ok(await fs.stat(`${f.files[0]}.lock`));
+});
+
+test('publication refuses a replaced path and closes its validated read descriptor', async t => {
+  const f = await fixture(t);
+  let swapped = false, closed = false, read = false;
+  const io = { ...fs, open: async (file, ...options) => {
+    const handle = await fs.open(file, ...options);
+    if (file !== f.files[0] || swapped) return handle;
+    swapped = true;
+    await fs.rename(file, `${file}.original`);
+    await fs.writeFile(file, 'foreign replacement');
+    return {
+      stat: () => handle.stat(),
+      readFile: (...args) => { read = true; return handle.readFile(...args); },
+      close: async () => { closed = true; await handle.close(); },
+    };
+  } };
+  await assert.rejects(publishTransactionalFiles({ ...f, io }), { code: 'PersistenceRecoveryRequired' });
+  assert.equal(read, false, 'A descriptor that no longer names the declared file is not consumed.');
+  assert.equal(closed, true);
+  assert.equal(await fs.readFile(f.files[0], 'utf8'), 'foreign replacement');
+  assert.equal(await fs.readFile(`${f.files[0]}.original`, 'utf8'), f.before[0]);
+});
+
+test('transaction publication accepts a Windows 8.3 parent alias without changing declared file identities', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t);
+  // Static interop source; the owned fixture path is passed as data in the child
+  // environment, never interpolated into shell commands or executable source.
+  const script = `
+    Add-Type -TypeDefinition 'using System; using System.Text; using System.Runtime.InteropServices; public class PaqviloShortPath { [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)] public static extern uint GetShortPathName(string path, StringBuilder output, uint size); }';
+    $short = New-Object System.Text.StringBuilder 32768;
+    if ([PaqviloShortPath]::GetShortPathName($env:PAQVILO_TEST_SHORT_PATH, $short, $short.Capacity) -eq 0) { exit 2; }
+    [Console]::Write($short.ToString());
+  `;
+  const result = spawnSync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+    encoding: 'utf8', windowsHide: true, timeout: 15000, env: { ...process.env, PAQVILO_TEST_SHORT_PATH: f.directory },
+  });
+  assert.ifError(result.error);
+  assert.equal(result.status, 0, result.stderr);
+  const shortRoot = result.stdout.trim();
+  if (shortRoot.toLowerCase() === (await fs.realpath(f.directory)).toLowerCase()) { t.skip('8.3 aliases are disabled on the fixture volume.'); return; }
+  assert.equal(await fs.realpath(shortRoot), await fs.realpath(f.directory));
+  const files = f.files.map(file => path.join(shortRoot, path.basename(file)));
+  await publishTransactionalFiles({ entries: f.entries.map((entry, index) => ({ ...entry, file: files[index] })), files,
+    allowedFiles: files, journalFile: path.join(shortRoot, 'transaction.json') });
+  assert.deepEqual(await Promise.all(f.files.map(async file => JSON.parse(await fs.readFile(file, 'utf8')))), f.entries.map(entry => entry.value));
+  assert.deepEqual((await fs.readdir(f.directory)).sort(), ['one.json', 'two.json']);
+});
+
+test('transaction publication refuses an ancestor junction instead of treating it as a Windows path alias', { skip: process.platform !== 'win32' }, async t => {
+  const f = await fixture(t), alias = path.join(f.directory, 'junction');
+  await fs.symlink(f.directory, alias, 'junction');
+  const files = f.files.map(file => path.join(alias, path.basename(file)));
+  await assert.rejects(publishTransactionalFiles({ entries: f.entries.map((entry, index) => ({ ...entry, file: files[index] })),
+    allowedFiles: files, journalFile: path.join(alias, 'transaction.json') }), { code: 'PersistenceRecoveryRequired' });
+  assert.deepEqual(await Promise.all(f.files.map(file => fs.readFile(file, 'utf8'))), f.before);
 });

@@ -17,7 +17,8 @@ async function workspace(t, level, { io, files, seed = initial() } = {}) {
   const definition = files ?? [{ file: 'data.json', tables: { item: { path: ['records'], idColumn: 'itemid' } }, newTablesPath: ['newTables'], schemaPath: ['schema'] }];
   for (const file of definition) await fs.writeFile(path.join(directory, file.file), JSON.stringify({ records: [{ itemid: id, name: 'Original', sibling: 'retained' }], schema: {}, newTables: {}, unrelated: { keep: true } }, null, 2));
   const packModule = path.join(directory, 'pack.mjs');
-  await fs.writeFile(packModule, `export default {id:'invented',name:'Invented',description:'Invented fixture',matches:()=>true,presets:()=>({}),dataFiles:${JSON.stringify(definition)}};`);
+  await fs.writeFile(path.join(directory, 'data-files.json'), JSON.stringify(definition));
+  await fs.writeFile(packModule, `import dataFiles from './data-files.json' with { type: 'json' }; export default {id:'invented',name:'Invented',description:'Invented fixture',matches:()=>true,presets:()=>({}),dataFiles};`);
   const pack = await loadPack(packModule), stateFile = path.join(directory, '.runtime', 'state.json');
   const open = async () => {
     const storageAdapter = await createSimulationPersistence({ settings: { level }, packs: [pack], stateFile, io });
@@ -30,7 +31,12 @@ async function workspace(t, level, { io, files, seed = initial() } = {}) {
 
 test('dry run edits records in memory, refuses schema, and never reads or writes a saved runtime', async t => {
   const { store, open, directory, dataFile, stateFile } = await workspace(t, 'dry-run');
-  const before = await fs.readFile(dataFile), info = await fs.stat(dataFile);
+  const readSnapshot = async () => {
+    const handle = await fs.open(dataFile, 'r');
+    try { return { bytes: await handle.readFile(), info: await handle.stat() }; }
+    finally { await handle.close(); }
+  };
+  const before = await readSnapshot();
   await fs.mkdir(path.dirname(stateFile), { recursive: true });
   await fs.writeFile(stateFile, 'not runtime JSON; dry run must ignore it');
   await store.update('item', id, { name: 'Memory' });
@@ -38,13 +44,14 @@ test('dry run edits records in memory, refuses schema, and never reads or writes
   await store.remove('item', created.itemid);
   assert.equal(store.tableRows('item')[0].name, 'Memory');
   assert.equal((await open()).tableRows('item')[0].name, 'Original');
-  assert.deepEqual(await fs.readFile(dataFile), before);
-  assert.equal((await fs.stat(dataFile)).mtimeMs, info.mtimeMs);
+  const after = await readSnapshot();
+  assert.deepEqual(after.bytes, before.bytes);
+  assert.equal(after.info.mtimeMs, before.info.mtimeMs);
   assert.equal(await fs.readFile(stateFile, 'utf8'), 'not runtime JSON; dry run must ignore it');
   const saved = store.snapshot();
   await assert.rejects(store.transact(() => { store.state.mappings.another = { idColumn: 'anotherid', entitySet: 'anothers' }; }), { code: 'SimulationSchemaDisabled' });
   assert.deepEqual(store.snapshot(), saved);
-  assert.deepEqual((await fs.readdir(directory)).sort(), ['.runtime', 'data.json', 'pack.mjs']);
+  assert.deepEqual((await fs.readdir(directory)).sort(), ['.runtime', 'data-files.json', 'data.json', 'pack.mjs']);
 });
 
 test('simulation updates the existing DATA file directly and survives a clean restart', async t => {

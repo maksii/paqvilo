@@ -462,6 +462,38 @@ test("RetrieveMetadataChanges criteria: nested Filters combine under their own F
   for (const entity of inList.EntityMetadata) assert.deepEqual(names(entity.Attributes), ["name"]);
 });
 
+test("RetrieveMetadataChanges filters before expansion and normalizes a large catalog once per request", () => {
+  const tableCount = 120;
+  let mappingReads = 0;
+  const attributeReads = new Map();
+  const catalog = Object.fromEntries(Array.from({ length: tableCount }, (_, index) => {
+    const logical = `bench${index}`;
+    const fields = Object.fromEntries(Array.from({ length: 8 }, (_, column) => [`field${column}`, {
+      get dataverseType() {
+        attributeReads.set(logical, (attributeReads.get(logical) ?? 0) + 1);
+        return "nvarchar";
+      },
+    }]));
+    return [logical, { entitySet: `${logical}s`, idColumn: `${logical}id`, nameColumn: "field0", fields }];
+  }));
+  const service = createMetadataService({ organizationId: ORG, mappings: () => { mappingReads++; return catalog; } });
+  const query = { Criteria: { Conditions: [{ PropertyName: "LogicalName", ConditionOperator: "Equals", Value: "bench0" }] } };
+  const filtered = service.retrieveMetadataChanges(query);
+  assert.deepEqual(names(filtered.EntityMetadata), ["bench0"]);
+  assert.ok(attributeReads.get("bench0") > 0);
+  assert.deepEqual([...attributeReads.keys()], ["bench0"], "rejected tables must not expand their attributes");
+
+  mappingReads = 0;
+  assert.equal(service.retrieveMetadataChanges().EntityMetadata.length, tableCount);
+  assert.ok(mappingReads < tableCount * 20, `catalog normalization must be linear, observed ${mappingReads} reads`);
+
+  // A request-local snapshot must not retain a relationship after the next schema edit.
+  catalog.bench0.relationships = { peers: { entity: "bench1", from: "bench0id", to: "bench1id", many: true, schemaName: "bench0_peers" } };
+  assert.ok(service.retrieveMetadataChanges(query).EntityMetadata[0].OneToManyRelationships.some((item) => item.SchemaName === "bench0_peers"));
+  delete catalog.bench0.relationships;
+  assert.equal(service.retrieveMetadataChanges(query).EntityMetadata[0].OneToManyRelationships.length, 0);
+});
+
 test("RetrieveMetadataChanges LabelQuery.FilterLanguages keeps only the requested labels", () => {
   const labelled = createMetadataService({
     organizationId: ORG, schema: () => null,

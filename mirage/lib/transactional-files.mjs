@@ -8,12 +8,40 @@ import { DataError } from './data-error.mjs';
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const samePath = (left, right) => process.platform === 'win32'
   ? path.resolve(left).toLowerCase() === path.resolve(right).toLowerCase() : path.resolve(left) === path.resolve(right);
-async function currentDigest(file, io) {
-  try {
-    const stat = await io.lstat(file);
-    if (stat.isSymbolicLink() || !stat.isFile() || !samePath(await io.realpath(file), file)) throw failure(`Transaction path is not a regular file at its declared location: ${file}.`, 'PersistenceRecoveryRequired');
-    return digest(await io.readFile(file));
+async function atDeclaredLocation(file, io) {
+  const physical = await io.realpath(file);
+  if (samePath(physical, file)) return true;
+  if (process.platform !== 'win32') return false;
+  // Windows TEMP may contain an 8.3 parent alias (for example RUNNER~1).
+  // Expand that parent without accepting a symlink/junction as a path alias.
+  const parent = path.dirname(path.resolve(file));
+  if (!samePath(physical, path.join(await io.realpath(parent), path.basename(file)))) return false;
+  for (let ancestor = parent;;) {
+    if ((await io.lstat(ancestor)).isSymbolicLink()) return false;
+    const next = path.dirname(ancestor);
+    if (next === ancestor) break;
+    ancestor = next;
   }
+  return true;
+}
+// Read through the validated descriptor. A path check followed by readFile(path)
+// could follow a replacement symlink between those two operations.
+async function readDeclaredFile(file, io, encoding) {
+  let handle;
+  try {
+    handle = await io.open(file, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+    const opened = await handle.stat(), declared = await io.lstat(file);
+    if (!opened.isFile() || declared.isSymbolicLink() || !declared.isFile()
+      || opened.dev !== declared.dev || opened.ino !== declared.ino || !await atDeclaredLocation(file, io))
+      throw failure(`Transaction path is not a regular file at its declared location: ${file}.`, 'PersistenceRecoveryRequired');
+    return await handle.readFile(encoding);
+  } catch (error) {
+    if (error.code === 'ELOOP') throw failure(`Transaction path is a symbolic link: ${file}.`, 'PersistenceRecoveryRequired');
+    throw error;
+  } finally { await handle?.close(); }
+}
+async function currentDigest(file, io) {
+  try { return digest(await readDeclaredFile(file, io)); }
   catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 const failure = (message, code = 'PackDataConflict', status = 409) => Object.assign(new DataError(message, status, code), { persistenceFailure: true });
@@ -32,8 +60,7 @@ async function durableWrite(file, value, io) {
 async function readJournal(journalFile, allowed, io) {
   let journal;
   try {
-    if ((await io.lstat(journalFile)).isSymbolicLink()) throw new Error('Symlink journal');
-    journal = JSON.parse(await io.readFile(journalFile, 'utf8'));
+    journal = JSON.parse(await readDeclaredFile(journalFile, io, 'utf8'));
   }
   catch (error) { if (error.code === 'ENOENT') return; throw failure('Cannot read the pack transaction journal.', 'PersistenceRecoveryRequired'); }
   if (!journal || typeof journal !== 'object' || ![1, 2].includes(journal.version) || !/^[a-f\d-]{36}$/i.test(journal.token) || !['prepared', 'committed'].includes(journal.phase) || !Array.isArray(journal.entries) || !journal.entries.length)
@@ -91,13 +118,13 @@ async function reclaimJournalLocks(journalFile, files, io) {
   const names = journal.lockFiles.map(file => `${file}.lock`), stale = [];
   for (const name of names) {
     try {
-      if ((await io.lstat(name)).isSymbolicLink() || await io.readFile(name, 'utf8') !== journal.lockOwner)
+      if (await readDeclaredFile(name, io, 'utf8') !== journal.lockOwner)
         throw failure('A pack lock is not owned by the interrupted journal.', 'PersistenceRecoveryRequired');
       stale.push(name);
     } catch (error) { if (error.code !== 'ENOENT') throw error; }
   }
   for (const name of stale) {
-    if ((await io.lstat(name)).isSymbolicLink() || await io.readFile(name, 'utf8') !== journal.lockOwner)
+    if (await readDeclaredFile(name, io, 'utf8') !== journal.lockOwner)
       throw failure('A pack lock changed before recovery.', 'PersistenceRecoveryRequired');
     await io.unlink(name);
   }
@@ -108,7 +135,7 @@ async function locks(files, io, journalFile) {
   const token = `${process.pid}:${randomUUID()}`, owned = [];
   const release = async () => {
     for (const file of owned.reverse()) {
-      try { if (!(await io.lstat(file)).isSymbolicLink() && await io.readFile(file, 'utf8') === token) await io.unlink(file); }
+      try { if (await readDeclaredFile(file, io, 'utf8') === token) await io.unlink(file); }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
   };

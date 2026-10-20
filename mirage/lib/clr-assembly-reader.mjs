@@ -357,7 +357,7 @@ function cmsCertificate(buffer) {
     let cert;
     try { cert = new X509Certificate(der.raw(candidate)); } catch { throw invalid('invalid signer X.509 certificate'); }
     return {
-      subject: cert.subject, issuer: cert.issuer, hash: createHash('sha1').update(cert.raw).digest('hex').toUpperCase(),
+      subject: cert.subject, issuer: cert.issuer, hash: cert.fingerprint.replaceAll(':', ''),
       selfSigned: cert.subject === cert.issuer && cert.verify(cert.publicKey),
       certificate: cert.raw.toString('base64'), encodedSubject: der.raw(subject).toString('base64'), encodedIssuer: der.raw(issuer).toString('base64'),
     };

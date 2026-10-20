@@ -26,7 +26,7 @@ describe('signing certificate inspection', () => {
     const fixture = certificateInspectionFixture(signer.raw, { precedingCertificates: [unrelated.raw] });
     const facts = inspectSigningCertificate(fixture.image);
     assert.equal(facts.subject, signer.subject);
-    assert.equal(facts.hash, createHash('sha1').update(signer.raw).digest('hex').toUpperCase());
+    assert.equal(facts.hash, signer.fingerprint.replaceAll(':', ''));
     assert.equal(facts.selfSigned, true);
     assert.equal(facts.certificate, signer.raw.toString('base64'));
     assert.equal(facts.encodedIssuer, fixture.encodedIssuer);

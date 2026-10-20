@@ -5,7 +5,14 @@ import { parseSolutionXml, descendants, pickLabel } from './solution-xml.mjs';
 
 const id = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const mergeRows = (base, incoming) => [...new Map([...base, ...incoming].map(row => [row.uniqueName ?? `${row.entity ?? ''}/${row.id}`, structuredClone(row)])).values()];
-const metadataXml = name => /(?:^|\/)(?:customizations\.xml|Entities\/.*\.xml|AppModules\/.*\.xml|AppModuleSiteMaps\/.*\.xml|Other\/Solution\.xml|solution\.xml|OptionSets\/.*\.xml|Relationships\/.*\.xml)$/i.test(name);
+const metadataXml = name => {
+  const parts = String(name).toLowerCase().split('/');
+  const file = parts.at(-1);
+  if (file === 'customizations.xml' || file === 'solution.xml') return true;
+  if (!file.endsWith('.xml')) return false;
+  return parts.slice(0, -1).some(part => part === 'entities' || part === 'appmodules'
+    || part === 'appmodulesitemaps' || part === 'optionsets' || part === 'relationships');
+};
 // Most component values are scalar strings, including potentially large XML.
 // Compare those values directly instead of serializing their contents on every
 // record-field lookup. Snapshot small structured values too so in-place edits

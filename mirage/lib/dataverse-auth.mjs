@@ -1,7 +1,7 @@
 // Entra ID (AAD) authority for the Dataverse simulator: RS256 signing key, OIDC metadata, client
 // authentication, client_credentials, authorization_code (PKCE), device_code, password (ROPC),
 // on-behalf-of and refresh_token grants, the interactive user pages, and AADSTS error envelopes.
-import { X509Certificate, constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, sign, timingSafeEqual, verify } from "node:crypto";
+import { X509Certificate, constants, createHash, createPublicKey, generateKeyPairSync, randomBytes, randomUUID, scryptSync, sign, timingSafeEqual, verify } from "node:crypto";
 import { GRANT_TYPES, grantAllowed } from "./dataverse-settings.mjs";
 
 const DATAVERSE_APP_ID = "00000007-0000-0000-c000-000000000000";
@@ -74,7 +74,11 @@ const safeDecode = (value) => {
     return value;
   }
 };
-const digest = (salt, secret) => createHash("sha256").update(salt).update(String(secret)).digest();
+// Fixed work factors: serialized credential data cannot choose its own CPU/memory cost.
+const SECRET_HASH_PREFIX = "scrypt$";
+const secretDigest = (salt, secret) => scryptSync(String(secret), salt, 32, { N: 16384, r: 8, p: 1, maxmem: 32 * 1024 * 1024 });
+// Read-only compatibility for pre-scrypt credentials. New hashes always use scrypt; no legacy writes.
+const legacySecretDigest = (salt, secret) => createHash("sha256").update(salt).update(String(secret)).digest();
 // RS256 is PKCS#1 v1.5; PS256 is RSASSA-PSS with a 32-byte salt.
 const verifies = (data, signature, key, alg = "RS256") => {
   try {
@@ -176,13 +180,17 @@ const redirectAllowed = (app, uri) =>
   (app.redirectUris ?? []).includes(uri) || (Boolean(app.publicClient) && (LOOPBACK_REDIRECT.test(String(uri)) || uri === NATIVE_CLIENT_REDIRECT));
 
 export function hashSecret(secret, salt = randomBytes(16)) {
-  return { hash: digest(salt, secret).toString("base64url"), salt: salt.toString("base64url") };
+  return { hash: `${SECRET_HASH_PREFIX}${secretDigest(salt, secret).toString("base64url")}`, salt: salt.toString("base64url") };
 }
 
 export function verifySecret(secret, { hash, salt } = {}) {
-  if (!hash || !salt) return false;
-  const expected = Buffer.from(hash, "base64url");
-  const actual = digest(Buffer.from(salt, "base64url"), secret);
+  if (typeof hash !== "string" || typeof salt !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(salt)) return false;
+  const modern = hash.startsWith(SECRET_HASH_PREFIX);
+  const encoded = modern ? hash.slice(SECRET_HASH_PREFIX.length) : hash;
+  if (!/^[A-Za-z0-9_-]{43}$/.test(encoded)) return false;
+  const expected = Buffer.from(encoded, "base64url");
+  const saltBytes = Buffer.from(salt, "base64url");
+  const actual = modern ? secretDigest(saltBytes, secret) : legacySecretDigest(saltBytes, secret);
   return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 

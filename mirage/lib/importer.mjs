@@ -118,8 +118,19 @@ const COMPONENT_TYPE_OF_KIND = Object.fromEntries(Object.entries(TYPES).map(([ty
 export const COMPONENT_KINDS = Object.freeze({ ...TYPES });
 export const DATA_MODELS = Object.freeze(["standard", "enhanced"]);
 export function decodeXml(text = "") {
-  return text
-    .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/g, "$1")
+  // A missing CDATA terminator must not rescan the same suffix for every opener.
+  const parts = [];
+  let cursor = 0;
+  while (cursor < text.length) {
+    const start = text.indexOf('<![CDATA[', cursor);
+    if (start < 0) break;
+    const end = text.indexOf(']]>', start + 9);
+    if (end < 0) break;
+    parts.push(text.slice(cursor, start), text.slice(start + 9, end));
+    cursor = end + 3;
+  }
+  parts.push(text.slice(cursor));
+  return parts.join('')
     .replace(/&(#x[\da-f]+|#\d+|amp|lt|gt|quot|apos);/gi, (_, entity) =>
       entity[0] === "#"
         ? String.fromCodePoint(

@@ -321,9 +321,16 @@ async function loadRecord(id) {
   try {
     const result = id ? await api(tablePath(table.entity, id)) : { row: Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, field.defaultValue])) };
     if (token !== generation) return; record = result.row; touchedFields = new Set(); recordCapabilities = result.capabilities ?? table.capabilities;
-    if (!id) for (const [name, value] of new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? '')) {
-      const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
-      if (field && !field.isPrimaryId && field.validForCreate !== false && hasControl(field)) record[name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value;
+    if (!id) {
+      const defaults = new Map(new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? ''));
+      const initialValues = Object.values(table.fields)
+        .filter(field => defaults.has(field.name) && !field.isPrimaryId && field.validForCreate !== false && hasControl(field))
+        .map(field => {
+          const value = defaults.get(field.name);
+          return [field.name, field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value];
+        });
+      // Creating own data properties avoids invoking inherited setters from URL-supplied defaults.
+      record = { ...record, ...Object.fromEntries(initialValues) };
     }
     etag = result.etag; formId = appForms()[0]?.id; activeTab = null; await renderRecord();
     if (token !== generation) return;

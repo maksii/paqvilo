@@ -5,6 +5,7 @@
 // fetches the pages into an ignored cache; the parser and builder are pure and tests never fetch.
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const DEFAULT_COMMIT = 'c3a8c43bfabbbbf1b6dd018fbb37bce6f6b7cd59';
@@ -437,6 +438,8 @@ export function buildStandardFile(pages, { commit = DEFAULT_COMMIT, prefixedTabl
 
 // Reads each page from the commit's cache directory, fetching only the missing ones.
 export async function loadPages(commit, { cacheRoot = CACHE_ROOT, fetchFn = fetch, tables = TABLES } = {}) {
+  if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error('Reference cache requires a full commit SHA.');
+  if (tables.some(name => !/^[a-z][a-z0-9_]*$/.test(name))) throw new Error('Reference table names must be logical identifiers.');
   const dir = path.join(cacheRoot, commit);
   fs.mkdirSync(dir, { recursive: true });
   const pages = {};
@@ -444,11 +447,16 @@ export async function loadPages(commit, { cacheRoot = CACHE_ROOT, fetchFn = fetc
     const file = path.join(dir, `${name}.md`);
     if (!fs.existsSync(file)) {
       const url = `https://raw.githubusercontent.com/${REPO}/${commit}/${PAGE_DIR}${name}.md`;
-      const response = await fetchFn(url);
+      const response = await fetchFn(url, { redirect: 'error' });
       if (!response.ok) throw new Error(`Fetch failed for ${name}: HTTP ${response.status}`);
-      const temp = `${file}.tmp`;
-      fs.writeFileSync(temp, await response.text());
-      fs.renameSync(temp, file);
+      const temp = `${file}.${randomUUID()}.tmp`;
+      try {
+        // Intentional non-executable Markdown cache from a fixed public repository
+        // at a validated immutable commit; neither remote data nor names choose an
+        // executable path. The parser extracts declarative table facts only.
+        fs.writeFileSync(temp, await response.text(), { flag: 'wx', mode: 0o600 });
+        fs.renameSync(temp, file);
+      } finally { fs.rmSync(temp, { force: true }); }
     }
     pages[name] = fs.readFileSync(file, 'utf8');
   }

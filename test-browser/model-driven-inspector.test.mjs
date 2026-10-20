@@ -45,6 +45,9 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   inspector = await startModelDrivenInspector({ context, page, overlay, cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' }, imported: sources, runtime: { debugPort: 9222 } });
   const discovery = JSON.parse(await fs.readFile(inspector.agent.discoveryFile, 'utf8'));
   const call = async (pathname, body) => {
+    // The bearer belongs to this test's freshly started agent and is deliberately
+    // read from discovery to exercise the real local client authentication flow.
+    // The endpoint comes from the owned server, never the discovery file.
     const response = await fetch(inspector.agent.endpoint + pathname, { method: body ? 'POST' : 'GET', headers: { authorization: `Bearer ${discovery.token}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
     assert.equal(response.status, 200); return response;
   };

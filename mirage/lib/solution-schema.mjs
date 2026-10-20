@@ -25,7 +25,7 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@20";
+export const SCHEMA_PARSER_ID = "schema@21";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
@@ -52,22 +52,42 @@ const deepText = (node, name) => childText(node, name) ?? descendants(node, name
 
 /** Classify a path inside a solution tree (or loose metadata directory). */
 export function classifySolutionPath(relative) {
-  const p = String(relative).replace(/\\/g, "/");
-  let m;
-  if (/(?:^|\/)(?:AppModules|AppModuleSiteMaps|SiteMaps)\/.+\.xml$/i.test(p)) return { kind: 'app' };
-  if (/(?:^|\/)Workflows\/.+\.xml$/i.test(p)) return { kind: 'workflow' };
-  if (/(?:^|\/)(?:PluginAssemblies|PluginTypes|SdkMessageProcessingSteps|SdkMessages)\/.+\.xml$/i.test(p)) return { kind: 'plugin' };
-  if ((m = /(?:^|\/)Entities\/([^/]+)\/Entity\.xml$/i.exec(p))) return { kind: "entity", entityDir: m[1] };
-  if ((m = /(?:^|\/)Entities\/([^/]+)\/FormXml\/.+\.xml$/i.exec(p))) return { kind: "form", entityDir: m[1] };
-  if ((m = /(?:^|\/)Entities\/([^/]+)\/SavedQueries\/.+\.xml$/i.exec(p))) return { kind: "view", entityDir: m[1] };
-  if (/(?:^|\/)OptionSets\/[^/]+\.xml$/i.test(p)) return { kind: "optionset" };
-  if (/(?:^|\/)Relationships\/[^/]+\.xml$/i.test(p) || /(?:^|\/)relationships\.xml$/i.test(p)) return { kind: "relationships" };
-  if (/(?:^|\/)customizations\.xml$/i.test(p)) return { kind: "customizations" };
-  if (/(?:^|\/)Other\/Solution\.xml$/i.test(p) || /^solution\.xml$/i.test(p)) return { kind: "solution" };
-  if ((m = /(?:^|\/)environmentvariabledefinitions\/([^/]+)\/environmentvariabledefinition\.xml$/i.exec(p)))
-    return { kind: "envdef", envDir: m[1] };
-  if ((m = /(?:^|\/)environmentvariabledefinitions\/([^/]+)\/environmentvariablevalues?\.(?:json|xml)$/i.exec(p)))
-    return { kind: "envvalue", envDir: m[1] };
+  const parts = String(relative).replace(/\\/g, '/').split('/');
+  const lower = parts.map(part => part.toLowerCase());
+  const file = lower.at(-1), parent = lower.at(-2);
+  const xml = file.endsWith('.xml');
+  let app = false, workflow = false, plugin = false, form, view;
+  // Inspect segments once: repeated directory names in an invalid long path
+  // cannot cause a suffix regex to retry the entire remaining path.
+  for (let index = 0; index < lower.length - 1; index++) {
+    const folder = lower[index];
+    const descendantXml = xml && (index < lower.length - 2 || file.length > 4);
+    if (descendantXml) {
+      if (folder === 'appmodules' || folder === 'appmodulesitemaps' || folder === 'sitemaps') app = true;
+      if (folder === 'workflows') workflow = true;
+      if (folder === 'pluginassemblies' || folder === 'plugintypes' || folder === 'sdkmessageprocessingsteps' || folder === 'sdkmessages') plugin = true;
+    }
+    if (folder === 'entities' && parts[index + 1] && index + 3 < lower.length
+        && xml && (index + 3 < lower.length - 1 || file.length > 4)) {
+      if (lower[index + 2] === 'formxml') form ??= parts[index + 1];
+      if (lower[index + 2] === 'savedqueries') view ??= parts[index + 1];
+    }
+  }
+  if (app) return { kind: 'app' };
+  if (workflow) return { kind: 'workflow' };
+  if (plugin) return { kind: 'plugin' };
+  if (lower.at(-3) === 'entities' && parts.at(-2) && file === 'entity.xml') return { kind: 'entity', entityDir: parts.at(-2) };
+  if (form !== undefined) return { kind: 'form', entityDir: form };
+  if (view !== undefined) return { kind: 'view', entityDir: view };
+  if (parent === 'optionsets' && xml && file.length > 4) return { kind: 'optionset' };
+  if ((parent === 'relationships' && xml && file.length > 4) || file === 'relationships.xml') return { kind: 'relationships' };
+  if (file === 'customizations.xml') return { kind: 'customizations' };
+  if ((parent === 'other' || parts.length === 1) && file === 'solution.xml') return { kind: 'solution' };
+  if (lower.at(-3) === 'environmentvariabledefinitions' && parts.at(-2)) {
+    if (file === 'environmentvariabledefinition.xml') return { kind: 'envdef', envDir: parts.at(-2) };
+    if (['environmentvariablevalue.json', 'environmentvariablevalues.json', 'environmentvariablevalue.xml', 'environmentvariablevalues.xml'].includes(file))
+      return { kind: 'envvalue', envDir: parts.at(-2) };
+  }
   return null;
 }
 const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
@@ -836,8 +856,11 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           table.primaryNameFile = doc.file;
         }
         if (entity.ownership) table.ownership = entity.ownership;
-        for (const name of ['tableType', 'dataSourceId', 'dataProviderId', 'changeTrackingEnabled', 'isOptimisticConcurrencyEnabled'])
-          if (entity[name] !== undefined) table[name] = entity[name];
+        if (entity.tableType !== undefined) table.tableType = entity.tableType;
+        if (entity.dataSourceId !== undefined) table.dataSourceId = entity.dataSourceId;
+        if (entity.dataProviderId !== undefined) table.dataProviderId = entity.dataProviderId;
+        if (entity.changeTrackingEnabled !== undefined) table.changeTrackingEnabled = entity.changeTrackingEnabled;
+        if (entity.isOptimisticConcurrencyEnabled !== undefined) table.isOptimisticConcurrencyEnabled = entity.isOptimisticConcurrencyEnabled;
         if (entity.isActivity !== undefined) table.isActivity = entity.isActivity;
         if (entity.documentManagement !== undefined) {
           table.documentManagement = entity.documentManagement;

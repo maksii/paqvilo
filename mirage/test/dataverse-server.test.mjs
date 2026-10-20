@@ -285,7 +285,6 @@ test("the https listener serves discovery, token and WhoAmI with the certificate
   assert.match(tlsOrigin, /^https:\/\/127\.0\.0\.1:\d+$/);
   assert.equal(reported, certificateFile);
   assert.match(certificateFingerprint, /^[0-9A-F]{2}(:[0-9A-F]{2})+$/i);
-  await fs.stat(certificateFile);
   const ca = await fs.readFile(certificateFile);
   const discovery = await httpsRequest(`${tlsOrigin}/${app.dataverse.tenantId}/v2.0/.well-known/openid-configuration`, { ca });
   assert.equal(discovery.status, 200);
@@ -754,8 +753,8 @@ function tdsLogin7(token) {
   body.writeUInt32LE(body.length, 0);
   return body;
 }
-async function tdsLogin(port, token = "not-a-token") {
-  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], rejectUnauthorized: false });
+async function tdsLogin(port, ca, token = "not-a-token") {
+  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], ca });
   socket.on("error", () => {});
   await once(socket, "secureConnect");
   const replies = [];
@@ -775,16 +774,18 @@ async function tdsLogin(port, token = "not-a-token") {
 }
 
 test("the TDS endpoint refuses logins while the environment turns it off, and accepts the sign-in check again when it is on", async (t) => {
-  const { app, admin } = await start(t, { dataverse: { enabled: true } });
+  const certificateFile = await certificatePath(t);
+  const { app, admin } = await start(t, { dataverse: { enabled: true, tls: true }, dataverseCertificateFile: certificateFile });
+  const ca = await fs.readFile(certificateFile);
   const port = app.dataverse.tdsPort;
   assert.ok(Number.isInteger(port) && port > 0);
   assert.equal((await admin("/dataverse/environment", { method: "PATCH", body: { tdsEnabled: false } })).status, 200);
-  const refused = await tdsLogin(port);
+  const refused = await tdsLogin(port, ca);
   assert.equal(refused[0], ERROR_TOKEN);
   assert.ok(refused.indexOf(TDS_DISABLED) > 0, "the refusal names the disabled endpoint");
 
   assert.equal((await admin("/dataverse/environment", { method: "PATCH", body: { tdsEnabled: true } })).status, 200);
-  const answered = await tdsLogin(port);
+  const answered = await tdsLogin(port, ca);
   assert.equal(answered[0], ERROR_TOKEN);
   assert.equal(answered.indexOf(TDS_DISABLED), -1, "an enabled endpoint no longer refuses for being disabled");
 });

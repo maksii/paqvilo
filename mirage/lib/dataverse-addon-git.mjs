@@ -5,7 +5,8 @@
 // The remote is a local directory the project sets (settings.gitRemoteDirectory). No network, no git binary:
 //   <dir>/<Organization>/<Project>/<Repository>/refs/<branch>  the head commit id (empty: no commit yet; missing: no branch)
 //   <dir>/<Organization>/<Project>/<Repository>/objects/<id>.json  one commit: { parent, message, author, time, solutions }
-//     where solutions is { <uniquename>: { unmanaged, managed } } (base64 zips). The id is the sha1 of that JSON.
+//     where solutions is { <uniquename>: { unmanaged, managed } } (base64 zips). New ids use SHA-256 of that JSON;
+//     existing SHA-1 ids remain readable. These local objects are not native Git objects.
 // Export and import reuse the ExportSolution and ImportSolution handlers (dataverse-solutions.mjs), found in api.registry at
 // call time, so that module is not edited.
 //
@@ -56,7 +57,7 @@ const refFile = (repo, branch) => {
   return file;
 };
 const commitFile = (repo, id) => {
-  if (!/^[0-9a-f]{40}$/i.test(String(id))) throw noResource();
+  if (!/^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(String(id))) throw noResource();
   return path.join(repo, "objects", `${id}.json`);
 };
 
@@ -72,7 +73,7 @@ function setHead(repo, branch, id) {
 const readCommit = (repo, id) => JSON.parse(readFileSync(commitFile(repo, id), "utf8"));
 function writeCommit(repo, commit) {
   const json = JSON.stringify(commit);
-  const id = createHash("sha1").update(json).digest("hex");
+  const id = createHash("sha256").update(json).digest("hex");
   mkdirSync(path.join(repo, "objects"), { recursive: true });
   writeFileSync(commitFile(repo, id), json);
   return id;

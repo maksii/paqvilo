@@ -160,7 +160,7 @@ describe("git source control messages", () => {
       assert.equal(first.status, 200, JSON.stringify(first.json));
       const repo = path.join(dir, ORG, PROJECT, REPO);
       const stored = readFileSync(path.join(repo, "objects", `${first.json.CommitId}.json`), "utf8");
-      assert.equal(sha1(stored), first.json.CommitId);
+      assert.equal(createHash("sha256").update(stored).digest("hex"), first.json.CommitId);
       assert.equal(readFileSync(path.join(repo, "refs", BRANCH), "utf8"), first.json.CommitId);
       assert.equal(JSON.parse(stored).parent, null);
       const second = await source.request("POST", "/CommitToGit", { CommitMessage: "second", SolutionUniqueName: SOLUTION });

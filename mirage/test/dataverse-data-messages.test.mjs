@@ -312,6 +312,21 @@ async function waitForStatus(store, status) {
   assert.fail(`import file did not reach processingstatus ${status}`);
 }
 
+test("recycle eligibility excludes exact elastic and virtual table types", async t => {
+  const h = await startServer({ extendState: state => {
+    for (const [name, tableType] of Object.entries({ x_standard: 'Standard', x_elastic: 'Elastic', x_virtual: 'Virtual', x_elasticity: 'Elasticity', x_nonvirtual: 'Nonvirtual' })) {
+      state.mappings[name] = { ...state.mappings.contoso_widget, logicalName: name, entitySet: `${name}s`, tableType };
+      state.tables[name] = [];
+    }
+  } });
+  t.after(() => h.close());
+  const response = await h.send('POST', '/GetEntitiesEligibleForRecycleBin', {});
+  assert.equal(response.status, 200);
+  const names = JSON.parse((await response.json()).Result);
+  for (const name of ['x_standard', 'x_elasticity', 'x_nonvirtual']) assert.ok(names.includes(name), name);
+  for (const name of ['x_elastic', 'x_virtual']) assert.equal(names.includes(name), false, name);
+});
+
 describe("recycle bin: delete hook, Restore and EmptyRecycleBin", () => {
   let h;
   before(async () => {

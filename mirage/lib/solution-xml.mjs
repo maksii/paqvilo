@@ -5,14 +5,13 @@ import { decodeXml } from "./importer.mjs";
  * Declarations and external entities are rejected; nothing is fetched.
  */
 export function parseSolutionXml(source, { recover = false } = {}) {
+  source = String(source);
   if (/<!DOCTYPE|<!ENTITY/i.test(source))
     throw new Error("XML external declarations are not supported");
   const root = { name: "#document", attrs: {}, children: [], text: "" };
   const stack = [root];
   let recovered = 0;
-  for (const token of String(source).match(
-    /<!--[\s\S]*?-->|<!\[CDATA\[[\s\S]*?\]\]>|<\?[\s\S]*?\?>|<[^>]+>|[^<]+/g,
-  ) ?? []) {
+  for (const token of xmlTokens(source)) {
     if (token.startsWith("<!--") || token.startsWith("<?")) continue;
     if (token.startsWith("<![CDATA[")) {
       stack.at(-1).text += token.slice(9, -3);
@@ -33,22 +32,10 @@ export function parseSolutionXml(source, { recover = false } = {}) {
       continue;
     }
     if (token.startsWith("<")) {
-      const m = /^<([\w:.-]+)([\s\S]*?)\/?\s*>$/.exec(token);
-      if (!m) throw new Error("Malformed XML element");
-      const attrs = {};
-      const rest = m[2].replace(
-        /([\w:.-]+)\s*=\s*(["'])([\s\S]*?)\2/g,
-        (_, key, _quote, value) => {
-          if (Object.hasOwn(attrs, key))
-            throw new Error("Duplicate XML attribute");
-          attrs[key] = decodeXml(value);
-          return "";
-        },
-      );
-      if (rest.trim()) throw new Error("Malformed XML attributes");
-      const node = { name: m[1], attrs, children: [], text: "" };
+      const { name, attrs, selfClosing } = readElement(token);
+      const node = { name, attrs, children: [], text: "" };
       stack.at(-1).children.push(node);
-      if (!/\/\s*>$/.test(token)) stack.push(node);
+      if (!selfClosing) stack.push(node);
     } else stack.at(-1).text += decodeXml(token);
   }
   if (recover && stack.length > 1) {
@@ -60,6 +47,76 @@ export function parseSolutionXml(source, { recover = false } = {}) {
   const element = root.children[0];
   if (recovered) Object.defineProperty(element, "recovered", { value: recovered });
   return element;
+}
+
+/** Scan once, without retrying a missing delimiter at every '<' in malformed input. */
+function* xmlTokens(source) {
+  for (let cursor = 0; cursor < source.length;) {
+    const start = cursor;
+    if (source[cursor] !== '<') {
+      const next = source.indexOf('<', cursor);
+      cursor = next < 0 ? source.length : next;
+    } else {
+      const terminator = source.startsWith('<!--', cursor) ? '-->'
+        : source.startsWith('<![CDATA[', cursor) ? ']]>'
+          : source.startsWith('<?', cursor) ? '?>' : null;
+      if (terminator) {
+        const end = source.indexOf(terminator, cursor + (terminator === ']]>' ? 9 : terminator === '-->' ? 4 : 2));
+        if (end < 0) throw new Error('Malformed XML: unterminated declaration or CDATA');
+        cursor = end + terminator.length;
+      } else {
+        let quote = null;
+        for (cursor++; cursor < source.length; cursor++) {
+          const character = source[cursor];
+          if (quote) {
+            if (character === quote) quote = null;
+          } else if (character === '"' || character === "'") quote = character;
+          else if (character === '>') break;
+          else if (character === '<') throw new Error('Malformed XML element');
+        }
+        if (cursor === source.length) throw new Error('Malformed XML: unterminated element');
+        cursor++;
+      }
+    }
+    yield source.slice(start, cursor);
+  }
+}
+
+/** Attribute names and quoted values are consumed in order, including long invalid names. */
+function readElement(token) {
+  let cursor = 1;
+  const nameCharacter = character => character !== undefined && /[\w:.-]/.test(character);
+  const skipWhitespace = () => { while (cursor < token.length && /\s/.test(token[cursor])) cursor++; };
+  const readName = () => {
+    const start = cursor;
+    while (nameCharacter(token[cursor])) cursor++;
+    return token.slice(start, cursor);
+  };
+  const name = readName();
+  if (!name) throw new Error('Malformed XML element');
+  const attrs = {};
+  while (cursor < token.length - 1) {
+    skipWhitespace();
+    if (token[cursor] === '>') break;
+    if (token[cursor] === '/') {
+      cursor++;
+      skipWhitespace();
+      if (token[cursor] !== '>') throw new Error('Malformed XML attributes');
+      return { name, attrs, selfClosing: true };
+    }
+    const key = readName();
+    skipWhitespace();
+    if (!key || token[cursor++] !== '=') throw new Error('Malformed XML attributes');
+    skipWhitespace();
+    const quote = token[cursor++];
+    if (quote !== '"' && quote !== "'") throw new Error('Malformed XML attributes');
+    const end = token.indexOf(quote, cursor);
+    if (end < 0) throw new Error('Malformed XML attributes');
+    if (Object.hasOwn(attrs, key)) throw new Error('Duplicate XML attribute');
+    Object.defineProperty(attrs, key, { value: decodeXml(token.slice(cursor, end)), enumerable: true, configurable: true, writable: true });
+    cursor = end + 1;
+  }
+  return { name, attrs, selfClosing: false };
 }
 
 export const descendants = (node, name) => {

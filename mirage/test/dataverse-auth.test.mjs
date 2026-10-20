@@ -382,10 +382,21 @@ test("verifyBearer tolerates five minutes of clock skew after expiry", () => {
 
 test("hashSecret and verifySecret round trip and reject a mismatch", () => {
   const stored = hashSecret("invented-secret");
+  assert.match(stored.hash, /^scrypt\$/);
   assert.equal(verifySecret("invented-secret", stored), true);
   assert.equal(verifySecret("another-secret", stored), false);
   assert.equal(verifySecret("invented-secret", {}), false);
   assert.notEqual(hashSecret("invented-secret").hash, stored.hash);
+});
+
+test("secret verification accepts legacy local hashes and rejects malformed work factors", () => {
+  // Historical salted SHA-256 fixture; literal bytes avoid introducing a weak hash writer.
+  const legacy = { salt: "aW52ZW50ZWQtc2FsdA", hash: "dsuPwGAtfFyufBsFuG9HsfrkwmzU3sG4kDuzD1710d0" };
+  assert.equal(verifySecret("invented-secret", legacy), true);
+  assert.equal(verifySecret("wrong", legacy), false);
+  for (const record of [{ hash: "scrypt$N=999999999", salt: legacy.salt }, { hash: "scrypt$!", salt: legacy.salt }, { ...legacy, salt: "a".repeat(129) }, { hash: {}, salt: legacy.salt }]) {
+    assert.equal(verifySecret("invented-secret", record), false);
+  }
 });
 
 const DELEGATED_CLIENT = { client_id: APP_ID, client_secret: SECRET, scope: SCOPE };

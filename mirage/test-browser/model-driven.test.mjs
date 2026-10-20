@@ -4,6 +4,31 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 
+test('new record URL defaults accept rendered columns and ignore arbitrary property names', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage();
+  const name = '<script>window.urlDefaultExecuted = true</script>';
+  const defaults = new URLSearchParams([
+    ['x_name', name], ['x_quantity', '7'], ['x_quantity', '9'],
+    ['x_itemid', 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'],
+    ['__proto__', '{"polluted":true}'], ['constructor', 'untrusted'], ['x_unknown', 'untrusted'],
+  ]);
+  const query = new URLSearchParams({ appname: 'x_example', pagetype: 'entityrecord', etn: 'x_item', extraqs: defaults.toString() });
+  await page.goto(`${origin}/main.aspx?${query}`);
+  await page.getByRole('textbox', { name: 'Name', exact: true }).waitFor();
+  assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), name);
+  assert.equal(await page.getByLabel('Quantity', { exact: true }).inputValue(), '9');
+  assert.equal(await page.evaluate(() => window.urlDefaultExecuted), undefined);
+  const submitted = page.waitForRequest(request => request.method() === 'POST' && new URL(request.url()).pathname === '/_apps/api/tables/x_item');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const payload = (await submitted).postDataJSON();
+  assert.equal(payload.x_name, name);
+  assert.equal(payload.x_quantity, 9);
+  for (const key of ['x_itemid', '__proto__', 'constructor', 'x_unknown']) assert.equal(Object.hasOwn(payload, key), false);
+  await page.getByRole('status').filter({ hasText: 'Record saved locally.' }).waitFor();
+});
+
 test('slow model-driven reads and saves show feedback, prevent duplicate writes and recover with retry', { timeout: 30000 }, async t => {
   const { origin } = await modelDrivenFixture(t);
   const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());

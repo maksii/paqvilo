@@ -56,7 +56,7 @@ async function startServer() {
   const secureContext = tls.createSecureContext({ key, cert, maxVersion: "TLSv1.2" });
   const srv = createTdsServer({ secureContext, onLogin, onQuery });
   const address = await srv.listen(0, "127.0.0.1");
-  return { ...srv, port: address.port };
+  return { ...srv, port: address.port, cert };
 }
 
 const u32 = (v) => {
@@ -107,8 +107,8 @@ function sqlBatch(text) {
 }
 
 // Hand-built TDS 8 client: TLS first (ALPN tds/8.0), then TDS messages inside TLS.
-async function connectStrict(port) {
-  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], rejectUnauthorized: false });
+async function connectStrict(port, ca) {
+  const socket = tls.connect({ host: "127.0.0.1", port, ALPNProtocols: ["tds/8.0"], ca });
   socket.on("error", () => {});
   await once(socket, "secureConnect");
   const queue = [];
@@ -125,8 +125,8 @@ async function connectStrict(port) {
   };
 }
 
-async function loginStrict(port) {
-  const client = await connectStrict(port);
+async function loginStrict(port, ca) {
+  const client = await connectStrict(port, ca);
   client.send(TDS.PRELOGIN, encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }));
   await client.next();
   client.send(TDS.LOGIN7, login7({ token: VALID_TOKEN }));
@@ -147,8 +147,18 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
     await server.close();
   });
 
+  test("the strict client rejects a listener outside the fixture CA", async () => {
+    const unrelated = createSelfSignedCertificate();
+    const socket = tls.connect({ host: "127.0.0.1", port: server.port, ALPNProtocols: ["tds/8.0"], ca: unrelated.cert });
+    try {
+      await assert.rejects(once(socket, "secureConnect"), /self.signed certificate/i);
+    } finally {
+      socket.destroy();
+    }
+  });
+
   test("PRELOGIN answers the version, encryption off and FEDAUTHREQUIRED", async () => {
-    const client = await connectStrict(server.port);
+    const client = await connectStrict(server.port, server.cert);
     try {
       client.send(TDS.PRELOGIN, encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }));
       const reply = await client.next();
@@ -163,7 +173,7 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
   });
 
   test("LOGIN7 with a valid token gets ENVCHANGE, LOGINACK, FEATUREEXTACK FEDAUTH and DONE", async () => {
-    const client = await connectStrict(server.port);
+    const client = await connectStrict(server.port, server.cert);
     try {
       client.send(TDS.PRELOGIN, encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01, fedAuthRequired: 0x01 }));
       await client.next();
@@ -180,7 +190,7 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
   });
 
   test("LOGIN7 with a rejected token gets ERROR 18456 and the connection closes", async () => {
-    const client = await connectStrict(server.port);
+    const client = await connectStrict(server.port, server.cert);
     try {
       client.send(TDS.PRELOGIN, encodePrelogin({ version: Buffer.from([12, 0, 0, 0, 0, 0]), encryption: 0x01 }));
       await client.next();
@@ -195,7 +205,7 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
   });
 
   test("ATTENTION on an idle connection is answered with DONE carrying the ATTN status", async () => {
-    const client = await loginStrict(server.port);
+    const client = await loginStrict(server.port, server.cert);
     try {
       client.send(0x06, Buffer.alloc(0));
       const reply = await client.next();
@@ -207,7 +217,7 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
   });
 
   test("a query error is ERROR followed by DONE with the ERROR status", async () => {
-    const client = await loginStrict(server.port);
+    const client = await loginStrict(server.port, server.cert);
     try {
       client.send(TDS.SQL_BATCH, sqlBatch("SELECT missing"));
       const reply = await client.next();
@@ -220,7 +230,7 @@ describe("TDS protocol over TDS 8 strict (hand-built client)", () => {
   });
 
   test("multiple result sets set MORE on every DONE except the last", async () => {
-    const client = await loginStrict(server.port);
+    const client = await loginStrict(server.port, server.cert);
     try {
       client.send(TDS.SQL_BATCH, sqlBatch("MULTI"));
       const reply = await client.next();
