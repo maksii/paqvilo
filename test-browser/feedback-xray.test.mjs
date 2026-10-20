@@ -158,8 +158,13 @@ test('Web Animations started after enabling X-ray and element resizes update sel
 });
 
 test('background outlines exclude descendants of clipped ancestors while manual selection remains available',async t=>{
-  const {page}=await fixture(t,'<div style="position:absolute;clip:rect(0,0,0,0)"><input id="clipped" style="width:100px;height:30px"></div>');
-  await page.waitForTimeout(100);assert.equal(await page.locator('#paqvilo-xray .mark').count(),0);
+  const {page}=await fixture(t,'<div style="position:absolute;clip:rect(0,0,0,0)"><input id="clipped" style="width:100px;height:30px"></div><input id="visible" style="position:absolute;left:200px;top:200px;width:100px;height:30px">');
+  const background=page.locator('#paqvilo-xray .mark:not(.hover):not(.selected)');
+  await background.waitFor();
+  // Initial pointer events may legitimately outline the document separately from background candidates.
+  await page.mouse.move(0,0);await page.locator('#paqvilo-xray .hover').waitFor();
+  assert.equal(await background.count(),1);
+  assert.deepEqual(await background.boundingBox(),await page.locator('#visible').boundingBox());
   await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.select(document.getElementById('clipped')));
   await page.locator('#paqvilo-xray .selected').waitFor();
 });

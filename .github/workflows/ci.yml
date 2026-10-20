@@ -179,7 +179,8 @@ jobs:
     if: needs.changes.outputs.runtime == 'true'
     name: Unit tests (Node 24, windows-latest)
     runs-on: windows-latest
-    timeout-minutes: 30
+    # Full runtime, original CLR and SDK projection suites need runner headroom.
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
