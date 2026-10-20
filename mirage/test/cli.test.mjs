@@ -20,11 +20,77 @@ async function fixture(t, files) {
   }
   return directory;
 }
-async function run(args, cwd) {
+function within(promise, timeout, message) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(message())), timeout);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+function closed(child) {
+  // AbortSignal emits an error before close. Observe it immediately, but wait
+  // for close so cleanup also covers the process and all of its stdio pipes.
+  return new Promise(resolve => {
+    let error;
+    // Shutdown can race the child's exit; an EPIPE on our stop command is
+    // harmless once close has confirmed that the owned process has ended.
+    child.stdin.on("error", () => {});
+    child.once("error", cause => { error = cause; });
+    child.once("close", (code, signal) => resolve({ code, signal, error }));
+  });
+}
+async function forceStop(child, completion) {
+  try {
+    if (child.exitCode === null && child.signalCode === null) child.kill("SIGKILL");
+  } finally {
+    // A failed worker must never retain subprocess pipes and hold up the suite.
+    child.stdin.destroy();
+    child.stdout.destroy();
+    child.stderr.destroy();
+  }
+  await within(completion, 1500, () => "CLI did not close after forced termination");
+}
+async function stop(child, completion) {
+  if (!child.stdin.destroyed && !child.stdin.writableEnded) child.stdin.end("stop\n");
+  await within(completion, 1500, () => "CLI did not stop during cleanup")
+    .catch(() => forceStop(child, completion));
+}
+function closeServer(server) {
+  const completion = new Promise(resolve => server.close(resolve));
+  server.closeAllConnections();
+  return within(completion, 1500, () => "Owned HTTP fixture did not close");
+}
+function startup(child, completion, output) {
+  let check;
+  const diagnostic = () => {
+    const { stdout, stderr } = output();
+    return `stdout: ${stdout}\nstderr: ${stderr}`;
+  };
+  return within(new Promise((resolve, reject) => {
+    check = () => {
+      try {
+        resolve(JSON.parse(output().stdout));
+      } catch {
+        /* Wait for complete startup JSON. */
+      }
+    };
+    child.stdout.on("data", check);
+    check();
+    completion.then(({ error }) => {
+      reject(error ?? new Error(`CLI exited before complete startup JSON. ${diagnostic()}`));
+    });
+  }), 30_000, () => `CLI did not start after 30s. ${diagnostic()}`)
+    .finally(() => child.stdout.off("data", check));
+}
+async function run(t, args, cwd) {
   const child = spawn(process.execPath, [cli, ...args], {
     cwd,
     stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
+    signal: t.signal,
+    killSignal: "SIGKILL",
   });
   let stdout = "",
     stderr = "";
@@ -34,16 +100,76 @@ async function run(args, cwd) {
   child.stderr.on("data", (data) => {
     stderr += data;
   });
-  const timer = setTimeout(() => child.kill(), 15_000);
+  const completion = closed(child);
   try {
-    const [code, signal] = await once(child, "close");
+    // Cold Windows runners need up to 10s just to start a valid runtime. Give
+    // startup/commands headroom without extending any product request deadline.
+    const { code, signal, error } = await within(completion, 30_000,
+      () => `CLI timed out after 30s: ${JSON.stringify(args)}\nstdout: ${stdout}\nstderr: ${stderr}`);
+    if (error) throw error;
     return { code, signal, stdout, stderr };
   } finally {
-    clearTimeout(timer);
+    await forceStop(child, completion);
   }
 }
 
-test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 30_000 }, async (t) => {
+test('CLI subprocess cleanup forcibly terminates a child that ignores stop', { timeout: 15_000 }, async (t) => {
+  const child = spawn(process.execPath, ['-e',
+    'process.stdin.on("data", () => {}); setInterval(() => {}, 1000); process.stdout.write("ready");'], {
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    signal: t.signal, killSignal: 'SIGKILL',
+  });
+  const completion = closed(child);
+  t.after(() => forceStop(child, completion));
+  await within(once(child.stdout, 'data'), 10_000, () => 'Fixture child did not start');
+  await stop(child, completion);
+  const result = await completion;
+  assert.equal(result.error, undefined);
+  assert.equal(result.signal, 'SIGKILL');
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+  // Repeated cleanup must not attempt another write to the ended stdin pipe.
+  await stop(child, completion);
+});
+
+test('CLI subprocess cleanup observes cancellation before close', { timeout: 15_000 }, async (t) => {
+  const controller = new AbortController();
+  const child = spawn(process.execPath, ['-e',
+    'process.stdin.on("data", () => {}); process.stdout.write("ready");'], {
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    signal: controller.signal, killSignal: 'SIGKILL',
+  });
+  const completion = closed(child);
+  t.after(() => forceStop(child, completion));
+  await within(once(child.stdout, 'data'), 10_000, () => 'Fixture child did not start');
+  controller.abort();
+  await forceStop(child, completion);
+  const result = await completion;
+  assert.equal(result.error?.name, 'AbortError');
+  assert.notEqual(result.signal, null);
+  assert.equal(child.stdin.destroyed, true);
+  assert.equal(child.stdout.destroyed, true);
+  assert.equal(child.stderr.destroyed, true);
+});
+
+test('CLI startup rejects partial JSON on exit and releases its output listener', { timeout: 15_000 }, async (t) => {
+  const child = spawn(process.execPath, ['-e', 'process.stdout.write("{\\\"url\\\":");'], {
+    stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
+    signal: t.signal, killSignal: 'SIGKILL',
+  });
+  const completion = closed(child);
+  t.after(() => forceStop(child, completion));
+  let stdout = '';
+  child.stdout.on('data', data => { stdout += data; });
+  const listeners = child.stdout.listenerCount('data');
+  await assert.rejects(startup(child, completion, () => ({ stdout, stderr: '' })),
+    /CLI exited before complete startup JSON/);
+  assert.equal(stdout, '{"url":');
+  assert.equal(child.stdout.listenerCount('data'), listeners);
+});
+
+test('CLI: invalid serve ports fail before starting or writing simulation state', { timeout: 60_000 }, async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
@@ -52,7 +178,7 @@ test('CLI: invalid serve ports fail before starting or writing simulation state'
   const state = path.join(directory, 'invalid-state.json');
   for (const selection of [['--source', path.join(directory, 'portal')], ['--project', path.join(directory, 'project.json')]]) {
     for (const port of ['', ' ', '-1', '0x1000', '1e3', '65536']) {
-      const result = await run(['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory);
+      const result = await run(t, ['serve', ...selection, `--port=${port}`, '--state', state, '--no-watch'], directory);
       assert.equal(result.code, 1, `${JSON.stringify(port)}: ${result.stderr}`);
       assert.match(result.stderr, /--port must be an integer/);
       assert.equal(result.stdout, '');
@@ -62,7 +188,7 @@ test('CLI: invalid serve ports fail before starting or writing simulation state'
   await assert.rejects(fs.stat(path.join(directory, 'first')), { code: 'ENOENT' });
 });
 
-test('CLI: multi-portal serve closes its runtime after browser attachment fails', { timeout: 30_000 }, async (t) => {
+test('CLI: multi-portal serve closes its runtime after browser attachment fails', { timeout: 45_000 }, async (t) => {
   const directory = await fixture(t, {
     'portal/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\n',
     'portal/Home.webpage.copy.html': '<h1>Local home</h1>',
@@ -71,8 +197,8 @@ test('CLI: multi-portal serve closes its runtime after browser attachment fails'
   const rejectedCdp = http.createServer((_req, res) => { res.writeHead(404); res.end('No browser'); });
   rejectedCdp.listen(0, '127.0.0.1');
   await once(rejectedCdp, 'listening');
-  t.after(() => new Promise(resolve => rejectedCdp.close(resolve)));
-  const result = await run(['serve', '--project', path.join(directory, 'project.json'), '--port', '0', '--no-watch', '--cdp', `http://127.0.0.1:${rejectedCdp.address().port}`], directory);
+  t.after(() => closeServer(rejectedCdp));
+  const result = await run(t, ['serve', '--project', path.join(directory, 'project.json'), '--port', '0', '--no-watch', '--cdp', `http://127.0.0.1:${rejectedCdp.address().port}`], directory);
   assert.equal(result.code, 1, result.stderr);
   assert.equal(result.signal, null, 'failure exits on its own after closing portal and identity provider');
   assert.match(result.stderr, /404|browser|CDP/i);
@@ -81,7 +207,7 @@ test('CLI: multi-portal serve closes its runtime after browser attachment fails'
 
 test(
   "CLI: standard/enhanced inspect, local render, controlled argument errors and no absolute render traffic",
-  { timeout: 60_000 },
+  { timeout: 120_000 },
   async (t) => {
     const directory = await fixture(t, {
       "standard/Home.webpage.yml":
@@ -94,7 +220,7 @@ test(
         '<powerpagecomponent powerpagecomponentid="enhanced-home"><name>Enhanced home</name><powerpagecomponenttype>2</powerpagecomponenttype><content>{&quot;adx_webpageid&quot;:&quot;enhanced-home&quot;,&quot;adx_name&quot;:&quot;Enhanced home&quot;,&quot;adx_partialurl&quot;:&quot;/&quot;,&quot;adx_copy&quot;:&quot;&lt;h1&gt;Enhanced local&lt;/h1&gt;&quot;}</content></powerpagecomponent>',
     });
     const standard = path.join(directory, "standard");
-    let result = await run(
+    let result = await run(t,
       ["inspect", "--source", standard, "--env", "sandbox", "--json"],
       directory,
     );
@@ -106,7 +232,7 @@ test(
     assert.equal(inspected.liquidSyntax.sourceCount, 1);
     assert.equal(inspected.liquidSyntax.sourceParsePassed, 1);
     assert.deepEqual(inspected.liquidSyntax.diagnostics, []);
-    result = await run(
+    result = await run(t,
       [
         "inspect",
         "--source",
@@ -128,7 +254,7 @@ test(
       await fs.readFile(path.join(standard, "Home.webpage.yml"), "utf8"),
       /CLI standard/,
     );
-    result = await run(
+    result = await run(t,
       ["inspect", "--source", path.join(directory, "enhanced"), "--json"],
       directory,
     );
@@ -136,7 +262,7 @@ test(
     assert.equal(JSON.parse(result.stdout).format, "enhanced");
     assert.equal(JSON.parse(result.stdout).pages[0].name, "Enhanced home");
     const output = path.join(directory, "rendered.html");
-    result = await run(
+    result = await run(t,
       [
         "render",
         "--source",
@@ -160,14 +286,14 @@ test(
     });
     unrelated.listen(0, "127.0.0.1");
     await once(unrelated, "listening");
-    t.after(() => new Promise((resolve) => unrelated.close(resolve)));
+    t.after(() => closeServer(unrelated));
     const unrelatedUrl = `http://127.0.0.1:${unrelated.address().port}/unrelated`;
     for (const badPath of [
       unrelatedUrl,
       unrelatedUrl.replace("http:", ""),
       "/\\127.0.0.1/unsafe",
     ]) {
-      result = await run(
+      result = await run(t,
         [
           "render",
           "--source",
@@ -186,7 +312,7 @@ test(
       );
     }
     assert.equal(unrelatedTraffic, 0);
-    result = await run(
+    result = await run(t,
       ["inspect", "--source", standard, "--not-an-option"],
       directory,
     );
@@ -197,7 +323,7 @@ test(
       /at parseArgs|node:internal|ERR_PARSE_ARGS/,
     );
     const unusedState = path.join(directory, "capture-state.json");
-    result = await run(
+    result = await run(t,
       [
         "capture-shell",
         "--source",
@@ -215,7 +341,7 @@ test(
       fs.stat(unusedState),
       (error) => error.code === "ENOENT",
     );
-    result = await run(
+    result = await run(t,
       [
         "capture-shell",
         "--source",
@@ -274,7 +400,8 @@ test(
         "0",
         "--no-watch",
       ],
-      { cwd: directory, stdio: ["pipe", "pipe", "pipe"], windowsHide: true },
+      { cwd: directory, stdio: ["pipe", "pipe", "pipe"], windowsHide: true,
+        signal: t.signal, killSignal: "SIGKILL" },
     );
     let stdout = "",
       stderr = "",
@@ -285,44 +412,14 @@ test(
     child.stderr.on("data", (data) => {
       stderr += data;
     });
-    const completion = once(child, "close").then((values) => {
+    const completion = closed(child).then((values) => {
       ended = true;
       return values;
     });
     t.after(async () => {
-      if (!ended) {
-        child.stdin.write("stop\n");
-        const stopped = await Promise.race([
-          completion,
-          new Promise((resolve) => setTimeout(() => resolve(null), 1500)),
-        ]);
-        if (!stopped) {
-          child.kill();
-          await completion;
-        }
-      }
+      if (!ended) await stop(child, completion);
     });
-    const discovery = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(
-        () => reject(new Error(`CLI did not start: ${stderr}`)),
-        12_000,
-      );
-      const check = () => {
-        try {
-          const value = JSON.parse(stdout);
-          clearTimeout(timeout);
-          child.stdout.off("data", check);
-          resolve(value);
-        } catch {
-          /* Wait for complete startup JSON. */
-        }
-      };
-      child.stdout.on("data", check);
-      completion.then(() => {
-        clearTimeout(timeout);
-        if (!stdout) reject(new Error(`CLI exited before startup: ${stderr}`));
-      });
-    });
+    const discovery = await startup(child, completion, () => ({ stdout, stderr }));
     const stateResponse = await fetch(`${discovery.url}/__sim/api/state`);
     assert.equal(discovery.stateFile, path.join(directory, "state.json"));
     assert.equal(stateResponse.status, 200);
@@ -335,8 +432,10 @@ test(
     assert.equal(page.status, 200);
     assert.match(await page.text(), /Friendly name/);
     assert.ok(await fs.stat(discovery.discovery));
-    child.stdin.write("stop\n");
-    const [code] = await completion;
+    child.stdin.end("stop\n");
+    const { code, error } = await within(completion, 10_000,
+      () => `CLI did not stop. stdout: ${stdout}\nstderr: ${stderr}`);
+    if (error) throw error;
     assert.equal(code, 0, stderr);
     await assert.rejects(
       fs.stat(discovery.discovery),
