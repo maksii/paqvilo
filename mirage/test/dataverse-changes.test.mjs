@@ -13,14 +13,22 @@ function fakeStore() {
   const consumers = new Set();
   return {
     revision: 0,
+    // The persisted org row version the change log stamps with; a commit moves it as a Dataverse write does.
+    state: { rowVersion: 0 },
     resolveMapping: () => ({ idColumn: "widgetid" }),
     addCommittedEvents(provider) {
       consumers.add(provider);
       return () => consumers.delete(provider);
     },
     subscribers: () => consumers.size,
-    // One commit: the revision moves, then every consumer sees the events.
+    // One commit: the revision and row version move, then every consumer sees the events.
     commit(...events) {
+      this.revision++;
+      this.state.rowVersion++;
+      for (const provider of consumers) provider(events);
+    },
+    // A commit that did not stamp any row (a portal write): only the store revision moves.
+    commitUnstamped(...events) {
       this.revision++;
       for (const provider of consumers) provider(events);
     },
@@ -88,6 +96,17 @@ describe("dataverse change log", () => {
     store.commit(removed(B));
     log.rewind(1);
     assert.deepEqual(await log.since("widget", 0), { changed: [A], deleted: [] });
+  });
+
+  it("gives a commit that stamped no row version the next one, so a token issued before it does not hide it", async () => {
+    const store = fakeStore();
+    const log = createChangeLog(store, { clock: CLOCK });
+    store.commit(written(A));
+    const token = log.token();
+    store.commitUnstamped(written(B));
+    assert.equal(store.state.rowVersion, 2);
+    assert.deepEqual(await log.since("widget", log.parse(token).revision), { changed: [B], deleted: [] });
+    assert.equal(log.current(), 2);
   });
 
   it("expires every token issued before reset, and keeps only entries logged after it", async () => {

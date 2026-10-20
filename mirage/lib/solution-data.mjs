@@ -42,7 +42,9 @@ function mappingFor(schema, name) {
     metadataSources: [...table.sources],
     schemaComplete: table.schemaComplete,
   };
-  mapping.inferred = mapping.entitySetInferred || mapping.idColumnInferred;
+  // The table's SchemaName (privilege nouns, metadata SchemaName) travels with the mapping, so the store resolves it without the schema.
+  if (table.schemaName) mapping.dataverseMetadata = { schemaName: table.schemaName };
+  mapping.inferred =mapping.entitySetInferred || mapping.idColumnInferred;
   if (table.primaryNameAttribute) {
     mapping.nameColumn = table.primaryNameAttribute;
     mapping.nameColumnSource = table.primaryNameSource;
@@ -118,6 +120,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
         type: "many-to-one",
         partner: rel.referencedNavigation,
         ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+        ...(rel.isHierarchical ? { hierarchical: true } : {}),
       };
       parent.relationships[rel.referencedNavigation] = {
         entity: rel.referencingEntity,
@@ -128,6 +131,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
         type: "one-to-many",
         partner: rel.referencingNavigation,
         ...(rel.cascade ? { cascade: { ...rel.cascade } } : {}),
+        ...(rel.isHierarchical ? { hierarchical: true } : {}),
       };
     } else {
       relationships[key] = {
@@ -267,9 +271,13 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
   const importDiagnostics = [];
   const imported = (mapping) =>
     mapping && mapping.userConfigured !== true && (mapping.inferred === true || Array.isArray(mapping.metadataSources));
+  // A table the Dataverse API seeded (dataverseOnly or a standard table) is a stand-in until a Solution defines it; a table
+  // created through the metadata API is the user's and stays.
+  const dataverseSeeded = (mapping) =>
+    (mapping?.dataverseOnly === true || mapping?.standardTable === true) && mapping.dataverseMetadata?.createdByMetadataApi !== true;
   for (const [name, mapping] of Object.entries(metadata.mappings)) {
     const existing = result.mappings[name];
-    if (!existing || imported(existing)) {
+    if (!existing || imported(existing) || dataverseSeeded(existing)) {
       const { fieldMetadata: _f, schemaComplete: _c, ...rest } = mapping;
       result.mappings[name] = structuredClone(rest);
     } else {

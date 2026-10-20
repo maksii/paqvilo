@@ -212,16 +212,28 @@ test("F2: an independent plugin commit inside an isolated transaction that later
   await fs.rm(directory, { recursive: true, force: true });
 });
 
-test("F3: a non-nested transact inside an isolated transaction rejects instead of deadlocking", { timeout: 5000 }, async () => {
+test("F3: a plain transact inside an isolated transaction joins it instead of deadlocking", { timeout: 5000 }, async () => {
   const store = fixture();
+  const before = store.revision;
   await store.transact(async () => {
-    await assert.rejects(
-      store.transact(() => store.state.tables.note.push({ noteid: "x", text: "x" })),
-      (error) => error.code === "TransactionReentry",
-    );
+    await store.transact(() => store.state.tables.note.push({ noteid: "x", text: "x" }));
+    assert.equal(store.revision, before, "joined transact must not commit");
     store.state.tables.note.push({ noteid: "b", text: "two" });
   }, { isolated: true });
-  assert.deepEqual(ids(store), ["a", "b"]);
+  assert.equal(store.revision, before + 1);
+  assert.deepEqual(ids(store), ["a", "x", "b"]);
+});
+
+test("a plain transact inside an isolated transaction joins it and rolls back with the outer throw", async () => {
+  const store = fixture();
+  const before = store.revision;
+  await assert.rejects(store.transact(async () => {
+    store.state.tables.note.push({ noteid: "b", text: "two" });
+    await store.transact(() => store.state.tables.note.push({ noteid: "c", text: "three" }));
+    throw new Error("outer boom");
+  }, { isolated: true }), /outer boom/);
+  assert.equal(store.revision, before);
+  assert.deepEqual(ids(store), ["a"]);
 });
 
 test("F4: an isolated count is not leaked when the transaction fails before its body runs", async () => {

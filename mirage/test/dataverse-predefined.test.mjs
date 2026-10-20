@@ -3,7 +3,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { createPrincipals, ensureSecurityModel, ownerColumns } from "../lib/dataverse-security.mjs";
-import { install } from "../lib/dataverse-predefined.mjs";
+import { install, reset } from "../lib/dataverse-predefined.mjs";
 
 const ORG = "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
 const ADMIN_OID = "aaaaaaaa-0000-4000-8000-000000000001";
@@ -120,14 +120,14 @@ test("savedQuery answers with the savedquery row's FetchXML", async () => {
     rows: { savedquery: [{ savedqueryid: SAVED, name: "All widgets", returnedtypecode: "widget", fetchxml: SAVED_FETCH }] },
   });
   const result = await t.query(t.admin, "widgets", { savedQuery: SAVED });
-  assert.deepEqual(result, { fetchXml: SAVED_FETCH });
+  assert.deepEqual(result, { fetchXml: SAVED_FETCH, columnOrder: "attribute" });
 });
 
 test("savedQuery falls back to a Solution view from the schema, read-only", async () => {
   const t = await setup({
     schema: { views: [{ id: SAVED, entity: "widget", fetchXml: SAVED_FETCH }] },
   });
-  assert.deepEqual(await t.query(t.admin, "widgets", { savedQuery: SAVED }), { fetchXml: SAVED_FETCH });
+  assert.deepEqual(await t.query(t.admin, "widgets", { savedQuery: SAVED }), { fetchXml: SAVED_FETCH, columnOrder: "attribute" });
 });
 
 test("a savedQuery for another entity answers 400 0x80041128", async () => {
@@ -145,6 +145,16 @@ test("an unknown savedQuery answers 404 0x80040217", async () => {
   assert.equal(error.status, 404);
   assert.equal(error.details.innerCode, "0x80040217");
   assert.equal(error.message, `savedquery With Id = ${MISSING} Does Not Exist`);
+});
+
+test("a savedQuery id that is not a GUID answers 500 code 0x0 before any lookup", async () => {
+  const t = await setup();
+  const error = await failure(() => t.query(t.admin, "widgets", { savedQuery: "bad" }));
+  assert.equal(error.status, 500);
+  assert.equal(error.details.innerCode, "0x0");
+  assert.equal(error.message, "Guid should contain 32 digits with 4 dashes (xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx).");
+  const braced = await failure(() => t.query(t.admin, "widgets", { savedQuery: `{${MISSING}}` }));
+  assert.equal(braced.status, 404, "a braced GUID passes the GUID check and fails the lookup");
 });
 
 test("userQuery answers with the owner's query, and Basic depth hides other users' queries", async () => {
@@ -193,7 +203,7 @@ test("a navigation collection takes its parent from the navigation context, with
     route: { kind: "property", set: "widgets", key: WIDGET, segment: "widget_gadgets" },
     navigation: { parent: { mapping: t.store.resolveMapping("widgets"), id: WIDGET }, name: "widget_gadgets" },
   };
-  assert.deepEqual(t.hooks.query(c, t.store.resolveMapping("gadgets")), { fetchXml: GADGETS_OF_WIDGET });
+  assert.deepEqual(t.hooks.query(c, t.store.resolveMapping("gadgets")), { fetchXml: GADGETS_OF_WIDGET, columnOrder: "attribute" });
 });
 
 test("a navigation predefined query that names no collection-valued relationship answers 400, never every row", async () => {
@@ -219,7 +229,7 @@ test("install registers the hook and returns its seeding, so awaiting install me
   const hooks = {};
   // A write already queued on the store delays the seeding, so only an awaited install sees it done.
   const earlier = store.transact(() => new Promise((resolve) => setTimeout(resolve, 20)));
-  await install({ store, recordHooks: { add: (name, fn) => { hooks[name] = fn; } } });
+  await install({ store, registry: { register() {} }, recordHooks: { add: (name, fn) => { hooks[name] = fn; } } });
   assert.equal(typeof hooks.query, "function");
   assert.equal(store.state.mappings.savedquery?.entitySet, "savedqueries");
   assert.equal(store.state.mappings.userquery?.entitySet, "userqueries");
@@ -229,4 +239,65 @@ test("install registers the hook and returns its seeding, so awaiting install me
 test("no predefined query parameter leaves the request to the records layer", async () => {
   const t = await setup();
   assert.equal(await t.query(t.admin, "widgets"), undefined);
+});
+
+test("reset(api) re-seeds the saved and user query mappings and tables after a wipe", async () => {
+  const { store, api } = await setup();
+  for (const logical of ["savedquery", "userquery"]) {
+    delete store.state.mappings[logical];
+    delete store.state.tables[logical];
+  }
+  await reset(api);
+  assert.equal(store.state.mappings.savedquery.entitySet, "savedqueries");
+  assert.equal(store.state.mappings.userquery.entitySet, "userqueries");
+  assert.deepEqual(store.state.tables.savedquery, []);
+  assert.deepEqual(store.state.tables.userquery, []);
+});
+
+// RetrieveExchangeRate and SendAppNotification, registered by install and called through the registry. Invented GUIDs only.
+const CURRENCY = "55555555-0000-4000-8000-000000000001";
+async function messageSetup() {
+  const state = emptyState();
+  state.mappings.transactioncurrency = {
+    logicalName: "transactioncurrency", entitySet: "transactioncurrencies", idColumn: "transactioncurrencyid", nameColumn: "currencyname",
+    fields: { transactioncurrencyid: { dataverseType: "uniqueidentifier" }, currencyname: text, exchangerate: { dataverseType: "decimal" }, ownerid: lookup, owninguser: lookup, owningteam: lookup, owningbusinessunit: lookup },
+    relationships: {},
+  };
+  state.tables.transactioncurrency = [{ transactioncurrencyid: CURRENCY, currencyname: "Euro", exchangerate: 1.25 }];
+  const store = new DataStore({ state });
+  const ops = [];
+  const api = { store, registry: { register: (op) => ops.push(op) }, recordHooks: { add() {} }, change: (fn) => fn(), principals: null };
+  await install(api);
+  await ensureSecurityModel(store, SETTINGS);
+  api.principals = createPrincipals(store, SETTINGS);
+  return {
+    store, op: (name) => ops.find((o) => o.name === name),
+    admin: api.principals.byObjectId(ADMIN_OID), basic: api.principals.byObjectId(BASIC_OID),
+  };
+}
+const ORIGIN_URL = "http://127.0.0.1:5555";
+
+test("RetrieveExchangeRate answers the exchange rate of a currency, and refuses an unknown or malformed id", async () => {
+  const t = await messageSetup();
+  const rate = t.op("RetrieveExchangeRate");
+  assert.equal(rate.csdl.includes('<Parameter Name="TransactionCurrencyId" Type="Edm.Guid" Nullable="false" />'), true);
+  const res = await rate.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, params: { TransactionCurrencyId: CURRENCY } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.ExchangeRate, 1.25);
+  await assert.rejects(rate.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, params: { TransactionCurrencyId: MISSING } }), (e) => e.status === 404);
+  await assert.rejects(rate.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, params: { TransactionCurrencyId: "not-a-guid" } }), (e) => e.status === 400);
+});
+
+test("SendAppNotification writes one appnotification row for a systemuser, and a caller without write on the table is refused", async () => {
+  const t = await messageSetup();
+  const send = t.op("SendAppNotification");
+  const recipient = { systemuserid: t.admin.systemuserid };
+  const res = await send.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, identity: { admin: true }, body: { Title: "Hello", Body: "Details", Recipient: recipient, IconType: 1, Priority: 2, Expiry: 60 } });
+  assert.equal(res.status, 200);
+  assert.equal(t.store.state.tables.appnotification.length, 1);
+  assert.equal(t.store.state.tables.appnotification[0].title, "Hello");
+  await assert.rejects(send.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.basic, body: { Title: "Denied", Recipient: recipient } }), (e) => e.status === 403);
+  assert.equal(t.store.state.tables.appnotification.length, 1, "a refused call writes no row");
+  await assert.rejects(send.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, body: { Recipient: recipient } }), (e) => e.status === 400);
+  await assert.rejects(send.handle({ origin: ORIGIN_URL, version: "v9.2", user: t.admin, body: { Title: "x", Recipient: { systemuserid: MISSING } } }), (e) => e.status === 404);
 });

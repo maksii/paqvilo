@@ -15,7 +15,7 @@ const GRANTS = Object.keys(GRANT_TYPES);
 const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 // The audience a federated identity credential accepts (Microsoft Entra workload identity federation).
 const TOKEN_EXCHANGE_AUDIENCE = 'api://AzureADTokenExchange';
-const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentities', 'federatedIssuers', 'auditing', 'tds'];
+const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory'];
 const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants', 'federatedCredentials'];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
 const FEDERATED_CREDENTIAL_KEYS = ['issuer', 'subject', 'audiences'];
@@ -184,11 +184,12 @@ function serviceProtection(value) {
   };
 }
 
+// "Enable TDS endpoint" is on by default in Dataverse. Port 0 is ephemeral; 1433 and 5558 are opt-in.
 function tds(value, label) {
-  if (value === undefined) return { enabled: false, port: 0 };
+  if (value === undefined) return { enabled: true, port: 0 };
   plainObject(value, label);
   knownKeys(value, TDS_KEYS, label);
-  return { enabled: boolean(value.enabled, `${label}.enabled`, false), port: integer(value.port, `${label}.port`, 0, 0, 65535) };
+  return { enabled: boolean(value.enabled, `${label}.enabled`, true), port: integer(value.port, `${label}.port`, 0, 0, 65535) };
 }
 
 export function dataverseSettings(value, label = 'dataverse') {
@@ -215,8 +216,17 @@ export function dataverseSettings(value, label = 'dataverse') {
     serviceProtection: serviceProtection(input.serviceProtection),
     managedIdentities: list(input.managedIdentities, 'managedIdentities').map((item, index) => managedIdentity(item, `${label}.managedIdentities[${index}]`)),
     federatedIssuers: list(input.federatedIssuers, 'federatedIssuers').map((item, index) => federatedIssuer(item, `${label}.federatedIssuers[${index}]`)),
+    // organization.isauditenabled, organization.isduplicatedetectionenabled and the base currency and locale of the organization.
     auditing: boolean(input.auditing, `${label}.auditing`, false),
+    duplicateDetection: boolean(input.duplicateDetection, `${label}.duplicateDetection`, true),
+    // The plug-in execution limit of a custom API's handler; the platform's sandbox limit is 2 minutes.
+    pluginTimeoutSeconds: integer(input.pluginTimeoutSeconds, `${label}.pluginTimeoutSeconds`, 120, 1, 3600),
+    currencyCode: text(input.currencyCode, `${label}.currencyCode`, 'USD', /^[A-Z]{3}$/),
+    currencySymbol: text(input.currencySymbol, `${label}.currencySymbol`, '$'),
+    localeId: integer(input.localeId, `${label}.localeId`, 1033, 1, 65535),
     tds: tds(input.tds, `${label}.tds`),
+    // A local directory standing in for the Git remote of source control (dataverse-addon-git.mjs); resolved by server.mjs.
+    gitRemoteDirectory: text(input.gitRemoteDirectory, `${label}.gitRemoteDirectory`, null),
   };
 }
 
@@ -230,5 +240,7 @@ export function dataverseStatus(settings, runtime = {}) {
     organizationId: settings.organizationId ?? runtime.organizationId ?? null,
     uniqueName: settings.uniqueName ?? null,
     version: settings.version ?? null,
+    // The listening TDS port (null when the endpoint is disabled).
+    tdsPort: runtime.tdsPort ?? null,
   };
 }

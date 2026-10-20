@@ -73,3 +73,49 @@ A project can map `npm run dev` to `paqvilo lense dev` and `npm run mirage:dev` 
 Keep a project's validation task pointed at its own test scripts. Core validation remains in the toolkit checkout. A workspace file can include the project and its external portal/Solution source folders without moving those sources into Paqvilo.
 
 Packs may contribute deterministic generators, personas, declarative backend rules, expression operators, local endpoints, shell conventions and parity plans. See [the full contract](../mirage/docs/data-packs.md). Do not check live exports, private identifiers or capture files into the public toolkit.
+
+## Classic workflow handlers
+
+A trusted pack can run a classic (XAML) workflow. Export `workflows: { '<workflowid or uniquename>': async (ctx) => ({ message }) }`. The key is matched case-insensitively against the workflow id, then its unique name. Mirage never interprets the XAML; without a handler the run is a placeholder that ends Canceled. `ctx` has `workflow` (a copy of the row), `target` (`{ logicalName, id, row }`), `caller`, `inputs` (the `InputArguments` as an object), `api` and `trace(text)`. The handler runs in one store transaction: a throw fails the job (or rejects a real-time request) and rolls its writes back. Duplicate keys across packs are an error.
+
+## Custom API handlers
+
+A trusted pack can implement its Dataverse custom APIs. Export `customApis: { '<uniquename>': async (ctx) => ({ outputs }) }`, or `{ '<uniquename>': { handler, pluginType } }`; the key is the custom API's unique name. `pluginType` is the full name of the provisioned plug-in type (for example `Contoso.Plugins.Echo`). Plug-in messages name it: the timeout message and the `Plugin.ExceptionFromPluginExecute` and trace annotations. Without it, the custom API name stands in.
+
+`ctx` has `name`, `inputs` (typed by parameter, `undefined` when absent), `target` (`{ logicalName, id, row }` for a bound call), `caller`, `origin`, `version`, `api` and `trace(text)`, which records a plug-in trace line (as `ITracingService.Trace` does). The handler runs after parameter checks, as one store transaction. Its `outputs` fill the response properties by name; an output left out is the native default.
+
+- Throw `{ pluginFault: 'InvalidPluginExecutionException', message, errorCode? }` for a plug-in fault: 400 `0x80040265` with its message. A named `errorCode` such as `0x8004F001` is not the top-level code: native carries it in `@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode` as a signed decimal (`-2147160063`). Without one the SubErrorCode is `-2146233088`.
+- Any other throw is unhandled: 400 `0x80040224` with the thrown message.
+- A handler still running after `pluginTimeoutSeconds` (a simulator Dataverse setting, default `120`, the 2-minute sandbox limit) is a timeout: 400 `0x80040224`, with the message naming the plug-in type. Its writes roll back.
+
+A custom API with no `customApis` entry runs a `pluginTypes` handler (see "Plug-in type handlers") when its `plugintypeid` names a plug-in type whose `typename` has one. That handler is the API's main operation and receives the same `ctx`. A `customApis` entry for the API always wins over the type handler. The plug-in's name in messages is the type's `typename`.
+
+The plug-in annotations (`Prefer: odata.include-annotations`) follow the native bodies: `ErrorDetails.*`, `HelpLink`, `TraceText` and `InnerError.Message` for a plug-in fault, and the same without `ErrorDetails` for an unhandled or timed-out call. Without a handler, the custom API returns its defaults.
+
+## Plug-in type handlers
+
+A trusted pack can run the plug-in steps that a Dataverse client registered through the API, and every step of one plug-in type. Export `pluginTypes: { '<Namespace.TypeName>': handler }`. The key is the exact CLR type name of the registered type (`plugintype.typename`), matched case-sensitively; the handler is synchronous (an async function is refused). A type name claimed by two packs is an error. Packs without `pluginTypes` behave as before.
+
+A step whose type has a handler runs it at its stage, mode and rank, when its message, table and filtering attributes match. A step on a type with no handler is stored and skipped (`PLUGIN_STEP_PLACEHOLDER`). A handler keyed by the exported step id (`pluginSteps`) takes precedence over a type handler for that step.
+
+The handler receives the arguments of a `pluginSteps` handler (`step`, `entity`, `operation`, `stage`, `target`, `record`, `previous`, `preImage`, `postImage`, `identity`, `changedAttributes`, `reject`) and also `context`, an IPluginExecutionContext-like object:
+
+- `MessageName`, `PrimaryEntityName`, `PrimaryEntityId`, `Stage`, `Mode` (0 or 1), `Depth` (1 at the top, one more for each nested handler write) and `InitiatingUserId`.
+- `UserId`: the step's impersonated user when it names one, else the initiating user.
+- `InputParameters`: `Target` for Create, Update and Delete; `Targets` for bulk messages.
+- `OutputParameters`: `id` for a PostOperation Create.
+- `PreEntityImages` and `PostEntityImages`: the registered images, keyed by alias, limited to their attributes.
+
+`context` is a copy: changing it does not change the write. Return `{ target }` to change a PreOperation Create or Update, or throw.
+
+- A thrown error is the plug-in fault: 400 `0x80040265` with its message. Its `SubErrorCode` annotation is `-2146233088`. The write rolls back.
+- An asynchronous (mode 1) step runs after commit through the same queue as the exported ones. While the Dataverse API is on, each run also writes an asyncoperation system job (operation type System Event): Completed with status Succeeded, or Failed with the handler's message. A succeeded job is removed when its step has `asyncautodelete`. The job is written in the run's own transaction, so the portal response does not change.
+- `trace(text)` on a plug-in handler's arguments (and `context.trace` for a `pluginTypes` handler) records a trace line. With `organization.plugintracelogsetting` 2 every handler or CLR run writes a plugintracelog row with its trace lines (`messageblock`), type, message, depth and duration; 1 writes only failed runs, with `exceptiondetails`; 0 writes none. The row rolls back with a rolled-back write (native keeps it; the simulator does not).
+
+## Dataverse message handlers
+
+A trusted pack can answer a Dataverse message that the simulator registers, including the add-on messages. Export `dataverseMessages: { '<MessageName>': async (ctx) => body }`. The key is the exact message name, matched case-sensitively. A handler replaces the simulator's own behaviour for that message. Without one, the message runs its simulated behaviour where it has one; otherwise it answers its documented default error.
+
+`ctx` has `name`, `args` (the request body merged with the URL parameters), `target` (`{ logicalName, id, row }` for a bound call, `null` otherwise), `caller`, `user`, `origin`, `version` and `api`. Return an object to set the response body (the `@odata.context` is added); return `undefined` for 204 No Content. Two packs naming the same message is an error. A key that no simulated message registers fails the start: `Data pack <id>: dataverseMessages names unknown message <Name>`.
+
+Some messages are marked "For internal use only" in Microsoft Learn. The simulator registers them with their native signature, so they appear in `$metadata`. Without a pack handler they answer 501 `NotImplemented` with inner code `0x80040216` and the message `<Name> is for internal use only and is not simulated.` The 501 default is unverified against a live environment.

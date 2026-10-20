@@ -3,6 +3,7 @@
 import { createHash } from 'node:crypto';
 import { DataError } from './data-error.mjs';
 import { standardTable } from './solution-standard.mjs';
+import { relationshipsOf, standardTableDef } from './dataverse-standard.mjs';
 
 export const ACCESS_RIGHTS = { Read: 1, Write: 2, Append: 4, AppendTo: 16, Create: 32, Delete: 65536, Share: 262144, Assign: 524288 };
 export const DEPTH = { Basic: 1, Local: 2, Deep: 4, Global: 8 };
@@ -13,28 +14,34 @@ const OPERATION_RIGHT = { read: 'Read', create: 'Create', update: 'Write', write
 const ORGANIZATION_EXCLUDED = new Set(['Assign', 'Share']);
 const ROLE_NAMES = ['System Administrator', 'System Customizer', 'Basic User'];
 // Miscellaneous privileges (no table). Granted at Global to System Administrator and System Customizer only,
-// except the two bypass privileges, which System Administrator alone holds.
-const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic']);
+// except the three System Administrator only privileges: the two bypass privileges and prvBulkDelete (Microsoft: a system
+// administrator has BulkDelete by default; other users must be granted it, and System Customizer is not documented as holding it).
+const SYSTEM_ADMINISTRATOR_ONLY = new Set(['prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete']);
 const GLOBAL_PRIVILEGES = [
-  'prvActOnBehalfOfAnotherUser', 'prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic',
+  'prvActOnBehalfOfAnotherUser', 'prvBypassCustomPlugins', 'prvBypassCustomBusinessLogic', 'prvBulkDelete',
   'prvReadRecordAuditHistory', 'prvReadAuditSummary', 'prvDeleteRecordChangeHistory',
   'prvCreateEntity', 'prvReadEntity', 'prvWriteEntity', 'prvDeleteEntity',
   'prvCreateAttribute', 'prvReadAttribute', 'prvWriteAttribute', 'prvDeleteAttribute',
   'prvReadbackgroundoperation', 'prvWritebackgroundoperation',
+  'prvExportCustomization', 'prvImportCustomization',
 ];
 const DEPTH_NAMES = ['Global', 'Deep', 'Local', 'Basic'];
 const DEFAULT_OTC = 10000;
 const GUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+// team.membershiptype: the Entra group match for a group team (Members and guests is the default).
+export const TEAM_MEMBERSHIP = { MembersAndGuests: 0, Members: 1, Owners: 2, Guests: 3 };
+const DEFAULT_HIERARCHY_DEPTH = 3;
+const HIERARCHY_LIMIT = 100;
 
 const TEXT = 'nvarchar', INT = 'int', BOOL = 'bit', LOOKUP = 'lookup', GUID = 'uniqueidentifier';
 const nn = (target, from, to, via) => ({ entity: target, from, to, many: true, intersect: { entity: via, from, to } });
 // ponytail: systemuser and team are user-owned in Dataverse; they are treated as organization-owned here.
 const TABLE_DEFS = {
-  organization: { set: 'organizations', id: 'organizationid', name: 'name', schemaName: 'Organization', fields: { organizationid: GUID, name: TEXT, uniquename: TEXT, friendlyname: TEXT } },
+  organization: { set: 'organizations', id: 'organizationid', name: 'name', schemaName: 'Organization', fields: { organizationid: GUID, name: TEXT, uniquename: TEXT, friendlyname: TEXT, isauditenabled: BOOL, isduplicatedetectionenabled: BOOL, localeid: INT, languagecode: INT } },
   businessunit: { set: standardTable('businessunit').entitySet, id: 'businessunitid', name: 'name', schemaName: 'BusinessUnit', fields: { businessunitid: GUID, name: TEXT, parentbusinessunitid: LOOKUP, organizationid: LOOKUP } },
   systemuser: { set: standardTable('systemuser').entitySet, id: 'systemuserid', name: 'fullname', schemaName: 'SystemUser', fields: { systemuserid: GUID, fullname: TEXT, domainname: TEXT, internalemailaddress: TEXT, applicationid: GUID, azureactivedirectoryobjectid: GUID, accessmode: INT, isdisabled: BOOL, businessunitid: LOOKUP, organizationid: LOOKUP, parentsystemuserid: LOOKUP }, relationships: { systemuserroles_association: nn('role', 'systemuserid', 'roleid', 'systemuserroles') } },
   // teamtype: 0 Owner, 1 Access, 2 Security group, 3 Office group. Access teams own no records and hold no roles.
-  team: { set: standardTable('team').entitySet, id: 'teamid', name: 'name', schemaName: 'Team', fields: { teamid: GUID, name: TEXT, businessunitid: LOOKUP, organizationid: LOOKUP, teamtype: INT, membershiptype: INT, azureactivedirectoryobjectid: GUID, administratorid: LOOKUP, teamtemplateid: LOOKUP, systemmanaged: BOOL }, relationships: { teammembership_association: nn('systemuser', 'teamid', 'systemuserid', 'teammembership'), teamroles_association: nn('role', 'teamid', 'roleid', 'teamroles') } },
+  team: { set: standardTable('team').entitySet, id: 'teamid', name: 'name', schemaName: 'Team', fields: { teamid: GUID, name: TEXT, businessunitid: LOOKUP, organizationid: LOOKUP, teamtype: INT, membershiptype: INT, azureactivedirectoryobjectid: GUID, administratorid: LOOKUP, teamtemplateid: LOOKUP, systemmanaged: BOOL }, relationships: { teammembership_association: nn('systemuser', 'teamid', 'systemuserid', 'teammembership'), teamroles_association: nn('role', 'teamid', 'roleid', 'teamroles') }, alternateKeys: [{ name: 'team_aadobjectid_membershiptype', attributes: ['azureactivedirectoryobjectid', 'membershiptype'] }] },
   // isinherited: 0 Team privileges only, 1 Direct User (Basic) access level and Team privileges (the default).
   role: { set: 'roles', id: 'roleid', name: 'name', schemaName: 'Role', fields: { roleid: GUID, name: TEXT, businessunitid: LOOKUP, organizationid: LOOKUP, isinherited: INT }, relationships: { roleprivileges_association: nn('privilege', 'roleid', 'privilegeid', 'roleprivileges') } },
   systemuserroles: { set: 'systemuserrolescollection', id: 'systemuserroleid', schemaName: 'SystemUserRoles', fields: { systemuserroleid: GUID, systemuserid: LOOKUP, roleid: LOOKUP } },
@@ -95,13 +102,76 @@ export function ownershipOf(logical, table, mapping) {
     ?? (Object.hasOwn(mapping?.fields ?? {}, 'ownerid') ? 'user' : 'org');
 }
 
-/** Dataverse OwnershipType name for metadata: the ten security tables report BusinessOwned like the platform. */
+/** Dataverse OwnershipType name for metadata: the standard file's value for a standard table; else the ten security tables report BusinessOwned. */
 export function ownershipTypeName(logical, table, mapping) {
+  const standard = standardTableDef(logical)?.ownershipType;
+  if (standard && !table?.ownership) return standard;
   if (TABLE_DEFS[logical]) return 'BusinessOwned';
   return ownershipOf(logical, table, mapping) === 'user' ? 'UserOwned' : 'OrganizationOwned';
 }
 
-const schemaNameOf = (logical, table) => table?.schemaName ?? TABLE_DEFS[logical]?.schemaName ?? capitalize(logical);
+// A table's SchemaName: its Solution schema entry, else the mapping's dataverseMetadata (a Solution or metadata-API table keeps it there),
+// else the security table, else the standard file, else the capitalised logical name.
+const schemaNameOf = (logical, table, mapping) => table?.schemaName ?? mapping?.dataverseMetadata?.schemaName ?? TABLE_DEFS[logical]?.schemaName ?? standardTableDef(logical)?.schemaName ?? capitalize(logical);
+// Privilege noun where it differs from the table SchemaName: systemuser privileges are prvReadUser, prvWriteUser, and so on.
+// Notes are prvReadNote and email templates prvReadEmailTemplate. activitypointer is the Activity noun (see privilegeNounOf).
+const PRIVILEGE_NOUN = { systemuser: 'User', annotation: 'Note', template: 'EmailTemplate', activitypointer: 'Activity' };
+// Platform tables the simulator's modules seed (not Solution content), by their documented SchemaName.
+const PLATFORM_NOUN = {
+  asyncoperation: 'AsyncOperation', bulkdeleteoperation: 'BulkDeleteOperation', bulkdeletefailure: 'BulkDeleteFailure',
+  backgroundoperation: 'BackgroundOperation', audit: 'Audit', customapi: 'CustomAPI', customapirequestparameter: 'CustomAPIRequestParameter',
+  customapiresponseproperty: 'CustomAPIResponseProperty', duplicaterule: 'DuplicateRule', duplicaterulecondition: 'DuplicateRuleCondition',
+  fieldsecurityprofile: 'FieldSecurityProfile', fieldpermission: 'FieldPermission', principalobjectattributeaccess: 'PrincipalObjectAttributeAccess',
+  savedquery: 'SavedQuery', userquery: 'UserQuery', teamtemplate: 'TeamTemplate',
+  queueitem: 'QueueItem', environmentvariablevalue: 'EnvironmentVariableValue',
+};
+// Intersect tables own no privileges; Dataverse checks the parent table's (the table whose relationship they serve).
+// Activity parties follow their activity: the Activity privileges, tested against the activity row (see parentRowOf).
+// The other None-owned tables below take their parent's privileges too (Learn's table pages give OwnershipType None and the
+// lookup to the parent; the privilege mapping itself is unverified: live capture). Their privileges are not seeded (tableInfo).
+const INTERSECT_PARENT = {
+  systemuserroles: 'systemuser', teammembership: 'team', teamroles: 'team', roleprivileges: 'role', activityparty: 'activitypointer',
+  calendarrule: 'calendar', appmodulecomponent: 'appmodule', attributemaskingrule: 'maskingrule', workflowlog: 'workflow',
+  activitymimeattachment: 'activitypointer', solutioncomponent: 'solution', dependency: 'solution',
+  // skip sweep 2026-10-20: None-owned tables and queue membership (intersect rows), each under its parent's privileges.
+  queuemembership: 'queue', postregarding: 'post', privilegecheckerlog: 'privilegecheckerrun', knowledgearticleviews: 'knowledgearticle',
+  processstage: 'workflow', reportcategory: 'report', rollupfield: 'metric', duplicaterecord: 'duplicaterule',
+  columnmapping: 'importmap', picklistmapping: 'importmap', lookupmapping: 'importmap', ownermapping: 'importmap',
+  importentitymapping: 'importmap', transformationmapping: 'importmap', transformationparametermapping: 'importmap',
+  msdyn_aiconfiguration: 'msdyn_aimodel',
+};
+// Timezone tables are platform reads open to every enabled user without a privilege. Learn's table pages do not state this: unverified.
+const PUBLIC_READ = new Set(['timezonedefinition', 'timezonerule', 'timezonelocalizedname']);
+// Customer addresses follow their parent account or contact (objecttypecode). Without a row (create, lists) either parent's privilege passes.
+// ponytail: create (no row) checks either parent's privilege, not the body's parent; records would need to pass the body to narrow it.
+const FOLLOWS_PARENT = new Set(['activityparty', 'customeraddress']);
+const ADDRESS_PARENTS = ['account', 'contact'];
+// Activity tables (isActivity in the standard file) check the activitypointer privileges: prvReadActivity, prvCreateActivity, and so on.
+const isActivityTable = (logical) => standardTableDef(logical)?.isActivity === true;
+const privilegeParent = (logical) => INTERSECT_PARENT[logical] ?? (logical !== 'activitypointer' && isActivityTable(logical) ? 'activitypointer' : undefined);
+// The one resolver for a table's privilege noun. Callers that have the Solution schema entry pass it as `table`; the mapping
+// (which a Solution import fills with dataverseMetadata.schemaName) is enough on its own.
+export const privilegeNounOf = (logical, table, mapping) => {
+  const parent = privilegeParent(logical);
+  return parent ? privilegeNounOf(parent) : PRIVILEGE_NOUN[logical] ?? PLATFORM_NOUN[logical] ?? schemaNameOf(logical, table, mapping);
+};
+// The Solution schema entry of a table; `schema` is the schema itself or a function returning it.
+const schemaTableOf = (schema, logical) => (typeof schema === 'function' ? schema() : schema)?.tables?.[logical];
+
+// Platform tables get only the Basic User depths listed here, per right; every other right on them is none for Basic User.
+// System Job (AsyncOperation) is user-owned (Microsoft Learn), so Basic reads only its own rows and its teams'. The
+// userquery and savedquery depths follow the brief; the Customer Insights Basic User baseline lists userquery Read, Write
+// and Create at Basic, and the pages checked do not confirm the savedquery Global read.
+const PLATFORM_BASIC = {
+  asyncoperation: { Read: DEPTH.Basic },
+  userquery: { Create: DEPTH.Basic, Read: DEPTH.Basic, Write: DEPTH.Basic, Delete: DEPTH.Basic, Append: DEPTH.Basic, AppendTo: DEPTH.Basic, Assign: DEPTH.Basic, Share: DEPTH.Basic },
+  savedquery: { Read: DEPTH.Global },
+};
+// unverified: live capture. Everything else in PLATFORM_NOUN gets no Basic User grant: bulkdeleteoperation, bulkdeletefailure,
+// backgroundoperation, audit (its reads are the miscellaneous prvReadAuditSummary and prvReadRecordAuditHistory, administrators only),
+// the custom API tables, duplicaterule(condition), the field security tables, teamtemplate, queueitem and environmentvariablevalue
+// (organization depth for the administrators only; unverified: live capture for those depths).
+const PLATFORM_TABLES = new Set(Object.keys(PLATFORM_NOUN));
 
 function mappingFor(logical, def) {
   return {
@@ -114,6 +184,7 @@ function mappingFor(logical, def) {
     dataverseOnly: true,
     fields: Object.fromEntries(Object.entries(def.fields).map(([field, type]) => [field, { dataverseType: type }])),
     relationships: def.relationships ?? {},
+    ...(def.alternateKeys ? { alternateKeys: def.alternateKeys } : {}),
   };
 }
 
@@ -122,6 +193,10 @@ const rowsOf = (store, logical) => (store.state.tables[logical] ??= []);
 // Seeding is insert-only: an existing row is never rewritten, so administrator edits survive a re-seed.
 function insertMissing(rows, idColumn, row) {
   if (!rows.some((r) => sameId(r[idColumn], row[idColumn]))) rows.push(row);
+}
+
+function removeWhere(rows, predicate) {
+  for (let i = rows.length - 1; i >= 0; i--) if (predicate(rows[i])) rows.splice(i, 1);
 }
 
 /** The organization's base currency row, found by its id (never by position: a portal table may list other currencies first). */
@@ -236,20 +311,34 @@ export function isInteractiveUser(row) {
 /** Table list for privilege generation: mapped tables, the ten security tables and schema tables. */
 function tableInfo(store, schema) {
   const source = typeof schema === 'function' ? schema() : schema;
-  const byName = new Map((source?.tables ?? []).map((t) => [t.logicalName, t]));
+  const byName = new Map(Object.values(source?.tables ?? {}).map((t) => [t.logicalName, t]));
   const names = new Set([...Object.keys(store.state.mappings), ...Object.keys(TABLE_DEFS), ...byName.keys()]);
-  return [...names].map((logical) => ({
-    logical,
-    own: ownershipOf(logical, byName.get(logical), store.state.mappings[logical]),
-    schemaName: schemaNameOf(logical, byName.get(logical)),
-  }));
+  // Tables the standard file marks OwnershipType None (privilege, principalobjectaccess, customeraddress, ...) get no privileges.
+  // Platform tables keep theirs: the simulator's modules (custom API, team templates, audit) check them.
+  const noneOwned = (logical) => standardTableDef(logical)?.ownershipType === 'None' && !PLATFORM_TABLES.has(logical);
+  return [...names].filter((logical) => !INTERSECT_PARENT[logical] && !noneOwned(logical)).map((logical) => {
+    const mapping = store.state.mappings[logical], meta = mapping?.dataverseMetadata;
+    // A table made through the metadata API has no schema entry: its SchemaName is kept on the mapping.
+    const table = byName.get(logical) ?? (meta?.schemaName ? { schemaName: meta.schemaName } : undefined);
+    return { logical, own: ownershipOf(logical, byName.get(logical), mapping), schemaName: privilegeNounOf(logical, table, mapping), created: meta?.createdByMetadataApi === true };
+  });
 }
 
+// System Customizer sees only the rows it creates in account, contact and the activity tables (Microsoft Learn): Basic there, Global elsewhere.
+const CUSTOMIZER_BASIC = new Set(['account', 'contact']);
 /** Built-in role templates: admins Global on everything; Basic User Basic on user-owned, Global Read on org-owned. */
 function templateGrants(p) {
   if (!p.right && SYSTEM_ADMINISTRATOR_ONLY.has(p.name)) return [['System Administrator', DEPTH.Global]];
-  const admins = [['System Administrator', DEPTH.Global], ['System Customizer', DEPTH.Global]];
+  const customizer = p.right && (CUSTOMIZER_BASIC.has(p.table) || isActivityTable(p.table)) ? DEPTH.Basic : DEPTH.Global;
+  const admins = [['System Administrator', DEPTH.Global], ['System Customizer', customizer]];
   if (!p.right) return admins;
+  // unverified: a table made at run time (metadata API or Solution import) gets the admin and customizer roles only; Basic User needs a grant.
+  if (p.created) return admins;
+  if (PLATFORM_TABLES.has(p.table)) {
+    const depth = PLATFORM_BASIC[p.table]?.[p.right];
+    return depth ? [...admins, ['Basic User', depth]] : admins;
+  }
+  // unverified: live capture. Basic User depths are the heuristic of standard-tables-plan 4.3, not a documented per-table list.
   if (p.own === 'user') return [...admins, ['Basic User', DEPTH.Basic]];
   // Every share in the organization is listed here, so Basic User gets no Global Read on it.
   return p.right === 'Read' && p.table !== 'principalobjectaccess' ? [...admins, ['Basic User', DEPTH.Global]] : admins;
@@ -259,7 +348,7 @@ function templateGrants(p) {
 function tablePrivilegesOf(table) {
   return Object.keys(ACCESS_RIGHTS)
     .filter((right) => table.own === 'user' || !ORGANIZATION_EXCLUDED.has(right))
-    .map((right) => ({ right, name: privilegeName(right, table.schemaName), own: table.own, table: table.logical }));
+    .map((right) => ({ right, name: privilegeName(right, table.schemaName), own: table.own, table: table.logical, created: table.created }));
 }
 
 const roleIdsOf = (organizationId) => Object.fromEntries(ROLE_NAMES.map((role) => [role, roleIdOf(organizationId, role)]));
@@ -288,13 +377,21 @@ function grantPrivileges(store, org, privileges) {
 function seedSecurity(store, settings, schema) {
   const org = settings.organizationId, root = rootId(org), name = settings.friendlyName ?? settings.uniqueName;
   seedMappings(store);
-  insertMissing(rowsOf(store, 'organization'), 'organizationid', { organizationid: org, name, uniquename: settings.uniqueName, friendlyname: name });
+  insertMissing(rowsOf(store, 'organization'), 'organizationid', {
+    organizationid: org, name, uniquename: settings.uniqueName, friendlyname: name,
+    hierarchysecurityenabled: settings.hierarchySecurity?.enabled === true,
+    hierarchysecuritydepth: settings.hierarchySecurity?.depth ?? DEFAULT_HIERARCHY_DEPTH,
+    isauditenabled: settings.auditing === true,
+    isduplicatedetectionenabled: settings.duplicateDetection !== false,
+    localeid: settings.localeId ?? 1033,
+    languagecode: settings.localeId ?? 1033,
+  });
   insertMissing(rowsOf(store, 'businessunit'), 'businessunitid', {
     businessunitid: root, name: settings.uniqueName, parentbusinessunitid: null, organizationid: lookupRow(store, 'organization', org),
   });
   // The organization's base currency: money columns report it as _transactioncurrencyid_value.
   insertMissing(rowsOf(store, 'transactioncurrency'), 'transactioncurrencyid', {
-    transactioncurrencyid: baseCurrencyId(org), currencyname: 'Base currency', isocurrencycode: null,
+    transactioncurrencyid: baseCurrencyId(org), currencyname: 'Base currency', isocurrencycode: settings.currencyCode ?? 'USD',
     currencysymbol: settings.currencySymbol ?? '$', currencyprecision: 2, exchangerate: 1, organizationid: lookupRow(store, 'organization', org),
   });
   const roleIds = {};
@@ -307,7 +404,8 @@ function seedSecurity(store, settings, schema) {
   const privileges = GLOBAL_PRIVILEGES.map((name) => ({ right: null, name, own: null }));
   for (const table of tableInfo(store, schema)) privileges.push(...tablePrivilegesOf(table));
   grantPrivileges(store, org, privileges);
-  const systemUserId = addUser(store, org, uuidV5(org, 'systemuser:SYSTEM'), { fullname: 'SYSTEM', accessmode: ACCESS_MODE.NonInteractive }, []);
+  // SYSTEM runs internal reads that need no caller privilege (dataverse-security-messages.mjs), so it holds System Administrator.
+  const systemUserId = addUser(store, org, uuidV5(org, 'systemuser:SYSTEM'), { fullname: 'SYSTEM', accessmode: ACCESS_MODE.NonInteractive }, ['System Administrator']);
   const userIds = {};
   for (const app of settings.applications ?? []) userIds[app.appId] = applicationUser(store, settings, app);
   for (const user of settings.users ?? []) userIds[interactiveObjectId(settings, user)] = interactiveUser(store, settings, user);
@@ -327,13 +425,25 @@ export function ensureSecurityModel(store, settings, { schema } = {}) {
  * (or appear in the schema) and the security model must already be seeded.
  */
 export function seedTablePrivileges(store, settings, logical, { schema } = {}) {
-  return store.transact(() => {
-    const [table] = tableInfo(store, schema).filter((t) => t.logical === logical);
-    if (!table) throw new DataError(`${logical} is not a known table.`, 404, 'NotFound');
-    const privileges = tablePrivilegesOf(table);
-    grantPrivileges(store, settings.organizationId, privileges);
-    return privileges.map((p) => p.name);
-  });
+  return store.transact(() => grantTablePrivileges(store, settings.organizationId, logical, { schema }));
+}
+
+/** Synchronous: the caller's transaction (createTable, the Solution import) grants them, so a table is never without them. */
+export function grantTablePrivileges(store, organizationId, logical, { schema } = {}) {
+  const [table] = tableInfo(store, schema).filter((t) => t.logical === logical);
+  if (!table) throw new DataError(`${logical} is not a known table.`, 404, 'NotFound');
+  const privileges = tablePrivilegesOf(table);
+  grantPrivileges(store, organizationId, privileges);
+  return privileges.map((p) => p.name);
+}
+
+/** Removes a table's privileges and the role grants on them. Call before its mapping is deleted (the names come from the mapping). */
+export function revokeTablePrivileges(store, organizationId, logical) {
+  const [table] = tableInfo(store, undefined).filter((t) => t.logical === logical);
+  if (!table) return;
+  const ids = new Set(tablePrivilegesOf(table).map((p) => privilegeId(organizationId, p.name)));
+  removeWhere(rowsOf(store, 'roleprivileges'), (g) => ids.has(key(refId(g.privilegeid))));
+  removeWhere(rowsOf(store, 'privilege'), (p) => ids.has(key(p.privilegeid)));
 }
 
 /** Creates or updates an application user and links its roles (names or role GUIDs). Returns systemuserid. */
@@ -442,7 +552,7 @@ function buildIndex(store) {
     if (Number(t.teamtype) >= 2 && t.azureactivedirectoryobjectid) add(groupTeams, key(t.azureactivedirectoryobjectid), key(t.teamid));
   }
   for (const u of store.tableRows('systemuser')) {
-    for (const groupId of u.azureactivedirectorygroupids ?? []) {
+    for (const groupId of u.isdisabled === true ? [] : u.azureactivedirectorygroupids ?? []) {
       for (const teamId of groupTeams.get(key(groupId)) ?? []) {
         if (!(idx.teams.get(key(u.systemuserid)) ?? []).includes(teamId)) add(idx.teams, key(u.systemuserid), teamId);
       }
@@ -453,6 +563,9 @@ function buildIndex(store) {
     if (refId(b.parentbusinessunitid)) add(idx.children, key(refId(b.parentbusinessunitid)), key(b.businessunitid));
   }
   for (const s of store.tableRows('principalobjectaccess')) add(idx.shares, key(s.objectid), { principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
+  // Org settings (hierarchySecurity) live on the organization row.
+  const org = store.tableRows('organization')[0], depth = Number(org?.hierarchysecuritydepth);
+  idx.hierarchy = { enabled: org?.hierarchysecurityenabled === true, depth: Number.isInteger(depth) && depth > 0 ? depth : DEFAULT_HIERARCHY_DEPTH };
   return idx;
 }
 
@@ -490,6 +603,22 @@ function rolesOf(idx, uid) {
   return idx.roleSets.get(uid);
 }
 
+/** Adds the grants a team's own roles give (privilege name -> { id, bu, depth, teamOnly }) to `into`. Members and the team subject share it. */
+function teamGrants(idx, teamId, into) {
+  const bu = key(refId(idx.teamRows.get(teamId)?.businessunitid));
+  for (const role of idx.teamRoles.get(teamId) ?? []) {
+    // isinherited 0 (Team privileges only): the team's privileges reach team-owned rows only.
+    const teamOnly = Number(idx.roles.get(role)?.isinherited ?? 1) === 0;
+    for (const g of idx.grants.get(role) ?? []) {
+      const name = idx.privNames.get(g.privilegeId);
+      if (!name) continue;
+      if (!into.has(name)) into.set(name, []);
+      into.get(name).push({ id: teamId, bu, depth: g.mask, teamOnly });
+    }
+  }
+  return into;
+}
+
 /**
  * Privilege grants of a user, kept apart by source. direct: privilege name -> highest depth mask over the
  * user's direct roles. team: privilege name -> one entry per team grant ({ id, bu, depth }), where bu is the team's business unit.
@@ -503,19 +632,7 @@ function grantsOf(idx, uid) {
         if (name) direct.set(name, Math.max(direct.get(name) ?? 0, g.mask));
       }
     }
-    for (const teamId of teamsOf(idx, uid)) {
-      const bu = key(refId(idx.teamRows.get(teamId)?.businessunitid));
-      for (const role of idx.teamRoles.get(teamId) ?? []) {
-        // isinherited 0 (Team privileges only): the team's privileges reach team-owned rows only.
-        const teamOnly = Number(idx.roles.get(role)?.isinherited ?? 1) === 0;
-        for (const g of idx.grants.get(role) ?? []) {
-          const name = idx.privNames.get(g.privilegeId);
-          if (!name) continue;
-          if (!team.has(name)) team.set(name, []);
-          team.get(name).push({ id: teamId, bu, depth: g.mask, teamOnly });
-        }
-      }
-    }
+    for (const teamId of teamsOf(idx, uid)) teamGrants(idx, teamId, team);
     idx.grantSets.set(uid, { direct, team });
   }
   return idx.grantSets.get(uid);
@@ -582,10 +699,11 @@ function teamAdmits(idx, team, row) {
  * Each grant the user holds for one privilege, with its row test. An effective principal (impersonation) holds one grant:
  * the lower depth, admitting only rows that both the impersonated user and the caller admit.
  */
-function grantsNamed(idx, user, name) {
-  const own = ownGrantsNamed(idx, user, name);
+// `hierarchy` adds the manager-hierarchy grants; callers set it only when a row (or a row filter) is in play.
+function grantsNamed(idx, user, name, { hierarchy = false } = {}) {
+  const own = ownGrantsNamed(idx, user, name, hierarchy);
   if (!user.impersonator) return own;
-  const caller = ownGrantsNamed(idx, user.impersonator, name);
+  const caller = ownGrantsNamed(idx, user.impersonator, name, hierarchy);
   if (!own.length || !caller.length) return [];
   return [{
     depth: Math.min(deepest(own), deepest(caller)),
@@ -594,7 +712,7 @@ function grantsNamed(idx, user, name) {
   }];
 }
 
-function ownGrantsNamed(idx, user, name) {
+function ownGrantsNamed(idx, user, name, hierarchy = false) {
   const uid = key(user.systemuserid), { direct, team } = grantsOf(idx, uid), out = [];
   if (direct.has(name)) {
     const depth = direct.get(name);
@@ -603,7 +721,102 @@ function ownGrantsNamed(idx, user, name) {
   for (const grant of team.get(name) ?? []) {
     out.push({ depth: grant.depth, direct: false, admits: (row) => teamAdmits(idx, grant, row) });
   }
+  const manager = hierarchy ? managerGrant(idx, user, name) : null;
+  if (manager) out.push(manager);
   return out;
+}
+
+// Manager hierarchy (org hierarchySecurity). Read, Write, Append and AppendTo; the caller needs the user-level Read
+// privilege on the table too. Requires the same-or-parent business unit rule below.
+const MANAGER_RIGHTS = ['prvAppendTo', 'prvAppend', 'prvWrite', 'prvRead'];
+
+function managerGrant(idx, user, name) {
+  const prefix = idx.hierarchy.enabled ? MANAGER_RIGHTS.find((p) => name.startsWith(p)) : undefined;
+  if (!prefix) return null;
+  const { direct, team } = grantsOf(idx, key(user.systemuserid)), readName = `prvRead${name.slice(prefix.length)}`;
+  if (!direct.has(readName) && !team.has(readName)) return null;
+  return { depth: DEPTH.Deep, direct: false, admits: (row) => managerAdmits(idx, user, prefix, row) };
+}
+
+// Level 1 = direct report (all four rights); levels 2..depth = nondirect reports in the chain (Read only).
+function managerAdmits(idx, user, prefix, row) {
+  const manager = key(user.systemuserid), owner = key(refId(row.ownerid));
+  let level = 0;
+  for (let at = owner, n = 1; n <= idx.hierarchy.depth && at; n++) {
+    const parent = key(refId(idx.users.get(at)?.parentsystemuserid));
+    if (parent === manager) { level = n; break; }
+    at = parent;
+  }
+  if (!level || (prefix !== 'prvRead' && level !== 1)) return false;
+  // ManagersMustBeInSameOrParentBusinessUnitAsReports (default true): the report's unit is the manager's or below it.
+  return buAdmits(idx, DEPTH.Deep, key(refId(idx.users.get(owner)?.businessunitid)), key(refId(user.businessunitid)));
+}
+
+/** Business-unit-scoped hierarchy walk over `link` (a lookup column of `logical` that names the parent row). */
+function walkTree(store, logical, link, startKey, up) {
+  const idColumn = store.state.mappings[logical]?.idColumn ?? `${logical}id`;
+  const rows = store.tableRows(logical), out = new Set();
+  const parentOf = (row) => key(refId(row[link]));
+  if (up) {
+    let current = rows.find((r) => key(r[idColumn]) === startKey);
+    for (let n = 0; current && n < HIERARCHY_LIMIT; n++) {
+      const parent = parentOf(current);
+      if (!parent || out.has(parent)) break;
+      out.add(parent);
+      current = rows.find((r) => key(r[idColumn]) === parent);
+    }
+    return out;
+  }
+  let frontier = new Set(startKey ? [startKey] : []);
+  for (let level = 0; frontier.size && level < HIERARCHY_LIMIT; level++) {
+    const next = new Set();
+    for (const row of rows) {
+      const id = key(row[idColumn]);
+      if (frontier.has(parentOf(row)) && id !== startKey && !out.has(id)) { out.add(id); next.add(id); }
+    }
+    frontier = next;
+  }
+  return out;
+}
+
+// The self-referencing hierarchical relationship of a table: its parent lookup column. systemuser uses its manager column.
+function hierarchyLinkOf(store, logical) {
+  if (logical === 'systemuser') return 'parentsystemuserid';
+  // Both sides of a self relationship match: the many-to-one side (many false) holds the lookup column in from; the one-to-many side's to.
+  const rel = Object.values(relationshipsOf(store, logical)).find((r) => r.hierarchical && r.entity === logical);
+  return rel ? (rel.many === false ? rel.from : rel.to) : null;
+}
+
+/**
+ * The identity.dataverse object for the conditions layer: the caller's user id, business unit and team ids, plus
+ * hierarchy(logical, idColumn, id, mode) (null when the table has no hierarchical relationship) and userHierarchy(userId),
+ * which lists the user's reports at any level. The walk follows the table's own parent lookup, not idColumn.
+ */
+export function dataverseIdentity(store, user) {
+  return {
+    userId: user.systemuserid,
+    businessUnitId: refId(user.businessunitid) ?? null,
+    teamIds: teamsOfUser(store, user.systemuserid),
+    hierarchy(logical, idColumn, id, mode) {
+      const link = hierarchyLinkOf(store, logical);
+      if (!link) return null;
+      const startKey = key(refId(id)), set = walkTree(store, logical, link, startKey, mode === 'above' || mode === 'eq-or-above');
+      if (mode === 'eq-or-under' || mode === 'eq-or-above') set.add(startKey);
+      return set;
+    },
+    userHierarchy: (userId) => walkTree(store, 'systemuser', 'parentsystemuserid', key(userId), false),
+  };
+}
+
+/** Sets the organization's hierarchySecurity (enabled, depth). Depth is the number of levels of read-only access below a manager. */
+export function setHierarchySecurity(store, organizationId, { enabled, depth = DEFAULT_HIERARCHY_DEPTH } = {}) {
+  return store.transact(() => {
+    if (!Number.isInteger(depth) || depth < 1) throw new DataError(`Invalid hierarchy depth ${depth}.`, 400, 'InvalidRequest');
+    const row = rowOf(store, 'organization', organizationId);
+    row.hierarchysecurityenabled = enabled === true;
+    row.hierarchysecuritydepth = depth;
+    return { enabled: row.hierarchysecurityenabled, depth };
+  });
 }
 
 const deepest = (grants) => grants.reduce((max, g) => Math.max(max, g.depth), 0);
@@ -667,16 +880,109 @@ export function businessUnitOf(store, row) {
   return rowBusinessUnit(indexOf(store), row);
 }
 
+/**
+ * Just-in-time group team membership from the token's Entra group ids: a group team (security or office) whose object id is
+ * in `groupIds` gets a teammembership row, and one the user has left loses it. Owner and access memberships are never touched.
+ * A disabled user joins no group team. ponytail: membershiptype (Members, Owners, Guests) is not matched; any member type
+ * matches by object id.
+ */
+export function syncGroupMembership(store, user, groupIds = []) {
+  return store.transact(() => {
+    const uid = key(user.systemuserid), wanted = new Set(groupIds.map(key));
+    const userRow = rowOf(store, 'systemuser', uid);
+    userRow.azureactivedirectorygroupids = [...wanted];
+    const groupTeams = rowsOf(store, 'team').filter((t) => Number(t.teamtype) >= 2 && t.azureactivedirectoryobjectid);
+    const isGroupMember = (team) => userRow.isdisabled !== true && wanted.has(key(team.azureactivedirectoryobjectid));
+    const memberships = rowsOf(store, 'teammembership');
+    for (let i = memberships.length - 1; i >= 0; i--) {
+      if (!sameId(refId(memberships[i].systemuserid), uid)) continue;
+      const team = groupTeams.find((t) => sameId(t.teamid, refId(memberships[i].teamid)));
+      if (team && !isGroupMember(team)) memberships.splice(i, 1);
+    }
+    const teamIds = [];
+    for (const team of groupTeams) {
+      if (!isGroupMember(team)) continue;
+      teamIds.push(key(team.teamid));
+      insertMissing(memberships, 'teammembershipid', {
+        teammembershipid: uuidV5(team.teamid, `member:${uid}`),
+        systemuserid: lookupRow(store, 'systemuser', uid),
+        teamid: lookupRow(store, 'team', team.teamid),
+      });
+    }
+    return { systemuserid: uid, teamIds };
+  });
+}
+
+/**
+ * SetBusinessSystemUser: moves a user to a business unit. Removes the user's role assignments (the default
+ * DoNotRemoveRolesOnChangeBusinessUnit = false) and, unless doNotMoveAllRecords, moves the business unit of the records the
+ * user owns. A disabled business unit is refused (0x8004032d).
+ * ponytail: ReassignPrincipal (owned records reassigned to another principal), the root default team membership and the
+ * manager reparenting of reports are not modelled.
+ */
+export function setBusinessUnit(store, { userId, businessUnitId, doNotMoveAllRecords = false } = {}) {
+  return store.transact(() => {
+    const user = rowOf(store, 'systemuser', userId), unit = rowOf(store, 'businessunit', businessUnitId);
+    if (unit.isdisabled === true) throw new DataError('The business unit is disabled.', 400, 'InvalidRequest', { innerCode: '0x8004032d' });
+    const uid = key(user.systemuserid), unitRef = lookupRow(store, 'businessunit', unit.businessunitid);
+    const roles = rowsOf(store, 'systemuserroles');
+    for (let i = roles.length - 1; i >= 0; i--) if (sameId(refId(roles[i].systemuserid), uid)) roles.splice(i, 1);
+    if (!doNotMoveAllRecords) {
+      for (const [logical, mapping] of Object.entries(store.state.mappings)) {
+        if (ownershipOf(logical, null, mapping) !== 'user') continue;
+        for (const row of store.state.tables[logical] ?? []) if (sameId(refId(row.ownerid), uid)) row.owningbusinessunit = unitRef;
+      }
+    }
+    user.businessunitid = unitRef;
+    return { systemuserid: uid, businessUnitId: unitRef.id };
+  });
+}
+
+/**
+ * The parent row a follows-parent row belongs to, as { logical, row }: an activity party's activity (found in the activity
+ * tables by activityid, or the lookup's logical name), a customer address's account or contact (parentid, named by
+ * objecttypecode). null when the parent is not in the store.
+ */
+function parentRowOf(store, logical, row) {
+  const find = (table, id) => {
+    const idColumn = store.state.mappings[table]?.idColumn ?? standardTableDef(table)?.primaryIdAttribute ?? `${table}id`;
+    const hit = (store.state.tables[table] ?? []).find((r) => sameId(r[idColumn], id) || sameId(r.activityid, id));
+    return hit ? { logical: table, row: hit } : null;
+  };
+  if (logical === 'activityparty') {
+    const id = refId(row.activityid);
+    if (!id) return null;
+    const named = row.activityid?.logical_name;
+    const tables = named ? [named] : Object.keys(store.state.mappings).filter((t) => t !== 'activitypointer' && isActivityTable(t));
+    for (const table of tables) {
+      const hit = find(table, id);
+      if (hit) return hit;
+    }
+    return null;
+  }
+  const id = refId(row.parentid), table = row.objecttypecode ?? row.parentid?.logical_name;
+  return id && table ? find(String(table), id) : null;
+}
+
 /** Principal and privilege checks for the Dataverse layer. Read-only apart from the cached index. */
 export function createPrincipals(store, settings = {}) {
   const idx = () => indexOf(store);
   const uidOf = (user) => key(typeof user === 'string' ? user : user?.systemuserid);
+  // The privilege noun, resolved as seeding resolves it: the Solution schema (settings.schema unless the call passes one) and the store's mapping.
+  const nounFor = (logical, schema) => privilegeNounOf(logical, schemaTableOf(schema ?? settings.schema, logical), store.state.mappings[logical]);
 
   // Grants that pass the privilege check. A user-owned row is tested against each grant; org-owned rows need no row test.
-  function gate(user, entity, operation, { row, mapping, schema } = {}) {
+  function gate(user, entity, operation, { row, mapping, schema, filter = false } = {}) {
     const m = mapping ?? store.resolveMapping(entity), logical = m.logicalName, index = idx();
-    const name = privilegeName(operation, schemaNameOf(logical, schema));
-    const grants = grantsNamed(index, user, name);
+    // A follows-parent row is tested as its parent row, by the parent table's privilege. Without a parent, a customer address
+    // checks either parent's privilege at table level, so System Administrator still passes.
+    const parent = row && FOLLOWS_PARENT.has(logical) ? parentRowOf(store, logical, row) : null;
+    if (parent) return gate(user, parent.logical, operation, { row: parent.row });
+    if (operation === 'read' && PUBLIC_READ.has(logical)) return { m, grants: [], depth: DEPTH.Global };
+    const nouns = logical === 'customeraddress' ? ADDRESS_PARENTS.map((p) => privilegeNounOf(p)) : [nounFor(logical, schema)];
+    const names = nouns.map((noun) => privilegeName(operation, noun)), name = names[0];
+    const owned = ownershipOf(logical, schema, m) === 'user';
+    const grants = names.flatMap((n) => grantsNamed(index, user, n, { hierarchy: (Boolean(row) || filter) && owned }));
     if (!grants.length) throw privilegeDenied(index, settings, user, logical, name, schema);
     if (!row || ownershipOf(logical, schema, m) === 'org') return { m, grants, depth: deepest(grants) };
     const idColumn = m.idColumn ?? `${logical}id`;
@@ -688,6 +994,8 @@ export function createPrincipals(store, settings = {}) {
 
   return {
     byId: (id) => idx().users.get(key(id)) ?? null,
+    /** The privilege noun of a table as the checks name it (prvRead<noun>), the same resolution the seeding uses. */
+    privilegeNoun: (logical, schema) => nounFor(logical, schema),
     byObjectId: (oid) => idx().byOid.get(key(oid)) ?? null,
     byApplicationId: (appId) => idx().byApp.get(key(appId)) ?? null,
     byDomainName: (name) => idx().byDomain.get(key(name)) ?? null,
@@ -743,7 +1051,15 @@ export function createPrincipals(store, settings = {}) {
 
     /** null when no row filter is needed (Global direct depth or organization-owned table). */
     readFilter({ user, entity, mapping, schema } = {}) {
-      const { m, grants } = gate(user, entity, 'read', { mapping, schema });
+      const { m, grants } = gate(user, entity, 'read', { mapping, schema, filter: true });
+      if (FOLLOWS_PARENT.has(m.logicalName)) {
+        // Each row is read if its parent row is; an orphan row is shown only to a Global direct grant (administrators).
+        const canRead = (parent) => { try { gate(user, parent.logical, 'read', { row: parent.row }); return true; } catch { return false; } };
+        return (row) => {
+          const parent = parentRowOf(store, m.logicalName, row);
+          return parent ? canRead(parent) : grants.some((g) => g.direct && g.depth >= DEPTH.Global);
+        };
+      }
       if (ownershipOf(m.logicalName, schema, m) === 'org') return null;
       if (grants.some((g) => g.direct && g.depth >= DEPTH.Global)) return null;
       const index = idx(), uid = uidOf(user), idColumn = m.idColumn ?? `${m.logicalName}id`;
@@ -812,11 +1128,30 @@ export function createPrincipals(store, settings = {}) {
       const index = idx(), m = mapping ?? store.resolveMapping(entity), owned = ownershipOf(m.logicalName, schema, m) === 'user', flags = [];
       const idColumn = m.idColumn ?? `${m.logicalName}id`, uid = uidOf(user);
       for (const right of Object.keys(ACCESS_RIGHTS)) {
-        const grants = grantsNamed(index, user, privilegeName(right, schemaNameOf(m.logicalName, schema)));
+        const grants = grantsNamed(index, user, privilegeName(right, nounFor(m.logicalName, schema)), { hierarchy: Boolean(row) && owned });
         if (!grants.length) continue;
         if (right === 'Create' || !row || !owned || grants.some((g) => g.admits(row)) || sharedWith(index, uid, row, idColumn, right)) flags.push(`${right}Access`);
       }
       return flags.length ? flags.join(', ') : 'None';
+    },
+
+    /** Team subject: the team's own roles (teamroles, team depth) and shares to the team. No membership, no manager hierarchy. */
+    teamAccess({ team, entity, row, mapping, schema } = {}) {
+      const index = idx(), m = mapping ?? store.resolveMapping(entity), owned = ownershipOf(m.logicalName, schema, m) === 'user', flags = [];
+      const idColumn = m.idColumn ?? `${m.logicalName}id`, teamId = key(team.teamid), grants = teamGrants(index, teamId, new Map());
+      for (const right of Object.keys(ACCESS_RIGHTS)) {
+        const list = grants.get(privilegeName(right, nounFor(m.logicalName, schema))) ?? [];
+        if (!list.length) continue;
+        if (right === 'Create' || !row || !owned || list.some((g) => teamAdmits(index, g, row)) || sharedWith(index, teamId, row, idColumn, right)) flags.push(`${right}Access`);
+      }
+      return flags.length ? flags.join(', ') : 'None';
+    },
+
+    /** Organization subject: every right but Assign and Share on organization-owned tables and rows; nothing on user-owned ones. */
+    organizationAccess({ entity, mapping, schema } = {}) {
+      const m = mapping ?? store.resolveMapping(entity);
+      if (ownershipOf(m.logicalName, schema, m) !== 'org') return 'None';
+      return Object.keys(ACCESS_RIGHTS).filter((right) => !ORGANIZATION_EXCLUDED.has(right)).map((right) => `${right}Access`).join(', ');
     },
   };
 }

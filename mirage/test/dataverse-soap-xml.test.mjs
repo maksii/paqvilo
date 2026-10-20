@@ -46,7 +46,7 @@ const VALUES = [
   { type: "EntityReference", logicalName: "widget", id: GUID, name: "Blue", keyAttributes: new Map([["code", text("W-1")]]) },
   { type: "EntityReference", logicalName: "widget", id: GUID, name: null, keyAttributes: new Map() },
   { type: "OptionSetValue", value: 2 },
-  { type: "Money", value: "99.90" },
+  { type: "Money", value: "99.9000" }, // four-digit exact scale on the wire and after decode
   { type: "OptionSetValueCollection", values: [1, 3] },
   { type: "AliasedValue", attribute: "name", entity: "widget", value: text("Blue") },
   { type: "Relationship", schemaName: "widget_gadgets", primaryEntityRole: "Referenced" },
@@ -54,7 +54,7 @@ const VALUES = [
     type: "Entity",
     logicalName: "widget",
     id: GUID,
-    attributes: new Map([["name", text("Blue")], ["price", { type: "Money", value: "5.00" }]]),
+    attributes: new Map([["name", text("Blue")], ["price", { type: "Money", value: "5.0000" }]]),
     formattedValues: new Map([["price", "$5.00"]]),
     keyAttributes: new Map([["code", text("W-1")]]),
     relatedEntities: null,
@@ -319,6 +319,41 @@ test("untyped a:Value decodes OptionSetValue and its collection as int, and Mone
   );
   assert.deepStrictEqual(sdkValue(`<v ${head} i:type="a:Money"><a:Value>12.50</a:Value></v>`), { type: "Money", value: "12.50" });
   assert.equal(encodeValue("v", { type: "OptionSetValue", value: 2 }), '<v i:type="a:OptionSetValue"><a:Value>2</a:Value></v>');
+});
+
+test("Money encodes an exact four-digit decimal in a typed c:decimal Value, rounding beyond four digits", () => {
+  assert.equal(encodeValue("v", { type: "Money", value: 12.5 }), '<v i:type="a:Money"><a:Value i:type="c:decimal">12.5000</a:Value></v>');
+  assert.equal(encodeValue("v", { type: "Money", value: "0.123456" }), '<v i:type="a:Money"><a:Value i:type="c:decimal">0.1235</a:Value></v>');
+  assert.equal(encodeValue("v", { type: "Money", value: null }), '<v i:nil="true"/>');
+});
+
+test("an invalid Date is a 400 DataError with the invalid-argument code, not a RangeError", () => {
+  assert.throws(
+    () => encodeValue("v", { type: "dateTime", value: new Date(Number.NaN) }),
+    (error) => error instanceof DataError && error.status === 400 && error.details?.innerCode === "0x80040203",
+  );
+});
+
+test("an ExecuteTransactionFault is an OrganizationServiceFault element typed by i:type, its prefixes declared on that element", () => {
+  // WCF reads FaultException<OrganizationServiceFault> from the detail element; a root named ExecuteTransactionFault is not that contract.
+  const xml = fault({ errorCode: -2147220969, message: "failed", timestamp: "2026-10-19T08:30:00Z", faultedRequestIndex: 2 });
+  assert.match(xml, /<OrganizationServiceFault xmlns="http:\/\/schemas\.microsoft\.com\/xrm\/2011\/Contracts" xmlns:i="[^"]+" xmlns:o="http:\/\/schemas\.microsoft\.com\/xrm\/7\.1\/Contracts" i:type="o:ExecuteTransactionFault">/);
+  const serviceFault = byName(byName(parseEnvelope(xml).request, "detail"), "OrganizationServiceFault");
+  assert.equal(serviceFault.ns, NS.a);
+  assert.equal(serviceFault.attrs.find((a) => a.name === "type").value, "o:ExecuteTransactionFault");
+  assert.equal(byName(serviceFault, "ErrorCode").ns, NS.a);
+  assert.equal(byName(serviceFault, "ErrorCode").text, "-2147220969");
+  // Base members (xrm/2011) come first; FaultedRequestIndex, the derived member, is last and in xrm/7.1.
+  assert.equal(serviceFault.children.at(-1).name, "FaultedRequestIndex");
+  assert.equal(serviceFault.children.at(-1).ns, NS.o);
+  assert.equal(serviceFault.children.at(-1).text, "2");
+});
+
+test("a plain OrganizationServiceFault has no i:type and no FaultedRequestIndex", () => {
+  const xml = fault({ errorCode: -2147220969, message: "failed", timestamp: "2026-10-19T08:30:00Z" });
+  assert.doesNotMatch(xml, /i:type=/);
+  assert.doesNotMatch(xml, /FaultedRequestIndex/);
+  assert.match(xml, /<OrganizationServiceFault xmlns="http:\/\/schemas\.microsoft\.com\/xrm\/2011\/Contracts" xmlns:i="[^"]+">/);
 });
 
 test("an out-of-range character reference is a 400 DataError, not a RangeError", () => {

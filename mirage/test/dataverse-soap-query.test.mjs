@@ -5,6 +5,7 @@ import assert from "node:assert/strict";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { DataError } from "../lib/data-error.mjs";
 import { fromBulkDeleteJson, fromQueryByAttribute, toFetchXml } from "../lib/dataverse-soap-query.mjs";
+import { modelOf } from "../lib/dataverse-misc-messages.mjs";
 
 const text = { dataverseType: "nvarchar" };
 
@@ -185,14 +186,47 @@ test("BulkDelete QuerySet keys outside the supported set are refused, not droppe
   assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", Criteria: {}, Surprise: 1 }), (error) => error instanceof DataError && error.status === 400);
 });
 
-test("BulkDelete DataSource other than default is refused as not simulated", () => {
-  assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", DataSource: "default" })), '<fetch><entity name="widget"></entity></fetch>');
-  assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", DataSource: "retained" }), (error) => {
-    assert.ok(error instanceof DataError);
-    assert.equal(error.status, 501);
-    assert.equal(error.code, "NotImplemented");
-    return true;
-  });
+test("DataSource renders the datasource attribute", () => {
+  assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", DataSource: "default" })), '<fetch datasource="default"><entity name="widget"></entity></fetch>');
+  assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", DataSource: "bin" })), '<fetch datasource="bin"><entity name="widget"></entity></fetch>');
+  assert.equal(toFetchXml(fromQueryByAttribute({ entityName: "widget", attributes: ["name"], values: ["x"], columnSet: { allColumns: true }, dataSource: "retained" })), '<fetch datasource="retained"><entity name="widget"><all-attributes/><filter type="and"><condition attribute="name" operator="eq" value="x"/></filter></entity></fetch>');
+});
+
+test("a native {Type, Value} and a plain scalar in Values render the same condition", () => {
+  const typed = fromBulkDeleteJson({ EntityName: "widget", Criteria: { Conditions: [{ AttributeName: "status", Operator: "Equal", Values: [{ Type: "System.Int32", Value: 2 }] }] } });
+  const plain = fromBulkDeleteJson({ EntityName: "widget", Criteria: { Conditions: [{ AttributeName: "status", Operator: "Equal", Values: [2] }] } });
+  assert.equal(toFetchXml(typed), toFetchXml(plain));
+  assert.equal(toFetchXml(typed), '<fetch><entity name="widget"><filter type="and"><condition attribute="status" operator="eq" value="2"/></filter></entity></fetch>');
+  const inList = fromBulkDeleteJson({ EntityName: "widget", Criteria: { Conditions: [{ AttributeName: "name", Operator: "In", Values: [{ Type: "System.String", Value: "a" }, "b"] }] } });
+  assert.equal(toFetchXml(inList), '<fetch><entity name="widget"><filter type="and"><condition attribute="name" operator="in"><value>a</value><value>b</value></condition></filter></entity></fetch>');
+});
+
+test("CompareColumns in a BulkDelete condition renders valueof and matches the column pair", async () => {
+  const model = fromBulkDeleteJson({ EntityName: "widget", Criteria: { Conditions: [{ AttributeName: "price", Operator: "GreaterThan", CompareColumns: true, Values: [{ Type: "System.String", Value: "status" }] }] } });
+  assert.equal(toFetchXml(model), '<fetch><entity name="widget"><filter type="and"><condition attribute="price" operator="gt" valueof="status"/></filter></entity></fetch>');
+  const store = await new DataStore({ state: fixtureState() }).init();
+  // price > status: Redmond (10 > 1), Old Bellevue (7 > 1) and Seattle (3 > 2) match; Redmond East has a null status and does not.
+  assert.deepEqual(store.fetchXml(toFetchXml(model), { admin: true }).entities.map((row) => row.name).sort(), ["Old Bellevue", "Redmond", "Seattle"]);
+});
+
+test("BulkDelete accepts QueryHints as options and ignores ForceSeek", async () => {
+  const store = await new DataStore({ state: fixtureState() }).init();
+  const model = fromBulkDeleteJson({ EntityName: "widget", QueryHints: "FAST", ForceSeek: true, Criteria: {} });
+  assert.equal(toFetchXml(model), '<fetch options="FAST"><entity name="widget"></entity></fetch>');
+  assert.equal(store.fetchXml(toFetchXml(model), { admin: true }).entities.length, 4);
+});
+
+test("AnyAllFilterLinkEntity is refused, not dropped; FilterHint and IsQuickFindFilter are accepted", () => {
+  const refused = (criteria) => assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", Criteria: criteria }), (error) => error instanceof DataError && error.status === 400 && error.details.innerCode === "0x80040203");
+  refused({ AnyAllFilterLinkEntity: { EntityName: "gadget" }, Conditions: [] });
+  refused({ Filters: [{ AnyAllFilterLinkEntity: {}, Conditions: [] }] });
+  assert.throws(() => fromBulkDeleteJson({ EntityName: "widget", LinkEntities: [{ LinkToEntityName: "gadget", LinkCriteria: { AnyAllFilterLinkEntity: {} } }] }), (error) => error instanceof DataError && error.status === 400);
+  assert.equal(toFetchXml(fromBulkDeleteJson({ EntityName: "widget", Criteria: { FilterHint: "x", IsQuickFindFilter: false, AnyAllFilterLinkEntity: null, Conditions: [] } })), '<fetch><entity name="widget"></entity></fetch>');
+});
+
+test("misc-messages modelOf with {Type, Value} keeps the value", () => {
+  const json = { EntityName: "widget", Criteria: { FilterOperator: "And", Conditions: [{ AttributeName: "status", Operator: "Equal", Values: [{ Type: "System.Int32", Value: 2 }] }], Filters: [] } };
+  assert.equal(toFetchXml(modelOf(json)), '<fetch><entity name="widget"><filter type="and"><condition attribute="status" operator="eq" value="2"/></filter></entity></fetch>');
 });
 
 test("BulkDelete condition EntityName is kept on the FetchXML condition", () => {

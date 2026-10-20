@@ -83,6 +83,18 @@ test("user hierarchy functions add the caller's reporting users and teams", () =
   assert.equal(withTeams(row({ ownerid: ID(9) })), false);
 });
 
+test("EqualUserAuthContext matches nothing on the Dataverse path and is unsupported on the portal path", () => {
+  const expression = "Microsoft.Dynamics.CRM.EqualUserAuthContext(PropertyName='name')";
+  assert.equal(predicateFor(expression)(row({ name: "anything" })), false);
+  assert.equal(predicateFor(expression)(row({ name: null })), false);
+  assert.throws(
+    () => predicateFor(expression, { identity: {} })(row({ name: "anything" })),
+    (error) =>
+      error.code === "UnsupportedQuery" &&
+      error.message === "FetchXML operator eq-userauthcontext is not supported locally: the portal application user's authentication contexts are not modelled.",
+  );
+});
+
 test("hierarchy functions pass the table, column, record and mode to the router lookup", () => {
   calls.length = 0;
   const cases = [

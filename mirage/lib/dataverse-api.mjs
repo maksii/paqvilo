@@ -1,17 +1,39 @@
-// Dataverse HTTP listeners: STS, discovery, SOAP stub and the Web API router.
+// Dataverse HTTP listeners: STS, discovery, SOAP and the Web API router.
 // Table rows are delegated to dataverse-records.mjs; metadata to dataverse-metadata.mjs.
+// Order in the router: managed identity, STS, Prefer, extension routes (bearer first), discovery, SOAP, then the Web API.
 import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { gzipSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
 import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
 import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
 import { createChangeLog } from "./dataverse-changes.mjs";
-import { createPrincipals, ensureSecurityModel, grantAccess, modifyAccess, parseAccessMask, privilegeId, revokeAccess, uuidV5 } from "./dataverse-security.mjs";
+import {
+  createPrincipals,
+  dataverseIdentity,
+  ensureSecurityModel,
+  grantAccess,
+  modifyAccess,
+  parseAccessMask,
+  privilegeId,
+  revokeAccess,
+  syncGroupMembership,
+  uuidV5,
+} from "./dataverse-security.mjs";
 import { createMetadataService, objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
+import { standardGlobalOptionSets } from "./dataverse-standard.mjs";
 import { EXTENSIONS } from "./dataverse-extensions.mjs";
+import { runInBackground } from "./dataverse-async.mjs";
+import { seedManagedIdentityRows } from "./dataverse-managed-identity.mjs";
+import { AUDIT_ACTION, writeAudit } from "./dataverse-audit.mjs";
 import { createOperationRegistry } from "./dataverse-operations.mjs";
+import { createServiceProtection } from "./dataverse-limits.mjs";
+import { createDiscovery } from "./dataverse-discovery.mjs";
+import { handleSoap } from "./dataverse-soap.mjs";
+import { startDataverseTds } from "./dataverse-tds.mjs";
+import { fieldsWithStandard } from "./dataverse-standard.mjs";
 import {
   JSON_CONTENT_TYPE,
   baseHeaders,
@@ -43,18 +65,24 @@ const CORS = {
   "Access-Control-Allow-Methods": "GET,POST,PATCH,PUT,DELETE,OPTIONS",
   "Access-Control-Expose-Headers": "OData-EntityId, ETag, Preference-Applied, x-ms-service-request-id, REQ_ID, Retry-After, x-ms-dop-hint, Location",
 };
-const SOAP_FAULT =
-  '<?xml version="1.0" encoding="utf-8"?><s:Envelope xmlns:s="http://schemas.xmlsoap.org/soap/envelope/"><s:Body><s:Fault>' +
-  "<faultcode>s:Receiver</faultcode>" +
-  "<faultstring>SOAP organization service is not simulated; use the Web API at /api/data/v9.2/.</faultstring>" +
-  "</s:Fault></s:Body></s:Envelope>";
+// The SOAP endpoint with or without /web (SDKClientVersion is a query parameter and never part of the pathname).
+const SOAP_ROUTE = /^\/XRMServices\/2011\/Organization\.svc(?:\/web)?\/?$/i;
+// Global Discovery Instances and $metadata under any vN.N (the service document is matched before this).
+const DISCOVERY_ROUTE = /^\/api\/discovery\/v\d+\.\d+\/(?:\$metadata|Instances(?:\(.*\))?)\/?$/;
 const METHODS = new Set(["GET", "HEAD", "POST", "PATCH", "PUT", "DELETE"]);
+const ODATA_VERSIONS = new Set(["4.0", "4.01"]);
 const BODY_METHODS = new Set(["POST", "PATCH", "PUT"]);
 const ROUTER_BOUND = new Set(["RetrieveUserPrivileges", "RetrievePrincipalAccess"]);
 const SHARE_ACTIONS = { GrantAccess: grantAccess, ModifyAccess: modifyAccess, RevokeAccess: revokeAccess };
+// The audit action each share change writes (Action option set: Share 14, Modify Share 48, Unshare 49).
+const SHARE_AUDIT = { GrantAccess: AUDIT_ACTION.share, ModifyAccess: AUDIT_ACTION.modifyShare, RevokeAccess: AUDIT_ACTION.unshare };
 const CRM_TYPE = /^Microsoft\.Dynamics\.CRM\.([A-Za-z_]\w*)$/;
-const BODY_LIMIT = 8 * 1024 * 1024;
-const WINDOW_MS = 300000;
+// Dataverse's request message limit (128 MB); a larger body answers 413 0x8004418a.
+const BODY_LIMIT = 128 * 1024 * 1024;
+// prvBypassCustomPlugins and prvBypassCustomBusinessLogic are distinct privileges, both held by System Administrator only
+// (dataverse-security.mjs), so this role check matches exactly the holders of either.
+const BYPASS_ROLES = new Set(["System Administrator"]);
+const GUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RING_SIZE = 500;
 // Header block limit for both listeners; a URL up to MAX_URL_LENGTH must fit in it.
 const MAX_HEADER_SIZE = 65536;
@@ -62,9 +90,6 @@ const MAX_URL_LENGTH = 32768;
 const PLAIN_INVALID_URL = "Bad Request - Invalid URL";
 // The other MSCRM headers (SuppressDuplicateDetection, SolutionUniqueName, MergeLabels) and Consistency are accepted no-ops:
 // the simulator has no duplicate detection, solution layers or consistency levels.
-// prvBypassCustomPlugins and prvBypassCustomBusinessLogic are distinct privileges, both held by System Administrator only
-// (dataverse-security.mjs), so this role check matches exactly the holders of either.
-const BYPASS_ROLES = new Set(["System Administrator"]);
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ["localhost", "127.0.0.1", "[::1]"];
 // Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
@@ -105,19 +130,20 @@ function hostAllowed(value, names) {
   }
 }
 
+// The received bytes, unchanged; callers decode only the bodies they parse as text.
 async function readBody(req) {
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
-    if (size > BODY_LIMIT) throw new DataError("Request body is too large.", 413, "PayloadTooLarge");
+    if (size > BODY_LIMIT) throw new DataError("Request message length is too large.", 413, "PayloadTooLarge", { innerCode: "0x8004418a" });
     chunks.push(chunk);
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return Buffer.concat(chunks);
 }
 
 async function readForm(req) {
-  const raw = await readBody(req);
+  const raw = (await readBody(req)).toString("utf8");
   if (/json/i.test(req.headers["content-type"] ?? "")) {
     try {
       return JSON.parse(raw || "{}");
@@ -167,10 +193,18 @@ function remember(requests, entry) {
   if (requests.length > RING_SIZE) requests.splice(0, requests.length - RING_SIZE);
 }
 
+// CORS headers answer cross-origin callers only: an Origin other than this server's own, and every preflight.
+const wantsCors = (req, origin) =>
+  req.headers.origin !== undefined &&
+  (String(req.headers.origin).toLowerCase() !== origin.toLowerCase() ||
+    (req.method === "OPTIONS" && req.headers["access-control-request-method"] !== undefined));
+const acceptsGzip = (req) => /gzip/i.test(String(req.headers["accept-encoding"] ?? ""));
+
 // Every write to res happens here; a throw (for example ERR_INVALID_CHAR from a header value) is the caller's to answer.
-function send(res, result, requestId, clientRequestId) {
+// The fallback answer passes no options: no CORS and no gzip.
+function send(res, result, requestId, clientRequestId, { cors = false, gzip = false } = {}) {
   const merged = {
-    ...CORS,
+    ...(cors ? CORS : {}),
     ...baseHeaders(requestId),
     ...(clientRequestId ? { "x-ms-client-request-id": clientRequestId } : {}),
     ...(result.headers ?? {}),
@@ -183,10 +217,21 @@ function send(res, result, requestId, clientRequestId) {
     const text = typeof body === "string";
     const binary = Buffer.isBuffer(body);
     payload = text || binary ? body : stringifyExactJson(orderAnnotations(body));
-    headers["content-type"] ??= text ? "text/plain; charset=utf-8" : binary ? "application/octet-stream" : JSON_CONTENT_TYPE;
+    headers["content-type"] ??= text ? "text/plain" : binary ? "application/octet-stream" : JSON_CONTENT_TYPE;
   }
+  const status = result.status ?? 200;
+  // observed: parity cases, every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
+  if (status === 200 && gzip && payload !== undefined && headers["content-type"] !== "application/octet-stream") {
+    payload = gzipSync(payload);
+    headers["content-encoding"] = "gzip";
+    headers.vary = "Accept-Encoding";
+  }
+  // Every native success carries nosniff; errors get it from dataverseError, which knows the engine-versus-route split.
+  if (status < 400) headers["x-content-type-options"] ??= "nosniff";
+  // Every native 204 (image and file ones included) is answered as an empty text/html response.
+  if (status === 204) headers["content-type"] ??= "text/html; charset=utf-8";
   for (const [name, value] of Object.entries(headers)) res.setHeader(name, value);
-  res.statusCode = result.status ?? 200;
+  res.statusCode = status;
   res.end(payload);
 }
 
@@ -256,44 +301,57 @@ function discoveryService(c) {
   };
 }
 
-function discoveryInstances(d, c, route) {
+// The caller's Global Discovery instance; State is Int32 (0 = Enabled) as the discovery CSDL types it.
+const discoveryInstance = (d, origin) => ({
+  Id: d.organizationId,
+  UniqueName: d.settings.uniqueName,
+  UrlName: d.settings.uniqueName,
+  FriendlyName: d.settings.friendlyName,
+  State: 0,
+  Version: d.settings.version,
+  Url: origin,
+  ApiUrl: origin,
+  LastUpdated: new Date(d.clock()).toISOString(),
+  Region: "NA",
+  TenantId: d.tenantId,
+  EnvironmentId: d.environmentId,
+  DatacenterId: ZERO_GUID,
+  TrialExpirationDate: "9999-12-31T23:59:59.9999999Z",
+  SchemaType: "Standard",
+});
+
+// Instances needs a bearer (a globaldisco-audience token is accepted too); $metadata is public. The pure handler does the rest.
+function discoveryCall(d, c) {
   if (c.method !== "GET") return methodNotAllowed(c);
   const { req, origin } = c;
-  let verdict = d.authority.verifyBearer(req.headers.authorization, { origin, tenantId: d.tenantId });
-  // Discovery callers may present a globaldisco-audience token; verifyBearer also checks the issuer against the origin it is given.
-  if (!verdict.ok && verdict.reason !== "missing") verdict = d.authority.verifyBearer(req.headers.authorization, { origin: GLOBAL_DISCO, tenantId: d.tenantId });
-  if (!verdict.ok) throw unauthorized(verdict);
-  c.meta.appId = verdict.claims.appid ?? null;
-  const instance = {
-    Id: d.organizationId,
-    UniqueName: d.settings.uniqueName,
-    UrlName: d.settings.uniqueName,
-    FriendlyName: d.settings.friendlyName,
-    State: "Enabled",
-    Version: d.settings.version,
-    Url: origin,
-    ApiUrl: origin,
-    LastUpdated: new Date(d.clock()).toISOString(),
-    Region: "NA",
-    OrganizationType: "Default",
-    TenantId: d.tenantId,
-    EnvironmentId: d.environmentId,
-    DatacenterId: ZERO_GUID,
-    Geo: "NA",
-    Purpose: null,
-    StatusMessage: null,
-    TrialExpirationDate: "9999-12-31T23:59:59.9999999Z",
-    SchemaType: "Standard",
-  };
-  const key = route.key;
-  const wanted = key == null || [instance.Id, instance.UniqueName].some((value) => key.toLowerCase().includes(String(value).toLowerCase()));
-  return { status: 200, body: { "@odata.context": `${origin}/api/discovery/v2.0/$metadata#Instances`, value: wanted ? [instance] : [] } };
+  if (!/\$metadata\/?$/.test(c.url.pathname)) {
+    let verdict = d.authority.verifyBearer(req.headers.authorization, { origin, tenantId: d.tenantId });
+    // verifyBearer also checks the issuer against the origin it is given, so a discovery token needs the global origin.
+    if (!verdict.ok && verdict.reason !== "missing") verdict = d.authority.verifyBearer(req.headers.authorization, { origin: GLOBAL_DISCO, tenantId: d.tenantId });
+    if (!verdict.ok) throw unauthorized(verdict);
+    c.meta.appId = verdict.claims.appid ?? null;
+  }
+  return createDiscovery({ instance: () => discoveryInstance(d, origin) }).handle({ pathname: c.url.pathname, searchParams: c.url.searchParams, origin });
 }
 
 function soap(c) {
-  if (c.req.method === "POST") return { status: 500, headers: { "content-type": "text/xml; charset=utf-8" }, body: SOAP_FAULT };
   if (c.req.method === "GET") throw unauthorized({ reason: "missing" });
   return methodNotAllowed(c);
+}
+
+// SOAP POST: the bearer check first, then handleSoap (which answers its own faults). A 401 names the authority and resource for SOAP clients.
+async function soapCall(d, c) {
+  if (c.method !== "POST") return soap(c);
+  try {
+    return await authenticated(d, c, ({ user, caller, identity, bodyBuffer }) =>
+      handleSoap({ method: c.method, headers: c.req.headers, bodyBuffer, user, caller, identity, origin: c.origin, version: "v9.2", requestId: c.requestId }, d.api),
+    );
+  } catch (error) {
+    if (error?.code !== "Unauthorized") throw error;
+    const result = dataverseError(error, { origin: c.origin, tenantId: d.tenantId, requestId: c.requestId });
+    result.headers["WWW-Authenticate"] = `Bearer authorization_uri="${c.origin}/${d.tenantId}", resource_id="${c.origin}"`;
+    return result;
+  }
 }
 
 function listParamTotals(d, c, route, common) {
@@ -347,15 +405,19 @@ function unboundFunction(d, c, route, common) {
       return { status: 200, body: listParamTotals(d, c, route, common) };
     case "RetrieveMetadataChanges":
       return { status: 200, body: metadataChanges(d, c, route) };
+    // Not a function: the name is read as an entity set (empty parentheses included), so an unknown one is the segment error.
     default:
-      return notFound(c);
+      return recordCall(d, { version: route.version, kind: "collection", set: route.name }, common);
   }
 }
 
-// RetrieveMetadataChanges(Query=@p1, ClientVersionStamp=@p2, DeletedMetadataFilters=@p3). The deleted-metadata filters are ignored.
+// RetrieveMetadataChanges(Query=@p1, ClientVersionStamp=@p2, DeletedMetadataFilters=@p3).
 function metadataChanges(d, c, route) {
   const params = parseFunctionParameters(route.params, c.url.searchParams);
-  const changes = d.metadata.retrieveMetadataChanges(params.Query ?? null, { clientVersionStamp: params.ClientVersionStamp ?? null });
+  const changes = d.metadata.retrieveMetadataChanges(params.Query ?? null, {
+    clientVersionStamp: params.ClientVersionStamp ?? null,
+    deletedMetadataFilters: params.DeletedMetadataFilters ?? null,
+  });
   return { "@odata.context": contextUrl(c.origin, route.version, "Microsoft.Dynamics.CRM.RetrieveMetadataChangesResponse"), ...changes };
 }
 
@@ -367,20 +429,32 @@ function principalAccess(d, c, route, subjectId, common) {
   const rowId = parseKey(target.key)?.id ?? target.key;
   const row = d.store.get(logical, rowId, common.identity);
   if (!row) throw new DataError(`${logical} With Id = ${rowId} Does Not Exist`, 404, "NotFound", { id: rowId });
-  const subject = d.principals.byId(subjectId);
-  if (!subject) throw new DataError(`systemuser With Id = ${subjectId} Does Not Exist`, 404, "NotFound", { id: subjectId });
+  let AccessRights;
+  if (route.set === "systemusers") {
+    const subject = d.principals.byId(subjectId);
+    if (!subject) throw new DataError(`systemuser With Id = ${subjectId} Does Not Exist`, 404, "NotFound", { id: subjectId });
+    AccessRights = d.principals.principalAccess({ user: subject, entity: logical, row });
+  } else if (route.set === "teams") {
+    const team = d.store.get("team", subjectId, common.identity);
+    if (!team) throw new DataError(`team With Id = ${subjectId} Does Not Exist`, 404, "NotFound", { id: subjectId });
+    AccessRights = d.principals.teamAccess({ team, entity: logical, row });
+  } else {
+    AccessRights = d.principals.organizationAccess({ entity: logical });
+  }
   return {
     status: 200,
     body: {
       "@odata.context": contextUrl(c.origin, route.version, "Microsoft.Dynamics.CRM.RetrievePrincipalAccessResponse"),
-      AccessRights: d.principals.principalAccess({ user: subject, entity: logical, row }),
+      AccessRights,
     },
   };
 }
 
 function boundFunction(d, c, route, common) {
   if (c.method !== "GET") return notFound(c);
-  if (route.set !== "systemusers" || !route.key) throw notImplementedFeature(route.name);
+  // RetrievePrincipalAccess is bound to systemuser, team and organization; RetrieveUserPrivileges to systemuser only.
+  const subjectSets = route.name === "RetrievePrincipalAccess" ? ["systemusers", "teams", "organizations"] : ["systemusers"];
+  if (!subjectSets.includes(route.set) || !route.key) throw notImplementedFeature(route.name);
   const subjectId = parseKey(route.key)?.id ?? route.key;
   if (route.name === "RetrieveUserPrivileges") {
     return {
@@ -407,7 +481,9 @@ function entityParameter(d, value) {
   } catch {
     throw invalidArgument();
   }
-  const id = parseKey(value[mapping.idColumn])?.id;
+  // ownerid is the primary key of systemuser and team as well (EntityType inheritance), so it is accepted for those two.
+  const raw = value[mapping.idColumn] ?? (["systemuser", "team"].includes(mapping.logicalName) ? value.ownerid : undefined);
+  const id = parseKey(raw)?.id;
   if (!id) throw invalidArgument();
   return { logical: mapping.logicalName, mapping, id };
 }
@@ -425,7 +501,11 @@ async function shareAction(d, c, route, common) {
   if (!["systemuser", "team"].includes(principal.logical) || !d.store.get(principal.logical, principal.id, common.identity)) throw invalidArgument();
   const share = { target: { logical: target.logical, id: target.id }, principal: { id: principal.id, logical_name: principal.logical } };
   if (route.name !== "RevokeAccess") share.mask = parseAccessMask(body.PrincipalAccess?.AccessMask);
-  const run = () => SHARE_ACTIONS[route.name](d.store, share);
+  // The audit row joins the share's transaction, so a rolled-back share takes its row with it.
+  const run = async () => {
+    await SHARE_ACTIONS[route.name](d.store, share);
+    await writeAudit(d.api, { entity: target.logical, id: target.id, action: SHARE_AUDIT[route.name], identity: common.identity });
+  };
   // Inside a $batch the batch already holds the change slot (see inBatch); a nested change call would wait on itself.
   await (inBatch.getStore() ? run() : d.change(run));
   return { status: 204 };
@@ -451,21 +531,25 @@ function metadataRead(c, metadata, route) {
   const collection = (items, suffix) => ({ status: 200, body: { "@odata.context": context(suffix), value: items } });
   const single = (item, suffix) => ({ status: 200, body: { "@odata.context": context(suffix), ...item } });
   const missing = (segmentName) => {
-    throw new DataError(`Resource not found for the segment '${segmentName}'.`, 404, "UnknownEntity", { segment: segmentName });
+    throw new DataError(`Resource not found for the segment '${segmentName}'.`, 404, "UnknownEntity", { segment: segmentName, route: true });
   };
   const shape = (items) => metadata.filterMetadata(items, filter).map((item) => metadata.selectMetadata(item, select));
   const listed = (items, segmentName) => shape(items ?? missing(segmentName));
+  // Native writes the key as requested without its LogicalName= name, and the $select inside the set's parentheses.
+  const keyedContext = (path, key) => `${path}(${key.replace(/^LogicalName=/i, "")})`;
+  const selectContext = (select) => (select ? `(${select})` : "");
 
   if (set === "GlobalOptionSetDefinitions") {
     if (c.url.searchParams.has("$filter")) throw new DataError("The $filter query option is not supported for GlobalOptionSetDefinitions.", 400, "InvalidRequest");
     if (key == null) return collection(shape(metadata.globalOptionSets()), set);
     const name = /^Name=['"]?([^'")]+)/i.exec(key)?.[1];
     const found = name ? metadata.globalOptionSet(name) : null;
-    return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
+    // observed: parity case metadata.choices (the option set is typed OptionSetMetadata).
+    return found ? single(metadata.selectMetadata(found, select), `${set}/Microsoft.Dynamics.CRM.OptionSetMetadata/$entity`) : missing(set);
   }
   if (set === "RelationshipDefinitions") {
     if (key == null) return collection(shape(metadata.relationships({ cast })), set);
-    const found = metadata.relationship(key);
+    const found = metadata.relationship(key, { cast });
     return found ? single(metadata.selectMetadata(found, select), `${set}/$entity`) : missing(set);
   }
   if (key == null) {
@@ -474,17 +558,32 @@ function metadataRead(c, metadata, route) {
     return collection(shape(entities), select ? `${set}(${select})` : set);
   }
   const entity = metadata.entity(key, { expand });
+  if (!entity && set === "EntityDefinitions" && !segment) {
+    // Native names the metadata id it looked for, under 0x80060888 (not the segment error).
+    throw new DataError(`EntityMetadata With Id = ${key} does not exist.`, 404, "NotFound", { httpStatus: 404, innerCode: "0x80060888" });
+  }
   if (!entity) return missing(set);
-  if (!segment) return single(metadata.selectMetadata(entity, select), `${set}/$entity`);
+  if (!segment) {
+    // observed: parity cases metadata.table and metadata.relationships ($expand navigations are written as name()).
+    const names = [...(select ? [select] : []), ...expand.map((name) => `${name}()`)];
+    return single(metadata.selectMetadata(entity, select), `${names.length ? `${set}(${names.join(",")})` : set}/$entity`);
+  }
   const logical = entity.LogicalName;
+  // EntityDefinitions(k)/Attributes(k2)/Microsoft.Dynamics.CRM.X/OptionSet (or GlobalOptionSet) → OptionSetMetadata.
+  if (route.subSegment) {
+    const option = metadata.attributeOptionSet(key, segmentKey, { global: route.subSegment === "GlobalOptionSet", select });
+    return option ? single(option, `${set}/Attributes/${route.subSegment}/$entity`) : missing(route.subSegment);
+  }
   switch (segment) {
     case "Attributes": {
       const list = metadata.attributes(key, { cast, key: segmentKey, select, expand }) ?? missing(set);
       if (segmentKey != null) return list[0] ? single(list[0], `${set}/Attributes/$entity`) : missing("Attributes");
-      return collection(metadata.filterMetadata(list, filter), `${set}/Attributes`);
+      // observed: parity cases metadata.attributes and metadata.typed-string (the cast is a typed attribute collection).
+      return collection(metadata.filterMetadata(list, filter), keyedContext(set, key) + `/Attributes${cast ? `/Microsoft.Dynamics.CRM.${cast}` : ""}${selectContext(select)}`);
     }
     case "Keys":
-      return collection(listed(metadata.keys(key), "Keys"), `${set}/Keys`);
+      // observed: parity case metadata.keys.
+      return collection(listed(metadata.keys(key, { select }), "Keys"), keyedContext(set, key) + `/Keys${selectContext(select)}`);
     case "OneToManyRelationships":
       return collection(listed(metadata.oneToMany(logical), segment), `${set}/${segment}`);
     case "ManyToOneRelationships":
@@ -541,16 +640,70 @@ const disabledEnvelope = (user, requestId) =>
     requestId,
   );
 
+const INVALID_CALLER = "CallerId provided for impersonation is invalid. Provided CallerId is either NULL or empty string";
+
+// An MSCRMCallerID that names no user: 404 in the legacy _error body (native evidence), not the envelope.
+function unknownCaller(id, requestId) {
+  const text = `Entity 'systemuser' With Id = ${id} Does Not Exist`;
+  return {
+    status: 404,
+    headers: { ...baseHeaders(requestId), "Content-Type": "application/json; charset=utf-8" },
+    body: {
+      _error: {
+        Code: "0x80040217",
+        Description: text,
+        DisplayText: "The requested record was not found.",
+        ErrorCode: -2147220969,
+        RedirectToEdit: false,
+        SerializedEntity: "",
+        SerializedException: "System.ServiceModel.FaultException`1[Microsoft.Xrm.Sdk.OrganizationServiceFault]: " + text,
+        Title: "Record Is Unavailable",
+      },
+    },
+  };
+}
+
+// The limiter's own 429 text and Retry-After: dataverseError would rewrite a 0x80072322 message to a fixed limit.
+const limitedEnvelope = (error, requestId) => {
+  const result = envelope(429, error.details.innerCode, error.message, requestId);
+  result.headers["Retry-After"] = String(error.details.retryAfter);
+  return result;
+};
+
 async function dataApi(d, c, route) {
-  const { req, origin, requestId, meta } = c;
+  const { req, origin, requestId } = c;
   if (route.kind === "unknown") return envelope(404, "", route.message, requestId);
   if (route.kind === "invalid") {
     // An over-long key segment answers as plain text; other malformed URIs use the JSON envelope.
     if (route.message === PLAIN_INVALID_URL) return { status: 400, headers: { "Content-Type": "text/plain; charset=utf-8" }, body: PLAIN_INVALID_URL };
     return envelope(400, "0x80060888", route.message, requestId);
   }
-  if (!METHODS.has(req.method)) return methodNotAllowed(c);
+  // HEAD is not a Web API verb (405, no body); the serve step maps it to GET only for the non-data routes.
+  if (!METHODS.has(req.method) || req.method === "HEAD") {
+    const refused = methodNotAllowed(c);
+    // observed: parity cases errors.method-head and errors.method-options on a keyed record list the record's verbs.
+    if (route.kind === "entity") refused.headers.Allow = "POST,OPTIONS,GET,HEAD,POST";
+    return refused;
+  }
+  const version = req.headers["odata-version"];
+  if (version !== undefined && !ODATA_VERSIONS.has(String(version).trim())) {
+    return envelope(412, "0x80060888", `The value '${version}' of the OData-Version HTTP header is invalid. Only '4.0' and '4.01' are supported as values for the OData-Version header.`, requestId);
+  }
+  // A record write takes JSON (or a binary column's octet-stream); any other media type is refused before the body is read.
+  const type = req.headers["content-type"];
+  if (type !== undefined && BODY_METHODS.has(req.method) && (route.kind === "entity" || route.kind === "collection") && !/json|octet-stream/i.test(type)) {
+    return envelope(415, "", `The request entity's media type '${String(type).split(";")[0].trim()}' is not supported for this resource.`, requestId);
+  }
+  return authenticated(d, c, ({ user, caller, identity, bodyBuffer }) =>
+    handleDataRequest(d, { method: c.method, url: c.url, route, headers: req.headers, bodyBuffer, user, caller, identity, prefer: c.prefer, origin, requestId }),
+  );
+}
 
+// The bearer check, caller resolution and impersonation for every route that acts as a caller (Web API, extension routes, SOAP).
+// handle({ user, caller, identity, bodyBuffer }) runs inside the service-protection admission. An unauthenticated request throws
+// the same 401 everywhere; a disabled or unknown caller gets the Dataverse envelope.
+async function authenticated(d, c, handle) {
+  const { req, origin, requestId, meta } = c;
   const verdict = d.authority.verifyBearer(req.headers.authorization, { origin, tenantId: d.tenantId });
   if (!verdict.ok) throw unauthorized(verdict);
   meta.appId = verdict.claims.appid ?? null;
@@ -560,42 +713,70 @@ async function dataApi(d, c, route) {
   const caller = resolved.user;
   meta.userId = caller.systemuserid;
 
-  const limit = d.settings.serviceProtection?.requestsPer300s;
-  if (limit) {
-    const now = d.clock();
-    const recent = (d.throttle.get(caller.systemuserid) ?? []).filter((at) => now - at < WINDOW_MS);
-    if (recent.length >= limit) {
-      d.throttle.set(caller.systemuserid, recent);
-      throw new DataError(`Number of requests exceeded the limit of ${limit} over time window of 300 seconds.`, 429, "ServiceProtection", { retryAfter: 300 });
+  // Service protection: admitted before dispatch and released when the request ends, whatever its outcome.
+  const admission = d.limits.admit(caller.systemuserid);
+  if (!admission.ok) return limitedEnvelope(admission.error, requestId);
+  const started = d.clock();
+  try {
+    // A groups claim keeps the caller's group teams current before the identity reads them.
+    if (Array.isArray(verdict.claims.groups)) await d.change(() => syncGroupMembership(d.store, caller, verdict.claims.groups));
+
+    let user = caller;
+    const callerObjectId = req.headers.callerobjectid;
+    const callerId = req.headers.mscrmcallerid;
+    if (callerObjectId !== undefined || callerId !== undefined) {
+      if (!d.principals.canImpersonate(caller)) throw privilegeDenied(d, caller, "prvActOnBehalfOfAnotherUser");
+      const byObjectId = callerObjectId !== undefined;
+      const value = String(byObjectId ? callerObjectId : callerId);
+      if (!GUID_TEXT.test(value)) return envelope(400, "0x80048d1A", INVALID_CALLER, requestId);
+      const target = byObjectId ? d.principals.byObjectId(value) : d.principals.byId(value);
+      if (!target) return byObjectId ? envelope(400, "0x80040203", "Invalid argument.", requestId) : unknownCaller(value, requestId);
+      if (target.isdisabled === true) return disabledEnvelope(target, requestId);
+      user = d.principals.effectivePrincipal(caller, target);
     }
-    recent.push(now);
-    d.throttle.set(caller.systemuserid, recent);
-  }
 
-  let user = caller;
-  const byObjectId = req.headers.callerobjectid;
-  const byId = req.headers.mscrmcallerid;
-  if (byObjectId || byId) {
-    if (!d.principals.canImpersonate(caller)) throw privilegeDenied(d, caller, "prvActOnBehalfOfAnotherUser");
-    user = byObjectId ? d.principals.byObjectId(byObjectId) : d.principals.byId(byId);
-    if (!user) return envelope(400, "0x80040203", "Invalid argument.", requestId);
-    if (user.isdisabled === true) return disabledEnvelope(user, requestId);
+    const { hierarchy, userHierarchy, ...identityData } = dataverseIdentity(d.store, user);
+    // The two functions are non-enumerable: the store clones identity into committed events (structuredClone), which cannot clone a function.
+    const dataverse = Object.defineProperties(
+      { appId: verdict.claims.appid, accessMode: user.accessmode, callerId: caller.systemuserid, ...identityData },
+      { hierarchy: { value: hierarchy }, userHierarchy: { value: userHierarchy } },
+    );
+    const identity = { admin: true, id: user.systemuserid, systemUserId: user.systemuserid, businessUnitId: refOf(user.businessunitid), dataverse };
+    const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
+    return await handle({ user, caller, identity, bodyBuffer });
+  } finally {
+    admission.release(d.clock() - started);
   }
+}
 
-  const identity = {
-    admin: true,
-    id: user.systemuserid,
-    systemUserId: user.systemuserid,
-    businessUnitId: refOf(user.businessunitid),
-    dataverse: { appId: verdict.claims.appid, accessMode: user.accessmode, callerId: caller.systemuserid },
+// The request an extension route handler gets: the parsed route and JSON body, and the caller authenticated() resolved.
+function extensionContext(c, { user, caller, identity, bodyBuffer }) {
+  const route = parseDataverseRoute(c.url.pathname);
+  const headers = c.req.headers;
+  return {
+    method: c.method, url: c.url, origin: c.origin, version: route?.version, route, prefer: c.prefer, headers, requestId: c.requestId,
+    body: bodyOf(c.method, headers, bodyBuffer, route), bodyBuffer, user, caller, identity, req: c.req,
   };
-  const bodyText = BODY_METHODS.has(req.method) ? await readBody(req) : "";
-  return handleDataRequest(d, { method: c.method, url: c.url, route, headers: req.headers, bodyText, user, caller, identity, prefer: c.prefer, origin, requestId });
+}
+
+// The JSON body of a write, parsed; a body that is not JSON is the Web API's malformed-payload error.
+function bodyOf(method, headers, bodyBuffer, route) {
+  if (!bodyBuffer.length || !BODY_METHODS.has(method) || !/json/i.test(headers["content-type"] ?? "")) return undefined;
+  try {
+    return JSON.parse(bodyBuffer.toString("utf8"));
+  } catch (error) {
+    const set = route?.set ?? route?.name ?? "";
+    throw new DataError(
+      `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
+      400,
+      "InvalidLookup",
+    );
+  }
 }
 
 // Answers one Web API request for a caller already authenticated. The HTTP path and $batch parts both come through here,
 // and it returns a result rather than writing to the response.
-async function handleDataRequest(d, { method, url, route, headers = {}, bodyText, user, caller, identity, prefer, origin, requestId }) {
+async function handleDataRequest(d, { method, url, route, headers = {}, bodyBuffer = Buffer.alloc(0), user, caller, identity, prefer, origin, requestId }) {
   const req = { method, headers };
   const c = { req, method, url, origin, requestId, prefer, meta: {} };
   // MSCRM.BypassCustomPluginExecution: true needs prvBypassCustomPlugins. MSCRM.BypassBusinessLogicExecution (a comma list)
@@ -609,31 +790,20 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
   if (plugins && !holds("prvBypassCustomPlugins")) throw privilegeDenied(d, caller, "prvBypassCustomPlugins");
   if (logic.length && !holds("prvBypassCustomBusinessLogic")) throw privilegeDenied(d, caller, "prvBypassCustomBusinessLogic");
   const bypassCustomPlugins = plugins || logic.includes("customsync");
-  let body;
-  if (bodyText && BODY_METHODS.has(method) && /json/i.test(headers["content-type"] ?? "")) {
-    try {
-      body = JSON.parse(bodyText);
-    } catch (error) {
-      const set = route.set ?? route.name ?? "";
-      throw new DataError(
-        `Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : Microsoft.OData.ODataException: ${error.message}`,
-        400,
-        "InvalidLookup",
-      );
-    }
-  }
+  const body = bodyOf(method, headers, bodyBuffer, route);
 
-  const common = { req, origin, requestId, prefer, method, url, body, bodyText, user, caller, identity, bypassCustomPlugins };
+  const common = { req, origin, requestId, prefer, method, url, body, bodyBuffer, user, caller, identity, bypassCustomPlugins };
   const operated = await operationCall(d, route, common);
   if (operated) return operated;
   switch (route.kind) {
     case "service":
-      return method === "GET" ? { status: 200, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
+      // Native omits Expires on the service document and $metadata (see baseHeaders).
+      return method === "GET" ? { status: 200, headers: { expires: undefined }, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
     case "metadata":
       if (method !== "GET") return methodNotAllowed(c);
       return {
         status: 200,
-        headers: { "content-type": "application/xml; charset=utf-8" },
+        headers: { "content-type": "application/xml", expires: undefined },
         body: d.metadata.csdl(origin, { annotations: url.searchParams.get("annotations") === "true" || prefer.annotations === "*" }),
       };
     case "batch":
@@ -656,6 +826,9 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyText
 
 // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions. Returns null on a miss so
 // the built-ins run. A name registered under another verb, binding or entity is a 404, as a wrong verb is for built-ins.
+const entitySetNamed = (store, name) =>
+  Object.values(store.state.mappings ?? {}).some((mapping) => mapping?.entitySet === name) || store.virtualTable?.(name)?.mapping?.entitySet === name;
+
 async function operationCall(d, route, common) {
   const ops = d.operations;
   // A bound operation written without the Microsoft.Dynamics.CRM. prefix parses as a property of the entity row.
@@ -667,7 +840,9 @@ async function operationCall(d, route, common) {
   // A wrong verb there falls through to the set, which may be a real entity; a registered bound name does not.
   if (route.candidate && route.kind !== "function" && ops.has(route.candidate.name)) {
     const op = ops.find({ name: route.candidate.name, kind, binding: "unbound" });
-    return op ? runOperation(d, op, route, route.candidate.params, common, undefined) : null;
+    if (op) return runOperation(d, op, route, route.candidate.params, common, undefined);
+    // A wrong verb on a registered name falls to the set only when an entity set has that name; otherwise there is no route (native: 404, no code).
+    return entitySetNamed(d.store, route.candidate.name) ? null : notFound(common);
   }
   if (!["function", "boundFunction", "boundAction"].includes(route.kind) || !ops.has(route.name)) return null;
   let binding = "unbound";
@@ -705,7 +880,7 @@ async function operationCall(d, route, common) {
 // Calls the operation's handle(ctx) and shapes its result: object bodies are JSON, Buffers go out as they are.
 async function runOperation(d, op, route, paramsText, common, target) {
   const headers = Object.fromEntries(Object.entries(common.req.headers ?? {}).map(([name, value]) => [name.toLowerCase(), value]));
-  const result = await op.handle({
+  const call = {
     method: common.method,
     route,
     url: common.url,
@@ -714,7 +889,7 @@ async function runOperation(d, op, route, paramsText, common, target) {
     prefer: common.prefer,
     headers,
     body: common.body,
-    bodyBuffer: Buffer.from(common.bodyText ?? "", "utf8"),
+    bodyBuffer: common.bodyBuffer,
     params: parseFunctionParameters(paramsText, common.url.searchParams),
     user: common.user,
     caller: common.caller,
@@ -722,16 +897,49 @@ async function runOperation(d, op, route, paramsText, common, target) {
     requestId: common.requestId,
     target,
     api: d.api,
-  });
+  };
+  // A Prefer: respond-async call to a custom API is answered 202 here and runs later; otherwise the operation runs now.
+  const result = (await runInBackground(d.api, call, op)) ?? (await op.handle(call));
   if (!result) return { status: 204 };
   const jsonBody = result.body !== null && typeof result.body === "object" && !Buffer.isBuffer(result.body);
-  return jsonBody ? asJson(result) : result;
+  // observed: parity cases custom.* and file.* answer application/json; odata.metadata=minimal with no charset.
+  return jsonBody ? { ...result, headers: { "content-type": JSON_CONTENT_TYPE, ...(result.headers ?? {}) } } : result;
 }
 
-// $batch: parts run in process under the caller verified for the batch; a changeset rolls back to a snapshot on failure.
+// The largest versionnumber any stored row holds (0 for none); a reset restores the org row version to it.
+function maxRowVersion(state) {
+  let max = 0;
+  for (const rows of Object.values(state.tables ?? {})) {
+    for (const row of Array.isArray(rows) ? rows : []) {
+      const version = Number(row?.versionnumber);
+      if (Number.isSafeInteger(version) && version > max) max = version;
+    }
+  }
+  return max;
+}
+
+// Runs fn as one unit: an isolated store transaction, so its writes stay private until fn returns and a throw discards them.
+// The change log is rewound to its revision on rollback. Usable by any caller that holds the api (a $batch changeset, a later
+// SOAP ExecuteTransaction); the caller holds the change slot. Plain store.transact calls made inside fn join this transaction.
+export async function runAtomic(api, fn) {
+  const revision = api.changes?.current();
+  const elasticSequence = api.store.elasticCommitSequence ?? 0;
+  try {
+    return await api.store.transact(fn, { isolated: true, cloneResult: false });
+  } catch (error) {
+    // The rolled-back writes' committed events must not survive in the change log (a DELETE would read as deleted).
+    await api.store.flushCommittedEvents?.();
+    // Standard writes roll back. Elastic writes have independent commit semantics;
+    // their preserved events are flushed by the store after restoring that state.
+    if ((api.store.elasticCommitSequence ?? 0) === elasticSequence) api.changes?.rewind(revision);
+    throw error;
+  }
+}
+
+// $batch: parts run in process under the caller verified for the batch; a changeset rolls back on failure (runAtomic).
 async function batchCall(d, c, common) {
   if (c.method !== "POST") return methodNotAllowed(c);
-  const parsed = parseBatch(c.req.headers["content-type"], common.bodyText);
+  const parsed = parseBatch(c.req.headers["content-type"], common.bodyBuffer);
   const runPart = async ({ method, url, headers, body }) => {
     const target = new URL(url);
     const route = parseDataverseRoute(target.pathname);
@@ -746,7 +954,7 @@ async function batchCall(d, c, common) {
       url: target,
       route,
       headers: { authorization: c.req.headers.authorization, ...headers },
-      bodyText: body ?? "",
+      bodyBuffer: Buffer.from(body ?? "", "utf8"),
       user: common.user,
       caller: common.caller,
       identity: common.identity,
@@ -768,35 +976,41 @@ async function batchCall(d, c, common) {
         origin: c.origin,
         tenantId: d.tenantId,
         logical: error?.details?.logical,
+        method: part.method,
       });
+      // Native answers a route-resolution failure inside a batch without REQ_ID (only Content-Type and OData-Version are left).
+      if (error?.details?.route && result.headers) delete result.headers.REQ_ID;
+      // A part's engine error carries its request id once: the part serialiser expects a string, not the top-level pair.
+      else if (Array.isArray(result.headers?.REQ_ID)) result.headers.REQ_ID = c.requestId;
     }
     const body = result.body ?? undefined;
     return { ...result, body: body === undefined || typeof body === "string" ? body : stringifyExactJson(orderAnnotations(body)) };
   };
-  // ponytail: snapshot and restore, because store.transact is not re-entrant and each part writes through its own transact.
-  dispatch.transaction = async (fn) => {
-    const snapshot = d.store.snapshot();
-    const revision = d.store.revision;
-    try {
-      return await fn();
-    } catch (error) {
-      await d.store.replaceState(snapshot);
-      // The rolled-back parts' committed events must not survive in the change log (a DELETE would read as deleted).
-      await d.store.flushCommittedEvents?.();
-      d.changes?.rewind(revision);
-      throw error;
-    }
-  };
+  dispatch.transaction = (fn) => runAtomic(d.api, fn);
   const continueOnError = common.prefer.continueOnError;
-  // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands between a changeset's
-  // snapshot and its restore. Ceiling: a long batch holds writers back; split the batch if that matters.
-  const result = await d.change(() => inBatch.run(true, () => executeBatch(parsed, { dispatch, origin: c.origin, continueOnError, requestId: c.requestId })));
-  const applied = preferenceApplied(common.prefer, { batch: true });
+  // ponytail: the whole batch takes one slot in the server's change queue, so no other write lands while a changeset runs.
+  // Ceiling: a long batch holds writers back; split the batch if that matters.
+  const result = await d.change(() => inBatch.run(true, () => executeBatch(parsed, { dispatch, origin: c.origin, base: new URL("./", c.url).href, continueOnError })));
+  const applied = preferenceApplied(common.prefer);
   return applied ? { ...result, headers: { ...result.headers, "Preference-Applied": applied } } : result;
 }
 
 async function route(d, c) {
   const path = c.url.pathname;
+  // Managed identity endpoints (the server's hook) answer GET requests before any route, discovery or data path.
+  if (c.method === "GET" && d.managedIdentity) {
+    const identityReply = d.managedIdentity({ method: c.req.method, pathname: path, searchParams: c.url.searchParams, headers: c.req.headers });
+    if (identityReply) {
+      c.meta.kind = "managedIdentity";
+      return asJson(identityReply);
+    }
+  }
+  // An anonymous extension route (api.addRoute with { anonymous: true }) answers without a bearer; every other route keeps the check.
+  const anonymous = (d.routes ?? []).find((entry) => entry.anonymous && entry.match(path, c.method));
+  if (anonymous) {
+    c.meta.kind = "extension";
+    return anonymous.handler({ ...c, user: null });
+  }
   const sts = await stsRoute(d, c);
   if (sts) {
     c.meta.kind = "sts";
@@ -804,28 +1018,28 @@ async function route(d, c) {
   }
   // A malformed Prefer is answered before any routing, as Dataverse does for every Web API request.
   if (c.prefer.malformed) return preferMalformedResponse(c.prefer.malformed);
-  // Extension routes (api.addRoute) answer before discovery, SOAP and the Web API; the first registered match wins.
+  // Extension routes (api.addRoute) answer before discovery, SOAP and the Web API, after the bearer check; the first match wins.
   const extension = (d.routes ?? []).find((entry) => entry.match(path, c.method));
   if (extension) {
     c.meta.kind = "extension";
-    return extension.handler(c);
+    return authenticated(d, c, (caller) => extension.handler(extensionContext(c, caller)));
   }
   if (path === "/api/discovery/v2.0" || path === "/api/discovery/v2.0/") {
     c.meta.kind = "discovery";
     return discoveryService(c);
   }
+  if (DISCOVERY_ROUTE.test(path)) {
+    c.meta.kind = "discovery";
+    return discoveryCall(d, c);
+  }
+  if (SOAP_ROUTE.test(path)) {
+    c.meta.kind = "soap";
+    return soapCall(d, c);
+  }
   const parsed = parseDataverseRoute(path);
   if (!parsed) {
     const parts = path.split("/").filter(Boolean);
     throw new DataError(`Resource not found for the segment '${parts[3] ?? parts.at(-1) ?? ""}'.`, 404, "UnknownEntity", { segment: parts[3] ?? parts.at(-1) ?? "" });
-  }
-  if (parsed.kind === "discovery") {
-    c.meta.kind = "discovery";
-    return discoveryInstances(d, c, parsed);
-  }
-  if (parsed.kind === "soap") {
-    c.meta.kind = "soap";
-    return soap(c);
   }
   return dataApi(d, c, parsed);
 }
@@ -833,7 +1047,8 @@ async function route(d, c) {
 // Every response write sits inside serve's try; a header that cannot be sent (for example a non-Latin-1 OData-EntityId)
 // becomes a Dataverse error envelope, and only if that write fails too does the connection drop.
 export function createDataverseHandler(deps) {
-  const d = { ...deps, change: deps.change ?? ((fn) => fn()), throttle: new Map(), requests: deps.requests ?? [], hostNames: allowedHostNames(deps.host ?? "127.0.0.1") };
+  const limits = deps.limits ?? createServiceProtection({ ...(deps.settings?.serviceProtection ?? {}), clock: deps.clock });
+  const d = { ...deps, change: deps.change ?? ((fn) => fn()), limits, requests: deps.requests ?? [], hostNames: allowedHostNames(deps.host ?? "127.0.0.1") };
   const log = deps.log ?? (() => {});
   const serve = async (req, res) => {
     const requestId = randomUUID();
@@ -856,7 +1071,7 @@ export function createDataverseHandler(deps) {
         kind: meta.kind,
       }),
     );
-    const reply = (result) => send(res, result, requestId, clientRequestId);
+    const reply = (result) => send(res, result, requestId, clientRequestId, { cors: wantsCors(req, origin), gzip: acceptsGzip(req) });
     let result;
     try {
       if (req.headers.host !== undefined && !hostAllowed(req.headers.host, d.hostNames)) {
@@ -865,21 +1080,26 @@ export function createDataverseHandler(deps) {
         result = envelope(400, "0x80060888", "Invalid URI: The Uri string is too long.", requestId);
       } else {
         c.url = new URL(req.url ?? "/", origin);
-        if (req.method === "OPTIONS") {
+        // A CORS preflight (Origin + Access-Control-Request-Method) and an anonymous OPTIONS answer 204. An authenticated
+        // OPTIONS that is not a preflight is a 405 from the route (native evidence: Dataverse refuses it).
+        const preflight = req.headers.origin !== undefined && req.headers["access-control-request-method"] !== undefined;
+        if (req.method === "OPTIONS" && (preflight || req.headers.authorization === undefined)) {
           meta.kind = "options";
           result = { status: 204 };
         } else result = await route(d, c);
       }
     } catch (error) {
-      result = dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, logical: error?.details?.logical });
+      result = dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, logical: error?.details?.logical, method: c.method });
       log("dataverse request failed", { requestId, path: c.url?.pathname, status: result.status, message: error?.message });
     }
+    // Every response for an authenticated caller carries the remaining service-protection headers; none reach unauthenticated ones.
+    const withLimits = meta.userId ? { ...result, headers: { ...(result.headers ?? {}), ...d.limits.headers(meta.userId) } } : result;
     try {
-      reply(result);
+      reply(withLimits);
     } catch (error) {
       log("dataverse response failed", { requestId, message: error?.message });
       try {
-        reply(dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId }));
+        reply(dataverseError(error, { prefer, requestId, origin, tenantId: d.tenantId, method: c.method }));
       } catch {
         res.destroy();
       }
@@ -917,6 +1137,7 @@ function seedRegistrations(store, settings, ids, clock) {
       redirectUris: app.redirectUris ?? [],
       // Stored as configured (short names); dataverse-settings grantAllowed maps them at the token endpoint.
       allowedGrants: app.allowedGrants,
+      federatedCredentials: app.federatedCredentials ?? [],
     };
     let entry = dv.applications.find((item) => String(item.appId).toLowerCase() === app.appId);
     if (!entry) {
@@ -954,8 +1175,12 @@ export async function startDataverseApi({
   records = null,
   log = () => {},
   extensions = EXTENSIONS,
+  managedIdentity = null,
 }) {
   void observed; // accepted for the documented signature; no router behaviour depends on it yet
+  // Standard table columns under the Solution's own fields (plan 3.2); the records and TDS layers both read this.
+  const solutionFields = metadataFields;
+  metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
   const organizationId = (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
   const environmentId = `Default-${tenantId}`;
@@ -967,28 +1192,45 @@ export async function startDataverseApi({
     uniqueName: settings.uniqueName,
     friendlyName: settings.friendlyName,
     version: settings.version,
-    currencySymbol: store.state.settings?.currencySymbol,
-    applications: applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
+    auditing: settings.auditing,
+    duplicateDetection: settings.duplicateDetection,
+    currencyCode: settings.currencyCode,
+    currencySymbol: settings.currencySymbol,
+    localeId: settings.localeId,
+    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
+    applications: [
+      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
+      ...(settings.managedIdentities ?? []).map((identity) => ({ appId: identity.clientId, displayName: identity.displayName, roles: identity.roles ?? [] })),
+    ],
     // Settings rows use domainname/fullname; the security model reads upn/displayName.
     users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),
   };
-  const registerApplications = () => store.transact(() => seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock));
+  const registerApplications = () => store.transact(() => {
+    seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock);
+    seedManagedIdentityRows(store, { tenantId, identities: settings.managedIdentities ?? [] });
+  });
   const seedSecurity = () => ensureSecurityModel(store, securitySettings, { schema });
   await change(registerApplications);
   await change(seedSecurity);
   // Record writes from inside a $batch skip `change` (see inBatch); other record writes use the caller's change.
   const recordChange = (fn) => (inBatch.getStore() ? fn() : change(fn));
 
-  const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf });
+  const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
+  // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
+  const operations = createOperationRegistry();
   const metadata = createMetadataService({
     organizationId,
     schema,
     mappings: () => store.state.mappings,
     virtualTables: () => store.virtualTables?.() ?? {},
+    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
+    changeLog: () => store.state.dataverse?.metadataLog ?? [],
+    extraCsdl: () => operations.csdlFragments(),
   });
   const authority = createAuthority({
     tenantId,
     applications: () => store.state.dataverse?.applications ?? [],
+    federatedIssuers: () => store.state.dataverse?.federatedIssuers ?? settings.federatedIssuers,
     users: {
       byObjectId: principals.byObjectId,
       byDomainName: principals.byDomainName,
@@ -1004,13 +1246,19 @@ export async function startDataverseApi({
   const changes = createChangeLog(store, { clock });
   const { createRecordHandlers, createRecordHooks } = await import("./dataverse-records.mjs");
   const recordHooks = createRecordHooks();
+  // fieldSecurity is read per request: the fls extension sets api.fieldSecurity when it installs, after the handlers exist.
   const recordHandlers =
-    records ?? createRecordHandlers({ store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes, hooks: recordHooks });
+    records ??
+    createRecordHandlers({
+      store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes, hooks: recordHooks,
+      fieldSecurity: () => api.fieldSecurity,
+    });
 
   // Extensions get the registry, the routes and the api object; security is re-seeded after they install, so tables
   // they seed get privileges and role grants (seedSecurity is idempotent).
-  const operations = createOperationRegistry();
   const routes = [];
+  // Shared by the HTTP router and the TDS endpoint, so both admit requests against the same windows.
+  const limits = createServiceProtection({ ...(settings.serviceProtection ?? {}), clock });
   const api = {
     store,
     change: recordChange,
@@ -1022,18 +1270,62 @@ export async function startDataverseApi({
     recordHooks,
     settings,
     schema,
+    changes,
     clock,
+    limits,
+    tdsPort: null,
     log,
-    addRoute: (match, handler) => {
-      routes.push({ match, handler });
+    addRoute: (match, handler, { anonymous = false } = {}) => {
+      routes.push({ match, handler, anonymous });
     },
+    // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
+    runAtomic: (fn) => runAtomic(api, fn),
     dataRevision: () => store.dataRevision?.(),
   };
+  // Metadata functions over the metadata service's response builders.
+  const metadataFunction = (name, respond, csdl) =>
+    operations.register({
+      name, kind: "function", binding: "unbound", csdl,
+      handle: (c) => {
+        const response = respond(c.params);
+        if (!response) throw new DataError(`${name} does not find the requested metadata.`, 404, "NotFound");
+        return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...response } };
+      },
+    });
+  // unverified: the response property types (the metadata CSDL's ComplexEntityMetadata and ComplexAttributeMetadata); the
+  // EntityFilters flags are Edm.Int32 here, not the mscrm enum.
+  metadataFunction("RetrieveEntity", (p) => metadata.retrieveEntityResponse(p.LogicalName ?? p.MetadataId ?? null, p.EntityFilters ?? null), `<ComplexType Name="RetrieveEntityResponse">
+  <Property Name="EntityMetadata" Type="mscrm.ComplexEntityMetadata" />
+</ComplexType>
+<Function Name="RetrieveEntity">
+  <Parameter Name="EntityFilters" Type="Edm.Int32" />
+  <Parameter Name="LogicalName" Type="Edm.String" />
+  <Parameter Name="MetadataId" Type="Edm.Guid" />
+  <Parameter Name="RetrieveAsIfPublished" Type="Edm.Boolean" />
+  <ReturnType Type="mscrm.RetrieveEntityResponse" Nullable="false" />
+</Function>`);
+  metadataFunction("RetrieveAllEntities", (p) => ({
+    EntityMetadata: metadata.entities().map((e) => metadata.retrieveEntityResponse(e.LogicalName, p.EntityFilters ?? null).EntityMetadata),
+    Timestamp: metadata.versionStamp(),
+  }), `<ComplexType Name="RetrieveAllEntitiesResponse"><Property Name="EntityMetadata" Type="Collection(mscrm.ComplexEntityMetadata)" /><Property Name="Timestamp" Type="Edm.String" /></ComplexType>
+<Function Name="RetrieveAllEntities"><Parameter Name="EntityFilters" Type="Edm.Int32" /><Parameter Name="RetrieveAsIfPublished" Type="Edm.Boolean" /><ReturnType Type="mscrm.RetrieveAllEntitiesResponse" Nullable="false" /></Function>`);
+  metadataFunction("RetrieveAttribute", (p) => metadata.retrieveAttributeResponse(p.EntityLogicalName ?? null, p.LogicalName ?? p.MetadataId ?? null), `<ComplexType Name="RetrieveAttributeResponse">
+  <Property Name="AttributeMetadata" Type="mscrm.ComplexAttributeMetadata" />
+</ComplexType>
+<Function Name="RetrieveAttribute">
+  <Parameter Name="EntityLogicalName" Type="Edm.String" />
+  <Parameter Name="LogicalName" Type="Edm.String" />
+  <Parameter Name="MetadataId" Type="Edm.Guid" />
+  <ReturnType Type="mscrm.RetrieveAttributeResponse" Nullable="false" />
+</Function>`);
   for (const extension of extensions) {
     if (typeof extension?.install !== "function") throw new Error("A Dataverse API extension needs an install(api) function.");
     await extension.install(api);
   }
   if (extensions.length) await change(seedSecurity);
+  // H6: the organization the seeded organization row carries (settings.organizationId is null at runtime).
+  const organizationRow = store.tableRows("organization").find((row) => String(row.organizationid).toLowerCase() === organizationId);
+  api.settings = { ...settings, organizationId: organizationRow?.organizationid ?? organizationId };
 
   const requests = [];
   const handle = createDataverseHandler({
@@ -1055,6 +1347,8 @@ export async function startDataverseApi({
     clock,
     log,
     requests,
+    managedIdentity,
+    limits,
   });
 
   const httpServer = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle);
@@ -1068,6 +1362,14 @@ export async function startDataverseApi({
     await listen(httpsServer, settings.tlsPort ?? 0, host);
     tlsOrigin = listenerOrigin("https", host, httpsServer.address().port);
   }
+  // On by default (Enable TDS endpoint); port 0 is ephemeral. Started last: the STS URL needs the HTTPS origin.
+  // Listens even when disabled: the endpoint then refuses every login (tds.enabled false).
+  const tdsSettings = settings.tds ?? { enabled: true, port: 0 };
+  const tds = await startDataverseTds({
+    store, authority, principals, records: recordHandlers, limits, metadataFields, clock, origin, tlsOrigin, tenantId,
+    version: settings.version, tls, host, port: tdsSettings.port, enabled: tdsSettings.enabled,
+  });
+  api.tdsPort = tds?.port ?? null;
 
   return {
     origin,
@@ -1075,6 +1377,7 @@ export async function startDataverseApi({
     authority: `${origin}/${tenantId}`,
     tenantId,
     organizationId,
+    tdsPort: api.tdsPort,
     servers,
     // Re-seeds the registrations and security rows after a store reset. Runs store transactions only, never `change`,
     // so it can be called from inside the server's change queue (its /reset handler does).
@@ -1082,23 +1385,30 @@ export async function startDataverseApi({
       await registerApplications();
       for (const extension of extensions) await extension.reset?.(api);
       await seedSecurity();
+      // The row version restarts at the largest version a row holds, so the next write takes a value above every row's.
+      await store.transact(() => {
+        store.state.rowVersion = maxRowVersion(store.state);
+      });
       // The seeding writes are not changes a client should see: flush them, then expire every token issued before the reset.
       await store.flushCommittedEvents?.();
       changes.reset();
     },
     requests: () => requests.map((entry) => ({ ...entry })),
+    issueManagedIdentityToken: authority.issueManagedIdentityToken,
     close: () => {
       recordHandlers.close?.();
       changes.close();
-      return Promise.all(
-        servers.map(
+      return Promise.all([
+        ...extensions.map((extension) => extension.close?.(api)),
+        tds?.close(),
+        ...servers.map(
           (server) =>
             new Promise((resolve) => {
               server.closeAllConnections();
               server.close(() => resolve());
             }),
         ),
-      ).then(() => undefined);
+      ]).then(() => undefined);
     },
     handle,
   };

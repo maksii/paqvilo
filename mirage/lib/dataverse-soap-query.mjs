@@ -142,9 +142,10 @@ function joinTypeOf(joinOperator = "Inner") {
   return linkType;
 }
 
-// Typed codec values ({type, value}, EntityReference by id) and Date objects reduce to their text before escaping.
+// Native Object {Type, Value} (SDK ConditionExpression.Values), typed codec values ({type, value}, EntityReference by id)
+// and Date objects reduce to their text before escaping. Plain scalars pass through unchanged.
 // unverified: booleans render as "true"; the FetchXML text form of booleans is not checked against the service.
-const scalar = (v) => (v instanceof Date ? v.toISOString() : v && typeof v === "object" ? (v.type === "EntityReference" ? v.id : v.value) : v);
+const scalar = (v) => (v instanceof Date ? v.toISOString() : v && typeof v === "object" ? (v.type === "EntityReference" ? v.id : "Value" in v ? v.Value : v.value) : v);
 
 function conditionXml(condition) {
   const entry = conditionOf(condition.operator);
@@ -205,7 +206,8 @@ export function toFetchXml(model, { primaryIdOf = () => null } = {}) {
   }
   const head = flag("distinct", model.distinct) + flag("no-lock", model.noLock) + attr("top", model.topCount > 0 ? model.topCount : null) +
     attr("page", page.pageNumber > 0 ? page.pageNumber : null) + attr("count", page.count > 0 ? page.count : null) +
-    attr("paging-cookie", page.pagingCookie) + flag("returntotalrecordcount", page.returnTotalRecordCount);
+    attr("paging-cookie", page.pagingCookie) + flag("returntotalrecordcount", page.returnTotalRecordCount) +
+    attr("options", model.queryHints) + attr("datasource", model.dataSource);
   const body = rootColumnsXml(model.columnSet, model.entityName, primaryIdOf) + ordersXml(model.orders) + filterXml(model.criteria) +
     (model.linkEntities ?? []).map(linkXml).join("");
   return `<fetch${head}><entity name="${esc(model.entityName)}">${body}</entity></fetch>`;
@@ -230,17 +232,21 @@ export function fromQueryByAttribute(model) {
     noLock: model.noLock,
     topCount: model.topCount,
     pageInfo: model.pageInfo,
+    dataSource: model.dataSource,
   };
 }
 
 function criteriaFromJson(criteria = {}) {
+  // Dropping a link-type filter would widen or narrow the rows a BulkDelete matches, so it is refused.
+  if (criteria.AnyAllFilterLinkEntity != null) throw invalid("Unsupported BulkDelete FilterExpression property 'AnyAllFilterLinkEntity'.");
   return {
     filterOperator: criteria.FilterOperator ?? "And",
     conditions: (criteria.Conditions ?? []).map((c) => ({
       entityName: c.EntityName,
       attributeName: c.AttributeName,
       operator: c.Operator,
-      values: (c.Values ?? []).map((v) => v.Value),
+      values: c.Values ?? [], // raw: scalar() reads both {Type, Value} and plain values
+      compareColumns: c.CompareColumns === true,
     })),
     filters: (criteria.Filters ?? []).map(criteriaFromJson),
   };
@@ -275,15 +281,13 @@ function linkFromJson(link) {
 
 // QuerySet keys a BulkDelete QueryExpression may carry. Anything else is refused rather than dropped,
 // because a dropped LinkEntities or TopCount widens the delete to the whole table.
-const BULK_DELETE_KEYS = new Set(["@odata.type", "EntityName", "Criteria", "ColumnSet", "LinkEntities", "Distinct", "NoLock", "Orders", "PageInfo", "TopCount", "DataSource"]);
+// QueryHints maps to FetchXML options (a no-op in the engine); ForceSeek is "for internal use only" and is accepted and ignored.
+const BULK_DELETE_KEYS = new Set(["@odata.type", "EntityName", "Criteria", "ColumnSet", "LinkEntities", "Distinct", "NoLock", "Orders", "PageInfo", "TopCount", "DataSource", "QueryHints", "ForceSeek"]);
 
 /** BulkDelete JSON QuerySet item as a QueryExpression model. */
 export function fromBulkDeleteJson(querySetItem) {
   for (const key of Object.keys(querySetItem)) {
     if (!BULK_DELETE_KEYS.has(key)) throw invalid(`Unsupported BulkDelete QuerySet property '${key}'.`);
-  }
-  if (querySetItem.DataSource != null && querySetItem.DataSource !== "default") {
-    throw new DataError("Long-term retained data is not simulated.", 501, "NotImplemented");
   }
   return {
     entityName: querySetItem.EntityName,
@@ -295,5 +299,7 @@ export function fromBulkDeleteJson(querySetItem) {
     orders: ordersFromJson(querySetItem.Orders),
     pageInfo: pageInfoFromJson(querySetItem.PageInfo),
     topCount: querySetItem.TopCount,
+    dataSource: querySetItem.DataSource,
+    queryHints: querySetItem.QueryHints,
   };
 }

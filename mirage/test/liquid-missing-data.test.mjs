@@ -15,6 +15,13 @@ test('unmapped root preflight is opt-in and precedes unknown-table plan validati
   assert.deepEqual(emptyUnmappedLiquidFetchXml(xml, { observed, resolveMapping }), { entities: [], more_records: false, entity_name: 'missing_fixture', xml, permission_granted: false, global_permission_granted: false, rules_exist: true, total_record_count: 0 });
 });
 
+test('root table lookup follows malformed XML and paging syntax validation', () => {
+  const store = new DataStore({ state: { tables: {}, mappings: {} } });
+  assert.throws(() => store.fetchXml('<fetch><entity name="missing_fixture"></fetch>'), /Malformed/);
+  assert.throws(() => store.fetchXml('<fetch count="invalid"><entity name="missing_fixture" /></fetch>'), error => error.code !== 'UnknownEntity' && /count/.test(error.message));
+  assert.throws(() => store.fetchXml('<fetch><entity name="missing_fixture" /></fetch>'), error => error.code === 'UnknownEntity');
+});
+
 test('known root invalid queries, missing links, and provider/infrastructure errors remain visible', () => {
   const store = new DataStore({ state: { tables: { sample: [] }, mappings: { sample: { entitySet: 'samples', idColumn: 'sampleid' } } } });
   const resolveMapping = name => store.resolveMapping(name), known = xml.replaceAll('missing_fixture', 'sample');

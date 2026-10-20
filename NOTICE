@@ -3,6 +3,9 @@ Original Paqvilo code: GNU Affero General Public License v3.0 only (see LICENSE)
 
 Third-party code and assets retain their upstream licenses:
 - Bootstrap glyphicons fonts under mirage/lib/bootstrap-fonts/: MIT; see LICENSE-bootstrap.txt.
+- mirage/lib/dataverse-standard-tables.json: facts from the Microsoft Learn Dataverse table/entity reference (MicrosoftDocs/powerapps-docs @ c3a8c43b), CC BY 4.0; descriptions omitted.
+- mirage/lib/platform-time-zones.mjs (TIME_ZONE_IDS): time zone codes, names and Windows/IANA ids joined from Microsoft Learn pages (Azure SQL Managed Instance time zones; SQL Server on Linux time zone mapping), CC BY 4.0.
+- mirage/lib/dataverse-operation-contracts.mjs: structural Microsoft Dataverse platform API schema facts (operation signatures, EDM type members and enum values), cross-checked with the Microsoft Learn Web API reference; descriptions and organization data omitted. Microsoft Learn reference material is CC BY 4.0.
 - npm dependencies: see each installed package's license and notices.
 - Test fixtures with upstream-derived assets: preserve the notices beside each fixture.
 

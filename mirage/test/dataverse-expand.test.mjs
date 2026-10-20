@@ -108,7 +108,7 @@ test("$ref is accepted on a lookup and rejected on a collection", () => {
 
 test("$skip, $count, $search and $levels inside an expand option are rejected", () => {
   for (const option of ["$skip=1", "$count=true", "$search='x'", "$levels=2"]) {
-    expectError(() => assertExpandText(`widget_gadgets(${option})`), `The expand option ${option.split("=")[0]} is not supported in $expand.`); // unverified: text
+    expectError(() => assertExpandText(`widget_gadgets(${option})`), "$skip, $count, $search, and $levels are not supported inside $expand");
   }
   assert.doesNotThrow(() => assertExpandText("widget_gadgets($select=name;$top=2;$skiptoken=x)"));
 });

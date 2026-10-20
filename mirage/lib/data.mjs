@@ -22,6 +22,8 @@ import { expressionOperator } from "./extensions.mjs";
 import { createHash } from "node:crypto";
 
 import { DataError } from "./data-error.mjs";
+import { assertElasticRecord, isElastic, samePartition, recordKey } from "./dataverse-elastic.mjs";
+import { relationshipsOf } from "./dataverse-standard.mjs";
 import { StateStorage } from './state-storage.mjs';
 import { RowTransaction, validateRowIndex, assignRowValues } from './row-transaction.mjs';
 import { stateDigest } from './state-stream.mjs';
@@ -896,19 +898,19 @@ export class DataStore {
   /**
    * `nested: true` joins the transaction this store already runs in the same async
    * context (no snapshot, commit, persist or event dispatch of its own); outside one
-   * it is a normal transaction. `isolated: true` keeps the changes private to the
+   * it is a normal transaction. A plain call inside an open isolated transaction joins
+   * it the same way. `isolated: true` keeps the changes private to the
    * async context until the commit, so concurrent readers see the committed state.
    */
   transact(fn, { skipSaveIfUnchanged = false, cloneResult = true, lazyReadSnapshot = false, incremental = false, nested = false, isolated = false } = {}) {
     // ponytail: a nested throw that the caller catches keeps that call's partial writes;
     // only the outermost transaction rolls back.
     // A frame that has finished (closed) no longer joins: its async continuations run later.
+    // Inside an open isolated changeset a plain transact joins it too: every write made while
+    // the changeset runs belongs to that changeset (Dataverse changesets are atomic).
     const active = transactionFrames.getStore();
-    if (nested && active?.store === this && !active.closed)
+    if ((nested || active?.working) && active?.store === this && !active.closed)
       return (async () => { const result = await fn(); return cloneResult ? clone(result) : result; })();
-    // Inside an isolated changeset a plain transact would queue behind its own transaction.
-    if (!nested && active?.store === this && !active.closed && active.working)
-      return Promise.reject(new DataError('Nested transact inside an isolated transaction must pass { nested: true }.', 500, 'TransactionReentry'));
     const frame = { store: this, working: null };
     const run = this.queue.then(async () => {
       transactionFrames.enterWith(frame);
@@ -927,6 +929,7 @@ export class DataStore {
         boundary.backup = clone(this.state);
       };
       const previousBoundary=this.pluginRollbackBoundary,previousTransaction=this.pluginInTransaction;
+      boundary.parent = previousBoundary;
       const previousEvents=this.committedEventCandidates;this.committedEventCandidates=[];
       this.pluginRollbackBoundary=boundary;this.pluginInTransaction=isolated;
       try {
@@ -945,7 +948,22 @@ export class DataStore {
         if (!rowTransaction?.promoted) rowTransaction?.rollback();
         this.rowIndexes = null;
         if (boundary.backup !== null) this.state = boundary.backup;
-        if(boundary.independentCommit&&!isolated){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
+        // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
+        // Restore only those rows after rollback: earlier standard-table writes remain transactional.
+        if (boundary.elasticWrites?.size) {
+          for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
+            const rows = (this.state.tables[mapping.logicalName] ??= []);
+            const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+            if (removed) { if (index >= 0) rows.splice(index, 1); }
+            else if (index >= 0) rows[index] = clone(row);
+            else rows.push(clone(row));
+          }
+          this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
+          if (isolated) this._state = frame.working;
+          await this.save(); this.revision++;
+          const retained = boundary.independentCommit && !isolated ? this.committedEventCandidates.slice(0, boundary.eventCount) : [];
+          this.dispatchCommittedEvents([...new Set([...retained, ...(boundary.elasticEvents ?? [])])]);
+        } else if(boundary.independentCommit&&!isolated){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
         throw error;
       } finally {
         if (rowTransaction?.promoted || !rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)) this.rowIndexes = null;
@@ -995,7 +1013,13 @@ export class DataStore {
     else rows.splice(index, 1);
     this.rowIndexes?.delete(rows);
   }
-  rowIndex(mapping, rows, id) {
+  rowIndex(mapping, rows, id, options = {}) {
+    if (isElastic(mapping)) {
+      const key = typeof id === "string" && id.includes("=") ? parseKeySegment(id) : null;
+      const primary = key?.[mapping.idColumn] ?? id;
+      const partition = key?.partitionid ?? options.partitionId ?? null;
+      return rows.findIndex((row) => equal(row[mapping.idColumn], primary) && samePartition(row.partitionid, partition));
+    }
     // Preserve the existing coercive comparison for non-string identifiers.
     if (typeof id !== 'string') return rows.findIndex(row => equal(row[mapping.idColumn], id));
     this.rowIndexes ??= new WeakMap();
@@ -1017,7 +1041,7 @@ export class DataStore {
   sdkMutation(fn) {
     this.ensureReadSnapshot();
     const joined=this.pluginInTransaction===true,previousBoundary=this.pluginRollbackBoundary;
-    const boundary={backup:clone(this.state),independentCommit:false,eventCount:this.committedEventCandidates?.length??0};
+    const boundary={backup:clone(this.state),independentCommit:false,eventCount:this.committedEventCandidates?.length??0,parent:previousBoundary};
     this.pluginRollbackBoundary=boundary;
     try {
       const result=fn();
@@ -1031,9 +1055,39 @@ export class DataStore {
       throw error;
     } finally {this.pluginRollbackBoundary=previousBoundary;}
   }
+  checkpointElastic(mapping, row, removed = false) {
+    if (!isElastic(mapping)) return;
+    const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
+    const lastEvent = this.committedEventCandidates?.at(-1);
+    for (let boundary = this.pluginRollbackBoundary; boundary; boundary = boundary.parent) {
+      (boundary.elasticWrites ??= new Map()).set(key, { mapping, row: clone(row), removed });
+      boundary.elasticVersion = this.state.rowVersion ?? 0;
+      if (lastEvent?.entity === mapping.logicalName) (boundary.elasticEvents ??= []).push(lastEvent);
+    }
+    this.elasticCommitSequence = (this.elasticCommitSequence ?? 0) + 1;
+  }
   setCommittedEvents(provider){this.committedEvents=typeof provider==='function'?provider:null;}
   addCommittedEvents(provider){if(typeof provider!=='function')throw new DataError('Committed event consumer must be a function.');this.committedEventConsumers??=new Set();this.committedEventConsumers.add(provider);return()=>this.committedEventConsumers.delete(provider);}
-  recordCommittedEvent(entity,operation,row,attributes,details={}){if((this.committedEvents||this.committedEventConsumers?.size)&&this.committedEventCandidates)this.committedEventCandidates.push({entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null});}
+  /** Synchronous storage observers stage derived local state inside the current transaction. */
+  addMutationObserver(fn, { matches } = {}) {
+    if (typeof fn !== 'function' || fn.constructor?.name === 'AsyncFunction' || matches !== undefined && (typeof matches !== 'function' || matches.constructor?.name === 'AsyncFunction'))
+      throw new DataError('Mutation observers and their matchers must be synchronous functions.', 400, 'InvalidMutationObserver');
+    const observer = { fn, matches }; this.mutationObservers ??= new Set(); this.mutationObservers.add(observer);
+    return () => this.mutationObservers.delete(observer);
+  }
+  recordCommittedEvent(entity,operation,row,attributes,details={}) {
+    if (!this.mutationObservers?.size && (!(this.committedEvents || this.committedEventConsumers?.size) || !this.committedEventCandidates)) return;
+    const event = {entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null};
+    for (const observer of this.mutationObservers ?? []) {
+      const matched = observer.matches ? observer.matches(clone(event)) : true;
+      if (matched && typeof matched.then === 'function') { Promise.resolve(matched).catch(()=>{}); throw new DataError('Mutation observer matchers cannot return a promise.', 500, 'InvalidMutationObserver'); }
+      if (!matched) continue;
+      this.ensureReadSnapshot();
+      const result = observer.fn(clone(event));
+      if (result && typeof result.then === 'function') { Promise.resolve(result).catch(()=>{}); throw new DataError('Mutation observers cannot return a promise.', 500, 'InvalidMutationObserver'); }
+    }
+    if ((this.committedEvents || this.committedEventConsumers?.size) && this.committedEventCandidates) this.committedEventCandidates.push(event);
+  }
   dispatchCommittedEvents(events){
     if(!events.length)return;const captured=clone(events),providers=[this.committedEvents,...(this.committedEventConsumers??[])].filter(Boolean),sequence=this.committedEventSequence=(this.committedEventSequence??0)+1;
     this.committedEventDispatches??=new Set();let delivery;
@@ -1073,7 +1127,7 @@ export class DataStore {
     this.pluginPipelineRequiresCheckpoint = requiresCheckpoint;
   }
   exportedPluginPhase(mapping, operation, stage, target, row, previous, identity, changedAttributes, options = {}) {
-    if(stage!==10)this.pluginInTransaction=true;
+    if(stage!==10)this.pluginInTransaction=!isElastic(mapping);
     // Dataverse writes with bypassCustomPlugins (MSCRM.BypassCustomPluginExecution) skip exported plug-ins.
     if (options.bypassCustomPlugins) return;
     if (!this.pluginPipeline || !this.pluginPipelineActive({ entity: mapping.logicalName, operation })) return;
@@ -1105,7 +1159,9 @@ export class DataStore {
   }
   /** Rows of a table: a virtual site table when the host supplies one, else local data. */
   tableRows(logical) {
-    return this.virtualTable(logical)?.rows ?? this.state.tables[logical] ?? [];
+    const rows = this.virtualTable(logical)?.rows ?? this.state.tables[logical] ?? [];
+    // Elastic tables only: rows past their time to live are hidden from every reader (dataverse-elastic.mjs installs expiryFilter).
+    return this.expiryFilter && this.state.mappings?.[logical]?.tableType === "Elastic" ? this.expiryFilter(logical, rows) : rows;
   }
   /** Site tables are derived from the export; local writes to them aren't simulated. */
   assertWritable(logical) {
@@ -1401,9 +1457,8 @@ export class DataStore {
   }
   get(entity, id, identity = {},options={}) {
     const m = this.resolveMapping(entity);
-    const row = this.tableRows(m.logicalName).find((r) =>
-      equal(r[m.idColumn], id),
-    );
+    const rows = this.tableRows(m.logicalName);
+    const row = rows[this.rowIndex(m, rows, id, options)];
     if (!row) return null;
     this.assertAllowed(m.logicalName, "read", row, identity);
     if(!options.skipPluginRead&&this.pluginPipeline&&this.pluginPipelineActive({entity:m.logicalName,operation:'retrieve'})){
@@ -1415,11 +1470,11 @@ export class DataStore {
         this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:20,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
         const responseFrame=this.pluginPipeline({entity:m.logicalName,operation:'retrieve',stage:40,record,identity,columns,holder,changedAttributes:[],portalRequest:options.portalRequest===true});
         handoffPluginResponse(this,'retrieve',m.logicalName,responseFrame,options.sdkResponseToken);
-        if(holder.entity?.$type!=='Entity'||holder.entity.logicalName!==m.logicalName||!equal(holder.entity.id,id))throw new DataError('Retrieve output must preserve record identity.',501,'LocalPluginQueryUnsupported');
-        return {...sdkValueToRecord(holder.entity),[m.idColumn]:row[m.idColumn]};
+        if(holder.entity?.$type!=='Entity'||holder.entity.logicalName!==m.logicalName||!equal(holder.entity.id,row[m.idColumn]))throw new DataError('Retrieve output must preserve record identity.',501,'LocalPluginQueryUnsupported');
+        return {...sdkValueToRecord(holder.entity),[m.idColumn]:row[m.idColumn],...(isElastic(m)?{partitionid:row.partitionid??null}:{})};
       }finally{this.pluginReadOnly=previousReadOnly;}
     }
-    if(options.sdkColumns)return {...sdkValueToRecord(recordToSdkEntity(this,m.logicalName,row,options.sdkColumns)),[m.idColumn]:row[m.idColumn]};
+    if(options.sdkColumns)return {...sdkValueToRecord(recordToSdkEntity(this,m.logicalName,row,options.sdkColumns)),[m.idColumn]:row[m.idColumn],...(isElastic(m)?{partitionid:row.partitionid??null}:{})};
     return clone(row);
   }
   /** Field metadata from explicit mappings or a caller-supplied solution metadata resolver. */
@@ -1492,6 +1547,13 @@ export class DataStore {
    * Query-local, immutable caches of this identity's readable rows and
    * relationship indexes. Never share them across requests or mutations.
    */
+  /**
+   * A mapping's relationships as this caller reads them. A Dataverse caller (identity.dataverse) also gets the standard
+   * navigations the mapping lacks (relationshipsOf); a portal caller gets the mapping's own, unchanged.
+   */
+  relationshipsFor(mapping, identity) {
+    return relationshipsOf(this, mapping.logicalName, mapping.relationships ?? {}, Boolean(identity?.dataverse));
+  }
   queryContext(identity = {}, options = {}) {
     const readable = options.fetchCache && !options.backendRowsFilter ? options.fetchCache.readable(this, identity) : new Map();
     const readRows = (logical, node) => {
@@ -1530,7 +1592,12 @@ export class DataStore {
         readRows(target.logicalName),
         rel.to,
       );
-      if (!rel.intersect) return targets.get(value) ?? [];
+      if (!rel.intersect) {
+        const found = targets.get(value) ?? [];
+        return isElastic(target) && rel.many === false
+          ? found.filter((candidate) => samePartition(candidate.partitionid, row[`${rel.from}pid`] ?? columnValue(row, rel.from)?.partitionid))
+          : found;
+      }
       const edgeMapping = this.resolveMapping(rel.intersect.entity);
       const edges = indexBy(
         `e\u0000${edgeMapping.logicalName}\u0000${rel.intersect.from}`,
@@ -1580,7 +1647,7 @@ export class DataStore {
       readRows,
       related,
       navigate: (mapping, row, name) => {
-        const rel = mapping.relationships?.[name];
+        const rel = this.relationshipsFor(mapping, identity)[name];
         if (!rel) return null;
         const target = this.resolveMapping(rel.entity);
         if (row == null)
@@ -1597,6 +1664,7 @@ export class DataStore {
       column: (logical, attribute) => this.columnStatus(logical, attribute, options.metadata),
       lookupName,
       identity,
+      relationships: (mapping) => this.relationshipsFor(mapping, identity),
       settings: this.querySettings(),
       now: Date.now(),
     };
@@ -1668,7 +1736,7 @@ export class DataStore {
   pathMapping(ctx, mapping, segments) {
     let currentMapping = mapping;
     for (const segment of segments) {
-      const rel = currentMapping.relationships?.[segment];
+      const rel = this.relationshipsFor(currentMapping, ctx.identity)[segment];
       if (!rel)
         throw new DataError(
           `No relationship mapping for ${currentMapping.logicalName}.${segment}`,
@@ -1686,7 +1754,7 @@ export class DataStore {
   /** Compile nested $expand options once per query. */
   prepareExpand(ctx, mapping, specs, query) {
     return specs.map((spec) => {
-      const rel = mapping.relationships?.[spec.navigation];
+      const rel = this.relationshipsFor(mapping, ctx.identity)[spec.navigation];
       if (!rel)
         throw new DataError(
           `No relationship mapping for ${mapping.logicalName}.${spec.navigation}`,
@@ -1872,6 +1940,8 @@ export class DataStore {
     // Single-record and navigation routes restrict the readable rows first.
     if (options.id != null)
       rows = rows.filter((row) => equal(row[m.idColumn], options.id));
+    if (isElastic(m) && Object.hasOwn(options, "partitionId"))
+      rows = rows.filter((row) => samePartition(row.partitionid, options.partitionId));
     if (options.ids) {
       const wanted = new Set([...options.ids].map(comparable));
       rows = rows.filter((row) => wanted.has(comparable(row[m.idColumn])));
@@ -1933,6 +2003,21 @@ export class DataStore {
           tieBreak: false,
         });
       }
+      // observed: parity case query.apply-group; a Dataverse groupby without $orderby answers its single-column groups in ascending key order (false before true).
+      if (!order.length && options.dialect === "dataverse") {
+        const groupKeys = steps
+          .filter((step) => step.kind === "groupby")
+          .flatMap((step) => step.properties ?? [])
+          .filter((path) => path.length === 1)
+          .map((path) => ({ path, descending: false }));
+        if (groupKeys.length)
+          values = sortRows(values, groupKeys, {
+            ...sortOptions,
+            valueOf: (row, path) => row[path.join("/")],
+            definition: (path) => ctx.definition(m.logicalName, path[0]),
+            tieBreak: false,
+          });
+      }
       if (p.$top != null) values = values.slice(0, boundedInt(p.$top, "$top"));
       return { value: clone(values) };
     }
@@ -1978,13 +2063,13 @@ export class DataStore {
         : {}),
     };
   }
-  normalizeRecord(mapping, data) {
+  normalizeRecord(mapping, data, identity = {}) {
     const row = clone(data);
     for (const [key, value] of Object.entries(row)) {
       safeName(key.replace(/@odata\.bind$/, ""));
       if (key.endsWith("@odata.bind")) {
         const navigation = key.slice(0, -11),
-          relationship = mapping.relationships?.[navigation],
+          relationship = this.relationshipsFor(mapping, identity)[navigation],
           field = relationship?.from ?? navigation;
         if (relationship?.many)
           throw new DataError(
@@ -2000,6 +2085,7 @@ export class DataStore {
           );
         if (value === null) {
           row[field] = null;
+          if (relationship && isElastic(this.resolveMapping(relationship.entity))) row[`${field}pid`] = null;
           delete row[key];
           continue;
         }
@@ -2012,7 +2098,17 @@ export class DataStore {
             400,
             "InvalidLookup",
           );
-        const hit = this.findByKey(target, reference.id);
+        const hit = isElastic(target) && !reference.id.includes("=")
+          ? this.get(target.logicalName, reference.id, { admin: true }, { partitionId: row[`${field}pid`] })
+          : this.findByKey(target, reference.id);
+        // Elastic lookups without the custom partition are allowed to persist, but remain unresolved.
+        // Never substitute a record from another partition (or its display name).
+        if (!hit && isElastic(target) && !reference.id.includes("=") && row[`${field}pid`] == null) {
+          row[field] = { id: reference.id, logical_name: target.logicalName, partitionid: null, name: "" };
+          row[`${field}pid`] = null;
+          delete row[key];
+          continue;
+        }
         if (!hit)
           throw new DataError(
             `Lookup target ${value} does not exist`,
@@ -2023,7 +2119,9 @@ export class DataStore {
           id: hit[target.idColumn],
           logical_name: target.logicalName,
           name: primaryNameValue(target, hit) ?? "",
+          ...(isElastic(target) ? { partitionid: hit.partitionid ?? null } : {}),
         };
+        if (isElastic(target)) row[`${field}pid`] = hit.partitionid ?? null;
         delete row[key];
       }
     }
@@ -2038,6 +2136,8 @@ export class DataStore {
     const parts = parseKeySegment(key);
     if (!parts) return rows[this.rowIndex(mapping, rows, key)];
     const names = Object.keys(parts).sort();
+    if (isElastic(mapping) && names.length === 1 && names[0] === mapping.idColumn)
+      return rows[this.rowIndex(mapping, rows, parts[mapping.idColumn])];
     const declared = (mapping.alternateKeys ?? []).some((alternate) => {
       const attributes = (alternate.attributes ?? alternate.keyAttributes ?? [])
         .map((name) => String(name).toLowerCase())
@@ -2055,7 +2155,7 @@ export class DataStore {
         { innerCode: "0x80040203" },
       );
     return rows.find((row) =>
-      names.every((name) => valuesEqual(field(row, name), parts[name])),
+      names.every((name) => isElastic(mapping) && name === "partitionid" ? samePartition(row[name], parts[name]) : valuesEqual(field(row, name), parts[name])),
     );
   }
   evaluate(expr, context) {
@@ -2450,11 +2550,12 @@ export class DataStore {
     }
   }
   validateBindings(mapping, input, row, identity, previous = null) {
+    const relationships = this.relationshipsFor(mapping, identity);
     if (this.state.settings.associationPermissions === "enforce")
       for (const key of Object.keys(input).filter((key) =>
         key.endsWith("@odata.bind"),
       ))
-        if (!mapping.relationships[key.slice(0, -11)])
+        if (!relationships[key.slice(0, -11)])
           throw new DataError(
             "Lookup binding requires a known navigation relationship",
             400,
@@ -2463,12 +2564,12 @@ export class DataStore {
     const changed = new Set(
       Object.keys(input).map((key) =>
         key.endsWith("@odata.bind")
-          ? (mapping.relationships[key.slice(0, -11)]?.from ??
+          ? (relationships[key.slice(0, -11)]?.from ??
             key.slice(0, -11))
           : key,
       ),
     );
-    for (const relationship of Object.values(mapping.relationships ?? {})) {
+    for (const relationship of Object.values(relationships)) {
       if (relationship.many === true || !changed.has(relationship.from))
         continue;
       const id = scalar(
@@ -2482,9 +2583,9 @@ export class DataStore {
       const bound = field(row, relationship.from) ?? field(previous ?? {}, relationship.from);
       if (bound?.logical_name && String(bound.logical_name).toLowerCase() !== String(targetMapping.logicalName).toLowerCase())
         continue;
-      const target = this.tableRows(targetMapping.logicalName).find(
-        (record) => equal(record[targetMapping.idColumn], id),
-      );
+      const candidates = this.tableRows(targetMapping.logicalName);
+      const target = candidates[this.rowIndex(targetMapping, candidates, id, { partitionId: row[`${relationship.from}pid`] ?? bound?.partitionid })];
+      if (!target && isElastic(targetMapping) && row[`${relationship.from}pid`] == null && bound?.partitionid == null) continue;
       if (!target)
         throw new DataError(
           "Lookup target does not exist",
@@ -2645,14 +2746,15 @@ export class DataStore {
     return row;
   }
   /** Separate deep-insert payloads and collection binds from scalar columns. */
-  splitDeepInsert(mapping, data) {
+  splitDeepInsert(mapping, data, identity = {}) {
     const input = {},
       nested = [],
-      collectionBinds = [];
+      collectionBinds = [],
+      relationships = this.relationshipsFor(mapping, identity);
     for (const [key, value] of Object.entries(data ?? {})) {
       if (key.endsWith("@odata.bind")) {
         const navigation = key.slice(0, -11),
-          rel = mapping.relationships?.[navigation];
+          rel = relationships[navigation];
         if (Array.isArray(value)) {
           if (!rel || rel.many === false)
             throw new DataError(
@@ -2666,7 +2768,7 @@ export class DataStore {
         input[key] = value;
         continue;
       }
-      const rel = mapping.relationships?.[key];
+      const rel = relationships[key];
       if (
         rel &&
         value &&
@@ -2687,8 +2789,8 @@ export class DataStore {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
-    const { input, nested, collectionBinds } = this.splitDeepInsert(m, data);
-    const row = { ...this.normalizeRecord(m, input) };
+    const { input, nested, collectionBinds } = this.splitDeepInsert(m, data, identity);
+    const row = { ...this.normalizeRecord(m, input, identity) };
     if (options.coerce) this.coerceRecord(m, row, options);
     // Caller-owned audit and ownership columns (Dataverse layer); merged after coercion, only when passed.
     const systemColumns = this.systemColumnsFor(options.systemColumns, m, input);
@@ -2709,7 +2811,8 @@ export class DataStore {
     const appUser = this.observed?.portalApplicationUser;
     if (appUser && !own(row, "createdby")) row.createdby = { id: this.observed?.portalApplicationUserId ?? null, logical_name: "systemuser", name: appUser };
     row[m.idColumn] ??= randomUUID();
-    if (rows.some((r) => equal(r[m.idColumn], row[m.idColumn])))
+    if (isElastic(m)) assertElasticRecord(row);
+    if (rows.some((r) => equal(r[m.idColumn], row[m.idColumn]) && (!isElastic(m) || samePartition(r.partitionid, row.partitionid))))
       throw new DataError(
         "A record with matching key values already exists.",
         412,
@@ -2806,8 +2909,12 @@ export class DataStore {
           );
         this.changeAssociationRecord(m.logicalName, row[m.idColumn], bind.navigation, reference.id, identity, true, options);
       }
+    if (isElastic(m)) {
+      this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
+      this.checkpointElastic(m, row);
+    }
     this.exportedPluginPhase(m, 'create', 40, pluginTarget, row, null, identity, changedAttributes, options);
-    this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
+    if (!isElastic(m)) this.recordCommittedEvent(m.logicalName,'create',row,changedAttributes,{target:pluginTarget,previous:null,identity});
     return row;
   }
   async create(entity, data, identity = {}, options = {}) {
@@ -2820,12 +2927,15 @@ export class DataStore {
     const m = this.resolveMapping(entity);
     this.assertWritable(m.logicalName);
     const rows = (this.state.tables[m.logicalName] ??= []);
-    const index = this.rowIndex(m, rows, id);
+    const index = this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
     if (index < 0) throw new DataError("Record not found", 404, "NotFound");
     this.assertPrecondition(m, rows[index], options);
     this.assertAllowed(m.logicalName, "update", rows[index], identity);
-    const changes = this.normalizeRecord(m, data);
+    const changes = this.normalizeRecord(m, data, identity);
+    if (isElastic(m) && own(changes, "partitionid") && !samePartition(changes.partitionid, rows[index].partitionid))
+      throw new DataError("The partitionid value of an elastic table row cannot be changed.", 400, "InvalidRequest");
     if (options.coerce) this.coerceRecord(m, changes, options);
+    if (isElastic(m)) assertElasticRecord(changes);
     const input = {
       ...rows[index],
       ...changes,
@@ -2853,6 +2963,8 @@ export class DataStore {
   touchRow(previous, row, systemColumns = null) {
     row.modifiedon = isoUtc(Date.now());
     if (systemColumns) Object.assign(row, systemColumns);
+    // A caller that takes the row version itself (Dataverse's org-wide counter) keeps its value.
+    if (systemColumns && "versionnumber" in systemColumns) return row;
     if(isExactNumeric(previous.versionnumber)){
       const version=sumNumeric([previous.versionnumber,1],'Int64');
       if(compareNumeric(version,'9223372036854775807')>0)throw new DataError('Stored row version exceeds Int64.',500,'NumericVersionOverflow');
@@ -2883,8 +2995,12 @@ export class DataStore {
     this.assertAlternateKeys(mapping, row, rows, index);
     this.writeRow(mapping.logicalName, rows, index, row);
     this.applySecondary(effects);
+    if (isElastic(mapping)) {
+      this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
+      this.checkpointElastic(mapping, row);
+    }
     this.exportedPluginPhase(mapping, 'update', 40, target, row, previous, identity, changedAttributes, options);
-    this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
+    if (!isElastic(mapping)) this.recordCommittedEvent(mapping.logicalName,'update',row,changedAttributes,{target,previous,identity});
     return row;
   }
   /**
@@ -2919,8 +3035,9 @@ export class DataStore {
   }
   upsertRecord(entity, id, data, identity = {}, options = {}) {
     const m = this.resolveMapping(entity);
+    if (isElastic(m)) return this.elasticUpsertRecord(entity, id, data, identity, options);
     const rows = this.state.tables[m.logicalName] ?? [];
-    const existing = rows[this.rowIndex(m, rows, id)];
+    const existing = rows[this.rowIndex(m, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid })];
     this.assertPrecondition(m, existing ?? null, options);
     if (existing || options.ifMatch != null)
       return {
@@ -2931,6 +3048,38 @@ export class DataStore {
       created: true,
       row: this.createRecord(entity, { ...data, [m.idColumn]: id }, identity, options),
     };
+  }
+  /** Elastic Upsert replaces the payload and raises Upsert, without dispatching Create or Update. */
+  elasticUpsertRecord(entity, id, data, identity = {}, options = {}) {
+    const mapping = this.resolveMapping(entity);
+    this.assertWritable(mapping.logicalName);
+    const rows = (this.state.tables[mapping.logicalName] ??= []);
+    const index = this.rowIndex(mapping, rows, id, { ...options, partitionId: options.partitionId ?? data.partitionid });
+    const previous = index < 0 ? null : rows[index];
+    this.assertPrecondition(mapping, previous, options);
+    this.assertAllowed(mapping.logicalName, previous ? "update" : "create", previous ?? data, identity);
+    const row = this.normalizeRecord(mapping, data, identity);
+    row[mapping.idColumn] = previous?.[mapping.idColumn] ?? parseKeySegment(id)?.[mapping.idColumn] ?? id;
+    row.partitionid ??= previous?.partitionid ?? options.partitionId ?? null;
+    if (previous && !samePartition(row.partitionid, previous.partitionid))
+      throw new DataError("The partitionid value of an elastic table row cannot be changed.", 400, "InvalidRequest");
+    if (options.coerce) this.coerceRecord(mapping, row, options);
+    assertElasticRecord(row);
+    row.createdon = previous?.createdon ?? isoUtc(Date.now());
+    row.modifiedon = isoUtc(Date.now());
+    if (previous?.createdby) row.createdby = clone(previous.createdby);
+    Object.assign(row, this.systemColumnsFor(options.systemColumns, mapping, row));
+    const target = clone(row), attributes = Object.keys(data);
+    this.exportedPluginPhase(mapping, "upsert", 10, target, row, previous, identity, attributes, options);
+    this.exportedPluginPhase(mapping, "upsert", 20, target, row, previous, identity, attributes, options);
+    this.validateBindings(mapping, data, row, identity, previous);
+    this.assertAlternateKeys(mapping, row, rows, index);
+    if (index < 0) this.insertRow(mapping.logicalName, rows, row);
+    else this.writeRow(mapping.logicalName, rows, index, row);
+    this.recordCommittedEvent(mapping.logicalName, previous ? "update" : "create", row, attributes, { target, previous, identity });
+    this.checkpointElastic(mapping, row);
+    this.exportedPluginPhase(mapping, "upsert", 40, target, row, previous, identity, attributes, options);
+    return { created: previous === null, row };
   }
   async remove(entity, id, identity = {}, options = {}) {
     return this.transact(() => this.removeRecord(entity, id, identity, options), { incremental: true });
@@ -2943,10 +3092,17 @@ export class DataStore {
       const m = this.resolveMapping(entity);
       this.assertWritable(m.logicalName);
       const rows = (this.state.tables[m.logicalName] ??= []);
-      const index = rows.findIndex((r) => equal(r[m.idColumn], id));
+      const index = this.rowIndex(m, rows, id, options);
       if (index < 0) throw new DataError("Record not found", 404, "NotFound");
       this.assertPrecondition(m, rows[index], options);
       this.assertAllowed(m.logicalName, "delete", rows[index], identity);
+      // Dataverse deletes hand the deleted rows (children first, root last) to the recycle bin; portal deletes never collect them.
+      if (identity?.dataverse && this.recycleDeleted) {
+        const deleted = [];
+        const result = this.deleteRow(m, rows[index], identity, new Set(), { ...options, deleted });
+        this.recycleDeleted(deleted, identity);
+        return result;
+      }
       return this.deleteRow(m, rows[index], identity, new Set(),options);
   }
   /**
@@ -2962,14 +3118,14 @@ export class DataStore {
    * own, so table permissions aren't checked for them; delete and update plugins run.
    */
   deleteRow(mapping, row, identity, deleting,options={}) {
-    const key = `${mapping.logicalName}\u0000${comparable(row[mapping.idColumn])}`;
+    const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
     if (deleting.has(key)) return row;
     deleting.add(key);
     const target = { [mapping.idColumn]: row[mapping.idColumn] }, attributes = Object.keys(target);
     this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes,options);
     this.exportedPluginPhase(mapping, 'delete', 20, target, row, row, identity, attributes,options);
     const effects = this.applyPlugins(mapping.logicalName, "delete", clone(row), row, identity);
-    for (const reference of this.referencesTo(mapping.logicalName)) {
+    for (const reference of this.referencesTo(mapping.logicalName, identity)) {
       const target = scalar(field(row, reference.targetColumn ?? mapping.idColumn));
       if (target == null) continue;
       const children = (this.state.tables[reference.entity] ?? []).filter((child) => {
@@ -2994,7 +3150,7 @@ export class DataStore {
         const rows = this.state.tables[reference.entity];
         const index = rows.findIndex((item) => equal(item[childMapping.idColumn], child[childMapping.idColumn]));
         if (index < 0) continue;
-        if (behaviour === "Cascade") this.deleteRow(childMapping, rows[index], identity, deleting, { systemColumns: options.systemColumns });
+        if (behaviour === "Cascade") this.deleteRow(childMapping, rows[index], identity, deleting, { systemColumns: options.systemColumns, deleted: options.deleted });
         else {
           const input = { ...rows[index], [reference.column]: null };
           const next = this.touchRow(rows[index], input, this.systemColumnsFor(options.systemColumns, childMapping, input));
@@ -3003,7 +3159,7 @@ export class DataStore {
       }
     }
     for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
-      for (const rel of Object.values(ownerMapping?.relationships ?? {})) {
+      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
         if (!rel?.intersect?.entity || !this.state.tables[rel.intersect.entity]?.length) continue;
         const sides = [];
         if (owner === mapping.logicalName) sides.push([rel.intersect.from, scalar(field(row, rel.from))]);
@@ -3016,11 +3172,18 @@ export class DataStore {
           }
       }
     const rows = this.state.tables[mapping.logicalName] ?? [];
-    const index = rows.findIndex((item) => equal(item[mapping.idColumn], row[mapping.idColumn]));
-    if (index >= 0) this.removeRow(mapping.logicalName, rows, index);
+    const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+    if (index >= 0) {
+      this.removeRow(mapping.logicalName, rows, index);
+      options.deleted?.push({ logicalName: mapping.logicalName, row: clone(row) });
+    }
     this.applySecondary(effects);
+    if (isElastic(mapping)) {
+      this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
+      this.checkpointElastic(mapping, row, true);
+    }
     this.exportedPluginPhase(mapping, 'delete', 40, target, row, row, identity, attributes,options);
-    this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
+    if (!isElastic(mapping)) this.recordCommittedEvent(mapping.logicalName,'delete',row,attributes,{target,previous:row,identity});
     return row;
   }
   /**
@@ -3028,7 +3191,7 @@ export class DataStore {
    * mapping (the child's single-valued lookup or the parent's collection), once per
    * referencing table and lookup column: { entity, column, targetColumn, cascade, schemaName }.
    */
-  referencesTo(logical) {
+  referencesTo(logical, identity = {}) {
     const found = new Map();
     const add = (reference) => {
       const key = `${reference.entity}\u0000${reference.column}`;
@@ -3036,7 +3199,7 @@ export class DataStore {
       if (!existing || (!existing.cascade && reference.cascade)) found.set(key, reference);
     };
     for (const [owner, ownerMapping] of Object.entries(this.state.mappings ?? {}))
-      for (const rel of Object.values(ownerMapping?.relationships ?? {})) {
+      for (const rel of Object.values(this.relationshipsFor(ownerMapping ?? {}, identity))) {
         if (!rel || rel.intersect || !rel.entity || !rel.from || !rel.to) continue;
         if (rel.many === false && rel.entity === logical)
           add({ entity: owner, column: rel.from, targetColumn: rel.to, cascade: rel.cascade, schemaName: rel.schemaName });
@@ -3100,7 +3263,7 @@ export class DataStore {
   }
   changeAssociationRecord(entity, id, navigation, targetId, identity, associate, options = {}) {
     const mapping = this.resolveMapping(entity);
-    const relationship = mapping.relationships[safeName(navigation)];
+    const relationship = this.relationshipsFor(mapping, identity)[safeName(navigation)];
     if (!relationship)
       throw new DataError(
         "Association navigation has no mapping",
@@ -3318,15 +3481,22 @@ export class DataStore {
     return this.retrieveMultipleOperation(entity,identity.admin&&options.sdkQuery?options.sdkQuery:{$type:'FetchExpression',query:permissionQuery.xml},identity,query=>{const source=query.$type==='QueryExpression'?queryExpressionToFetch(query,this):query.$type==='FetchExpression'?query.query:null;if(!source||parseFetchXml(source).children.find(node=>node.name==='entity')?.attrs.name!==entity)throw new DataError('A RetrieveMultiple observer cannot change the bound query table or type.',501,'LocalPluginQueryUnsupported');return execute(source);},'entities',options.sdkResponseToken,{...options,queryTransport:permissionQuery.transport});
   }
   fetchXmlCore(xml, identity = {}, options = {}) {
+    const tableLimits = this.querySettings().fetchLimits;
     const planOptions = {
       profile: options.sdkResult===true&&options.portalRequest!==true ? "sdk" : options.profile === "webapi" ? "webapi" : "portal",
-      limits: options.noBackendAdmission ? {...this.querySettings().fetchLimits,links:Number.MAX_SAFE_INTEGER,linksAndFilters:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : this.querySettings().fetchLimits,
+      limits: options.noBackendAdmission ? {...tableLimits,links:Number.MAX_SAFE_INTEGER,linksAndFilters:Number.MAX_SAFE_INTEGER,conditionsAndLinks:Number.MAX_SAFE_INTEGER,linkDepth:Number.MAX_SAFE_INTEGER} : tableLimits,
       generatedAnyAllAliases: options.permissionQuery?.generatedAnyAllAliases ?? [],
       linkBudgetError:this.observed?.fetchLinkBudgetError,
       ...(identity?.dataverse ? { dataverseIdentity: true } : {}),
     };
     const buildPlan = () => planFetch(parseFetchXml(xml), planOptions);
-    const plan = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();
+    const validated = options.fetchCache ? options.fetchCache.plan(JSON.stringify([xml, planOptions]), buildPlan) : buildPlan();
+    // Syntax and admission errors precede table lookup, including an unmapped root. Specialize the validated
+    // plan without mutating the render cache; the count attribute has already passed integer validation.
+    const elastic = isElastic(this.resolveMapping(validated.root.attrs.name));
+    const count = Number(validated.fetch.attrs.count);
+    const plan = elastic ? { ...validated, limits: { ...validated.limits, pageSize: 500, totalRecordCount: 500 },
+      pageSize: count ? Math.min(count, 500) : 500, totalRecordCountLimit: 500 } : validated;
     // Native Liquid preserves omission of returntotalrecordcount in its
     // exposed query and returns -1. The generic portal planner's historical
     // injected count is not part of this independently observed transport.
@@ -3342,11 +3512,13 @@ export class DataStore {
     const ctx = this.queryContext(identity, {...options,permissionLinkNodes,rawQueryNodes});
     return executeFetch(plan, {
       mapping: (name) => this.resolveMapping(name),
+      relationships: ctx.relationships,
       readableRows: options.noBackendAdmission ? () => [] : ctx.readRows,
       permissionLink: node => permissionLinkNodes.has(node),
       permissionTerminalConditions: options.permissionQuery?.generatedTerminalConditions ?? [],
       nativePagingCookies: options.portalRequest===true&&this.observed?.tablePermissionQueryPipeline==='native-classic',
       tableRows: (logical) => this.tableRows(logical),
+      datasourceRows: (source, logical) => (identity?.dataverse ? this.datasourceRows?.(source, logical, identity, { plan, options }) : undefined) ?? [],
       definition: ctx.definition,
       column: ctx.column,
       lookupName: ctx.lookupName,
@@ -3498,6 +3670,9 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
   switch (kind) {
     case "string": {
       if (typeof value !== "string") throw conversion("Edm.String");
+      // observed: the Web API rejects a NUL character in text (parity case family values.text).
+      if (options.dataverseWebApi && value.includes("\u0000"))
+        throw new DataError(`Invalid character in field '${attribute}': '.', hexadecimal value 0x00, is an invalid character.`, 400, "InvalidValue", { innerCode: "0x80040278" });
       if (value === "") return null;
       const max = Number(definition.maxLength);
       if (Number.isFinite(max) && max > 0 && value.length > max)
@@ -3541,6 +3716,9 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
         assertBounds(result,definition,'DecimalValueOutOfRange','0x80044330',{entity,attribute,kind});return result;
       }
       if(isExactNumeric(value)&&kind==='double'&&value.numericType==='Literal')value=Number(value.value);
+      // observed: the Web API parses Infinity text and then rejects it as outside the column's range (parity case family values.double).
+      if (kind === "double" && options.dataverseWebApi && (value === "Infinity" || value === "-Infinity"))
+        throw new DataError(`A validation error occurred for ${entity}.${attribute}. The value ${value === "Infinity" ? "∞" : "-∞"} of type System.Double is outside the valid range(${definition.minValue ?? ""} to ${definition.maxValue ?? ""}).`, 400, "DecimalValueOutOfRange", { innerCode: "0x80044330" });
       if (kind === "double" && typeof value === "string" && /^[+-]?(?:\d+(?:\.\d*)?|\.\d+)(?:e[+-]?\d+)?$/i.test(value.trim()))
         value = Number(value.trim());
       if (typeof value !== "number" || !Number.isFinite(value))
@@ -3575,10 +3753,28 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       if (typeof raw === "string" && /^[+-]?\d+$/.test(raw.trim())) raw = Number(raw.trim());
       if (typeof raw !== "number" || !Number.isInteger(raw))
         throw conversion("Edm.Int32");
+      // observed: a plain picklist accepts -1 on create and patch and reads it back (parity case family values.choice). State, status and multiselect columns do not.
+      if (options.dataverseWebApi && raw === -1 && String(definition.dataverseType ?? definition.type ?? "").toLowerCase() === "picklist") return raw;
       assertOption(raw, definition, { entity, attribute });
       return raw;
     }
     case "multichoice": {
+      // observed: the Web API takes a comma-separated string of option values; an empty string, an array or a non-integer part is rejected (parity case family values.multiselect).
+      if (options.dataverseWebApi) {
+        if (typeof value !== "string") throw conversion("Edm.String");
+        if (value.trim() === "") throw new DataError("Edm Object passed should have the options selected. ", 400, "InvalidValue", { innerCode: "0x80060888" });
+        const numbers = new Set();
+        for (const part of value.split(",")) {
+          const text = part.trim();
+          // unverified: the message for an empty part between commas.
+          const number = /^[+-]?\d+$/.test(text) ? Number(text) : NaN;
+          if (!Number.isInteger(number)) throw new DataError(`The optionset values sent ${text} are not valid integers.`, 400, "InvalidValue", { innerCode: "0x80060888" });
+          assertOption(number, definition, { entity, attribute });
+          numbers.add(number);
+        }
+        // Repeated choice values are stored once, in first-seen order.
+        return [...numbers].join(",");
+      }
       // The native form posts the MultiSelectPicklist control's JSON array of option metadata.
       if (typeof value === "string" && /^\s*\[/.test(value)) {
         try { value = JSON.parse(value).map((item) => item && typeof item === "object" ? item.Value : item).join(","); } catch { throw conversion("Edm.String"); }
@@ -3594,6 +3790,9 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
     }
     case "datetime": {
       if (typeof value !== "string") throw conversion("Edm.DateTimeOffset");
+      // observed: a DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader (parity case family values.dateonly).
+      if (options.dataverseWebApi && isDateOnlyField(definition) && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value)))
+        throw conversion("Edm.Date");
       const parsed = parseDateValue(value);
       // Timestamp calendar/clock errors fail the OData primitive reader. Failed
       // date-text/zone conversion reaches Dataverse's CrmDateTime validation.

@@ -260,6 +260,9 @@ function entityFacts(node, info) {
   const primaryName = attributes.find((a) => a.isPrimaryName)?.name;
   return compact({
     logicalName: logical,
+    // A mixed-case entity Name is the table's SchemaName (bp_DefaultApplication). A lowercase Name is the logical name, and its
+    // SchemaName is not in the export, so the privilege noun stays the capitalised logical name.
+    schemaName: /[A-Z]/.test(String(header?.attrs?.Name ?? "")) ? String(header.attrs.Name).trim() : undefined,
     entitySetName: valid(h("EntitySetName")) ? h("EntitySetName") : undefined,
     logicalCollectionName: valid(h("LogicalCollectionName") ?? h("CollectionName"))
       ? (h("LogicalCollectionName") ?? h("CollectionName"))
@@ -780,6 +783,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
         table.origin = "solution";
         if (!table.sources.includes(doc.file)) table.sources.push(doc.file);
         table.layers.push({ layer: layer.index, solution: layer.name, file: doc.file, fullDefinition: Boolean(entity.fullDefinition), attributes: entity.attributes.length, ...(entity.unmodified ? { unmodified: true } : {}) });
+        if (entity.schemaName) table.schemaName = entity.schemaName;
         if (entity.entitySetName) {
           if (table.entitySet && table.entitySet !== entity.entitySetName)
             diagnostics.push({ code: "SOLUTION_MAPPING_OVERRIDE", entity: entity.logicalName, source: doc.file, previous: table.entitySet, message: "A later metadata layer changes the entity set name." });

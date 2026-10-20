@@ -93,6 +93,19 @@ export function compileOperator(operator, {
   const op = operator === "neq" ? "ne" : operator;
   if (identity.dataverse && DATAVERSE_IDENTITY_OPERATORS.has(op))
     return compileIdentityOperator(op, { attribute, values, table, identity: identity.dataverse });
+  // EqualUserAuthContext is a query function only: it has no FetchXML operator, so it is not in FETCH_OPERATORS.
+  // The caller's authentication contexts come from identity.dataverse.authContexts; the simulator issues no acrs claim,
+  // so the list is empty and nothing matches. unverified: the semantics are a guess from the name (live capture LC-G5-3).
+  if (op === "eq-userauthcontext") {
+    if (!identity.dataverse)
+      throw new DataError(
+        "FetchXML operator eq-userauthcontext is not supported locally: the portal application user's authentication contexts are not modelled.",
+        400,
+        "UnsupportedQuery",
+      );
+    const contexts = identityIds(identity.dataverse.authContexts ?? []);
+    return (x) => !isNullValue(x) && contexts.has(identityKey(x) ?? String(scalar(x)).toLowerCase());
+  }
   const unsupported = UNSUPPORTED_OPERATORS.get(op);
   if (unsupported)
     throw new DataError(
@@ -331,6 +344,7 @@ export const CRM_FUNCTIONS = {
   EqualUserId: { operator: "eq-userid", values: "none" },
   NotEqualUserId: { operator: "ne-userid", values: "none" },
   EqualUserLanguage: { operator: "eq-userlanguage", values: "none" },
+  EqualUserAuthContext: { operator: "eq-userauthcontext", values: "none" },
   On: { operator: "on", values: "one" },
   OnOrAfter: { operator: "on-or-after", values: "one" },
   OnOrBefore: { operator: "on-or-before", values: "one" },

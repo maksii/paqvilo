@@ -78,6 +78,11 @@ export function webApiPolicy(portal, store, entity) {
   const mapping = store.resolveMapping(entity),
     prefix = `Webapi/${mapping.logicalName}/`,
     settings = portal.settings ?? {};
+  // Column type from Solution metadata; tables the Dataverse API seeds (standard or dataverseOnly) have none, so their
+  // own field types answer. A user-configured mapping keeps the Solution-only rule.
+  const seeded = mapping.standardTable || mapping.dataverseOnly;
+  const columnType = (name) =>
+    portal.webApiEntities?.[mapping.logicalName]?.fields?.[name]?.dataverseType ?? (seeded ? mapping.fields?.[name]?.dataverseType : undefined);
   if (
     WEBAPI_UNSUPPORTED_TABLES.has(mapping.logicalName) ||
     String(settings[prefix + "enabled"] ?? "false").toLowerCase() !== "true"
@@ -112,10 +117,7 @@ export function webApiPolicy(portal, store, entity) {
       if (field.name && !field.name.includes(".")) {
         fields.add(field.name);
         if (
-          ["lookup", "customer", "owner"].includes(
-            portal.webApiEntities?.[mapping.logicalName]?.fields?.[field.name]
-              ?.dataverseType,
-          )
+          ["lookup", "customer", "owner"].includes(columnType(field.name))
         )
           fields.add(`_${field.name}_value`);
       }
@@ -138,10 +140,7 @@ export function webApiPolicy(portal, store, entity) {
   // Keep the usual metadata-derived aliases unless that site observation opts in.
   for (const field of portal.observed?.webApiLookupFields === 'explicit-wire' ? [] : fields)
     if (
-      ["lookup", "customer", "owner"].includes(
-        portal.webApiEntities?.[mapping.logicalName]?.fields?.[field]
-          ?.dataverseType,
-      ) ||
+      ["lookup", "customer", "owner"].includes(columnType(field)) ||
       Object.values(mapping.relationships ?? {}).some(
         (relationship) =>
           relationship.from === field && relationship.many !== true,
@@ -154,10 +153,7 @@ export function webApiPolicy(portal, store, entity) {
     const match = /^_(.+)_value$/.exec(field);
     if (
       match &&
-      (["lookup", "customer", "owner"].includes(
-        portal.webApiEntities?.[mapping.logicalName]?.fields?.[match[1]]
-          ?.dataverseType,
-      ) ||
+      (["lookup", "customer", "owner"].includes(columnType(match[1])) ||
         Object.values(mapping.relationships ?? {}).some(
           (relationship) =>
             relationship.from === match[1] && relationship.many !== true,

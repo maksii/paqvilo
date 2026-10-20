@@ -7,11 +7,16 @@ const WINDOW_MS = 300000;
 const thousands = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 
 export function createServiceProtection({
-  requestsPer300s = null,
-  executionMsPer300s = null,
-  concurrentRequests = null,
+  requestsPer300s: requestsOption = null,
+  executionMsPer300s: executionOption = null,
+  concurrentRequests: concurrentOption = null,
   clock = Date.now,
 } = {}) {
+  // A limit may be a function, read on every request: the admin Environment settings change limits while the simulator runs.
+  const limitsNow = () => {
+    const read = (value) => (typeof value === "function" ? value() : value);
+    return { requestsPer300s: read(requestsOption), executionMsPer300s: read(executionOption), concurrentRequests: read(concurrentOption) };
+  };
   // userId -> { requests: admission times, executed: { at, ms } on release, active: in-flight count }
   const users = new Map();
 
@@ -51,6 +56,7 @@ export function createServiceProtection({
      * otherwise the concurrency slot leaks and the user stays throttled. A negative or non-numeric duration counts as 0.
      */
     admit(userId) {
+      const { requestsPer300s, executionMsPer300s, concurrentRequests } = limitsNow();
       const now = clock();
       const s = stateOf(userId);
       prune(s, now);
@@ -92,6 +98,7 @@ export function createServiceProtection({
 
     /** Remaining-limit headers for the user; a header is omitted when its limit is disabled. */
     headers(userId) {
+      const { requestsPer300s, executionMsPer300s } = limitsNow();
       const now = clock();
       const s = stateOf(userId);
       prune(s, now);
@@ -102,7 +109,8 @@ export function createServiceProtection({
       if (executionMsPer300s != null) {
         const used = s.executed.reduce((sum, e) => sum + e.ms, 0);
         // unverified: the header unit is taken as seconds with two decimals (the value baseHeaders emits).
-        out["x-ms-ratelimit-time-remaining-xrm-requests"] = (Math.max(0, executionMsPer300s - used) / 1000).toFixed(2);
+        // observed: native authenticated responses (e.g. image.thumbnail) send the time remaining with a thousands separator (1,068.10).
+        out["x-ms-ratelimit-time-remaining-xrm-requests"] = ((Math.max(0, executionMsPer300s - used) / 1000).toFixed(2)).replace(/^\d+/, thousands);
       }
       return out;
     },

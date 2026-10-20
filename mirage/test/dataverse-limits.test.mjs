@@ -111,6 +111,11 @@ test("headers report remaining requests and execution time in seconds", () => {
   });
 });
 
+test("the time remaining header groups thousands in the seconds value", () => {
+  const limits = createServiceProtection({ executionMsPer300s: 1200000, clock: fakeClock().clock });
+  assert.equal(limits.headers("u1")["x-ms-ratelimit-time-remaining-xrm-requests"], "1,200.00");
+});
+
 test("a disabled limit never rejects and its header is omitted", () => {
   const limits = createServiceProtection({ requestsPer300s: 1 });
   assert.equal(limits.admit("u1").ok, true);

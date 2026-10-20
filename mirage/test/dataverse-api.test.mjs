@@ -7,6 +7,7 @@ import { dataverseSettings } from "../lib/dataverse-settings.mjs";
 import { startDataverseApi } from "../lib/dataverse-api.mjs";
 import { hashSecret } from "../lib/dataverse-auth.mjs";
 import { uuidV5 } from "../lib/dataverse-security.mjs";
+import { NS } from "../lib/dataverse-soap-xml.mjs";
 
 const APP_ID = "22222222-2222-2222-2222-222222222222";
 const SECRET_VAR = "PAQVILO_TEST_SECRET";
@@ -41,6 +42,8 @@ describe("dataverse API router", () => {
         recordCalls.push(ctx);
         // A header value outside Latin-1 cannot be written; the router must still answer JSON.
         if (ctx.url.searchParams.has("badheader")) return { status: 204, headers: { "OData-EntityId": "https://example.test/日本" } };
+        if (ctx.url.searchParams.has("empty")) return { status: 204 };
+        if (ctx.url.searchParams.has("text")) return { status: 200, body: "raw value" };
         return { status: 200, body: { echo: ctx.route.kind, user: ctx.user.systemuserid } };
       },
     };
@@ -115,6 +118,19 @@ describe("dataverse API router", () => {
     const body = await response.json();
     assert.equal(body.error.code, "");
     assert.ok(body.error.message.includes("No HTTP resource was found"));
+  });
+
+  it("sends nosniff, Expires and Allow on successes, answers an empty 204 as text/html and omits Expires on the service document", async () => {
+    const response = await get(apiPath("WhoAmI"));
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("expires"), "-1");
+    assert.equal(response.headers.get("allow"), "OPTIONS,GET,HEAD,POST");
+    const empty = await get(apiPath("widgets?empty"));
+    assert.equal(empty.status, 204);
+    assert.equal(empty.headers.get("content-type"), "text/html; charset=utf-8");
+    const service = await get(apiPath(""));
+    assert.equal(service.status, 200);
+    assert.equal(service.headers.get("expires"), null);
   });
 
   it("answers RetrieveVersion with its response context", async () => {
@@ -266,17 +282,101 @@ describe("dataverse API router", () => {
     assert.equal(unknownRight.status, 400);
   });
 
+  it("P14: GrantAccess and RevokeAccess accept a systemuser or team principal keyed by ownerid", async () => {
+    const widgetId = "aaaaaaaa-0000-0000-0000-000000000002";
+    const target = { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" };
+    const principal = { ownerid: makerUserId, "@odata.type": "Microsoft.Dynamics.CRM.systemuser" };
+    const post = (name, body) => fetch(`${origin}${apiPath(name)}`, { method: "POST", headers: { ...auth(), "content-type": "application/json" }, body: JSON.stringify(body) });
+    const granted = await post("GrantAccess", { Target: target, PrincipalAccess: { AccessMask: "ReadAccess", Principal: principal } });
+    assert.equal(granted.status, 204);
+    assert.equal(store.state.tables.principalobjectaccess.find((row) => row.objectid === widgetId).principalid.id, makerUserId);
+    assert.equal((await post("RevokeAccess", { Target: target, Revokee: principal })).status, 204);
+    assert.equal(store.state.tables.principalobjectaccess.find((row) => row.objectid === widgetId), undefined);
+  });
+
+  it("P13: RetrievePrincipalAccess answers for a team (its shares and roles) and for the organization instead of 501", async () => {
+    const widgetId = "aaaaaaaa-0000-0000-0000-000000000001";
+    const teamId = "bbbbbbbb-0000-4000-8000-0000000000a1";
+    const target = { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" };
+    const post = (name, body) => fetch(`${origin}${apiPath(name)}`, { method: "POST", headers: { ...auth(), "content-type": "application/json" }, body: JSON.stringify(body) });
+    const access = async (subject) => {
+      const response = await get(apiPath(`${subject}/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@p1)?@p1={'@odata.id':'widgets(${widgetId})'}`));
+      return { status: response.status, rights: (await response.json()).AccessRights };
+    };
+    await store.transact(() => {
+      (store.state.tables.team ??= []).push({ teamid: teamId, name: "Readers", teamtype: 0, businessunitid: { id: uuidV5(organizationId, "businessunit:root"), logical_name: "businessunit" } });
+      (store.state.tables.teamroles ??= []).push({
+        teamroleid: uuidV5(teamId, uuidV5(organizationId, "role:Basic User")),
+        teamid: { id: teamId, logical_name: "team" },
+        roleid: { id: uuidV5(organizationId, "role:Basic User"), logical_name: "role" },
+      });
+    });
+    // Shared to the team at Read: the team's Basic role reads the admin-owned widget through the share.
+    assert.equal((await post("GrantAccess", { Target: target, PrincipalAccess: { AccessMask: "ReadAccess", Principal: { ownerid: teamId, "@odata.type": "Microsoft.Dynamics.CRM.team" } } })).status, 204);
+    const shared = await access(`teams(${teamId})`);
+    assert.equal(shared.status, 200);
+    assert.ok(shared.rights.split(", ").includes("ReadAccess"), `team rights: ${shared.rights}`);
+    assert.equal((await access("teams(cccccccc-0000-4000-8000-000000000000)")).status, 404);
+    const organization = await access(`organizations(${organizationId})`);
+    assert.equal(organization.status, 200);
+    assert.equal(organization.rights, "None", "the widget is user-owned, so the organization holds no rights on it");
+    assert.equal((await post("RevokeAccess", { Target: target, Revokee: { ownerid: teamId, "@odata.type": "Microsoft.Dynamics.CRM.team" } })).status, 204);
+  });
+
+  it("writes a share audit row for a GrantAccess when auditing is on", async () => {
+    const widgetId = "aaaaaaaa-0000-0000-0000-000000000001";
+    const mapping = store.state.mappings.widget;
+    const setAudit = (on) => store.transact(() => {
+      store.tableRows("organization")[0].isauditenabled = on;
+      mapping.dataverseMetadata = { ...(mapping.dataverseMetadata ?? {}), IsAuditEnabled: { Value: on } };
+    });
+    await setAudit(true);
+    try {
+      const before = store.tableRows("audit").length;
+      const granted = await fetch(`${origin}${apiPath("GrantAccess")}`, {
+        method: "POST",
+        headers: { ...auth(), "content-type": "application/json" },
+        body: JSON.stringify({
+          Target: { widgetid: widgetId, "@odata.type": "Microsoft.Dynamics.CRM.widget" },
+          PrincipalAccess: { AccessMask: "ReadAccess", Principal: { systemuserid: makerUserId, "@odata.type": "Microsoft.Dynamics.CRM.systemuser" } },
+        }),
+      });
+      assert.equal(granted.status, 204, await granted.clone().text());
+      const row = store.tableRows("audit").slice(before).find((item) => item.objectid?.id === widgetId);
+      assert.ok(row, "the GrantAccess wrote an audit row for the widget");
+      assert.equal(row.action, 14); // Share
+      assert.equal(row.objecttypecode, "widget");
+    } finally {
+      await setAudit(false);
+    }
+  });
+
   it("answers an unknown route with 404 0x8006088a", async () => {
     const response = await get("/api/data/v8.0/widgets");
     assert.equal(response.status, 404);
     assert.equal((await response.json()).error.code, "0x8006088a");
   });
 
-  it("answers SOAP POST with a 500 text/xml fault", async () => {
-    const response = await fetch(`${origin}/XRMServices/2011/Organization.svc/web`, { method: "POST", body: "<x/>" });
-    assert.equal(response.status, 500);
-    assert.ok(response.headers.get("content-type").startsWith("text/xml"));
-    assert.ok((await response.text()).includes("<faultcode>s:Receiver</faultcode>"));
+  it("answers an unauthenticated SOAP POST with a 401 challenge, and an authenticated SOAP WhoAmI with 200", async () => {
+    const challenge = await fetch(`${origin}/XRMServices/2011/Organization.svc/web`, { method: "POST", body: "<x/>" });
+    assert.equal(challenge.status, 401);
+    assert.equal(challenge.headers.get("www-authenticate"), `Bearer authorization_uri="${origin}/${tenantId}", resource_id="${origin}"`);
+    const body = `<s:Envelope xmlns:s="${NS.s}"><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:WhoAmIRequest" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns:a="${NS.a}"><a:Parameters/><a:RequestName>WhoAmI</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+    const response = await fetch(`${origin}/XRMServices/2011/Organization.svc/web`, { method: "POST", headers: { ...auth(), "content-type": "text/xml; charset=utf-8" }, body });
+    assert.equal(response.status, 200);
+    const xml = await response.text();
+    assert.ok(xml.includes("WhoAmIResponse"));
+    assert.ok(xml.includes(appUserId));
+  });
+
+  it("serves the cascade job message through the generic SOAP OrganizationRequest, from the registry", async () => {
+    const parent = "dddddddd-0000-4000-8000-000000000001";
+    const body = `<s:Envelope xmlns:s="${NS.s}"><s:Body><Execute xmlns="${NS.svc}"><request i:type="a:OrganizationRequest" xmlns:i="http://www.w3.org/2001/XMLSchema-instance" xmlns:a="${NS.a}"><a:Parameters><a:KeyValuePairOfstringanyType xmlns:b="http://schemas.datacontract.org/2004/07/System.Collections.Generic"><b:key>ParentEntityId</b:key><b:value i:type="c:string" xmlns:c="http://www.w3.org/2001/XMLSchema">${parent}</b:value></a:KeyValuePairOfstringanyType></a:Parameters><a:RequestName>RetrieveCascadeAssignAsyncJobId</a:RequestName></request></Execute></s:Body></s:Envelope>`;
+    const response = await fetch(`${origin}/XRMServices/2011/Organization.svc/web`, { method: "POST", headers: { ...auth(), "content-type": "text/xml; charset=utf-8" }, body });
+    const xml = await response.text();
+    assert.equal(response.status, 200, xml);
+    assert.match(xml, /<a:ResponseName>RetrieveCascadeAssignAsyncJobId<\/a:ResponseName>/);
+    assert.ok(xml.includes("00000000-0000-0000-0000-000000000000"), "the cascade job answers the empty id");
   });
 
   it("passes the MSCRM bypass headers to the record handler as bypassCustomPlugins", async () => {
@@ -332,13 +432,62 @@ describe("dataverse API router", () => {
     assert.ok(!JSON.stringify(entries).includes(token));
   });
 
-  it("answers OPTIONS with CORS headers", async () => {
-    const response = await fetch(`${origin}${apiPath("widgets")}`, { method: "OPTIONS" });
+  it("answers a cross-origin OPTIONS with CORS headers", async () => {
+    const response = await fetch(`${origin}${apiPath("widgets")}`, { method: "OPTIONS", headers: { origin: "http://other.test" } });
     assert.equal(response.status, 204);
     assert.equal(response.headers.get("access-control-allow-origin"), "*");
     assert.equal(response.headers.get("access-control-allow-methods"), "GET,POST,PATCH,PUT,DELETE,OPTIONS");
     // Authorization is listed explicitly: a browser preflight does not treat "*" as covering it.
     assert.match(response.headers.get("access-control-allow-headers"), /^Authorization, Content-Type, Accept, Prefer, If-Match/);
+  });
+
+  it("sends CORS headers only to a cross-origin caller", async () => {
+    assert.equal((await get(apiPath("WhoAmI"))).headers.get("access-control-allow-origin"), null);
+    assert.equal((await get(apiPath("WhoAmI"), { origin })).headers.get("access-control-allow-origin"), null);
+    assert.equal((await get(apiPath("WhoAmI"), { origin: "http://other.test" })).headers.get("access-control-allow-origin"), "*");
+  });
+
+  it("gzips a 200 for a caller that accepts gzip, and never a 204", async () => {
+    const zipped = await get(apiPath("widgets"), { "accept-encoding": "gzip" });
+    assert.equal(zipped.status, 200);
+    assert.equal(zipped.headers.get("content-encoding"), "gzip");
+    assert.equal(zipped.headers.get("vary"), "Accept-Encoding");
+    assert.equal((await zipped.json()).echo, "collection");
+    // fetch adds Accept-Encoding: gzip on its own, so the plain case asks for identity explicitly.
+    assert.equal((await get(apiPath("widgets"), { "accept-encoding": "identity" })).headers.get("content-encoding"), null);
+    const empty = await get(apiPath("widgets?empty"), { "accept-encoding": "gzip" });
+    assert.equal(empty.status, 204);
+    assert.equal(empty.headers.get("content-encoding"), null);
+    // A raw string value is text/plain with no charset, as native property $value answers.
+    const raw = await get(apiPath("widgets?text"), { "accept-encoding": "identity" });
+    assert.equal(raw.headers.get("content-type"), "text/plain");
+    assert.equal(await raw.text(), "raw value");
+  });
+
+  it("lists the keyed record's verbs in Allow on a HEAD or OPTIONS 405", async () => {
+    const path = `${origin}${apiPath("widgets(aaaaaaaa-0000-0000-0000-000000000001)")}`;
+    const head = await fetch(path, { method: "HEAD", headers: auth() });
+    assert.equal(head.status, 405);
+    assert.equal(head.headers.get("allow"), "POST,OPTIONS,GET,HEAD,POST");
+    const options = await fetch(path, { method: "OPTIONS", headers: auth() });
+    assert.equal(options.status, 405);
+    assert.equal(options.headers.get("allow"), "POST,OPTIONS,GET,HEAD,POST");
+  });
+
+  it("writes metadata contexts with the $select inside the set, the key as requested and expansions as name()", async () => {
+    const suffixOf = async (path) => (await (await get(apiPath(path))).json())["@odata.context"].split("$metadata#")[1];
+    assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')?$select=LogicalName,EntitySetName"), "EntityDefinitions(LogicalName,EntitySetName)/$entity");
+    assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')?$select=LogicalName&$expand=OneToManyRelationships"), "EntityDefinitions(LogicalName,OneToManyRelationships())/$entity");
+      const expanded = await (await get(apiPath("EntityDefinitions(LogicalName='widget')?$select=LogicalName&$expand=OneToManyRelationships,ManyToManyRelationships"))).json();
+      assert.ok(Array.isArray(expanded.OneToManyRelationships));
+      assert.ok(Array.isArray(expanded.ManyToManyRelationships));
+      assert.equal(expanded.DisplayName, undefined, "unselected scalar metadata stays omitted");
+    assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')/Attributes?$select=LogicalName"), "EntityDefinitions('widget')/Attributes(LogicalName)");
+    assert.equal(await suffixOf("EntityDefinitions(LogicalName='widget')/Keys?$select=LogicalName"), "EntityDefinitions('widget')/Keys(LogicalName)");
+    assert.equal(
+      await suffixOf("EntityDefinitions(LogicalName='widget')/Attributes/Microsoft.Dynamics.CRM.StringAttributeMetadata?$select=LogicalName"),
+      "EntityDefinitions('widget')/Attributes/Microsoft.Dynamics.CRM.StringAttributeMetadata(LogicalName)",
+    );
   });
 
   it("records the kind of each request", async () => {
@@ -458,7 +607,7 @@ describe("dataverse API batch, metadata and sign-in", () => {
   it("serves $metadata as application/xml with the widget entity type", async () => {
     const response = await send(apiPath("$metadata"), { headers: bearer(token) });
     assert.equal(response.status, 200);
-    assert.ok(response.headers.get("content-type").startsWith("application/xml"));
+    assert.equal(response.headers.get("content-type"), "application/xml");
     assert.ok((await response.text()).includes('EntityType Name="widget"'));
   });
 
@@ -484,10 +633,42 @@ describe("dataverse API batch, metadata and sign-in", () => {
     assert.equal(category.OptionSet.Options[0].Label.LocalizedLabels[0].Label, "Standard");
   });
 
+  it("answers the OptionSet of one attribute through its sub-path", async () => {
+    const path = apiPath("EntityDefinitions(LogicalName='widget')/Attributes(LogicalName='category')/Microsoft.Dynamics.CRM.PicklistAttributeMetadata/OptionSet");
+    const response = await send(path, { headers: bearer(token) });
+    assert.equal(response.status, 200, await response.clone().text());
+    const body = await response.json();
+    assert.equal(body.Options.map((option) => option.Value).join(","), "1,2");
+    assert.ok(body["@odata.context"].endsWith("EntityDefinitions/Attributes/OptionSet/$entity"));
+  });
+
+  it("answers RetrieveAttribute with the attribute's metadata and 404 for an unknown column", async () => {
+    const found = await send(apiPath(`RetrieveAttribute(EntityLogicalName=@e,LogicalName=@n)?${new URLSearchParams({ "@e": "'widget'", "@n": "'category'" })}`), { headers: bearer(token) });
+    assert.equal(found.status, 200, await found.clone().text());
+    const body = await found.json();
+    assert.equal(body.AttributeMetadata.LogicalName, "category");
+    assert.ok(body["@odata.context"].endsWith("Microsoft.Dynamics.CRM.RetrieveAttributeResponse"));
+    const missing = await send(apiPath(`RetrieveAttribute(EntityLogicalName=@e,LogicalName=@n)?${new URLSearchParams({ "@e": "'widget'", "@n": "'nosuchcolumn'" })}`), { headers: bearer(token) });
+    assert.equal(missing.status, 404);
+  });
+
   it("answers WhoAmI() with parentheses", async () => {
     const response = await send(apiPath("WhoAmI()"), { headers: bearer(token) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).OrganizationId, organizationId);
+  });
+
+  it("a JSON batch with one WhoAmI item answers 200 in the multipart form, as native does", async () => {
+    const response = await send(apiPath("$batch"), {
+      method: "POST",
+      headers: { ...bearer(token), "content-type": "application/json; charset=utf-8" },
+      body: JSON.stringify({ requests: [{ id: "1", method: "GET", url: "WhoAmI" }] }),
+    });
+    assert.equal(response.status, 200);
+    assert.ok(response.headers.get("content-type").startsWith("multipart/mixed; boundary=batchresponse_"));
+    const text = await response.text();
+    assert.match(text, /^HTTP\/1\.1 200 OK/m);
+    assert.ok(text.includes(organizationId));
   });
 
   it("runs a changeset of two creates and returns the entity ids in a multipart response", async () => {
@@ -529,7 +710,8 @@ describe("dataverse API batch, metadata and sign-in", () => {
       { prefer: "odata.continue-on-error" },
     );
     assert.equal(response.status, 200);
-    assert.ok(response.headers.get("preference-applied").includes("odata.continue-on-error"));
+    // Native omits Preference-Applied for continue-on-error, batch included.
+    assert.equal(response.headers.get("preference-applied"), null);
     const text = await response.text();
     assert.ok(text.includes("HTTP/1.1 404"));
     assert.match(text, /HTTP\/1\.1 20[14]/);
@@ -721,10 +903,11 @@ describe("dataverse API batch, metadata and sign-in", () => {
     assert.equal(allowed.status, 200);
   });
 
-  it("answers impersonation of an unknown target with 400 0x80040203 and a caller without the privilege with the full 403", async () => {
+  it("answers impersonation of an unknown target with 404 in the _error body and a caller without the privilege with the full 403", async () => {
+    // Native (headers.impersonation-invalid): 404 Record Is Unavailable, not the 400 envelope this test used to expect.
     const unknown = await send(apiPath("WhoAmI"), { headers: { ...bearer(token), MSCRMCallerID: "99999999-9999-4999-8999-999999999999" } });
-    assert.equal(unknown.status, 400);
-    assert.equal((await unknown.json()).error.code, "0x80040203");
+    assert.equal(unknown.status, 404);
+    assert.equal((await unknown.json())._error.Code, "0x80040217");
     const denied = await send(apiPath("WhoAmI"), { headers: { ...bearer(userToken), MSCRMCallerID: makerUserId } });
     assert.equal(denied.status, 403);
     const { error } = await denied.json();
@@ -755,6 +938,50 @@ describe("dataverse API batch, metadata and sign-in", () => {
     const response = await send(apiPath("WhoAmI"), { headers: bearer(token) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).UserId, uuidV5(organizationId, `systemuser:app:${APP_ID}`));
+  });
+
+  it("reseed restores the org row version to the largest stored versionnumber", async () => {
+    await store.transact(() => {
+      store.state.rowVersion = 1;
+      (store.state.tables.widget ??= []).push({ widgetid: "0b9d0b3e-0000-4000-8000-00000000f0f0", versionnumber: 500 });
+    });
+    await api.reseed();
+    assert.ok(store.state.rowVersion >= 500, `row version ${store.state.rowVersion} sits below the stored 500`);
+  });
+
+  it("keeps a custom column added through the Web API when the mapping is reset and reseeded", async () => {
+    const created = await send(apiPath("EntityDefinitions(LogicalName='widget')/Attributes"), {
+      method: "POST",
+      headers: { ...bearer(token), "content-type": "application/json" },
+      body: JSON.stringify({
+        "@odata.type": "Microsoft.Dynamics.CRM.StringAttributeMetadata", SchemaName: "new_Note", MaxLength: 100,
+        DisplayName: { LocalizedLabels: [{ Label: "Note", LanguageCode: 1033 }] },
+      }),
+    });
+    assert.equal(created.status, 204, await created.clone().text());
+    assert.ok(store.state.mappings.widget.fields.new_note);
+    // A Solution reload leaves the mapping with its Solution fields only; the stored custom column must come back.
+    await store.transact(() => {
+      delete store.state.mappings.widget.fields.new_note;
+    });
+    await api.reseed();
+    assert.ok(store.state.mappings.widget.fields.new_note, "the custom column is reapplied after reseed");
+  });
+
+  it("re-creates the audit, saved query, duplicate rule, async operation and field security tables on reseed", async () => {
+    // A fresh store has none of these: drop their mappings and tables, then reseed as the /_sim/ reset path does.
+    const logicals = ["audit", "savedquery", "duplicaterule", "asyncoperation", "fieldsecurityprofile"];
+    await store.transact(() => {
+      for (const logical of logicals) {
+        delete store.state.mappings[logical];
+        delete store.state.tables[logical];
+      }
+    });
+    await api.reseed();
+    for (const logical of logicals) {
+      assert.ok(store.state.mappings[logical], `${logical} mapping exists after reseed`);
+      assert.ok(Array.isArray(store.state.tables[logical]), `${logical} table exists after reseed`);
+    }
   });
 });
 

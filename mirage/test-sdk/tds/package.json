@@ -1,0 +1,8 @@
+{
+  "name": "paqvilo-sdk-gate-tds",
+  "private": true,
+  "type": "module",
+  "description": "SDK verification gate: tedious against the Mirage Dataverse TDS endpoint",
+  "scripts": { "test": "node --test --test-timeout=600000 gate.test.mjs" },
+  "dependencies": { "tedious": "20.3.8" }
+}

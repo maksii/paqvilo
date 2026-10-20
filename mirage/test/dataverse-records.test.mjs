@@ -5,8 +5,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { ACCESS_RIGHTS, baseCurrencyId, createPrincipals, ensureSecurityModel, grantAccess } from "../lib/dataverse-security.mjs";
-import { encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
+import { dataverseError, encodeSkipToken, parseDataverseRoute, parsePrefer } from "../lib/dataverse-odata.mjs";
 import { createRecordHandlers, createRecordHooks } from "../lib/dataverse-records.mjs";
+import { fieldSecurity } from "../lib/dataverse-fls.mjs";
 import { DataError } from "../lib/data-error.mjs";
 import { createChangeLog } from "../lib/dataverse-changes.mjs";
 import { stringifyExactJson } from "../lib/exact-numeric.mjs";
@@ -72,7 +73,7 @@ async function setup(options = {}) {
   const handlers = createRecordHandlers({ store, change: (fn) => fn(), principals, metadataFields: () => undefined, changes, ...options });
   const admin = principals.byObjectId(ADMIN_OID);
   const basic = principals.byObjectId(BASIC_OID);
-  const send = async (method, path, { user = admin, caller = user, body, headers = {} } = {}) => {
+  const send = async (method, path, { user = admin, caller = user, body, headers = {}, bodyBuffer } = {}) => {
     const url = new URL(path, ORIGIN);
     const lowered = Object.fromEntries(Object.entries(headers).map(([name, value]) => [name.toLowerCase(), value]));
     return handlers.handle({
@@ -84,6 +85,7 @@ async function setup(options = {}) {
       prefer: parsePrefer(lowered.prefer),
       headers: lowered,
       body,
+      bodyBuffer,
       user,
       caller,
       identity: { admin: true, id: user.systemuserid, systemUserId: user.systemuserid },
@@ -232,7 +234,8 @@ test("unknown entity set answers 404 with the Dataverse segment error", async ()
   const t = await setup();
   const error = await failure(t.send("GET", `/api/data/${VERSION}/nothings`));
   assert.equal(error.status, 404);
-  assert.equal(error.details.innerCode, "0x8006088a");
+  // Native (errors.unknown-set): 0x80060888, not the 0x8006088a this test used to expect.
+  assert.equal(error.details.innerCode, "0x80060888");
   assert.equal(error.message, "Resource not found for the segment 'nothings'.");
 });
 
@@ -294,11 +297,13 @@ test("PATCH updates, enforces If-Match and If-None-Match, and rejects stale etag
 
   const missingIfMatch = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${MISSING})`, { body: { name: "x" }, headers: { "if-match": "*" } }));
   assert.equal(missingIfMatch.status, 404);
-  assert.equal(missingIfMatch.message, `widget With Id = ${MISSING} Does Not Exist`);
+  // Native (parity capture): 404 0x80040217 worded with "Entity '<table>'".
+  assert.equal(missingIfMatch.message, `Entity 'widget' With Id = ${MISSING} Does Not Exist`);
+  assert.equal(missingIfMatch.details.innerCode, "0x80040217");
 
   const exists = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "x" }, headers: { "if-none-match": "*" } }));
   assert.equal(exists.status, 412);
-  assert.equal(exists.details.innerCode, "");
+  assert.equal(exists.details.innerCode, "0x80040237");
 
   const stale = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "x" }, headers: { "if-match": 'W/"1"' } }));
   assert.equal(stale.status, 412);
@@ -324,9 +329,11 @@ test("properties: PUT, GET, $value and DELETE set and clear a value", async () =
   assert.deepEqual(raw, { status: 200, body: "Put" });
   assert.equal((await t.send("DELETE", `/api/data/${VERSION}/widgets(${id})/price`)).status, 204);
   assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets(${id})/price`)).status, 204);
+  // Native (property.unknown): an unknown path segment after a record is a missing resource, 404 0x80060888 without a period.
   const unknown = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})/nosuch`));
-  assert.equal(unknown.status, 400);
-  assert.match(unknown.message, /Could not find a property named/);
+  assert.equal(unknown.status, 404);
+  assert.equal(unknown.details.innerCode, "0x80060888");
+  assert.equal(unknown.message, "Resource not found for the segment 'nosuch'");
 });
 
 test("single-valued navigation returns the target entity, or 204 when unset", async () => {
@@ -457,19 +464,20 @@ test("Basic User sees only owned widgets and is denied others and unprivileged t
 
 const businessUnitOf = (user) => String(user.businessunitid?.id ?? user.businessunitid).toLowerCase();
 
-test("unknown payload properties answer 400 0x0 on create and update, and nothing is written", async () => {
+test("unknown payload properties answer 400 0x80048d19 on create and update, and nothing is written", async () => {
   const t = await setup();
   const created = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "x", bogus: 1 } }));
   assert.equal(created.status, 400);
-  assert.equal(created.details.innerCode, "0x0");
+  assert.equal(created.details.innerCode, "0x80048d19");
+  // The payload-reader form of native batch.rollback, without its stack trace.
   assert.equal(
     created.message,
-    "An error occurred while validating input parameters: Microsoft.Crm.CrmException: Invalid property 'bogus' was found in entity 'Microsoft.Dynamics.CRM.widget'. ---> Microsoft.OData.ODataException: Does not support untyped value in non-open type.",
+    "Error identified in Payload provided by the user for Entity :'widgets', For more information on this error please follow this help link https://go.microsoft.com/fwlink/?linkid=2195293  ---->  InnerException : Microsoft.Crm.CrmException: Invalid property 'bogus' was found in entity 'Microsoft.Dynamics.CRM.widget'. ---> Microsoft.OData.ODataException: The property 'bogus' does not exist on type 'Microsoft.Dynamics.CRM.widget'. Make sure to only use property names that are defined by the type.",
   );
   assert.equal(t.store.state.tables.widget.length, 0);
   const id = await create(t, "widgets", { name: "Real" });
   const patched = await failure(t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { nonsense: "x" } }));
-  assert.equal(patched.details.innerCode, "0x0");
+  assert.equal(patched.details.innerCode, "0x80048d19");
   assert.match(patched.message, /Invalid property 'nonsense'/);
   const dangling = await failure(t.send("POST", `/api/data/${VERSION}/gadgets`, { body: { name: "g", "nope@odata.bind": `/widgets(${id})` } }));
   assert.equal(dangling.status, 400);
@@ -477,18 +485,22 @@ test("unknown payload properties answer 400 0x0 on create and update, and nothin
   assert.match(dangling.message, /An undeclared property 'nope'/);
 });
 
-test("unknown $filter, $orderby and $expand properties answer 400 0x0 while declared ones pass", async () => {
+test("unknown $select, $filter, $orderby and $expand properties answer 400 0x80060888 while declared ones pass", async () => {
   const t = await setup();
   await create(t, "widgets", { name: "Known" });
   const expected = (name) => `Could not find a property named '${name}' on type 'Microsoft.Dynamics.CRM.widget'.`;
+  const select = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=bogus`));
+  assert.equal(select.status, 400);
+  assert.equal(select.details.innerCode, "0x80060888");
+  assert.equal(select.message, expected("bogus"));
   const filter = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$filter=bogus eq 1`));
-  assert.equal(filter.details.innerCode, "0x0");
+  assert.equal(filter.details.innerCode, "0x80060888");
   assert.equal(filter.message, expected("bogus"));
   const order = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$orderby=bogus`));
-  assert.equal(order.details.innerCode, "0x0");
+  assert.equal(order.details.innerCode, "0x80060888");
   assert.equal(order.message, expected("bogus"));
   const expand = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$expand=bogus`));
-  assert.equal(expand.details.innerCode, "0x0");
+  assert.equal(expand.details.innerCode, "0x80060888");
   assert.equal(expand.message, expected("bogus"));
   const ok = await t.send("GET", `/api/data/${VERSION}/widgets?$filter=name eq 'Known' and _ownerid_value ne null&$orderby=name desc&$expand=widget_gadgets`);
   assert.equal(ok.status, 200);
@@ -499,7 +511,7 @@ test("logical table names do not route; only entity set names do", async () => {
   const t = await setup();
   const error = await failure(t.send("GET", `/api/data/${VERSION}/widget`));
   assert.equal(error.status, 404);
-  assert.equal(error.details.innerCode, "0x8006088a");
+  assert.equal(error.details.innerCode, "0x80060888"); // native unknown-set code (errors.unknown-set)
   assert.equal(error.message, "Resource not found for the segment 'widget'.");
 });
 
@@ -571,12 +583,12 @@ test("create defaults statecode to 0 and statuscode to the state-0 status, keepi
   assert.equal(kept.statuscode, 2);
 });
 
-test("create answers 204 with OData-EntityId only; a 201 representation has no entity id or Location", async () => {
+test("create answers 204 with OData-EntityId and the same Location; a 201 representation has neither", async () => {
   const t = await setup();
   const created = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "H" } });
   assert.equal(created.status, 204);
   assert.match(created.headers["OData-EntityId"], /\/widgets\([0-9a-f-]{36}\)$/);
-  assert.equal(created.headers.Location, undefined);
+  assert.equal(created.headers.Location, created.headers["OData-EntityId"]);
   const shown = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "S" }, headers: { prefer: "return=representation" } });
   assert.equal(shown.status, 201);
   assert.equal(shown.headers["OData-EntityId"], undefined);
@@ -598,14 +610,15 @@ test("a duplicate alternate key answers 412 0x80060892 with the key name and col
   );
 });
 
-test("304 answers carry the JSON content type and OData-Version", async () => {
+test("304 answers an empty text/html response with no ETag and no OData-Version", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Tagged" });
   const etag = (await t.send("GET", `/api/data/${VERSION}/widgets(${id})`)).headers.ETag;
   const again = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: { "if-none-match": etag } });
   assert.equal(again.status, 304);
-  assert.equal(again.headers["Content-Type"], "application/json; odata.metadata=minimal");
-  assert.equal(again.headers["OData-Version"], "4.0");
+  assert.equal(again.headers["Content-Type"], "text/html; charset=utf-8");
+  assert.equal(again.headers.ETag, undefined);
+  assert.equal(again.headers["OData-Version"], undefined);
 });
 
 test("lookups to the owner carry their navigation name when annotations are requested", async () => {
@@ -643,7 +656,7 @@ test("Basic-depth reads include rows shared with the caller", async () => {
 test("money columns serialize with four decimals, a currency symbol and the base currency lookup", async () => {
   const t = await setup();
   const id = await create(t, "widgets", { name: "Priced", price: 12.5 });
-  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price,${CURRENCY}`, { headers: annotate("*") });
   assert.equal(res.status, 200);
   const currency = t.store.state.tables.transactioncurrency[0];
   assert.equal(res.body[CURRENCY], currency.transactioncurrencyid);
@@ -653,8 +666,10 @@ test("money columns serialize with four decimals, a currency symbol and the base
   assert.match(stringifyExactJson(res.body), /"price":12\.5000[,}]/);
   const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`);
   assert.ok(!(CURRENCY in plain.body.value[0]), "rows without a money column carry no currency");
-  const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`);
+  const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price,${CURRENCY}`);
   assert.equal(list.body.value[0][CURRENCY], currency.transactioncurrencyid);
+  const priceOnly = await t.send("GET", `/api/data/${VERSION}/widgets?$select=price`, { headers: annotate("*") });
+  assert.ok(!(CURRENCY in priceOnly.body.value[0]), "a $select without the currency lookup omits it and its annotations");
   assert.ok(!Object.keys(list.body.value[0]).some((key) => key.includes("@") && !key.startsWith("@odata.")), "annotations stay opt-in");
 });
 
@@ -665,7 +680,7 @@ test("money formatting uses the Dataverse base currency when a portal currency r
     transactioncurrencyid: "eeeeeeee-0000-4000-8000-000000000001", currencyname: "Euro", currencysymbol: "€", currencyprecision: 2,
   }));
   const id = await create(t, "widgets", { name: "Priced", price: 12.5 });
-  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price,${CURRENCY}`, { headers: annotate("*") });
   assert.equal(res.body[CURRENCY], baseCurrencyId(ORG));
   assert.equal(res.body[`${CURRENCY}@OData.Community.Display.V1.FormattedValue`], "Base currency");
   assert.equal(res.body["price@OData.Community.Display.V1.FormattedValue"], "$12.50");
@@ -744,6 +759,7 @@ test("change tracking answers only organization-level readers, and a limited rea
   const denied = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { user: t.basic, headers: { prefer: "odata.track-changes" } }));
   assert.equal(denied.status, 403);
   assert.equal(denied.details.innerCode, "0x80040220");
+  assert.match(denied.message, /prvReadWidget\b/);
   const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
   const link = full.body["@odata.deltaLink"];
   await t.send("DELETE", `/api/data/${VERSION}/widgets(${own})`);
@@ -951,6 +967,31 @@ test("deep-inserted children carry their own table's audit and owner columns, wi
   assert.equal(lowerId(kid.ownerid), t.basic.systemuserid.toLowerCase());
 });
 
+test("create and update take the next org-wide row version across tables, and the ETag is that versionnumber", async () => {
+  const t = await setup();
+  const widgetId = await create(t, "widgets", { name: "Alpha" });
+  const widget = t.store.state.tables.widget[0];
+  const created = widget.versionnumber;
+  await create(t, "tags", { name: "Beta" });
+  const tag = t.store.state.tables.tag[0];
+  assert.equal(tag.versionnumber, created + 1, "the tag takes the next version after the widget");
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${widgetId})`, { body: { name: "Alpha2" } });
+  const patched = t.store.state.tables.widget[0];
+  assert.equal(patched.versionnumber, tag.versionnumber + 1, "the patch takes the next version after the tag");
+  assert.equal(t.store.state.rowVersion, patched.versionnumber);
+  const etag = (await t.send("GET", `/api/data/${VERSION}/widgets(${widgetId})`)).headers.ETag;
+  assert.equal(etag, `W/"${patched.versionnumber}"`);
+});
+
+test("a delete after a token is logged after that token, so a delta read reports it", async () => {
+  const t = await setup();
+  const widgetId = await create(t, "widgets", { name: "Doomed" });
+  const token = t.changes.token();
+  await t.send("DELETE", `/api/data/${VERSION}/widgets(${widgetId})`);
+  const { revision } = t.changes.parse(token);
+  assert.deepEqual(await t.changes.since("widget", revision), { changed: [], deleted: [widgetId.toLowerCase()] });
+});
+
 test("system columns in a payload are ignored on create and update; overriddencreatedon sets createdon on create only", async () => {
   const t = await setup();
   const id = await create(t, "widgets", {
@@ -1120,4 +1161,557 @@ test("change tracking reads the mapping's flag (or its metadata) unless the opti
   const overridden = await setup({ changeTrackingEnabled: () => undefined });
   overridden.store.state.mappings.tag.changeTrackingEnabled = false;
   assert.equal((await overridden.send("GET", `/api/data/${VERSION}/tags?$select=name`, { headers: { prefer: "odata.track-changes" } })).status, 200);
+});
+
+test("afterWrite runs inside the write's transaction: an awaited hook sees the row, and its throw rolls back the write and its own changes", async () => {
+  const hooks = createRecordHooks();
+  const seen = [];
+  hooks.add("beforeWrite", async (c, mapping, info) => {
+    await Promise.resolve();
+    seen.push(`before:${info.operation}`);
+  });
+  hooks.add("afterWrite", async (c, mapping, info) => {
+    await Promise.resolve();
+    seen.push(`after:${info.operation}`);
+    if (mapping.logicalName !== "widget" || info.operation !== "create") return;
+    seen.push(`row-visible:${t.store.state.tables.widget.some((row) => row.name === c.body.name)}`);
+    t.store.insertRow("tag", t.store.state.tables.tag, { tagid: randomUUID(), name: `mark-${c.body.name}` });
+    if (c.body.name === "veto") throw new DataError("Vetoed after the write.", 403, "Forbidden", { innerCode: "0x80040220" });
+  });
+  const t = await setup({ hooks });
+  const vetoed = await failure(t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "veto" } }));
+  assert.equal(vetoed.message, "Vetoed after the write.");
+  assert.equal(t.store.state.tables.widget.some((row) => row.name === "veto"), false, "the write rolls back");
+  assert.equal(t.store.state.tables.tag.some((row) => row.name === "mark-veto"), false, "the hook's own change rolls back");
+  await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "kept" } });
+  assert.equal(t.store.state.tables.widget.some((row) => row.name === "kept"), true);
+  assert.equal(t.store.state.tables.tag.some((row) => row.name === "mark-kept"), true, "the hook's change persists with the write");
+  assert.deepEqual(seen.slice(0, 3), ["before:create", "after:create", "row-visible:true"], "the row is visible to the awaited hook inside the transaction");
+});
+
+test("expanding or linking to a table the caller cannot read answers 403 even when that table has no rows", async () => {
+  const t = await setup();
+  const mine = await create(t, "widgets", { name: "BasicWidget" }, t.basic);
+  t.store.state.mappings.vault = { logicalName: "vault", entitySet: "vaults", idColumn: "vaultid", nameColumn: "name", fields: { name: text } };
+  t.store.state.mappings.widget.relationships.widget_vault = { entity: "vault", from: "widgetid", to: "vaultid", many: false };
+  t.store.state.tables.vault = [];
+  const expanded = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${mine})?$expand=widget_vault`, { user: t.basic }));
+  assert.equal(expanded.status, 403);
+  assert.equal(expanded.details.innerCode, "0x80040220");
+  const xml = '<fetch><entity name="widget"><attribute name="name"/><link-entity name="vault" from="vaultid" to="widgetid" link-type="outer" alias="v"><attribute name="name" alias="v.name"/></link-entity></entity></fetch>';
+  const linked = await failure(t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent(xml)}`, { user: t.basic }));
+  assert.equal(linked.status, 403);
+  assert.equal(linked.details.innerCode, "0x80040220");
+});
+
+test("the raw request body reaches the stream and write hooks as c.bodyBuffer", async () => {
+  const hooks = createRecordHooks();
+  const raw = [];
+  hooks.add("stream", (c) => {
+    if (c.route.kind === "value") raw.push(["stream", c.bodyBuffer.toString("utf8")]);
+    return undefined;
+  });
+  hooks.add("beforeWrite", (c, mapping, info) => {
+    raw.push(["before", info.operation, Buffer.isBuffer(c.bodyBuffer) && c.bodyBuffer.toString("utf8")]);
+  });
+  const t = await setup({ hooks });
+  const id = await create(t, "widgets", { name: "Raw" });
+  raw.length = 0;
+  await t.send("GET", `/api/data/${VERSION}/widgets(${id})/name/$value`, { bodyBuffer: Buffer.from("raw-get") });
+  await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "x" }, bodyBuffer: Buffer.from('{"name":"x"}') });
+  assert.deepEqual(raw, [["stream", "raw-get"], ["before", "create", '{"name":"x"}']]);
+});
+
+test("$expand and FetchXML aggregates answer a formatted value for count and sum when annotations are requested", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a", price: 1.5 });
+  await create(t, "widgets", { name: "b", price: 2.25 });
+  const xml = encodeURIComponent('<fetch aggregate="true"><entity name="widget"><attribute name="widgetid" aggregate="count" alias="n"/><attribute name="price" aggregate="sum" alias="total"/></entity></fetch>');
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${xml}`, { headers: annotate("OData.Community.Display.V1.FormattedValue") });
+  const [row] = res.body.value;
+  assert.equal(row.n, 2);
+  assert.equal(typeof row["n@OData.Community.Display.V1.FormattedValue"], "string");
+  assert.equal(row["n@OData.Community.Display.V1.FormattedValue"], "2");
+  assert.equal(row["total@OData.Community.Display.V1.FormattedValue"], "3.75");
+});
+
+test("an expanded collection over 5000 rows answers the first page and a nav@odata.nextLink that pages on", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Parent" });
+  for (let i = 0; i < 5001; i++) t.store.state.tables.gadget.push({ gadgetid: randomUUID(), name: `g${i}`, widgetid: id });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$expand=widget_gadgets`);
+  assert.equal(res.body.widget_gadgets.length, 5000);
+  const link = res.body["widget_gadgets@odata.nextLink"];
+  assert.ok(link.startsWith(`${ORIGIN}/api/data/${VERSION}/widgets(${id})/widget_gadgets?$skiptoken=`), link);
+  const rest = await t.send("GET", link);
+  assert.equal(rest.body.value.length, 1);
+});
+
+test("expansion options are checked: $skip is refused, and a paged many-valued expansion nested under another is refused", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "P" });
+  const skip = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})?$expand=widget_gadgets($skip=1)`));
+  assert.equal(skip.details.innerCode, "0x80060888");
+  assert.equal(skip.message, "$skip, $count, $search, and $levels are not supported inside $expand");
+  const nested = await failure(t.send("GET", `/api/data/${VERSION}/gadgets?$expand=widgetid($expand=widget_gadgets($top=1))`));
+  assert.equal(nested.details.innerCode, "0x80060888");
+});
+
+test("a $filter with a negated Dataverse query function answers 400 0x80060888", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a" });
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$filter=not Microsoft.Dynamics.CRM.Between(PropertyName='name',PropertyValues=['a','b'])`));
+  assert.equal(error.details.innerCode, "0x80060888");
+  assert.match(error.message, /Not operator along with the Custom Named Condition operators/);
+});
+
+test("$apply aggregate aliases carry a formatted value when annotations are requested", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "a", price: 1.5 });
+  await create(t, "widgets", { name: "b", price: 2.25 });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets?$apply=aggregate(price with sum as total)`, { headers: annotate("OData.Community.Display.V1.FormattedValue") });
+  assert.equal(res.body.value[0].total, 3.75);
+  assert.equal(res.body.value[0]["total@OData.Community.Display.V1.FormattedValue"], "3.75");
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$apply=aggregate(price with sum as total)`);
+  assert.equal(plain.body.value[0]["total@OData.Community.Display.V1.FormattedValue"], undefined);
+});
+
+// Column-level security over the record handlers: the handlers read api.fieldSecurity through the getter.
+// The widget and gadget secret columns are secured; BASIC has no field permissions, the admin bypasses them.
+async function securedSetup() {
+  let api;
+  const hooks = createRecordHooks();
+  const t = await setup({ fieldSecurity: () => api?.fieldSecurity, hooks });
+  api = { store: t.store, principals: t.principals, settings: SETTINGS, change: (fn) => fn(), registry: { register() {} }, recordHooks: hooks };
+  await fieldSecurity.install(api);
+  const secured = { dataverseType: "nvarchar", columnMetadata: { isSecured: true } };
+  t.store.state.mappings.widget.fields.secret = secured;
+  t.store.state.mappings.gadget.fields.secret = secured;
+  return t;
+}
+
+// Rows are created by the basic user, who owns them, so the basic user reads them; the secret values are set in state
+// (the basic user holds no field permission to write them).
+async function securedRow(t, set, values, user = t.basic) {
+  const id = await create(t, set, { name: values.name, ...(values.bind ? { "widgetid@odata.bind": values.bind } : {}) }, user);
+  const logical = set === "widgets" ? "widget" : "gadget";
+  const row = t.store.state.tables[logical].find((item) => lowerId(item[`${logical}id`]) === id.toLowerCase());
+  if (values.secret !== undefined) row.secret = values.secret;
+  return id;
+}
+
+test("FetchXML hides secured root and link-entity columns, aliased ones too, and refuses aggregates over them", async () => {
+  const t = await securedSetup();
+  const w1 = await securedRow(t, "widgets", { name: "W1", secret: "s1" });
+  await securedRow(t, "gadgets", { name: "G1", secret: "g1", bind: `/widgets(${w1})` });
+  const linked = `<fetch><entity name="gadget"><attribute name="name"/><attribute name="secret"/><link-entity name="widget" from="widgetid" to="widgetid" link-type="outer" alias="w"><attribute name="secret"/><attribute name="name" alias="w.name"/><attribute name="secret" alias="ws"/></link-entity></entity></fetch>`;
+  const path = `/api/data/${VERSION}/gadgets?fetchXml=${encodeURIComponent(linked)}`;
+  const basic = await t.send("GET", path, { user: t.basic });
+  const row = basic.body.value[0];
+  assert.equal(row.name, "G1");
+  assert.equal(row["w.name"], "W1");
+  for (const hidden of ["secret", "w.secret", "ws"]) assert.equal(Object.hasOwn(row, hidden), false, hidden);
+  assert.ok(!JSON.stringify(basic.body).includes("s1") && !JSON.stringify(basic.body).includes("g1"));
+  const admin = await t.send("GET", path);
+  assert.equal(admin.body.value[0].secret, "g1");
+  assert.equal(admin.body.value[0]["w.secret"], "s1");
+  assert.equal(admin.body.value[0].ws, "s1");
+  // An aggregate over the root or a link-entity secured column answers 403 for the basic user, 200 for the admin.
+  const rootAgg = `<fetch aggregate="true"><entity name="gadget"><attribute name="secret" aggregate="count" alias="n"/></entity></fetch>`;
+  const linkAgg = `<fetch aggregate="true"><entity name="gadget"><attribute name="name" aggregate="count" alias="n"/><link-entity name="widget" from="widgetid" to="widgetid" link-type="outer" alias="w"><attribute name="secret" aggregate="max" alias="m"/></link-entity></entity></fetch>`;
+  for (const xml of [rootAgg, linkAgg]) {
+    const refused = await failure(t.send("GET", `/api/data/${VERSION}/gadgets?fetchXml=${encodeURIComponent(xml)}`, { user: t.basic }));
+    assert.equal(refused.status, 403);
+    assert.equal(refused.details.innerCode, "0x8004f508");
+    assert.equal((await t.send("GET", `/api/data/${VERSION}/gadgets?fetchXml=${encodeURIComponent(xml)}`)).status, 200);
+  }
+  // $apply over a secured column is refused the same way; the admin groups it.
+  const applied = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$apply=groupby((secret))`, { user: t.basic }));
+  assert.equal(applied.details.innerCode, "0x8004f508");
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets?$apply=groupby((secret))`)).status, 200);
+});
+
+test("a Dataverse groupby without $orderby answers its groups in ascending key order", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Beta", price: 1 });
+  await create(t, "widgets", { name: "Alpha", price: 2 });
+  await create(t, "widgets", { name: "Beta", price: 4 });
+  // observed: parity case query.apply-group; native sorts groups by key when there is no $orderby.
+  const grouped = await t.send("GET", `/api/data/${VERSION}/widgets?$apply=groupby((name),aggregate(price with sum as total))`);
+  assert.equal(grouped.status, 200);
+  assert.deepEqual(grouped.body.value.map((row) => [row.name, row.total]), [["Alpha", 2], ["Beta", 5]]);
+});
+
+test("$filter, $orderby and $count on a hidden secured column read it as null for the caller", async () => {
+  const t = await securedSetup();
+  await securedRow(t, "widgets", { name: "a" });
+  await securedRow(t, "widgets", { name: "b" });
+  const names = (res) => res.body.value.map((row) => row.name);
+  // The unsorted order follows the store, not insertion; give the first unsorted row the lower secret so a leaked
+  // descending sort on secret would reverse it.
+  const unsorted = names(await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { user: t.basic }));
+  for (const [index, name] of unsorted.entries()) t.store.state.tables.widget.find((row) => row.name === name).secret = `s${index + 1}`;
+  // The hidden value is null, so an equality on it matches nothing for the basic user and one row for the admin.
+  const hiddenEq = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name,secret&$filter=secret eq 's1'`, { user: t.basic });
+  assert.deepEqual(hiddenEq.body.value, []);
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets?$select=name&$filter=secret eq 's1'`)).body.value.length, 1);
+  // A count is an Edm.Int32: a $filter that names the hidden column is refused, as it is for any property.
+  const countHidden = await failure(t.send("GET", `/api/data/${VERSION}/widgets/$count?$filter=secret eq 's1'`, { user: t.basic }));
+  assert.equal(countHidden.message, "Could not find a property named 'secret' on type 'Edm.Int32'.");
+  // A sort on the hidden column is dropped for the basic user: the order is the unsorted one.
+  const hiddenSort = names(await t.send("GET", `/api/data/${VERSION}/widgets?$select=name&$orderby=secret desc`, { user: t.basic }));
+  assert.deepEqual(hiddenSort, unsorted);
+  // The admin sorts on the real values.
+  assert.deepEqual(names(await t.send("GET", `/api/data/${VERSION}/widgets?$select=name&$orderby=secret desc`)), [...unsorted].reverse());
+  // A $apply filter on the hidden column leaves the pipeline and matches nothing for the basic user.
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets?$apply=filter(secret eq 's1')`, { user: t.basic })).body.value.length, 0);
+  assert.equal((await t.send("GET", `/api/data/${VERSION}/widgets?$apply=filter(secret eq 's1')`)).body.value.length, 1);
+  // Plain reads still hide the value itself.
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name,secret`, { user: t.basic });
+  assert.ok(plain.body.value.every((row) => row.secret == null));
+});
+
+test("$select=* answers every column, and an unknown $select column still answers 400 0x80060888", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Star", price: 2 });
+  const star = await t.send("GET", `/api/data/${VERSION}/widgets?$select=*`);
+  assert.equal(star.status, 200);
+  assert.equal(star.body.value[0].name, "Star");
+  assert.equal(star.body.value[0].widgetid, id);
+  assert.equal(star.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(*)`);
+  const single = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=*`);
+  assert.equal(single.body.name, "Star");
+  const unknown = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=name,bogus`));
+  assert.equal(unknown.status, 400);
+  assert.equal(unknown.details.innerCode, "0x80060888");
+});
+
+test("a read with no $select or $select=* answers every table column, unset ones as null; a $select list names only its columns", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Sparse" });
+  const star = await t.send("GET", `/api/data/${VERSION}/widgets?$select=*`);
+  const row = star.body.value[0];
+  for (const column of ["widgetid", "name", "code", "price", "status", "createdon", "statecode", "statuscode", "_createdby_value", "_ownerid_value"]) {
+    assert.ok(column in row, `${column} is answered`);
+  }
+  assert.equal(row.code, null);
+  assert.equal(row.price, null);
+  assert.equal(row[CURRENCY], null, "the base currency lookup is answered null when no money is set");
+  assert.equal(row.price_base, null);
+  // Without $select the answer is the same set of columns, single-row reads included.
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`);
+  assert.equal(plain.body.code, null);
+  assert.ok("status" in plain.body);
+  // A $select list still answers only its own columns.
+  const named = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`);
+  assert.deepEqual(Object.keys(named.body.value[0]).filter((key) => !key.includes("@")).sort(), ["name", "widgetid"]);
+});
+
+test("a row with a money value answers its base amount, the base currency and exchange rate 1", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Priced", price: 12.5 });
+  const row = (await t.send("GET", `/api/data/${VERSION}/widgets`)).body.value[0];
+  assert.match(stringifyExactJson(row), /"price_base":12\.5000[,}]/);
+  assert.equal(row.exchangerate, 1);
+  assert.ok(row[CURRENCY], "the base currency is answered");
+});
+
+test("a full-row read formats the base companion like its money column and the rate at 12 places", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Priced", price: 12.5 });
+  const row = (await t.send("GET", `/api/data/${VERSION}/widgets`, { headers: annotate("*") })).body.value[0];
+  const formatted = "@OData.Community.Display.V1.FormattedValue";
+  assert.ok(row[`price${formatted}`], "the money column is formatted");
+  assert.equal(row[`price_base${formatted}`], row[`price${formatted}`]);
+  assert.equal(row[`exchangerate${formatted}`], "1.000000000000");
+});
+
+test("the @odata.context lists a repeated $select column once, then each expansion with its columns", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Parent" });
+  await create(t, "gadgets", { name: "Child", "widgetid@odata.bind": `/widgets(${id})` });
+  const deduped = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name,name&$expand=widget_gadgets($select=name,name)`);
+  assert.equal(deduped.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(name,widget_gadgets(name))`);
+  const filtered = await t.send("GET", `/api/data/${VERSION}/widgets?$expand=widget_gadgets($filter=name eq 'Child')`);
+  assert.equal(filtered.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(widget_gadgets())`);
+});
+
+test("a FetchXML context lists the columns alphabetically with the id, and an aggregate has no column list", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Listed", price: 2 });
+  const listed = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent("<fetch><entity name='widget'><attribute name='price'/><attribute name='name'/></entity></fetch>")}`);
+  assert.equal(listed.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets(name,price,widgetid)`);
+  const total = await t.send("GET", `/api/data/${VERSION}/widgets?fetchXml=${encodeURIComponent("<fetch aggregate='true'><entity name='widget'><attribute name='price' aggregate='sum' alias='total'/></entity></fetch>")}`);
+  assert.equal(total.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#widgets`);
+});
+
+test("a single-valued $ref answers the $ref context", async () => {
+  const t = await setup();
+  const widget = await create(t, "widgets", { name: "Target" });
+  const gadget = await create(t, "gadgets", { name: "Pointer", "widgetid@odata.bind": `/widgets(${widget})` });
+  const ref = await t.send("GET", `/api/data/${VERSION}/gadgets(${gadget})/widgetid/$ref`);
+  assert.equal(ref.body["@odata.context"], `${ORIGIN}/api/data/${VERSION}/$metadata#$ref`);
+  assert.match(ref.body["@odata.id"], /widgets\(/);
+});
+
+test("an expanded collection links its children, each child carries its parent lookup, and an unselected expansion answers every column", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Parent" });
+  await create(t, "gadgets", { name: "Child", "widgetid@odata.bind": `/widgets(${id})` });
+  const selected = await t.send("GET", `/api/data/${VERSION}/widgets?$expand=widget_gadgets($select=name)`, { headers: annotate("*") });
+  const row = selected.body.value[0];
+  assert.equal(row["widget_gadgets@odata.nextLink"], `${ORIGIN}/api/data/${VERSION}/widgets(${id})/widget_gadgets?$select=name`);
+  assert.equal(row.widget_gadgets[0]._widgetid_value, id);
+  assert.ok(!("OData.Community.Display.V1.FormattedValue" in row.widget_gadgets[0]) && !Object.keys(row.widget_gadgets[0]).some((key) => key.includes("@OData")), "no formatted annotation leaks into an expanded row without a Prefer");
+  const all = await t.send("GET", `/api/data/${VERSION}/widgets?$expand=widget_gadgets`);
+  assert.ok("createdon" in all.body.value[0].widget_gadgets[0], "a child with no $select answers every column");
+  const single = await t.send("GET", `/api/data/${VERSION}/gadgets?$expand=widgetid($select=name)`);
+  assert.match(single.body.value[0].widgetid["@odata.etag"], /^W\/"\d+"$/);
+});
+
+test("query options Dataverse refuses answer 400 0x80060888 with its message", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Counted" });
+  const cases = [
+    ["$filter=", "The value for OData query '$filter' cannot be empty."],
+    ["$count=garbage", "'garbage' is not a valid count option."],
+    ["$top=0", "Invalid value for $top query option."],
+    ["$top=1&$top=2", "Query option '$top' was specified more than once, but it must be specified at most once."],
+  ];
+  for (const [query, message] of cases) {
+    const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?${query}`));
+    assert.equal(error.status, 400, query);
+    assert.equal(error.details.innerCode, "0x80060888", query);
+    assert.equal(error.message, message, query);
+  }
+  const counted = await t.send("GET", `/api/data/${VERSION}/widgets?$count=false`);
+  assert.equal(counted.status, 200);
+  assert.equal(counted.body["@odata.count"], undefined);
+});
+
+test("a $skiptoken that is not a paging cookie answers malformed XML (0x80040201)", async () => {
+  const t = await setup();
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$skiptoken=bad-token`));
+  assert.equal(error.status, 400);
+  assert.equal(error.details.innerCode, "0x80040201");
+  assert.equal(error.message, "Malformed XML");
+});
+
+test("a non-32-bit odata.maxpagesize answers 405 0x80060888, and maxpagesize=0 pages with the default size and is echoed", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Paged" });
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.maxpagesize=abc" } }));
+  assert.equal(error.status, 405);
+  assert.equal(error.details.innerCode, "0x80060888");
+  const response = dataverseError(error);
+  assert.equal(response.status, 405);
+  assert.deepEqual(response.body.error, { code: "0x80060888", message: "Prefer Odata.maxpagesize value should be 32 bit integer." });
+  const huge = await failure(t.send("GET", `/api/data/${VERSION}/widgets`, { headers: { prefer: "odata.maxpagesize=2147483648" } }));
+  assert.equal(huge.status, 405);
+  const zero = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.maxpagesize=0" } });
+  assert.equal(zero.status, 200);
+  assert.equal(zero.headers["Preference-Applied"], "odata.maxpagesize=0");
+});
+
+test("an unknown property's $value answers the $value URI error, not the property error", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Raw" });
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets(${id})/nosuch/$value`));
+  assert.equal(error.status, 400);
+  assert.equal(error.details.innerCode, "0x80060888");
+  assert.equal(error.message, "The URI segment '$value' is invalid after the segment 'nosuch'.");
+  const raw = await t.send("GET", `/api/data/${VERSION}/widgets(${id})/name/$value`);
+  assert.deepEqual(raw, { status: 200, body: "Raw" });
+});
+
+test("$count with a $filter that names a property answers 0x80060888 on Edm.Int32", async () => {
+  const t = await setup();
+  await create(t, "widgets", { name: "Counted" });
+  const error = await failure(t.send("GET", `/api/data/${VERSION}/widgets/$count?$filter=name eq 'Counted'`));
+  assert.equal(error.status, 400);
+  assert.equal(error.details.innerCode, "0x80060888");
+  assert.equal(error.message, "Could not find a property named 'name' on type 'Edm.Int32'.");
+  const all = await t.send("GET", `/api/data/${VERSION}/widgets/$count`);
+  assert.equal(all.body, "1");
+});
+
+test("a write representation answers every declared column with unset ones null, and a $select keeps only what it names", async () => {
+  const t = await setup();
+  const full = await t.send("POST", `/api/data/${VERSION}/widgets`, { body: { name: "Full" }, headers: { prefer: "return=representation" } });
+  assert.equal(full.status, 201);
+  assert.equal(full.body.name, "Full");
+  assert.equal(full.body.code, null, "an unset declared column is answered as null");
+  assert.equal(full.body.price, null);
+  assert.equal(full.headers.ETag, undefined, "a create's 201 carries no ETag header");
+  assert.equal(full.headers["Preference-Applied"], "return=representation");
+  const narrow = await t.send("POST", `/api/data/${VERSION}/widgets?$select=name`, { body: { name: "Narrow" }, headers: { prefer: "return=representation" } });
+  const keys = Object.keys(narrow.body).filter((key) => !key.startsWith("@")).sort();
+  assert.deepEqual(keys, ["name", "widgetid"]);
+});
+
+test("PATCH answers its headers by shape, and a representation drops the null columns", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Patch" });
+  const plain = await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Plain" } });
+  assert.equal(plain.status, 204);
+  assert.ok(plain.headers.Location.endsWith(`/widgets(${id})`));
+  assert.equal(plain.headers["OData-EntityId"], plain.headers.Location);
+  const shown = await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Shown", price: 3 }, headers: { prefer: "return=representation" } });
+  assert.equal(shown.status, 200);
+  assert.equal(shown.headers["OData-EntityId"], undefined, "a 200 representation names no OData-EntityId");
+  assert.match(shown.headers.ETag, /^W\/"/);
+  assert.equal(shown.headers["Preference-Applied"], "return=representation");
+  assert.ok(!("code" in shown.body), "an unset column is omitted from an update's representation");
+  assert.ok(!("code@OData.Community.Display.V1.FormattedValue" in shown.body));
+  assert.equal(shown.body.name, "Shown");
+  assert.ok("price_base" in shown.body, "a set money column returns its base amount");
+});
+
+test("a key read that selects a money column answers the base currency lookup once the row has held money, even when the money is now null", async () => {
+  const t = await setup();
+  const base = t.store.state.tables.transactioncurrency[0].transactioncurrencyid;
+  // observed: parity case values.pqwp_money.0: a row never given money has no currency lookup, selected or not.
+  const blank = await create(t, "widgets", { name: "Blank" });
+  const never = await t.send("GET", `/api/data/${VERSION}/widgets(${blank})?$select=name,price`, { headers: annotate("*") });
+  assert.ok(!(CURRENCY in never.body), "a row never given money carries no lookup");
+  const held = await create(t, "widgets", { name: "Held", price: 3 });
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${held})`, { body: { price: null } });
+  const single = await t.send("GET", `/api/data/${VERSION}/widgets(${held})?$select=name,price`, { headers: annotate("*") });
+  assert.equal(single.body[CURRENCY], base);
+  const list = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name,price`, { headers: annotate("*") });
+  assert.ok(list.body.value.every((row) => !(CURRENCY in row)), "a collection with the same $select omits the lookup");
+});
+
+test("a negative money value reads in parentheses with the currency symbol inside them", async () => {
+  const t = await setup();
+  // observed: parity case values.pqwp_money.2.create: (₴1,000.0000) with a minus-sign money read as parentheses.
+  const id = await create(t, "widgets", { name: "Owed", price: -3 });
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=price`, { headers: annotate("*") });
+  assert.equal(res.body["price@OData.Community.Display.V1.FormattedValue"], "($3.00)");
+  assert.match(stringifyExactJson(res.body), /"price":-3\.0000[,}]/);
+});
+
+test("owner lookups carry the annotations native gives each owner column", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Owned" }, t.basic);
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: annotate("*") });
+  const nav = "@Microsoft.Dynamics.CRM.associatednavigationproperty";
+  const formatted = "@OData.Community.Display.V1.FormattedValue";
+  assert.equal(res.body[`_owninguser_value${nav}`], undefined, "the user-owner lookup has no navigation name");
+  assert.equal(res.body[`_owninguser_value${formatted}`], undefined, "the user-owner lookup has no formatted value");
+  assert.equal(res.body[`_owninguser_value@Microsoft.Dynamics.CRM.lookuplogicalname`], "systemuser");
+  assert.equal(res.body[`_owningbusinessunit_value${nav}`], "owningbusinessunit");
+  assert.equal(res.body[`_ownerid_value${nav}`], "ownerid");
+});
+
+test("an organization-owned row always answers the organization lookup, selected or not", async () => {
+  const t = await setup();
+  const id = await create(t, "tags", { name: "Shared" });
+  const single = await t.send("GET", `/api/data/${VERSION}/tags(${id})?$select=name`);
+  assert.equal(single.body._organizationid_value, ORG);
+  const list = await t.send("GET", `/api/data/${VERSION}/tags?$select=name`);
+  assert.equal(list.body.value[0]._organizationid_value, ORG);
+});
+
+test("an explicit navigation collection projection omits the unselected organization lookup", async () => {
+  const t = await setup();
+  const parent = await create(t, "widgets", { name: "Parent" });
+  const child = await create(t, "tags", { name: "Related" });
+  await t.send("POST", `/api/data/${VERSION}/widgets(${parent})/widget_tags/$ref`, { body: { "@odata.id": `${ORIGIN}/api/data/${VERSION}/tags(${child})` } });
+  const result = await t.send("GET", `/api/data/${VERSION}/widgets(${parent})/widget_tags?$select=name`);
+  assert.equal(result.body.value[0].name, "Related");
+  assert.equal(Object.hasOwn(result.body.value[0], "_organizationid_value"), false);
+});
+
+test("generated time-zone version values receive formatted annotations only when requested", async () => {
+  const t = await setup();
+  t.store.state.mappings.widget.fields.occurredon = { dataverseType: "datetime" };
+  const id = await create(t, "widgets", { name: "Dated", occurredon: "2026-10-20T10:30:00Z" });
+  const key = "timezoneruleversionnumber@OData.Community.Display.V1.FormattedValue";
+  const formatted = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: annotate("*") });
+  assert.equal(formatted.body.timezoneruleversionnumber, 4);
+  assert.equal(formatted.body[key], "4");
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`);
+  assert.equal(Object.hasOwn(plain.body, key), false);
+});
+
+test("DateOnly values imply the time-zone rule stamp without a UserLocal value", async () => {
+  const t = await setup();
+  t.store.state.mappings.widget.fields.occurredon = { dataverseType: "datetime", dateTimeBehavior: "UserLocal" };
+  t.store.state.mappings.widget.fields.duedate = { dataverseType: "datetime", dateTimeBehavior: "DateOnly" };
+  const key = "timezoneruleversionnumber@OData.Community.Display.V1.FormattedValue";
+  const onlyDate = await create(t, "widgets", { name: "Date only", duedate: "2026-10-20" });
+  const read = await t.send("GET", `/api/data/${VERSION}/widgets(${onlyDate})`, { headers: annotate("*") });
+  assert.equal(read.body.timezoneruleversionnumber, 4);
+  assert.equal(read.body[key], "4");
+  assert.equal(read.body.occurredon, null);
+  const both = await create(t, "widgets", { name: "Both dates", duedate: "2026-10-20", occurredon: "2026-10-20T10:30:00Z" });
+  const clearLocal = await t.send("PATCH", `/api/data/${VERSION}/widgets(${both})`, {
+    body: { occurredon: null }, headers: { prefer: 'return=representation,odata.include-annotations="*"' },
+  });
+  assert.equal(clearLocal.body.timezoneruleversionnumber, 4);
+  assert.equal(clearLocal.body[key], "4");
+  assert.equal(clearLocal.body.duedate, "2026-10-20");
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets(${onlyDate})`);
+  assert.equal(Object.hasOwn(plain.body, key), false);
+});
+
+test("Preference-Applied echoes the annotations preference on a single read and on a write", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Echo" });
+  const read = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`, { headers: annotate("*") });
+  assert.equal(read.headers["Preference-Applied"], 'odata.include-annotations="*"');
+  const bare = await t.send("GET", `/api/data/${VERSION}/widgets(${id})`);
+  assert.equal(bare.headers["Preference-Applied"], undefined);
+  const written = await t.send("PATCH", `/api/data/${VERSION}/widgets(${id})`, {
+    body: { name: "Echo2" },
+    headers: { prefer: 'return=representation,odata.include-annotations="*"' },
+  });
+  assert.match(written.headers["Preference-Applied"], /return=representation/);
+  assert.match(written.headers["Preference-Applied"], /odata\.include-annotations="\*"/);
+});
+
+test("a keyed PUT answers 405 with the record's Allow methods", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Verb" });
+  const error = await failure(t.send("PUT", `/api/data/${VERSION}/widgets(${id})`, { body: { name: "Put" } }));
+  assert.equal(error.status, 405);
+  assert.equal(error.details.allow, "GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST");
+});
+
+test("a picklist value with no option answers a null FormattedValue when annotations are requested", async () => {
+  const t = await setup();
+  const id = await create(t, "widgets", { name: "Unlisted" });
+  t.store.state.tables.widget.find((item) => item.widgetid === id).statuscode = -1;
+  const res = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=statuscode`, { headers: annotate("*") });
+  assert.equal(res.body.statuscode, -1);
+  assert.equal(res.body["statuscode@OData.Community.Display.V1.FormattedValue"], null);
+  const plain = await t.send("GET", `/api/data/${VERSION}/widgets(${id})?$select=statuscode`);
+  assert.ok(!Object.keys(plain.body).some((key) => key.includes("FormattedValue")));
+});
+
+test("a tracked first page without $orderby answers in row-version order, and the order is not echoed in the delta link", async () => {
+  const t = await setup();
+  const b = await create(t, "widgets", { name: "b" });
+  await create(t, "widgets", { name: "a" });
+  await create(t, "widgets", { name: "c" });
+  await t.send("PATCH", `/api/data/${VERSION}/widgets(${b})`, { body: { name: "b2" } });
+  const full = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name`, { headers: { prefer: "odata.track-changes" } });
+  // observed: parity case query.track-changes: the initial tracked page is in creation and update order (the updated row last).
+  assert.deepEqual(full.body.value.map((row) => row.name), ["a", "c", "b2"]);
+  assert.ok(!full.body["@odata.deltaLink"].includes("orderby"), "the internal sort stays out of the link");
+});
+
+test("a $orderby paging cookie carries the order column's first and last values before the id element", async () => {
+  const t = await setup();
+  for (const name of ["a", "b", "c"]) await create(t, "widgets", { name });
+  const page = await t.send("GET", `/api/data/${VERSION}/widgets?$select=name&$orderby=name`, { headers: { prefer: "odata.maxpagesize=2" } });
+  assert.deepEqual(page.body.value.map((row) => row.name), ["a", "b"]);
+  const token = new URL(page.body["@odata.nextLink"]).searchParams.get("$skiptoken");
+  // The pagingcookie attribute is percent-encoded once inside the token: decoding it gives the cookie's XML.
+  const inner = decodeURIComponent(/pagingcookie="([^"]*)"/.exec(token)[1]);
+  assert.match(inner, /<name last="b" first="a" \/><widgetid last="\{[0-9A-F-]+\}" first="\{[0-9A-F-]+\}" \/><\/cookie>$/);
+  assert.match(page.body["@odata.nextLink"], /\$orderby=name&/);
+  const next = await t.send("GET", page.body["@odata.nextLink"].replace(/^https?:\/\/[^/]+/, ""), { headers: { prefer: "odata.maxpagesize=2" } });
+  assert.deepEqual(next.body.value.map((row) => row.name), ["c"]);
 });

@@ -193,7 +193,8 @@ export function attributeMetadata(entity, attribute, field, { primaryName, lcid 
         Format: /^date(only)?$/.test(format) ? 0 : 1,
         ImeMode: ime,
         DateTimeBehavior: { Value: field.dateTimeBehavior ?? "UserLocal", ExtensionData: {} },
-        CanChangeDateTimeBehavior: managed(facts.canChangeDateTimeBehavior ?? true, facts.canChangeDateTimeBehavior ?? true, "canmodifybehavior"),
+        // unverified: logical name (Learn gives the property, not its managed property name); shared with dataverse-soap-contracts.mjs.
+        CanChangeDateTimeBehavior: managed(facts.canChangeDateTimeBehavior ?? true, facts.canChangeDateTimeBehavior ?? true, "canmodifydatetimebehavior"),
       }, formula);
     case 1:
     case 6:

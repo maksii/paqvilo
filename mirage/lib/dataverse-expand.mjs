@@ -13,10 +13,10 @@ function invalid(message) {
   return new DataError(message, 400, "InvalidRequest", { innerCode: "0x80060888" });
 }
 
-/** Throws when raw $expand text uses $skip, $count, $search or $levels inside an option. Message unverified. */
+/** Reject unsupported nested options before evaluating the expansion. */
 export function assertExpandText(text) {
   const match = UNSUPPORTED_OPTION.exec(String(text ?? "").replace(/'(?:[^']|'')*'/g, "''"));
-  if (match) throw invalid(`The expand option $${match[1]} is not supported in $expand.`); // unverified: message text
+  if (match) throw invalid("$skip, $count, $search, and $levels are not supported inside $expand");
 }
 
 function countOptions(items) {

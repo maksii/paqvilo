@@ -13,6 +13,8 @@ const WIDGET_ID = "aaaaaaaa-0000-0000-0000-0000000000a1";
 const MISSING_ID = "aaaaaaaa-0000-0000-0000-0000000000ff";
 const CRM = "Microsoft.Dynamics.CRM.";
 const API = "/api/data/v9.2/";
+// Routes the stubbed record handler was asked to answer (the real records module is covered in dataverse-routing-errors.test.mjs).
+const handledRoutes = [];
 
 function fixtureState() {
   const state = emptyState();
@@ -36,7 +38,7 @@ async function startServer({ extensions = [], change = (fn) => fn() } = {}) {
     change,
     settings,
     extensions,
-    records: { handle: async () => ({ status: 200, body: { echo: "records" } }) },
+    records: { handle: async (ctx) => { handledRoutes.push(ctx.route); return { status: 200, body: { echo: "records" } }; } },
     log: () => {},
   });
   const tokenResponse = await fetch(`${server.origin}/${server.tenantId}/oauth2/v2.0/token`, {
@@ -195,6 +197,12 @@ describe("extension operations on the Web API", () => {
     assert.equal(body.contentType, "application/json");
   });
 
+  it("answers an object result as application/json; odata.metadata=minimal with no charset", async () => {
+    const response = await server.get(`${API}${CRM}PaqEcho()`);
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("content-type"), "application/json; odata.metadata=minimal");
+  });
+
   it("sends a Buffer body as-is with the operation's content type", async () => {
     const response = await server.get(`${API}${CRM}PaqBytes()`);
     assert.equal(response.status, 200);
@@ -208,7 +216,7 @@ describe("extension operations on the Web API", () => {
     assert.deepEqual(await found.json(), { name: "one", id: WIDGET_ID, logical: "widget" });
     const missing = await server.get(`${API}widgets(${MISSING_ID})/${CRM}PaqInspect()`);
     assert.equal(missing.status, 404);
-    assert.ok((await missing.json()).error.message.includes(`widget With Id = ${MISSING_ID} Does Not Exist`));
+    assert.ok((await missing.json()).error.message.includes(`Entity 'widget' With Id = ${MISSING_ID} Does Not Exist`));
   });
 
   it("answers an entity-bound operation written without the namespace prefix with 400", async () => {
@@ -225,12 +233,10 @@ describe("extension operations on the Web API", () => {
     assert.deepEqual(await response.json(), { via: "candidate", method: "POST" });
   });
 
-  it("answers an unregistered function with empty parentheses with the old 404 envelope", async () => {
+  it("reads an unregistered function with empty parentheses as an entity set, which the record handler then rejects (native: 404 0x80060888)", async () => {
     const response = await server.get(`${API}NoSuchFunction()`);
-    assert.equal(response.status, 404);
-    const error = (await response.json()).error;
-    assert.equal(error.code, "");
-    assert.equal(error.message, `No HTTP resource was found that matches the request URI '${server.origin}${API}NoSuchFunction()'.`);
+    assert.equal(response.status, 200); // the stubbed record handler answers
+    assert.deepEqual(handledRoutes.at(-1), { version: "v9.2", kind: "collection", set: "NoSuchFunction" });
   });
 
   it("runs a collection-bound function with no row in the target", async () => {
@@ -263,8 +269,30 @@ describe("extension operations on the Web API", () => {
     });
     const probe = await startServer({ extensions: [extension] });
     try {
-      assert.equal(extension.api.registry.csdlFragments(), '<Function Name="PaqFragment"/>');
+      // The core metadata functions are declared too, so the fragments carry the extension's line among them.
+      assert.ok(extension.api.registry.csdlFragments().endsWith('<Function Name="PaqFragment"/>'));
       assert.equal(typeof extension.api.dataRevision(), "string");
+    } finally {
+      await probe.close();
+    }
+  });
+});
+
+describe("extension CSDL imports", () => {
+  it("imports each unbound extension function and action in the EntityContainer, and no bound one", async () => {
+    const extension = captureExtension("csdl-imports", (api) => {
+      api.registry.register({ name: "PaqFn", kind: "function", binding: "unbound", csdl: '<Function Name="PaqFn">\n</Function>', handle: async () => ({ status: 204 }) });
+      api.registry.register({ name: "PaqAct", kind: "action", binding: "unbound", csdl: '<Action Name="PaqAct">\n</Action>', handle: async () => ({ status: 204 }) });
+      api.registry.register({ name: "PaqBound", kind: "function", binding: "entity", entity: "widget", csdl: '<Function Name="PaqBound" IsBound="true">\n</Function>', handle: async () => ({ status: 204 }) });
+    });
+    const probe = await startServer({ extensions: [extension] });
+    try {
+      const xml = await (await probe.get(`${API}$metadata`)).text();
+      assert.match(xml, /<FunctionImport Name="PaqFn" Function="mscrm\.PaqFn" IncludeInServiceDocument="false" \/>/);
+      assert.match(xml, /<ActionImport Name="PaqAct" Action="mscrm\.PaqAct" \/>/);
+      assert.doesNotMatch(xml, /Import Name="PaqBound"/);
+      // The imports sit inside the EntityContainer, after the built-in ones.
+      assert.ok(xml.indexOf('<FunctionImport Name="PaqFn"') > xml.indexOf('<EntityContainer'));
     } finally {
       await probe.close();
     }

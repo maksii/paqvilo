@@ -21,7 +21,7 @@ test("absent and false disable the simulator; true enables defaults", () => {
   assert.deepEqual(dataverseSettings(true), {
     enabled: true, port: 0, tls: false, tlsPort: 0, tenantId: null, organizationId: null,
     uniqueName: "orgsim", friendlyName: "Simulated environment", version: "9.2.25041.00000",
-    applications: [], users: [], serviceProtection: null, managedIdentities: [], federatedIssuers: [], auditing: false, tds: { enabled: false, port: 0 },
+    applications: [], users: [], serviceProtection: null, managedIdentities: [], federatedIssuers: [], auditing: false, duplicateDetection: true, pluginTimeoutSeconds: 120, currencyCode: "USD", currencySymbol: "$", localeId: 1033, tds: { enabled: true, port: 0 }, gitRemoteDirectory: null,
   });
   assert.deepEqual(dataverseSettings({}), dataverseSettings(true));
 });
@@ -133,7 +133,7 @@ test("status exposes runtime and derived identity without secrets", () => {
   const settings = dataverseSettings({ enabled: true, uniqueName: "sim01" });
   assert.deepEqual(dataverseStatus(settings), {
     enabled: true, origin: null, tlsOrigin: null, authority: null, tenantId: null, organizationId: null,
-    uniqueName: "sim01", version: "9.2.25041.00000",
+    uniqueName: "sim01", version: "9.2.25041.00000", tdsPort: null,
   });
   assert.equal(dataverseStatus(dataverseSettings(undefined), { origin: "http://127.0.0.1:1" }).origin, "http://127.0.0.1:1");
 });
@@ -183,4 +183,11 @@ test("federatedIssuers hold public JWKS only; auditing and tds validate", () => 
   assert.throws(() => dataverseSettings({ auditing: "yes" }), /dataverse\.auditing must be true or false/);
   assert.throws(() => dataverseSettings({ tds: { port: 70000 } }), /dataverse\.tds\.port must be an integer from 0 to 65535/);
   assert.throws(() => dataverseSettings({ tds: { enabled: true, host: "x" } }), /dataverse\.tds\.host is not a supported setting/);
+});
+
+test("pluginTimeoutSeconds defaults to the 2-minute sandbox limit and accepts whole seconds from 1 to 3600", () => {
+  assert.equal(dataverseSettings({}).pluginTimeoutSeconds, 120);
+  assert.equal(dataverseSettings({ pluginTimeoutSeconds: 30 }).pluginTimeoutSeconds, 30);
+  assert.throws(() => dataverseSettings({ pluginTimeoutSeconds: 0 }), /dataverse\.pluginTimeoutSeconds must be an integer from 1 to 3600/);
+  assert.throws(() => dataverseSettings({ pluginTimeoutSeconds: 1.5 }), /dataverse\.pluginTimeoutSeconds must be an integer/);
 });

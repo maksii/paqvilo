@@ -41,7 +41,7 @@ function fakeDispatch() {
   const created = [];
   const dispatch = async (req) => {
     calls.push(req);
-    if (req.url.includes('fail')) return { status: 400, body: { error: { code: '0x80044331', message: 'boom' } } };
+    if (req.url.includes('fail')) return { status: 400, headers: { REQ_ID: randomUUID() }, body: { error: { code: '0x80044331', message: 'boom' } } };
     if (req.method === 'POST') {
       const id = randomUUID();
       created.push(id);
@@ -92,13 +92,61 @@ test('rejects a missing boundary with 0x80048d19', () => {
   assert.throws(() => parseBatch('multipart/mixed', SAMPLE), check);
 });
 
-test('a JSON batch is rejected with 0x80048d19 and the payload message', () => {
-  assert.throws(() => parseBatch('application/json', SAMPLE), {
-    status: 400,
-    code: 'InvalidBatch',
-    details: { innerCode: '0x80048d19' },
-    message: /^Error identified in Payload provided by the user for Entity :''.*multipart\/mixed/,
-  });
+test('a JSON batch whose body is not a requests document is rejected with 0x80048d19 and the payload message', () => {
+  const check = { status: 400, code: 'InvalidBatch', details: { innerCode: '0x80048d19' }, message: /^Error identified in Payload provided by the user for Entity :''/ };
+  assert.throws(() => parseBatch('application/json', SAMPLE), check);
+  assert.throws(() => parseBatch('application/json', '{"requests":"WhoAmI"}'), check);
+  assert.throws(() => parseBatch('application/json', '{"requests":[{"method":"GET"}]}'), check);
+});
+
+// JSON batch: {"requests":[...]} runs through the same dispatch as multipart; the answer keeps the multipart form.
+const jsonBatch = (requests) => JSON.stringify({ requests });
+const ODATA = '/api/data/v9.2';
+
+test('a JSON batch runs its item through dispatch and answers in the multipart form, with no Content-ID', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const res = await run(parseBatch('application/json; charset=utf-8', jsonBatch([{ id: '1', method: 'GET', url: 'WhoAmI' }])), dispatch, { base: `${ORIGIN}${ODATA}/` });
+  assert.equal(res.status, 200);
+  assert.match(res.headers['content-type'], /^multipart\/mixed; boundary=batchresponse_/);
+  assert.deepEqual(calls.map((c) => c.url), [`${ORIGIN}${ODATA}/WhoAmI`]);
+  assert.equal(count(res.body, /^HTTP\/1\.1 200 OK/gm), 1);
+  assert.equal(count(res.body, /Content-ID/g), 0);
+});
+
+test('a JSON batch orders by dependsOn, resolves $id references and runs an atomicityGroup as one changeset', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const body = jsonBatch([
+    { id: 'child', method: 'POST', url: `${ODATA}/widgets`, body: { name: 'B', 'parent@odata.bind': '$root' }, atomicityGroup: 'g', dependsOn: ['root'] },
+    { id: 'root', method: 'POST', url: `${ODATA}/widgets`, body: { name: 'A' }, atomicityGroup: 'g' },
+  ]);
+  const res = await run(parseBatch('application/json', body), dispatch);
+  assert.equal(res.status, 200);
+  assert.deepEqual(calls.map((c) => (c.body.includes('"name":"A"') ? 'root' : 'child')), ['root', 'child']);
+  assert.match(calls[1].body, new RegExp(`"parent@odata.bind":"${ODATA}/widgets\\(`));
+  assert.equal(count(res.body, /^HTTP\/1\.1 204/gm), 2);
+  assert.equal(count(res.body, /boundary=changesetresponse_/g), 1);
+});
+
+test('a failing item of a JSON atomicityGroup rolls the group back and the batch answers that status', async () => {
+  const { dispatch, calls } = fakeDispatch();
+  const body = jsonBatch([
+    { id: 'a', method: 'POST', url: `${ODATA}/widgets`, body: { name: 'A' }, atomicityGroup: 'g' },
+    { id: 'b', method: 'POST', url: `${ODATA}/fail`, body: { name: 'B' }, atomicityGroup: 'g' },
+  ]);
+  const res = await run(parseBatch('application/json', body), dispatch);
+  assert.equal(res.status, 400);
+  assert.match(res.body, /0x80044331/);
+  assert.equal(calls.length, 2);
+});
+
+test('JSON batch dependencies are checked: unknown ids, cycles and a GET in a group answer 400 InvalidBatch', () => {
+  const check = { status: 400, code: 'InvalidBatch' };
+  assert.throws(() => parseBatch('application/json', jsonBatch([{ id: 'a', method: 'GET', url: 'WhoAmI', dependsOn: ['zz'] }])), check);
+  assert.throws(() => parseBatch('application/json', jsonBatch([
+    { id: 'a', method: 'GET', url: 'WhoAmI', dependsOn: ['b'] },
+    { id: 'b', method: 'GET', url: 'WhoAmI', dependsOn: ['a'] },
+  ])), check);
+  assert.throws(() => parseBatch('application/json', jsonBatch([{ id: 'a', method: 'GET', url: 'WhoAmI', atomicityGroup: 'g' }])), { ...check, message: 'GET requests are not allowed inside change sets.' });
 });
 
 test('parts for an unmatched boundary are skipped and the batch answers 200 with nothing run', async () => {
@@ -232,6 +280,15 @@ test('changeset response nests a changesetresponse part that echoes Content-ID',
   assert.equal(count(res.body, /HTTP\/1\.1 204 No Content/g), 2);
 });
 
+test('a top-level part answers without Content-ID, while a change set part keeps its echo', async () => {
+  const { dispatch } = fakeDispatch();
+  const cs = changeset('changeset_5', [{ cid: '3', request: httpReq('POST', '/api/data/v9.2/widgets', '{"name":"C"}') }]);
+  const res = await run(parseBatch(ct, batchOf([part(B, '1', httpReq('GET', '/api/data/v9.2/widgets')), cs])), dispatch);
+  assert.equal(res.status, 200);
+  assert.equal(count(res.body, /Content-ID: 1\r\n/g), 0);
+  assert.equal(count(res.body, /Content-ID: 3\r\n/g), 1);
+});
+
 test('$1 references resolve in an @odata.bind body value and in a URL', async () => {
   const { dispatch, calls, created } = fakeDispatch();
   const cs = changeset('changeset_2', [
@@ -257,7 +314,7 @@ test('forward reference returns 400 with the batch-context message', async () =>
   assert.equal(calls.length, 0);
 });
 
-test('without continue-on-error the batch stops at the failing part with REQ_ID', async () => {
+test('without continue-on-error the batch stops at the failing part and keeps the parts that ran, with REQ_ID', async () => {
   const { dispatch, calls } = fakeDispatch();
   const parsed = parseBatch(ct, batchOf([
     part(B, undefined, httpReq('POST', '/api/data/v9.2/widgets', '{"name":"A"}')),
@@ -266,11 +323,45 @@ test('without continue-on-error the batch stops at the failing part with REQ_ID'
   ]));
   const res = await run(parsed, dispatch);
   assert.equal(res.status, 400);
-  assert.equal(count(res.body, /HTTP\/1\.1 /g), 1);
-  assert.match(res.body, /HTTP\/1\.1 400 Bad Request/);
+  assert.equal(count(res.body, /HTTP\/1\.1 /g), 2);
+  assert.match(res.body, /HTTP\/1\.1 204 No Content[\s\S]*HTTP\/1\.1 400 Bad Request/);
   assert.match(res.body, /REQ_ID: [0-9a-f-]{36}/);
   assert.match(res.body, /boom/);
   assert.equal(calls.length, 2);
+  // The failed batch answers nosniff on the outer response as well (native batch.stop-on-error).
+  assert.equal(res.headers["x-content-type-options"], "nosniff");
+});
+
+test('a part carries its own headers: no service envelope, and no REQ_ID or nosniff on a route failure', async () => {
+  const envelope = { 'x-ms-service-request-id': 'r1', 'x-ms-dop-hint': '4', Allow: 'OPTIONS,GET,HEAD,POST', expires: '-1', 'Strict-Transport-Security': 'max-age=1' };
+  // The route failure comes without REQ_ID, as the batch dispatch leaves it (dataverse-api.mjs).
+  const dispatch = async (req) => {
+    if (req.url.includes('route')) return { status: 404, headers: { ...envelope, 'cache-control': 'no-cache' }, body: { error: { code: '0x80060888', message: 'segment' } } };
+    return { status: 200, headers: { ...envelope, ETag: 'W/"7"' }, body: { ok: true } };
+  };
+  const parsed = parseBatch(ct, batchOf([
+    part(B, undefined, httpReq('GET', '/api/data/v9.2/widgets(1)')),
+    part(B, undefined, httpReq('GET', '/api/data/v9.2/route')),
+  ]));
+  const res = await run(parsed, dispatch, { continueOnError: true });
+  for (const name of ['x-ms-service-request-id', 'x-ms-dop-hint', 'Allow:', 'expires:', 'Strict-Transport-Security']) assert.equal(res.body.includes(name), false, name);
+  // The success part: nosniff, the no-cache pair for an ETag, and the multipart JSON type (no streaming parameter).
+  assert.match(res.body, /X-Content-Type-Options: nosniff\r\nCache-Control: no-cache\r\nPragma: no-cache\r\n/);
+  assert.match(res.body, /Content-Type: application\/json; odata\.metadata=minimal\r\n/);
+  assert.equal(res.body.includes('odata.streaming'), false);
+  // The route failure carries no REQ_ID and no nosniff (native batch.continue-on-error).
+  const routePart = res.body.slice(res.body.indexOf('HTTP/1.1 404'));
+  assert.equal(routePart.includes('REQ_ID'), false);
+  assert.equal(routePart.includes('x-content-type-options'), false);
+  assert.equal(routePart.includes('Cache-Control'), false);
+});
+
+test('a JSON batch answers its parts with the streaming JSON type; a multipart batch does not', async () => {
+  const { dispatch } = fakeDispatch();
+  const json = await run(parseBatch('application/json; charset=utf-8', JSON.stringify({ requests: [{ id: '1', method: 'GET', url: 'WhoAmI' }] })), dispatch);
+  assert.match(json.body, /Content-Type: application\/json; odata\.metadata=minimal; odata\.streaming=true/);
+  const multipart = await run(parseBatch(ct, batchOf([part(B, undefined, httpReq('GET', '/api/data/v9.2/WhoAmI'))])), dispatch);
+  assert.equal(multipart.body.includes('odata.streaming'), false);
 });
 
 test('with continue-on-error every part runs and the batch answers 200', async () => {
@@ -309,7 +400,11 @@ test('a failing change set runs through the transaction hook and rolls back', as
   const res = await run(parseBatch(ct, batchOf([cs])), dispatch);
   assert.deepEqual(log, ['begin', 'rollback']);
   assert.equal(res.status, 400);
-  assert.equal(res.body.includes('changesetresponse_'), false);
+  // Native answers a failed change set with its changesetresponse part holding only the failing response, Content-ID kept.
+  assert.match(res.body, /Content-Type: multipart\/mixed; boundary=changesetresponse_/);
+  assert.equal(count(res.body, /Content-ID: 2\r\n/g), 1);
+  assert.equal(count(res.body, /Content-ID: 1\r\n/g), 0);
+  assert.equal(count(res.body, /HTTP\/1\.1 /g), 1);
 });
 
 test('reasonPhrase returns standard HTTP reason phrases', () => {

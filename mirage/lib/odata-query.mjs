@@ -12,6 +12,9 @@ import {
 import {
   compareForFilter,
   compareSortKeys,
+  edmFamily,
+  edmOfColumn,
+  edmOfLiteral,
   fieldKind,
   guidKey,
   looksLikeDate,
@@ -82,9 +85,42 @@ function tokenize(source) {
 }
 
 const KEYWORDS = new Set(["and", "or", "not", "eq", "ne", "gt", "ge", "lt", "le", "in", "null", "true", "false", "has", "add", "sub", "mul", "div", "mod"]);
+const OPERATOR_KINDS = { eq: "Equal", ne: "NotEqual", gt: "GreaterThan", ge: "GreaterThanOrEqual", lt: "LessThan", le: "LessThanOrEqual" };
 
-/** Parse an OData expression into an AST. */
-export function parseODataExpression(source, { dialect = "dataverse", aliases = {}, rejectNotOnQueryFunctions = false } = {}) {
+// Static operand typing (strictEdm): a comparison whose column and literal (or two columns) are of families that
+// never match fails before rows are read, so the answer does not depend on the table's contents. Single-segment
+// paths only; lambda bodies name another table and are not checked here.
+function checkOperandTypes(node, columnDefinition) {
+  const typeOf = (side) => {
+    if (side.type === "path") return side.segments.length === 1 ? edmOfColumn(columnDefinition(side.segments[0])) : null;
+    if (side.type === "literal") return edmOfLiteral(side);
+    return null;
+  };
+  const visit = (n) => {
+    if (!n || typeof n !== "object" || n.type === "lambda") return;
+    if (n.type === "compare") {
+      const left = typeOf(n.left), right = typeOf(n.right);
+      const families = [edmFamily(left), edmFamily(right)];
+      if (families[0] && families[1] && families[0] !== families[1])
+        fail(
+          `A binary operator with incompatible types was detected. Found operand types '${left}' and '${right}' for operator kind '${OPERATOR_KINDS[n.op]}'.`,
+          400,
+          "InvalidQuery",
+          { innerCode: "0x80060888" },
+        );
+    }
+    for (const key of ["left", "right", "operand"]) visit(n[key]);
+  };
+  visit(node);
+}
+
+/**
+ * Parse an OData expression into an AST.
+ * strictEdm (Dataverse Web API records only; default off, so portal and flow readers are unchanged): the
+ * simulator's extended functions answer 501 "isn't supported", and comparisons between operand types that can
+ * never match fail statically (0x80060888) before any row is read. columnDefinition(name) gives column metadata.
+ */
+export function parseODataExpression(source, { dialect = "dataverse", aliases = {}, rejectNotOnQueryFunctions = false, strictEdm = false, columnDefinition = () => null } = {}) {
   const tokens = tokenize(source);
   let pos = 0;
   let conditions = 0;
@@ -112,7 +148,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
       case "datetime":
         return { type: "literal", kind: "datetime", value: token.value };
       case "number":
-        return { type: "literal", kind: "number", value: parseNumericLiteral(token.value.replace(/[mdflMDFL]$/, "")) };
+        return { type: "literal", kind: "number", value: parseNumericLiteral(token.value.replace(/[mdflMDFL]$/, "")), raw: token.value };
       default:
         return null;
     }
@@ -212,6 +248,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
       return { type: "string", name: lower, args };
     }
     if (dialect === "extended" && ODATA_EXTENDED_FUNCTIONS.has(lower)) return { type: "call", name: lower, args };
+    if (strictEdm && ODATA_EXTENDED_FUNCTIONS.has(lower)) fail(`The "${name}" function isn't supported.`, 501, "UnsupportedQueryFunction");
     unsupported(`Unsupported OData function ${name}`);
   };
   const primary = () => {
@@ -311,6 +348,7 @@ export function parseODataExpression(source, { dialect = "dataverse", aliases = 
   const result = or();
   if (pos !== tokens.length)
     unsupported(`Unsupported OData syntax: ${tokens.slice(pos).map((t) => t.value).join(" ")}`);
+  if (strictEdm) checkOperandTypes(result, columnDefinition);
   if (conditions > ODATA_LIMITS.conditions)
     fail("Number of conditions in query exceeded maximum limit.", 400, "UnsupportedQuery", { innerCode: "0x8004430c" });
   return result;
@@ -403,7 +441,7 @@ export function compileODataPredicate(ast, mapping, ctx) {
       if (currentRow == null) return { value: undefined, definition: ctx.definition(currentMapping.logicalName, head) };
     }
     if (currentRow == null) return { value: undefined, definition: null };
-    const nav = currentMapping.relationships?.[head];
+    const nav = (ctx.relationships?.(currentMapping) ?? currentMapping.relationships)?.[head];
     if (nav && !own(currentRow, head)) {
       const navigation = ctx.navigate(currentMapping, currentRow, head);
       if (navigation?.many)

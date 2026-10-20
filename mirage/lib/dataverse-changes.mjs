@@ -1,10 +1,19 @@
 // Change log for Dataverse change tracking (Prefer: odata.track-changes and $deltatoken).
-// Committed store events become per-table entries keyed by the store revision the commit produced;
-// a delta token names a revision, and a delta read answers with everything logged after it.
+// Committed store events become per-table entries keyed by the org row version the commit produced (state.rowVersion,
+// the counter behind versionnumber and the ETag); a delta token names that version, and a delta read answers with
+// everything logged after it. Creates and updates take the next version per row they write; a commit whose counter did
+// not move (a delete, a portal write) takes one here, so a token issued before the commit cannot hide it.
 // A token's stamp is the log's epoch, so a token from another log (a restart, a reset) is expired, not replayed.
 // ponytail: in-memory ring, so a token outlives the process only as an "expired" answer; persist the log if that matters.
 // ponytail: epochs are whole seconds, made distinct within a process; a restart in the same wall-clock second as the old log aliases its tokens.
 import { DataError } from "./data-error.mjs";
+
+/** The org-wide row version: the persisted counter every Dataverse create, update and delete takes the next value of. */
+export const rowVersionOf = (store) => store.state?.rowVersion ?? 0;
+export function nextRowVersion(store) {
+  store.state.rowVersion = rowVersionOf(store) + 1;
+  return store.state.rowVersion;
+}
 
 const DEFAULT_LIMIT = 10000;
 const EXPIRED_MESSAGE = "Version stamp associated with the client has expired. Please perform a full sync.";
@@ -33,6 +42,8 @@ const nextEpoch = (clock) => (lastEpoch = Math.max(Math.floor(clock() / 1000), l
 
 export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Date.now() } = {}) {
   const entries = [];
+  // The version the last logged commit took; a commit that leaves the counter where it was takes the next one.
+  let lastStamp = rowVersionOf(store);
   // Tokens below this revision lack entries (trimmed away), so they are expired.
   let expiredBelow = 0;
   let epoch = nextEpoch(clock);
@@ -45,7 +56,8 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
     }
   };
   const unsubscribe = store.addCommittedEvents((events) => {
-    const revision = store.revision;
+    if (rowVersionOf(store) === lastStamp) nextRowVersion(store);
+    const revision = (lastStamp = rowVersionOf(store));
     for (const event of events) {
       const id = idOf(event.entity, event.row);
       if (id) entries.push({ revision, entity: lower(event.entity), id, deleted: event.operation === "delete" });
@@ -57,8 +69,11 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
   });
 
   return {
-    /** Token for the current store revision and this log's epoch. */
-    token: () => `${store.revision}!${epochStamp()}`,
+    /** Token for the current row version and this log's epoch. */
+    token: () => `${rowVersionOf(store)}!${epochStamp()}`,
+
+    /** The current row version: a changeset takes it before it runs, and rewinds to it on rollback. */
+    current: () => rowVersionOf(store),
 
     /**
      * { revision } for a token this log issued. null for text that is not token-shaped; an ExpiredVersionStamp
@@ -69,7 +84,7 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
       if (!match) return null;
       const revision = Number(match[1]);
       if (!Number.isSafeInteger(revision)) return null;
-      if (match[2] !== epochStamp() || revision > store.revision || revision < expiredBelow) throw expiredVersionStamp();
+      if (match[2] !== epochStamp() || revision > rowVersionOf(store) || revision < expiredBelow) throw expiredVersionStamp();
       return { revision };
     },
 
@@ -95,12 +110,14 @@ export function createChangeLog(store, { limit = DEFAULT_LIMIT, clock = () => Da
     rewind(revision) {
       const at = entries.findIndex((entry) => entry.revision > revision);
       if (at !== -1) entries.splice(at);
+      lastStamp = rowVersionOf(store); // a rolled-back changeset may have reverted the counter
     },
 
     /** Expires every token issued so far, for a full store reset. */
     reset() {
       entries.length = 0;
-      expiredBelow = store.revision;
+      expiredBelow = rowVersionOf(store);
+      lastStamp = expiredBelow;
       epoch = nextEpoch(clock);
     },
 

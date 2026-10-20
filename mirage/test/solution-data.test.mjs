@@ -503,3 +503,56 @@ test("configured mappings keep the Solution's relationships and primary name unl
     await fs.rm(root, { recursive: true, force: true });
   }
 });
+
+test("a Solution table replaces a Dataverse-seeded mapping on reload, and keeps metadata-API tables, user mappings and rows", async () => {
+  const root = await fs.mkdtemp(join(tmpdir(), "pp-solution-seeded-"));
+  try {
+    const file = join(root, "customizations.xml");
+    await fs.writeFile(
+      file,
+      `<ImportExportXml>${entity("account")}${entity("systemuser")}${entity("sample_made")}${entity("sample_user")}</ImportExportXml>`,
+    );
+    const metadata = await importSolutionData([file]);
+    const seeded = (logical, extra = {}) => ({
+      logicalName: logical,
+      entitySet: `seeded_${logical}`,
+      idColumn: `${logical}id`,
+      userConfigured: true,
+      dataverseOnly: true,
+      fields: { [`${logical}id`]: { dataverseType: "Edm.Guid" } },
+      relationships: {},
+      ...extra,
+    });
+    const rows = {
+      account: [{ accountid: "a1", name: "Kept account" }],
+      systemuser: [{ systemuserid: "u1", fullname: "Kept user" }],
+      sample_made: [{ sample_madeid: "m1", name: "Kept made" }],
+    };
+    const state = {
+      mappings: {
+        // Seeded for the Dataverse API as standard tables: the Solution's mapping replaces them.
+        account: seeded("account", { standardTable: true }),
+        systemuser: seeded("systemuser"),
+        // Created through the metadata API: the Solution does not replace it.
+        sample_made: seeded("sample_made", { dataverseMetadata: { createdByMetadataApi: true } }),
+        // A mapping the user configured without any Dataverse marker: kept.
+        sample_user: { logicalName: "sample_user", entitySet: "custom_users", idColumn: "sample_userid", userConfigured: true },
+      },
+      tables: structuredClone(rows),
+    };
+    const resolved = applySolutionData(state, metadata);
+    for (const logical of ["account", "systemuser"]) {
+      assert.equal(resolved.mappings[logical].entitySet, metadata.mappings[logical].entitySet, `${logical} takes the Solution entity set`);
+      assert.equal(resolved.mappings[logical].userConfigured, undefined, `${logical} is no longer a seeded mapping`);
+      assert.equal(resolved.mappings[logical].dataverseOnly, undefined, `${logical} is no longer dataverseOnly`);
+    }
+    assert.equal(resolved.mappings.sample_made.entitySet, "seeded_sample_made");
+    assert.equal(resolved.mappings.sample_made.dataverseOnly, true);
+    assert.equal(resolved.mappings.sample_user.entitySet, "custom_users");
+    for (const [logical, expected] of Object.entries(rows)) assert.deepEqual(resolved.tables[logical], expected, `${logical} rows are kept`);
+    // The replaced mapping is an imported Solution mapping, so a later reload replaces it again if the Solution changes.
+    assert.ok(Array.isArray(resolved.mappings.account.metadataSources));
+  } finally {
+    await fs.rm(root, { recursive: true, force: true });
+  }
+});

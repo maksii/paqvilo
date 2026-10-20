@@ -483,16 +483,14 @@ function dispatch(t) {
  * Resolve an entity set segment; Web API segments are case-sensitive entity set names.
  * A segment that names no Dataverse table answers 400 9004010A, a known table that
  * isn't enabled 404 9004010C with its logical name (webApiPolicy), as live reference
- * sites answer (docs/dataverse-parity.md). Known tables are the local mappings, data
- * and site tables, and the Power Pages tables every environment has
- * (POWER_PAGES_TABLES).
+ * sites answer (docs/dataverse-parity.md). Known tables are the local mappings (including
+ * tables the simulated Dataverse API seeds or creates), data and site tables, and the
+ * Power Pages tables every environment has (POWER_PAGES_TABLES).
  */
 function resolveSet(store, set) {
   // The entity set name wins over a table whose logical name happens to equal it (a
   // table named x_products doesn't shadow the x_products set of x_product).
-  // Mappings seeded by the simulated Dataverse API (dataverseOnly) are invisible here, so
-  // enabling that API never changes which sets the portal recognises.
-  const owner = Object.entries(store.state?.mappings ?? {}).find(([, value]) => value?.entitySet === set && !value?.dataverseOnly);
+  const owner = Object.entries(store.state?.mappings ?? {}).find(([, value]) => value?.entitySet === set);
   if (owner) return store.resolveMapping(owner[0]);
   let mapping = null;
   try {
@@ -500,7 +498,7 @@ function resolveSet(store, set) {
   } catch (error) {
     if (!(error.status === 404 || error.code === "UnknownEntity")) throw error;
   }
-  if (mapping?.entitySet === set && !mapping.dataverseOnly) return mapping;
+  if (mapping?.entitySet === set) return mapping;
   const table = POWER_PAGES_TABLES.get(set);
   if (table)
     throw new DataError(`Resource not found for the segment '${set}'.`, 404, "WebApiTableNotEnabled", {

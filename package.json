@@ -86,7 +86,7 @@
     "demo:evidence": "node scripts/demo.mjs --evidence",
     "lense": "node bin/paqvilo.mjs lense",
     "check:boundary": "node scripts/project-boundary.mjs",
-    "test:sdk": "node --test --test-timeout=600000 mirage/test-sdk/toolkit-client/gate.test.mjs mirage/test-sdk/python-dataverse/gate.test.mjs mirage/test-sdk/webapi-samples/gate.test.mjs mirage/test-sdk/serviceclient/gate.test.mjs && npm --prefix mirage/test-sdk/dynamics-web-api test && npm --prefix mirage/test-sdk/cert-auth test"
+    "test:sdk": "node --test --test-timeout=600000 mirage/test-sdk/toolkit-client/gate.test.mjs mirage/test-sdk/python-dataverse/gate.test.mjs mirage/test-sdk/webapi-samples/gate.test.mjs mirage/test-sdk/serviceclient/gate.test.mjs && npm --prefix mirage/test-sdk/dynamics-web-api test && npm --prefix mirage/test-sdk/cert-auth test && npm --prefix mirage/test-sdk/tds test"
   },
   "engines": {
     "node": ">=22"

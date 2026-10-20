@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { DataError } from '../lib/data-error.mjs';
+import { dateTimeRangeError } from '../lib/dataverse-values.mjs';
 import {
   VERSIONS,
   parseDataverseRoute,
@@ -250,41 +251,100 @@ test('parsePrefer flags a backslash outside a quoted-string and unterminated quo
   assert.deepEqual(parsePrefer('odata.include-annotations="a\\b"').annotations, ['a\\b']);
 });
 
-test('preferenceApplied echoes only applied preferences; continue-on-error only for a batch', () => {
+test('preferenceApplied echoes only applied preferences, representation first; continue-on-error and respond-async are never echoed', () => {
   const all = parsePrefer('odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error, odata.track-changes, respond-async');
-  assert.equal(preferenceApplied(all, { paged: true }), 'odata.include-annotations="*", odata.maxpagesize=2, return=representation');
-  assert.equal(preferenceApplied(all, { paged: true, batch: true }), 'odata.include-annotations="*", odata.maxpagesize=2, return=representation, odata.continue-on-error');
-  assert.equal(preferenceApplied(parsePrefer('odata.track-changes, respond-async'), { batch: true }), null);
+  assert.equal(preferenceApplied(all, { paged: true }), 'return=representation, odata.include-annotations="*", odata.maxpagesize=2');
+  assert.equal(preferenceApplied(all, { paged: true, tracked: true }), 'return=representation, odata.include-annotations="*", odata.maxpagesize=2, odata.track-changes');
+  assert.equal(preferenceApplied(parsePrefer('odata.track-changes, respond-async'), { paged: true }), null);
+  assert.equal(preferenceApplied(parsePrefer('odata.continue-on-error'), { paged: true }), null);
   assert.equal(preferenceApplied(parsePrefer('odata.continue-on-error')), null);
-  assert.equal(preferenceApplied(parsePrefer('odata.continue-on-error'), { batch: true }), 'odata.continue-on-error');
+  // maxpagesize=0 pages with the default size and is echoed on a paged response only.
+  assert.equal(preferenceApplied(parsePrefer('odata.maxpagesize=0'), { paged: true }), 'odata.maxpagesize=0');
+  assert.equal(preferenceApplied(parsePrefer('odata.maxpagesize=0'), { paged: false }), null);
 });
 
-test('CDS error annotations follow code and message, match each name, and survive orderAnnotations', () => {
+test('a validation fault adds TraceText for its operation step, and POST or GET adds the Api* details; a route or reader error has none', () => {
+  const fault = new DataError('A validation error occurred.', 400, 'InvalidValue', { innerCode: '0x80044331' });
+  const prefer = parsePrefer('odata.include-annotations="*"');
+  const created = dataverseError(fault, { prefer, method: 'POST', requestId: 'req-8', logical: 'widget' }).body.error;
+  assert.equal(created['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionSourceKey'], 'Plugin/Microsoft.Crm.ObjectModel.TargetAttributeValidationPlugin');
+  const createStep = created['@Microsoft.PowerApps.CDS.ErrorDetails.ApiStepKey'];
+  assert.match(createStep, /^[0-9a-f]{8}-[0-9a-f-]{27}$/);
+  assert.equal(dataverseError(fault, { prefer, method: 'POST' }).body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiStepKey'], createStep);
+  assert.equal(created['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionMessageName'], 'StringLengthTooLong');
+  assert.equal(created['@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus'], undefined);
+  assert.equal(created['@Microsoft.PowerApps.CDS.TraceText'], `\r\n[Microsoft.Crm.ObjectModel: Microsoft.Crm.ObjectModel.TargetAttributeValidationPlugin]\r\n[${createStep}: TargetAttributeValidationPlugin]\r\n\r\n`);
+
+  const patched = dataverseError(fault, { prefer, method: 'PATCH', requestId: 'req-8' }).body.error;
+  assert.equal(patched['@Microsoft.PowerApps.CDS.ErrorDetails.ApiStepKey'], undefined);
+  assert.match(patched['@Microsoft.PowerApps.CDS.TraceText'], /\[[0-9a-f-]{36}: TargetAttributeValidationPlugin\]/);
+  assert.ok(!patched['@Microsoft.PowerApps.CDS.TraceText'].includes(createStep));
+
+  // A reader error (0x80048d19) carries no annotations at all, even when the Prefer header asks for them.
+  const reader = dataverseError(new DataError('bad payload', 400, 'InvalidLookup', { innerCode: '0x80048d19' }), { prefer, method: 'POST', requestId: 'req-8' });
+  assert.deepEqual(reader.body.error, { code: '0x80048d19', message: 'bad payload' });
+  // A route-level error carries no annotations and one REQ_ID line.
+  const route = dataverseError(new DataError('Resource not found', 404, 'UnknownEntity', { route: true }), { prefer, requestId: 'req-8' });
+  assert.deepEqual(route.body.error, { code: '0x8006088a', message: 'Resource not found' });
+  assert.equal(route.headers.REQ_ID, 'req-8');
+});
+
+test('elastic bulk fault details are exposed only through the requested annotation', () => {
+  const entries = [{ RequestIndex: 1, Id: '11111111-2222-4000-8000-000000000001', StatusCode: 400 }];
+  const error = new DataError('One bulk target failed.', 400, 'InvalidRequest', { innerCode: '0x80060888', bulkApiErrorDetails: entries });
+  const annotation = '@Microsoft.PowerApps.CDS.ErrorDetails.Plugin.BulkApiErrorDetails';
+  assert.equal(dataverseError(error).body.error[annotation], undefined);
+  const requested = dataverseError(error, { prefer: parsePrefer('odata.include-annotations="Microsoft.PowerApps.CDS.ErrorDetails*"') }).body.error;
+  assert.deepEqual(JSON.parse(requested[annotation]), entries);
+});
+
+test('an engine error repeats the request id on REQ_ID; a route-level error carries it once', () => {
+  const engine = dataverseError(new DataError('Record not found', 404, 'NotFound', { id: G1 }), { logical: 'account', id: G1, requestId: 'req-9' });
+  assert.deepEqual(engine.headers.REQ_ID, ['req-9', 'req-9']);
+  const route = dataverseError(new DataError('bad path', 400, 'InvalidRequest', { route: true }), { requestId: 'req-9' });
+  assert.equal(route.headers.REQ_ID, 'req-9');
+});
+
+test('a keyed 405 answers the Allow list of its resource (PUT and POST), and a collection 405 keeps the default', () => {
+  const keyed = (method, allow) => dataverseError(new DataError('Method not allowed', 405, 'InvalidRequest', { innerCode: '0x80060888', httpStatus: 405, allow }), { requestId: 'req-11' });
+  assert.equal(keyed('PUT', 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST').headers.Allow, 'GET,PATCH,DELETE,OPTIONS,GET,HEAD,POST');
+  assert.equal(keyed('POST', 'GET,PUT,PATCH,DELETE,OPTIONS,GET,HEAD,POST').headers.Allow, 'GET,PUT,PATCH,DELETE,OPTIONS,GET,HEAD,POST');
+  const collection = dataverseError(new DataError('Method not allowed', 405, 'InvalidRequest', { innerCode: '0x80060888', httpStatus: 405 }), { requestId: 'req-11' });
+  assert.equal(collection.headers.Allow, 'OPTIONS,GET,HEAD,POST');
+});
+
+test('a date below 1753 or an unparsable date answers the CrmDateTime minimum message (0x80040239)', () => {
+  const below = dataverseError(dateTimeRangeError('1752-12-31T00:00:00Z'), { requestId: 'req-10' });
+  assert.equal(below.body.error.code, '0x80040239');
+  assert.equal(below.body.error.message, 'DateTime is less than minumum value supported by CrmDateTime. Actual value: 12/31/1752 00:00:00, Minimum value supported: 01/01/1753 00:00:00');
+  const unparsed = dataverseError(dateTimeRangeError('bad'), { requestId: 'req-10' });
+  assert.match(unparsed.body.error.message, /Actual value: 01\/01\/0001 00:00:00, Minimum value supported: 01\/01\/1753 00:00:00$/);
+});
+
+test('CDS error annotations follow the error origin, match each name, and survive orderAnnotations', () => {
   const error = new DataError('Record not found', 404, 'NotFound', { id: G1 });
-  const annotated = dataverseError(error, { logical: 'account', id: G1, prefer: parsePrefer('odata.include-annotations="*"') });
-  const keys = [
-    'code',
-    'message',
-    '@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus',
-    '@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode',
-    '@Microsoft.PowerApps.CDS.HelpLink',
-    '@Microsoft.PowerApps.CDS.TraceText',
-    '@Microsoft.PowerApps.CDS.InnerError.Message',
-  ];
+  const annotated = dataverseError(error, { logical: 'account', id: G1, method: 'GET', requestId: 'req-7', prefer: parsePrefer('odata.include-annotations="*"') });
+  const api = ['ApiExceptionSourceKey', 'ApiStepKey', 'ApiDepthKey', 'ApiActivityIdKey', 'ApiPluginSolutionNameKey', 'ApiStepSolutionNameKey', 'ApiExceptionCategory', 'ApiExceptionMessageName', 'ApiExceptionHttpStatusCode']
+    .map((name) => `@Microsoft.PowerApps.CDS.ErrorDetails.${name}`);
+  const keys = ['code', 'message', ...api, '@Microsoft.PowerApps.CDS.HelpLink', '@Microsoft.PowerApps.CDS.InnerError.Message'];
   assert.deepEqual(Object.keys(annotated.body.error), keys);
   assert.deepEqual(Object.keys(orderAnnotations(annotated.body).error), keys);
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiActivityIdKey'], 'req-7');
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionMessageName'], 'ObjectDoesNotExist');
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionHttpStatusCode'], '404');
+
+  // PATCH is neither POST nor GET: no Api* details. No platform error carries OperationStatus or SubErrorCode.
+  const patched = dataverseError(error, { logical: 'account', id: G1, method: 'PATCH', prefer: parsePrefer('odata.include-annotations="*"') });
+  assert.deepEqual(Object.keys(patched.body.error), ['code', 'message', '@Microsoft.PowerApps.CDS.HelpLink', '@Microsoft.PowerApps.CDS.InnerError.Message']);
 
   const names = (pattern) =>
-    Object.keys(dataverseError(error, { logical: 'account', id: G1, prefer: parsePrefer(`odata.include-annotations="${pattern}"`) }).body.error)
+    Object.keys(dataverseError(error, { logical: 'account', id: G1, method: 'GET', requestId: 'req-7', prefer: parsePrefer(`odata.include-annotations="${pattern}"`) }).body.error)
       .filter((key) => key.startsWith('@'));
-  assert.deepEqual(names('Microsoft.PowerApps.CDS.ErrorDetails*'), [
-    '@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus',
-    '@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode',
-  ]);
+  assert.deepEqual(names('Microsoft.PowerApps.CDS.ErrorDetails*'), api);
   assert.deepEqual(names('Microsoft.PowerApps.CDS.HelpLink'), ['@Microsoft.PowerApps.CDS.HelpLink']);
   assert.deepEqual(names('Microsoft.PowerApps.CDS.InnerError.Message'), ['@Microsoft.PowerApps.CDS.InnerError.Message']);
-  assert.equal(names('Microsoft.PowerApps.CDS.*').length, 5);
-  assert.equal(names('*').length, 5);
+  assert.equal(names('Microsoft.PowerApps.CDS.*').length, 11);
+  assert.equal(names('*').length, 11);
   assert.deepEqual(names('Microsoft.Dynamics.CRM.*'), []);
 });
 
@@ -317,8 +377,8 @@ test('dataverseError maps store codes to Dataverse status, code and message', ()
   const options = { requestId: 'req-1', origin: 'https://org.example', tenantId: 't1', logical: 'account' };
   const notFound = dataverseError(new DataError('Record not found', 404, 'NotFound'), { ...options, id: G1 });
   assert.equal(notFound.status, 404);
-  assert.deepEqual(notFound.body, { error: { code: '0x80040217', message: `account With Id = ${G1} Does Not Exist` } });
-  assert.equal(notFound.headers['REQ_ID'], 'req-1');
+  assert.deepEqual(notFound.body, { error: { code: '0x80040217', message: `Entity 'account' With Id = ${G1} Does Not Exist` } });
+  assert.deepEqual(notFound.headers['REQ_ID'], ['req-1', 'req-1']);
   assert.equal(notFound.headers['Content-Type'], JSON_CONTENT_TYPE);
 
   const denied = dataverseError(new DataError('Privilege denied', 403, 'PermissionDenied', { innerCode: '0x80040220' }), options);
@@ -339,6 +399,17 @@ test('dataverseError maps store codes to Dataverse status, code and message', ()
   });
   assert.equal(unexpected.headers['OData-Version'], '4.0');
   assert.deepEqual(baseHeaders('req-2')['REQ_ID'], 'req-2');
+});
+
+test('baseHeaders carries no x-ms-ratelimit headers, and a limiter message passes through dataverseError unchanged', () => {
+  assert.equal(Object.keys(baseHeaders('req-6')).some((name) => name.startsWith('x-ms-ratelimit')), false);
+  const limited = 'Number of requests exceeded the limit of 100 over time window of 300 seconds.';
+  const mapped = dataverseError(new DataError(limited, 429, 'ServiceProtection', { innerCode: '0x80072322' }), { requestId: 'req-6' });
+  assert.equal(mapped.status, 429);
+  assert.equal(mapped.body.error.message, limited);
+  // unverified: an unauthenticated 401 is answered without the x-ms-ratelimit headers.
+  const unauthenticated = dataverseError(new DataError('', 401, 'Unauthorized'), { requestId: 'req-6' });
+  assert.equal(Object.keys(unauthenticated.headers).some((name) => name.startsWith('x-ms-ratelimit')), false);
 });
 
 test('dataverseError: 401 has no body and a WWW-Authenticate challenge; 429 adds Retry-After', () => {
@@ -363,9 +434,9 @@ test('dataverseError adds the CDS annotations only when the Prefer header asks f
   const plain = dataverseError(error, { logical: 'account', id: G1 });
   assert.equal(Object.keys(plain.body.error).length, 2);
 
-  const annotated = dataverseError(error, { logical: 'account', id: G1, prefer: parsePrefer('odata.include-annotations="*"') });
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus'], '0');
-  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode'], '-2146233088');
+  const annotated = dataverseError(error, { logical: 'account', id: G1, method: 'GET', prefer: parsePrefer('odata.include-annotations="*"') });
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.ApiExceptionMessageName'], 'ObjectDoesNotExist');
+  assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus'], undefined);
   assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.HelpLink'], 'http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a80040217&client=platform');
   assert.equal(annotated.body.error['@Microsoft.PowerApps.CDS.InnerError.Message'], annotated.body.error.message);
 });
@@ -449,7 +520,7 @@ test('entity keys route without a method (parser is method-agnostic)', () => {
 
 test('every gap-review and Wave 1 inner code maps to its status, matched case-insensitively', () => {
   const cases = [
-    ['0x80040333', 500], ['0x8004f502', 403], ['0x8004f507', 403], ['0x8004f504', 403], ['0x80048d37', 403],
+    ['0x80040333', 412], ['0x8004f502', 403], ['0x8004f507', 403], ['0x8004f504', 403], ['0x80048d37', 403],
     ['0x80072321', 429], ['0x80072326', 429],
     ['0x80044a02', 400], ['0x80072553', 400], ['0x80090487', 400], ['0x80090017', 400], ['0x80048d1a', 400],
     ['0x8004032d', 400], ['0x80048408', 400], ['0x8004f00e', 400], ['0x80044352', 400], ['0x80044366', 400],
@@ -485,4 +556,27 @@ test('every 429 gets Retry-After from its details, including the concurrency and
   assert.equal(execution.status, 429);
   assert.equal(execution.headers['Retry-After'], '42');
   assert.equal(dataverseError(new DataError('execution', 429, 'ServiceProtection', { innerCode: '0x80072321' }), {}).headers['Retry-After'], '300');
+});
+
+test('dataverseError keeps the message of a 500 that names its Dataverse code, and sends nosniff only from the engine', () => {
+  // A 500 with innerCode 0x0 is a deliberate Dataverse error; an internal exception still gets the generic message.
+  const named = dataverseError(new DataError('Guid should contain 32 digits with 4 dashes.', 500, 'InvalidRequest', { innerCode: '0x0' }), {});
+  assert.deepEqual(named.body, { error: { code: '0x0', message: 'Guid should contain 32 digits with 4 dashes.' } });
+  assert.equal(named.headers['x-content-type-options'], 'nosniff');
+  // The payload reader (0x80048d19) and route-resolution errors carry no nosniff; engine errors do.
+  const payload = dataverseError(new DataError('bad payload', 400, 'InvalidLookup', { innerCode: '0x80048d19' }), {});
+  assert.equal(payload.headers['x-content-type-options'], undefined);
+  const routed = dataverseError(new DataError('segment', 404, 'UnknownEntity', { segment: 'widgets', route: true }), {});
+  assert.equal(routed.headers['x-content-type-options'], undefined);
+  assert.equal(routed.headers['Content-Type'], JSON_CONTENT_TYPE);
+  // An error can name its own Content-Type (the file download route answers plain application/json).
+  const plain = dataverseError(new DataError('missing', 404, 'NotFound', { innerCode: '0x80040217', contentType: 'application/json' }), {});
+  assert.equal(plain.headers['Content-Type'], 'application/json');
+});
+
+test('baseHeaders carries Expires, Allow and Public on every Dataverse response', () => {
+  const headers = baseHeaders('req-7');
+  assert.equal(headers.expires, '-1');
+  assert.equal(headers.Allow, 'OPTIONS,GET,HEAD,POST');
+  assert.equal(headers.Public, 'OPTIONS,GET,HEAD,POST');
 });

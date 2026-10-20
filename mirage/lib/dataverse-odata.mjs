@@ -1,8 +1,10 @@
 import { parseKeySegment } from "./data.mjs";
 import { DataError } from "./data-error.mjs";
 import { annotationMatcher } from "./webapi-handler.mjs";
+import { uuidV5 } from "./dataverse-security.mjs";
 
 export { annotationMatcher };
+export { contextUrl } from "./dataverse-url.mjs";
 export const VERSIONS = ["v9.0", "v9.1", "v9.2"];
 export const JSON_CONTENT_TYPE = "application/json; odata.metadata=minimal";
 
@@ -32,6 +34,7 @@ const KEEP_ORDER = Symbol("keepOrder");
 const CODE_MAP = {
   NotFound: [404, "0x80040217"],
   UnknownEntity: [404, "0x8006088a"],
+  UnsupportedQueryFunction: [501, "0x8006088a"],
   PermissionDenied: [403, "0x80040220"],
   InvalidKey: [400, "0x80040203"],
   InvalidAutoNumber: [400, "0x80040203"],
@@ -70,7 +73,7 @@ const INNER_STATUS = {
   "0x80040225": 401,
   "0x8004032c": 401,
   // Codes from the gap review (task 0.2) and from Wave 1 modules. Statuses marked unverified there default to 400.
-  "0x80040333": 500,
+  "0x80040333": 412,
   "0x8004f502": 403,
   "0x8004f507": 403,
   "0x8004f504": 403,
@@ -112,6 +115,7 @@ const decode = (text) => {
   }
 };
 const invalid = (message) => ({ kind: "invalid", message });
+const QUERY_SYNTAX = "Bad Request - Error in query syntax.";
 
 /** Splits on `separator` outside quotes and brackets. */
 function splitTop(text, separator) {
@@ -206,6 +210,8 @@ function resource(rest, path) {
       return { kind: second.args === undefined ? "boundAction" : "boundFunction", set, key: key ?? null, name: bound[1], params: second.args };
     }
     if (second.name === "$count" && second.args === undefined && key === undefined) return { kind: "count", set };
+    // A plain segment after a set with no key is a query-syntax error (400 0x80060888), not a missing resource.
+    if (key === undefined && IDENT.test(second.name) && second.args === undefined) return invalid(QUERY_SYNTAX);
     if (key === undefined || !IDENT.test(second.name) || second.args === "") return unknown;
     if (second.args === undefined) return { kind: "property", set, key, segment: second.name };
     if (keyProblem(second.args)) return invalid(keyProblem(second.args));
@@ -247,8 +253,21 @@ export function parseDataverseRoute(pathname) {
 /** Key text is echoed in headers (Location, OData-EntityId), so control characters are a 400. */
 export function assertKeyText(text) {
   if (CONTROL_CHARACTER.test(String(text ?? ""))) {
-    throw new DataError("Invalid URI: the key segment contains control characters.", 400, "InvalidRequest", { innerCode: "0x80060888" });
+    throw new DataError("Invalid URI: the key segment contains control characters.", 400, "InvalidRequest", { innerCode: "0x80060888", route: true });
   }
+}
+
+/**
+ * A key that is GUID-shaped (two or more hyphens) but not a GUID is a syntax error (400 0x80060888), not a missing row.
+ * Position: the second hyphen of "(key)". Inferred from one native sample ("(not-a-guid)" -> 6); unverified for other shapes.
+ * Returns null for any other text, which callers keep as their own "Invalid argument." (0x80040203).
+ */
+export function keySyntaxError(text) {
+  const key = String(text ?? "").trim();
+  if (GUID.test(key) || key.includes("=") || (key.match(/-/g) ?? []).length < 2) return null;
+  const wrapped = `(${key})`;
+  const position = wrapped.indexOf("-", wrapped.indexOf("-") + 1);
+  return new DataError(`')' or ',' expected at position ${position} in '${wrapped}'.`, 400, "InvalidRequest", { innerCode: "0x80060888", route: true });
 }
 
 /** Key predicate text: GUID -> { id }, alternate key pairs -> { alternate }, otherwise null. */
@@ -348,7 +367,10 @@ export function parsePrefer(header) {
         break;
       }
       case "odata.maxpagesize":
-        prefer.maxPageSize = /^\d+$/.test(value) && Number(value) > 0 ? Number(value) : null;
+        // 0 pages with the default size but is echoed in Preference-Applied; anything that is not a 32-bit integer is refused by the collection read (405).
+        if (!/^\d+$/.test(value) || Number(value) > 2147483647) prefer.maxPageSizeInvalid = value;
+        else if (Number(value) > 0) prefer.maxPageSize = Number(value);
+        else prefer.maxPageSizeZero = true;
         break;
       case "return":
         if (value.toLowerCase() === "representation") prefer.representation = true;
@@ -382,25 +404,21 @@ export function preferMalformedResponse(malformed) {
 }
 
 /**
- * Preference-Applied echo: only what the response actually applied. maxpagesize needs a paged response
- * (size up to 5,000); continue-on-error only on a batch; track-changes only when a delta link was issued.
- * respond-async is never echoed.
+ * Preference-Applied echo: only what the response actually applied, in native order (return=representation first).
+ * maxpagesize (0 to 5,000) needs a paged response; track-changes only when a delta link was issued.
+ * continue-on-error (native omits it, batch included) and respond-async are never echoed.
  */
-export function preferenceApplied(prefer = {}, { paged = false, batch = false, tracked = false } = {}) {
+export function preferenceApplied(prefer = {}, { paged = false, tracked = false } = {}) {
   const applied = [];
+  if (prefer.representation) applied.push("return=representation");
   if (prefer.annotations) {
     const list = Array.isArray(prefer.annotations) ? prefer.annotations.join(",") : prefer.annotations;
     applied.push(`odata.include-annotations="${list}"`);
   }
-  if (paged && prefer.maxPageSize > 0 && prefer.maxPageSize <= MAX_PAGE_SIZE) applied.push(`odata.maxpagesize=${prefer.maxPageSize}`);
-  if (prefer.representation) applied.push("return=representation");
-  if (batch && prefer.continueOnError) applied.push("odata.continue-on-error");
+  const pageSize = prefer.maxPageSize ?? (prefer.maxPageSizeZero ? 0 : null);
+  if (paged && pageSize != null && pageSize <= MAX_PAGE_SIZE) applied.push(`odata.maxpagesize=${pageSize}`);
   if (tracked && prefer.trackChanges) applied.push("odata.track-changes");
   return applied.length ? applied.join(", ") : null;
-}
-
-export function contextUrl(origin, version, suffix) {
-  return `${origin}/api/data/${version}/$metadata#${suffix}`;
 }
 
 /** Header-safe: encodeURI leaves ' = , ( ) as they are, and # and ? would end the path, so they are encoded too. */
@@ -412,10 +430,19 @@ export function entityUrl(origin, version, set, keyText) {
 const upperGuid = (id) => String(id).replace(/[{}]/g, "").toUpperCase();
 const lowerGuid = (id) => String(id).replace(/[{}]/g, "").toLowerCase();
 
-/** Raw paging cookie: the pagingcookie attribute is percent-encoded twice, with lowercase escapes. */
-export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOfRecords }) {
+const XML_ATTRIBUTE = { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" };
+
+/**
+ * Raw paging cookie: the pagingcookie attribute is percent-encoded twice, with lowercase escapes.
+ * orderColumn ({ name, last, first }, optional): a $orderby column's values, which come before the id element.
+ * The ordered column adds its own last/first values to the paging cookie.
+ */
+export function encodeSkipToken({ pageNumber, lastId, firstId, idColumn, countOfRecords, orderColumn }) {
   const count = countOfRecords == null ? "" : ` countOfRecords="${countOfRecords}"`;
-  const inner = `<cookie page="${pageNumber - 1}"${count}><${idColumn} last="{${upperGuid(lastId)}}" first="{${upperGuid(firstId)}}" /></cookie>`;
+  const order = orderColumn
+    ? `<${orderColumn.name} last="${String(orderColumn.last ?? "").replace(/[&<>"]/g, (ch) => XML_ATTRIBUTE[ch])}" first="${String(orderColumn.first ?? "").replace(/[&<>"]/g, (ch) => XML_ATTRIBUTE[ch])}" />`
+    : "";
+  const inner = `<cookie page="${pageNumber - 1}"${count}>${order}<${idColumn} last="{${upperGuid(lastId)}}" first="{${upperGuid(firstId)}}" /></cookie>`;
   const paging = encodeURIComponent(encodeURIComponent(inner)).replace(/%25([0-9A-F]{2})/g, (escape, hex) => `%25${hex.toLowerCase()}`);
   return `<cookie pagenumber="${pageNumber}" pagingcookie="${paging}" istracking="False" />`;
 }
@@ -440,14 +467,16 @@ export function decodeSkipToken(text) {
   const outer = /<cookie\s+pagenumber="(\d+)"\s+pagingcookie="([^"]*)"/.exec(raw);
   if (!outer) return null;
   const inner = decode(decode(outer[2]) ?? "");
-  const element = inner && /<cookie\s+page="\d+"([^>]*)>\s*<(\w+)\s+last="\{?([^"}]*)\}?"\s+first="\{?([^"}]*)\}?"/.exec(inner);
+  const head = inner && /<cookie\s+page="\d+"([^>]*)>/.exec(inner);
+  // The id element is the last one: a $orderby column element (see encodeSkipToken) comes before it.
+  const element = head && [...inner.matchAll(/<(\w+)\s+last="\{?([^"}]*)\}?"\s+first="\{?([^"}]*)\}?"/g)].at(-1);
   if (!element) return null;
-  const count = /countOfRecords="(\d+)"/.exec(element[1]);
+  const count = /countOfRecords="(\d+)"/.exec(head[1]);
   return {
     pageNumber: Number(outer[1]),
-    lastId: lowerGuid(element[3]),
-    firstId: lowerGuid(element[4]),
-    idColumn: element[2],
+    lastId: lowerGuid(element[2]),
+    firstId: lowerGuid(element[3]),
+    idColumn: element[1],
     ...(count ? { countOfRecords: Number(count[1]) } : {}),
   };
 }
@@ -467,16 +496,64 @@ const annotationPatterns = (prefer) => {
     .join(",");
 };
 
-/** The CDS error annotations the Prefer header asks for, each matched by its own name. */
-function cdsErrorAnnotations(prefer, code, message) {
+/** The HelpLink annotation native sends for a Dataverse code. */
+export const cdsHelpLink = (code) => `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`;
+
+const VALIDATION_PLUGIN = "Microsoft.Crm.ObjectModel.TargetAttributeValidationPlugin";
+const SERVICE_PLUGIN = "Microsoft.Crm.ObjectModel.CustomBusinessEntityService";
+// Native Api* details by code: [message name, plug-in that raised it]. Observed: POST and GET only (parity cases of text length, datetime and not-found).
+const API_ERRORS = {
+  "0x80040217": ["ObjectDoesNotExist", SERVICE_PLUGIN],
+  "0x80040239": ["InvalidDateTime", SERVICE_PLUGIN],
+  "0x80040278": ["InvalidCharactersInField", SERVICE_PLUGIN],
+  "0x80044331": ["StringLengthTooLong", VALIDATION_PLUGIN],
+  "0x80044330": ["DecimalValueOutOfRange", VALIDATION_PLUGIN],
+  "0x8004431a": ["PicklistValueOutOfRange", VALIDATION_PLUGIN],
+  "0x8004432f": ["IntegerValueOutOfRange", VALIDATION_PLUGIN],
+};
+const ERROR_NAMESPACE = "6ba7b811-9dad-11d1-80b4-00c04fd430c8";
+// Local framework identities: reference organization step IDs belong in private
+// evidence. Stable generated IDs preserve consistency without impersonating it.
+const validationStep = (method) => uuidV5(ERROR_NAMESPACE, `${VALIDATION_PLUGIN}:${method === "PATCH" ? "Update" : "Create"}`);
+const NOT_FOUND_WORDING = /^([a-z_][a-z0-9_]*) With Id = (.+) Does Not Exist$/;
+
+/** A platform error's annotations: Api* details (POST and GET of a known code), HelpLink, TraceText (validation only), InnerError.Message. */
+function platformAnnotations({ code, message, status, method, logical, requestId }) {
+  const api = API_ERRORS[code];
+  const out = {};
+  const named = (name, value) => { out[`Microsoft.PowerApps.CDS.ErrorDetails.${name}`] = value; };
+  const validation = api?.[1] === VALIDATION_PLUGIN;
+  if (api && (method === "POST" || method === "GET")) {
+    // A plug-in step is stable per operation; a service step is an org-specific id, so it is derived from the table and message.
+    const step = validation ? validationStep("POST") : uuidV5(ERROR_NAMESPACE, `${logical ?? ""}:${message}`);
+    named("ApiExceptionSourceKey", `Plugin/${api[1]}`);
+    named("ApiStepKey", step);
+    named("ApiDepthKey", "1");
+    named("ApiActivityIdKey", requestId);
+    named("ApiPluginSolutionNameKey", "System");
+    named("ApiStepSolutionNameKey", "System");
+    named("ApiExceptionCategory", "ClientError");
+    named("ApiExceptionMessageName", api[0]);
+    named("ApiExceptionHttpStatusCode", String(status));
+  }
+  out["Microsoft.PowerApps.CDS.HelpLink"] = cdsHelpLink(code);
+  if (validation) {
+    const step = validationStep(method);
+    out["Microsoft.PowerApps.CDS.TraceText"] = `\r\n[Microsoft.Crm.ObjectModel: ${VALIDATION_PLUGIN}]\r\n[${step}: TargetAttributeValidationPlugin]\r\n\r\n`;
+  }
+  out["Microsoft.PowerApps.CDS.InnerError.Message"] = message;
+  return out;
+}
+
+/**
+ * The CDS error annotations the Prefer header asks for, each matched by its own name. Native differs by error origin:
+ * details.cdsAnnotations (plug-in faults) replaces the set; a reader, URL or route error carries none; any other error is a platform error.
+ */
+function cdsErrorAnnotations(prefer, { code, status, method, logical, requestId, message, details }) {
   const matches = annotationMatcher(annotationPatterns(prefer));
-  const all = {
-    "Microsoft.PowerApps.CDS.ErrorDetails.OperationStatus": "0",
-    "Microsoft.PowerApps.CDS.ErrorDetails.SubErrorCode": "-2146233088",
-    "Microsoft.PowerApps.CDS.HelpLink": `http://go.microsoft.com/fwlink/?LinkID=398563&error=Microsoft.Crm.CrmException%3a${code.slice(2)}&client=platform`,
-    "Microsoft.PowerApps.CDS.TraceText": "",
-    "Microsoft.PowerApps.CDS.InnerError.Message": message,
-  };
+  const noAnnotations = code === "0x80048d19" || code === "0x80060888" || details.route;
+  const all = { ...(details.cdsAnnotations ?? (noAnnotations ? {} : platformAnnotations({ code, message, status, method, logical, requestId }))) };
+  if (details.bulkApiErrorDetails) all["Microsoft.PowerApps.CDS.ErrorDetails.Plugin.BulkApiErrorDetails"] = JSON.stringify(details.bulkApiErrorDetails);
   return Object.fromEntries(
     Object.entries(all)
       .filter(([name]) => matches(name))
@@ -485,7 +562,7 @@ function cdsErrorAnnotations(prefer, code, message) {
 }
 
 /** Store error -> { status, body, headers }. Dataverse innerCode wins, then the store code, then the status. */
-export function dataverseError(error, { prefer, logical, requestId, origin, tenantId, id } = {}) {
+export function dataverseError(error, { prefer, logical, requestId, origin, tenantId, id, method } = {}) {
   const details = error?.details ?? {};
   if (error?.code === "Unauthorized") {
     const invalidToken = details.reason === "invalid_token" ? 'error="invalid_token", error_description="Error during token validation!", ' : "";
@@ -503,23 +580,34 @@ export function dataverseError(error, { prefer, logical, requestId, origin, tena
   const [status, code] = keyViolation ? [412, "0x80060892"] : resolveError(error);
   let message = error?.message ?? "An unexpected error occurred.";
   const recordId = id ?? details.id;
-  if (status === 500) message = "An unexpected error occurred.";
+  // A 500 that names its Dataverse code (innerCode, for example 0x0) keeps its message; an internal exception does not.
+  if (status === 500 && typeof details.innerCode !== "string") message = "An unexpected error occurred.";
   else if (keyViolation) {
     const columns = [details.columns].flat().join(", ");
     message = `Entity Key ${details.keyName} violated. A record with the same value for ${columns} already exists. A duplicate record cannot be created. Select one or more unique values and try again.`;
-  } else if (code === "0x80040217" && logical && recordId != null) message = `${logical} With Id = ${recordId} Does Not Exist`;
-  else if (code === "0x8006088a" && details.segment) message = `Resource not found for the segment '${details.segment}'.`;
-  else if (code === "0x80072322") message = "Number of requests exceeded the limit of 6000 over time window of 300 seconds.";
+  } else if (code === "0x80040217" && logical && recordId != null) message = `Entity '${logical}' With Id = ${recordId} Does Not Exist`;
+  else if (code === "0x80040217") message = message.replace(NOT_FOUND_WORDING, "Entity '$1' With Id = $2 Does Not Exist");
+  else if (code === "0x80040239" && (details.failedDateConversion || details.dateTimeBelowMinimum)) {
+    message = `DateTime is less than minumum value supported by CrmDateTime. Actual value: ${details.dateTimeActual ?? "01/01/0001 00:00:00"}, Minimum value supported: 01/01/1753 00:00:00`;
+  } else if (code === "0x8006088a" && details.segment) message = `Resource not found for the segment '${details.segment}'.`;
   // code and message come first, then the annotations; orderAnnotations must leave this object alone.
-  const body = { error: { code, message, ...cdsErrorAnnotations(prefer, code, message) } };
+  const body = { error: { code, message, ...cdsErrorAnnotations(prefer, { code, status, method, logical, requestId, message, details }) } };
   Object.defineProperty(body.error, KEEP_ORDER, { value: true });
-  const headers = { ...baseHeaders(requestId), "Content-Type": JSON_CONTENT_TYPE };
+  // Native sends nosniff on errors from the entity engine, not on payload-reader (0x80048d19) or route-resolution errors.
+  const headers = { ...baseHeaders(requestId), "Content-Type": details.contentType ?? JSON_CONTENT_TYPE };
+  if (code !== "0x80048d19" && !details.route) headers["x-content-type-options"] = "nosniff";
+  // Native repeats the request id on an engine error (two REQ_ID lines); a route-level error carries one.
+  if (!details.route && requestId != null) headers.REQ_ID = [requestId, requestId];
   if (status === 429) headers["Retry-After"] = String(details.retryAfter ?? 300);
+  // A keyed 405 names the methods its resource answers (B18); the default Allow list is the collection one.
+  if (details.allow) headers.Allow = details.allow;
   return { status, body, headers };
 }
 
 function resolveError(error) {
   const inner = String(error?.details?.innerCode ?? "").toLowerCase();
+  // details.httpStatus: the status a handler's code answers with when the inner code's default status differs (0x80060888 is 400 by default, 405 for a Prefer maxpagesize).
+  if (Number.isInteger(error?.details?.httpStatus) && typeof error?.details?.innerCode === "string") return [error.details.httpStatus, inner];
   if (Object.hasOwn(INNER_STATUS, inner)) return [INNER_STATUS[inner], inner];
   // A handler that names its own Dataverse code (including "0x0" and the empty code) keeps it with its status.
   if (typeof error?.details?.innerCode === "string" && Number.isInteger(error?.status)) return [error.status, inner];
@@ -528,15 +616,21 @@ function resolveError(error) {
   return [status, status === 400 ? "0x80060888" : "0x80040216"];
 }
 
+// The x-ms-ratelimit-* headers are not set here: the service-protection limiter supplies them for authenticated responses
+// (dataverse-api.mjs serve) and omits them when its limits are disabled.
+// unverified: Dataverse is documented to send them with authenticated responses only; an unauthenticated 401 carries none.
 export function baseHeaders(requestId) {
   return {
     "OData-Version": "4.0",
     "x-ms-service-request-id": requestId,
     REQ_ID: requestId,
-    "x-ms-ratelimit-burst-remaining-xrm-requests": "5999",
-    "x-ms-ratelimit-time-remaining-xrm-requests": "1199.99",
     "x-ms-dop-hint": "4",
     "cache-control": "no-cache",
+    // Native sends these on every response; the service document and $metadata override expires to omit it.
+    expires: "-1",
+    // The default Allow list (the record and collection one); native lists a resource's own methods on some 405s, not modelled.
+    Allow: "OPTIONS,GET,HEAD,POST",
+    Public: "OPTIONS,GET,HEAD,POST",
     "Strict-Transport-Security": "max-age=31536000; includeSubDomains",
   };
 }

@@ -170,12 +170,12 @@ test("errors: retrieve of a missing record is 404 0x80040217 Does Not Exist", T,
   );
 });
 
-test("errors: unknown $select column is 400 0x0", { ...T }, async () => {
+test("errors: unknown $select column is 400 0x80060888", { ...T }, async () => {
   await assert.rejects(
     api.retrieveMultiple({ collection: "widgets", select: ["nope"] }),
     (e) => {
       assert.equal(e.status, 400);
-      assert.equal(e.code, "0x0");
+      assert.equal(e.code, "0x80060888");
       return true;
     },
   );

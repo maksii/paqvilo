@@ -2,11 +2,17 @@
 // RelationshipDefinitions and GlobalOptionSetDefinitions. A Solution schema table wins over the
 // store mapping of the same name; virtual tables are read-only fallbacks. Shapes follow
 // webapi-contract.md section 1 ($metadata CSDL) and section 8 (RetrieveMetadataChanges).
+import { isDateOnlyField } from "./dataverse-values.mjs";
 import { createHash } from "node:crypto";
 import { attributeMetadata } from "./attribute-metadata.mjs";
 import { tableFields } from "./solution-schema.mjs";
 import { pluralizeEntitySetName, standardTable } from "./solution-standard.mjs";
-import { ownershipOf, ownershipTypeName } from "./dataverse-security.mjs";
+import { ACCESS_RIGHTS, ownershipOf, ownershipTypeName, privilegeId, privilegeName, privilegeNounOf } from "./dataverse-security.mjs";
+import { expiredVersionStamp } from "./dataverse-changes.mjs";
+import { DataError } from "./data-error.mjs";
+import { relationshipsOf, standardFields, standardGlobalOptionSets, standardTableDef } from "./dataverse-standard.mjs";
+import { MANAGED_MEMBERS } from "./dataverse-soap-contracts.mjs";
+import { platformCsdl } from "./dataverse-operation-contracts.mjs";
 
 const PREFIX = /^[a-z0-9]+_/;
 const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -36,20 +42,40 @@ const TYPES = {
   uniqueidentifier: ["Uniqueidentifier", "UniqueIdentifier", "UniqueidentifierType"],
   entityname: ["EntityName", "EntityName", "EntityNameType"],
   // File and image columns: FileAttributeMetadata / ImageAttributeMetadata. attribute-metadata.mjs is portal-visible, so they live here.
-  file: ["File", "File", "FileType"], image: ["Image", "Image", "ImageType"],
+  file: ["Virtual", "File", "FileType"], image: ["Virtual", "Image", "ImageType"],
+  partylist: ["PartyList", "Lookup", "PartyListType"], managedproperty: ["ManagedProperty", "ManagedProperty", "ManagedPropertyType"],
 };
 // Columns built from the compact shape even when exported (no file/image branch in attribute-metadata.mjs).
-const COMPACT_TYPES = new Set(["file", "image"]);
+const COMPACT_TYPES = new Set(["file", "image", "partylist", "managedproperty"]);
 // EntityFilters flags (RetrieveEntity): Default and Entity are 1, All is 15.
 const ENTITY_FILTERS = { default: 1, entity: 1, attributes: 2, privileges: 4, relationships: 8, all: 15 };
-// RelationshipMetadataBase properties: what an uncast RelationshipDefinitions query returns. // unverified: IsCustomRelationship and IsManaged are assumed base properties.
-const RELATIONSHIP_BASE = ["MetadataId", "HasChanged", "SchemaName", "RelationshipType", "IsCustomRelationship", "IsManaged"];
+// DeletedMetadataFilters flags (Web API enum: no Entity member, Default stands for entities; Microsoft Learn cache-schema-data).
+const DELETED_FILTERS = { default: 1, attribute: 2, relationship: 4, label: 8, optionset: 16, all: 31 };
+// Deleted kinds in filter order: [DeletedMetadata key, filter bit, change-log kind].
+const DELETED_KINDS = [["Default", 1, "entity"], ["Attribute", 2, "attribute"], ["Relationship", 4, "relationship"], ["OptionSet", 16, "optionset"]];
+// SecurityPrivilegeMetadata.PrivilegeType by right; the rights of a table follow dataverse-security.mjs (organization-owned: no Assign or Share).
+const PRIVILEGE_TYPE = { Create: 1, Read: 2, Write: 3, Delete: 4, Assign: 5, Share: 6, Append: 7, AppendTo: 8 };
+const ORGANIZATION_RIGHTS = ["Create", "Read", "Write", "Delete", "Append", "AppendTo"];
+// Organization.ExpireSubscriptionsInDays, default 90 (Microsoft Learn cache-schema-data). The simulator does not read the org setting.
+const EXPIRE_DAYS = 90;
+const DAY_MS = 86400000;
+// ServerVersionStamp / ClientVersionStamp text: "<seq>!MM/dd/yyyy HH:mm:ss" (UTC).
+const STAMP = /^(\d+)!(\d{2})\/(\d{2})\/(\d{4}) (\d{2}):(\d{2}):(\d{2})$/;
+const CHANGE_TRACKING = "Org.OData.Capabilities.V1.ChangeTracking";
+// RelationshipMetadataBase properties (Microsoft Learn RelationshipMetadataBase EntityType, with MetadataBase's MetadataId and
+// HasChanged): what an uncast RelationshipDefinitions query returns.
+const RELATIONSHIP_BASE = ["MetadataId", "HasChanged", "IntroducedVersion", "IsCustomizable", "IsCustomRelationship", "IsManaged", "IsValidForAdvancedFind", "RelationshipType", "SchemaName", "SecurityTypes"];
+// SecurityTypes (flags enum, Learn) by RelationshipBehavior. Native captures show exactly these pairs: 0 None, 1 Append, 2 ParentChild.
+const RELATIONSHIP_SECURITY = ["None", "Append", "ParentChild"];
+// Native AssociatedMenuConfiguration of one relationship (unverified: a single live sample; Behavior and Order vary by relationship).
+const associatedMenu = () => ({ Behavior: "DoNotDisplay", Group: "Details", Label: { LocalizedLabels: [], UserLocalizedLabel: null }, Order: null, AvailableOffline: true, Icon: null, IsCustomizable: false, MenuId: null, QueryApi: null, ViewId: "00000000-0000-0000-0000-000000000000" });
 // Shape keys a mapping's dataverseMetadata may not replace.
 const OVERRIDE_SKIP = new Set(["@odata.type", "MetadataId", "LogicalName", "EntityLogicalName", "AttributeType", "AttributeTypeName", "HasChanged", "IsAuditEnabled", "IsSecured"]);
 const REQUIRED = { none: "None", systemrequired: "SystemRequired", applicationrequired: "ApplicationRequired", required: "ApplicationRequired" };
-const READ_ONLY = new Set(["createdon", "modifiedon", "createdby", "modifiedby", "versionnumber"]);
+const REQUIRED_NAMES = ["None", "SystemRequired", "ApplicationRequired", "Recommended"]; // AttributeRequiredLevel, by number
+const READ_ONLY = new Set(["createdon", "modifiedon", "createdby", "modifiedby", "versionnumber", "owninguser", "owningteam", "owningbusinessunit"]);
 // Columns every standard table has (solution exports omit them); owner columns only for user-owned tables.
-// Principal tables (systemuser, team) inherit the ownerid key from the mscrm.principal base type.
+// Principal tables (systemuser, team) derive from the mscrm.principal base type, whose key is ownerid.
 const SYSTEM_COLUMNS = {
   createdon: { dataverseType: "datetime", label: "Created On", schemaName: "CreatedOn" },
   modifiedon: { dataverseType: "datetime", label: "Modified On", schemaName: "ModifiedOn" },
@@ -72,6 +98,20 @@ const capitalize = (text) => (text ? text.charAt(0).toUpperCase() + text.slice(1
 const own = (object, key) => (object && Object.hasOwn(object, key) ? object[key] : null);
 const listOf = (value) => (value == null ? [] : (Array.isArray(value) ? value : String(value).split(","))).map((item) => String(item).trim()).filter(Boolean);
 const castName = (cast) => String(cast).replace(/^#/, "").replace(/^Microsoft\.Dynamics\.CRM\./, "");
+// Casts accepted on Attributes: the AttributeMetadata derived EntityTypes of the captured CSDL (metadata.xml). The leaf types
+// this module emits (TYPES stems) match by exact type; the Enum base matches its enum stems; the base matches every column.
+// Owner and Customer have no derived type in the CSDL (their columns are LookupAttributeMetadata), so casting to them is unknown.
+// ponytail: a stem added to TYPES is accepted here automatically; a CSDL type this module never emits matches no column.
+const ENUM_STEMS = new Set(["Picklist", "MultiSelectPicklist", "State", "Status", "EntityName"]);
+const ATTRIBUTE_CASTS = new Set([
+  "AttributeMetadata", "EnumAttributeMetadata", "ManagedPropertyAttributeMetadata",
+  ...Object.values(TYPES).map(([, stem]) => `${stem}AttributeMetadata`),
+]);
+const castMatches = (name, attribute) => {
+  if (name === "AttributeMetadata") return true;
+  if (name === "EnumAttributeMetadata") return ENUM_STEMS.has(stemOf(attribute));
+  return attribute["@odata.type"] === `#Microsoft.Dynamics.CRM.${name}`;
+};
 const keyName = (text) => /^(?:LogicalName|SchemaName)=['"]?([^'")]+)['"]?$/i.exec(String(text))?.[1]?.toLowerCase() ?? null;
 const unsupported = (message) => Object.assign(new Error(message), { status: 400, code: "UnsupportedQuery" });
 const xmlEscape = (text) => String(text).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&apos;" })[c]);
@@ -96,8 +136,15 @@ const EDM = {
   Boolean: "Edm.Boolean", DateTime: "Edm.DateTimeOffset",
 };
 const stemOf = (attribute) => attribute["@odata.type"].replace(/^#Microsoft\.Dynamics\.CRM\./, "").replace(/AttributeMetadata$/, "");
-// Version stamp = digest of the whole metadata set plus a fixed date: the simulator keeps no change clock.
-const STAMP_DATE = "01/01/2026 00:00:00";
+// Change log: state.dataverse.metadataLog, appended by the metadata writers (the service reads it through changeLog).
+// One entry per changed item: { seq, at, op, kind, logical, name }
+//   seq      integer, 1-based, strictly increasing: a writer appends with last seq + 1. The server stamp is the last seq.
+//   at       when the change happened (ISO string, Date or epoch ms); its UTC time is the time part of the stamp.
+//   op       'add' | 'change' | 'delete'
+//   kind     'entity' | 'attribute' | 'relationship' | 'optionset'
+//   logical  table logical name for entity and attribute entries, else null
+//   name     attribute LogicalName, relationship SchemaName or option set Name
+// MetadataIds are derived here, so writers log names only. Entries are never trimmed; a stamp below the first entry is expired.
 // Change responses keep these base keys; each expansion is filtered by the query section named here.
 const CHANGE_KEYS = new Set(["@odata.type", "MetadataId", "LogicalName", "HasChanged"]);
 const NESTED = { Attributes: "AttributeQuery", Keys: "KeyQuery", OneToManyRelationships: "RelationshipQuery", ManyToOneRelationships: "RelationshipQuery", ManyToManyRelationships: "RelationshipQuery" };
@@ -140,20 +187,24 @@ function limitLabels(value, languages) {
   return walk(value);
 }
 
-// EntityFilters: a number, a flag name list ("Attributes,Relationships") or the enum form Microsoft.Dynamics.CRM.EntityFilters'All'.
-function entityFilterBits(value) {
-  if (value == null || value === "") return ENTITY_FILTERS.entity;
+// Flag enum value: a number, a flag name list ("Attributes,Relationships") or the enum form Microsoft.Dynamics.CRM.Type'All'. Absent = fallback.
+function flagBits(value, table, fallback, type) {
+  if (value == null || value === "") return fallback;
   if (/^\d+$/.test(String(value))) return Number(value);
   let bits = 0;
   for (const part of String(value).split(/[,|+\s]+/).filter(Boolean)) {
-    const bit = ENTITY_FILTERS[part.replace(/^Microsoft\.Dynamics\.CRM\.EntityFilters/i, "").replace(/'/g, "").toLowerCase()];
-    if (!bit) throw unsupported(`Unknown EntityFilters value '${part}'.`);
+    const bit = table[part.replace(/^Microsoft\.Dynamics\.CRM\.\w+/i, "").replace(/'/g, "").toLowerCase()];
+    if (!bit) throw unsupported(`Unknown ${type} value '${part}'.`);
     bits |= bit;
   }
   return bits;
 }
+const entityFilterBits = (value) => flagBits(value, ENTITY_FILTERS, ENTITY_FILTERS.entity, "EntityFilters");
+const deletedBits = (value) => flagBits(value, DELETED_FILTERS, 0, "DeletedMetadataFilters"); // absent: no deleted items (the docs need both a stamp and a filter)
 
-const auditFlag = (value, canBeChanged, name) => ({ Value: Boolean(value), CanBeChanged: canBeChanged, ManagedPropertyLogicalName: name });
+// ManagedProperty flags arrive as booleans or as { Value } (BooleanManagedProperty); a missing value is false.
+const boolOf = (value) => (value !== null && typeof value === "object" ? value.Value === true : value === true);
+const auditFlag = (value, canBeChanged, name) => ({ Value: boolOf(value), CanBeChanged: canBeChanged, ManagedPropertyLogicalName: name });
 
 // Mapping dataverseMetadata: a key the shape already has takes the mapping's value (identity keys excluded).
 function withOverrides(shape, overrides) {
@@ -262,9 +313,12 @@ function evaluate(node, item) {
 }
 
 // RetrieveMetadataChanges conditions: Value.Type picks the coercion; Guid and enum text compare through equal().
+// A plain JSON value (Web API) is taken as it is; a typed { Type, Value } is coerced by its type.
 function coerceValue(value) {
-  const type = String(value?.Type ?? "");
-  const raw = value?.Value ?? null;
+  if (Array.isArray(value)) return value.map(coerceValue);
+  if (value === null || typeof value !== "object") return value ?? null;
+  const type = String(value.Type ?? "");
+  const raw = value.Value ?? null;
   if (type.endsWith("[]")) return listOf(raw);
   if (/Boolean$/.test(type)) return String(raw).toLowerCase() === "true";
   if (/(Int16|Int32|Int64|Decimal|Double)$/.test(type)) return Number(raw);
@@ -273,24 +327,46 @@ function coerceValue(value) {
 
 // Nested Value properties (RequiredLevel/Value style) compare by their Value.
 const unwrap = (value) => (value !== null && typeof value === "object" && !Array.isArray(value) && "Value" in value ? value.Value : value);
+const nodesOf = (value) => (value == null ? [] : Array.isArray(value) ? value : [value]);
 
+function conditionMatches(item, c) {
+  const actual = unwrap(item[ALIASES[c.PropertyName] ?? c.PropertyName]);
+  const want = coerceValue(c.Value);
+  switch (c.ConditionOperator) {
+    case "Equals": return equal(actual, want);
+    case "NotEquals": return !equal(actual, want);
+    case "In": return [want].flat().some((v) => equal(actual, v));
+    case "NotIn": return ![want].flat().some((v) => equal(actual, v));
+    case "GreaterThan": return actual > want;
+    case "LessThan": return actual < want;
+    default: throw unsupported(`Unsupported metadata condition: ${c.ConditionOperator}`);
+  }
+}
+
+// Conditions and nested Filters combine under the one FilterOperator (And when absent). Nothing to test matches every item.
 function matchesAll(item, criteria) {
-  const conditions = criteria?.Conditions ?? [];
-  if (!conditions.length) return true;
-  const results = conditions.map((c) => {
-    const actual = unwrap(item[ALIASES[c.PropertyName] ?? c.PropertyName]);
-    const want = coerceValue(c.Value);
-    switch (c.ConditionOperator) {
-      case "Equals": return equal(actual, want);
-      case "NotEquals": return !equal(actual, want);
-      case "In": return [want].flat().some((v) => equal(actual, v));
-      case "NotIn": return ![want].flat().some((v) => equal(actual, v));
-      case "GreaterThan": return actual > want;
-      case "LessThan": return actual < want;
-      default: throw unsupported(`Unsupported metadata condition: ${c.ConditionOperator}`);
+  const conditions = nodesOf(criteria?.Conditions);
+  const filters = nodesOf(criteria?.Filters);
+  if (!conditions.length && !filters.length) return true;
+  const results = [
+    ...conditions.map((c) => conditionMatches(item, c)),
+    ...filters.map((f) => matchesAll(item, f)),
+  ];
+  const or = String(criteria.FilterOperator ?? "And").toLowerCase() === "or" || String(criteria.FilterOperator) === "1";
+  return or ? results.some(Boolean) : results.every(Boolean);
+}
+
+// ManagedProperty<T> members (MANAGED_MEMBERS, the table the SOAP writer shares) are objects in the JSON too: a plain value
+// becomes { Value, CanBeChanged, ManagedPropertyLogicalName }. Members already in that shape are left as they are.
+function managedMembers(meta, contracts) {
+  for (const contract of contracts) {
+    for (const [name, logical] of Object.entries(MANAGED_MEMBERS[contract] ?? {})) {
+      const value = meta[name];
+      if (value === undefined || (value !== null && typeof value === "object")) continue;
+      meta[name] = { Value: value, CanBeChanged: true, ManagedPropertyLogicalName: logical };
     }
-  });
-  return String(criteria.FilterOperator ?? "And").toLowerCase() === "or" ? results.some(Boolean) : results.every(Boolean);
+  }
+  return meta;
 }
 
 // One requested item: null when its Criteria fails; else the base keys plus the requested properties (all when none are named).
@@ -307,6 +383,7 @@ function projectChange(item, section) {
 }
 
 const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
+<EntityType Name="expando" BaseType="mscrm.crmbaseentity" OpenType="true" />
 <EntityType Name="crmmodelbaseentity" Abstract="true" />
 <EntityType Name="principal" BaseType="mscrm.crmbaseentity" Abstract="true">
   <Key>
@@ -314,148 +391,39 @@ const CSDL_TYPES = `<EntityType Name="crmbaseentity" Abstract="true" />
   </Key>
   <Property Name="ownerid" Type="Edm.Guid" Nullable="false" />
 </EntityType>
-<ComplexType Name="WhoAmIResponse">
-  <Property Name="BusinessUnitId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="UserId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="OrganizationId" Type="Edm.Guid" Nullable="false" />
-</ComplexType>
-<ComplexType Name="RetrieveVersionResponse">
-  <Property Name="Version" Type="Edm.String" />
-</ComplexType>
-<ComplexType Name="EndpointCollection">
-  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
-  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
-  <Property Name="Keys" Type="Collection(Edm.String)" />
-  <Property Name="Values" Type="Collection(Edm.String)" />
-</ComplexType>
-<ComplexType Name="OrganizationDetail">
-  <Property Name="OrganizationId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="FriendlyName" Type="Edm.String" />
-  <Property Name="OrganizationVersion" Type="Edm.String" />
-  <Property Name="EnvironmentId" Type="Edm.Guid" />
-  <Property Name="DatacenterId" Type="Edm.Guid" />
-  <Property Name="Geo" Type="Edm.String" />
-  <Property Name="TenantId" Type="Edm.Guid" />
-  <Property Name="UrlName" Type="Edm.String" />
-  <Property Name="UniqueName" Type="Edm.String" />
-  <Property Name="OrganizationType" Type="mscrm.OrganizationType" />
-  <Property Name="SchemaType" Type="mscrm.SchemaType" />
-  <Property Name="State" Type="mscrm.OrganizationState" />
-  <Property Name="Endpoints" Type="mscrm.EndpointCollection" />
-</ComplexType>
-<ComplexType Name="RetrieveCurrentOrganizationResponse">
-  <Property Name="Detail" Type="mscrm.OrganizationDetail" />
-</ComplexType>
-<ComplexType Name="EntityRecordCountCollection">
-  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
-  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
-  <Property Name="Keys" Type="Collection(Edm.String)" />
-  <Property Name="Values" Type="Collection(Edm.Int64)" />
-</ComplexType>
-<ComplexType Name="RetrieveTotalRecordCountResponse">
-  <Property Name="EntityRecordCountCollection" Type="mscrm.EntityRecordCountCollection" />
-</ComplexType>
-<ComplexType Name="RetrievePrincipalAccessResponse">
-  <Property Name="AccessRights" Type="Edm.String" />
-</ComplexType>
-<ComplexType Name="RolePrivilege">
-  <Property Name="Depth" Type="Edm.String" />
-  <Property Name="PrivilegeId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="BusinessUnitId" Type="Edm.Guid" Nullable="false" />
-  <Property Name="PrivilegeName" Type="Edm.String" />
-  <Property Name="RecordFilterId" Type="Edm.Guid" Nullable="true" />
-  <Property Name="RecordFilterUniqueName" Type="Edm.String" />
-</ComplexType>
-<ComplexType Name="RetrieveUserPrivilegesResponse">
-  <Property Name="RolePrivileges" Type="Collection(mscrm.RolePrivilege)" />
-</ComplexType>
-<ComplexType Name="CreateMultipleResponse">
-  <Property Name="Ids" Type="Collection(Edm.Guid)" />
-</ComplexType>
-<EnumType Name="EndpointAccessType">
-  <Member Name="Default" Value="0" />
-  <Member Name="Internet" Value="1" />
-  <Member Name="Intranet" Value="2" />
-</EnumType>
-<EnumType Name="OrganizationType">
-  <Member Name="Default" />
-</EnumType>
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 <EnumType Name="SchemaType">
   <Member Name="Standard" />
   <Member Name="Core" />
   <Member Name="Full" />
   <Member Name="Uno" />
 </EnumType>
-<EnumType Name="OrganizationState">
-  <Member Name="Enabled" />
-  <Member Name="Disabled" />
-</EnumType>
-<EnumType Name="DeletedMetadataFilters">
-  <Member Name="Default" />
-  <Member Name="Entity" />
-  <Member Name="Attribute" />
-  <Member Name="Relationship" />
-  <Member Name="Label" />
-  <Member Name="OptionSet" />
-  <Member Name="All" />
-</EnumType>
-<ComplexType Name="MetadataPropertiesExpression">
-  <Property Name="AllProperties" Type="Edm.Boolean" Nullable="false" />
-  <Property Name="PropertyNames" Type="Collection(Edm.String)" />
-</ComplexType>
+
+
+
 <ComplexType Name="MetadataConditionValue">
   <Property Name="Type" Type="Edm.String" />
   <Property Name="Value" Type="Edm.String" />
 </ComplexType>
-<ComplexType Name="MetadataConditionExpression">
-  <Property Name="PropertyName" Type="Edm.String" />
-  <Property Name="ConditionOperator" Type="Edm.String" />
-  <Property Name="Value" Type="mscrm.MetadataConditionValue" />
-</ComplexType>
-<ComplexType Name="MetadataFilterExpression">
-  <Property Name="FilterOperator" Type="Edm.String" />
-  <Property Name="Conditions" Type="Collection(mscrm.MetadataConditionExpression)" />
-</ComplexType>
+
+
 <ComplexType Name="MetadataQueryExpression">
   <Property Name="Properties" Type="mscrm.MetadataPropertiesExpression" />
   <Property Name="Criteria" Type="mscrm.MetadataFilterExpression" />
-</ComplexType>
-<ComplexType Name="LabelQueryExpression">
-  <Property Name="FilterLanguages" Type="Collection(Edm.Int32)" />
-  <Property Name="MissingLabelBehavior" Type="Edm.Int32" />
-</ComplexType>
-<ComplexType Name="EntityQueryExpression">
-  <Property Name="Properties" Type="mscrm.MetadataPropertiesExpression" />
-  <Property Name="Criteria" Type="mscrm.MetadataFilterExpression" />
-  <Property Name="AttributeQuery" Type="mscrm.MetadataQueryExpression" />
-  <Property Name="RelationshipQuery" Type="mscrm.MetadataQueryExpression" />
-  <Property Name="KeyQuery" Type="mscrm.MetadataQueryExpression" />
-  <Property Name="LabelQuery" Type="mscrm.LabelQueryExpression" />
-</ComplexType>
-<ComplexType Name="DeletedMetadataCollection">
-  <Property Name="Count" Type="Edm.Int32" Nullable="false" />
-  <Property Name="IsReadOnly" Type="Edm.Boolean" Nullable="false" />
-  <Property Name="Keys" Type="Collection(Edm.String)" />
-  <Property Name="Values" Type="Collection(Edm.String)" />
-</ComplexType>
-<ComplexType Name="ComplexAttributeMetadata">
-  <Property Name="LogicalName" Type="Edm.String" />
-  <Property Name="SchemaName" Type="Edm.String" />
-  <Property Name="MetadataId" Type="Edm.Guid" />
-  <Property Name="AttributeType" Type="Edm.String" />
-  <Property Name="HasChanged" Type="Edm.Boolean" />
-</ComplexType>
-<ComplexType Name="ComplexEntityMetadata">
-  <Property Name="LogicalName" Type="Edm.String" />
-  <Property Name="SchemaName" Type="Edm.String" />
-  <Property Name="MetadataId" Type="Edm.Guid" />
-  <Property Name="HasChanged" Type="Edm.Boolean" />
-  <Property Name="Attributes" Type="Collection(mscrm.ComplexAttributeMetadata)" />
-</ComplexType>
-<ComplexType Name="RetrieveMetadataChangesResponse">
-  <Property Name="ServerVersionStamp" Type="Edm.String" />
-  <Property Name="DeletedMetadata" Type="mscrm.DeletedMetadataCollection" />
-  <Property Name="EntityMetadata" Type="Collection(mscrm.ComplexEntityMetadata)" />
 </ComplexType>`;
 
 // Bound to the role table, so emitted only when that table exists.
@@ -508,8 +476,21 @@ const CSDL_OPERATIONS = `<Function Name="WhoAmI">
   <Parameter Name="entityset" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
   <Parameter Name="Targets" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
 </Action>
+<Action Name="DeleteMultiple" IsBound="true">
+  <Parameter Name="entityset" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+  <Parameter Name="Targets" Type="Collection(mscrm.crmbaseentity)" Nullable="false" />
+</Action>
 <Action Name="GrantAccess">
   <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <Parameter Name="PrincipalAccess" Type="mscrm.PrincipalAccess" />
+</Action>
+<Action Name="ModifyAccess">
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <Parameter Name="PrincipalAccess" Type="mscrm.PrincipalAccess" />
+</Action>
+<Action Name="RevokeAccess">
+  <Parameter Name="Target" Type="mscrm.crmbaseentity" Nullable="false" />
+  <Parameter Name="Revokee" Type="mscrm.crmbaseentity" Nullable="false" />
 </Action>`;
 
 const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" IncludeInServiceDocument="false" />
@@ -517,13 +498,20 @@ const CSDL_IMPORTS = `<FunctionImport Name="WhoAmI" Function="mscrm.WhoAmI" Incl
 <FunctionImport Name="RetrieveCurrentOrganization" Function="mscrm.RetrieveCurrentOrganization" IncludeInServiceDocument="false" />
 <FunctionImport Name="RetrieveTotalRecordCount" Function="mscrm.RetrieveTotalRecordCount" IncludeInServiceDocument="false" />
 <FunctionImport Name="RetrieveMetadataChanges" Function="mscrm.RetrieveMetadataChanges" IncludeInServiceDocument="false" />
-<ActionImport Name="GrantAccess" Action="mscrm.GrantAccess" />`;
+<ActionImport Name="GrantAccess" Action="mscrm.GrantAccess" />
+<ActionImport Name="ModifyAccess" Action="mscrm.ModifyAccess" />
+<ActionImport Name="RevokeAccess" Action="mscrm.RevokeAccess" />`;
 
-export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables, globalOptionSets }) {
+// changeLog: the metadataLog array (or a function returning it), see the entry shape above. extraCsdl: CSDL text appended to $metadata
+// (the registry's csdlFragments()). clock: ms epoch; the seeded stamp (seq 0) is dated at creation, and expiry is measured from it.
+export function createMetadataService({ organizationId, schema, mappings, lcid = 1033, virtualTables, globalOptionSets, changeLog, extraCsdl, clock = () => Date.now() }) {
   const read = (source) => (typeof source === "function" ? source() : source) ?? null;
   const schemaRoot = () => read(schema);
   const mappingRoot = () => read(mappings) ?? {};
   const virtualRoot = () => read(virtualTables) ?? {};
+  // relationshipsOf reads only state.mappings; the service has the mappings, not the store.
+  const storeOf = () => ({ state: { mappings: mappingRoot() } });
+  const baseAt = clock();
   const metadataIdOf = (kind, ...parts) => uuidV5(organizationId, `${kind}:${parts.join(":")}`);
 
   function logicalNames() {
@@ -541,19 +529,26 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const m = mapping ?? virtual?.mapping ?? null;
     if (!s && !m) return null;
     const std = standardTable(logical);
+    // Standard file (standard-tables-plan 3.1): Solution export > standard file > mapping. Its fields go under the Solution's.
+    const def = standardTableDef(logical);
+    const thin = m?.fields ?? {};
+    // API-created columns (customColumns, reapplied onto the mapping) stay above the standard columns.
+    const custom = Object.fromEntries(Object.entries(thin).filter(([, f]) => f?.columnMetadata?.isManaged === false && f?.columnMetadata?.isCustomizable === true));
     return {
       logical,
       s,
       m,
+      def,
       lcid,
       isVirtual: s ? Boolean(s.isVirtual) : !mapping,
       // One ownership answer per table, shared with the security model: 'user' | 'org'.
       ownership: ownershipOf(logical, s, m),
-      ownershipType: ownershipTypeName(logical, s, m),
+      // A Solution export that omits ownership takes the standard table's.
+      ownershipType: !s?.ownership && def ? def.ownershipType : ownershipTypeName(logical, s, m),
       entitySet: s?.entitySetName ?? m?.entitySet ?? std?.entitySet ?? pluralizeEntitySetName(logical),
       idColumn: s?.primaryIdAttribute ?? m?.idColumn ?? std?.primaryIdAttribute ?? `${logical}id`,
-      primaryName: s?.primaryNameAttribute ?? m?.nameColumn ?? std?.primaryNameAttribute ?? null,
-      fields: s ? tableFields(root, logical) : (m?.fields ?? {}),
+      primaryName: s?.primaryNameAttribute ?? def?.primaryNameAttribute ?? m?.nameColumn ?? std?.primaryNameAttribute ?? null,
+      fields: s ? { ...standardFields(logical), ...tableFields(root, logical) } : { ...thin, ...standardFields(logical), ...custom },
     };
   }
 
@@ -570,34 +565,46 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
 
   function entityOf(src) {
     const dm = src.m?.dataverseMetadata ?? {};
+    // TableType: the mapping's (elastic tables come from a create body or the standard file); Standard otherwise.
+    const elastic = (src.m?.tableType ?? src.def?.tableType) === "Elastic";
     const shape = {
+      TableType: elastic ? "Elastic" : "Standard",
       MetadataId: metadataIdOf("entity", src.logical),
       LogicalName: src.logical,
-      SchemaName: src.s?.schemaName ?? capitalize(src.logical),
+      SchemaName: src.s?.schemaName ?? src.def?.schemaName ?? dm.schemaName ?? capitalize(src.logical),
       EntitySetName: src.entitySet,
-      LogicalCollectionName: src.s?.logicalCollectionName ?? src.m?.logicalCollectionName ?? src.entitySet,
+      LogicalCollectionName: src.s?.logicalCollectionName ?? src.def?.logicalCollectionName ?? src.m?.logicalCollectionName ?? src.entitySet,
       PrimaryIdAttribute: src.idColumn,
       PrimaryNameAttribute: src.primaryName,
-      ObjectTypeCode: objectTypeCode(src.logical),
+      ObjectTypeCode: dm.ObjectTypeCode ?? objectTypeCode(src.logical),
       OwnershipType: src.ownershipType,
       IsCustomEntity: PREFIX.test(src.logical),
-      IsActivity: Boolean(src.s?.isActivity),
+      // Solution says so, else the standard table (the nine activitypointer-derived tables); false otherwise.
+      IsActivity: Boolean(src.s?.isActivity ?? src.def?.isActivity),
       IsIntersect: Boolean(src.s?.isIntersect || src.m?.intersect),
       IsValidForAdvancedFind: true,
       IsPrivate: false,
       HasChanged: null,
-      // unverified: dataverseMetadata.labels (written by 1.9) is read as the display-name labels when the schema has none.
-      DisplayName: labelBlock(src.s?.labels ?? dm.labels, src.m?.label ?? capitalize(src.logical), lcid),
-      DisplayCollectionName: labelBlock(src.s?.collectionLabels, src.m?.collectionLabel ?? capitalize(src.entitySet), lcid),
-      Description: labelBlock(null, null, lcid),
+      // Labels the 1.9 writer stores are dataverseMetadata.labels = { DisplayName, DisplayCollectionName, Description } of lcid maps.
+      DisplayName: labelBlock(src.s?.labels ?? src.def?.labels ?? dm.labels?.DisplayName, src.m?.label ?? capitalize(src.logical), lcid),
+      DisplayCollectionName: labelBlock(src.s?.collectionLabels ?? src.def?.collectionLabels ?? dm.labels?.DisplayCollectionName, src.m?.collectionLabel ?? capitalize(src.entitySet), lcid),
+      Description: labelBlock(dm.labels?.Description ?? null, null, lcid),
+      // Opt-in per table (Microsoft Learn use-change-tracking): the flag marks the entity set in $metadata when annotations=true.
+      ChangeTrackingEnabled: boolOf(src.s?.changeTrackingEnabled ?? src.m?.changeTrackingEnabled ?? false),
+      // Microsoft Learn optimistic-concurrency: enabled by default for custom tables. System-table support varies;
+      // a supplied Solution/mapping fact wins and an unknown system table is not asserted enabled or disabled.
+      IsOptimisticConcurrencyEnabled: src.s?.isOptimisticConcurrencyEnabled ?? src.m?.isOptimisticConcurrencyEnabled
+        ?? (PREFIX.test(src.logical) && !src.isVirtual && !elastic ? true : null),
       IsAuditEnabled: auditFlag(dm.IsAuditEnabled ?? false, true, "isauditenabled"), // unverified: table default when the mapping says nothing
     };
+    // Elastic tables take no charts, duplicate detection or N:N relationships (Learn, create-edit-elastic-tables).
+    if (elastic) Object.assign(shape, { CanCreateCharts: false, IsDuplicateDetectionEnabled: false, CanManyToMany: false });
     return withOverrides(shape, dm);
   }
 
   function synthesize(src, name, def, { attrType, typeName, type, id }) {
     const custom = PREFIX.test(name);
-    const readOnly = id || READ_ONLY.has(name);
+    const readOnly = READ_ONLY.has(name);
     const required = REQUIRED[def.requiredLevel] ?? (id ? "SystemRequired" : def.required ? "ApplicationRequired" : "None");
     const meta = {
       AttributeOf: null,
@@ -610,13 +617,18 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       HasChanged: null,
       IsCustomAttribute: custom,
       IsCustomizable: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "iscustomizable" },
+      // unverified: defaults and logical names are not in Microsoft Learn (only the property types); native capture not yet taken for columns.
+      IsRenameable: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "isrenameable" },
+      IsSortableEnabled: { Value: false, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyissortablesettings" },
+      IsGlobalFilterEnabled: { Value: false, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyglobalfiltersettings" },
+      CanModifyAdditionalSettings: { Value: true, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyadditionalsettings" },
       IsManaged: false,
       IsPrimaryId: id,
       IsPrimaryName: name === src.primaryName,
       IsValidForAdvancedFind: !id,
-      IsValidForCreate: def.validForCreate ?? !readOnly,
+      IsValidForCreate: def.validForCreate ?? (name === "statecode" ? false : !readOnly),
       IsValidForRead: def.validForRead ?? true,
-      IsValidForUpdate: def.validForUpdate ?? !readOnly,
+      IsValidForUpdate: def.validForUpdate ?? !(id || readOnly),
       LogicalName: name,
       RequiredLevel: { Value: required, CanBeChanged: true, ManagedPropertyLogicalName: "canmodifyrequirementlevelsettings" },
       SchemaName: def.schemaName ?? capitalize(name),
@@ -626,8 +638,10 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     if (["Decimal", "Double", "Money"].includes(attrType)) meta.Precision = def.precision ?? (attrType === "Money" ? 2 : null);
     if (attrType === "DateTime") {
       Object.assign(meta, {
-        Format: /^dateonly$/i.test(def.format ?? "") ? "DateOnly" : "DateAndTime",
+        Format: isDateOnlyField(def) ? "DateOnly" : "DateAndTime",
         DateTimeBehavior: { Value: def.dateTimeBehavior ?? "UserLocal" },
+        // Custom, changeable columns only (Learn: CreatedOn/ModifiedOn report False). unverified: logical name.
+        CanChangeDateTimeBehavior: { Value: custom && !readOnly, CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifydatetimebehavior" },
       });
     }
     if (["Lookup", "Customer", "Owner"].includes(attrType)) {
@@ -662,19 +676,25 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const compact = COMPACT_TYPES.has(type);
     const exported = def.columnMetadata && !compact ? attributeMetadata(src.logical, name, def, { primaryName: src.primaryName, lcid }) : null;
     const meta = exported ?? synthesize(src, name, compact ? { ...def, labels: def.labels ?? facts.labels, requiredLevel: def.requiredLevel ?? facts.requiredLevel } : def, { attrType, typeName, type, id });
+    // attribute-metadata.mjs reports RequiredLevel as its number; the Web API names it (synthesize and the docs use the name).
+    if (typeof meta.RequiredLevel?.Value === "number") meta.RequiredLevel = { ...meta.RequiredLevel, Value: REQUIRED_NAMES[meta.RequiredLevel.Value] };
     const custom = PREFIX.test(name);
     const dm = def.dataverseMetadata ?? {};
     // unverified: file default size and mapping keys (maxSizeInKB, canStoreFullImage, isPrimaryImage, globalOptionSet) are assumed, not documented.
     if (type === "file") meta.MaxSizeInKB = facts.maxSizeInKB ?? null;
     if (type === "image") Object.assign(meta, { MaxSizeInKB: facts.maxSizeInKB ?? 10240, CanStoreFullImage: facts.canStoreFullImage ?? false, IsPrimaryImage: facts.isPrimaryImage ?? null });
-    meta.IsSecured = Boolean(dm.IsSecured ?? facts.isSecured ?? meta.IsSecured ?? false);
-    meta.IsAuditEnabled = { CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyauditsettings", ...meta.IsAuditEnabled, Value: Boolean(dm.IsAuditEnabled ?? meta.IsAuditEnabled?.Value ?? false) };
-    if (def.globalOptionSet) meta.GlobalOptionSet = globalNamed(def.globalOptionSet);
-    return Object.assign(withOverrides(meta, dm), {
+    meta.IsSecured = boolOf(dm.IsSecured ?? facts.isSecured ?? meta.IsSecured ?? false);
+    meta.IsAuditEnabled = { CanBeChanged: custom, ManagedPropertyLogicalName: "canmodifyauditsettings", ...meta.IsAuditEnabled, Value: boolOf(dm.IsAuditEnabled ?? meta.IsAuditEnabled?.Value ?? false) };
+    // Global binding: the mapping's globalOptionSet, or the 1.9 writer's columnMetadata.optionSet ({ isGlobal, name }).
+    const globalName = def.globalOptionSet ?? (facts.optionSet?.isGlobal ? facts.optionSet.name : null);
+    if (globalName) meta.GlobalOptionSet = globalNamed(globalName);
+    if (meta.GlobalOptionSet) meta.OptionSet = meta.GlobalOptionSet;
+    const shaped = Object.assign(withOverrides(meta, dm), {
       "@odata.type": `#Microsoft.Dynamics.CRM.${stem}AttributeMetadata`,
       MetadataId: metadataIdOf("attribute", src.logical, name),
       AttributeType: attrType,
     });
+    return managedMembers(shaped, ["AttributeMetadata", `${stem}AttributeMetadata`]);
   }
 
   function attributesOf(src) {
@@ -695,7 +715,8 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   }
 
   function keysOf(src) {
-    const list = src.s ? (src.s.keys ?? []) : (src.m?.alternateKeys ?? []);
+    // The Solution schema keeps a table's keys keyed by name (solution-schema.mjs); mapping alternateKeys are an array.
+    const list = src.s ? Object.values(src.s.keys ?? {}) : (src.m?.alternateKeys ?? []);
     return list.map((k) => ({
       "@odata.type": "#Microsoft.Dynamics.CRM.EntityKeyMetadata",
       MetadataId: metadataIdOf("key", src.logical, k.name),
@@ -703,7 +724,9 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       SchemaName: k.schemaName ?? k.name,
       EntityLogicalName: src.logical,
       KeyAttributes: [...k.attributes],
-      EntityKeyIndexStatus: "Active",
+      // indexStatus and asyncJob are written by DeactivateEntityKey and ReactivateEntityKey (dataverse-metadata-messages.mjs).
+      EntityKeyIndexStatus: k.indexStatus ?? "Active",
+      AsyncJob: k.asyncJob ?? "00000000-0000-0000-0000-000000000000",
       IsCustomizable: { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" },
       IsManaged: false,
       DisplayName: labelBlock(k.labels, k.name, lcid),
@@ -723,68 +746,98 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     };
     for (const rel of Object.values(schemaRoot()?.relationships ?? {})) {
       if (rel.type === "one-to-many") {
-        add({ type: "1:N", schemaName: rel.schemaName, referencedEntity: rel.referencedEntity, referencedAttribute: rel.referencedAttribute, referencingEntity: rel.referencingEntity, referencingAttribute: rel.referencingAttribute, referencedNav: rel.referencedNavigation, referencingNav: rel.referencingNavigation });
+        add({ type: "1:N", schemaName: rel.schemaName, referencedEntity: rel.referencedEntity, referencedAttribute: rel.referencedAttribute, referencingEntity: rel.referencingEntity, referencingAttribute: rel.referencingAttribute, referencedNav: rel.referencedNavigation, referencingNav: rel.referencingNavigation, relationshipBehavior: rel.relationshipBehavior, ...(rel.isHierarchical ? { hierarchical: true } : {}) });
       } else if (rel.type === "many-to-many") {
         add({ type: "N:N", schemaName: rel.schemaName, intersectEntity: rel.intersectEntity, entity1: rel.entity1, attribute1: rel.attribute1, nav1: rel.navigation1, entity2: rel.entity2, attribute2: rel.attribute2, nav2: rel.navigation2 });
       }
     }
     for (const logical of logicalNames())
-      for (const [nav, rel] of Object.entries(source(logical).m?.relationships ?? {})) add(fromMapping(logical, nav, rel));
+      for (const [nav, rel] of Object.entries(relationshipsOf(storeOf(), logical, source(logical).m?.relationships))) add(fromMapping(logical, nav, rel));
     return [...records.values()];
   }
 
   function fromMapping(logical, nav, rel) {
+    // Writer-stored labels (relationship writer: displayLabels / descriptionLabels on the mapping relationship) travel with the record.
+    const labels = { displayLabels: rel.displayLabels, descriptionLabels: rel.descriptionLabels, relationshipBehavior: rel.relationshipBehavior };
+    const schemaName = relationshipSchemaName(logical, nav, rel);
     if (rel.intersect) {
-      return { type: "N:N", schemaName: rel.schemaName ?? rel.intersect.entity, intersectEntity: rel.intersect.entity, entity1: logical, attribute1: rel.intersect.from, nav1: nav, entity2: rel.entity, attribute2: rel.intersect.to, nav2: rel.partner ?? null };
+      return { ...labels, type: "N:N", schemaName, intersectEntity: rel.intersect.entity, entity1: logical, attribute1: rel.intersect.from, nav1: nav, entity2: rel.entity, attribute2: rel.intersect.to, nav2: rel.partner ?? null };
     }
-    const schemaName = rel.schemaName ?? `${logical}_${nav}`;
     if (!rel.many) {
       // Lookup on this table: the table is the referencing side.
-      return { type: "1:N", schemaName, referencedEntity: rel.entity, referencedAttribute: rel.to, referencingEntity: logical, referencingAttribute: rel.from, referencedNav: rel.partner ?? null, referencingNav: nav, cascade: rel.cascade };
+      return { ...labels, type: "1:N", schemaName, referencedEntity: rel.entity, referencedAttribute: rel.to, referencingEntity: logical, referencingAttribute: rel.from, referencedNav: rel.partner ?? null, referencingNav: nav, cascade: rel.cascade, hierarchical: rel.hierarchical === true };
     }
-    return { type: "1:N", schemaName, referencedEntity: logical, referencedAttribute: rel.from, referencingEntity: rel.entity, referencingAttribute: rel.to, referencedNav: nav, referencingNav: rel.partner ?? null, cascade: rel.cascade };
+    return { ...labels, type: "1:N", schemaName, referencedEntity: logical, referencedAttribute: rel.from, referencingEntity: rel.entity, referencingAttribute: rel.to, referencedNav: nav, referencingNav: rel.partner ?? null, cascade: rel.cascade, hierarchical: rel.hierarchical === true };
+  }
+
+  // unverified: relationship labels are not RelationshipMetadataBase properties in Microsoft Learn; they are carried as DisplayName/Description
+  // when the relationship writer stored them, and the uncast base projection leaves them out.
+  const relationshipLabels = (r) => (r.displayLabels || r.descriptionLabels
+    ? { DisplayName: labelBlock(r.displayLabels, null, lcid), Description: labelBlock(r.descriptionLabels, null, lcid) }
+    : {});
+
+  // RelationshipMetadataBase members (Learn), as native returns them. Native IsCustomizable is { Value: true, CanBeChanged: true }
+  // on every relationship sampled, system and custom alike.
+  function relationshipBaseOf(r, { custom, type, security }) {
+    return {
+      MetadataId: metadataIdOf("relationship", r.schemaName),
+      HasChanged: null,
+      IntroducedVersion: "1.0.0.0", // unverified: native shows "1.0.0.0" and "1.0" on system relationships
+      IsCustomizable: { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "iscustomizable" },
+      IsCustomRelationship: custom,
+      IsManaged: false,
+      IsValidForAdvancedFind: true,
+      RelationshipType: type,
+      SchemaName: r.schemaName,
+      SecurityTypes: security,
+    };
   }
 
   function oneToManyShape(r) {
     const cascade = r.cascade ?? {};
+    const behavior = Number.isInteger(r.relationshipBehavior) ? r.relationshipBehavior : 0;
     return {
       "@odata.type": "#Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata",
-      MetadataId: metadataIdOf("relationship", r.schemaName),
-      SchemaName: r.schemaName,
+      ...relationshipBaseOf(r, { custom: PREFIX.test(r.referencingAttribute ?? ""), type: "OneToManyRelationship", security: RELATIONSHIP_SECURITY[behavior] ?? "None" }),
       ReferencedEntity: r.referencedEntity,
       ReferencedAttribute: r.referencedAttribute,
       ReferencingEntity: r.referencingEntity,
       ReferencingAttribute: r.referencingAttribute,
       ReferencedEntityNavigationPropertyName: r.referencedNav ?? null,
       ReferencingEntityNavigationPropertyName: r.referencingNav ?? null,
-      RelationshipType: "OneToManyRelationship",
-      IsCustomRelationship: PREFIX.test(r.referencingAttribute ?? ""),
-      IsManaged: false,
-      CascadeConfiguration: { Assign: "NoCascade", Delete: cascade.delete ?? "RemoveLink", Merge: "NoCascade", Reparent: "NoCascade", Share: "NoCascade", Unshare: "NoCascade", RollupView: "NoCascade" },
-      HasChanged: null,
+      IsHierarchical: r.hierarchical === true,
+      AssociatedMenuConfiguration: associatedMenu(),
+      CascadeConfiguration: { Assign: "NoCascade", Delete: cascade.delete ?? "RemoveLink", Archive: "NoCascade", Merge: "NoCascade", Reparent: "NoCascade", Share: "NoCascade", Unshare: "NoCascade", RollupView: "NoCascade" },
+      DenormalizedAttributeName: null, // unverified: native null on the samples taken
+      EntityKey: null,
+      IsDenormalizedLookup: null,
+      IsRelationshipAttributeDenormalized: false,
+      RelationshipAttributes: [],
+      RelationshipBehavior: behavior,
+      ...relationshipLabels(r),
     };
   }
 
   function manyToManyShape(r) {
     return {
       "@odata.type": "#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata",
-      MetadataId: metadataIdOf("relationship", r.schemaName),
-      SchemaName: r.schemaName,
+      ...relationshipBaseOf(r, { custom: PREFIX.test(r.intersectEntity ?? ""), type: "ManyToManyRelationship", security: "None" }),
       IntersectEntityName: r.intersectEntity,
       Entity1LogicalName: r.entity1,
       Entity1IntersectAttribute: r.attribute1,
       Entity1NavigationPropertyName: r.nav1 ?? null,
+      Entity1AssociatedMenuConfiguration: associatedMenu(),
       Entity2LogicalName: r.entity2,
       Entity2IntersectAttribute: r.attribute2,
       Entity2NavigationPropertyName: r.nav2 ?? null,
-      RelationshipType: "ManyToManyRelationship",
-      IsCustomRelationship: PREFIX.test(r.intersectEntity ?? ""),
-      IsManaged: false,
-      HasChanged: null,
+      Entity2AssociatedMenuConfiguration: associatedMenu(),
+      ...relationshipLabels(r),
     };
   }
 
   const relationshipShape = (r) => (r.type === "N:N" ? manyToManyShape(r) : oneToManyShape(r));
+  // Uncast RelationshipDefinitions are typed RelationshipMetadataBase: only its properties.
+  const relationshipBase = (r) => Object.fromEntries(RELATIONSHIP_BASE.filter((k) => k in r).map((k) => [k, r[k]]));
   const oneToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencedEntity === logical).map(oneToManyShape);
   const manyToOneOf = (logical) => relationshipRecords().filter((r) => r.type === "1:N" && r.referencingEntity === logical).map(oneToManyShape);
   const manyToManyOf = (logical) => relationshipRecords().filter((r) => r.type === "N:N" && (r.entity1 === logical || r.entity2 === logical)).map(manyToManyShape);
@@ -812,20 +865,26 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
   });
 
   // Solution global sets first, then the sets created through the Web API (state.dataverse.globalOptionSets) that the schema does not name.
-  // unverified: stored shape assumed as 1.10 writes it: Name, DisplayName/Description (string or label block), OptionSetType, Options [{ Value, Label }].
+  // Two stored shapes are read: the Web API one (Name, DisplayName, OptionSetType, Options [{ Value, Label }]) and the relationship/option-set
+  // writer's (name, displayLabels, descriptionLabels, type 'picklist', options [{ value, label, labels }]). // unverified: the writer's shape
   const storedSetOf = (set) => {
+    const name = set.Name ?? set.name;
     const block = (value, fallback) => (value && typeof value === "object" ? value : labelBlock(null, value ?? fallback, lcid));
+    const option = (o) => (o.Label && typeof o.Label === "object"
+      ? o
+      : optionOf({ value: o.Value ?? o.value, label: o.Label ?? o.label ?? String(o.Value ?? o.value), labels: o.labels }, lcid));
     return {
       "@odata.type": "#Microsoft.Dynamics.CRM.OptionSetMetadata",
-      MetadataId: set.MetadataId ?? metadataIdOf("optionset", set.Name),
-      Name: set.Name,
-      DisplayName: block(set.DisplayName, set.Name),
-      Description: block(set.Description, null),
-      OptionSetType: set.OptionSetType ?? "Picklist",
+      MetadataId: set.MetadataId ?? metadataIdOf("optionset", name),
+      Name: name,
+      DisplayName: set.DisplayName !== undefined ? block(set.DisplayName, name) : labelBlock(set.displayLabels, name, lcid),
+      Description: set.Description !== undefined ? block(set.Description, null) : labelBlock(set.descriptionLabels, null, lcid),
+      OptionSetType: set.OptionSetType ?? { picklist: "Picklist", boolean: "Boolean", state: "State", status: "Status" }[set.type] ?? "Picklist",
       IsGlobal: true,
-      IsCustomOptionSet: true,
+      // The standard file's sets (standardGlobalOptionSets) are platform sets, not created ones.
+      IsCustomOptionSet: !standardGlobalOptionSets()[name],
       IsManaged: false,
-      Options: (set.Options ?? []).map((o) => (o.Label && typeof o.Label === "object" ? o : optionOf({ value: o.Value, label: o.Label ?? String(o.Value) }, lcid))),
+      Options: (set.Options ?? set.options ?? []).map(option),
       HasChanged: null,
     };
   };
@@ -833,7 +892,7 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     const schemaSets = Object.values(schemaRoot()?.optionSets ?? {}).map(globalOptionSetOf);
     const names = new Set(schemaSets.map((set) => set.Name.toLowerCase()));
     const stored = Object.values(read(globalOptionSets) ?? {})
-      .filter((set) => set?.Name && !names.has(String(set.Name).toLowerCase()))
+      .filter((set) => (set?.Name ?? set?.name) && !names.has(String(set.Name ?? set.name).toLowerCase()))
       .map(storedSetOf);
     return [...schemaSets, ...stored];
   };
@@ -847,6 +906,9 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const top = name.split("/")[0];
       if (top in item) out[top] = item[top];
     }
+    // Entity() materializes these navigation arrays only for an explicit $expand. A sibling scalar $select
+    // must not discard them; this also covers expanded empty collections without inventing missing metadata.
+    for (const name of Object.keys(EXPANSIONS)) if (Object.hasOwn(item, name)) out[name] = item[name];
     return out;
   }
 
@@ -906,9 +968,13 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       });
       return xmlElement("Annotation", { Term: `${KEYS}.AlternateKeys` }, xmlElement("Collection", {}, records));
     };
+    // Native $metadata: activitypointer is abstract, and each activity table derives from it and declares only its own columns.
+    const activityColumns = known.has("activitypointer") ? new Set(tables.get("activitypointer").attributes.map((a) => a.LogicalName)) : null;
     const typeLines = names.map((logical) => {
-      const { src, attributes } = tables.get(logical);
+      const { src, attributes: all } = tables.get(logical);
       const entity = entityOf(src);
+      const derived = Boolean(activityColumns) && entity.IsActivity && logical !== "activitypointer";
+      const attributes = derived ? all.filter((a) => !activityColumns.has(a.LogicalName)) : all;
       const properties = attributes.map((a) => {
         const lookup = stemOf(a) === "Lookup";
         const id = a.LogicalName === src.idColumn;
@@ -919,20 +985,34 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       const navigation = navs.get(logical).sort(byName).map((n) => xmlElement("NavigationProperty", { Name: n.name, Type: n.type, Partner: n.partner },
         n.lookup ? xmlElement("ReferentialConstraint", { Property: `_${n.lookup}_value`, ReferencedProperty: n.target ? tables.get(n.target).src.idColumn : "ownerid" }) : []));
       const label = labelText(entity.DisplayName);
-      // A principal derives its key from mscrm.principal (ownerid); a derived type may not redeclare one.
+      // Native $metadata: a principal (systemuser, team) derives from the abstract mscrm.principal and declares the ownerid key
+      // again, as activity tables declare their activityid key; its own id column stays an ordinary property.
       const principal = PRINCIPAL_TABLES.has(logical);
-      return xmlElement("EntityType", { Name: logical, BaseType: principal ? "mscrm.principal" : "mscrm.crmbaseentity" },
-        principal ? [] : xmlElement("Key", {}, xmlElement("PropertyRef", { Name: src.idColumn })),
+      const base = derived ? "mscrm.activitypointer" : "mscrm.crmbaseentity";
+      return xmlElement("EntityType", { Name: logical, BaseType: principal ? "mscrm.principal" : base, Abstract: logical === "activitypointer" ? "true" : null },
+        xmlElement("Key", {}, xmlElement("PropertyRef", { Name: principal ? "ownerid" : src.idColumn })),
         annotations && label ? xmlElement("Annotation", { Term: DESCRIPTION, String: label }) : [],
         annotations ? alternateKeys(src) : [],
         properties, navigation);
     });
     // Polymorphic owner navigation has no entity set; only concrete targets are bound.
+    // Change-tracked tables (EntityMetadata.ChangeTrackingEnabled) mark their entity set when annotations are on.
     const sets = names.map((logical) => xmlElement("EntitySet", { Name: tables.get(logical).src.entitySet, EntityType: `mscrm.${logical}` },
+      annotations && entityOf(tables.get(logical).src).ChangeTrackingEnabled === true
+        ? xmlElement("Annotation", { Term: CHANGE_TRACKING }, xmlElement("Record", {}, xmlElement("PropertyValue", { Property: "Supported", Bool: "true" })))
+        : [],
       navs.get(logical).filter((n) => n.target).map((n) => xmlElement("NavigationPropertyBinding", { Path: n.name, Target: tables.get(n.target).src.entitySet }))));
+    // Registry fragments (operation CSDL of extension and built-in operations) join the schema after the built-in operations.
+    const extraText = String(read(extraCsdl) ?? "");
+    // Each unbound extension function or action (its declaration has no IsBound) gets an import in the container, where the
+    // service lists it: FunctionImport for a Function, ActionImport for an Action.
+    const extraImports = [...extraText.matchAll(/<(Function|Action) Name="(\w+)"(?![^>]*IsBound)/g)].map(([, tag, name]) => (tag === "Action"
+      ? `<ActionImport Name="${name}" Action="mscrm.${name}" />`
+      : `<FunctionImport Name="${name}" Function="mscrm.${name}" IncludeInServiceDocument="false" />`));
+    const platformFragments = platformCsdl([CSDL_TYPES, known.has("systemuser") ? CSDL_USER_FUNCTIONS : "", known.has("role") ? CSDL_ROLE_ACTIONS : "", CSDL_OPERATIONS, extraText].join("\n"), { queryFunctions: true });
     const schemaLines = xmlElement("Schema", { Namespace: "Microsoft.Dynamics.CRM", Alias: "mscrm", xmlns: "http://docs.oasis-open.org/odata/ns/edm" },
-      xmlFixed(CSDL_TYPES), typeLines, known.has("systemuser") ? xmlFixed(CSDL_USER_FUNCTIONS) : [], known.has("role") ? xmlFixed(CSDL_ROLE_ACTIONS) : [], xmlFixed(CSDL_OPERATIONS),
-      xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(CSDL_IMPORTS)));
+      xmlFixed(platformFragments), typeLines,
+      xmlElement("EntityContainer", { Name: "System" }, sets, xmlFixed(CSDL_IMPORTS), xmlFixed(extraImports.join("\n"))));
     return ['<?xml version="1.0" encoding="utf-8"?>', ...xmlElement("edmx:Edmx", { Version: "4.0", "xmlns:edmx": "http://docs.oasis-open.org/odata/ns/edmx" }, xmlElement("edmx:DataServices", {}, schemaLines))].join("\n") + "\n";
   }
 
@@ -947,22 +1027,110 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       OneToManyRelationships: oneToManyOf(logical),
       ManyToOneRelationships: manyToOneOf(logical),
       ManyToManyRelationships: manyToManyOf(logical),
+      Privileges: privilegesOf(src),
     };
   };
-  const stampOf = () => `${createHash("sha1").update(JSON.stringify(logicalNames().map(fullEntity))).digest().readUInt32BE(0)}!${STAMP_DATE}`;
-  function changeOf(logical, query) {
-    const item = projectChange(fullEntity(logical), query);
-    if (!item) return null;
-    for (const [key, section] of Object.entries(NESTED)) {
-      if (Array.isArray(item[key])) item[key] = item[key].map((child) => projectChange(child, query?.[section])).filter(Boolean);
+
+  // Privileges (EntityFilters bit 4, or named in a RetrieveMetadataChanges query): the table's rights as dataverse-security seeds them,
+  // with its ids and names. User-owned tables get all four depths; organization-owned tables get global only.
+  function privilegesOf(src) {
+    const user = src.ownership === "user";
+    return (user ? Object.keys(ACCESS_RIGHTS) : ORGANIZATION_RIGHTS).map((right) => {
+      const name = privilegeName(right, privilegeNounOf(src.logical, src.s, src.m));
+      return {
+        CanBeBasic: user, CanBeDeep: user, CanBeGlobal: true, CanBeLocal: user,
+        CanBeEntityReference: false, CanBeParentEntityReference: false,
+        Name: name, PrivilegeId: privilegeId(organizationId, name), PrivilegeType: PRIVILEGE_TYPE[right],
+      };
+    });
+  }
+
+  // Change log -> RetrieveMetadataChanges. The server stamp is the last seq with the UTC time of its entry (seq 0 = the seeded state, dated at creation).
+  const logOf = () => read(changeLog) ?? [];
+  const latestOf = () => logOf().reduce((top, e) => (e.seq > top.seq ? e : top), { seq: 0, at: baseAt });
+  const stampTime = (at) => {
+    const d = new Date(at);
+    const p = (n) => String(n).padStart(2, "0");
+    return `${p(d.getUTCMonth() + 1)}/${p(d.getUTCDate())}/${d.getUTCFullYear()} ${p(d.getUTCHours())}:${p(d.getUTCMinutes())}:${p(d.getUTCSeconds())}`;
+  };
+  const stampOf = () => {
+    const top = latestOf();
+    return `${top.seq}!${stampTime(top.at)}`;
+  };
+  // ClientVersionStamp -> the sequence it names. Expired (0x80044352): before the log start, after the server's sequence, or older than EXPIRE_DAYS.
+  function sinceOf(text) {
+    const m = STAMP.exec(String(text ?? "").trim());
+    if (!m) throw new DataError("ClientVersionStamp is not a version stamp.", 400, "InvalidRequest"); // unverified: message
+    const [, seqText, mo, d, y, h, mi, s] = m;
+    const at = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s));
+    const seqs = logOf().map((e) => e.seq);
+    const logStart = seqs.length ? Math.min(...seqs) - 1 : 0;
+    const seq = Number(seqText);
+    if (seq < logStart || seq > latestOf().seq || clock() - at > EXPIRE_DAYS * DAY_MS) throw expiredVersionStamp();
+    return seq;
+  }
+  // The entries after `since` (null: a full read), indexed for the item builder. Deletes are kept apart: they are reported only with a stamp.
+  function changeIndex(since) {
+    const index = { full: since === null, entities: new Set(), attributes: new Set(), relationships: new Set(), optionSets: new Set(), deleted: [] };
+    for (const e of logOf()) {
+      if (since !== null && e.seq <= since) continue;
+      if (e.op === "delete") index.deleted.push(e);
+      else if (e.kind === "entity") index.entities.add(e.logical);
+      else if (e.kind === "attribute") index.attributes.add(`${e.logical}.${String(e.name).toLowerCase()}`);
+      else if (e.kind === "relationship") index.relationships.add(String(e.name).toLowerCase());
+      else if (e.kind === "optionset") index.optionSets.add(String(e.name).toLowerCase());
     }
-    return item;
+    return index;
+  }
+  // One table's item. A changed table returns its own properties with HasChanged true, and all children with their own flag.
+  // An unchanged table whose children changed returns those children with HasChanged true and HasChanged false on itself.
+  // Null when nothing changed, unless its Privileges were named in the query (they are returned regardless of the stamp).
+  function changeOf(logical, query, index, wantsPrivileges) {
+    const item = fullEntity(logical);
+    const full = index.full;
+    const own = full || index.entities.has(logical);
+    const attrChanged = (a) => full || index.attributes.has(`${logical}.${a.LogicalName}`)
+      || (a.GlobalOptionSet != null && index.optionSets.has(String(a.GlobalOptionSet.Name).toLowerCase()));
+    const relChanged = (r) => full || index.relationships.has(String(r.SchemaName).toLowerCase());
+    const out = {
+      ...item,
+      HasChanged: own,
+      Attributes: item.Attributes.filter((a) => own || attrChanged(a)).map((a) => ({ ...a, HasChanged: attrChanged(a) })),
+      Keys: own ? item.Keys.map((k) => ({ ...k, HasChanged: full })) : [],
+    };
+    for (const key of ["OneToManyRelationships", "ManyToOneRelationships", "ManyToManyRelationships"]) {
+      out[key] = item[key].filter((r) => own || relChanged(r)).map((r) => ({ ...r, HasChanged: relChanged(r) }));
+    }
+    const childChanged = [...out.Attributes, ...out.OneToManyRelationships, ...out.ManyToOneRelationships, ...out.ManyToManyRelationships].some((c) => c.HasChanged);
+    if (!own && !childChanged && !wantsPrivileges) return null;
+    const shaped = projectChange(out, query);
+    if (!shaped) return null;
+    for (const [key, section] of Object.entries(NESTED)) {
+      if (Array.isArray(shaped[key])) shaped[key] = shaped[key].map((child) => projectChange(child, query?.[section])).filter(Boolean);
+    }
+    return shaped;
+  }
+  // The stored entries of the requested kinds as GUIDs, keyed like DeletedMetadataCollection (the docs give Guid values per filter key).
+  const idOfChange = (e) => (e.kind === "entity" ? metadataIdOf("entity", e.logical)
+    : e.kind === "attribute" ? metadataIdOf("attribute", e.logical, e.name)
+      : e.kind === "relationship" ? metadataIdOf("relationship", e.name) : metadataIdOf("optionset", e.name));
+  function deletedOf(index, bits) {
+    const keys = [];
+    const values = [];
+    for (const [name, bit, kind] of DELETED_KINDS) {
+      if (!(bits & bit)) continue;
+      const ids = [...new Set(index.deleted.filter((e) => e.kind === kind).map(idOfChange))];
+      if (ids.length) { keys.push(name); values.push(ids); }
+    }
+    return { Count: keys.length, IsReadOnly: false, Keys: keys, Values: values };
   }
 
   return {
     metadataId: metadataIdOf,
 
     objectTypeCode: (logical) => objectTypeCode(logical),
+
+    versionStamp: () => stampOf(),
 
     entities() {
       return logicalNames().map((name) => entityOf(source(name)));
@@ -977,13 +1145,24 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     },
 
     attributes(name, { cast, key, select, expand, labelLanguages } = {}) {
+      // An unknown cast is a query syntax error (400 0x80060888), checked before the table is looked up.
+      // route: native answers this with one REQ_ID header (dataverseError), not the engine's two.
+      if (cast && !ATTRIBUTE_CASTS.has(castName(cast))) throw new DataError("Bad Request - Error in query syntax.", 400, "InvalidRequest", { innerCode: "0x80060888", route: true });
       const src = sourceFor(name);
       if (!src) return null;
       let list = attributesOf(src);
-      if (cast) list = list.filter((a) => a["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`);
+      if (cast) list = list.filter((a) => castMatches(castName(cast), a));
       if (key) list = list.filter((a) => matchKey(a, key));
       const keep = listOf(select).length ? [...listOf(select), ...listOf(expand)] : null;
-      return limitLabels(keep ? list.map((a) => selectMetadata(a, keep)) : list, labelLanguages);
+      const shaped = keep ? list.map((a) => selectMetadata(a, keep)) : list;
+      // Once the URL casts to the exact metadata type it supplies the expected OData type. Keep the discriminator
+      // for polymorphic base casts (EnumAttributeMetadata / AttributeMetadata), where it still carries information.
+      const expectedType = cast ? `#Microsoft.Dynamics.CRM.${castName(cast)}` : null;
+      return limitLabels(shaped.map((attribute) => {
+        if (!expectedType || attribute["@odata.type"] !== expectedType) return attribute;
+        const { "@odata.type": _type, ...rest } = attribute;
+        return rest;
+      }), labelLanguages);
     },
 
     // Attributes(...)/Microsoft.Dynamics.CRM.<Type>AttributeMetadata/OptionSet (or /GlobalOptionSet) → OptionSetMetadata; null when absent.
@@ -995,14 +1174,14 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     },
 
     // RetrieveEntity(EntityFilters=@f,LogicalName=@n,MetadataId=@m,RetrieveAsIfPublished=@r) → { EntityMetadata }; key is a name, Name= text or MetadataId.
-    // The filter bits pick the collections: Attributes (+ Keys), Relationships. // unverified: Keys under the Attributes bit.
-    // Privileges (bit 4) are not modelled and are left out.
+    // The filter bits pick the collections: Attributes (+ Keys), Relationships, Privileges (4). // unverified: Keys under the Attributes bit.
     retrieveEntityResponse(key, entityFilters, { labelLanguages } = {}) {
       const src = sourceFor(key);
       if (!src) return null;
       const bits = entityFilterBits(entityFilters);
       const out = { "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata", ...entityOf(src) };
       if (bits & 2) Object.assign(out, { Attributes: attributesOf(src), Keys: keysOf(src) });
+      if (bits & 4) Object.assign(out, { Privileges: privilegesOf(src) });
       if (bits & 8) Object.assign(out, { OneToManyRelationships: oneToManyOf(src.logical), ManyToOneRelationships: manyToOneOf(src.logical), ManyToManyRelationships: manyToManyOf(src.logical) });
       return { EntityMetadata: limitLabels(out, labelLanguages) };
     },
@@ -1017,26 +1196,33 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       return null;
     },
 
-    keys(name) {
+    // Under $select a key carries only the selected properties and MetadataId, without @odata.type (native omits it).
+    keys(name, { select } = {}) {
       const src = sourceFor(name);
-      return src ? keysOf(src) : null;
+      if (!src) return null;
+      const list = keysOf(src);
+      return listOf(select).length ? list.map((k) => { const { "@odata.type": _type, ...rest } = selectMetadata(k, select); return rest; }) : list;
     },
 
     manyToOne: (name) => manyToOneOf(String(name).toLowerCase()),
     oneToMany: (name) => oneToManyOf(String(name).toLowerCase()),
     manyToMany: (name) => manyToManyOf(String(name).toLowerCase()),
 
-    relationship(schemaName) {
+    // RelationshipDefinitions(SchemaName=...): uncast, the RelationshipMetadataBase properties (as the list does); with a cast, the derived shape.
+    relationship(schemaName, { cast } = {}) {
       const wanted = (keyName(schemaName) ?? String(schemaName)).toLowerCase();
       const hit = relationshipRecords().find((r) => r.schemaName.toLowerCase() === wanted);
-      return hit ? relationshipShape(hit) : null;
+      if (!hit) return null;
+      const shape = relationshipShape(hit);
+      if (cast) return shape["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}` ? shape : null;
+      return relationshipBase(shape);
     },
 
     relationships({ cast } = {}) {
       const all = relationshipRecords().map(relationshipShape);
       if (cast) return all.filter((r) => r["@odata.type"] === `#Microsoft.Dynamics.CRM.${castName(cast)}`);
       // Uncast RelationshipDefinitions are typed RelationshipMetadataBase: only its properties.
-      return all.map((r) => Object.fromEntries(RELATIONSHIP_BASE.filter((k) => k in r).map((k) => [k, r[k]])));
+      return all.map(relationshipBase);
     },
 
     globalOptionSets: ({ labelLanguages } = {}) => limitLabels(globalSets(), labelLanguages),
@@ -1058,6 +1244,9 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     filterMetadata(items, filterText) {
       const text = String(filterText ?? "");
       if (!/[^\s+]/.test(text)) return items;
+      // Functions (startswith, contains, ...) are not simulated over metadata; Dataverse answers 501 0x8006088a.
+      const call = /(?<![\w/.])(?!(?:and|or|not)\b)([A-Za-z_]\w*)\s*\(/i.exec(text.replace(/'(?:[^']|'')*'/g, "''"));
+      if (call) throw new DataError(`The "${call[1]}" function isn't supported for Metadata Entities.`, 501, "UnsupportedQueryFunction");
       const ast = parseFilter(text);
       return items.filter((item) => evaluate(ast, item));
     },
@@ -1068,16 +1257,29 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
       return csdlDocument(annotations);
     },
 
-    retrieveMetadataChanges(query = null, { clientVersionStamp = null, labelLanguages = null } = {}) {
+    // RetrieveMetadataChanges(Query=@q,ClientVersionStamp=@s,DeletedMetadataFilters=@d). No stamp: every table, all children (a full read).
+    // With a stamp: the items changed after it; DeletedMetadata only when the filters are also given.
+    retrieveMetadataChanges(query = null, { clientVersionStamp = null, labelLanguages = null, deletedMetadataFilters = null } = {}) {
       const serverVersionStamp = stampOf();
-      const unchanged = clientVersionStamp != null && String(clientVersionStamp) === serverVersionStamp;
+      const since = clientVersionStamp == null || String(clientVersionStamp) === "" ? null : sinceOf(clientVersionStamp);
+      const index = changeIndex(since);
+      // Privileges come back whenever they are named, even for an unchanged table (Microsoft Learn retrieve-detect-changes-metadata).
+      const wantsPrivileges = listOf(query?.Properties?.PropertyNames).includes("Privileges");
+      const EntityMetadata = logicalNames().map((name) => changeOf(name, query, index, wantsPrivileges)).filter(Boolean);
+      // LabelQuery.FilterLanguages limits the labels of every returned item (the argument wins when a caller passes one).
+      const languages = labelLanguages ?? query?.LabelQuery?.FilterLanguages ?? null;
       return {
         ServerVersionStamp: serverVersionStamp,
-        DeletedMetadata: { Count: 0, IsReadOnly: false, Keys: [], Values: [] },
-        EntityMetadata: unchanged ? [] : limitLabels(logicalNames().map((name) => changeOf(name, query)).filter(Boolean), labelLanguages),
+        DeletedMetadata: since === null ? { Count: 0, IsReadOnly: false, Keys: [], Values: [] } : deletedOf(index, deletedBits(deletedMetadataFilters)),
+        EntityMetadata: limitLabels(EntityMetadata, languages),
       };
     },
   };
+}
+
+// A relationship's SchemaName when the mapping gives none: N:N takes its intersect table, 1:N is "<table>_<nav>". Writers share this default.
+export function relationshipSchemaName(logical, nav, rel) {
+  return rel.schemaName ?? (rel.intersect ? rel.intersect.entity : `${logical}_${nav}`);
 }
 
 // Standard codes are fixed; a custom table gets a stable code in 10000-59999 from its logical name.

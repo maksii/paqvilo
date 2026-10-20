@@ -3,6 +3,7 @@
 // order and OrganizationServiceFault. Pure functions, no sockets.
 import { DataError } from "./data-error.mjs";
 import { xmlDecode, xmlEscapeAttribute } from "./fetchxml-engine.mjs";
+import { fixedScaleNumeric } from "./exact-numeric.mjs";
 
 // Canonical http:// URIs. Microsoft samples show https:// forms; canonical() folds them.
 export const NS = {
@@ -10,9 +11,10 @@ export const NS = {
   a: "http://schemas.microsoft.com/xrm/2011/Contracts",
   svc: "http://schemas.microsoft.com/xrm/2011/Contracts/Services",
   g: "http://schemas.microsoft.com/crm/2011/Contracts",
-  l: "http://schemas.microsoft.com/xrm/2012/Contracts", // unverified: URI completed from the brief
-  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // KeyAttributeCollection (SDK docs)
+  l: "http://schemas.microsoft.com/xrm/2012/Contracts", // ExecuteMultipleSettings, ExecuteMultipleResponseItem (SDK docs)
+  o: "http://schemas.microsoft.com/xrm/7.1/Contracts", // KeyAttributeCollection, ExecuteTransactionFault, OrganizationResponseCollection (SDK docs)
   x9: "http://schemas.microsoft.com/xrm/9.0/Contracts", // OptionSetValueCollection (SDK docs)
+  x14: "http://schemas.microsoft.com/xrm/2014/Contracts", // OrganizationDetail (SDK docs: Microsoft.Xrm.Sdk.Organization)
   b: "http://schemas.datacontract.org/2004/07/System.Collections.Generic",
   c: "http://www.w3.org/2001/XMLSchema",
   e: "http://schemas.microsoft.com/2003/10/Serialization/",
@@ -292,6 +294,10 @@ const DECODERS = new Map([
   })],
   ["a:Entity", decodeEntity],
   ["a:EntityCollection", decodeCollection],
+  // Serialization/Arrays: a SOAP array of scalars (unverified: the item element names are the scalar names).
+  ["f:ArrayOfstring", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : c.text)) })],
+  ["f:ArrayOfint", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : Number(c.text.trim()))) })],
+  ["f:ArrayOfguid", (n) => ({ type: "Array", values: n.children.map((c) => (isNil(c) ? null : c.text.trim())) })],
 ]);
 
 // Encoding. Element names use the canonical prefixes, which envelope() declares on the root.
@@ -306,7 +312,14 @@ const pairs = (name, entries, toValue = (v) => encodeValue("b:value", v), wrap =
   `<${name}>${pairItems(entries, toValue, wrap)}</${name}>`;
 const scalarEncoder = (qname, text = String) => (name, v) => typed(name, qname, esc(text(v.value)));
 const doubleText = (x) => (Number.isNaN(x) ? "NaN" : x === Infinity ? "INF" : x === -Infinity ? "-INF" : String(x));
-const dateText = (x) => (x instanceof Date ? x.toISOString() : String(x));
+// An invalid Date has no ISO form; toISOString would throw a RangeError, so it is a 400 fault instead.
+const dateText = (x) => {
+  if (!(x instanceof Date)) return String(x);
+  if (Number.isNaN(x.getTime())) throw new DataError("The date-time value is not a valid date.", 400, "InvalidRequest", { innerCode: "0x80040203" });
+  return x.toISOString();
+};
+// Money is an exact decimal with four digits (the Web API scale); the Value is typed c:decimal.
+const moneyValue = (value) => (value == null ? nil("a:Value") : typed("a:Value", "c:decimal", esc(fixedScaleNumeric(value, 4).lexeme)));
 
 // Declared members (EntityReference fields, Relationship fields) carry no xsi:type.
 const referenceBody = (r) =>
@@ -370,7 +383,7 @@ const ENCODERS = new Map([
   ["duration", scalarEncoder("e:duration")],
   ["EntityReference", encodeReference],
   ["OptionSetValue", (name, v) => typed(name, "a:OptionSetValue", plainOrNil("a:Value", v.value))],
-  ["Money", (name, v) => typed(name, "a:Money", plainOrNil("a:Value", v.value))],
+  ["Money", (name, v) => typed(name, "a:Money", moneyValue(v.value))],
   ["OptionSetValueCollection", (name, v) => typed(
     name,
     "x9:OptionSetValueCollection",
@@ -428,19 +441,31 @@ export function executeResponse({ responseType, namespace, responseName, results
   );
 }
 
-/** Full SOAP fault envelope. `errorCode` is the signed 32-bit code (for example -2147220969). */
-export function fault({ errorCode, message, timestamp, traceText = null, errorDetails = new Map() }) {
+/**
+ * Full SOAP fault envelope. `errorCode` is the signed 32-bit code (for example -2147220969). With `faultedRequestIndex`
+ * the detail is still an OrganizationServiceFault element (xrm/2011, the element WCF reads FaultException<T> from), typed
+ * by i:type as ExecuteTransactionFault (xrm/7.1, DataContract name "ExecuteTransactionFault", Microsoft Learn). Its base
+ * members come first, then FaultedRequestIndex, the derived member. Without i:type WCF falls back to a plain FaultException.
+ * The i and o prefixes are declared on the fault element: WCF reads the detail without the envelope's declarations, so an
+ * i:type prefix declared only on the root resolves to no namespace ("contains data of the ':ExecuteTransactionFault' data contract").
+ */
+export function fault({ errorCode, message, timestamp, traceText = null, errorDetails = new Map(), faultedRequestIndex }) {
   if (!Number.isInteger(errorCode)) throw new TypeError("fault errorCode must be a signed integer");
+  const transaction = faultedRequestIndex != null;
+  const typeAttr = transaction ? ' i:type="o:ExecuteTransactionFault"' : "";
+  const derivedNs = transaction ? ` xmlns:o="${NS.o}"` : "";
+  const derived = transaction ? `<o:FaultedRequestIndex>${faultedRequestIndex}</o:FaultedRequestIndex>` : "";
   return envelope(
     '<s:Fault><faultcode>s:Client</faultcode><faultstring xml:lang="en-US">' + esc(message) + "</faultstring>" +
-      `<detail><OrganizationServiceFault xmlns="${NS.a}" xmlns:i="${NS.i}">` +
+      `<detail><OrganizationServiceFault xmlns="${NS.a}" xmlns:i="${NS.i}"${derivedNs}${typeAttr}>` +
       `<ErrorCode>${errorCode}</ErrorCode>` +
-      // ErrorDetailCollection is in xrm/2011, the default namespace here, so the items are unprefixed.
+      // ErrorDetailCollection is in xrm/2011 under the default namespace.
       `<ErrorDetails xmlns:b="${NS.b}">${pairItems(errorDetails, (v) => encodeValue("b:value", v), "KeyValuePairOfstringanyType")}</ErrorDetails>` +
       plain("Message", message) +
       plain("Timestamp", timestamp) +
-      "<InnerFault i:nil=\"true\"/>" +
-      (traceText == null ? '<TraceText i:nil="true"/>' : plain("TraceText", traceText)) +
+      `<InnerFault i:nil="true"/>` +
+      (traceText == null ? `<TraceText i:nil="true"/>` : plain("TraceText", traceText)) +
+      derived +
       "</OrganizationServiceFault></detail></s:Fault>",
   );
 }

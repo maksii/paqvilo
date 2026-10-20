@@ -343,6 +343,54 @@ export function compareForFilter(stored, literal, options = {}) {
   return pair.x < pair.y ? -1 : pair.x > pair.y ? 1 : 0;
 }
 
+// Static $filter operand typing (Dataverse Web API): the EDM type a column reads as, and the family
+// (text, number, boolean, datetime) that decides whether a comparison can ever match. Guid and
+// lookup operands are not checked, so they return null.
+const EDM_COLUMN = new Map([
+  ...["nvarchar", "string", "text", "memo", "ntext", "textarea", "email", "entityname"].map((t) => [t, "Edm.String"]),
+  ...["int", "integer", "picklist", "state", "status", "choice", "optionset"].map((t) => [t, "Edm.Int32"]),
+  ["bigint", "Edm.Int64"],
+  ...["decimal", "money"].map((t) => [t, "Edm.Decimal"]),
+  ...["float", "double"].map((t) => [t, "Edm.Double"]),
+  ...["bit", "boolean", "twooptions"].map((t) => [t, "Edm.Boolean"]),
+  ...["datetime", "date"].map((t) => [t, "Edm.DateTimeOffset"]),
+  ["uniqueidentifier", "Edm.Guid"],
+  ["primarykey", "Edm.Guid"],
+]);
+const EDM_FAMILY = new Map([
+  ["Edm.String", "text"],
+  ["Edm.Int32", "number"], ["Edm.Int64", "number"], ["Edm.Decimal", "number"], ["Edm.Double", "number"], ["Edm.Single", "number"],
+  ["Edm.Boolean", "boolean"],
+  ["Edm.DateTimeOffset", "datetime"], ["Edm.Date", "datetime"],
+]);
+export const edmFamily = (edm) => EDM_FAMILY.get(edm) ?? null;
+export function edmOfColumn(definition) {
+  const raw = String(definition?.dataverseType ?? definition?.type ?? "").toLowerCase();
+  const edm = EDM_COLUMN.get(raw) ?? null;
+  // A DateOnly column (behaviour, or format when no behaviour is declared) reads as Edm.Date, not DateTimeOffset.
+  if (edm === "Edm.DateTimeOffset" && (isDateOnlyField(definition) || /^dateonly$/i.test(String(definition?.format ?? ""))))
+    return "Edm.Date";
+  return edm;
+}
+/** EDM type of a parsed literal node (kind string|number|boolean|datetime|guid|null; number nodes carry raw text). */
+export function edmOfLiteral(literal) {
+  switch (literal?.kind) {
+    case "string": return "Edm.String";
+    case "boolean": return "Edm.Boolean";
+    case "datetime": return String(literal.value).includes("T") ? "Edm.DateTimeOffset" : "Edm.Date";
+    case "guid": return "Edm.Guid";
+    case "number": {
+      const raw = String(literal.raw ?? literal.value);
+      if (/[fF]$/.test(raw)) return "Edm.Single";
+      if (/[dDeE]/.test(raw)) return "Edm.Double";
+      if (/[mM]$|\./.test(raw)) return "Edm.Decimal";
+      if (/[lL]$/.test(raw) || Math.abs(Number(raw.replace(/[lL]$/, ""))) > 2147483647) return "Edm.Int64";
+      return "Edm.Int32";
+    }
+    default: return null;
+  }
+}
+
 const choiceLabelOf = (definition, value) =>
   Array.isArray(definition?.options)
     ? definition.options.find((option) => Number(option.value) === Number(value))?.label

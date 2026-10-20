@@ -2,7 +2,9 @@
 // $filter subset, from an invented mapping-only fixture and from a minimal Solution schema table.
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createMetadataService, objectTypeCode } from "../lib/dataverse-metadata.mjs";
+import { createMetadataService, objectTypeCode, relationshipSchemaName } from "../lib/dataverse-metadata.mjs";
+import { privilegeId } from "../lib/dataverse-security.mjs";
+import { seed as seedStandard } from "../lib/dataverse-standard.mjs";
 
 const ORG = "5f0c2c1e-1d2b-4c3a-9a7e-0123456789ab";
 
@@ -77,6 +79,58 @@ const SCHEMA = {
 const mapped = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => MAPPINGS });
 const solution = createMetadataService({ organizationId: ORG, schema: () => SCHEMA, mappings: () => ({}) });
 const names = (items) => items.map((item) => item.LogicalName);
+
+test("metadata $select preserves explicitly expanded relationship collections, including empty collections", () => {
+  const entity = mapped.entity("widget", { expand: "OneToManyRelationships,ManyToManyRelationships" });
+  const projected = mapped.selectMetadata(entity, "LogicalName");
+  assert.equal(projected.LogicalName, "widget");
+  assert.ok(projected.OneToManyRelationships.some((relationship) => relationship.SchemaName === "widget_gadgets"));
+  assert.ok(projected.ManyToManyRelationships.some((relationship) => relationship.SchemaName === "widget_tags"));
+  assert.equal(projected.DisplayName, undefined);
+  const empty = mapped.selectMetadata(mapped.entity("tag", { expand: "OneToManyRelationships" }), "LogicalName");
+  assert.deepEqual(empty.OneToManyRelationships, []);
+  assert.equal(mapped.selectMetadata(mapped.entity("tag"), "LogicalName").OneToManyRelationships, undefined);
+});
+
+test("generated metadata validity reflects supplied GUIDs and read-only ownership fields while explicit facts win", () => {
+  const attributes = Object.fromEntries(mapped.attributes("widget").map((attribute) => [attribute.LogicalName, attribute]));
+  assert.equal(attributes.widgetid.IsValidForCreate, true);
+  assert.equal(attributes.widgetid.IsValidForUpdate, false);
+  assert.equal(attributes.statecode.IsValidForCreate, false);
+  assert.equal(attributes.statecode.IsValidForUpdate, true);
+  for (const name of ["owninguser", "owningteam", "owningbusinessunit"]) {
+    assert.equal(attributes[name].IsValidForCreate, false); assert.equal(attributes[name].IsValidForUpdate, false);
+  }
+  const explicit = createMetadataService({ organizationId: ORG, mappings: () => ({ widget: { ...MAPPINGS.widget, fields: { ...MAPPINGS.widget.fields, statecode: { dataverseType: "state", validForCreate: true, validForUpdate: false } } } }) });
+  const state = explicit.attributes("widget").find((attribute) => attribute.LogicalName === "statecode");
+  assert.equal(state.IsValidForCreate, true); assert.equal(state.IsValidForUpdate, false);
+});
+
+test("file and image metadata use the Virtual enum while retaining derived metadata types", () => {
+  const service = createMetadataService({ organizationId: ORG, mappings: () => ({ doc: { entitySet: "docs", idColumn: "docid", fields: { upload: { dataverseType: "file" }, photo: { dataverseType: "image" } } } }) });
+  for (const [name, type] of [["upload", "File"], ["photo", "Image"]]) {
+    const attribute = service.attributes("doc").find((attribute) => attribute.LogicalName === name);
+    assert.equal(attribute.AttributeType, "Virtual");
+    assert.equal(attribute["@odata.type"], `#Microsoft.Dynamics.CRM.${type}AttributeMetadata`);
+    assert.equal(attribute.AttributeTypeName.Value, `${type}Type`);
+  }
+});
+
+test("an exact attribute cast omits a redundant discriminator while polymorphic enum casts keep it", () => {
+  const strings = mapped.attributes("widget", { cast: "StringAttributeMetadata", select: "LogicalName,MaxLength" });
+  assert.ok(strings.length > 0); assert.ok(strings.every((attribute) => !("@odata.type" in attribute)));
+  const enums = mapped.attributes("widget", { cast: "EnumAttributeMetadata", select: "LogicalName" });
+  assert.ok(enums.some((attribute) => attribute["@odata.type"] === "#Microsoft.Dynamics.CRM.PicklistAttributeMetadata"));
+});
+
+test("table tracking facts and custom-table optimistic concurrency defaults are exposed without overriding explicit false", () => {
+  const schema = { ...SCHEMA, tables: { new_widget: { ...SCHEMA.tables.gizmo, logicalName: "new_widget", changeTrackingEnabled: true } } };
+  const service = createMetadataService({ organizationId: ORG, schema: () => schema });
+  assert.equal(service.entity("new_widget").ChangeTrackingEnabled, true);
+  assert.equal(service.entity("new_widget").IsOptimisticConcurrencyEnabled, true);
+  const overridden = createMetadataService({ organizationId: ORG, schema: () => schema, mappings: () => ({ new_widget: { dataverseMetadata: { IsOptimisticConcurrencyEnabled: false } } }) });
+  assert.equal(overridden.entity("new_widget").IsOptimisticConcurrencyEnabled, false);
+});
 
 // Kept apart from MAPPINGS so the table lists above stay fixed: owner/customer lookups, ownership and principal tables.
 const EXTENDED = {
@@ -194,7 +248,12 @@ test("many-to-many returns the intersect with both sides", () => {
   assert.equal(m2m.Entity1NavigationPropertyName, "tags");
   assert.equal(m2m.Entity2LogicalName, "tag");
   assert.equal(m2m.Entity2IntersectAttribute, "tagid");
-  assert.deepEqual(mapped.relationship("widget_tags"), m2m);
+  // An uncast single-key lookup is RelationshipMetadataBase, like the uncast list; the derived shape needs the cast.
+  // (This assertion used to expect the full derived shape without a cast.)
+  assert.deepEqual(mapped.relationship("widget_tags"), mapped.relationships().find((r) => r.SchemaName === "widget_tags"));
+  assert.equal("IntersectEntityName" in mapped.relationship("widget_tags"), false);
+  assert.deepEqual(mapped.relationship("widget_tags", { cast: "ManyToManyRelationshipMetadata" }), m2m);
+  assert.equal(mapped.relationship("widget_tags", { cast: "OneToManyRelationshipMetadata" }), null);
   assert.equal(mapped.relationship("nope"), null);
   assert.equal(mapped.relationships({ cast: "Microsoft.Dynamics.CRM.OneToManyRelationshipMetadata" }).length, 1);
 });
@@ -220,9 +279,10 @@ test("filterMetadata evaluates the supported subset", () => {
   assert.deepEqual(names(mapped.filterMetadata(attributes, "(LogicalName eq 'price' or LogicalName eq 'status') and IsPrimaryId eq false")), ["price", "status"]);
   assert.equal(mapped.filterMetadata(attributes, "").length, attributes.length);
 
-  for (const bad of ["LogicalName gt 'a'", "LogicalName eq", "contains(LogicalName,'x')", "LogicalName eq 'a' )"]) {
+  for (const bad of ["LogicalName gt 'a'", "LogicalName eq", "LogicalName eq 'a' )"]) {
     assert.throws(() => mapped.filterMetadata(entities, bad), { status: 400, code: "UnsupportedQuery" }, bad);
   }
+  assert.throws(() => mapped.filterMetadata(entities, "contains(LogicalName,'x')"), { status: 501, code: "UnsupportedQueryFunction", message: 'The "contains" function isn\'t supported for Metadata Entities.' });
 });
 
 test("selectMetadata keeps MetadataId and @odata.type", () => {
@@ -242,6 +302,18 @@ test("object type codes: standard fixed, custom stable in the custom range", () 
   assert.equal(objectTypeCode("new_thing"), custom);
 });
 
+test("a Solution table's keys (kept by name in the schema) read back as Keys", () => {
+  const keyed = createMetadataService({
+    organizationId: ORG, mappings: () => ({}),
+    schema: () => ({ ...SCHEMA, tables: { gizmo: { ...SCHEMA.tables.gizmo, keys: { gizmo_name_key: { name: "gizmo_name_key", schemaName: "gizmo_name_key", attributes: ["gizmoname"], labels: { 1033: "Gizmo Name Key" } } } } } }),
+  });
+  const [key] = keyed.entity("gizmo", { expand: ["Keys"] }).Keys;
+  assert.equal(key.LogicalName, "gizmo_name_key");
+  assert.deepEqual(key.KeyAttributes, ["gizmoname"]);
+  assert.equal(key.EntityKeyIndexStatus, "Active");
+  assert.equal(solution.entity("gizmo", { expand: ["Keys"] }).Keys.length, 0);
+});
+
 test("schema table drives attributes, option labels and entity names", () => {
   const gizmo = solution.entity("gizmo");
   assert.equal(gizmo.EntitySetName, "gizmos");
@@ -252,7 +324,7 @@ test("schema table drives attributes, option labels and entity names", () => {
 
   const [color] = solution.attributes("gizmo", { cast: "PicklistAttributeMetadata" });
   assert.equal(color.LogicalName, "gizmocolor");
-  assert.equal(color["@odata.type"], "#Microsoft.Dynamics.CRM.PicklistAttributeMetadata");
+  assert.equal(color["@odata.type"], undefined, "the exact URL cast supplies the metadata type");
   assert.deepEqual(color.OptionSet.Options.map((o) => o.Label.UserLocalizedLabel.Label), ["Red", "Blue"]);
 
   const attributes = solution.attributes("gizmo");
@@ -343,7 +415,8 @@ test("RetrieveMetadataChanges answers the sample query with complex shapes", () 
   for (const attribute of widget.Attributes) assert.match(attribute["@odata.type"], /^#Microsoft\.Dynamics\.CRM\.Complex\w+AttributeMetadata$/);
   const attributeNames = widget.Attributes.map((a) => a.LogicalName);
   assert.ok(attributeNames.includes("name"));
-  assert.ok(!attributeNames.includes("widgetid"), "AttributeQuery criteria filters the attributes");
+  assert.ok(attributeNames.includes("widgetid"), "a primary GUID can be supplied on create");
+  assert.ok(!attributeNames.includes("createdon"), "AttributeQuery criteria filters read-only system attributes");
   assert.deepEqual(Object.keys(widget.Attributes[0]).sort(), ["@odata.type", "HasChanged", "LogicalName", "MetadataId"]);
 });
 
@@ -353,23 +426,93 @@ test("RetrieveMetadataChanges: null query returns every table, nested keys inclu
   const widgetKeys = all.EntityMetadata.find((e) => e.LogicalName === "widget").Keys;
   assert.equal(widgetKeys[0].LogicalName, "widget_code");
   assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: all.ServerVersionStamp }).EntityMetadata.length, 0);
-  assert.equal(mapped.retrieveMetadataChanges(null, { clientVersionStamp: "1!01/01/1999 00:00:00" }).EntityMetadata.length, 3);
+  // This used to return all three tables. A stamp 90 days old, or ahead of the server, is ExpiredVersionStamp now.
+  assert.throws(() => mapped.retrieveMetadataChanges(null, { clientVersionStamp: "1!01/01/1999 00:00:00" }), (e) => e.details?.innerCode === "0x80044352");
+});
+
+test("RetrieveMetadataChanges criteria: nested Filters combine under their own FilterOperator", () => {
+  const either = mapped.retrieveMetadataChanges({
+    Properties: { AllProperties: false, PropertyNames: ["SchemaName"] },
+    Criteria: {
+      FilterOperator: "Or",
+      Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: "tag" }],
+      Filters: [{ FilterOperator: "And", Conditions: [
+        { ConditionOperator: "Equals", PropertyName: "LogicalName", Value: { Type: "System.String", Value: "gadget" } },
+        { ConditionOperator: "NotEquals", PropertyName: "SchemaName", Value: "Nothing" },
+      ] }],
+    },
+  });
+  assert.deepEqual(names(either.EntityMetadata), ["gadget", "tag"]);
+  const disjoint = mapped.retrieveMetadataChanges({
+    Criteria: { FilterOperator: "And", Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: "widget" }],
+      Filters: [{ Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: "tag" }] }] },
+  });
+  assert.deepEqual(disjoint.EntityMetadata, []);
+  // Nested Filters of an AttributeQuery select attributes the same way; In takes a list of plain values.
+  const inList = mapped.retrieveMetadataChanges({
+    Properties: { AllProperties: false, PropertyNames: ["LogicalName", "Attributes"] },
+    Criteria: { Conditions: [{ ConditionOperator: "In", PropertyName: "LogicalName", Value: ["widget", "gadget"] }] },
+    AttributeQuery: { Properties: { AllProperties: false, PropertyNames: ["LogicalName"] },
+      Criteria: { FilterOperator: "Or", Filters: [{ Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: "name" }] }] } },
+  });
+  assert.deepEqual(names(inList.EntityMetadata), ["gadget", "widget"]);
+  for (const entity of inList.EntityMetadata) assert.deepEqual(names(entity.Attributes), ["name"]);
+});
+
+test("RetrieveMetadataChanges LabelQuery.FilterLanguages keeps only the requested labels", () => {
+  const labelled = createMetadataService({
+    organizationId: ORG, schema: () => null,
+    mappings: () => ({ ...MAPPINGS, widget: { ...MAPPINGS.widget, fields: { ...MAPPINGS.widget.fields, name: { dataverseType: "nvarchar", maxLength: 100, labels: { 1033: "Name", 1031: "Name DE" } } } } }),
+  });
+  const query = (languages) => ({
+    Properties: { AllProperties: true },
+    Criteria: { Conditions: [{ ConditionOperator: "Equals", PropertyName: "LogicalName", Value: "widget" }] },
+    LabelQuery: languages ? { FilterLanguages: languages } : undefined,
+  });
+  const codes = (languages) => labelled.retrieveMetadataChanges(query(languages)).EntityMetadata[0].Attributes
+    .find((a) => a.LogicalName === "name").DisplayName.LocalizedLabels.map((label) => label.LanguageCode);
+  assert.deepEqual(codes([1031]), [1031]);
+  assert.deepEqual(codes(null).sort(), [1031, 1033]);
+});
+
+test("Web API JSON: synthesized ManagedProperty members are objects, and flag enums are names", () => {
+  const attributes = Object.fromEntries(mapped.attributes("widget").map((a) => [a.LogicalName, a]));
+  assert.deepEqual(attributes.name.IsValidForAdvancedFind, { Value: true, CanBeChanged: true, ManagedPropertyLogicalName: "canmodifysearchsettings" });
+  assert.equal(attributes.widgetid.IsValidForAdvancedFind.Value, false, "a primary key is not valid for Advanced Find");
+  assert.equal(attributes.name.IsCustomizable.ManagedPropertyLogicalName, "iscustomizable");
+  assert.equal(attributes.name.IsAuditEnabled.ManagedPropertyLogicalName, "canmodifyauditsettings");
+  assert.equal(attributes.name.RequiredLevel.Value, "None");
+  assert.equal(mapped.entity("widget").OwnershipType, "UserOwned");
+  assert.equal(extended.entity("orgbox").OwnershipType, "OrganizationOwned");
 });
 
 test("owner and customer lookups are LookupAttributeMetadata with their own AttributeType and targets", () => {
   const lookups = extended.attributes("ticket", { cast: "LookupAttributeMetadata" });
   const byName = Object.fromEntries(lookups.map((a) => [a.LogicalName, a]));
-  assert.equal(byName.ownerid["@odata.type"], "#Microsoft.Dynamics.CRM.LookupAttributeMetadata");
+  assert.equal(byName.ownerid["@odata.type"], undefined);
   assert.equal(byName.ownerid.AttributeType, "Owner");
   assert.equal(byName.ownerid.AttributeTypeName.Value, "OwnerType");
   assert.deepEqual(byName.ownerid.Targets, ["systemuser", "team"]);
-  assert.equal(byName.customerid["@odata.type"], "#Microsoft.Dynamics.CRM.LookupAttributeMetadata");
+  assert.equal(byName.customerid["@odata.type"], undefined);
   assert.equal(byName.customerid.AttributeType, "Customer");
   assert.equal(byName.customerid.AttributeTypeName.Value, "CustomerType");
   assert.deepEqual(byName.customerid.Targets, ["account", "contact"]);
   assert.ok(mapped.attributes("widget", { cast: "LookupAttributeMetadata" }).some((a) => a.LogicalName === "ownerid"));
-  assert.equal(extended.attributes("ticket", { cast: "OwnerAttributeMetadata" }).length, 0);
-  assert.equal(extended.attributes("ticket", { cast: "CustomerAttributeMetadata" }).length, 0);
+  // The captured CSDL has no Owner or Customer AttributeMetadata type: such a cast is a query error, not an empty list.
+  for (const cast of ["OwnerAttributeMetadata", "CustomerAttributeMetadata"]) {
+    assert.throws(() => extended.attributes("ticket", { cast }), { status: 400, details: { innerCode: "0x80060888", route: true } });
+  }
+});
+
+test("an Attributes cast must name a CSDL AttributeMetadata type; an unknown one answers 400 0x80060888", () => {
+  assert.throws(() => extended.attributes("ticket", { cast: "DoesNotExistMetadata" }), { status: 400, details: { innerCode: "0x80060888", route: true } });
+  assert.throws(() => extended.attributes("ticket", { cast: "Microsoft.Dynamics.CRM.DoesNotExistMetadata" }), { status: 400, details: { innerCode: "0x80060888", route: true } });
+  // The base type returns every column; the enum base returns only the enum-typed columns; a derived type with no column is an empty list.
+  assert.equal(extended.attributes("ticket", { cast: "AttributeMetadata" }).length, extended.attributes("ticket").length);
+  const enums = extended.attributes("ticket", { cast: "EnumAttributeMetadata" });
+  assert.ok(enums.length > 0);
+  for (const a of enums) assert.match(a["@odata.type"], /#Microsoft\.Dynamics\.CRM\.(Picklist|MultiSelectPicklist|State|Status|EntityName)AttributeMetadata$/);
+  assert.equal(extended.attributes("ticket", { cast: "ManagedPropertyAttributeMetadata" }).length, 0);
 });
 
 test("OwnershipType and owner columns come from one ownership answer per table", () => {
@@ -389,14 +532,16 @@ const complexBlock = (xml, name) => {
   return xml.slice(start, xml.indexOf("</ComplexType>", start));
 };
 
-test("csdl: owner has one principal navigation, principal tables carry no key", () => {
+test("csdl: owner has one principal navigation; principal tables derive from mscrm.principal and declare ownerid", () => {
   const xml = extended.csdl("https://org.example");
   assertWellFormed(xml);
   assert.match(block(xml, "ticket"), /<NavigationProperty Name="ownerid" Type="mscrm\.principal">\s*<ReferentialConstraint Property="_ownerid_value" ReferencedProperty="ownerid" \/>/);
   assert.match(block(xml, "ticket"), /<Property Name="_ownerid_value" Type="Edm\.Guid" \/>/);
   assert.ok(!xml.includes("ownerid_systemuser") && !xml.includes("ownerid_team"), "no per-target owner navigations");
   assert.match(block(xml, "systemuser"), /BaseType="mscrm\.principal"/);
-  assert.ok(!block(xml, "systemuser").includes("<Key>"), "systemuser has no Key");
+  // Native $metadata (parity recording): systemuser and team are BaseType mscrm.principal with Key ownerid; principal is abstract with Key ownerid.
+  assert.match(block(xml, "systemuser"), /<Key>\s*<PropertyRef Name="ownerid" \/>\s*<\/Key>/, "systemuser declares the ownerid key");
+  assert.match(block(xml, "principal"), /<EntityType Name="principal" BaseType="mscrm\.crmbaseentity" Abstract="true">\s*<Key>\s*<PropertyRef Name="ownerid" \/>/);
   assert.match(block(xml, "systemuser"), /<Property Name="systemuserid" Type="Edm\.Guid" Nullable="false" \/>/);
   assert.ok(!block(xml, "systemuser").includes('<NavigationProperty Name="ownerid"'), "systemuser gets no owner navigation");
   assert.match(block(xml, "widget"), /<PropertyRef Name="widgetid" \/>/, "non-principal tables keep their Key");
@@ -409,9 +554,9 @@ test("csdl: OrganizationDetail, RolePrivilege, metadata changes and the role act
   assert.match(xml, /<EnumType Name="OrganizationType">/);
   assert.match(xml, /<EnumType Name="SchemaType">/);
   assert.match(xml, /<EnumType Name="OrganizationState">/);
-  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterId" Type="Edm\.Guid" Nullable="true" \/>/);
-  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterUniqueName" Type="Edm\.String" \/>/);
-  assert.match(xml, /<Function Name="RetrieveMetadataChanges">\s*<Parameter Name="Query" Type="mscrm\.EntityQueryExpression" \/>/);
+  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterId" Type="Edm\.Guid"(?: Nullable="true")? \/>/);
+  assert.match(complexBlock(xml, "RolePrivilege"), /<Property Name="RecordFilterUniqueName" Type="Edm\.String"(?: Unicode="false")? \/>/);
+  assert.match(xml, /<Function Name="RetrieveMetadataChanges">\s*<Parameter Name="Query" Type="mscrm\.EntityQueryExpression">\s*<Annotation Term="Org\.OData\.Core\.V1\.OptionalParameter" \/>/);
   assert.match(xml, /<FunctionImport Name="RetrieveMetadataChanges" Function="mscrm\.RetrieveMetadataChanges"/);
   assert.match(xml, /<Action Name="AddPrivilegesRole" IsBound="true">\s*<Parameter Name="entity" Type="mscrm\.role" Nullable="false" \/>\s*<Parameter Name="Privileges" Type="Collection\(mscrm\.RolePrivilege\)" \/>/);
   assert.ok(!mapped.csdl("https://org.example").includes("AddPrivilegesRole"), "the role action needs a role table");
@@ -429,6 +574,17 @@ test("uncast RelationshipDefinitions return base properties only; a cast returns
   assert.equal(oneToMany[0].ReferencedEntity, "widget");
   const manyToMany = mapped.relationships({ cast: "#Microsoft.Dynamics.CRM.ManyToManyRelationshipMetadata" });
   assert.deepEqual(manyToMany.map((r) => r.IntersectEntityName), ["widget_tag"]);
+});
+
+test("IsHierarchical: the standard account parent relationship reports true, a custom one-to-many reports false", () => {
+  const oneToMany = (service, schemaName) => service.relationship(schemaName, { cast: "OneToManyRelationshipMetadata" });
+  assert.equal(oneToMany(STANDARD, "account_parent_account").IsHierarchical, true);
+  assert.equal(oneToMany(STANDARD, "user_parent_user").IsHierarchical, true);
+  assert.equal(oneToMany(STANDARD, "contact_master_contact").IsHierarchical, false);
+  assert.equal(oneToMany(mapped, "widget_gadgets").IsHierarchical, false);
+  assert.equal(STANDARD.relationships({ cast: "OneToManyRelationshipMetadata" }).filter((r) => r.IsHierarchical).length, 2);
+  // Uncast RelationshipDefinitions are RelationshipMetadataBase: the flag is a derived property.
+  assert.equal("IsHierarchical" in STANDARD.relationship("account_parent_account"), false);
 });
 
 test("attribute option sets: OptionSet and GlobalOptionSet sub-paths, and an unknown global set is absent", () => {
@@ -577,4 +733,245 @@ test("RetrieveEntity builder: EntityFilters choose the collections, RetrieveAttr
   assert.equal(mapped.retrieveAttributeResponse(null, "price"), null, "a name needs its table");
   assert.equal(mapped.retrieveAttributeResponse("widget", "nope"), null);
   assert.equal(mapped.retrieveAttributeResponse("widget", "price", { labelLanguages: 1036 }).AttributeMetadata.DisplayName.LocalizedLabels.length, 0);
+});
+
+test("table labels, SchemaName, ObjectTypeCode and the audit flag come from dataverseMetadata written by the 1.9 writer", () => {
+  const written = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({
+      new_bankaccount: {
+        entitySet: "new_bankaccounts", idColumn: "new_bankaccountid", nameColumn: "new_name",
+        fields: { new_name: { dataverseType: "nvarchar" } },
+        dataverseMetadata: {
+          schemaName: "new_BankAccount",
+          labels: { DisplayName: { 1033: "Bank Account" }, DisplayCollectionName: { 1033: "Bank Accounts" }, Description: { 1033: "Accounts held" } },
+          ObjectTypeCode: 10500,
+          IsAuditEnabled: { Value: false },
+        },
+      },
+    }),
+  });
+  const entity = written.entity("new_bankaccount");
+  assert.equal(entity.SchemaName, "new_BankAccount");
+  assert.equal(entity.DisplayName.UserLocalizedLabel.Label, "Bank Account");
+  assert.equal(entity.DisplayCollectionName.UserLocalizedLabel.Label, "Bank Accounts");
+  assert.equal(entity.Description.UserLocalizedLabel.Label, "Accounts held");
+  assert.equal(entity.ObjectTypeCode, 10500);
+  assert.equal(entity.IsAuditEnabled.Value, false);
+});
+
+test("ManagedProperty flags read { Value }: a false flag stays false, a true one stays true", () => {
+  const flags = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({
+      vault: {
+        entitySet: "vaults", idColumn: "vaultid", nameColumn: "code",
+        dataverseMetadata: { IsAuditEnabled: { Value: true } },
+        fields: {
+          code: { dataverseType: "nvarchar", dataverseMetadata: { IsAuditEnabled: { Value: false }, IsSecured: { Value: false } } },
+          pin: { dataverseType: "nvarchar", dataverseMetadata: { IsSecured: { Value: true } } },
+        },
+      },
+    }),
+  });
+  assert.equal(flags.entity("vault").IsAuditEnabled.Value, true);
+  const byName = Object.fromEntries(flags.attributes("vault").map((a) => [a.LogicalName, a]));
+  assert.equal(byName.code.IsAuditEnabled.Value, false);
+  assert.equal(byName.code.IsSecured, false);
+  assert.equal(byName.pin.IsSecured, true);
+});
+
+test("global option sets written by the option-set writer read back, and a bound 1.9 column reports them", () => {
+  const sets = {
+    sample_colors: { name: "sample_colors", displayLabels: { 1033: "Colors" }, type: "picklist", options: [{ value: 100000000, label: "Red", labels: { 1033: "Red" } }] },
+  };
+  const service = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({
+      paint: {
+        entitySet: "paints", idColumn: "paintid", nameColumn: "name",
+        fields: {
+          name: { dataverseType: "nvarchar" },
+          color: { dataverseType: "picklist", globalOptionSet: "sample_colors" },
+          tint: { dataverseType: "picklist", columnMetadata: { type: "picklist", optionSet: { isGlobal: true, name: "sample_colors" } } },
+        },
+      },
+    }),
+    globalOptionSets: () => sets,
+  });
+  assert.deepEqual(service.globalOptionSets().map((s) => s.Name), ["sample_colors"]);
+  const set = service.globalOptionSet("sample_colors");
+  assert.equal(set.DisplayName.UserLocalizedLabel.Label, "Colors");
+  assert.equal(set.Options[0].Value, 100000000);
+  assert.equal(set.Options[0].Label.UserLocalizedLabel.Label, "Red");
+  assert.equal(service.attributeOptionSet("paint", "color", { global: true }).Name, "sample_colors");
+  assert.equal(service.attributeOptionSet("paint", "tint", { global: true }).Name, "sample_colors", "the columnMetadata binding reads too");
+});
+
+test("relationship schema names: N:N without one is the intersect table, 1:N is table_nav", () => {
+  assert.equal(relationshipSchemaName("widget", "tags", MAPPINGS.widget.relationships.tags), "widget_tags");
+  assert.equal(relationshipSchemaName("widget", "tags", { intersect: { entity: "widget_tag" } }), "widget_tag");
+  assert.equal(relationshipSchemaName("gadget", "widget", { entity: "widget" }), "gadget_widget");
+});
+
+test("privileges: EntityFilters bit 4 gives the rights with security's names and ids; organization-owned tables get six", () => {
+  const user = extended.retrieveEntityResponse("widget", "Privileges").EntityMetadata;
+  assert.equal(user.Privileges.length, 8, "user-owned: eight rights");
+  const read = user.Privileges.find((p) => p.Name === "prvReadWidget");
+  assert.equal(read.PrivilegeType, 2);
+  assert.equal(read.PrivilegeId, privilegeId(ORG, "prvReadWidget"));
+  assert.equal(read.CanBeBasic, true);
+  assert.equal(read.CanBeGlobal, true);
+  const org = extended.retrieveEntityResponse("orgbox", "Privileges").EntityMetadata;
+  assert.equal(org.Privileges.length, 6, "organization-owned: no Assign or Share");
+  assert.ok(!org.Privileges.some((p) => p.PrivilegeType === 5 || p.PrivilegeType === 6));
+  assert.equal(org.Privileges.find((p) => p.Name === "prvReadOrgbox").CanBeBasic, false);
+  assert.equal(extended.retrieveEntityResponse("widget", "Attributes").EntityMetadata.Privileges, undefined, "not requested, not returned");
+  const systemuser = extended.retrieveEntityResponse("systemuser", "Privileges").EntityMetadata;
+  assert.ok(systemuser.Privileges.some((p) => p.Name === "prvReadUser" && p.PrivilegeId === privilegeId(ORG, "prvReadUser")), "systemuser privileges use the User noun");
+  assert.ok(!systemuser.Privileges.some((p) => /prv\w+Systemuser$/.test(p.Name)));
+});
+
+test("change log: changed children, containing tables with HasChanged false, deletes behind a filter, expiry", () => {
+  const T0 = Date.UTC(2026, 9, 19, 10, 0, 0);
+  const log = [];
+  const tracked = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => MAPPINGS, changeLog: () => log, clock: () => T0 });
+  const start = tracked.retrieveMetadataChanges(null).ServerVersionStamp;
+  assert.equal(start, "0!10/19/2026 10:00:00");
+  assert.equal(tracked.retrieveMetadataChanges(null, { clientVersionStamp: start }).EntityMetadata.length, 0);
+
+  log.push({ seq: 1, at: T0 + 1000, op: "change", kind: "attribute", logical: "widget", name: "price" });
+  const one = tracked.retrieveMetadataChanges(null, { clientVersionStamp: start });
+  assert.equal(one.ServerVersionStamp, "1!10/19/2026 10:00:01");
+  assert.deepEqual(names(one.EntityMetadata), ["widget"]);
+  assert.equal(one.EntityMetadata[0].HasChanged, false, "the containing table did not change");
+  assert.deepEqual(one.EntityMetadata[0].Attributes.map((a) => [a.LogicalName, a.HasChanged]), [["price", true]]);
+
+  log.push({ seq: 2, at: T0 + 2000, op: "change", kind: "entity", logical: "gadget", name: null });
+  const gadget = tracked.retrieveMetadataChanges(null, { clientVersionStamp: one.ServerVersionStamp }).EntityMetadata;
+  assert.deepEqual(names(gadget), ["gadget"]);
+  assert.equal(gadget[0].HasChanged, true);
+  assert.ok(gadget[0].Attributes.length > 0 && gadget[0].Attributes.every((a) => a.HasChanged === false), "the table's own change keeps every child, none flagged");
+
+  log.push({ seq: 3, at: T0 + 3000, op: "delete", kind: "attribute", logical: "widget", name: "code" });
+  const since2 = "2!10/19/2026 10:00:02";
+  const deleted = tracked.retrieveMetadataChanges(null, { clientVersionStamp: since2, deletedMetadataFilters: "Attribute" }).DeletedMetadata;
+  assert.deepEqual(deleted, { Count: 1, IsReadOnly: false, Keys: ["Attribute"], Values: [[tracked.metadataId("attribute", "widget", "code")]] });
+  assert.equal(tracked.retrieveMetadataChanges(null, { clientVersionStamp: since2 }).DeletedMetadata.Count, 0, "no filter, no deleted items");
+
+  const expired = (e) => e.details?.innerCode === "0x80044352";
+  assert.throws(() => tracked.retrieveMetadataChanges(null, { clientVersionStamp: "9!10/19/2026 10:00:09" }), expired, "ahead of the server");
+  assert.throws(() => tracked.retrieveMetadataChanges(null, { clientVersionStamp: "1!01/01/2020 00:00:00" }), expired, "older than 90 days");
+  const trimmed = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => MAPPINGS, changeLog: () => [{ seq: 5, at: T0, op: "change", kind: "entity", logical: "tag" }], clock: () => T0 });
+  assert.throws(() => trimmed.retrieveMetadataChanges(null, { clientVersionStamp: "2!10/19/2026 10:00:00" }), expired, "before the log start");
+
+  const named = tracked.retrieveMetadataChanges({ Properties: { AllProperties: false, PropertyNames: ["Privileges"] } }, { clientVersionStamp: "3!10/19/2026 10:00:03" }).EntityMetadata;
+  assert.equal(named.length, 3, "named Privileges come back for every table, changed or not");
+  assert.ok(named.every((e) => e.HasChanged === false && e.Privileges.length > 0));
+});
+
+test("csdl: registry fragments join the schema; change-tracked entity sets carry the annotation only with annotations=true", () => {
+  const withFragment = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => MAPPINGS, extraCsdl: () => '<Function Name="PaqFragment" />' });
+  const plain = withFragment.csdl(null);
+  assertWellFormed(plain);
+  assert.match(plain, /<Function Name="PaqFragment" \/>/);
+  assert.ok(!plain.includes('<Member Name="Entity" />'), "the Web API DeletedMetadataFilters enum has no Entity member");
+
+  const tracked = createMetadataService({
+    organizationId: ORG,
+    schema: () => null,
+    mappings: () => ({ ...MAPPINGS, gadget: { ...MAPPINGS.gadget, dataverseMetadata: { ChangeTrackingEnabled: true } } }),
+  });
+  const annotated = tracked.csdl(null, { annotations: true });
+  assertWellFormed(annotated);
+  // One EntitySet element by name, self-closing or with children.
+  const setOf = (xml, name) => [...xml.matchAll(/<EntitySet Name="[^"]+"[^>]*\/>|<EntitySet Name="[^"]+"[^>]*>[\s\S]*?<\/EntitySet>/g)].map((m) => m[0]).find((s) => s.includes(`Name="${name}"`));
+  assert.match(setOf(annotated, "gadgets"), /<Annotation Term="Org\.OData\.Capabilities\.V1\.ChangeTracking">\s*<Record>\s*<PropertyValue Property="Supported" Bool="true" \/>/);
+  assert.ok(!setOf(annotated, "widgets").includes("ChangeTracking"));
+  assert.ok(!setOf(tracked.csdl(null), "gadgets").includes("ChangeTracking"), "entity-set annotations are opt-in");
+});
+
+// Standard tables: the seeded mappings (seedStandard) read the Learn-derived columns, labels and ownership.
+const standardState = seedStandard({ state: {} });
+const STANDARD = createMetadataService({ organizationId: ORG, schema: () => null, mappings: () => standardState.mappings });
+const standardAttribute = (table, column) => STANDARD.attributes(table).find((a) => a.LogicalName === column);
+
+test("standard account: SchemaName, primary name, ownership and the column facts from the reference", () => {
+  const account = STANDARD.entity("account");
+  assert.equal(account.SchemaName, "Account");
+  assert.equal(account.PrimaryNameAttribute, "name");
+  assert.equal(account.OwnershipType, "UserOwned");
+  assert.equal(account.IsActivity, false);
+  assert.equal(standardAttribute("account", "name").MaxLength, 160);
+  assert.equal(standardAttribute("account", "name").RequiredLevel.Value, "ApplicationRequired");
+  const industry = standardAttribute("account", "industrycode");
+  assert.equal(industry["@odata.type"], "#Microsoft.Dynamics.CRM.PicklistAttributeMetadata");
+  assert.equal(industry.OptionSet.Options.find((o) => o.Value === 1).Label.UserLocalizedLabel.Label, "Accounting");
+  assert.equal(standardAttribute("account", "donotemail").DefaultValue, false);
+  assert.equal(standardAttribute("account", "statecode").OptionSet.Options[0].DefaultStatus, 1);
+  assert.equal(STANDARD.entity("organization").OwnershipType, "OrganizationOwned");
+});
+
+test("standard activities: task is an activity, and the activity columns are typed as party lists and managed properties", () => {
+  assert.equal(STANDARD.entity("task").IsActivity, true);
+  assert.equal(STANDARD.entity("task").OwnershipType, "UserOwned");
+  assert.equal(standardAttribute("activitypointer", "allparties").AttributeType, "PartyList");
+  assert.equal(standardAttribute("connectionrole", "iscustomizable").AttributeType, "ManagedProperty");
+});
+
+test("a Solution account overrides the columns it declares; the standard columns it omits remain", () => {
+  const SOLUTION_ACCOUNT = {
+    lcid: 1033,
+    targets: {},
+    optionSets: {},
+    relationships: {},
+    tables: {
+      account: {
+        logicalName: "account",
+        entitySetName: "accounts",
+        primaryIdAttribute: "accountid",
+        primaryNameAttribute: "name",
+        ownership: "UserOwned",
+        labels: { 1033: "Account" },
+        collectionLabels: { 1033: "Accounts" },
+        schemaComplete: false,
+        attributes: {
+          accountid: { name: "accountid", type: "primarykey", requiredLevel: "systemrequired", labels: {} },
+          name: { name: "name", type: "nvarchar", maxLength: 200, requiredLevel: "applicationrequired", isPrimaryName: true, labels: { 1033: "Account Name" } },
+          x_tier: { name: "x_tier", type: "int", requiredLevel: "none", labels: { 1033: "Tier" } },
+        },
+      },
+    },
+  };
+  const overridden = createMetadataService({ organizationId: ORG, schema: () => SOLUTION_ACCOUNT, mappings: () => standardState.mappings });
+  const columns = overridden.attributes("account");
+  const column = (name) => columns.find((a) => a.LogicalName === name);
+  assert.equal(column("name").MaxLength, 200);
+  assert.ok(column("x_tier"), "x_tier is added");
+  assert.ok(column("industrycode"), "industrycode stays from the standard file");
+  assert.equal(overridden.entity("account").OwnershipType, "UserOwned");
+});
+
+test("metadata keys under $select carry the selected properties and no @odata.type", () => {
+  const all = mapped.keys("widget");
+  assert.equal(all[0]["@odata.type"], "#Microsoft.Dynamics.CRM.EntityKeyMetadata");
+  const selected = mapped.keys("widget", { select: "LogicalName,EntityKeyIndexStatus,KeyAttributes" });
+  assert.deepEqual(Object.keys(selected[0]).sort(), ["EntityKeyIndexStatus", "KeyAttributes", "LogicalName", "MetadataId"]);
+  assert.deepEqual(selected[0].KeyAttributes, ["code"]);
+});
+
+test("csdl: activitypointer is abstract with the activityid key, and an activity derives from it with its own columns only", () => {
+  const xml = STANDARD.csdl("https://org.example");
+  assertWellFormed(xml);
+  assert.match(block(xml, "activitypointer"), /<EntityType Name="activitypointer" BaseType="mscrm\.crmbaseentity" Abstract="true">\s*<Key>\s*<PropertyRef Name="activityid" \/>/);
+  const task = block(xml, "task");
+  assert.match(task, /<EntityType Name="task" BaseType="mscrm\.activitypointer">/);
+  // Native $metadata also declares the key on the derived type (the parity capture).
+  assert.match(task, /<Key>\s*<PropertyRef Name="activityid" \/>\s*<\/Key>/);
+  assert.doesNotMatch(task, /<Property Name="activityid"/);
+  assert.match(task, /<Property Name="percentcomplete"/);
+  assert.match(block(xml, "account"), /<EntityType Name="account" BaseType="mscrm\.crmbaseentity">/);
 });

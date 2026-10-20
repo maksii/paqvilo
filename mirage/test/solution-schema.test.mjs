@@ -735,3 +735,19 @@ test("one-to-many relationships keep the Solution's cascade configuration on the
   assert.deepEqual(report.relationships.find((rel) => rel.schemaName === "sample_parent_item_restrict").cascade.delete, "Restrict");
   assert.match(formatReport(report), /one-to-many delete behaviour: Cascade 1, RemoveLink 1, Restrict 1, unstated 1/);
 });
+
+test("a self-referencing relationship with IsHierarchical is hierarchical on both navigation sides; other relationships carry no flag", async (t) => {
+  const hierarchy = oneToMany("sample_node_parent", "sample_node", "sample_node", "sample_ParentNode").replace("<ReferencingAttributeName>", "<IsHierarchical>1</IsHierarchical><ReferencingAttributeName>");
+  const flat = oneToMany("sample_node_related", "sample_node", "sample_other", "sample_Related");
+  const core = await tree(t, {
+    "Other/Solution.xml": solution("Core"),
+    "Entities/sample_node/Entity.xml": entityXml("sample_node", { set: "sample_nodes", full: true }),
+    "Entities/sample_other/Entity.xml": entityXml("sample_other", { set: "sample_others", full: true }),
+    "Other/Relationships/sample_node.xml": `<EntityRelationships>${hierarchy}${flat}</EntityRelationships>`,
+  });
+  const data = await importSolutionData([core]);
+  assert.equal(data.mappings.sample_node.relationships.sample_ParentNode.hierarchical, true, "the many-to-one side");
+  assert.equal(data.mappings.sample_node.relationships.sample_node_parent.hierarchical, true, "the one-to-many side");
+  assert.equal(Object.hasOwn(data.mappings.sample_node.relationships.sample_Related, "hierarchical"), false);
+  assert.equal(Object.hasOwn(data.mappings.sample_other.relationships.sample_node_related, "hierarchical"), false);
+});

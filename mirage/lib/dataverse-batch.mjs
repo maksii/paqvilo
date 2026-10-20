@@ -25,7 +25,7 @@ function invalid(message) {
 
 function boundaryOf(contentType) {
   const match = /^multipart\/mixed\s*;\s*boundary=(?:"([^"]+)"|([^;\s"]+))/i.exec(contentType ?? "");
-  if (!match) throw invalid(/^application\/json/i.test(contentType ?? "") ? JSON_BATCH : "Batch boundary is missing or invalid.");
+  if (!match) throw invalid("Batch boundary is missing or invalid.");
   return match[1] ?? match[2];
 }
 
@@ -102,13 +102,90 @@ function parseSection(section, inChangeset) {
   return { kind: "request", ...(contentId ? { contentId } : {}), ...request };
 }
 
+// JSON batch: {"requests":[{id,method,url,headers?,body?,atomicityGroup?,dependsOn?}]}. Native answers 200 in the multipart form,
+// so the items run through the same dispatch as multipart parts. Items run in dependsOn order (array order otherwise).
+// A run of consecutive items sharing an atomicityGroup is one changeset; the id is the Content-ID reference for $<id>.
+// ponytail: an atomicityGroup whose members are not consecutive after ordering becomes separate changesets.
+// Ceiling: order the group's members together at the first member's position if that case matters.
+// unverified: the JSON form is not documented; malformed JSON and unknown dependsOn/cycle messages are assumed.
+function jsonItem(item) {
+  if (!item || typeof item !== "object" || typeof item.method !== "string" || typeof item.url !== "string") throw invalid(JSON_BATCH);
+  const headers = {};
+  for (const [name, value] of Object.entries(item.headers ?? {})) headers[name.toLowerCase()] = String(value);
+  let body = item.body ?? undefined;
+  if (body !== undefined && typeof body !== "string") {
+    body = JSON.stringify(body);
+    headers["content-type"] ??= "application/json";
+  }
+  return {
+    kind: "request",
+    method: item.method.toUpperCase(),
+    url: item.url,
+    headers,
+    body,
+    ...(item.id !== undefined ? { refId: String(item.id) } : {}),
+    group: item.atomicityGroup == null ? null : String(item.atomicityGroup),
+    dependsOn: [item.dependsOn ?? []].flat().map(String),
+  };
+}
+
+function orderJson(items) {
+  const ids = items.map((item) => item.refId).filter((id) => id !== undefined);
+  if (new Set(ids).size !== ids.length) throw invalid("The batch contains a duplicate request id."); // unverified: message
+  for (const item of items) {
+    const missing = item.dependsOn.find((dep) => !ids.includes(dep));
+    if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // unverified: message
+  }
+  const done = new Set();
+  const ordered = [];
+  let pending = items;
+  while (pending.length) {
+    const next = pending.find((item) => item.dependsOn.every((dep) => done.has(dep)));
+    if (!next) throw invalid("The batch dependsOn ordering contains a cycle."); // unverified: message
+    ordered.push(next);
+    if (next.refId !== undefined) done.add(next.refId);
+    pending = pending.filter((item) => item !== next);
+  }
+  return ordered;
+}
+
+function parseJsonBatch(rawBody) {
+  const text = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody ?? "");
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch {
+    throw invalid(JSON_BATCH);
+  }
+  if (!Array.isArray(payload?.requests)) throw invalid(JSON_BATCH);
+  const parts = [];
+  let open = null; // the changeset of the current run of one atomicityGroup
+  for (const { group, dependsOn, ...request } of orderJson(payload.requests.map(jsonItem))) {
+    if (group === null) {
+      parts.push(request);
+      open = null;
+      continue;
+    }
+    if (request.method === "GET") throw invalid("GET requests are not allowed inside change sets.");
+    if (open?.group === group) open.changeset.requests.push(request);
+    else {
+      open = { group, changeset: { kind: "changeset", requests: [request] } };
+      parts.push(open.changeset);
+    }
+  }
+  return parts;
+}
+
 export function parseBatch(contentType, rawBody) {
+  const checked = (parsed) => {
+    const count = parsed.parts.reduce((n, part) => n + (part.kind === "changeset" ? part.requests.length : 1), 0);
+    if (count > MAX_REQUESTS) throw invalid(`The batch contains more than ${MAX_REQUESTS} requests.`);
+    return parsed;
+  };
+  if (/^application\/json/i.test(contentType ?? "")) return checked({ boundary: null, json: true, parts: parseJsonBatch(rawBody) });
   const text = Buffer.isBuffer(rawBody) ? rawBody.toString("utf8") : String(rawBody ?? "");
   const boundary = boundaryOf(contentType);
-  const parts = sections(text, boundary).map((s) => parseSection(s, false));
-  const count = parts.reduce((n, part) => n + (part.kind === "changeset" ? part.requests.length : 1), 0);
-  if (count > MAX_REQUESTS) throw invalid(`The batch contains more than ${MAX_REQUESTS} requests.`);
-  return { boundary, parts };
+  return checked({ boundary, parts: sections(text, boundary).map((s) => parseSection(s, false)) });
 }
 
 const headerOf = (headers, name) => Object.entries(headers ?? {}).find(([key]) => key.toLowerCase() === name)?.[1];
@@ -120,7 +197,8 @@ const badReference = (contentId) => ({
 });
 
 // Runs one request. $n references resolve against entities created earlier in the same changeset.
-async function execute(request, { dispatch, origin }, refs) {
+// Relative URLs (JSON batches: "WhoAmI") resolve against the service root, which is base; absolute paths against origin.
+async function execute(request, { dispatch, origin, base }, refs) {
   let url = request.url;
   const head = /^\$([^/?]+)/.exec(url);
   if (head) {
@@ -145,22 +223,29 @@ async function execute(request, { dispatch, origin }, refs) {
     if (missing !== undefined) return badReference(missing);
   }
   try {
-    return await dispatch({ method: request.method, url: new URL(url, origin).href, headers: request.headers, body });
+    return await dispatch({ method: request.method, url: new URL(url, base ?? origin).href, headers: request.headers, body });
   } catch (error) {
     return { status: error.status ?? 500, body: { error: { code: error.code ?? "InternalError", message: error.message } } };
   }
 }
 
-async function runChangeset(changeset, context) {
-  const refs = new Map();
+// A created entity is referenced as $<Content-ID>, or $<id> for a JSON batch item.
+const remember = (refs, request, response) => {
+  const key = request.contentId ?? request.refId;
+  const entity = headerOf(response.headers, "odata-entityid");
+  if (key && entity) refs.set(key, entity);
+};
+
+// batchRefs: references the batch has committed so far. A rolled-back changeset publishes none of its own.
+async function runChangeset(changeset, context, batchRefs = new Map()) {
   const responses = [];
+  const refs = new Map(batchRefs);
   const run = async () => {
     for (const request of changeset.requests) {
       const response = await execute(request, context, refs);
       responses.push({ request, response });
       if (response.status >= 400) throw ROLLBACK;
-      const entity = headerOf(response.headers, "odata-entityid");
-      if (request.contentId && entity) refs.set(request.contentId, entity);
+      remember(refs, request, response);
     }
   };
   try {
@@ -170,7 +255,9 @@ async function runChangeset(changeset, context) {
   } catch (error) {
     if (error !== ROLLBACK) throw error;
   }
-  return { responses, failure: responses.find(({ response }) => response.status >= 400) };
+  const failure = responses.find(({ response }) => response.status >= 400);
+  if (!failure) for (const [key, entity] of refs) batchRefs.set(key, entity);
+  return { responses, failure };
 }
 
 const mimeLines = (contentId) => [
@@ -181,53 +268,79 @@ const mimeLines = (contentId) => [
 
 const partOf = (boundary, mime, content) => `--${boundary}\r\n${mime.map((line) => `${line}\r\n`).join("")}\r\n${content}\r\n`;
 
-function httpBlock(response, requestId) {
+// Envelope headers that a top-level answer carries but a native batch part does not (measured on batch.success,
+// batch.rollback and batch.continue-on-error): the service request ids and dop hint, expires, Allow, Public, the
+// transport headers and CORS. REQ_ID is not here: the dispatch supplies it on entity-engine errors only.
+const PART_ENVELOPE = /^(x-ms-|expires$|allow$|public$|strict-transport-security$|access-control-|connection$|keep-alive$|set-cookie$)/i;
+// The JSON type a multipart part carries (native batch.success, batch.continue-on-error); a JSON batch answers with streaming too.
+const PART_JSON_TYPE = "application/json; odata.metadata=minimal";
+
+function httpBlock(response, { json = false } = {}) {
   const headers = new Map();
   const set = (name, value) => headers.set(name.toLowerCase(), [name, String(value)]);
-  for (const [name, value] of Object.entries(response.headers ?? {})) if (value !== undefined && value !== null) set(name, value);
+  // An error part carries no Cache-Control (native batch.rollback and batch.continue-on-error); the no-cache pair is for reads.
+  for (const [name, value] of Object.entries(response.headers ?? {})) {
+    if (value === undefined || value === null || PART_ENVELOPE.test(name)) continue;
+    if (response.status >= 400 && /^cache-control$/i.test(name)) continue;
+    set(name, value);
+  }
   const body = response.body ?? undefined;
   const text = body === undefined || typeof body === "string" ? body : JSON.stringify(body);
-  if (text && !headers.has("content-type")) set("Content-Type", JSON_TYPE);
+  if (text && !headers.has("content-type")) set("Content-Type", json ? JSON_TYPE : PART_JSON_TYPE);
   if (!headers.has("odata-version")) set("OData-Version", "4.0");
+  if (response.status < 400) {
+    // Native answers each successful part with nosniff. An entity read (one with an ETag) also carries the no-cache pair:
+    // unverified beyond the two nested record reads measured; a WhoAmI part carries neither.
+    if (!headers.has("x-content-type-options")) set("X-Content-Type-Options", "nosniff");
+    if (headers.has("etag")) {
+      if (!headers.has("cache-control")) set("Cache-Control", "no-cache");
+      if (!headers.has("pragma")) set("Pragma", "no-cache");
+    }
+  }
   const entity = headers.get("odata-entityid")?.[1];
   if (response.status === 204 && entity && !headers.has("location")) set("Location", entity);
-  if (response.status >= 400 && !headers.has("req_id")) set("REQ_ID", requestId);
   const lines = [`HTTP/1.1 ${response.status} ${reasonPhrase(response.status)}`, ...[...headers.values()].map(([n, v]) => `${n}: ${v}`)];
   return `${lines.join("\r\n")}\r\n\r\n${text ?? ""}`;
 }
 
-function changesetPart(boundary, responses, requestId) {
+function changesetPart(boundary, responses, json) {
   const inner = `changesetresponse_${randomUUID()}`;
-  const parts = responses.map(({ request, response }) => partOf(inner, mimeLines(request.contentId), httpBlock(response, requestId))).join("");
+  const parts = responses.map(({ request, response }) => partOf(inner, mimeLines(request.contentId), httpBlock(response, { json }))).join("");
   return partOf(boundary, [`Content-Type: multipart/mixed; boundary=${inner}`], `${parts}--${inner}--\r\n`);
 }
 
 function result(boundary, status, blocks) {
+  // observed: parity cases batch.stop-on-error and batch.rollback; a failed batch answers nosniff on the outer response too.
+  const nosniff = status >= 400 ? { "x-content-type-options": "nosniff" } : {};
   return {
     status,
-    headers: { "content-type": `multipart/mixed; boundary=${boundary}`, "OData-Version": "4.0" },
+    headers: { "content-type": `multipart/mixed; boundary=${boundary}`, "OData-Version": "4.0", ...nosniff },
     body: `${blocks.join("")}--${boundary}--\r\n`,
   };
 }
 
-export async function executeBatch(parsed, { dispatch, origin, continueOnError = false, requestId } = {}) {
-  const reqId = requestId ?? randomUUID();
+export async function executeBatch(parsed, { dispatch, origin, base, continueOnError = false } = {}) {
   const boundary = `batchresponse_${randomUUID()}`;
-  const context = { dispatch, origin };
+  const context = { dispatch, origin, base };
+  const json = parsed.json === true;
+  // A JSON batch shares its references across items; a multipart part scopes them to its own changeset.
+  const shared = new Map();
   const blocks = [];
+  // Without continue-on-error the batch stops at the first failing part and keeps the parts that already ran (native batch.stop-on-error).
   for (const part of parsed.parts) {
+    const refs = parsed.json ? shared : new Map();
     if (part.kind === "request") {
-      const response = await execute(part, context, new Map());
-      const block = partOf(boundary, mimeLines(part.contentId), httpBlock(response, reqId));
-      if (response.status >= 400 && !continueOnError) return result(boundary, response.status, [block]);
+      const response = await execute(part, context, refs);
+      remember(refs, part, response);
+      // Native echoes Content-ID only inside a changeset: a top-level part answers without one.
+      const block = partOf(boundary, mimeLines(), httpBlock(response, { json }));
       blocks.push(block);
+      if (response.status >= 400 && !continueOnError) return result(boundary, response.status, blocks);
     } else {
-      const { responses, failure } = await runChangeset(part, context);
-      if (failure && !continueOnError) {
-        const { request, response } = failure;
-        return result(boundary, response.status, [partOf(boundary, mimeLines(request.contentId), httpBlock(response, reqId))]);
-      }
-      blocks.push(changesetPart(boundary, responses, reqId));
+      const { responses, failure } = await runChangeset(part, context, refs);
+      // A failed changeset answers as a changeset part holding the failing response (rollback), Content-ID kept.
+      if (failure && !continueOnError) return result(boundary, failure.response.status, [...blocks, changesetPart(boundary, [failure], json)]);
+      blocks.push(changesetPart(boundary, responses, json));
     }
   }
   return result(boundary, 200, blocks);

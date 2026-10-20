@@ -1,6 +1,6 @@
 # Dataverse Web API simulation
 
-Mirage serves a Dataverse-shaped Web API on its own loopback origin, beside the portal. The API shares the portal's local state (`DataStore`), but it does not change the portal `/_api/` behaviour, page rendering or `/_sim/` routes.
+Mirage serves a Dataverse-shaped Web API on its own loopback origin, beside the portal. The API shares the portal's local state (`DataStore`), and rows written on either side are visible on the other. The portal sees Dataverse tables only under its own `Webapi/<table>/enabled`, `Webapi/<table>/fields` and table permissions; the portal's logic, permission checks and error contracts are unchanged.
 
 ## Enable it
 
@@ -33,12 +33,25 @@ mirage:
 | `enabled` | Starts the listeners. Absent or `false` leaves the API off. |
 | `port` | HTTP listener port. `0` picks an ephemeral port. Use `80` for `Microsoft.PowerPlatform.Dataverse.Client`, which drops the port. |
 | `tls`, `tlsPort` | `tls: true` adds an `https` listener on `tlsPort` (`0` picks an ephemeral port). Its certificate is a self-signed CA, reused while it stays valid for more than 7 days (regenerated when the hosts change), name-constrained to the loopback hosts, and written to the certificate file reported by status (`dataverse-ca.pem` beside the state file under `.paqvilo/`; kept in memory when there is no state file). Trust it with `NODE_EXTRA_CA_CERTS` or `REQUESTS_CA_BUNDLE`. It is never installed into the OS store. |
-| `serviceProtection` | `{ requestsPer300s: <n> }` enables service-protection limits: a caller that exceeds `n` requests in a sliding 300 second window receives 429 `0x80072322` with `Retry-After`. Unset means no limit. |
+| `serviceProtection` | `{ requestsPer300s, executionMsPer300s, concurrentRequests }`. Limits per user: requests and combined execution time in a sliding 300 second window, and concurrent requests. A caller over the request limit receives 429 `0x80072322`, and over the execution-time limit 429 `0x80072321`, each with `Retry-After`. Unset limits do not apply. `executionTimeMsPer300s` is accepted as an alias of `executionMsPer300s`. |
 | `tenantId` | Tenant in the token authority. Defaults to a GUID derived from the site id. |
 | `organizationId`, `uniqueName`, `friendlyName` | Organization identity returned by `WhoAmI` and `RetrieveCurrentOrganization`. |
-| `applications` | Application registrations. `roles` creates an application user with those roles. |
+| `version` | Four-part version reported by `RetrieveVersion` and the SOAP organization detail. Default `9.2.25041.00000`. |
+| `managedIdentity` | Server key, outside the settings reader: `{ mode }` with `appservice` (default), `imds` or `arc`. Selects the managed identity token endpoint, see [Managed identity](#managed-identity-and-federated-credentials). |
+| `managedIdentities` | Managed identities `{ clientId, principalId?, displayName, roles }`. `roles` defaults to `Basic User`. Each becomes an application user. |
+| `federatedIssuers` | External issuers `{ issuer, jwks: { keys } }`, public keys only. They verify the RS256 client assertions of the applications' `federatedCredentials`. |
+| `auditing` | `true` sets `organization.isauditenabled`; a table and its columns are audited by their own flags. Default `false`. |
+| `tds` | The read-only SQL endpoint (Dataverse "Enable TDS endpoint"). `{ enabled, port }`. Default `{ enabled: true, port: 0 }`: a loopback listener on an ephemeral port, reported as `tdsPort` on the API and in `/_sim/` status. Port `1433` or `5558` is opt-in. With `enabled: false` the listener still runs and every login is refused with "TDS protocol endpoint is disabled for this organization." (as Dataverse keeps the endpoint reachable). Login takes an Entra access token (FEDAUTH); SQL and Windows logins are refused. Each query runs as the caller through the record handlers, so table, field and row security apply. The query limit is 2 minutes when the parsed batch has a JOIN or APPLY, a nested FROM or a `*` column, else 5 minutes. Service-protection rejections answer 40501. The refusal texts and limits are unverified against live Dataverse. |
+| `duplicateDetection` | Sets `organization.isduplicatedetectionenabled`. `false` switches the duplicate check off for the organization. Default `true`. The check still runs only on requests that send `MSCRM.SuppressDuplicateDetection: false`, see [Duplicate detection](#duplicate-detection). |
+| `pluginTimeoutSeconds` | The execution limit of a custom API's trusted handler (see [custom API handlers](../../docs/project-extensions.md#custom-api-handlers)). A handler past it fails as a timeout (400 `0x80040224`), and its writes roll back. Whole seconds from 1 to 3600. Default `120`, the platform's 2-minute sandbox limit. |
+| `currencyCode`, `currencySymbol` | ISO code and symbol of the organization's base currency (its `transactioncurrency` row). Defaults `USD` and `$`. |
+| `localeId` | Organization locale (LCID), written to `organization.localeid` and `languagecode`. Default `1033`. |
+| `gitRemoteDirectory` | Optional local Git working directory used by the source-control operation adapter. It is project configuration; no organization URL or remote credential belongs in core. |
+| `applications` | Application registrations. `roles` creates an application user with those roles (none by default). |
 | `applications[].secretEnvironmentVariable` | Name of the environment variable that holds the plain client secret. |
-| `users` | Interactive users. `objectId` is the Entra object id (`azureactivedirectoryobjectid`). `roles` lists role names. |
+| `applications[].publicClient`, `redirectUris`, `allowedGrants` | A public client (`publicClient: true`) may use only the authorization code, device code, refresh token and password grants. `redirectUris` are http(s) URLs. `allowedGrants` limits the grants the application may use; default all. |
+| `applications[].federatedCredentials` | `[{ issuer, subject, audiences }]`. Trusts a client assertion from `issuer` whose subject is `subject`. One audience; default `api://AzureADTokenExchange`. |
+| `users` | Interactive users. `objectId` is the Entra object id (`azureactivedirectoryobjectid`). `roles` lists role names; default `Basic User`. |
 
 Secrets come only from environment variables. A plain secret in YAML is not accepted. The simulator stores secrets and user passwords hashed, returns a new secret once on creation, and never writes a token or secret to disk or to the request log.
 
@@ -72,13 +85,14 @@ curl -s "$ORIGIN/api/data/v9.2/WhoAmI" \
 Notes for specific clients:
 
 - **MSAL libraries** need an https authority: set `tls: true` and point the authority at `<tlsOrigin>/<tenantId>` with instance discovery disabled. `@azure/msal-node`: `knownAuthorities` containing the tlsOrigin host. MSAL Python: `validate_authority=False, instance_discovery=False`. .NET: `WithInstanceDiscovery(false)`. Trust the CA as described above; .NET clients that read only the OS store need their own trust configuration. Microsoft's Python Dataverse SDK takes `tlsOrigin` as `base_url`.
-- **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. SOAP `IOrganizationService` calls receive a SOAP fault, because only the Web API is simulated.
+- **`Microsoft.PowerPlatform.Dataverse.Client`** drops the port from the org URL. Set `port: 80`, and use the constructor that takes a token provider. Port 80 must be free on the machine. `IOrganizationService` calls go to the SOAP endpoint, which is simulated for the messages listed under [SOAP Organization service](#soap-organization-service).
 
 ## Token behaviour
 
 - `expires_in` is 3599 for a token with a 3600-second lifetime.
 - `client_info` is returned when the request asks for it.
 - Certificate assertions accept RS256 and PS256 and match a registered certificate by `x5t` or `x5t#S256`. A reused `jti` is rejected as a replay.
+- Federated client assertions (RS256) match a `federatedCredentials` entry by issuer, subject and audience, and verify against the issuer's keys in `federatedIssuers`.
 - Public clients must send PKCE with `authorization_code`.
 - An authorization code is spent on any redemption attempt.
 - The sign-in pickers list only interactive, enabled users with an Entra object id. SYSTEM and application users never appear.
@@ -132,7 +146,7 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 - An unknown payload property answers 400, error code `0x0`, with the documented "Invalid property" message.
 - An unknown property in `$select`, `$filter`, `$orderby` or `$expand` answers 400, `0x0`, "Could not find a property named ...".
 - Entity sets are matched case-sensitively by set name. A logical name answers 404 `0x8006088a`.
-- `$skip`, `$search` and `$format` answer 400 `0x80060888`.
+- `$skip` and `$format` answer 400 `0x80060888`. `$search` answers 501 `0x8006088a`.
 - URLs up to 32,768 characters are accepted. A longer URL answers 400 `0x80060888`, "Invalid URI: The Uri string is too long."
 - A path segment over 260 characters answers 400 "Bad Request - Invalid URL".
 - Alternate-key values containing control characters are rejected.
@@ -141,9 +155,9 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 ### Headers
 
 - `Preference-Applied` echoes only the preferences that were applied: `odata.include-annotations`, `odata.maxpagesize`, `odata.track-changes` (on a tracked collection), `return=representation`, and `odata.continue-on-error` inside `$batch`.
-- `respond-async` is accepted but not applied.
-- `MSCRM.BypassCustomPluginExecution` and `MSCRM.BypassBusinessLogicExecution` require the `prvBypassCustomPlugins` privilege, which System Administrator and System Customizer hold. They are then accepted as no-ops, because the simulated API runs no plug-ins.
-- `MSCRM.SuppressDuplicateDetection`, `MSCRM.SolutionUniqueName`, `MSCRM.MergeLabels` and `Consistency` are accepted as no-ops.
+- `Prefer: respond-async` on a custom API call is applied: the call answers 202 with a `Location` for its status monitor and `Preference-Applied: respond-async`. On other requests it is accepted and not applied.
+- `MSCRM.BypassCustomPluginExecution` needs the `prvBypassCustomPlugins` privilege, which System Administrator and System Customizer hold. `MSCRM.BypassBusinessLogicExecution` needs `prvBypassCustomBusinessLogic`. A bypass skips the project's exported plug-ins for that write, and `customsync` also skips the synchronous plug-in phase.
+- `MSCRM.SuppressDuplicateDetection: false` turns the duplicate check on, see [Duplicate detection](#duplicate-detection). `MSCRM.SolutionUniqueName`, `MSCRM.MergeLabels` and `Consistency` are accepted as no-ops.
 - `x-ms-client-request-id` is echoed.
 - Every response carries `x-ms-service-request-id`, `REQ_ID`, the rate-limit headers and `x-ms-dop-hint`.
 
@@ -179,6 +193,7 @@ The change log is in memory and keeps the last 10,000 changes. It is reset by a 
 - `ownerid` and customer columns are `LookupAttributeMetadata` with `AttributeType` `Owner` or `Customer`.
 - `OwnershipType` is `UserOwned`, `OrganizationOwned` or `BusinessOwned`. The security tables report `BusinessOwned`.
 - `$metadata` declares the response complex types `OrganizationDetail`, `RolePrivilege` and `RetrieveMetadataChanges`, and a single `ownerid` navigation typed `principal`.
+- The operation registry and metadata builder share a platform contract catalogue. It preserves native action/function kinds, collection and entity overloads, parameter order, nullability, optional annotations and nested enum/complex/metadata types. Only referenced type dependencies are emitted. Project custom APIs retain their own authored signatures. A declared parameter or matching catalogue does not establish that every native option's business semantics are implemented.
 - `GlobalOptionSetDefinitions` rejects `$filter`.
 
 ## Administration
@@ -196,6 +211,7 @@ These endpoints live under the local administration API (`/_sim/`).
 | `POST /_sim/api/dataverse/applications/<appId>/secrets` | 201 `{ id, secret, hint, expiresOn }`. The secret is shown once. |
 | `DELETE /_sim/api/dataverse/applications/<appId>/secrets/<id>` | 204. |
 | `POST /_sim/api/dataverse/applications/<appId>/certificates` | Body `{ certificatePem }` (an X.509 certificate PEM; its SHA-1 and SHA-256 fingerprints become `x5t` / `x5t#S256`) or `{ publicKeyPem }` (a bare public key; digests of its DER SPKI). 201 `{ thumbprint, thumbprint256 }`. |
+| `POST /_sim/api/dataverse/applications/<appId>/federated-credentials` | Body `{ issuer, subject, audiences?, jwks }`. Adds a federated credential and its issuer's public keys. 201 with the credential. A duplicate issuer and subject answers 409. |
 | `DELETE /_sim/api/dataverse/applications/<appId>` | Removes the registration and its application user. 204. |
 | `POST /_sim/api/dataverse/users` | Body `{ fullname, domainname, objectId?, roles?, accessmode?, businessUnitId?, password? }`. 201 `{ systemuserid, azureactivedirectoryobjectid }`. |
 | `PATCH /_sim/api/dataverse/users/<systemuserid>` | Body `{ roles?, isdisabled?, accessmode?, password? }`. 200. |
@@ -203,7 +219,7 @@ These endpoints live under the local administration API (`/_sim/`).
 
 Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets appear only in the create responses above. Subsequent reads show `hint` and `expiresOn`. A `password` is 8 to 256 characters, stored hashed, and never returned; reads show only `passwordSet`. The request log never contains tokens.
 
-`POST /_sim/api/reset` keeps registrations and re-seeds the security tables. The security tables it seeds (`systemuser`, `role`, `businessunit` and the others) are marked as Dataverse-only mappings in the shared local state: the portal `/_api/` resolver ignores them, so enabling the API does not change which entity sets the portal recognises. Liquid FetchXML on the portal can still query those tables, subject to the portal's table permissions, exactly as it can on a live site.
+`POST /_sim/api/reset` keeps registrations and re-seeds the security tables. The tables it seeds (`systemuser`, `role`, `businessunit` and the others) are ordinary tables to the portal: `/_api/systemusers` answers 404 `9004010C` until `Webapi/systemuser/enabled` is true, then follows the table permissions (403 `90040120` without a read grant), as on a live site. Liquid and FetchXML read them under the same table permissions.
 
 ## Supported surface
 
@@ -213,27 +229,162 @@ Every write needs the `X-Sim-CSRF` header with the runtime CSRF token. Secrets a
 - Change tracking on collections, described under Request handling.
 - `fetchXml` queries.
 - Navigation properties and `$ref` associations.
-- `$batch` with change sets and `$n` references.
+- `$batch` with change sets and `$n` references, and JSON batch (`{ "requests": [...] }`), whose items run in `dependsOn` order. JSON batch answers in the multipart form.
 - Functions and actions: `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `RetrieveTotalRecordCount`, `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `RetrieveMetadataChanges`, `GrantAccess`, `ModifyAccess`, `RevokeAccess`.
 - Metadata reads: the `$metadata` document, `EntityDefinitions`, `RelationshipDefinitions`, `GlobalOptionSetDefinitions`.
 - Discovery: `Instances`.
 - Documented error envelope and error codes.
 - Money columns: JSON values with four decimals (`12.5000`), formatted values with the base currency symbol (`$12.50`), and `_transactioncurrencyid_value` (with its lookup annotations) on every row that returns a money column. The simulator has one currency, so every money row reports the base currency.
-- Collection-bound `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`.
+- Collection-bound `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`; elastic tables also support `DeleteMultiple`.
 - OAuth 2.0 grants: `client_credentials` (client secret or certificate assertion), `authorization_code` with PKCE, `device_code`, `password` (ROPC), on-behalf-of, and `refresh_token` rotation. OpenID Connect discovery, JWKS and instance discovery.
 - Impersonation through `CallerObjectId` or `MSCRMCallerID` for callers holding `prvActOnBehalfOfAnotherUser`.
 
+### SOAP Organization service
+
+`/XRMServices/2011/Organization.svc/web` answers these messages, backed by the same record handlers:
+
+- Body operations: `Create`, `Retrieve`, `RetrieveMultiple`, `Update`, `Delete`, `Associate` and `Disassociate`.
+- Execute messages: `Upsert`, `Assign`, `SetState`, `WhoAmI`, `RetrieveVersion`, `RetrieveCurrentOrganization`, `ExecuteMultiple` and `ExecuteTransaction`.
+- Queries: `QueryExpression`, `QueryByAttribute` and `FetchExpression`, run as FetchXML.
+- Metadata: `RetrieveEntity`, `RetrieveAttribute`, `RetrieveAllEntities`, `RetrieveOptionSet`, `RetrieveRelationship` and `RetrieveMetadataChanges`, including typed nested metadata queries and deletion stamps.
+- A registered Web API action or function, named by `RequestName` on the generic `OrganizationRequest`.
+
+Any other message answers a SOAP fault (HTTP 500).
+
+### Metadata writes
+
+Metadata writes need the metadata privilege of the message (`prv*Entity` or `prv*Attribute`). System Administrator and System Customizer hold them.
+
+- Tables: `EntityDefinitions` POST, PUT and DELETE. A created table is user-configured and `dataverseOnly`. Seeded and Solution tables are read-only at table level.
+- Columns: `Attributes` POST, PUT and DELETE. Columns made here are kept with the table, so a Solution refresh keeps them.
+- Alternate keys: `Keys` POST and DELETE, with activation jobs. `PublishXml` and `PublishAllXml` accept publication; writes already apply immediately. `PublishAllXmlAsync` exposes publication as a type 204 system job.
+- Relationships: `RelationshipDefinitions` POST for one-to-many and many-to-many, and PUT and DELETE by key.
+- Lookups: `CreateCustomerRelationships` and `CreatePolymorphicLookupAttribute`.
+- Choices: `GlobalOptionSetDefinitions` POST, PUT and DELETE. Option actions: `InsertOptionValue`, `UpdateOptionValue`, `DeleteOptionValue`, `OrderOption`, `InsertStatusValue` and `UpdateStateValue`.
+
+### Files and images
+
+- Single upload: a `PATCH` of a file or image column with the bytes as the body.
+- Chunked upload: `InitializeFileBlocksUpload`, `UploadBlock` and `CommitFileBlocksUpload`. Upload sessions live in memory, so a restart drops the uploads in progress.
+- Download: `$value` reads, including ranged reads, and `InitializeFileBlocksDownload` and `DownloadBlock` for chunks.
+- `DeleteFile` removes the file from its column.
+
+### Record messages and predefined queries
+
+- `Merge` for `account`, `contact`, `lead` and `incident`. The target gains the subordinate's empty values, and `UpdateContent` applies (not on `incident`). Ownership, audit and state columns are never copied.
+- `InitializeFrom`, `CalculateRollupField`, `IsValidStateTransition` and `FormatAddress`.
+- `savedQuery=<id>` and `userQuery=<id>` answer from the stored FetchXML. Navigation through a many-to-many relationship in a predefined query answers 501.
+
+### Solutions
+
+- `ExportSolution` (needs `prvExportCustomization`) returns the zip of a solution as `ExportSolutionFile`. The zip holds its component membership, including metadata writes with the `MSCRM.SolutionUniqueName` header. A base solution with child patches is locked for export until its patches are removed or rolled up. `ExportSolutionAsync` and `DownloadSolutionExportData` expose the job and download lifecycle.
+- `ImportSolution` (needs `prvImportCustomization`) reads `CustomizationFile` (base64 zip) and creates or keeps each table, column, global option set and relationship. A failed import rolls back its components; its `importjob` row keeps the failure. `OverwriteUnmanagedCustomizations` replaces existing columns with the solution's definition. `ImportSolutionAsync` answers with `AsyncOperationId` and `ImportJobKey` and runs the import on a later tick.
+- `CloneAsPatch` and `CloneAsSolution` create patches and roll them up. `StageSolution` checks an archive without importing it; `StageAndUpgrade` and its asynchronous counterpart import a holding solution, and `DeleteAndPromote` replaces the base. `UninstallSolutionAsync` removes a managed solution's introduced components only after checking dependencies. Failed imports and blocked removals preserve prior state.
+- `AddSolutionComponent`, `RemoveSolutionComponent`, dependency queries and asynchronous component additions share the membership model. `UpdateSolutionComponent` persists its opaque included-setting strings per membership; their individual platform meanings remain unverified. Preferred solutions are stored per user. Managed table/column layers support removing active customizations.
+- The import/export adapter currently transports tables, supported columns, global choices and relationships. App definitions, scripts, workflow definitions, alternate keys and export-settings flags are not transported by this adapter. Model-driven apps use the selected local Solution sources and catalogue.
+- Microsoft documents synchronous `UninstallSolution` and `ImportSolutions` as internal-only. Their signatures are available, with the shared explicit project-override contract and an honest 501 default.
+
+### Custom APIs
+
+Custom APIs come from the Solution's `customapi` rows. Unbound, entity-bound and collection-bound functions answer GET, and actions answer POST. Without a handler, the response properties take their defaults. A trusted pack can supply a handler, see [custom API handlers](../../docs/project-extensions.md#custom-api-handlers).
+
+### Duplicate detection
+
+Duplicate rules come from the `duplicaterule` and `duplicaterulecondition` rows. Create and update are checked only when the request sends `MSCRM.SuppressDuplicateDetection: false`; the default suppresses the check. The organization's `isduplicatedetectionenabled` flag (the `duplicateDetection` setting) switches it off for the whole organization. A duplicate answers 412 `0x80040333`. Rule operators `0` to `6` are simulated: exact match, same first or last characters, same date, same date and time, picklist label and picklist value. `PublishDuplicateRule`, `UnpublishDuplicateRule` and `RetrieveDuplicates` are available.
+
+### Auditing
+
+`RetrieveRecordChangeHistory`, `RetrieveAttributeChangeHistory` and `RetrieveAuditDetails` read the `audit` table. `DeleteRecordChangeHistory` deletes history entries and needs `prvDeleteRecordChangeHistory`. The organization flag enables auditing, and each table and column has its own flag. Shares, role privileges and role assignments are audited too, and so are writes made through the portal and `/_sim/`.
+
+### Async operations
+
+- `BulkDelete` needs `prvBulkDelete` (System Administrator only). It queues a system job and returns its `JobId`. The job runs later as the submitter, through the record handlers, so privileges and row access apply. `StartDateTime` postpones it. `RecurrencePattern` accepts `FREQ=DAILY`, `WEEKLY` or `MONTHLY`, with an optional `INTERVAL`.
+- Each job writes one `bulkdeleteoperation` row, and one `bulkdeletefailure` row per row it could not delete. Jobs resume after a restart.
+- A custom API call with `Prefer: respond-async` answers 202 and runs as a background operation. Its status monitor is `GET` or `DELETE` on `/api/backgroundoperation/<id>`, outside `/api/data`.
+
+### Workflows
+
+- The Solution's `Workflows` folder seeds one `workflow` row per data file (classic XAML and cloud flow JSON), and an activation row (type 2) for each activated definition. A PATCH of `statecode` activates or deactivates; other columns of an activated definition, and any change to an activation row, are refused with Learn's codes (`0x80045002`, `0x80045003`, `0x80045004`, `0x80045018`, `0x8004500D`).
+- `ExecuteWorkflow` takes `EntityId` and returns the id of an asyncoperation of type 10 (Workflow). A background run is that job; a real-time classic run executes inside the request and answers the empty id. A cloud flow is always a job. Learn's codes cover a draft or unpublished classic workflow, one that is not on-demand, a cloud flow that is not on-demand or whose trigger is not Dataverse. A call with no `EntityId` is refused with an unverified code.
+- `CreateWorkflowFromTemplate` copies a template (type 3) into a new draft definition named `WorkflowName`.
+- Classic workflow XAML is never interpreted. A run uses a trusted pack handler (`workflows: { '<workflowid or uniquename>': handler }`, documented in `docs/project-extensions.md`), or it is a placeholder that ends the job Canceled with "Simulator: classic workflow XAML is not executed" and records a `WORKFLOW_PLACEHOLDER` diagnostic. A handler or mock run writes a `workflowlog` row; a real-time failure with `syncworkflowlogonfailure` writes a `processsession` row. A chain of runs deeper than 16 is canceled with `0x80044182`.
+- Creating a classic workflow through the Web API is refused (unverified code, LC-W1c). `ExecuteWorkflowRequest` reaches the same workflow operation through the generic SOAP bridge when the workflow extension is installed by Mirage.
+
+### Model-driven app customization
+
+`RetrieveAppComponents`, `AddAppComponents`, `RemoveAppComponents` and `ValidateApp` expose local app membership. Adds validate all source references before writing, and duplicate additions are idempotent. `InstantiateFilters` copies referenced system-view templates into personal queries owned by the bound user; exact Outlook duplication and column-copy behavior remain unverified. Reports expose their stored definition and related categories; rendering is not implemented.
+
+### Elastic tables and search
+
+Elastic records have partition-aware identity and expiry (`ttlinseconds`). The same primary id can exist in distinct partitions. Collection bulk operations preserve each target's partition; `DeleteMultiple` remains unavailable for standard tables. `ExecuteCosmosSqlQuery` evaluates the modeled Cosmos SQL subset locally and returns an `expando` result with scoped paging cookies. Unsupported SQL shapes fail explicitly.
+
+Dataverse search actions and `/api/search/v1.0` and `/api/search/v2.0` routes query records through the caller's security and field-security checks. Search uses a local token matcher, without Dataverse's distributed index, Lucene, fuzzy matching, boosting or proximity. This search surface is separate from unsupported OData `$search`.
+
+### Security messages and field security
+
+- Privileges: `AddPrivilegesRole`, `RemovePrivilegeRole`, `ReplacePrivilegesRole`, `RetrieveRolePrivilegesRole`, `RetrieveUserPrivilegeByPrivilegeName`, `RetrieveUserPrivilegeByPrivilegeId`, `RetrieveUserSetOfPrivilegesByNames`, `RetrieveUserSetOfPrivilegesByIds` and `RetrieveTeamPrivileges`.
+- Teams and hierarchy: `AddMembersTeam`, `RemoveMembersTeam`, `AddUserToRecordTeam`, `RemoveUserFromRecordTeam`, `SetBusinessSystemUser`, `SetParentSystemUser` and `RetrieveBusinessHierarchyBusinessUnit`. Access-team templates (`teamtemplate`) are seeded.
+- Entra ID users: `RetrieveAadUserRoles` and `RetrieveAadUserPrivileges`.
+- Sharing: `RetrieveSharedPrincipalsAndAccess` and `RetrieveAccessOrigin`.
+- Field security: field security profiles, field permissions and field sharing. Record hooks null or refuse secured columns. `RetrievePrincipalAttributePrivileges` reports the column privileges of a principal.
+
+### Activity pointer
+
+`activitypointer` is a read-only view over the activity tables. Each source table is read through the record handlers, so its privileges, ownership and sharing apply. A read needs `prvReadActivity`. `$filter`, `$orderby`, `$count` and paging work on the combined rows. Single-row `$expand`, property and `$value` reads go to the source table. Other verbs are refused.
+
+### Managed identity and federated credentials
+
+`managedIdentity.mode` picks the endpoint shape. All three share one token issuer:
+
+- `appservice`: `/msi/token`, with the identity header secret.
+- `imds`: `/metadata/identity/oauth2/token`, with the `Metadata` header.
+- `arc`: the Arc challenge on the IMDS path. Each challenge secret is a single-use file under `.paqvilo/mirage`.
+
+Both resource selectors, `mi_res_id` (App Service) and `msi_res_id` (IMDS), are accepted.
+
+Managed identities are application users, listed in the `managedidentities` table. Federated credentials come from `applications[].federatedCredentials` with `federatedIssuers`, or from the administration endpoint above.
+
+### SQL (TDS) endpoint
+
+- Login takes an Entra access token (FEDAUTH). Each table read runs as the caller through the Web API record handlers, so table, field and row security apply. The endpoint is read-only: a write answers error 102 with a "read-only" message.
+- Statements: `SELECT` with `DISTINCT`, `TOP n [PERCENT]`, aliases, `*` and `alias.*`, `SELECT @v = expr`, `DECLARE` and `SET`. Statements are separated by `;` or a line break, and `GO` ends a batch. `sp_executesql` is the only procedure mapped, and its parameters arrive as `@p1` and so on.
+- Sources: `dbo` tables and derived tables (alias required). Joins: `INNER`, `LEFT`, `RIGHT` and `FULL` (with optional `OUTER`), `CROSS JOIN`, and `CROSS APPLY` or `OUTER APPLY` over a derived table.
+- Clauses: `WHERE`, `GROUP BY`, `HAVING`, `ORDER BY` (expressions or ordinals), `UNION` and `UNION ALL`.
+- Predicates and subqueries: comparisons, `LIKE`, `BETWEEN`, `IN`, `IS NULL`, `EXISTS`, `CASE`, scalar and derived subqueries, and `ANY`, `SOME` and `ALL` comparisons.
+- Aggregates: `AVG`, `COUNT`, `COUNT_BIG`, `MAX`, `MIN`, `STRING_AGG`, `SUM`, `STDEV`, `STDEVP`, `VAR` and `VARP`. `CHECKSUM_AGG` and `GROUPING` are refused.
+- Functions: 66 scalar functions with T-SQL semantics, including string, date, math, null handling, `CAST`, `CONVERT` and `TRY_CONVERT`.
+- Refused: window functions (`OVER`), CTEs (`WITH`), `OFFSET`/`FETCH`, `EXCEPT`, `INTERSECT`, `INTO`, `PIVOT`, `UNPIVOT`, `ROLLUP`, `CUBE`, `GROUPING SETS`, non-`dbo` schemas, DML, DDL and `EXEC`.
+
+## Standard tables
+
+The simulator seeds the 167 standard tables of the Microsoft Learn Dataverse table reference (`MicrosoftDocs/powerapps-docs` at commit `c3a8c43b`). The data file, `mirage/lib/dataverse-standard-tables.json`, holds names, types, option labels, ownership and relationships. It holds no description text. The data is CC BY 4.0, see [NOTICE](../../NOTICE). Columns whose names start with `adx_`, `msa_`, `msdyn_`, `mspp_`, `msdynce_`, `msft_` or `msfp_` are left out, except in the six allow-listed `msdyn_` tables (`PREFIXED_TABLES`).
+
+| Item | Count |
+| --- | --- |
+| Tables | 167: 160 standard, 7 elastic (`backgroundoperation`, `appnotification`, `flowrun`, `sourcecontrolconfiguration`, `sourcecontrolbranchconfiguration`, `sourcecontrolcomponent`, `sourcecontrolcomponentpayload`) |
+| Columns | 6,584, including 167 primary keys |
+| Relationships | 1,873: 1,855 one-to-many, 18 many-to-many |
+| Global option sets | 78 |
+| Local option sets (choice columns) | 838 |
+| Ownership | 74 user-owned, 47 organization-owned, 5 business-owned, 41 none |
+
+- The tables are seeded when the Dataverse API starts, as stand-ins that exist only in the simulator (`dataverseOnly`). They start with no rows.
+- A Solution that defines a table with the same name replaces the seeded stand-in. Nothing writes into a Solution mapping.
+- The portal sees a standard table only through its own settings: `Webapi/<table>/enabled` and table permissions. Until it is enabled, `/_api/accounts` answers 404 `9004010C`, as on a live site. Liquid and FetchXML read the table under the same table permissions.
+- Regenerate with `node scripts/dataverse-standard-tables.mjs`. The first run fetches the pages at the pinned commit into the ignored `.paqvilo/standard-tables-cache/`. `--check` regenerates in memory and exits 1 when the committed file differs. `--out <path>` writes elsewhere, and `--allow <table>,...` accepts parse problems for the named tables.
+
 ## Not simulated
 
-Not simulated, by design:
+Not simulated:
 
-- SOAP `Organization.svc` (answers with a SOAP fault).
-- Dataverse search (`/api/search/`), elastic tables, file and image column streaming.
-- Solution import and export, plug-in registration through the API, the `pac` CLI.
-- Metadata writes (`EntityDefinitions` POST and PUT).
-- Browser-based MSAL.js sign-in beyond the minimal picker.
+- A hosted Dataverse service, PAC deployment, external OAuth federation, or execution of arbitrary uploaded assembly content. This is a local simulator; sources, app catalogue, trusted implementations and local state determine behavior.
+- The complete native business logic of every installed Dynamics application. Registered operations follow the modeled or documented contracts; unverified details remain identified in source and tests.
 - Sharing with an `organization` principal (`GrantAccess`, `ModifyAccess`, `RevokeAccess`): answers 400 `InvalidKey`. Only `systemuser` and `team` principals are simulated.
-- Bound functions and actions other than `RetrieveUserPrivileges`, `RetrievePrincipalAccess`, `CreateMultiple`, `UpdateMultiple` and `UpsertMultiple`; `Merge`, `WinOpportunity`, `ExecuteWorkflow` and `DeleteMultiple` answer 501.
+- `DeleteMultiple` on a standard table answers 501 `0x80040216`. Actions and functions without a registered handler answer 404, "No HTTP resource was found", with no error code.
+- `$skip` and `$format` (400 `0x80060888`), and `$search` (501 `0x8006088a`).
+- Recurring BulkDelete schedules outside the modeled `FREQ=DAILY`, `WEEKLY` or `MONTHLY` forms, and unsupported metadata criteria/operators, fail explicitly. A declared schema type alone does not prove that every native query shape executes.
+- `_Downloademailasattachment`, `_InvokeHideReserveEntities`, `_SyncKnowledgeManagementSettings` and `cascadeAsync_SuccessAPI` have captured native signatures but no qualified implementation contract. They support an explicit project handler and otherwise answer 501. A matching name or successful catalogue comparison is not behavior-parity evidence.
+- Browser-based MSAL.js sign-in beyond the minimal picker.
 
 ### Unverified against a live tenant
 
@@ -244,6 +395,14 @@ These details follow the research notes rather than a live capture, and stay as 
 - The HTTP status and body of a `DELETE` with `If-Match: *` on a missing row, and the `0x80060882` code on an `If-Match` mismatch (the documented sample shows an empty code).
 - `GrantAccess` ORs its mask into an existing share. Microsoft's documentation describes the share, not the merge, and no live tenant has confirmed it.
 - The change-tracking codes and messages (`0x80044352`, `0x80072491`) follow Microsoft's error-code reference, not a live capture.
+- `Merge` for `lead` and `incident`, and its same-table and same-record rules. The Merge reference lists `account` and `contact` only.
+- Metadata write messages, status codes and parameter rules that the Learn pages do not confirm.
+- `UpdateMultiple` and `UpsertMultiple` with empty or mixed `Targets`.
+- The file MIME type, taken from the file extension.
+- Managed identity `credentialsource`, `subjectscope` and `version` values, and the body of an `api-version` error.
+- The `Locked` transitional statuses of a bulk delete job that is cancelled or paused.
+- SQL endpoint: `ORDER BY NULL` ordering, `OFFSET`/`FETCH` and `PIVOT` support, the messages for refused constructs, and the `FORMATMESSAGE` missing-parameter text.
+- Standard tables: whether `activitypointer_prioritycode` is a global or a local option set. The privilege noun of `queueitem` and `environmentvariablevalue`.
 
 ## Evidence
 
@@ -255,9 +414,10 @@ The local behaviour is a simulation. Parity claims rest on the SDK gates under `
 | `dynamics-web-api` | `dynamics-web-api` 2.5.1 with `@azure/msal-node` 7.1.0 | client_credentials over `authorityMetadata` (http) and over OpenID Connect discovery on the TLS listener, CRUD, `$select`/`$filter`/`$expand`/`$count`, paging, alternate keys, FetchXML paging cookies, `$batch` change sets, error codes |
 | `python-dataverse` | Microsoft `PowerPlatform-Dataverse-Client` 1.1.0 with `msal` 1.39.0 | TLS `base_url`, OpenID Connect discovery with `instance_discovery=False`, picklist label resolution through `EntityDefinitions` and `OptionSet` expansion, CRUD, query builder, `CreateMultiple`, `$batch`, 400 and 404 error details |
 | `webapi-samples` | Microsoft `PowerApps-Samples` WebAPIService (C#, pinned commit) | Microsoft's own request shapes: `WhoAmI`, create with `OData-EntityId`, retrieve, update, `RetrieveMultiple`, delete, `$batch` change set, `x-ms-dop-hint` |
-| `serviceclient` | `Microsoft.PowerPlatform.Dataverse.Client` 1.2.27 (C#, token-provider constructor) | Port 80 (ServiceClient drops the port), `RetrieveCurrentOrganization` on v9.0 with the `Endpoints` dictionary and the version switch to v9.2, `ExecuteWebRequest` CRUD, `WhoAmI` over the Web API, and a clean `FaultException` for the SOAP `IOrganizationService` call |
+| `serviceclient` | `Microsoft.PowerPlatform.Dataverse.Client` 1.2.27 (C#, token-provider constructor) | Port 80 (ServiceClient drops the port), `RetrieveCurrentOrganization` on v9.0 with the version switch to v9.2. Two passes. The SOAP pass covers CRUD, `QueryExpression` paging, FetchXML, `Associate`, `ExecuteMultiple`, `ExecuteTransaction`, `WhoAmI`, CallerId impersonation and a `FaultException` for a missing row. The Web API pass covers CRUD over the Web API and `RetrieveEntityRequest` over SOAP |
 | `cert-auth` | `@azure/msal-node` 7.1.0 `clientCertificate` and `Microsoft.Identity.Client` 4.91.0 `WithCertificate` (C#) | Certificate client authentication: a per-run self-signed certificate registered by its fingerprints, PS256 assertions carrying `x5t#S256` and `x5c` redeemed over the TLS authority (MSAL.NET with `WithInstanceDiscovery(false)` and a CA-trusting `IMsalHttpClientFactory`), `appidacr` 2, `WhoAmI`, the token and `WhoAmI` requests in the simulator log, and AADSTS700027 for a tampered assertion |
+| `tds` | `tedious` 20.3.8 (Node) | Login with an Entra access token (FEDAUTH) over the TDS listener, `SELECT TOP`, `JOIN`, `GROUP BY` with `COUNT(*)` and `ORDER BY`, `UNION`, security trimming (a Basic User token sees fewer rows than the admin token), and an `INSERT` refused with error 102 |
 
-`npm run test:sdk` runs all six gates, and all six pass.
+`npm run test:sdk` runs all seven gates.
 
 Gate dependencies stay out of the package: Node packages install under `mirage/test-sdk/<gate>/node_modules`, the Python environment and the cloned sample repository live under the ignored `.paqvilo/sdk-gates/`. A passing SDK gate shows that the client could authenticate and receive the documented shapes. It does not show that every live environment behaves identically.

@@ -2,9 +2,26 @@ import { DataError } from './data-error.mjs';
 import {executeBulkRecords} from './plugin-bulk.mjs';
 import {executeAssociation} from './plugin-association.mjs';
 import {isExactNumeric,exactNumeric} from './exact-numeric.mjs';
+import {isElastic,recordKey} from './dataverse-elastic.mjs';
 const fail=(message,code='LocalOrganizationServiceUnsupported',status=501)=>{throw new DataError(message,status,code);};
 const uuid=/^[a-f\d]{8}(?:-[a-f\d]{4}){3}-[a-f\d]{12}$/i;
 const own=(o,k)=>o!=null&&Object.hasOwn(o,k);
+/** Preserve typed SDK alternate keys; an elastic primary key is scoped by its opaque partition. */
+export function sdkRecordKey(store, entity, target, partitionId) {
+ const mapping=store.resolveMapping(entity),keys=target&&typeof target==='object'?target.keyAttributes:null;
+ if(keys&&Object.keys(keys).length){
+  const values=Object.fromEntries(Object.entries(keys).map(([name,value])=>[name,sdkValueToRecord(value)]));
+  if(isElastic(mapping)&&!own(values,mapping.idColumn)&&uuid.test(target.id??''))values[mapping.idColumn]=target.id;
+  return Object.entries(values).map(([name,value])=>{
+   if(!/^[a-z][\w]*$/i.test(name)||['constructor','prototype','__proto__'].includes(name))fail('Invalid SDK key attribute.');
+   if(typeof value==='string')return `${name}=${uuid.test(value)?value:`'${value.replaceAll("'","''")}'`}`;
+   if(typeof value==='number'&&Number.isFinite(value)||typeof value==='boolean')return `${name}=${value}`;
+   fail('SDK key attributes require scalar values.');
+  }).join(',');
+ }
+ const id=target&&typeof target==='object'?target.id??target.value:target;
+ return isElastic(mapping)&&partitionId!=null?recordKey(mapping,{[mapping.idColumn]:id,partitionid:partitionId}):id;
+}
 /** Explicit local backend grants are independent of portal roles. No default system user. */
 export function validateServiceProfile(profile){
  if(!profile||!uuid.test(profile.userId??'')||typeof profile.evidence!=='string'||!profile.evidence.trim()||!Array.isArray(profile.grants))fail('A project-supplied backend user ID, evidence and explicit grants are required.','LocalBackendIdentityRequired',409);
@@ -17,10 +34,16 @@ export function localOrganizationService(store,profile){
  const localIdentity={id:profile.userId,admin:true}; // Bypass portal grants only AFTER the separate backend grant check below.
  const authorize=(entity,operation,row)=>{const logical=store.resolveMapping(entity).logicalName;const grants=profile.grants.filter(g=>g.entity===logical&&g.operations.includes(operation));if(!grants.some(g=>!g.predicate||g.predicate(structuredClone(row),operation)===true))fail(`Local backend profile denied ${operation} on ${logical}.`,'LocalBackendPermissionDenied',403);return logical;};
  const rawGet=(entity,id)=>{const row=store.get(entity,id,localIdentity,{skipPluginRead:true});if(!row)fail('Record not found.','NotFound',404);authorize(entity,'read',row);return row;};
- const get=(entity,id,columns,{responseToken}={})=>{const mapping=store.resolveMapping(entity),raw=store.get(entity,id,localIdentity,{skipPluginRead:true});if(!raw)fail('Record not found.','NotFound',404);authorize(entity,'read',raw);const row=store.get(entity,id,localIdentity,{sdkColumns:columns,sdkResponseToken:responseToken});return structuredClone(row);};
+ const get=(entity,id,columns,{responseToken,partitionId}={})=>{const key=sdkRecordKey(store,entity,id,partitionId),raw=store.get(entity,key,localIdentity,{skipPluginRead:true});if(!raw)fail('Record not found.','NotFound',404);authorize(entity,'read',raw);const row=store.get(entity,key,localIdentity,{sdkColumns:columns,sdkResponseToken:responseToken});return structuredClone(row);};
  const writeGraph=(values,entity)=>{for(const[key,value]of Object.entries(values??{})){
-  if(key.endsWith('@odata.bind')){for(const binding of [value].flat()){if(binding===null)continue;const match=/^\/?([a-z][\w]*)\(([a-f\d-]{36})\)$/i.exec(binding??'');if(!match)fail('Unsupported backend lookup binding.');rawGet(match[1],match[2]);}}
-  else if(value&&typeof value==='object'&&value.logical_name&&value.id)rawGet(value.logical_name,value.id);
+  if(key.endsWith('@odata.bind')){for(const binding of [value].flat()){if(binding===null)continue;const match=/^\/?([a-z][\w]*)\((.+)\)$/i.exec(binding??'');if(!match)fail('Unsupported backend lookup binding.');rawGet(match[1],match[2]);}}
+  else if(value&&typeof value==='object'&&value.logical_name&&(value.id||value.keyAttributes)){
+   const target=store.resolveMapping(value.logical_name),partition=value.partitionid??values[`${key}pid`],reference=sdkRecordKey(store,value.logical_name,value,partition);
+   const found=store.get(value.logical_name,reference,localIdentity,{skipPluginRead:true});
+   if(found){authorize(value.logical_name,'read',found);value.id=found[target.idColumn];if(isElastic(target)){value.partitionid=found.partitionid??null;values[`${key}pid`]=value.partitionid;}}
+   else if(isElastic(target)&&partition==null&&!value.keyAttributes){authorize(value.logical_name,'read');value.partitionid=null;values[`${key}pid`]=null;}
+   else fail('Record not found.','NotFound',404);
+  }
   else if(Array.isArray(value)&&String(store.fieldDefinition(entity,key)?.dataverseType??store.fieldDefinition(entity,key)?.type??'').toLowerCase()==='multiselectpicklist'){
    const options=store.fieldDefinition(entity,key)?.options;
    if(value.some(option=>typeof option!=='number'||!Number.isInteger(option)||option< -2147483648||option>2147483647||options?.length&&!options.some(allowed=>Number(allowed.value)===option)))fail('Backend choices require source-valid Int32 option values.');
@@ -32,8 +55,8 @@ export function localOrganizationService(store,profile){
   query(entity,params={},{responseToken,sdkQuery}={}){if(params instanceof URLSearchParams?params.has('$expand'):params.$expand)fail('Backend query expansion requires an explicit security adapter.');const logical=store.resolveMapping(entity).logicalName,grants=profile.grants.filter(g=>g.entity===logical&&g.operations.includes('read'));if(!grants.length)fail('Local backend profile denied read on '+logical,'LocalBackendPermissionDenied',403);const constrained=!grants.some(g=>!g.predicate);const p=params instanceof URLSearchParams?Object.fromEntries(params):params;if(constrained&&(p.$apply||String(p.$filter??'').includes('/')||String(p.$select??'').includes('/')||String(p.$orderby??'').includes('/')))fail('Predicate-backed queries support direct root fields only; navigation/aggregate needs a row-security adapter.');return store.query(entity,params,localIdentity,undefined,{dialect:'dataverse',sdkResponseToken:responseToken,sdkQuery,backendRowFilter:constrained?row=>grants.some(g=>g.predicate(structuredClone(row),'read')===true):undefined});},
   fetch(xml,options={}){if(typeof xml!=='string')fail('FetchXML must be a string.');const tables=[...xml.matchAll(/<(?:entity|link-entity)\s[^>]*name=["']([\w]+)["']/gi)].map(m=>m[1]);if(!tables.length)fail('FetchXML entity is missing.');const grants=new Map();for(const name of tables){const logical=store.resolveMapping(name).logicalName,matching=profile.grants.filter(g=>g.entity===logical&&g.operations.includes('read'));if(!matching.length)fail('Local backend profile denied read on '+logical,'LocalBackendPermissionDenied',403);grants.set(logical,matching);}return store.fetchXml(xml,localIdentity,{...options,backendRowsFilter:(logical,row)=>(grants.get(logical)??[]).some(g=>!g.predicate||g.predicate(structuredClone(row),'read')===true)});},
   create(entity,values,{responseToken}={}){authorize(entity,'create',values);writeGraph(values,entity);return store.sdkMutation(()=>store.createRecord(entity,values,localIdentity,{coerce:true,sdkResponseToken:responseToken}));},
-  update(entity,id,values,{responseToken}={}){const previous=store.get(entity,id,localIdentity,{skipPluginRead:true});if(!previous)fail('Record not found.','NotFound',404);authorize(entity,'update',previous);authorize(entity,'update',{...previous,...values});writeGraph(values,entity);return store.sdkMutation(()=>store.updateRecord(entity,id,values,localIdentity,{coerce:true,sdkResponseToken:responseToken}));},
-  remove(entity,id,{responseToken}={}){const previous=store.get(entity,id,localIdentity,{skipPluginRead:true});if(!previous)fail('Record not found.','NotFound',404);authorize(entity,'delete',previous);return store.sdkMutation(()=>store.removeRecord(entity,id,localIdentity,{sdkResponseToken:responseToken}));},
+  update(entity,id,values,{responseToken}={}){const key=sdkRecordKey(store,entity,id,values.partitionid),previous=store.get(entity,key,localIdentity,{skipPluginRead:true});if(!previous)fail('Record not found.','NotFound',404);authorize(entity,'update',previous);authorize(entity,'update',{...previous,...values});writeGraph(values,entity);return store.sdkMutation(()=>store.updateRecord(entity,key,values,localIdentity,{coerce:true,sdkResponseToken:responseToken}));},
+  remove(entity,id,{responseToken,partitionId}={}){const key=sdkRecordKey(store,entity,id,partitionId),previous=store.get(entity,key,localIdentity,{skipPluginRead:true});if(!previous)fail('Record not found.','NotFound',404);authorize(entity,'delete',previous);return store.sdkMutation(()=>store.removeRecord(entity,key,localIdentity,{sdkResponseToken:responseToken}));},
   associate(entity,id,relationship,related,associate=true,{responseToken}={}){return store.sdkMutation(()=>executeAssociation({store,entity,id,relationship,related,identity:localIdentity,authorize,associate,responseToken}));},
   bulk(operation,targets,{responseToken}={}){const entity=targets?.[0]?.logicalName,source=(profile.bulkTables??[]).find(table=>table.entity===entity);if(!source||!source.messages.includes(operation==='createmultiple'?'CreateMultiple':'UpdateMultiple'))fail('Bulk requires explicit source-evidenced standard table and available SDK message capability.','LocalPluginBulkUnsupported');return store.sdkMutation(()=>executeBulkRecords({store,entity,operation,targets:structuredClone(targets),identity:localIdentity,responseToken,authorize:(op,row,previous)=>{if(previous)authorize(entity,op,previous);authorize(entity,op,row);writeGraph(row,entity);}}));},
   mapping:entity=>store.resolveMapping(entity),
@@ -55,7 +78,7 @@ export function sdkValueToRecord(value){
   }
   case 'OptionSetValueCollection':return value.values.map(v=>v.value??v);
   case 'OptionSetValue':return value.value;
-  case 'EntityReference':return {id:value.id,logical_name:value.logicalName,...(value.name?{name:value.name}:{})};
+  case 'EntityReference':return {id:value.id,logical_name:value.logicalName,...(value.name?{name:value.name}:{}),...(value.keyAttributes?{keyAttributes:sdkValueToRecord(value.keyAttributes)}:{})};
   case 'AliasedValue':return sdkValueToRecord(value.value);
   case 'Entity':return Object.fromEntries(Object.entries(value.attributes??{}).map(([k,v])=>[k,sdkValueToRecord(v)]));
   default:if(own(value,'$type'))fail('Unsupported SDK value type: '+value.$type);return Object.fromEntries(Object.entries(value).map(([k,v])=>[k,sdkValueToRecord(v)]));

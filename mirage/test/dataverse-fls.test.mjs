@@ -1,21 +1,24 @@
-// Simulated Dataverse column (field) security: profile matrix, team profiles, field sharing,
-// administrator bypass, write errors and RetrievePrincipalAttributePrivileges. Invented schema and GUIDs only.
+// Simulated Dataverse column (field) security: profile matrix, team profiles, field sharing, administrator bypass,
+// write errors, aliased projection, aggregates, api.fieldSecurity and RetrievePrincipalAttributePrivileges.
+// Invented schema and GUIDs only.
 import test from "node:test";
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { DataStore, emptyState } from "../lib/data.mjs";
 import { createPrincipals, ensureSecurityModel, uuidV5 } from "../lib/dataverse-security.mjs";
-import { ensureFieldSecurity, fieldSecurity, SYSTEM_ADMINISTRATOR_PROFILE_ID } from "../lib/dataverse-fls.mjs";
+import { ensureFieldSecurity, fieldSecurity, isSecuredField, SYSTEM_ADMINISTRATOR_PROFILE_ID } from "../lib/dataverse-fls.mjs";
 
 const ORG = "6f1d7c1e-2b3a-4c5d-8e9f-0a1b2c3d4e5f";
 const ADMIN_OID = "aaaaaaaa-0000-4000-8000-000000000001";
 const BASIC_OID = "aaaaaaaa-0000-4000-8000-000000000002";
 const OUTSIDER_OID = "aaaaaaaa-0000-4000-8000-000000000003";
+const NOROLE_OID = "aaaaaaaa-0000-4000-8000-000000000004";
 const TEAM = "bbbbbbbb-0000-4000-8000-000000000001";
 const PROFILE = "dddddddd-0000-4000-8000-000000000001";
 const TEAM_PROFILE = "dddddddd-0000-4000-8000-000000000002";
 const W1 = "cccccccc-0000-4000-8000-000000000001";
 const W2 = "cccccccc-0000-4000-8000-000000000002";
+const MGR = "eeeeeeee-0000-4000-8000-000000000001";
 const SETTINGS = {
   organizationId: ORG,
   tenantId: "tenant-test",
@@ -26,9 +29,11 @@ const SETTINGS = {
     { objectId: ADMIN_OID, upn: "admin@example.test", displayName: "Admin", roles: ["System Administrator"] },
     { objectId: BASIC_OID, upn: "basic@example.test", displayName: "Basic", roles: ["Basic User"] },
     { objectId: OUTSIDER_OID, upn: "outsider@example.test", displayName: "Outsider", roles: ["Basic User"] },
+    { objectId: NOROLE_OID, upn: "norole@example.test", displayName: "No role", roles: [] },
   ],
 };
 const ANNOTATION = "secret@OData.Community.Display.V1.FormattedValue";
+const MGR_ANNOTATION = "_manager_value@OData.Community.Display.V1.FormattedValue";
 
 const text = { dataverseType: "nvarchar" };
 
@@ -41,11 +46,12 @@ function fixtureState() {
       secret: { ...text, columnMetadata: { isSecured: true } },
       grade: { ...text, dataverseMetadata: { isSecured: true } },
       label: { ...text, columnMetadata: { isSecured: true }, dataverseMetadata: { isSecured: false } },
+      manager: { dataverseType: "lookup", columnMetadata: { isSecured: true } },
     },
   };
   state.tables.widget = [
-    { widgetid: W1, name: "w1", secret: "s1", grade: "A", label: "x" },
-    { widgetid: W2, name: "w2", secret: "s2", grade: "B", label: "y" },
+    { widgetid: W1, name: "w1", secret: "s1", grade: "A", label: "x", _manager_value: MGR },
+    { widgetid: W2, name: "w2", secret: "s2", grade: "B", label: "y", _manager_value: MGR },
   ];
   return state;
 }
@@ -53,18 +59,21 @@ function fixtureState() {
 async function setup() {
   const store = new DataStore({ state: fixtureState() });
   await ensureSecurityModel(store, SETTINGS);
-  await ensureFieldSecurity(store);
   const principals = createPrincipals(store, SETTINGS);
   const ops = [], hooks = {};
-  fieldSecurity.install({
-    store, principals, settings: SETTINGS,
+  // Runtime shape: settings.organizationId is null; install reads the GUID from the organization row.
+  const api = {
+    store, principals, settings: { ...SETTINGS, organizationId: null }, change: (fn) => fn(),
     registry: { register: (op) => ops.push(op) },
     recordHooks: { add: (n, fn) => { hooks[n] = fn; } },
-  });
+  };
+  await fieldSecurity.install(api);
   const add = (table, row) => store.transact(() => store.state.tables[table].push(row));
   const mapping = store.state.mappings.widget;
   const user = (oid) => principals.byObjectId(oid);
-  const formatted = (id) => ({ widgetid: id, name: "w", secret: "s1", [ANNOTATION]: "s1", grade: "A", label: "x" });
+  const formatted = (id) => ({
+    widgetid: id, name: "w", secret: "s1", [ANNOTATION]: "s1", grade: "A", label: "x", _manager_value: MGR, [MGR_ANNOTATION]: "Bob",
+  });
   const grant = (flags) => add("fieldpermission", {
     fieldpermissionid: randomUUID(), fieldsecurityprofileid: { id: PROFILE }, entityname: "widget",
     attributelogicalname: "secret", cancreate: 0, canread: 0, canupdate: 0, canreadunmasked: 0, ...flags,
@@ -73,7 +82,7 @@ async function setup() {
   const project = (u, row) => { hooks.project({ user: u }, mapping, row); return row; };
   // Lookups name systemuser GUIDs, not the Entra object ids the settings use.
   const sid = (oid) => principals.byObjectId(oid).systemuserid;
-  return { store, principals, ops, hooks, add, grant, user, sid, formatted, write, project, mapping };
+  return { store, principals, api, ops, hooks, add, grant, user, sid, formatted, write, project, mapping };
 }
 
 test("seeds dataverse-only field security mappings and the System Administrator profile once", async () => {
@@ -87,25 +96,55 @@ test("seeds dataverse-only field security mappings and the System Administrator 
   assert.equal(profiles.length, 1);
 });
 
+test("install seeds the field security tables itself and exposes api.fieldSecurity", async () => {
+  const store = new DataStore({ state: fixtureState() });
+  await ensureSecurityModel(store, SETTINGS);
+  const ops = [];
+  const api = {
+    store, principals: createPrincipals(store, SETTINGS), settings: SETTINGS, change: (fn) => fn(),
+    registry: { register: (op) => ops.push(op) }, recordHooks: { add() {} },
+  };
+  await fieldSecurity.install(api);
+  assert.equal(store.state.mappings.fieldpermission.dataverseOnly, true);
+  assert.equal(store.tableRows("fieldsecurityprofile").filter((p) => p.fieldsecurityprofileid === SYSTEM_ADMINISTRATOR_PROFILE_ID).length, 1);
+  assert.deepEqual(ops.map((o) => o.entity).sort(), ["systemuser", "team"]);
+  assert.deepEqual(Object.keys(api.fieldSecurity).sort(), ["assertAggregate", "canRead", "canWrite", "mask"]);
+});
+
+test("IsSecured is read from either spelling and an { Value } wrapper; dataverseMetadata overrides columnMetadata", () => {
+  assert.equal(isSecuredField({ dataverseMetadata: { IsSecured: true } }), true);
+  assert.equal(isSecuredField({ dataverseMetadata: { IsSecured: { Value: true } } }), true);
+  assert.equal(isSecuredField({ dataverseMetadata: { IsSecured: { Value: false } }, columnMetadata: { isSecured: true } }), false);
+  assert.equal(isSecuredField({ dataverseMetadata: { isSecured: false }, columnMetadata: { IsSecured: true } }), false);
+  assert.equal(isSecuredField({ columnMetadata: { IsSecured: true } }), true);
+  assert.equal(isSecuredField({ columnMetadata: { isSecured: true } }), true);
+  assert.equal(isSecuredField({ name: "plain" }), false);
+});
+
 test("profile matrix: a secured column reads as null without canread and keeps its value with canread 4", async () => {
   const t = await setup();
   const basic = t.user(BASIC_OID);
-  // Basic user holds no profile yet: secured and graded columns are nulled, annotations removed, unsecured kept.
+  // Basic user holds no profile yet: secured, graded and lookup columns are nulled, annotations removed, unsecured kept.
   const denied = t.project(basic, t.formatted(W1));
   assert.equal(denied.secret, null);
   assert.equal(Object.hasOwn(denied, ANNOTATION), false);
   assert.equal(denied.grade, null);
   assert.equal(denied.label, "x");
   assert.equal(denied.name, "w");
-  // A profile with canread 4 on secret, linked to the basic user.
+  assert.equal(denied._manager_value, null);
+  assert.equal(Object.hasOwn(denied, MGR_ANNOTATION), false);
+  // A profile with canread 4 on secret and manager, linked to the basic user.
   await t.add("fieldsecurityprofile", { fieldsecurityprofileid: PROFILE, name: "Reader" });
   await t.add("systemuserprofiles", { systemuserprofileid: randomUUID(), systemuserid: { id: t.sid(BASIC_OID) }, fieldsecurityprofileid: { id: PROFILE } });
   await t.grant({ canread: 4 });
   await t.grant({ attributelogicalname: "grade", canread: 0 });
+  await t.grant({ attributelogicalname: "manager", canread: 4 });
   const allowed = t.project(basic, t.formatted(W1));
   assert.equal(allowed.secret, "s1");
   assert.equal(allowed[ANNOTATION], "s1");
   assert.equal(allowed.grade, null);
+  assert.equal(allowed._manager_value, MGR);
+  assert.equal(allowed[MGR_ANNOTATION], "Bob");
 });
 
 test("team profiles reach the members of the team and nobody else", async () => {
@@ -141,6 +180,8 @@ test("writes: create needs cancreate, update needs canupdate or an update share,
     return true;
   });
   assert.throws(() => t.write("update", basic, { secret: "x" }, w1), (e) => e.details.innerCode === "0x8004f507");
+  // A secured lookup written through its @odata.bind form needs the same permission.
+  assert.throws(() => t.write("create", basic, { "manager@odata.bind": "/systemusers(x)" }), (e) => e.details.innerCode === "0x8004f502");
   // Writes without secured keys never need a permission.
   t.write("create", basic, { name: "fine" });
   await t.add("fieldsecurityprofile", { fieldsecurityprofileid: PROFILE, name: "Editor" });
@@ -166,17 +207,76 @@ test("System Administrator users bypass every secured column", async () => {
   t.write("update", admin, { secret: "x" }, t.store.tableRows("widget")[0]);
 });
 
-test("RetrievePrincipalAttributePrivileges reports the profile permissions of a systemuser or team", async () => {
+test("RetrievePrincipalAttributePrivileges reports the profile permissions and checks the caller can read the principal", async () => {
   const t = await setup();
   const op = (kind) => t.ops.find((o) => o.name === "RetrievePrincipalAttributePrivileges" && o.entity === kind);
+  const call = (kind, id, caller) => op(kind).handle({ user: caller, target: { mapping: { logicalName: kind }, id } });
   assert.ok(op("systemuser") && op("team"));
   await t.add("fieldsecurityprofile", { fieldsecurityprofileid: PROFILE, name: "Editor" });
   await t.add("systemuserprofiles", { systemuserprofileid: randomUUID(), systemuserid: { id: t.sid(BASIC_OID) }, fieldsecurityprofileid: { id: PROFILE } });
   await t.grant({ canread: 4, cancreate: 4, canreadunmasked: 1 });
-  const body = op("systemuser").handle({ target: { mapping: { logicalName: "systemuser" }, id: t.sid(BASIC_OID) } }).body;
+  // Own record: no read check. Its AttributeId derives from the organization row, not settings.organizationId (null).
+  const body = call("systemuser", t.sid(BASIC_OID), t.user(BASIC_OID)).body;
   assert.deepEqual(body.AttributePrivileges, [{
     AttributeId: uuidV5(ORG, "attribute:widget:secret"), CanCreate: 4, CanRead: 4, CanReadUnMasked: 1, CanUpdate: 0,
   }]);
-  assert.deepEqual(op("systemuser").handle({ target: { mapping: { logicalName: "systemuser" }, id: t.sid(OUTSIDER_OID) } }).body.AttributePrivileges, []);
-  assert.deepEqual(op("team").handle({ target: { mapping: { logicalName: "team" }, id: TEAM } }).body.AttributePrivileges, []);
+  // An administrator reads any principal.
+  assert.deepEqual(call("systemuser", t.sid(OUTSIDER_OID), t.user(ADMIN_OID)).body.AttributePrivileges, []);
+  assert.deepEqual(call("team", TEAM, t.user(ADMIN_OID)).body.AttributePrivileges, []);
+  // A caller without roles cannot read another principal's field permissions.
+  assert.throws(() => call("systemuser", t.sid(BASIC_OID), t.user(NOROLE_OID)), (e) => e.status === 403);
+});
+
+test("api.fieldSecurity.mask copies a row; canRead and canWrite follow the same grants", async () => {
+  const t = await setup();
+  const { mask, canRead, canWrite } = t.api.fieldSecurity;
+  const basic = t.user(BASIC_OID), admin = t.user(ADMIN_OID);
+  const row = t.formatted(W1);
+  const masked = mask(basic, "widget", row);
+  assert.notEqual(masked, row);
+  assert.equal(masked.secret, null);
+  assert.equal(masked._manager_value, null);
+  assert.equal(Object.hasOwn(masked, MGR_ANNOTATION), false);
+  assert.equal(masked.name, "w");
+  assert.equal(row.secret, "s1", "the source row is not mutated");
+  assert.equal(mask(admin, "widget", row).secret, "s1");
+  assert.deepEqual(mask(basic, "nosuch", { a: 1 }), { a: 1 });
+  assert.equal(canRead(basic, "widget", "secret"), false);
+  assert.equal(canRead(basic, "widget", "name"), true);
+  assert.equal(canRead(basic, "widget", "nosuch"), true);
+  assert.equal(canWrite(basic, "widget", "secret", "create"), false);
+  assert.equal(canWrite(basic, "widget", "name", "create"), true);
+  // A field share on W1 grants read on that record only, and only when the record id is named.
+  await t.add("principalobjectattributeaccess", {
+    principalobjectattributeaccessid: randomUUID(), objectid: { id: W1 },
+    attributeid: uuidV5(ORG, "attribute:widget:secret"), principalid: { id: t.sid(BASIC_OID) }, readaccess: true, updateaccess: false,
+  });
+  assert.equal(canRead(basic, "widget", "secret", W1), true);
+  assert.equal(canRead(basic, "widget", "secret", W2), false);
+  assert.equal(canRead(basic, "widget", "secret"), false);
+});
+
+test("aliased link columns are masked by prefix and secured aggregates are refused", async () => {
+  const t = await setup();
+  const { mask, assertAggregate } = t.api.fieldSecurity;
+  const basic = t.user(BASIC_OID);
+  const linked = mask(basic, "widget", {
+    "w2.widgetid": W2, "w2.secret": "S3CRET", "w2.name": "n", "w2._manager_value": MGR, [`w2._manager_value@OData.Community.Display.V1.FormattedValue`]: "Bob",
+  }, { prefix: "w2." });
+  assert.equal(linked["w2.secret"], null);
+  assert.equal(linked["w2.name"], "n");
+  assert.equal(linked["w2._manager_value"], null);
+  assert.equal(Object.keys(linked).some((k) => k.includes("@")), false);
+  assert.throws(() => assertAggregate({ user: basic }, t.mapping, ["secret"]), (e) => e.status === 403 && e.details.innerCode === "0x8004f508");
+  assert.doesNotThrow(() => assertAggregate({ user: basic }, t.mapping, ["name"]));
+  assert.doesNotThrow(() => assertAggregate({ user: t.user(ADMIN_OID) }, t.mapping, ["secret"]));
+});
+
+test("reset(api) re-seeds the field security tables and the System Administrator profile after a wipe", async () => {
+  const t = await setup();
+  delete t.store.state.mappings.fieldpermission;
+  delete t.store.state.tables.fieldsecurityprofile;
+  await fieldSecurity.reset(t.api);
+  assert.equal(t.store.state.mappings.fieldpermission.dataverseOnly, true);
+  assert.equal(t.store.state.tables.fieldsecurityprofile.filter((p) => p.fieldsecurityprofileid === SYSTEM_ADMINISTRATOR_PROFILE_ID).length, 1);
 });

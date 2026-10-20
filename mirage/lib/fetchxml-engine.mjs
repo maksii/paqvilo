@@ -46,6 +46,11 @@ export const FETCH_AGGREGATES = new Set(["count", "countcolumn", "sum", "avg", "
 export const FETCH_DATE_GROUPINGS = new Set([
   "day", "week", "month", "quarter", "year", "fiscal-period", "fiscal-year",
 ]);
+/** Columns every Dataverse table has (audit, version and state stamps) that Solution metadata doesn't always list. The Dataverse caller never rejects them as unknown. */
+export const DATAVERSE_SYSTEM_COLUMNS = new Set([
+  "createdon", "modifiedon", "versionnumber", "statecode", "statuscode",
+  "importsequencenumber", "overriddencreatedon", "timezoneruleversionnumber", "utcconversiontimezonecode",
+]);
 export const FETCH_SCHEMA = Object.freeze({
   fetch: {
     children: ["entity"],
@@ -375,7 +380,9 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
             "UnsupportedQuery",
           );
         if (!identityOperator && !FETCH_OPERATORS.has(operator === "neq" ? "ne" : operator) && operator !== "neq")
-          fail(`Unsupported FetchXML operator ${operator}`, 400, "UnsupportedQuery");
+          dataverseIdentity
+            ? fail(`Unknown Condition Operator: ${operator}`, 400, "UnsupportedQuery", { innerCode: "0x80041120" })
+            : fail(`Unsupported FetchXML operator ${operator}`, 400, "UnsupportedQuery");
         break;
       }
       case "attribute":
@@ -438,7 +445,9 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
       "InvalidFetchXml",
     );
   const datasource = fetch.attrs.datasource;
-  if (datasource != null && !/^(?:retained|default)$/i.test(datasource))
+  // unverified: bin (the recycle bin) is a Dataverse-only datasource; a portal request is still refused.
+  const sources = dataverseIdentity ? /^(?:retained|default|bin)$/i : /^(?:retained|default)$/i;
+  if (datasource != null && !sources.test(datasource))
     fail(`Unsupported FetchXML datasource ${datasource}`, 400, "UnsupportedQuery");
   const injectedTotal =
     profile === "portal" &&
@@ -459,7 +468,8 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
     diagnostics,
     distinct: bool(fetch.attrs.distinct),
     top,
-    pageSize: count ? Math.min(count, FETCH_LIMITS.pageSize) : FETCH_LIMITS.pageSize,
+    pageSize: count ? Math.min(count, limits.pageSize) : limits.pageSize,
+    totalRecordCountLimit: limits.totalRecordCount,
     page: page ?? 1,
     pagingCookie: fetch.attrs["paging-cookie"] ?? null,
     returnTotal: returnTotal || injectedTotal,
@@ -469,6 +479,8 @@ export function planFetch(fetch, { profile = "portal", limits: overrides = {}, g
       max: limits.aggregateRecords,
     }),
     retained: /^retained$/i.test(datasource ?? ""),
+    datasource: (datasource ?? "default").toLowerCase(),
+    dataverseIdentity,
   };
 }
 
@@ -540,7 +552,7 @@ const cookieValue = (value) => {
  * mappingOf maps the root and each link to its table mapping.
  * Returns Map(link -> { relation, columns, selectable }).
  */
-export function structuralIntersects(plan, mappingOf) {
+export function structuralIntersects(plan, mappingOf, relationshipsFor = (mapping) => mapping.relationships ?? {}) {
   const structural = new Map();
   for (const link of plan.links) {
     const parent = plan.parentOf.get(link);
@@ -548,7 +560,7 @@ export function structuralIntersects(plan, mappingOf) {
     const parentMapping = mappingOf.get(parent);
     const lm = mappingOf.get(link);
     if (children(link, "all-attributes").length) continue;
-    const relation = Object.values(parentMapping.relationships ?? {}).find(
+    const relation = Object.values(relationshipsFor(parentMapping)).find(
       (rel) =>
         rel.intersect?.entity === lm.logicalName &&
         rel.intersect.from === link.attrs.from &&
@@ -612,7 +624,8 @@ export function executeFetch(plan, ctx) {
       )
       .map((entry) => entry.row);
 
-  const structural = structuralIntersects(plan, mappingOf);
+  // ctx.relationships (data.mjs) adds the standard navigations for a Dataverse caller only (plan.dataverseIdentity).
+  const structural = structuralIntersects(plan, mappingOf, ctx.relationships);
 
   // Columns the query names (projection, conditions, orders and join columns) are checked
   // against the local metadata. Complete Solution metadata still can't prove a column is
@@ -632,9 +645,14 @@ export function executeFetch(plan, ctx) {
     const key = `${logical}\u0000${attribute}`;
     if (checkedColumns.has(key)) return;
     checkedColumns.add(key);
-    const status = ctx.column(logical, attribute);
-    if (status === "unknown" && settings.fetchColumnValidation === "strict")
-      fail("The specified attribute does not exist on this entity.", 400, "InvalidFetchXml", {
+    const status = plan.dataverseIdentity && DATAVERSE_SYSTEM_COLUMNS.has(attribute.toLowerCase()) ? "known" : ctx.column(logical, attribute);
+    // The Dataverse caller rejects a column its metadata doesn't define, even when that metadata is incomplete
+    // (0x80041103, the native text); the portal rejects only an unknown column under strict.
+    const dataverse = plan.dataverseIdentity === true;
+    if ((status === "unknown" && (dataverse || settings.fetchColumnValidation === "strict")) || (status === "unverified" && dataverse))
+      fail(dataverse
+        ? `'${logical}' entity doesn't contain attribute with Name = '${attribute}' and NameMapping = 'Logical' (look up attribute by name is case-sensitive).`
+        : "The specified attribute does not exist on this entity.", 400, "InvalidFetchXml", {
         innerCode: "0x80041103",
         entity: logical,
         attribute,
@@ -1009,12 +1027,15 @@ export function executeFetch(plan, ctx) {
       children(node, "link-entity").some((link) => children(link, "order").length || ordersLinks(link));
     if (ordersLinks(root)) return null;
     let limit = plan.top != null ? plan.top : plan.page * plan.pageSize + 1;
-    if (plan.returnTotal) limit = Math.max(limit, FETCH_LIMITS.totalRecordCount + 1);
+    if (plan.returnTotal) limit = Math.max(limit, (plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount) + 1);
     return limit;
   }
 
   // ---- evaluate ------------------------------------------------------------
-  let inputs = plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
+  // A Dataverse caller's bin and retained datasources read their own rows; portal retained answers none, as before.
+  let inputs = plan.dataverseIdentity && plan.datasource !== "default"
+    ? (ctx.datasourceRows?.(plan.datasource, rootMapping.logicalName) ?? [])
+    : plan.retained ? [] : ctx.readableRows(rootMapping.logicalName, root);
   // Only ANDed root GUID equalities can narrow inputs before the complete predicate.
   // Text/numeric/date comparisons retain their existing collation and coercion rules.
   const narrow = filter => {
@@ -1258,8 +1279,8 @@ export function executeFetch(plan, ctx) {
     entities: pageEntities,
     more_records: more,
     paging_cookie: pagingCookie,
-    total_record_count: plan.returnTotal ? Math.min(total.value, FETCH_LIMITS.totalRecordCount) : -1,
-    total_record_count_limit_exceeded: plan.returnTotal && total.value > FETCH_LIMITS.totalRecordCount,
+    total_record_count: plan.returnTotal ? Math.min(total.value, plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount) : -1,
+    total_record_count_limit_exceeded: plan.returnTotal && total.value > (plan.totalRecordCountLimit ?? FETCH_LIMITS.totalRecordCount),
     entity_name: rootMapping.logicalName,
   };
   Object.defineProperty(result, "columns", {

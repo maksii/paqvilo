@@ -9,6 +9,8 @@ export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374
 const ALLOWED = 4;
 const ADMIN_ROLE = 'System Administrator';
 const FLAGS = ['cancreate', 'canread', 'canupdate', 'canreadunmasked'];
+// unverified: the read code 0x8004f508 comes from the audit brief, not from a captured response.
+const INNER_CODE = { create: '0x8004f502', update: '0x8004f507', read: '0x8004f508' };
 
 const TEXT = 'nvarchar', INT = 'int', BOOL = 'bit', LOOKUP = 'lookup', GUID = 'uniqueidentifier';
 const nn = (target, from, to, via) => ({ entity: target, from, to, many: true, intersect: { entity: via, from, to } });
@@ -67,27 +69,31 @@ export function ensureFieldSecurity(store) {
   });
 }
 
-// Column-level security: columnMetadata.isSecured, unless dataverseMetadata.isSecured overrides it.
-const isSecured = (field) => (field?.dataverseMetadata?.isSecured ?? (field?.columnMetadata?.isSecured === true));
-const securedNames = (mapping) => Object.entries(mapping?.fields ?? {}).filter(([, field]) => isSecured(field)).map(([name]) => name);
-const idOf = (mapping, row) => row?.[mapping.idColumn ?? `${mapping.logicalName}id`];
+// IsSecured arrives as a bool, or as { Value } in the Web API; the dataverseMetadata flag overrides the columnMetadata one.
+const flag = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
+export function isSecuredField(field) {
+  return flag(field?.dataverseMetadata?.IsSecured ?? field?.dataverseMetadata?.isSecured ?? field?.columnMetadata?.IsSecured ?? field?.columnMetadata?.isSecured);
+}
+const securedNames = (mapping) => Object.entries(mapping?.fields ?? {}).filter(([, field]) => isSecuredField(field)).map(([name]) => name);
+// A link-entity or aggregate alias prefixes both the key and the id column.
+const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${mapping.idColumn ?? `${mapping.logicalName}id`}`];
 
 // unverified: mirrors dataverse-metadata metadataIdOf (not exported); field sharing keys AttributeId on it.
 const attributeIdOf = (organizationId, entity, name) => uuidV5(organizationId, `attribute:${entity}:${name}`);
 
 // unverified: status 403, the AccessDenied code and the principal-type wording; inner codes from the task brief.
 function denied(operation, user, name, entity) {
-  const innerCode = operation === 'create' ? '0x8004f502' : '0x8004f507';
   return new DataError(
     `SystemUser user with Id ${user.systemuserid} does not have ${operation} permissions to a ${name} secured field on entity ${entity}. The requested operation could not be completed.`,
-    403, 'AccessDenied', { innerCode },
+    403, 'AccessDenied', { innerCode: INNER_CODE[operation] },
   );
 }
 
-/** Pure factory over a store and principals. `organizationId` (a GUID) derives the column MetadataIds. */
+/** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
 export function createFieldSecurity({ store, principals, organizationId }) {
   const rows = (logical) => store.tableRows(logical);
   const isAdmin = (user) => principals.roles(user).some((r) => r.name === ADMIN_ROLE);
+  const fieldOf = (logical, column) => store.state.mappings?.[logical]?.fields?.[column];
 
   // The profiles a systemuser or team holds, and the principals a field share can name: the user (or team) and its teams.
   // A user reaches its own profiles and those of its teams.
@@ -129,12 +135,12 @@ export function createFieldSecurity({ store, principals, organizationId }) {
     return out;
   }
 
-  // unverified: a System Administrator passes every secured column; recordId is absent on create.
+  // unverified: a System Administrator passes every secured column; recordId is absent on create and on aggregates.
   function accessOf(user, entity, name, recordId) {
     if (isAdmin(user)) return { create: true, read: true, update: true };
     const { profiles, principals: ids } = scopeOf('systemuser', user.systemuserid);
     const perm = grantsOf(profiles).get(`${key(entity)}.${key(name)}`) ?? {};
-    const shared = sharedOf(ids, recordId, attributeIdOf(organizationId, entity, name));
+    const shared = sharedOf(ids, recordId, attributeIdOf(organizationId(), entity, name));
     return {
       create: perm.cancreate === ALLOWED,
       read: perm.canread === ALLOWED || shared.read,
@@ -142,30 +148,65 @@ export function createFieldSecurity({ store, principals, organizationId }) {
     };
   }
 
+  // Create checks cancreate; update checks canupdate or an update share on the record.
+  function writable(user, logical, name, operation, recordId) {
+    const access = accessOf(user, logical, name, recordId);
+    return operation === 'create' ? access.create : access.update;
+  }
+
+  // Nulls each secured column the user cannot read, under its plain name and its lookup form (_name_value), with its annotations.
+  // unverified: the aliased lookup form `prefix_name_value` is assumed, not captured.
+  function maskRow(user, mapping, row, prefix = '') {
+    const recordId = idOf(mapping, row, prefix);
+    for (const name of securedNames(mapping)) {
+      const forms = [`${prefix}${name}`, `${prefix}_${name}_value`].filter((form) => Object.hasOwn(row, form));
+      if (!forms.length || accessOf(user, mapping.logicalName, name, recordId).read) continue;
+      for (const form of forms) {
+        row[form] = null;
+        for (const k of Object.keys(row)) if (k.startsWith(`${form}@`)) delete row[k];
+      }
+    }
+    return row;
+  }
+
   return {
     /** Projection hook: a secured column the caller may not read becomes null and loses its annotations. */
-    project(c, mapping, formatted) {
-      const names = securedNames(mapping);
-      if (!names.length) return;
+    project(c, mapping, formatted, { prefix = '' } = {}) {
+      if (!securedNames(mapping).length) return;
       // unverified: `formatted` may be one row or an array; both are handled.
-      for (const row of [].concat(formatted)) {
-        const recordId = idOf(mapping, row);
-        for (const name of names) {
-          if (!Object.hasOwn(row, name) || accessOf(c.user, mapping.logicalName, name, recordId).read) continue;
-          row[name] = null;
-          for (const k of Object.keys(row)) if (k.startsWith(`${name}@`)) delete row[k];
-        }
+      for (const row of [].concat(formatted)) maskRow(c.user, mapping, row, prefix);
+    },
+
+    /** Copy of a row with the secured columns the user cannot read nulled. Other modules' responses use it via api.fieldSecurity. */
+    mask(user, logical, row, { prefix = '' } = {}) {
+      const mapping = store.state.mappings?.[logical];
+      const copy = { ...row };
+      return mapping ? maskRow(user, mapping, copy, prefix) : copy;
+    },
+
+    canRead(user, logical, column, recordId) {
+      return !isSecuredField(fieldOf(logical, column)) || accessOf(user, logical, column, recordId).read;
+    },
+
+    /** operation: 'create' or 'update'. */
+    canWrite(user, logical, column, operation, recordId) {
+      return !isSecuredField(fieldOf(logical, column)) || writable(user, logical, column, operation, recordId);
+    },
+
+    /** Aggregates read the raw column, so a secured one the caller cannot read is refused. */
+    assertAggregate(c, mapping, columns = []) {
+      for (const name of columns) {
+        if (isSecuredField(mapping.fields?.[name]) && !accessOf(c.user, mapping.logicalName, name).read) throw denied('read', c.user, name, mapping.logicalName);
       }
     },
 
-    /** Write hook: create needs cancreate, update needs canupdate or an update share on the record. */
+    /** Write hook: a write naming a secured column (plain or @odata.bind) needs the matching permission. */
     beforeWrite(c, mapping, { operation, data = {}, existing } = {}) {
       if (operation !== 'create' && operation !== 'update') return;
       const recordId = operation === 'update' ? (idOf(mapping, existing) ?? c.target?.id) : undefined;
       for (const name of securedNames(mapping)) {
-        if (!Object.hasOwn(data, name)) continue;
-        const access = accessOf(c.user, mapping.logicalName, name, recordId);
-        if (operation === 'create' ? access.create : access.update) continue;
+        if (!Object.hasOwn(data, name) && !Object.hasOwn(data, `${name}@odata.bind`)) continue;
+        if (writable(c.user, mapping.logicalName, name, operation, recordId)) continue;
         throw denied(operation, c.user, name, mapping.logicalName);
       }
     },
@@ -174,7 +215,7 @@ export function createFieldSecurity({ store, principals, organizationId }) {
     retrievePrivileges(kind, id) {
       const { profiles } = scopeOf(kind, id);
       return [...grantsOf(profiles).values()].map((g) => ({
-        AttributeId: attributeIdOf(organizationId, g.entity, g.name),
+        AttributeId: attributeIdOf(organizationId(), g.entity, g.name),
         CanCreate: g.cancreate,
         CanRead: g.canread,
         CanReadUnMasked: g.canreadunmasked,
@@ -184,21 +225,36 @@ export function createFieldSecurity({ store, principals, organizationId }) {
   };
 }
 
-/** Extension entry: registers the bound function and the project / beforeWrite hooks. Seed with ensureFieldSecurity. */
+/** Extension entry: seeds its tables, exposes api.fieldSecurity and registers the bound function and the project / beforeWrite hooks. */
 export const fieldSecurity = {
   name: 'dataverse-fls',
   install(api) {
-    const fls = createFieldSecurity({ store: api.store, principals: api.principals, organizationId: api.settings.organizationId });
+    const { store, principals } = api;
+    // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime (H6).
+    const fls = createFieldSecurity({ store, principals, organizationId: () => store.state.tables.organization?.[0]?.organizationid });
+    api.fieldSecurity = { mask: fls.mask, canRead: fls.canRead, canWrite: fls.canWrite, assertAggregate: fls.assertAggregate };
     for (const entity of ['systemuser', 'team']) {
       api.registry.register({
         name: 'RetrievePrincipalAttributePrivileges',
         kind: 'function',
         binding: 'entity',
         entity,
-        handle: (c) => ({ status: 200, body: { AttributePrivileges: fls.retrievePrivileges(c.target.mapping.logicalName, c.target.id) } }),
+        handle: (c) => {
+          const kind = c.target.mapping.logicalName;
+          // unverified: reading another principal's field permissions needs read on that principal; a user reads its own.
+          const own = kind === 'systemuser' && same(c.user?.systemuserid, c.target.id);
+          if (!own) principals.authorize({ user: c.user, entity: kind, operation: 'read' });
+          return { status: 200, body: { AttributePrivileges: fls.retrievePrivileges(kind, c.target.id) } };
+        },
       });
     }
     api.recordHooks.add('project', (c, mapping, formatted) => fls.project(c, mapping, formatted));
     api.recordHooks.add('beforeWrite', (c, mapping, change) => fls.beforeWrite(c, mapping, change));
+    // The API awaits install, so the seed is committed before the first request.
+    return api.change(() => ensureFieldSecurity(store));
+  },
+  // Re-seeds through the store only: reset runs inside the server's change queue (see dataverse-extensions.mjs).
+  reset(api) {
+    return ensureFieldSecurity(api.store);
   },
 };
