@@ -13,9 +13,10 @@ let catalogue, app, table, current, query = {}, selected = new Set(), record, re
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
 let clientRuntime, clientReady = Promise.resolve(), clientChanges = Promise.resolve(), requestingSave = false;
+let gridSearchTimer, dialogLifetime;
 const clientControlState = new Map();
 const disposeControls = () => { for (const entry of controls) entry.control.destroy?.(); controls = []; };
-function disposeClient() { clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
+function disposeClient() { clearTimeout(gridSearchTimer); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 async function api(path = '', options = {}) {
   const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
@@ -47,6 +48,7 @@ async function staffProfile() {
     const selection = select.value; if (!selection) return;
     closeDialog(); if (!await canLeave()) return;
     renderStaffSession(await staffRequest(selection === 'local-admin' ? { method: 'DELETE' } : { method: 'POST', body: JSON.stringify({ userId: selection }) }));
+    generation++; disposeClient();
     dirty = false; record = null; recordCapabilities = undefined; current = null; $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
     catalogue = await api(); await loadRoute();
   }, true]]);
@@ -74,7 +76,10 @@ function button(label, action, { disabled = false, title, className = '', iconNa
 }
 async function run(action) { try { await action(); } catch (error) { notice(error.message, true); } }
 function dialog(title, content, actions) {
+  dialogLifetime?.abort(); dialogLifetime = new AbortController();
+  const lifetime = dialogLifetime;
   const element = $('#dialog'); if (element.open) element.close(); element.replaceChildren();
+  element.addEventListener('cancel', () => queueMicrotask(() => lifetime.abort()), { once: true, signal: lifetime.signal });
   const heading = document.createElement('h2'); heading.id = 'dialog-title'; heading.textContent = title;
   const body = document.createElement('div'); body.className = 'dialog-body'; if (typeof content === 'string') body.innerHTML = content; else body.append(content);
   const footer = document.createElement('div'); footer.className = 'dialog-actions';
@@ -82,11 +87,14 @@ function dialog(title, content, actions) {
   for (const [name, action, primary] of actions) footer.append(button(name, action, { className: primary ? 'primary' : 'secondary' }));
   element.showModal(); return element;
 }
-const closeDialog = () => $('#dialog').close();
+const closeDialog = () => { dialogLifetime?.abort(); $('#dialog').close(); };
+// Replacing a modal must settle the old caller as a dismissal as well as remove
+// its listeners. Successful actions settle first, before closing their modal.
+const onDialogCancel = (_element, listener) => dialogLifetime.signal.addEventListener('abort', listener, { once: true });
 async function confirm(title, text, yes = 'Continue') {
   return new Promise(resolve => {
-    const element = dialog(title, `<p>${esc(text)}</p>`, [['Cancel', () => { closeDialog(); resolve(false); }], [yes, () => { closeDialog(); resolve(true); }, true]]);
-    element.addEventListener('cancel', () => resolve(false), { once: true });
+    const element = dialog(title, `<p>${esc(text)}</p>`, [['Cancel', () => { resolve(false); closeDialog(); }], [yes, () => { resolve(true); closeDialog(); }, true]]);
+    onDialogCancel(element, () => resolve(false));
   });
 }
 async function canLeave() { return !dirty || await confirm('Unsaved changes', 'Leave this record and discard your unsaved changes?', 'Discard changes'); }
@@ -177,6 +185,7 @@ async function loadGrid() {
   } finally { if (token === generation) $('#content').setAttribute('aria-busy', 'false'); }
 }
 function renderGrid() {
+  clearTimeout(gridSearchTimer);
   document.title = `${table.label} ${table.views.find(view => view.id === query.view)?.name ?? ''} - ${app.name} · Mirage`;
   const content = $('#content'); content.replaceChildren(); content.className = 'grid-content';
   const header = document.createElement('div'); header.className = 'grid-header';
@@ -186,9 +195,10 @@ function renderGrid() {
   views.addEventListener('change', () => run(() => navigate(table.entity, { view: views.value })));
   header.append(views, button('▥ Edit columns', editColumns), button('▽ Edit filters', editFilters));
   const search = document.createElement('input'); search.type = 'search'; search.className = 'search'; search.placeholder = 'Filter by keyword'; search.setAttribute('aria-label', 'Filter by keyword'); search.value = query.search ?? '';
-  let searchTimer;
-  search.addEventListener('input', () => { clearTimeout(searchTimer); searchTimer = setTimeout(() => run(async () => { query.search = search.value; query.page = 1; await loadGrid(); const replacement = $('.search'); replacement?.focus(); }), 300); });
-  search.addEventListener('keydown', event => { if (event.key === 'Enter') { clearTimeout(searchTimer); run(async () => { query.search = search.value; query.page = 1; await loadGrid(); $('.search')?.focus(); }); } });
+  const searchGeneration = generation;
+  const applySearch = async () => { if (!search.isConnected || searchGeneration !== generation) return; query.search = search.value; query.page = 1; await loadGrid(); $('.search')?.focus(); };
+  search.addEventListener('input', () => { clearTimeout(gridSearchTimer); gridSearchTimer = setTimeout(() => run(applySearch), 300); });
+  search.addEventListener('keydown', event => { if (event.key === 'Enter') { clearTimeout(gridSearchTimer); run(applySearch); } });
   const searchBox = document.createElement('div'); searchBox.className = 'search-box'; searchBox.innerHTML = icon('search'); searchBox.append(search); header.append(searchBox); content.append(header);
   if (query.filters?.length) { const summary = document.createElement('div'); summary.className = 'filter-summary'; summary.textContent = query.filters.map(filter => `${table.fields[filter.field]?.label ?? filter.field} ${filter.operator} ${filter.value ?? ''}`).join(' AND '); summary.append(button('Clear filters', () => { query.filters = []; query.page = 1; savePreferences(); return loadGrid(); })); content.append(summary); }
   const scroll = document.createElement('div'); scroll.className = 'grid-scroll';
@@ -268,12 +278,12 @@ async function lookup(field) {
     const body = document.createElement('div'), target = document.createElement('select'); target.setAttribute('aria-label', 'Lookup table'); for (const entity of targets) target.add(new Option(catalogue.tables[entity].label, entity));
     const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search records'; search.setAttribute('aria-label', 'Search lookup records');
     const results = document.createElement('div'); results.className = 'lookup-results'; body.append(target, search, results);
-    const element = dialog(`Look up ${field.label}`, body, [['Cancel', () => { closeDialog(); resolve(null); }]]); element.addEventListener('cancel', () => resolve(null), { once: true });
+    const element = dialog(`Look up ${field.label}`, body, [['Cancel', () => { resolve(null); closeDialog(); }]]); onDialogCancel(element, () => resolve(null));
     let timer, sequence = 0;
     async function load() {
       const token = ++sequence, destination = catalogue.tables[target.value]; const found = await api(tablePath(target.value) + '?query=' + encodeURIComponent(JSON.stringify({ search: search.value, columns: [destination.nameColumn], pageSize: 50, view: destination.views.find(view => view.id === 'all')?.id })));
       if (token !== sequence) return; results.replaceChildren();
-      for (const row of found.rows) results.append(button(display(row[destination.nameColumn]) || '(No name)', () => { closeDialog(); resolve({ id: row[destination.idColumn], entity: destination.entity, name: display(row[destination.nameColumn]) }); }));
+      for (const row of found.rows) results.append(button(display(row[destination.nameColumn]) || '(No name)', () => { resolve({ id: row[destination.idColumn], entity: destination.entity, name: display(row[destination.nameColumn]) }); closeDialog(); }));
       if (!found.rows.length) results.textContent = 'No matching local records.';
     }
     target.addEventListener('change', () => run(load)); search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(load), 250); }); run(load);
@@ -410,7 +420,7 @@ function createShellClient(selectedForm) {
     request: async (entity, id, options = {}) => { if (!Object.hasOwn(catalogue.tables, entity)) throw new Error(`Table ${entity} is not imported.`); return api(tablePath(entity, id ? String(id).replace(/[{}]/g, '') : undefined) + (options.query ? '?query=' + encodeURIComponent(JSON.stringify(options.query)) : ''), { method: options.method ?? 'GET', ...(options.etag ? { headers: { 'if-match': options.etag } } : {}), ...(options.data ? { body: JSON.stringify(options.data) } : {}) }); },
     save: close => saveRecord(close), refresh: () => loadRoute(), close: () => navigate(table.entity),
     openForm: options => { if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.'); if (options.useQuickCreateForm || options.openInNewWindow) throw new Error('Quick create and separate form windows are not supported locally.'); return navigate(options.entityName, { id: options.entityId ?? 'new' }); },
-    alert: (text, title) => new Promise(resolve => { const body = document.createElement('p'); body.textContent = text; const element = dialog(title, body, [['OK', () => { closeDialog(); resolve(); }, true]]); element.addEventListener('cancel', () => resolve(), { once: true }); }),
+    alert: (text, title) => new Promise(resolve => { const body = document.createElement('p'); body.textContent = text; const element = dialog(title, body, [['OK', () => { resolve(); closeDialog(); }, true]]); onDialogCancel(element, () => resolve()); }),
     confirm: (text, title) => confirm(title, text),
   });
   globalThis.Xrm = runtime.Xrm; return runtime;
@@ -553,7 +563,8 @@ window.addEventListener('focus', () => run(async () => {
   try {
     const previous = JSON.stringify(staffSession?.current); await loadStaffSession();
     if (previous === JSON.stringify(staffSession?.current)) return;
-    if (dirty) { clientRuntime?.destroy(); clientRuntime = undefined; for (const element of document.querySelectorAll('#record-form input,#record-form select,#record-form textarea,#record-form button,#commands button')) element.disabled = true; notice('The staff session changed in another tab. Reload or choose a profile to discard this draft before continuing.', true); return; }
+    generation++; disposeClient();
+    if (dirty) { for (const element of document.querySelectorAll('#record-form input,#record-form select,#record-form textarea,#record-form button,#commands button')) element.disabled = true; notice('The staff session changed in another tab. Reload or choose a profile to discard this draft before continuing.', true); return; }
     $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
     if (staffSession) { catalogue = await api(); await loadRoute(); }
   } finally { checkingStaff = false; }

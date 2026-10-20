@@ -79,7 +79,7 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   let nodes;try{nodes=document.querySelectorAll(selector);}catch{return {invalidSelector:true};}
   const elements = [];
   let total = 0;
-  const blocked = 'script,style,template,noscript,input,textarea,select,option,#paqvilo-panel,[contenteditable]:not([contenteditable="false"])';
+  const blocked = 'script,style,template,noscript,input,textarea,select,option,#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector,[contenteditable]:not([contenteditable="false"])';
   const textOf = (node) => {
     if (node.matches(blocked)) return '';
     const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
@@ -92,7 +92,7 @@ function inspectDom({ origin, selector, limit, textLimit, styles }) {
   };
   for (let index = 0; index < nodes.length; index++) {
     const node = nodes[index];
-    if (node.closest('#paqvilo-panel')) continue;
+    if (node.closest('#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector')) continue;
     total++;
     if (elements.length >= limit) continue;
     const rect = node.getBoundingClientRect();
@@ -154,7 +154,8 @@ export async function startAgentServer({ session, context, panel, attached = fal
     while (events.length > maxEvents || eventBytes > 1024 * 1024) eventBytes -= eventSizes.get(events.shift());
   };
   const location = (value) => { try { return redactUrl(new URL(value, cfg.origin).href); } catch { return '[invalid URL]'; } };
-  const active = (page) => !page.isClosed() && sameOrigin(page.url(), cfg.origin);
+  const ownsPage = options.ownsPage ?? (() => true);
+  const active = (page) => ownsPage(page) && !page.isClosed() && sameOrigin(page.url(), cfg.origin);
   const documentUrl = (url) => { try { const value = new URL(url); value.hash = ''; return value.href; } catch { return null; } };
   const nextDocument = (page) => {
     const revision = (documentRevisions.get(page) ?? 0) + 1;
@@ -198,7 +199,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
     push({ type: 'requestfinished', ...publicRecord, durationMs: Date.now() - started, timing });
   };
   const listenPage = (page) => {
-    if (stopped || pageIds.has(page)) return;
+    if (stopped || pageIds.has(page) || !ownsPage(page)) return;
     const pageId = String(++pageNumber);
     pageIds.set(page, pageId); pages.set(pageId, page);
     currentDocuments.set(page, { id: nextDocument(page), url: page.url() });
@@ -241,6 +242,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
   // Playwright emits a popup's first request/response before its Page exists. Its public
   // Request.frame() remains unavailable; never guess a page from its URL (popups can share it).
   on(context, 'request', (request) => {
+    if (options.ownsPage) return; // An unowned popup cannot be attributed to a dedicated app tab.
     if (!request.isNavigationRequest?.()) return;
     try { request.frame(); } catch { recordRequest(request); }
   });
@@ -256,7 +258,12 @@ export async function startAgentServer({ session, context, panel, attached = fal
   on(session, 'hit', (hit) => push({ type: 'overlay', pageId: hit.page ? pageIds.get(hit.page) : undefined, url: location(hit.url), kind: hit.type, sources: (hit.sources ?? []).slice(0, 30).map(({ rel, kind, action }) => ({ rel, kind, action })) }));
 
   const textRows = (rows, keys) => (rows ?? []).slice(0, MAX_ITEMS).map((row) => Object.fromEntries(keys.filter((key) => row[key] !== undefined).map((key) => [key, typeof row[key] === 'string' ? key === 'url' ? location(row[key]) : redactText(row[key]) : typeof row[key] === 'boolean' || typeof row[key] === 'number' ? row[key] : null])));
-  const sessionState = () => ({
+  const sessionState = () => options.sessionState ? ({
+    id, session: { ...discovery, token: undefined },
+    readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
+    debugger: { port: runtime.debugPort ?? null, attached: false },
+    ...options.sessionState(), pages: pageList(),
+  }) : ({
     id,
     session: { ...discovery, token: undefined },
     readiness: { browser: true, watcher: Boolean(runtime.watching), stopping: stopped },
@@ -270,6 +277,11 @@ export async function startAgentServer({ session, context, panel, attached = fal
     pages: pageList(),
   });
   const pageState = (page, pageId) => {
+    if (options.pageState) return {
+      ...options.pageState(page),
+      page: { id: pageId, documentId: currentDocuments.get(page)?.id, url: redactUrl(page.url()), reloadAllowed: reloadAllowed(page), documentMethod: documents.get(page)?.method ?? null },
+      runtime: { events: events.filter(event => event.pageId === pageId && event.documentId === currentDocuments.get(page)?.id && ['pageerror', 'console', 'requestfailed'].includes(event.type)).slice(-100), retention: { oldestSequence: events[0]?.sequence ?? sequence + 1, latestSequence: sequence, retained: events.length, dropped: Math.max(0, sequence - events.length) } },
+    };
     const state = panel?.stateFor(page);
     const hits = session.pageHits?.get(page) ?? [];
     const documentId = currentDocuments.get(page)?.id;
@@ -365,7 +377,7 @@ export async function startAgentServer({ session, context, panel, attached = fal
           if (!dimensions) throw fault(403, 'origin_changed', 'The page left the configured portal origin');
           const { width, height } = dimensions;
           if (width < 1 || height < 1 || width > 8192 || height > 8192 || width * height > 8_388_608) throw fault(413, 'image_too_large', 'Screenshot is limited to 8 megapixels and 8192 pixels per side; use the viewport');
-          const bytes = await page.screenshot({ type: 'png', scale: 'css', fullPage: Boolean(body.fullPage), ...(body.includePanel ? {} : { style: '#paqvilo-panel { visibility: hidden !important; }' }), ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}), timeout: 10_000 });
+          const bytes = await page.screenshot({ type: 'png', scale: 'css', fullPage: Boolean(body.fullPage), ...(body.includePanel ? {} : { style: '#paqvilo-panel,#paqvilo-xray,#paqvilo-model-inspector { visibility: hidden !important; }' }), ...(body.fullPage ? { clip: { x: 0, y: 0, width, height } } : {}), timeout: 10_000 });
           if (bytes.length > MAX_IMAGE) throw fault(413, 'image_too_large', 'Screenshot exceeds 8 MiB');
           return bytes;
         });

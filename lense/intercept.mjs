@@ -27,7 +27,7 @@ function settlesWithin(promise, ms) {
  * @param {import('playwright-core').BrowserContext} context
  * @param {string} origin only requests to this origin are intercepted
  * @param {(route: object) => Promise<void>} handler
- * @param {{bypassCSP?: boolean, onError?: (error: Error) => void}} [options] report failures on later tabs
+ * @param {{bypassCSP?: boolean, ownsPage?: (page: object) => boolean, onError?: (error: Error) => void}} [options] report failures on later tabs; ownership is checked before changing browser settings
  * @returns {Promise<() => Promise<void>>} releases this overlay's interception sessions
  */
 export async function interceptOrigin(context, origin, handler, options = {}) {
@@ -35,7 +35,7 @@ export async function interceptOrigin(context, origin, handler, options = {}) {
 }
 
 /** One CDP attachment per tab, routing all configured origins without competing Fetch handlers. */
-export async function interceptOrigins(context, origins, handler, { bypassCSP = false, onError = (error) => console.error(error.message) } = {}) {
+export async function interceptOrigins(context, origins, handler, { bypassCSP = false, ownsPage = () => true, onError = (error) => console.error(error.message) } = {}) {
   const allowed = new Set(origins.map((origin) => new URL(origin).origin));
   if (!allowed.size) throw new Error('At least one portal origin is required');
   const matches = (url) => { try { return allowed.has(new URL(url).origin); } catch { return false; } };
@@ -75,7 +75,7 @@ export async function interceptOrigins(context, origins, handler, { bypassCSP = 
     return record.closing;
   };
   const attach = async (page) => {
-    if (stopped || attached.has(page)) return;
+    if (stopped || attached.has(page) || !ownsPage(page)) return;
     attached.add(page);
     let cdp;
     try {

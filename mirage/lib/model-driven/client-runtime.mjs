@@ -73,13 +73,14 @@ function writeData(data) {
 }
 
 export function createFormClientRuntime(host) {
-  let live = true, depth = 0, saving = false, activeEvent;
+  let live = true, depth = 0, saving = false;
+  const activeEvents = new Map();
   const assertLive = () => { if (!live) throw new Error('This form context has been disposed.'); };
   const client = (value, path) => bounded(Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, typeof entry === 'function' ? (...args) => { assertLive(); return entry(...args); } : entry])), path);
   const events = new Map(), notifications = new Set(), initial = structuredClone(host.record);
   const add = (key, callback) => { if (typeof callback !== 'function') throw new Error('Client event handler must be a function.'); const handlers = events.get(key) ?? []; handlers.push(callback); events.set(key, handlers); };
   const remove = (key, callback) => events.set(key, (events.get(key) ?? []).filter(handler => handler !== callback));
-  const saveForm = close => { assertLive(); if (activeEvent) throw new Error(`Saving from an active ${activeEvent} handler is not supported. Finish the event before saving.`); return host.save(close); };
+  const saveForm = close => { assertLive(); if (activeEvents.size) throw new Error(`Saving from an active ${[...activeEvents.keys()].at(-1)} handler is not supported. Finish the event before saving.`); return host.save(close); };
   const fieldValue = name => { assertLive(); return host.read(name); };
   const clientValue = (name, value) => {
     if (value == null) return null;
@@ -137,7 +138,7 @@ export function createFormClientRuntime(host) {
   async function dispatch(name, attribute, saveMode = 1) {
     assertLive(); if (name === 'onsave' && saving) throw new Error('Recursive save from an OnSave handler is not supported.');
     if (name === 'onsave') saving = true;
-    const previousEvent = activeEvent; activeEvent = name;
+    activeEvents.set(name, (activeEvents.get(name) ?? 0) + 1);
     let prevented = false;
     const eventArgs = client({ getSaveMode: () => saveMode, preventDefault: () => { if (name !== 'onsave') unsupported(`${name}.preventDefault`); prevented = true; }, isDefaultPrevented: () => prevented }, 'eventArgs');
     const context = client({ getFormContext: () => formContext, getEventSource: () => attribute ? formContext.getAttribute(attribute) : formContext.data.entity,
@@ -149,14 +150,18 @@ export function createFormClientRuntime(host) {
       }
       for (const handler of [...(events.get(name === 'onchange' ? `onchange:${attribute}` : name) ?? [])]) await call(handler, [context]);
       return { prevented };
-    } finally { activeEvent = previousEvent; if (name === 'onsave') saving = false; }
+    } finally { const count = activeEvents.get(name) - 1; if (count) activeEvents.set(name, count); else activeEvents.delete(name); if (name === 'onsave') saving = false; }
   }
+  // Recheck after each asynchronous boundary: a form or staff identity may have
+  // changed while a read was in flight. In particular, never send a follow-up
+  // PATCH/DELETE from a context revoked during its ETag preflight.
+  const request = async (...args) => { assertLive(); const result = await host.request(...args); assertLive(); return result; };
   const webApi = client({
-    retrieveRecord: async (entity, id, options) => { const query = queryOptions(options); if (Object.keys(query).some(key => key !== 'columns')) unsupported('Xrm.WebApi.retrieveRecord query'); const result = await host.request(entity, id); return query.columns ? Object.fromEntries(query.columns.filter(name => Object.hasOwn(result.row, name)).map(name => [name, result.row[name]])) : result.row; },
-    retrieveMultipleRecords: async (entity, options, maxPageSize) => { const query = queryOptions(options), hasTop = query.pageSize !== undefined; if (maxPageSize !== undefined && (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)) throw new Error('Xrm.WebApi maxPageSize must be between 1 and 5000.'); if (maxPageSize && !query.pageSize) query.pageSize = maxPageSize; query.scope = 'table'; const result = await host.request(entity, undefined, { query }); if (result.more && !hasTop) unsupported('Xrm.WebApi continuation paging; narrow the query or increase the page size'); return { entities: result.rows }; },
-    createRecord: async (entity, data) => { writeData(data); const result = await host.request(entity, undefined, { method: 'POST', data }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
-    updateRecord: async (entity, id, data) => { writeData(data); const current = await host.request(entity, id); await host.request(entity, id, { method: 'PATCH', data, etag: current.etag }); return { id, entityType: entity }; },
-    deleteRecord: async (entity, id) => { const current = await host.request(entity, id); await host.request(entity, id, { method: 'DELETE', etag: current.etag }); return { id, entityType: entity }; },
+    retrieveRecord: async (entity, id, options) => { const query = queryOptions(options); if (Object.keys(query).some(key => key !== 'columns')) unsupported('Xrm.WebApi.retrieveRecord query'); const result = await request(entity, id); return query.columns ? Object.fromEntries(query.columns.filter(name => Object.hasOwn(result.row, name)).map(name => [name, result.row[name]])) : result.row; },
+    retrieveMultipleRecords: async (entity, options, maxPageSize) => { const query = queryOptions(options), hasTop = query.pageSize !== undefined; if (maxPageSize !== undefined && (!Number.isInteger(maxPageSize) || maxPageSize < 1 || maxPageSize > 5000)) throw new Error('Xrm.WebApi maxPageSize must be between 1 and 5000.'); if (maxPageSize && !query.pageSize) query.pageSize = maxPageSize; query.scope = 'table'; const result = await request(entity, undefined, { query }); if (result.more && !hasTop) unsupported('Xrm.WebApi continuation paging; narrow the query or increase the page size'); return { entities: result.rows }; },
+    createRecord: async (entity, data) => { writeData(data); const result = await request(entity, undefined, { method: 'POST', data }); return { id: result.row[host.tables[entity].idColumn], entityType: entity }; },
+    updateRecord: async (entity, id, data) => { writeData(data); const current = await request(entity, id); await request(entity, id, { method: 'PATCH', data, etag: current.etag }); return { id, entityType: entity }; },
+    deleteRecord: async (entity, id) => { const current = await request(entity, id); await request(entity, id, { method: 'DELETE', etag: current.etag }); return { id, entityType: entity }; },
   }, 'Xrm.WebApi');
   const Xrm = client({ Page: formContext, WebApi: webApi,
     Navigation: client({ openAlertDialog: options => host.alert(options.text ?? '', options.title ?? 'Message'), openConfirmDialog: options => host.confirm(options.text ?? '', options.title ?? 'Confirm').then(confirmed => ({ confirmed })), openForm: options => host.openForm(options),

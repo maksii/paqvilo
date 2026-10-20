@@ -72,6 +72,18 @@ test('unsupported WebApi lookup bindings fail before any record request or parti
   assert.deepEqual(requests, []); assert.deepEqual(record, before);
 });
 
+test('disposing a form during WebApi preflight prevents follow-up mutations and stale read results', async () => {
+  for (const operation of ['updateRecord', 'deleteRecord', 'retrieveRecord', 'retrieveMultipleRecords']) {
+    let release; const requests = [];
+    const { runtime } = runtimeFixture({ request: (...args) => { requests.push(args); return new Promise(resolve => { release = resolve; }); } });
+    const pending = runtime.Xrm.WebApi[operation]('x_item', operation === 'retrieveMultipleRecords' ? undefined : 'id', operation === 'updateRecord' ? { x_name: 'Stale' } : undefined);
+    const rejected = assert.rejects(pending, /disposed/);
+    runtime.destroy(); release({ row: { x_name: 'Copper' }, rows: [], etag: 'W/"1"' });
+    await rejected;
+    assert.equal(requests.length, 1, `${operation} must not dispatch after its form is revoked`);
+  }
+});
+
 test('form XML compiles native handler metadata and ribbon preserves unsupported commands visibly', () => {
   const form = compileForm({ id: 'events', xml: '<form><formLibraries><Library name="x_/sample.js" /></formLibraries><events><event name="onload"><Handlers><Handler functionName="Sample.load" libraryName="x_/sample.js" enabled="true" passExecutionContext="true" parameters="2"/></Handlers></event><event name="onchange" attribute="x_name"><Handlers><Handler functionName="Sample.change" libraryName="x_/sample.js" enabled="false"/></Handlers></event></events></form>' }, {});
   assert.deepEqual(form.libraries, ['x_/sample.js']); assert.equal(form.clientEvents[0].handlers[0].passExecutionContext, true); assert.equal(form.clientEvents[1].attribute, 'x_name'); assert.equal(form.clientEvents[1].handlers[0].enabled, false);
@@ -87,10 +99,28 @@ test('save reentrancy is rejected during lifecycle events but allowed from ribbo
   await runtime.dispatch('onsave'); await runtime.formContext.data.save(); assert.deepEqual(writes, [{ save: false }]);
 });
 
+test('overlapping async form events release their save guard even when they finish out of order', async () => {
+  const { runtime, writes } = runtimeFixture();
+  let release, changing;
+  const held = new Promise(resolve => { release = resolve; });
+  const attribute = runtime.formContext.getAttribute('x_name');
+  attribute.addOnChange(() => held);
+  runtime.formContext.data.addOnLoad(() => { changing = attribute.fireOnChange(); });
+  await runtime.dispatch('onload');
+  assert.throws(() => runtime.formContext.data.save(), /active onchange/);
+  release(); await changing;
+  await runtime.formContext.data.save();
+  assert.deepEqual(writes, [{ save: false }]);
+});
+
 test('modern AppAction compiles its exported WebResource ID and PrimaryControl without evaluating parameter text', () => {
   const xml = '<appaction uniquename="x_modern"><buttonlabeltext default="Modern reviewed"><label description="Modern reviewed" languagecode="1033"/></buttonlabeltext><context>1</context><contextentity><logicalname>x_item</logicalname></contextentity><contextvalue>x_item</contextvalue><hidden>0</hidden><isdisabled>0</isdisabled><location>0</location><name>modern</name><onclickeventjavascriptfunctionname>Sample.mark</onclickeventjavascriptfunctionname><onclickeventjavascriptparameters>[{"type":5,"value":null}]</onclickeventjavascriptparameters><onclickeventjavascriptwebresourceid><webresourceid>aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa</webresourceid></onclickeventjavascriptwebresourceid><onclickeventtype>2</onclickeventtype><type>0</type></appaction>';
   const command = parseAppActionCommand(xml, { webresourcesById: new Map([['aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'x_/sample.js']]) });
   assert.equal(command.entity, 'x_item'); assert.equal(command.supported, true); assert.deepEqual(command.actions[0].parameters, [{ kind: 'crm', value: 'PrimaryControl' }]);
+  assert.equal(command.id, 'x_modern'); assert.deepEqual(command.nativeControlIds, ['x_item|NoRelationship|Form|modern']);
+  assert.deepEqual(parseAppActionCommand(xml.replace('<location>0</location>', '<location>1</location>')).nativeControlIds, [], 'Grid aliases require their own observed contract');
+  assert.deepEqual(parseAppActionCommand(xml.replace('<context>1</context>', '<context>2</context>')).nativeControlIds, [], 'Other contexts cannot impersonate a table form command');
+  assert.deepEqual(parseAppActionCommand(xml.replace('<name>modern</name>', '<name>foreign|identifier</name>')).nativeControlIds, [], 'An exported name cannot add native shell path segments');
   assert.equal(parseAppActionCommand(xml).supported, false, 'missing resource keeps command disabled');
   assert.equal(parseAppActionCommand(xml.replace('<context>1</context>', '<context>2</context>'), { webresourcesById: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'x_/sample.js' } }).supported, false);
   assert.equal(parseAppActionCommand(xml.replace('<hidden>0</hidden>', '<statecode>1</statecode>'), { webresourcesById: { 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa': 'x_/sample.js' } }).supported, false);

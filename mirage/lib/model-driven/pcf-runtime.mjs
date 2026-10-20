@@ -91,7 +91,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
   const context = {
     parameters: {}, updatedProperties: [],
     mode: { isControlDisabled: disabled, isVisible: true, allocatedWidth: -1, allocatedHeight: -1,
-      trackContainerResize(track) { observer?.disconnect(); observer = undefined; if (track && typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(() => schedule(['layout'])); observer.observe(element); } },
+      trackContainerResize(track) { observer?.disconnect(); observer = undefined; if (!destroyed && !failed && track && typeof ResizeObserver !== 'undefined') { observer = new ResizeObserver(() => schedule(['layout'])); observer.observe(element); } },
       setControlState(next) { state = structuredClone(next); }, setFullScreen() { unsupported('fullscreen'); } },
     resources: { getString: key => definition.resources?.resx?.[key] ?? key, getResource: () => unsupported('binary resources') },
     userSettings: { languageId: options.languageId ?? 1033, isRTL: false, userId: options.user?.id ?? '', userName: options.user?.name ?? '', securityRoles: [] },
@@ -151,8 +151,8 @@ export function renderPcfControl(field, initialValue, options = {}) {
         const framework = window.ComponentFramework = window.ComponentFramework ?? {}, prior = framework.registerControl;
         framework.registerControl = function (name, Constructor) { if (safeName(name) && typeof Constructor === 'function') constructors.set(name, Constructor); if (typeof prior === 'function') prior.call(this, name, Constructor); };
       }
-      for (const url of definition.resources?.css ?? []) await resource(url, 'style');
-      for (const url of definition.resources?.code ?? []) await resource(url, 'script');
+      for (const url of definition.resources?.css ?? []) { if (destroyed) return; await resource(url, 'style'); }
+      for (const url of definition.resources?.code ?? []) { if (destroyed) return; await resource(url, 'script'); }
       if (destroyed) return;
       let Constructor = constructors.get(constructorName) ?? constructorName.split('.').reduce((owner, key) => owner && Object.hasOwn(owner, key) ? owner[key] : undefined, window);
       if (!Constructor) {
@@ -165,7 +165,7 @@ export function renderPcfControl(field, initialValue, options = {}) {
       instance = new Constructor();
       if (typeof instance.init !== 'function' || typeof instance.updateView !== 'function') throw new Error('The PCF bundle does not implement the standard field lifecycle.');
       refresh(); instance.init(context, notifyOutputChanged, state, element); refresh(bound.map(property => property.name)); instance.updateView(context); element.dataset.pcfState = 'ready';
-    } catch (error) { showError(error); }
+    } catch (error) { if (!destroyed) showError(error); }
   })();
   return { element, ready, get supported() { return !failed; }, read: () => value,
     setValue(next) { value = next; schedule(bound.map(property => property.name)); },

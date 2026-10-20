@@ -76,6 +76,8 @@ export const PROJECT_TEMPLATE_FILES = [
 ].map(name => `templates/project/${name}`);
 
 export const REQUIRED_RELEASE_FILES = [
+  'lense/model-driven.mjs', 'lense/commands/model-driven.mjs',
+  'lense/model-driven-inspection.mjs', 'lense/model-driven-inspector.mjs', 'lense/model-driven-inspector-ui.mjs',
   ...MODEL_DRIVEN_FILES, 'mirage/docs/model-driven-apps.md',
   'lense/standalone-mirage.mjs', 'mirage/lib/standalone-runtime.mjs',
   'mirage/lib/dataverse-organization.mjs', 'mirage/lib/runtime-config.mjs',

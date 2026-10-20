@@ -11,6 +11,22 @@ const pause = (tab, extra = {}, request = {}) => tab.cdp.emit('Fetch.requestPaus
   request: { url: URL, method: 'POST', headers: {}, ...request },
 });
 
+test('page ownership is admitted before attaching CDP or changing cache and CSP', async () => {
+  const b = fakeBrowser(), user = b.openTab(`${ORIGIN}/existing`), owned = b.openTab();
+  let attachments = 0;
+  const attach = b.context.newCDPSession;
+  b.context.newCDPSession = async page => { attachments++; assert.equal(page, owned.page); return attach(page); };
+  const dispose = await interceptOrigin(b.context, ORIGIN, async route => route.fallback(), { ownsPage: page => page === owned.page, bypassCSP: true });
+  b.context.emit('page', b.openTab(`${ORIGIN}/user-popup`).page);
+  b.context.emit('page', user.page); await setImmediate();
+  assert.equal(attachments, 1);
+  assert.equal(user.cdp.listenerCount('Fetch.requestPaused'), 0);
+  assert.equal(b.sent.filter(command => command.method === 'Network.setCacheDisabled' && command.cacheDisabled).length, 1);
+  await dispose();
+  assert.equal(owned.cdp.listenerCount('Fetch.requestPaused'), 0);
+  assert.equal(b.context.listenerCount('page'), 0);
+});
+
 test('all configured origins share one interceptor and foreign origins pass through', async () => {
   const b = fakeBrowser();
   const tab = b.openTab();

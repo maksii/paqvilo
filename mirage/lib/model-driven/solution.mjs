@@ -179,8 +179,15 @@ export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid
     });
   } catch { parameterError = true; }
   const location = Number(childText(root, 'location')), labelNode = child(root, 'buttonlabeltext');
+  // Native form command elements use the exported AppAction name, which differs
+  // from the canonical uniquename. Only the observed form/context contract is
+  // mapped; other locations remain available by canonical ID without guessing.
+  const nativeName = childText(root, 'name');
+  const nativeControlIds = childText(root, 'context') === '1' && location === 0 && /^[a-z][a-z0-9_]*$/i.test(entity ?? '')
+    && nativeName && nativeName.length <= 1024 && !/[|\x00-\x1f]/.test(nativeName)
+    ? [`${entity.toLowerCase()}|NoRelationship|Form|${nativeName}`] : [];
   const supported = Boolean(entity && library && childText(root, 'onclickeventjavascriptfunctionname') && childText(root, 'context') === '1' && childText(root, 'statecode') !== '1' && childText(root, 'onclickeventtype') === '2' && childText(root, 'type') === '0' && !parameterError && parameters.every(parameter => parameter.kind !== 'unsupported') && [0, 1].includes(location) && childText(root, 'isdisabled') !== '1');
-  return { entity: entity?.toLowerCase(), id: root.attrs.uniquename ?? childText(root, 'name'),
+  return { entity: entity?.toLowerCase(), id: root.attrs.uniquename ?? childText(root, 'name'), nativeControlIds,
     label: label(labelNode, lcid) ?? labelNode?.attrs.default ?? childText(root, 'name'), locations: childText(root, 'hidden') === '1' ? [] : location === 0 ? ['form'] : location === 1 ? ['grid'] : [],
     supported, reason: supported ? undefined : 'This modern command requires a supported JavaScript action, parameter and local exported resource.',
     actions: [{ type: 'JavaScriptFunction', library, functionName: childText(root, 'onclickeventjavascriptfunctionname'), parameters }], displayRules: [], enableRules: [], source: 'appaction' };

@@ -23,7 +23,7 @@ Commands
            snapshot, screenshot, navigate, reload, viewport, stop (always JSON)
   model-driven inspect|dev --project FILE --url ORIGIN
            inspect or overlay exported Solution webresources and mapped PCF bundles;
-           dev reloads its own model-driven app tab when declared local sources change
+           dev provides X-ray, agent/debugger access and reloads its own app tab on save
   mirage init|start|dev|status|inspect|stop
            local Mirage runtime: init writes a project file from the catalogue site; dev opens
            the runtime with the paqvilo panel and stops it again when the browser closes; with

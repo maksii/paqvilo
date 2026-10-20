@@ -1,7 +1,7 @@
 // Install the actual distributable into an independent project, without portal traffic.
 import fs from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import { validateReleaseFiles } from './release-check.mjs';
 import { verifyConsumerToolOwnership } from './consumer-tool-smoke.mjs';
@@ -25,6 +25,9 @@ const bootstrap = path.join(work, 'bootstrap');
 fs.mkdirSync(bootstrap);
 fs.writeFileSync(path.join(bootstrap, 'package.json'), JSON.stringify({ name: 'paqvilo-smoke-bootstrap', private: true, dependencies: { paqvilo: archive } }));
 run(['install', '--offline', '--ignore-scripts', '--no-audit', '--no-fund'], bootstrap);
+// Load the shipped inspector graph: a file-list check alone misses broken runtime imports.
+const modelInspector = await import(pathToFileURL(path.join(bootstrap, 'node_modules/paqvilo/lense/model-driven-inspector.mjs')));
+if (typeof modelInspector.startModelDrivenInspector !== 'function') throw new Error('Installed model-driven inspector is unavailable.');
 // Exercise empty consumer templates from the actual archive, independently of the demo.
 for (const options of [[], ['--no-pack', '--no-vscode'], ['--pack', 'alpha', '--pack', 'beta', '--site', 'one', '--site', 'two']]) {
   const consumer = path.join(work, `consumer-${options.length}`);

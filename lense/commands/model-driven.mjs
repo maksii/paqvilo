@@ -6,11 +6,45 @@ import { solutionWatchFilter } from '../../mirage/lib/solution-roots.mjs';
 import { standaloneMirageConfiguration } from '../standalone-mirage.mjs';
 import { openBrowser } from '../browser.mjs';
 import { interceptOrigin } from '../intercept.mjs';
+import { refreshUrl } from '../navigation.mjs';
+import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject, modelDrivenOrigin, readModelDrivenResourceMap } from '../model-driven.mjs';
 
 const cleanError = error => String(error.message).replace(/https?:\/\/[^\s<>"']+/g, value => {
   try { const url = new URL(value); return `${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}`; } catch { return '[redacted URL]'; }
 });
+
+/** One active import and one latest pending revision, regardless of save volume. */
+export function modelDrivenReloadQueue(task) {
+  let pending, requested = false, stopped = false;
+  return {
+    request() {
+      if (stopped) return Promise.resolve();
+      requested = true;
+      return pending ??= Promise.resolve().then(async () => {
+        do { requested = false; await task(); } while (requested && !stopped);
+      }).finally(() => { pending = null; });
+    },
+    async close() { stopped = true; requested = false; await pending; },
+  };
+}
+
+export async function refreshModelDrivenPage(page, origin) {
+  if (!page.isClosed() && new URL(page.url()).origin === origin) {
+    // A native app can reach its current document through POST. Never replay it
+    // as a side effect of saving a local file.
+    await page.goto(refreshUrl(page.url()), { waitUntil: 'domcontentloaded', timeout: 15000 });
+    return true;
+  }
+  return false;
+}
+
+export function publishModelDrivenReload(overlay, next, mappings) {
+  const failed = next.diagnostics.find(item => ['MODEL_CLIENT_IMPORT_FAILED', 'MODEL_CLIENT_IMPORT_LIMIT', 'MODEL_CLIENT_XML_INVALID',
+    'MODEL_WEBRESOURCE_UNRESOLVED', 'MODEL_PCF_IMPORT_FAILED', 'MODEL_PCF_RESOURCE_UNRESOLVED', 'MODEL_APP_ACTION_INVALID', 'PCF_IMPORT_FAILED'].includes(item.code));
+  if (failed) throw new Error(`Local resource reload failed (${failed.code}); the previous overlay remains active.`);
+  overlay.replace(next, mappings);
+}
 
 export default async function run(_cfg, args, [action = 'dev'] = []) {
   if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
@@ -19,9 +53,9 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   const origin = modelDrivenOrigin(args.url), project = await loadProjectConfig(args.project);
   let imported = await importModelDrivenProject(project);
   const mappings = await readModelDrivenResourceMap(args['resource-map']);
-  let page;
+  let page, inspector;
   const overlay = createModelDrivenOverlay({ origin, imported, mappings, ownsRequest: request => request.frame?.().page?.() === page,
-    onApplied: event => { if (event.count === 1) console.log(`Applied local Solution resource: ${event.resource}`); } });
+    onApplied: event => { if (event.count === 1) console.log(`Applied local Solution resource: ${event.resource}`); inspector?.refresh(); } });
   if (action === 'inspect') {
     const report = { ...overlay.report(), trustedExtensions: project.modelDriven.trustedExtensions };
     if (args.json) console.log(JSON.stringify(report));
@@ -35,8 +69,8 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   const timeout = args.timeout == null ? null : Number(args.timeout);
   if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600000)) throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
-  const { context, close, attached } = await openBrowser(cfg, { debugPort: cfg.browser.debugPort });
-  let release, watcher, timer, reloadTimer, stopping = false, pending = Promise.resolve(), stop;
+  const { context, close, attached, debugPort } = await openBrowser(cfg, { debugPort: cfg.browser.debugPort });
+  let release, watcher, timer, reloadTimer, reloads, stopping = false, stop;
   const stopped = new Promise(resolve => { stop = resolve; });
   const browser = context.browser();
   const onError = error => console.error(`Model-driven overlay: ${cleanError(error)}`);
@@ -44,10 +78,18 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   try {
     page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
     page.once('close', stop);
-    release = await interceptOrigin(context, origin, route => overlay.handle(route), { bypassCSP: cfg.browser.bypassCSP, onError });
+    release = await interceptOrigin(context, origin, route => overlay.handle(route), { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
+    inspector = await startModelDrivenInspector({ context, page, overlay, cfg, imported, attached, stop,
+      runtime: { watching: !args['no-reload'], debugPort: debugPort ?? null } });
     if (!args['no-reload']) {
-      watcher = chokidar.watch([...project.solutionRoots, ...(args['resource-map'] ? [path.resolve(args['resource-map'])] : [])], { ignoreInitial: true,
-        ignored: solutionWatchFilter({ roots: project.solutionRoots, layers: imported.layers }) });
+      const mapFile = args['resource-map'] ? path.resolve(args['resource-map']) : null;
+      let ignoredSource = solutionWatchFilter({ roots: project.solutionRoots, layers: imported.layers });
+      let watchedLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
+      watcher = chokidar.watch([...project.solutionRoots, ...(mapFile ? [mapFile] : [])], { ignoreInitial: true,
+        ignored: (candidate, stats) => {
+          const resolved = path.resolve(candidate);
+          return mapFile && (resolved === mapFile || mapFile.startsWith(resolved + path.sep)) ? false : ignoredSource(candidate, stats);
+        } });
       watcher.on('error', onError);
       await new Promise((resolve, reject) => {
         const ready = () => { clearTimeout(deadline); watcher.off('error', fail); resolve(); };
@@ -55,22 +97,25 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
         const deadline = setTimeout(() => fail(new Error('The local Solution watcher did not become ready within 10 seconds.')), 10000);
         watcher.once('ready', ready); watcher.once('error', fail);
       });
+      reloads = modelDrivenReloadQueue(async () => {
+        if (stopping) return;
+        try {
+          const next = await importModelDrivenProject(project), map = await readModelDrivenResourceMap(args['resource-map']);
+          publishModelDrivenReload(overlay, next, map); imported = next;
+          inspector.refresh(next);
+          ignoredSource = solutionWatchFilter({ roots: project.solutionRoots, layers: imported.layers });
+          const nextLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
+          const addedLayers = [...nextLayers].filter(dir => !watchedLayers.has(dir));
+          if (addedLayers.length) watcher.add(addedLayers);
+          watchedLayers = nextLayers;
+          // Only this session's own app tab reloads. Login pages and attached
+          // user tabs remain under their existing owner's control.
+          if (!stopping && await refreshModelDrivenPage(page, origin)) console.log('Reloaded model-driven app with local Solution resources.');
+        } catch (error) { onError(error); }
+      });
       watcher.on('all', () => {
         clearTimeout(reloadTimer);
-        reloadTimer = setTimeout(() => {
-          pending = pending.catch(() => {}).then(async () => {
-            if (stopping) return;
-            try {
-              const next = await importModelDrivenProject(project), map = await readModelDrivenResourceMap(args['resource-map']);
-              const failed = next.diagnostics.find(item => ['MODEL_CLIENT_IMPORT_FAILED', 'MODEL_CLIENT_XML_INVALID', 'MODEL_WEBRESOURCE_UNRESOLVED', 'PCF_IMPORT_FAILED'].includes(item.code));
-              if (failed) throw new Error(`Local resource reload failed (${failed.code}); the previous overlay remains active.`);
-              overlay.replace(next, map); imported = next;
-              // Only this session's own app tab reloads. Login pages and attached
-              // user tabs remain under their existing owner's control.
-              if (!stopping && !page.isClosed() && new URL(page.url()).origin === origin) { await page.reload({ waitUntil: 'domcontentloaded' }); console.log('Reloaded model-driven app with local Solution resources.'); }
-            } catch (error) { onError(error); }
-          });
-        }, 150);
+        reloadTimer = setTimeout(() => { reloads.request().catch(onError); }, 150);
       });
     }
     if (timeout) timer = setTimeout(stop, timeout);
@@ -83,9 +128,11 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   } finally {
     stopping = true; clearTimeout(timer); clearTimeout(reloadTimer);
     process.off('SIGINT', stop); process.off('SIGTERM', stop); context.off('close', stop); browser?.off('disconnected', stop); page?.off('close', stop);
-    await watcher?.close(); await pending; await release?.();
-    if (attached && page && !page.isClosed()) await page.close();
-    await close();
+    // Finish every cleanup step even if a disconnected browser rejects one.
+    for (const cleanup of [() => watcher?.close(), () => reloads?.close(), () => inspector?.close(), () => release?.(),
+      () => attached && page && !page.isClosed() ? page.close() : undefined, close]) {
+      try { await cleanup(); } catch (error) { onError(error); }
+    }
     const report = overlay.report();
     if (args.output) { const file = path.resolve(args.output); report.writesFiles = [file]; await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, JSON.stringify(report, null, 2) + '\n'); console.log(`Model-driven overlay report: ${file}`); }
     console.log(`Model-driven overlay stopped: ${report.applied} local resource applications; ${report.currentRevisionApplied} on the current revision; ${report.resources.filter(resource => resource.currentRevisionApplied === 0).length} current resources not observed.`);

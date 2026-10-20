@@ -2,7 +2,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { readLocalFile } from '../../lense/local-file.mjs';
-import { readSolutionAssetEntries, solutionAssetName } from './dataverse-solution-assets.mjs';
+import { readSolutionAssetEntries, solutionAssetName, SOLUTION_ASSET_LIMITS } from './dataverse-solution-assets.mjs';
 import { importCodeComponents } from './code-components.mjs';
 import { parseSolutionXml, descendants, childText, child, serializeXml } from './solution-xml.mjs';
 import { parseAppActionCommand } from './model-driven/solution.mjs';
@@ -11,15 +11,39 @@ const limit = 8 * 1024 * 1024;
 const mime = name => /\.css$/i.test(name) ? 'text/css; charset=utf-8' : /\.js$/i.test(name) ? 'text/javascript; charset=utf-8' : null;
 const token = value => createHash('sha256').update(value).digest('hex').slice(0, 32);
 const inside = (root, file) => { const rel = path.relative(root, file); return rel && rel !== '..' && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel); };
+const readEntry = async entry => entry.data ?? entry.load();
 
-async function layerEntries(layer) {
-  if (layer.type === 'zip') return readSolutionAssetEntries(await readLocalFile(layer.dir, { maxBytes: 128 * 1024 * 1024 }));
+function importBudget(requested = {}) {
+  const ceilings = { bytes: SOLUTION_ASSET_LIMITS.totalBytes, entries: SOLUTION_ASSET_LIMITS.entries, layers: SOLUTION_ASSET_LIMITS.layers };
+  const remaining = { ...ceilings };
+  for (const [key, value] of Object.entries(requested)) {
+    if (!Object.hasOwn(ceilings, key) || !Number.isSafeInteger(value) || value < 1 || value > ceilings[key]) throw new Error(`Invalid Solution client import limit ${key}.`);
+    remaining[key] = value;
+  }
+  return { remaining, take(key, count) { if (count > remaining[key]) { const error = new Error(`Solution client assets exceed the aggregate ${key} limit.`); error.code = 'MODEL_CLIENT_IMPORT_LIMIT'; throw error; } remaining[key] -= count; } };
+}
+
+async function readBudgetedFile(file, root, budget) {
+  const size = (await fs.stat(file)).size;
+  budget.take('bytes', size);
+  const data = await readLocalFile(file, { root, maxBytes: Math.min(limit, size) });
+  // A file can grow between stat and open; readLocalFile enforces the admitted size.
+  return data;
+}
+
+async function layerEntries(layer, budget) {
+  if (layer.type === 'zip') {
+    const entries = readSolutionAssetEntries(await readLocalFile(layer.dir, { maxBytes: SOLUTION_ASSET_LIMITS.archiveBytes }),
+      { totalBytes: Math.max(1, budget.remaining.bytes), entries: Math.max(1, budget.remaining.entries) });
+    budget.take('entries', entries.length); budget.take('bytes', entries.reduce((sum, entry) => sum + entry.data.length, 0));
+    return entries;
+  }
   const result = [];
   if (layer.type !== 'directory') return result;
   const root = await fs.realpath(layer.dir);
   async function visit(dir, top = false) {
-    for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
-      if (result.length >= 10000) throw new Error('Solution client assets exceed 10000 entries.');
+    for await (const entry of await fs.opendir(dir)) {
+      budget.take('entries', 1);
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
@@ -29,7 +53,11 @@ async function layerEntries(layer) {
         if (!/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(name)) continue;
         const real = await fs.realpath(file);
         if (!inside(root, real)) throw new Error('Solution client asset escapes its root.');
-        result.push({ name, data: await readLocalFile(file, { root, maxBytes: limit }), file });
+        // Index physical names first. Binary images and unrelated WebResources do
+        // not enter memory; only metadata and declared JS/CSS assets are read.
+        const indexed = { name, file };
+        indexed.load = async () => indexed.data ??= await readBudgetedFile(file, root, budget);
+        result.push(indexed);
       }
     }
   }
@@ -38,20 +66,27 @@ async function layerEntries(layer) {
 }
 
 /** Only selected Solution sources contribute executable code. No remote resolution or fallback. */
-export async function importModelDrivenResources(layers = [], { codeComponents } = {}) {
+export async function importModelDrivenResources(layers = [], { codeComponents, limits } = {}) {
   const resources = new Map(), assets = new Map(), ribbonDocuments = [], actionDocuments = [], diagnostics = [];
+  const budget = importBudget(limits);
+  const limited = error => error.code === 'MODEL_CLIENT_IMPORT_LIMIT' || error.code === 'ArchiveLimit';
+  const failLimit = (error, source) => ({ resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [],
+    diagnostics: [...diagnostics, { code: 'MODEL_CLIENT_IMPORT_LIMIT', source, message: error.message }] });
   for (const layer of layers) {
     let entries;
-    try { entries = await layerEntries(layer); }
-    catch (error) { diagnostics.push({ code: 'MODEL_CLIENT_IMPORT_FAILED', source: layer.dir, message: error.message }); continue; }
+    try { budget.take('layers', 1); entries = await layerEntries(layer, budget); }
+    catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_CLIENT_IMPORT_FAILED', source: layer.dir, message: error.message }); continue; }
     const byName = new Map(entries.map(entry => [entry.name.toLowerCase(), entry]));
-    actionDocuments.push(...entries.filter(entry => /^appactions\/.*\/appaction\.xml$/i.test(entry.name)));
+    for (const entry of entries.filter(entry => /^appactions\/.*\/appaction\.xml$/i.test(entry.name))) {
+      try { actionDocuments.push({ ...entry, data: await readEntry(entry), source: entry.file ?? `${layer.dir}!/${entry.name}` }); }
+      catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_APP_ACTION_INVALID', source: entry.name, message: error.message }); }
+    }
     const definitions = [];
     for (const entry of entries.filter(entry => /\.xml$/i.test(entry.name))) {
       // Restrict XML parsing to the component areas we consume.
       if (!/^(?:webresources\/|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(entry.name)) continue;
       try {
-        const xml = entry.data.toString('utf8'), tree = parseSolutionXml(xml);
+        const xml = (await readEntry(entry)).toString('utf8'), tree = parseSolutionXml(xml);
         if (/RibbonDiffXml[\s>]/.test(xml)) {
           const entity = /^entities\/([^/]+)\//i.exec(entry.name)?.[1]?.toLowerCase();
           const source = entry.file ?? `${layer.dir}!/${entry.name}`;
@@ -70,7 +105,7 @@ export async function importModelDrivenResources(layers = [], { codeComponents }
           const id = childText(node, 'WebResourceId') ?? childText(node, 'webresourceid');
           if (name && [2, 3].includes(type)) definitions.push({ name, type, file, unpacked, id });
         }
-      } catch (error) { diagnostics.push({ code: 'MODEL_CLIENT_XML_INVALID', source: entry.name, message: error.message }); }
+      } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_CLIENT_XML_INVALID', source: entry.name, message: error.message }); }
     }
     for (const definition of definitions) {
       const url = `/_apps/resources/${token(definition.name)}`;
@@ -80,37 +115,47 @@ export async function importModelDrivenResources(layers = [], { codeComponents }
         // file is authoritative only when the exported Name exactly matches that pair.
         const file = solutionAssetName(definition.file.replace(/^\/(?=WebResources\/)/i, ''));
         const entry = byName.get(file.toLowerCase()) ?? byName.get(`webresources/${file}`.toLowerCase()) ?? (definition.unpacked && byName.get(definition.unpacked.toLowerCase()));
-        if (!entry || entry.data.length > limit) throw new Error('Declared WebResource file is missing or oversized.');
+        if (!entry) throw new Error('Declared WebResource file is missing or oversized.');
+        const data = await readEntry(entry);
+        if (data.length > limit) throw new Error('Declared WebResource file is missing or oversized.');
         resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: definition.type === 3 ? 'script' : 'style' });
-        assets.set(url, { data: entry.data, mime: definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', file: entry.file, name: definition.name });
-      } catch (error) { diagnostics.push({ code: 'MODEL_WEBRESOURCE_UNRESOLVED', name: definition.name, message: error.message }); }
+        assets.set(url, { data, mime: definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', file: entry.file, name: definition.name });
+      } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_WEBRESOURCE_UNRESOLVED', name: definition.name, message: error.message }); }
     }
   }
-  const components = codeComponents ?? await importCodeComponents(layers);
+  let components;
+  try { components = codeComponents ?? await importCodeComponents(layers); }
+  catch (error) { diagnostics.push({ code: 'MODEL_PCF_IMPORT_FAILED', message: error.message }); components = { controls: new Map(), assets: new Map(), diagnostics: [] }; }
   diagnostics.push(...components.diagnostics);
   const controls = [];
   for (const control of components.controls.values()) {
     const urls = { code: [], css: [], exports: [], resx: {} };
-    for (const resource of control.resources) {
-      const asset = components.assets.get(resource.url);
-      if (!asset) continue;
-      const url = resource.url.replace('/__sim-static/pcf/', '/_apps/controls/');
-      if (['code', 'css'].includes(resource.kind)) {
-        const data = await readLocalFile(asset.file, { root: asset.root, maxBytes: limit });
-        assets.set(url, { data, mime: mime(resource.path) ?? (resource.kind === 'code' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'), file: asset.file, name: `${control.schemaName}/${resource.path}` });
-        urls[resource.kind].push(url);
-        if (resource.exportGlobal) urls.exports.push(resource.exportGlobal);
+    const controlAssets = new Map();
+    try {
+      budget.take('entries', 1);
+      for (const resource of control.resources) {
+        budget.take('entries', 1);
+        const asset = components.assets.get(resource.url);
+        if (!asset) continue;
+        const url = resource.url.replace('/__sim-static/pcf/', '/_apps/controls/');
+        if (['code', 'css'].includes(resource.kind)) {
+          const data = await readBudgetedFile(asset.file, asset.root, budget);
+          controlAssets.set(url, { data, mime: mime(resource.path) ?? (resource.kind === 'code' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'), file: asset.file, name: `${control.schemaName}/${resource.path}` });
+          urls[resource.kind].push(url);
+          if (resource.exportGlobal) urls.exports.push(resource.exportGlobal);
+        }
       }
-    }
-    // A deterministic exported fallback; selected language support can layer over this.
-    for (const resource of control.stringResources ?? []) if (resource.lcid === 1033) Object.assign(urls.resx, resource.strings);
-    controls.push({ name: control.schemaName, constructor: control.constructor, controlType: control.type, datasets: control.datasets,
-      properties: control.properties.map(property => ({ ...property, ofType: property['of-type'] ?? property.types?.[0] })),
-      features: control.features, libraries: control.libraries, resources: urls });
+      // A deterministic exported fallback; selected language support can layer over this.
+      for (const resource of control.stringResources ?? []) if (resource.lcid === 1033) Object.assign(urls.resx, resource.strings);
+      controls.push({ name: control.schemaName, constructor: control.constructor, controlType: control.type, datasets: control.datasets,
+        properties: control.properties.map(property => ({ ...property, ofType: property['of-type'] ?? property.types?.[0] })),
+        features: control.features, libraries: control.libraries, resources: urls });
+      for (const [url, asset] of controlAssets) assets.set(url, asset);
+    } catch (error) { if (limited(error)) return failLimit(error, control.schemaName); diagnostics.push({ code: 'MODEL_PCF_RESOURCE_UNRESOLVED', name: control.schemaName, message: error.message }); }
   }
   const webresourcesById = new Map([...resources.values()].filter(resource => resource.id).map(resource => [resource.id, resource.name]));
   const appActions = actionDocuments.flatMap(entry => {
-    try { const command = parseAppActionCommand(entry.data.toString('utf8'), { webresourcesById }); if (!command) throw new Error('Expected an AppAction definition.'); return [command]; }
+    try { const command = parseAppActionCommand(entry.data.toString('utf8'), { webresourcesById }); if (!command) throw new Error('Expected an AppAction definition.'); return [{ ...command, sourceKind: command.source, source: entry.source }]; }
     catch (error) { diagnostics.push({ code: 'MODEL_APP_ACTION_INVALID', source: entry.name, message: error.message }); return []; }
   });
   return { resources: [...resources.values()], pcf: { controls }, assets, ribbonDocuments, appActions, diagnostics };

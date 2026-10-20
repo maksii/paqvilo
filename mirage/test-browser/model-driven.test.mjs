@@ -4,6 +4,37 @@ import { chromium } from 'playwright-core';
 import { browserLaunchOptions } from '../lib/browser-launch.mjs';
 import { modelDrivenFixture } from '../test/model-driven-fixture.mjs';
 
+test('navigation cancels a pending grid search and repeated dialogs release listeners', async t => {
+  const { origin } = await modelDrivenFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());
+  const page = await browser.newPage();
+  await page.clock.install();
+  await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
+  await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  const cdp = await page.context().newCDPSession(page); t.after(() => cdp.detach().catch(() => {}));
+  const cancelListeners = async () => {
+    const { result } = await cdp.send('Runtime.evaluate', { expression: 'document.querySelector("#dialog")', objectGroup: 'dialog-audit' });
+    try { return (await cdp.send('DOMDebugger.getEventListeners', { objectId: result.objectId })).listeners.filter(listener => listener.type === 'cancel').length; }
+    finally { await cdp.send('Runtime.releaseObjectGroup', { objectGroup: 'dialog-audit' }); }
+  };
+  const baseline = await cancelListeners();
+  for (let index = 0; index < 15; index++) {
+    await page.getByRole('button', { name: 'Edit columns' }).click();
+    await page.getByRole('dialog').getByRole('button', { name: 'Cancel', exact: true }).click();
+  }
+  assert.equal(await cancelListeners(), baseline, 'closed dialog listeners must not accumulate');
+  await page.getByRole('searchbox', { name: 'Filter by keyword' }).fill('unmatched stale search');
+  await page.getByRole('button', { name: 'New', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Name', exact: true }).waitFor();
+  await page.clock.runFor(1000);
+  assert.equal(await page.locator('#record-form').count(), 1, 'old search must not replace the opened record with a grid');
+  await page.getByRole('textbox', { name: 'Name', exact: true }).fill('Unsaved');
+  await page.getByRole('button', { name: 'Back', exact: true }).click();
+  await page.getByRole('dialog').waitFor(); await page.keyboard.press('Escape');
+  assert.equal(await cancelListeners(), baseline);
+  assert.equal(await page.locator('#record-form').count(), 1, 'Escape must keep the unsaved record');
+});
+
 test('model-driven shell supports solution navigation, editable grids and local record lifecycle', async t => {
   const { origin } = await modelDrivenFixture(t);
   const browser = await chromium.launch(browserLaunchOptions()); t.after(() => browser.close());

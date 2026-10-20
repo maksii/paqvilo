@@ -34,10 +34,13 @@ test('selected unpacked and ZIP WebResources resolve declared filenames, layers 
   await fs.writeFile(archive, writeSolutionAssetEntries([
     { name: 'customizations.xml', data: Buffer.from(`<ImportExportXml><WebResources>${descriptor('x_/events.js', 'WebResources/blob')}</WebResources></ImportExportXml>`) },
     { name: 'WebResources/blob', data: Buffer.from('window.Example = {version:2};') },
+    { name: 'appactions/x_zip/appaction.xml', data: Buffer.from('<appaction uniquename="x_zip"><contextentity><logicalname>x_first</logicalname></contextentity></appaction>') },
   ]));
   const merged = await importModelDrivenResources([{ type: 'directory', dir: root }, { type: 'zip', dir: archive }]);
   assert.equal(merged.resources.length, 1);
   assert.equal(merged.assets.get(merged.resources[0].url).data.toString(), 'window.Example = {version:2};');
+  assert.equal(merged.appActions[0].source, `${archive}!/appactions/x_zip/appaction.xml`);
+  assert.equal(merged.appActions[0].sourceKind, 'appaction');
   const broken = path.join(root, 'broken.zip');
   await fs.writeFile(broken, writeSolutionAssetEntries([{ name: 'customizations.xml', data: Buffer.from(`<ImportExportXml><WebResources>${descriptor('x_/events.js', 'WebResources/missing')}</WebResources></ImportExportXml>`) }]));
   const replaced = await importModelDrivenResources([{ type: 'directory', dir: root }, { type: 'zip', dir: broken }]);
@@ -49,6 +52,42 @@ test('client extension trust is explicit, validated and cannot be inferred from 
   assert.deepEqual(modelDrivenSettings(), { trustedExtensions: false });
   for (const input of [true, [], { trustedExtensions: 'true' }, { trusted: true }]) assert.throws(() => modelDrivenSettings(input));
   assert.equal(clientExtensionCatalogue({ resources: [] }, modelDrivenSettings()).trusted, false);
+});
+
+test('client import reads declared assets lazily and fails closed at aggregate layer, byte and traversal limits', async t => {
+  const root = await fixture(t, {
+    'WebResources/events.js': 'window.Example = {};',
+    'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+    'WebResources/unrelated.png': Buffer.alloc(4096),
+  });
+  const layer = { type: 'directory', dir: root };
+  const selected = await importModelDrivenResources([layer], { limits: { bytes: 512 } });
+  assert.equal(selected.resources.length, 1, 'unreferenced binary data does not consume the client asset budget');
+  assert.deepEqual(selected.diagnostics, []);
+  for (const [layers, limits] of [[[layer], { bytes: 16 }], [[layer], { entries: 2 }], [[layer, layer], { layers: 1 }], [[layer, layer], { bytes: 256 }]]) {
+    const limited = await importModelDrivenResources(layers, { limits });
+    assert.equal(limited.resources.length, 0); assert.equal(limited.assets.size, 0);
+    assert.equal(limited.diagnostics.some(item => item.code === 'MODEL_CLIENT_IMPORT_LIMIT'), true);
+  }
+  await assert.rejects(importModelDrivenResources([layer], { limits: { bytes: Number.MAX_SAFE_INTEGER } }), /Invalid.*limit/);
+  const zip = path.join(root, 'assets.zip');
+  await fs.writeFile(zip, writeSolutionAssetEntries([{ name: 'WebResources/events.js', data: Buffer.alloc(512) }]));
+  const zipped = await importModelDrivenResources([{ type: 'zip', dir: zip }], { limits: { bytes: 256 } });
+  assert.equal(zipped.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
+test('a changed PCF resource is reported without rejecting organization import or exposing a partial control', async t => {
+  const root = await fixture(t, { 'WebResources/events.js': 'window.Example = {};', 'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'), 'bundle.js': 'window.Input = class {};' });
+  const resource = name => ({ kind: 'code', path: name, url: `/__sim-static/pcf/control/${name}` });
+  const resources = [resource('bundle.js'), resource('missing.js')];
+  const codeComponents = { controls: new Map([['example.Input', { schemaName: 'example.Input', constructor: 'Input', type: 'standard', properties: [], resources }]]),
+    assets: new Map(resources.map(item => [item.url, { file: path.join(root, item.path), root }])), diagnostics: [] };
+  const imported = await importModelDrivenResources([{ type: 'directory', dir: root }], { codeComponents });
+  assert.equal(imported.resources.length, 1); assert.equal(imported.pcf.controls.length, 0);
+  assert.equal(imported.assets.size, 1, 'the earlier control bundle is never exposed after a later resource fails');
+  assert.equal(imported.diagnostics.some(item => item.code === 'MODEL_PCF_RESOURCE_UNRESOLVED'), true);
+  const limited = await importModelDrivenResources([], { codeComponents: { ...codeComponents, controls: new Map([['example.Input', { ...codeComponents.controls.get('example.Input'), resources: [resources[0]] }]]) }, limits: { bytes: 1 } });
+  assert.equal(limited.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
 });
 
 test('PAC unpack pairs WebResource metadata with source and keeps apps distinct when GUIDs are omitted', async t => {
@@ -71,6 +110,8 @@ test('PAC unpack pairs WebResource metadata with source and keeps apps distinct 
   assert.deepEqual(records.map(component => component.id).sort(), first.metadata.modelDrivenApps.map(app => app.id).sort());
   assert.equal(first.clientResources.resources[0].name, 'x_/events.js');
   assert.equal(first.clientResources.appActions[0].supported, true);
+  assert.equal(first.clientResources.appActions[0].sourceKind, 'appaction');
+  assert.equal(first.clientResources.appActions[0].source, path.join(root, 'appactions/x_review/appaction.xml'));
   assert.equal(first.clientResources.appActions[0].actions[0].library, 'x_/events.js');
   assert.deepEqual(first.clientResources.diagnostics, []);
 });

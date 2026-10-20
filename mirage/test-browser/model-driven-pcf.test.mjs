@@ -151,6 +151,29 @@ test('a disposed form cannot initialize a component after asynchronous resources
   assert.deepEqual(errors, []);
 });
 
+test('disposal stops later PCF resource loads and retained contexts cannot restart resize observers', async t => {
+  const { page, errors, scriptCount } = await fixture(t);
+  let requested, release;
+  const started = new Promise(resolve => { requested = resolve; });
+  const resumed = new Promise(resolve => { release = resolve; });
+  await page.route('**/slow.css', async route => { requested(); await resumed; await route.fulfill({ status: 200, contentType: 'text/css', body: '.invented{}' }); });
+  await page.evaluate(() => {
+    const delayed = { ...extensions, pcf: { controls: [{ ...extensions.pcf.controls[0], resources: { css: ['/slow.css'], code: ['/bundle.js'], exports: ['InventedExports'] } }] } };
+    control = render(field, 'Initial', { ...options, clientExtensions: delayed }); document.querySelector('main').append(control.element);
+  });
+  await started; await page.evaluate(() => control.destroy()); release(); await page.evaluate(() => control.ready);
+  assert.equal(scriptCount(), 0, 'leaving during CSS loading must not execute the next component script');
+  assert.deepEqual(await page.evaluate(() => lifecycle), []);
+  const observers = await page.evaluate(async () => {
+    window.observerCreates = 0; window.observerDisconnects = 0;
+    window.ResizeObserver = class { constructor() { observerCreates++; } observe() {} disconnect() { observerDisconnects++; } };
+    await mount(); control.destroy(); pcfContext.mode.trackContainerResize(true);
+    return { created: observerCreates, disconnected: observerDisconnects };
+  });
+  assert.deepEqual(observers, { created: 1, disconnected: 1 });
+  assert.deepEqual(errors, []);
+});
+
 test('an exported Solution PCF edits and saves through the actual model-driven shell', async t => {
   const source = await modelDrivenFixture(t); await source.sim.close();
   const controlDir = path.join(source.solutionDir, 'Controls', 'publisher.InventedInput'); await fs.mkdir(controlDir, { recursive: true });

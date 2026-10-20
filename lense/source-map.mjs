@@ -34,7 +34,7 @@ export function identityMapUrl(file, lineCount, sourceContent, {line=0,column=0,
   return `data:application/json;charset=utf-8;base64,${Buffer.from(JSON.stringify(map)).toString('base64')}`;
 }
 
-function hasMap(text) {
+export function hasSourceMap(text) {
   // Horizontal whitespace only: allowing newlines here makes a long blank file quadratic.
   // A directive may follow code on the same line (common in minified bundles).
   if (/\/\/[#@][^\S\r\n\u2028\u2029]*sourceMappingURL=\S+/.test(text)) return true;
@@ -47,7 +47,7 @@ function hasMap(text) {
 /** `body` (a JS file exactly as it is on disk) with a source map comment for `file` appended. */
 export function withFileSourceMap(body, file) {
   const text = body.toString('utf8');
-  if (hasMap(text)) return body; // Includes inline maps whose data exceeds 4096 characters.
+  if (hasSourceMap(text)) return body; // Includes inline maps whose data exceeds 4096 characters.
   let lineCount = 1;
   for (let i = 0; i < text.length; i++) {
     const code = text.charCodeAt(i);

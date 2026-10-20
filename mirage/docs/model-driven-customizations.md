@@ -70,6 +70,15 @@ diagnostics in the app catalogue (`GET /_apps/api`). Resource responses are loca
 uncached and confined to the app's allowlist. Source changes trigger reload through
 the selected Solution watcher.
 
+Client asset import reads unpacked WebResource bodies only when a declared
+JavaScript or stylesheet references them. Across selected sources and retained
+PCF assets, admission is bounded by 256 MiB of content, 10,000 visited entries and
+256 layers, with an 8 MiB limit per executable file. ZIP archives also retain the
+shared Solution archive size and expansion checks. Exceeding an aggregate limit
+disables the client extension catalogue and reports `MODEL_CLIENT_IMPORT_LIMIT`;
+it never silently executes an earlier layer. A PCF file that disappears during
+import reports a component diagnostic without taking down the organization host.
+
 ## PCF inputs and limits
 
 Select an unpacked Solution containing `Controls/<name>/ControlManifest.xml`, its
@@ -129,6 +138,48 @@ declared resources and unbound controls offline. During development, the report
 records applied responses and unmatched requests with query values omitted.
 Saving a selected source reloads the owned app tab. A resource mapping does not
 prove it was requested or executed; check the applied count and visible behavior.
+
+### Inspect and debug the live app
+
+Model-driven dev adds a separate **Lense X-ray** inspector to its app tab. Use
+**Alt+Shift+X** to toggle inspection. It reports declared resources, exact mapped
+paths, current-revision applications, import diagnostics and runtime errors.
+Select a rendered field or command to inspect the available Solution binding;
+an unresolved native element stays unresolved. The inspector does not read field
+values or infer that a delivered bundle's constructor executed. Power Pages
+retains its existing source inspector and Liquid provenance.
+
+Owned browsers also expose the existing authenticated, loopback
+[agent API](../../docs/lense.md#agent-api-reference). The command prints the
+discovery **path**; keep its contents private. Use that path with:
+
+```sh
+paqvilo lense agent pages --session .paqvilo/agents/SESSION.json --json
+paqvilo lense agent state --session .paqvilo/agents/SESSION.json --page-id 1 --json
+paqvilo lense agent events --session .paqvilo/agents/SESSION.json --after 0 --limit 100 --json
+paqvilo lense agent snapshot --session .paqvilo/agents/SESSION.json --page-id 1 --selector "[data-id]" --limit 30 --json
+```
+
+Use page IDs returned by `pages`, and advance event cursors with `nextSequence`.
+Screenshots and bounded DOM inspection use the same commands as Power Pages.
+An attached user-owned browser receives no agent server. Other tabs are excluded
+from model-driven interception and inspection. Native popups and separate record
+windows are outside this dedicated-tab session.
+
+Start dev with a free `--debug-port 9222` to attach DevTools or VS Code. Local
+JavaScript without an existing source map receives a file-backed identity map;
+existing compiled maps are preserved. ZIP-only resources have no physical local
+file map. Breakpoints can be set in the served bundle when its original map is
+unavailable. Mapping a PCF bundle does not make missing TypeScript sources or
+source-map sidecars available. Confirm the debugger port in agent status.
+Generated maps are admitted before allocation: at most 16 MiB for a mapped asset
+and 64 MiB of generated map bytes per overlay revision. A map that exceeds these
+budgets is omitted with `MODEL_SOURCE_MAP_LIMIT`; the original script still runs.
+This avoids expanding newline-heavy bundles into very large debug payloads.
+
+Reloads use an explicit GET and never replay the document's POST. Source saves
+coalesce to one active import and one pending refresh. `--no-reload` disables the
+source watcher; it does not disable initial interception or the inspector.
 
 Native apps can cache WebResources and PCF constructors inside the application.
 A browser reload may then make no resource request for Lense to intercept. The
