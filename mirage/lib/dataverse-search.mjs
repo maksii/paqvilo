@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Dataverse search over the rows the caller can read. Web API: searchquery, searchsuggest and searchautocomplete (actions),
 // searchstatus and searchstatistics (functions). /api/search/v2.0 answers with the same bodies; /api/search/v1.0 query, suggest
 // and autocomplete answer with the legacy shapes. Sources (Microsoft Learn, read 2026-10-19):
@@ -37,7 +38,7 @@ const unique = (list) => [...new Set(list)];
 const isScalar = (value) => value != null && typeof value !== "object";
 const lowerKeys = (object) => Object.fromEntries(Object.entries(object ?? {}).map(([key, value]) => [key.toLowerCase(), value]));
 const tokens = (text) => text.toLowerCase().match(TOKEN) ?? [];
-const enabled = (api) => api.store.tableRows("organization")[0]?.isexternalsearchindexenabled !== false; // unverified: a row without the column is on
+const enabled = (api) => organizationRecord(api.store)?.isexternalsearchindexenabled !== false; // unverified: a row without the column is on
 
 // A list argument: a JSON array string, a comma-separated string, or an array already parsed. null and "null" mean none.
 function listOf(value, name) {

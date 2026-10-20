@@ -34,7 +34,7 @@ function knownKeys(value, keys, label) {
 }
 
 function required(value, label) {
-  if (value === undefined) throw new Error(`${label} is required`);
+  if (value === undefined || value === null) throw new Error(`${label} is required`);
   return value;
 }
 
@@ -73,6 +73,11 @@ function text(value, label, fallback, pattern = null) {
   return value;
 }
 
+// Optional fields emit null when unset, so their normalized representation is
+// also a valid input when a project passes settings into a runtime host.
+const optionalText = (value, label, pattern = null) => value === null ? null : text(value, label, null, pattern);
+const optionalLimit = (value, label) => value === null ? null : integer(value, label, null, 1, Number.MAX_SAFE_INTEGER);
+
 function textList(value, label, fallback) {
   if (value === undefined) return [...fallback];
   if (!Array.isArray(value) || value.some((item) => typeof item !== 'string' || !item.trim())) throw new Error(`${label} must be an array of non-empty text`);
@@ -102,7 +107,7 @@ function application(value, label) {
   });
   const allowedGrants = value.allowedGrants === undefined ? [...GRANTS] : value.allowedGrants;
   if (!Array.isArray(allowedGrants) || allowedGrants.some((grant) => grantName(grant) === null)) throw new Error(`${label}.allowedGrants must be a subset of ${GRANTS.join(', ')}`);
-  const secretEnvironmentVariable = text(value.secretEnvironmentVariable, `${label}.secretEnvironmentVariable`, null, /^[A-Z_][A-Z0-9_]*$/);
+  const secretEnvironmentVariable = optionalText(value.secretEnvironmentVariable, `${label}.secretEnvironmentVariable`, /^[A-Z_][A-Z0-9_]*$/);
   const federated = value.federatedCredentials === undefined ? [] : value.federatedCredentials;
   if (!Array.isArray(federated)) throw new Error(`${label}.federatedCredentials must be an array`);
   return {
@@ -176,11 +181,10 @@ function serviceProtection(value) {
   const { executionMsPer300s, executionTimeMsPer300s } = value;
   if (executionMsPer300s !== undefined && executionTimeMsPer300s !== undefined && executionMsPer300s !== executionTimeMsPer300s) throw new Error(`${bound}.executionTimeMsPer300s must equal executionMsPer300s when both are set`);
   const executionKey = executionMsPer300s !== undefined ? 'executionMsPer300s' : 'executionTimeMsPer300s';
-  const max = Number.MAX_SAFE_INTEGER;
   return {
-    requestsPer300s: integer(value.requestsPer300s, `${bound}.requestsPer300s`, null, 1, max),
-    executionMsPer300s: integer(executionMsPer300s ?? executionTimeMsPer300s, `${bound}.${executionKey}`, null, 1, max),
-    concurrentRequests: integer(value.concurrentRequests, `${bound}.concurrentRequests`, null, 1, max),
+    requestsPer300s: optionalLimit(value.requestsPer300s, `${bound}.requestsPer300s`),
+    executionMsPer300s: optionalLimit(executionMsPer300s ?? executionTimeMsPer300s, `${bound}.${executionKey}`),
+    concurrentRequests: optionalLimit(value.concurrentRequests, `${bound}.concurrentRequests`),
   };
 }
 
@@ -226,7 +230,7 @@ export function dataverseSettings(value, label = 'dataverse') {
     localeId: integer(input.localeId, `${label}.localeId`, 1033, 1, 65535),
     tds: tds(input.tds, `${label}.tds`),
     // A local directory standing in for the Git remote of source control (dataverse-addon-git.mjs); resolved by server.mjs.
-    gitRemoteDirectory: text(input.gitRemoteDirectory, `${label}.gitRemoteDirectory`, null),
+    gitRemoteDirectory: optionalText(input.gitRemoteDirectory, `${label}.gitRemoteDirectory`),
   };
 }
 

@@ -1,31 +1,32 @@
 # Dataverse Web API simulation
 
-Mirage serves a Dataverse-shaped Web API on its own loopback origin, beside the portal. The API shares the portal's local state (`DataStore`), and rows written on either side are visible on the other. The portal sees Dataverse tables only under its own `Webapi/<table>/enabled`, `Webapi/<table>/fields` and table permissions; the portal's logic, permission checks and error contracts are unchanged.
+Mirage serves a Dataverse-shaped Web API on its own loopback origin. It can run [without Power Pages](standalone-organization.md), alongside model-driven apps, or beside a portal. Enabled surfaces share one organization record pipeline and storage. A portal sees Dataverse tables only under its own `Webapi/<table>/enabled`, `Webapi/<table>/fields` and table permissions; its visitor identity and error contracts remain separate from organization staff and application tokens.
 
 ## Enable it
 
-Add a `dataverse` key under `mirage:` in the catalogue, or under `sites.<id>.mirage` for one portal. See [configuration](../../docs/configuration.md).
+Use **Project setup → Runtime configuration** to enable the HTTP API and select its port, then restart Mirage. A standalone project puts `dataverse` at its top level; a catalogue uses `defaults.mirage.dataverse` or `sites.<id>.mirage.dataverse`. See [configuration](../../docs/configuration.md) and the [standalone project example](standalone-organization.md). Model-driven staff sessions use the organization core even while the HTTP listener is off.
+
+Project configuration fragment:
 
 ```yaml
-mirage:
-  dataverse:
-    enabled: true
-    port: 0
-    tls: false
-    tenantId: 11111111-1111-1111-1111-111111111111
-    organizationId: 44444444-4444-4444-4444-444444444444
-    uniqueName: orgsim
-    friendlyName: Simulated environment
-    applications:
-      - appId: 22222222-2222-2222-2222-222222222222
-        displayName: Integration client
-        secretEnvironmentVariable: PAQVILO_SIM_CLIENT_SECRET
-        roles: ["System Administrator"]
-    users:
-      - domainname: maker@example.test
-        fullname: Maker User
-        objectId: 33333333-3333-3333-3333-333333333333
-        roles: ["System Customizer"]
+dataverse:
+  enabled: true
+  port: 0
+  tls: false
+  tenantId: 11111111-1111-1111-1111-111111111111
+  organizationId: 44444444-4444-4444-4444-444444444444
+  uniqueName: orgsim
+  friendlyName: Simulated environment
+  applications:
+    - appId: 22222222-2222-2222-2222-222222222222
+      displayName: Integration client
+      secretEnvironmentVariable: PAQVILO_SIM_CLIENT_SECRET
+      roles: ["System Administrator"]
+  users:
+    - domainname: maker@example.test
+      fullname: Maker User
+      objectId: 33333333-3333-3333-3333-333333333333
+      roles: ["System Customizer"]
 ```
 
 | Key | Meaning |
@@ -53,7 +54,7 @@ mirage:
 | `applications[].federatedCredentials` | `[{ issuer, subject, audiences }]`. Trusts a client assertion from `issuer` whose subject is `subject`. One audience; default `api://AzureADTokenExchange`. |
 | `users` | Interactive users. `objectId` is the Entra object id (`azureactivedirectoryobjectid`). `roles` lists role names; default `Basic User`. |
 
-Secrets come only from environment variables. A plain secret in YAML is not accepted. The simulator stores secrets and user passwords hashed, returns a new secret once on creation, and never writes a token or secret to disk or to the request log.
+Configured secrets come only from named environment variables; a plain secret in YAML is rejected. Administration can also generate a local secret and show it once. Secrets and user passwords are stored hashed, with private control-plane persistence selected by the simulation level. Plain tokens/secrets never belong in configuration, pack DATA or request logs. Dry run keeps control-plane changes in memory. See [simulation levels](simulation-levels.md).
 
 `mirage status` prints the org URL (origin) and the token authority. `GET /_sim/api/dataverse` returns the same values as JSON, with `tlsOrigin`, `certificateFile` and `certificateFingerprint` when TLS is on, plus the registered applications, users (with `passwordSet`), roles and recent requests.
 
@@ -167,7 +168,7 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 
 ### Batch
 
-`$batch` part errors use the Dataverse error envelope. A change set runs under the runtime's single mutation queue and is rolled back as a whole on failure (snapshot and restore). This is a local atomicity model, not transaction isolation for readers.
+`$batch` part errors use the Dataverse error envelope. A change set runs under the runtime's mutation boundary and rolls back as a whole on failure. Organization/app reads use the shared serialized read boundary so they do not observe a partially applied change set. This is a local queued atomicity model, not distributed Dataverse transaction behavior.
 
 ### Change tracking
 
@@ -198,7 +199,7 @@ The change log is in memory and keeps the last 10,000 changes. It is reset by a 
 
 ## Administration
 
-The **Dataverse API** view at `/_sim/#dataverse` shows the status (origins, authority, tenant and organization ids, certificate file and fingerprint), the registered applications with secret hints and certificate thumbprints, the users with roles, access mode and disabled state, and the recent requests. Its forms call the endpoints below with the runtime CSRF token: register an application, add a secret or a certificate (or bare public key), remove a secret or an application, create an interactive user with roles and an optional password, save roles, enable or disable a user, and reset the workspace. A created secret is shown once in the view with a copy button; dismissing it, leaving the view or reloading the page drops it, and no later read returns it. When the API is off the view shows "Dataverse API is disabled for this runtime".
+The **Organization identity & API** view at `/_sim/#dataverse` shows organization availability separately from HTTP listeners. It manages staff users/roles, model-driven browser sessions, application registrations, one-time secrets, public certificates and federation. Staff administration remains available with the HTTP API off. Listener configuration is changed in Project setup and applied after restart. A created secret is shown once; dismissing it, leaving the view or reloading drops it, and later reads return only a hint. Control-plane changes follow the simulation level's private persistence policy.
 
 ### Endpoints
 
@@ -207,6 +208,9 @@ These endpoints live under the local administration API (`/_sim/`).
 | Method and path | Effect |
 | --- | --- |
 | `GET /_sim/api/dataverse` | Status: origins (`origin`, `tlsOrigin`), certificate file and fingerprint, authority, tenant, applications, users (with `passwordSet`), roles, requests. |
+| `GET /_sim/api/dataverse/session` | Current model-driven staff principal with roles, eligible users and the explicit local-administrator option. |
+| `POST /_sim/api/dataverse/session` | Body `{ userId }`; select an enabled interactive user in this browser's signed, runtime-specific HttpOnly session cookie. |
+| `DELETE /_sim/api/dataverse/session` | Explicitly reset this browser to local administrator. Invalid/deleted/disabled/expired selections otherwise fail without escalating. |
 | `POST /_sim/api/dataverse/applications` | Body `{ displayName, appId?, roles?, publicClient?, redirectUris?, allowedGrants? }`. 201 `{ appId, systemuserid, secret }`. The secret is shown once. A public client (`publicClient: true`) uses only the authorization code, device code, refresh token and password (ROPC) grants. `redirectUris` must be http(s) URLs and `allowedGrants` names known grants. |
 | `POST /_sim/api/dataverse/applications/<appId>/secrets` | 201 `{ id, secret, hint, expiresOn }`. The secret is shown once. |
 | `DELETE /_sim/api/dataverse/applications/<appId>/secrets/<id>` | 204. |

@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Miscellaneous platform messages of the simulated Dataverse Web API: FetchXML and QueryExpression conversion and
 // validation, RetrieveTimestamp, the knowledge article and knowledge base article search functions, and the knowledge
 // version and view, rollup, virtual table event, composite data source, certificate credential, managed identity and
@@ -326,7 +327,7 @@ function mustRow(store, logical, pk, id) {
   if (!row) throw notFound(logical, id);
   return row;
 }
-const orgIdOf = (store) => store.tableRows("organization")[0]?.organizationid ?? ZERO_GUID;
+const orgIdOf = (store) => organizationRecord(store)?.organizationid ?? ZERO_GUID;
 const tenantOf = (api) => (api.settings?.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${api.settings?.uniqueName}:tenant`)).toLowerCase(); // as dataverse-api.mjs
 
 // An entity reference ({"@odata.id": "accounts(guid)"}, an entity with @odata.type, or the URL text): its logical name and id.

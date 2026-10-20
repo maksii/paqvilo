@@ -1180,6 +1180,16 @@ export function createMetadataService({ organizationId, schema, mappings, lcid =
     objectTypeCode: (logical) => objectTypeCode(logical),
 
     versionStamp: () => stampOf(),
+    // Local global-metadata version: stable across row edits and restarts, and
+    // shared by the service document and CSDL. No native version is invented.
+    etag: () => {
+      const root = schemaRoot();
+      const digest = createHash('sha256').update(JSON.stringify({ organizationId,
+        tables: root?.tables, relationships: root?.relationships, optionSets: root?.optionSets,
+        mappings: mappingRoot(), virtual: Object.fromEntries(Object.entries(virtualRoot().tables ?? {}).map(([name, table]) => [name, table.mapping])),
+        globalOptionSets: read(globalOptionSets), extraCsdl: read(extraCsdl), seq: latestOf().seq })).digest('hex');
+      return `"${BigInt('0x' + digest.slice(0, 13)).toString()}"`;
+    },
 
     entities() {
       return logicalNames().map((name) => entityOf(source(name)));

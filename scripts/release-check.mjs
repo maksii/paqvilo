@@ -12,7 +12,7 @@ const DOCUMENTATION_ASSETS = new Set([
 
 const SAMPLE_COMPONENT_LICENSE = 'examples/project/code-solution/Controls/exa_ExamplePages.ExampleLinearInput/bundle.js.LICENSE.txt';
 const SETUP_ASSETS = new Set(['lense/setup/index.html', 'lense/setup/style.css']);
-const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'catalogue.mjs', 'controls.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
+const MODEL_DRIVEN_FILES = new Set(['app.mjs', 'catalogue.mjs', 'control-descriptors.mjs', 'controls.mjs', 'data.mjs', 'http.mjs', 'icons.mjs', 'index.html', 'power-pages.mjs', 'providers.mjs', 'solution.mjs', 'style.css'].map(name => `mirage/lib/model-driven/${name}`));
 // Reusable campaign sources only. Native recordings, configuration snapshots,
 // bridge credentials and local invocation manifests stay outside the package.
 const COMPANY_QUALIFICATION_SOURCES = new Set([
@@ -77,6 +77,11 @@ export const PROJECT_TEMPLATE_FILES = [
 
 export const REQUIRED_RELEASE_FILES = [
   ...MODEL_DRIVEN_FILES, 'mirage/docs/model-driven-apps.md',
+  'lense/standalone-mirage.mjs', 'mirage/lib/standalone-runtime.mjs',
+  'mirage/lib/dataverse-organization.mjs', 'mirage/lib/runtime-config.mjs',
+  'mirage/lib/simulation-settings.mjs', 'mirage/lib/simulation-persistence.mjs',
+  'mirage/lib/transactional-files.mjs', 'mirage/lib/pack-data-files.mjs',
+  'mirage/docs/standalone-organization.md', 'mirage/docs/simulation-levels.md',
   'lense/commands/setup.mjs', 'lense/setup/store.mjs', 'lense/setup/server.mjs', 'lense/setup/app.mjs',
   'lense/setup/index.html', 'lense/setup/style.css', 'docs/setup.md',
   'lense/commands/init.mjs', 'lense/project-scaffold.mjs', 'lense/project-check.mjs',

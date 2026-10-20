@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages: role privileges, team membership, privilege and share lookups, parent users, the
 // business unit hierarchy, access-team templates and the Microsoft Entra ID user lookups, through the registered operations.
 // Registered as extension operations (dataverse-operations.mjs). Invented schema and GUIDs only.
@@ -200,7 +201,7 @@ function seedTeamTemplateTable(store) {
  */
 export async function ensureTeamTemplates(store) {
   seedTeamTemplateTable(store);
-  const org = tableOf(store, "organization")[0];
+  const org = organizationRecord(store);
   return seedTablePrivileges(store, { organizationId: org?.organizationid }, "teamtemplate", { schema: TEAM_TEMPLATE_SCHEMA });
 }
 
@@ -405,7 +406,7 @@ function operations(api) {
           let team = accessTeamOf(store, template.teamtemplateid, id);
           if (!team) {
             // ponytail: one access team per (template, record); the platform's team naming and cascade rules are not modelled.
-            const org = tableOf(store, "organization")[0];
+            const org = organizationRecord(store);
             team = {
               teamid: uuidV5(template.teamtemplateid, `access-team:${id}`), name: template.teamtemplatename ?? "", teamtype: ACCESS_TEAM,
               systemmanaged: true, teamtemplateid: ref("teamtemplate", template.teamtemplateid), regardingobjectid: ref(mapping.logicalName, id),

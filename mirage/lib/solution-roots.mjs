@@ -106,7 +106,7 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
       if (inside) treeKeys.push(key(path.join(pair.given, relative)));
     }
   }
-  const sources = spellings(sourceDir);
+  const sources = sourceDir ? spellings(sourceDir) : [];
   const rootKeys = roots.flatMap(spellings);
   // Runtime output (state, caches) never triggers a source reload.
   const excluded = exclude.filter(Boolean).flatMap(spellings);

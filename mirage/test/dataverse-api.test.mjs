@@ -611,6 +611,38 @@ describe("dataverse API batch, metadata and sign-in", () => {
     assert.ok((await response.text()).includes('EntityType Name="widget"'));
   });
 
+  it('service and metadata share a strong local ETag that changes with schema, not record edits', async t => {
+    const serviceTag = (await send(apiPath(''), { headers: bearer(token) })).headers.get('etag');
+    const metadataTag = (await send(apiPath('$metadata'), { headers: bearer(token) })).headers.get('etag');
+    assert.match(serviceTag, /^"\d+"$/);
+    assert.equal(serviceTag, metadataTag);
+    const original = store.tableRows('widget').find(row => row.widgetid === WIDGET_ID).name;
+    await store.update('widget', WIDGET_ID, { name: 'ETag data edit' }, { admin: true });
+    assert.equal((await send(apiPath('$metadata'), { headers: bearer(token) })).headers.get('etag'), metadataTag);
+    await store.update('widget', WIDGET_ID, { name: original }, { admin: true });
+    const fields = structuredClone(store.state.mappings.widget.fields);
+    t.after(() => store.transact(() => { store.state.mappings.widget.fields = fields; }));
+    await store.transact(() => { store.state.mappings.widget.fields.metadatatag = { dataverseType: 'nvarchar' }; });
+    const changed = (await send(apiPath('$metadata'), { headers: bearer(token) })).headers.get('etag');
+    assert.notEqual(changed, metadataTag);
+    assert.equal((await send(apiPath(''), { headers: bearer(token) })).headers.get('etag'), changed);
+  });
+
+  it('conditional records, unresolved callers and route errors retain their distinct response headers', async () => {
+    const path = apiPath(`widgets(${WIDGET_ID})`), record = await send(path, { headers: bearer(token) });
+    const tag = record.headers.get('etag'); await record.arrayBuffer();
+    const unchanged = await send(path, { headers: { ...bearer(token), 'if-none-match': tag } });
+    assert.equal(unchanged.status, 304); assert.equal(unchanged.headers.get('odata-version'), null);
+    const unknown = await send(path + '/unknownproperty', { headers: bearer(token) });
+    assert.equal(unknown.status, 404); assert.equal(unknown.headers.get('x-content-type-options'), null);
+    const put = await send(path, { method: 'PUT', headers: { ...bearer(token), 'content-type': 'application/json' }, body: '{}' });
+    assert.equal(put.status, 405); assert.equal(put.headers.get('x-content-type-options'), null);
+    const caller = await send(apiPath('WhoAmI'), { headers: { ...bearer(token), MSCRMCallerID: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa' } });
+    assert.equal(caller.status, 404); assert.equal(caller.headers.get('odata-version'), null);
+    const preferences = await send(apiPath('widgets'), { headers: { ...bearer(token), Prefer: 'return=minimal,return=representation' } });
+    assert.equal(preferences.status, 200); assert.equal(preferences.headers.get('preference-applied'), null);
+  });
+
   it("answers RetrieveMetadataChanges with one entry for widget", async () => {
     const criteria = { Conditions: [{ PropertyName: "LogicalName", ConditionOperator: "Equals", Value: { Type: "System.String", Value: "widget" } }] };
     const query = JSON.stringify({ Criteria: criteria });

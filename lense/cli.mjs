@@ -155,6 +155,8 @@ try {
       styles: { type: 'string' },
       'sign-in-timeout': { type: 'string' },
       project: { type: 'string' },
+      runtime: { type: 'string' },
+      simulation: { type: 'string' },
       portal: { type: 'string' },
       port: { type: 'string' },
       state: { type: 'string' },
@@ -236,7 +238,7 @@ try {
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
     agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
-    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json'],
+    mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json', 'runtime', 'simulation'],
   };
   for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw Object.assign(new Error(`--${option} is not supported by ${command}`),{code:'unsupported_option'});
   if (values.pick && values.json) throw new Error('--pick cannot be combined with --json; provide --site and --env explicitly');
@@ -245,7 +247,22 @@ try {
   const { load, needsSite } = commands[command];
   phase='configuration';
   let cfg = null;
-  if (needsSite && !(command === 'mirage' && (positionals[1] ?? 'status') === 'status')) {
+  let standaloneProject = null;
+  if (command === 'mirage' && values.project && !values.config && !values.site) {
+    const { loadProjectConfig } = await import('../mirage/lib/project-config.mjs');
+    const candidate = await loadProjectConfig(values.project);
+    if (candidate.runtime?.kind !== 'power-pages') standaloneProject = candidate;
+  }
+  const standalone = command === 'mirage' && (standaloneProject || values.runtime && values.runtime !== 'power-pages');
+  let standaloneCatalogue;
+  if (command === 'mirage' && !values.project && (values.config || values.site)) {
+    const catalogue = loadCatalogue(values), name = values.site ?? catalogue.root.defaultSite;
+    if (catalogue.sites[name]?.mirage?.runtime?.kind && catalogue.sites[name].mirage.runtime.kind !== 'power-pages')
+      standaloneCatalogue = (await import('./standalone-mirage.mjs')).standaloneCatalogueConfiguration(catalogue, name, values);
+  }
+  if (standaloneCatalogue) cfg = standaloneCatalogue;
+  else if (standalone) cfg = (await import('./standalone-mirage.mjs')).standaloneMirageConfiguration(standaloneProject, values);
+  else if (needsSite && !(command === 'mirage' && (positionals[1] ?? 'status') === 'status')) {
     if (values.pick) {
       const { pickSiteAndEnv } = await import('./prompt.mjs');
       const catalogue = loadCatalogue(values);

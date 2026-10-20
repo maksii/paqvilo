@@ -56,14 +56,14 @@ function fixtureState() {
   return state;
 }
 
-async function setup() {
+async function setup(metadataFields) {
   const store = new DataStore({ state: fixtureState() });
   await ensureSecurityModel(store, SETTINGS);
   const principals = createPrincipals(store, SETTINGS);
   const ops = [], hooks = {};
   // Runtime shape: settings.organizationId is null; install reads the GUID from the organization row.
   const api = {
-    store, principals, settings: { ...SETTINGS, organizationId: null }, change: (fn) => fn(),
+    store, principals, metadataFields, settings: { ...SETTINGS, organizationId: null }, change: (fn) => fn(),
     registry: { register: (op) => ops.push(op) },
     recordHooks: { add: (n, fn) => { hooks[n] = fn; } },
   };
@@ -84,6 +84,20 @@ async function setup() {
   const sid = (oid) => principals.byObjectId(oid).systemuserid;
   return { store, principals, api, ops, hooks, add, grant, user, sid, formatted, write, project, mapping };
 }
+
+test('source-only secured metadata governs root, linked, aggregate and write paths without portal Webapi mappings', async () => {
+  const source = { secret: { dataverseType: 'nvarchar', isSecured: true }, manager: { dataverseType: 'lookup', isSecured: true } };
+  const t = await setup(logical => logical === 'widget' ? source : undefined);
+  delete t.mapping.fields.secret; delete t.mapping.fields.manager;
+  const basic = t.user(BASIC_OID);
+  assert.equal(t.project(basic, t.formatted(W1)).secret, null);
+  assert.equal(t.api.fieldSecurity.canWrite(basic, 'widget', 'secret', 'create'), false);
+  assert.throws(() => t.write('update', basic, { secret: 'Denied' }, t.store.tableRows('widget')[0]), error => error.status === 403);
+  assert.equal(t.api.fieldSecurity.mask(basic, 'widget', { 'linked.widgetid': W1, 'linked.secret': 'Hidden' }, { prefix: 'linked.' })['linked.secret'], null);
+  assert.throws(() => t.api.fieldSecurity.assertAggregate({ user: basic }, t.mapping, ['secret']), error => error.status === 403);
+  t.mapping.fields.secret = { dataverseMetadata: { IsSecured: false } };
+  assert.equal(t.api.fieldSecurity.canRead(basic, 'widget', 'secret'), true, 'Explicit runtime security overrides remain authoritative.');
+});
 
 test("seeds dataverse-only field security mappings and the System Administrator profile once", async () => {
   const { store } = await setup();
@@ -118,6 +132,8 @@ test("IsSecured is read from either spelling and an { Value } wrapper; dataverse
   assert.equal(isSecuredField({ dataverseMetadata: { isSecured: false }, columnMetadata: { IsSecured: true } }), false);
   assert.equal(isSecuredField({ columnMetadata: { IsSecured: true } }), true);
   assert.equal(isSecuredField({ columnMetadata: { isSecured: true } }), true);
+  assert.equal(isSecuredField({ isSecured: true }), true, 'Provenance-free Solution mappings retain their source security flag.');
+  assert.equal(isSecuredField({ isSecured: true, dataverseMetadata: { IsSecured: false } }), false, 'An explicit API metadata override still wins.');
   assert.equal(isSecuredField({ name: "plain" }), false);
 });
 
@@ -145,6 +161,17 @@ test("profile matrix: a secured column reads as null without canread and keeps i
   assert.equal(allowed.grade, null);
   assert.equal(allowed._manager_value, MGR);
   assert.equal(allowed[MGR_ANNOTATION], "Bob");
+});
+
+test('source fieldMetadata security survives provenance removal and thin explicit field definitions', async () => {
+  const t = await setup(), basic = t.user(BASIC_OID);
+  t.mapping.fieldMetadata = { secret: { dataverseType: 'nvarchar', isSecured: true } };
+  t.mapping.fields = { secret: { dataverseType: 'nvarchar' } };
+  assert.equal(t.project(basic, t.formatted(W1)).secret, null);
+  assert.throws(() => t.write('update', basic, { secret: 'Denied' }, { widgetid: W1 }), error => error.status === 403);
+  assert.equal(t.api.fieldSecurity.canRead(basic, 'widget', 'secret'), false);
+  t.mapping.fields.secret.dataverseMetadata = { IsSecured: false };
+  assert.equal(t.api.fieldSecurity.canRead(basic, 'widget', 'secret'), true, 'An explicit metadata override remains authoritative.');
 });
 
 test("team profiles reach the members of the team and nobody else", async () => {

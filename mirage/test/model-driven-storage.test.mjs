@@ -62,6 +62,28 @@ test('source model changes remove only obsolete source projections', t => {
   assert.equal(store.state.tables.unrelated.length, 1);
 });
 
+test('source lookup identity preserves canonical values and versions but target changes invalidate them', t => {
+  const { store, adapter, source } = fixture(); t.after(() => adapter.close());
+  const table = source.invented_component, related = '22222222-2222-4222-8222-222222222222';
+  table.fields.parentid = { name: 'parentid', dataverseType: 'lookup', targets: ['invented_parent'] };
+  table.rows[0].parentid = related;
+  const row = store.tableRows('invented_component')[0];
+  row.parentid = { id: related, logical_name: 'invented_parent', name: 'Canonical lookup' };
+  row.__simVersion = 7;
+  row.versionnumber = 7;
+  row.statuscode = 1;
+  adapter.materialize();
+  assert.equal(store.etag(store.tableRows('invented_component')[0]), 'W/"7"');
+  assert.deepEqual(store.tableRows('invented_component')[0].parentid, row.parentid);
+  assert.equal(store.tableRows('invented_component')[0].statuscode, 1, 'A pipeline-supplied status reason survives a thin source projection.');
+  table.fields.parentid.targets = ['invented_parent', 'invented_other'];
+  table.rows[0].parentid = { id: related, logical_name: 'invented_other' };
+  adapter.materialize();
+  assert.notEqual(store.etag(store.tableRows('invented_component')[0]), 'W/"7"');
+  assert.equal(store.tableRows('invented_component')[0].parentid.logical_name, 'invented_other');
+  assert.equal(table.rows[0].parentid.logical_name, 'invented_other', 'Materialization leaves source values intact.');
+});
+
 test('protected source deletes reject before root or child plug-ins, cascades and observers, including SDK writes', async t => {
   const { store, adapter, source } = fixture(); t.after(() => adapter.close());
   source.invented_component.protectedIds = [id];

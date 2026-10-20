@@ -78,8 +78,9 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     const components = scan.layers.flatMap(layer => layer.documents.map(document => document.facts.appComponents ?? {}));
     const present = (table, key, componentId) => (!state.dataverse?.solutionPayloads?.[componentId]
       && !state.dataverse?.sourceSolutionComponents?.baseline?.[`${table}/${componentId}`]) || rows[table].some(row => id(row[key]) === componentId);
-    const forms = mergeRows(base.forms ?? [], components.flatMap(component => component.forms ?? [])).filter(form => present('systemform', 'formid', form.id));
-    const views = mergeRows(base.views ?? [], components.flatMap(component => component.views ?? [])).filter(view => present('savedquery', 'savedqueryid', view.id));
+    const localized = component => ({ ...component, name: pickLabel(component.nameLabels, base.lcid) ?? component.name });
+    const forms = mergeRows(base.forms ?? [], components.flatMap(component => component.forms ?? []).map(localized)).filter(form => present('systemform', 'formid', form.id));
+    const views = mergeRows(base.views ?? [], components.flatMap(component => component.views ?? []).map(localized)).filter(view => present('savedquery', 'savedqueryid', view.id));
     // Current metadata rows take precedence over their original import payload.
     for (const row of rows.systemform) {
       const form = forms.find(form => form.id === id(row.formid));
@@ -100,7 +101,7 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     }
     const explicitMaps = [...scan.layers.flatMap(layer => layer.documents), ...appDocuments].flatMap(document => document.facts.appMaps ?? []);
     const apps = [];
-    for (const source of [...(base.modelDrivenApps ?? []), ...appsOf({ ...scan, layers: [...scan.layers, { documents: appDocuments }] })]) {
+    for (const source of [...(base.modelDrivenApps ?? []), ...appsOf({ ...scan, layers: [...scan.layers, { documents: appDocuments }] }, { lcid: base.lcid ?? 1033 })]) {
       if (!present('appmodule', 'appmoduleid', source.id)) continue;
       const index = apps.findIndex(app => source.id && app.id === source.id || source.uniqueName && app.uniqueName === source.uniqueName);
       const next = structuredClone(source);

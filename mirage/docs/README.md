@@ -13,6 +13,8 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Several portals and state isolation | [Multi-portal projects](multi-portal.md) |
 | Local administration and sign-in | [Simulation administration](sim-administration.md) |
 | Solution-based model-driven apps and Power Pages Management | [Model-driven apps](model-driven-apps.md) |
+| Apps and APIs without a Power Pages export | [Standalone organization](standalone-organization.md) |
+| Memory edits, direct pack DATA writes and schema changes | [Simulation levels](simulation-levels.md) |
 | Grouped personas, custom sign-in and isolated scenarios | [Persona catalogues](persona-catalog.md) |
 | Exported environment settings and local profile selection | [Deployment profiles](deployment-profiles.md) |
 | Platform rules, site overrides and configuration presets | [Configuration experiments](configuration-experiments.md) |

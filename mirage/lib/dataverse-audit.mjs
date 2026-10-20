@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse auditing: the read-only audit table, enablement from the organization,
 // table and column flags, the change history functions, the audit-only delete action, and the writers
 // other modules call: writeAudit (shares, role privileges and role assignments) and recordUserAccess.
@@ -48,7 +49,7 @@ const lower = (value) => String(value ?? '').toLowerCase();
 const ref = (logical, id) => (id == null ? null : { id, logical_name: logical, name: '' });
 const rowsOf = (store) => (store.state.tables.audit ??= []);
 const detailsOf = (store) => ((store.state.dataverse ??= {}).auditDetails ??= {});
-const organizationOf = (store) => store.tableRows('organization')[0] ?? {};
+const organizationOf = (store) => organizationRecord(store) ?? {};
 const schemaOf = (api) => (typeof api.schema === 'function' ? api.schema() : api.schema);
 
 // Organization.IsAuditEnabled gates everything; a table and its columns are audited when their flags say so.

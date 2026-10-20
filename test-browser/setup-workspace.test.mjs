@@ -59,8 +59,8 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   const failures = []; page.on('pageerror', error => failures.push(error.message));
   const demoServer = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => demoServer.close());
   await page.goto(demoServer.url);
-  await page.getByRole('heading', { name: 'Portals & sources', exact: true }).waitFor();
-  assert.match(await page.locator('#portal-example').innerText(), /Source found/);
+  await page.getByRole('heading', { name: 'Targets & sources', exact: true }).waitFor();
+  assert.match(await page.locator('#portal-example').innerText(), /export/);
   const demoForm = page.locator('form[data-form=site][data-site=example]');
   await page.locator('#portal-example summary').first().click();
   const configurationBefore = await fs.readFile(path.join(demo, 'paqvilo.config.yml'), 'utf8');
@@ -78,7 +78,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
   const popupWait = page.waitForEvent('popup'); await page.getByRole('link', { name: 'Project setup', exact: true }).click();
   const popup = await popupWait; await popup.getByRole('heading', { name: 'Project setup', exact: true }).waitFor();
   assert.equal(await popup.getByRole('link', { name: '← Back to portal', exact: true }).getAttribute('href'), '/');
-  assert.equal(await popup.getByRole('link', { name: 'Manage data and personas', exact: true }).getAttribute('href'), '/_sim/');
+  assert.equal(await popup.getByRole('link', { name: 'Administration', exact: true }).getAttribute('href'), '/_sim/');
   assert.match(await popup.locator('#overview').innerText(), /Mirage preview running/); await popup.close();
 
   const server = await startSetupServer({ directory: consumer, processEnv: {} }); t.resources.push(() => server.close());
@@ -93,7 +93,7 @@ test('setup UI configures a demo and an independent scaffold with two local Git 
     await form.locator('[name=env-url]').fill(`http://127.0.0.1:${id === 'alpha' ? 8787 : 8788}`);
     await form.locator('[name=port]').fill('0');
     await saveForm(page, form);
-    assert.match(await page.locator(`#portal-${id}`).innerText(), /Source found/);
+    assert.match(await page.locator(`#portal-${id}`).innerText(), /export/);
     assert.doesNotMatch(await page.locator(`#portal-${id}`).innerText(), /No committed Git checkout/);
   }
   assert.match(await page.locator('#overview').innerText(), /Configuration ready/);

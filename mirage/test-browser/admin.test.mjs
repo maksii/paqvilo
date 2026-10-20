@@ -341,7 +341,7 @@ test(
         "plugins",
       ],
       [
-        "Identity & permissions",
+        "Portal identity & permissions",
         "Add permission",
         {
           id: "permission1",
@@ -431,7 +431,7 @@ test(
     assert.equal(workspace.data.contact[0].contactid, "preset-contact");
 
     await page
-      .getByRole("link", { name: "Identity & permissions", exact: true })
+      .getByRole("link", { name: "Portal identity & permissions", exact: true })
       .click();
     await page
       .getByText("Advanced: configured identity (sign-in default and scripts)", { exact: true })
@@ -852,6 +852,7 @@ test(
     await page.locator("#editor").waitFor({ state: "hidden" });
     assert.equal(simulator.state().config.plugins.length, 1);
     await page.getByRole("link", { name: "Data records", exact: true }).click();
+    await page.getByLabel('Entity', { exact: true }).selectOption('contact');
     await page
       .getByRole("button", { name: "Create record", exact: true })
       .first()
@@ -887,7 +888,7 @@ test(
     );
     assert.equal(onDisk.tables.contact[0].fullname, "Ada Lovelace");
     await page
-      .getByRole("link", { name: "Identity & permissions", exact: true })
+      .getByRole("link", { name: "Portal identity & permissions", exact: true })
       .click();
     await page
       .getByText("Advanced: configured identity (sign-in default and scripts)", { exact: true })

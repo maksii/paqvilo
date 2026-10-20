@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security messages, second set: owner reassignment, owner-to-access team conversion, team business units
 // and group sync, shared links, Entra object id privilege reads, the user hierarchy, team-derived privileges, masked columns,
 // the delegation, privilege checker, consent and inherited-access messages, and the internal-only channel and sync messages.
@@ -78,7 +79,7 @@ function reassignRows(api, c, from, to, objectType) {
 
 // A shared-link row. The target's business unit and the organization are copied as the other team rows carry them.
 function linkRow(store, { token, logical, id, mask, row }) {
-  const org = tableOf(store, "organization")[0];
+  const org = organizationRecord(store);
   return {
     teamid: token, name: "Shared link", teamtype: OWNER_TEAM, systemmanaged: false, sharelinkqualifier: String(mask),
     regardingobjectid: lookup(logical, id), regardingobjecttypecode: logical, grantees: [],
@@ -123,7 +124,7 @@ export function install(api) {
     const user = systemuserByAad(store, c.params?.DirectoryObjectId);
     return respond(c, name, { RolePrivileges: entriesOf(store, roleIdsOfUser(store, user.systemuserid)).filter(keep) });
   };
-  const orgId = () => tableOf(store, "organization")[0]?.organizationid ?? null;
+  const orgId = () => organizationRecord(store)?.organizationid ?? null;
   // The System Administrator role check of dataverse-fls.mjs. unverified: the privilege name in the refusal.
   const needSystemAdministrator = (c) => {
     if (!api.principals.roles(c.user).some((r) => r.name === ADMIN_ROLE)) throw privilegeDeniedError(c.user, "prvSystemAdministrator", "organization");

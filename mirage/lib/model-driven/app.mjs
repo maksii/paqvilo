@@ -8,13 +8,46 @@ const storage = {
   get(key, fallback) { try { return JSON.parse(localStorage.getItem('mirage.apps.' + key)) ?? fallback; } catch { return fallback; } },
   set(key, value) { try { localStorage.setItem('mirage.apps.' + key, JSON.stringify(value)); } catch { /* Session remains usable when browser storage is unavailable. */ } },
 };
-let catalogue, app, table, current, query = {}, selected = new Set(), record, etag, formId, activeTab, controls = [], dirty = false, pending = false, generation = 0, tabObserver;
+let catalogue, app, table, current, query = {}, selected = new Set(), record, recordCapabilities, etag, formId, activeTab, controls = [], dirty = false, pending = false, generation = 0, tabObserver, staffIdentity, staffSession, staffSessionError = '';
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
+let touchedFields = new Set();
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 async function api(path = '', options = {}) {
   const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
   const body = await response.json(); if (!response.ok) throw new Error(body.error?.message ?? `Request failed (${response.status}).`); return body;
 }
+async function staffRequest(options = {}) {
+  const response = await fetch('/_sim/api/dataverse/session', { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf } });
+  const body = await response.json(); if (!response.ok) throw new Error(body.error?.message ?? 'Staff session unavailable.'); return body;
+}
+function renderStaffSession(session) {
+  staffSession = session; staffSessionError = '';
+  staffIdentity = session.current?.kind === 'staff' ? session.current.id : 'local-admin';
+  const profile = $('#staff-profile'); profile.textContent = session.current?.kind === 'staff' ? (session.current.name ?? '').split(/\s+/).map(word => word[0]).slice(0, 2).join('').toUpperCase() || '#' : '#';
+  profile.title = `${session.current?.name ?? 'Local administrator'} · ${session.current?.kind === 'staff' ? (session.current.roles ?? []).join(', ') || 'No roles' : 'Explicit local development administrator'}`;
+}
+async function loadStaffSession() {
+  try { const session = await staffRequest(); renderStaffSession(session); }
+  catch (error) { staffSession = undefined; staffIdentity = undefined; staffSessionError = error.message; $('#staff-profile').title = 'Staff session unavailable. Select an identity explicitly.'; notice(error.message, true); }
+}
+async function staffProfile() {
+  await loadStaffSession();
+  const body = document.createElement('div');
+  body.innerHTML = `<p><strong>${esc(staffSession?.current?.name ?? 'Staff session unavailable')}</strong></p><p>${esc(staffSessionError || (staffSession?.current?.roles ?? []).join(', ') || 'No roles')}</p><p>Staff roles and field security apply to model-driven reads and changes. Local administrator is an explicit development bypass. Portal personas and API application tokens are separate.</p><label for="staff-actor">Organization staff</label>`;
+  const select = document.createElement('select'); select.id = 'staff-actor'; select.add(new Option('Local administrator', 'local-admin'));
+  for (const user of staffSession?.users ?? []) select.add(new Option(`${user.name} · ${(user.roles ?? []).join(', ') || 'No roles'}`, user.id));
+  if (!staffIdentity) { select.add(new Option('Select an identity', '')); select.value = ''; } else select.value = staffIdentity;
+  body.append(select); const administration = document.createElement('p'); administration.innerHTML = '<a href="/_sim/#dataverse">Manage organization identities</a>'; body.append(administration);
+  dialog('Staff profile', body, [['Close', closeDialog], ['Use identity', async () => {
+    const selection = select.value; if (!selection) return;
+    closeDialog(); if (!await canLeave()) return;
+    renderStaffSession(await staffRequest(selection === 'local-admin' ? { method: 'DELETE' } : { method: 'POST', body: JSON.stringify({ userId: selection }) }));
+    dirty = false; record = null; recordCapabilities = undefined; current = null; $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
+    catalogue = await api(); await loadRoute();
+  }, true]]);
+}
+const capability = (operation, source = recordCapabilities ?? table?.capabilities) => source?.[operation] !== false;
+const capabilityReason = source => source?.reason ?? 'Your staff role or the configured DATA ownership does not allow this operation.';
 const tablePath = (entity = table.entity, id) => '/tables/' + encodeURIComponent(entity) + (id ? '/' + encodeURIComponent(id) : '');
 function button(label, action, { disabled = false, title, className = '', iconName, iconOnly = false, chevron = false } = {}) {
   const iconForLabel = { '⌂  Home': 'home', '＋ New': 'add', '＋ New related record': 'add', '↻ Refresh': 'refresh', '↻ Refresh related records': 'refresh', '▣ Save': 'save', '← Back': 'back', '▥ Edit columns': 'columns', '▽ Edit filters': 'filter', 'Save & Close': 'saveClose', Delete: 'delete', 'Show Chart': 'chart', 'Visualize this view': 'powerbi', 'Email a Link': 'email', Flow: 'flow', 'Run Report': 'report', Share: 'share', Pin: 'pin', Unpin: 'pin' };
@@ -82,14 +115,15 @@ function renderCommands(mode) {
   commands.append(button('Back', mode === 'form' ? () => navigate(table.entity) : null, { iconName: 'back', iconOnly: true, disabled: mode !== 'form' })); separator();
   if (mode === 'form') {
     commands.append(button('Open in new window', null, { iconName: 'open', iconOnly: true, disabled: true, title: 'Opening a separate record window is not supported locally.' })); separator();
-    commands.append(button('Open in VSCode', null, { iconName: 'vscode', disabled: true, title: 'Opening an external editor is not supported locally.' }), button('▣ Save', () => saveRecord(false)), button('Save & Close', () => saveRecord(true)), button('＋ New', () => navigate(table.entity, { id: 'new' })), button('Deactivate', null, { iconName: 'deactivate', disabled: true, title: 'Record activation commands are not supported locally yet.' }));
-    if (record?.[table.idColumn]) commands.append(button('Delete', () => deleteRecords([{ id: record[table.idColumn], etag }]), { disabled: table.protectedIds?.includes(record[table.idColumn]), title: table.protectedIds?.includes(record[table.idColumn]) ? 'The source website cannot be deleted from its own running instance.' : undefined }));
+    const canSave = capability(record?.[table.idColumn] ? 'update' : 'create');
+    commands.append(button('Open in VSCode', null, { iconName: 'vscode', disabled: true, title: 'Opening an external editor is not supported locally.' }), button('▣ Save', () => saveRecord(false), { disabled: !canSave, title: canSave ? undefined : capabilityReason(recordCapabilities ?? table.capabilities) }), button('Save & Close', () => saveRecord(true), { disabled: !canSave }), button('＋ New', () => navigate(table.entity, { id: 'new' }), { disabled: !capability('create', table.capabilities), title: capability('create', table.capabilities) ? undefined : capabilityReason(table.capabilities) }), button('Deactivate', null, { iconName: 'deactivate', disabled: true, title: 'Record activation commands are not supported locally yet.' }));
+    if (record?.[table.idColumn]) commands.append(button('Delete', () => deleteRecords([{ id: record[table.idColumn], etag }]), { disabled: !capability('delete') || table.protectedIds?.includes(record[table.idColumn]), title: table.protectedIds?.includes(record[table.idColumn]) ? 'The source website cannot be deleted from its own running instance.' : !capability('delete') ? capabilityReason(recordCapabilities ?? table.capabilities) : undefined }));
     commands.append(button('↻ Refresh', async () => { if (await canLeave()) await loadRoute(); }), button('Check Access', null, { iconName: 'key', disabled: true, title: 'Access inspection command is not supported locally.' }), button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }));
     commands.append(button('More commands', () => { const isPinned = pinned.some(item => item.url === location.pathname + location.search); dialog('Record commands', '<p>Keep this local record in your pinned navigation.</p>', [['Close', closeDialog], [isPinned ? 'Unpin' : 'Pin', () => { const url = location.pathname + location.search; pinned = isPinned ? pinned.filter(item => item.url !== url) : [...pinned, { url, label: record?.[table.nameColumn] ?? table.singular, app: app.uniqueName }]; storage.set('pinned', pinned); closeDialog(); renderNavigation(); }]]); }, { iconName: 'more', iconOnly: true }));
   } else {
-    commands.append(button('Show Chart', null, { disabled: true, title: 'Charts are not supported locally yet.' }), button('＋ New', () => navigate(table.entity, { id: 'new' }), { className: 'new-command', title: 'Create a local record' }), button('Delete', async () => {
+    commands.append(button('Show Chart', null, { disabled: true, title: 'Charts are not supported locally yet.' }), button('＋ New', () => navigate(table.entity, { id: 'new' }), { className: 'new-command', disabled: !capability('create', current?.capabilities ?? table.capabilities), title: capability('create', current?.capabilities ?? table.capabilities) ? 'Create a local record' : capabilityReason(current?.capabilities ?? table.capabilities) }), button('Delete', async () => {
       const rows = await Promise.all([...selected].map(id => api(tablePath(table.entity, id)).then(value => ({ id, etag: value.etag })))); await deleteRecords(rows);
-    }, { disabled: !selected.size || [...selected].some(id => table.protectedIds?.includes(id)) }), button('↻ Refresh', () => loadGrid()));
+    }, { disabled: !selected.size || !capability('delete', current?.capabilities ?? table.capabilities) || [...selected].some(id => table.protectedIds?.includes(id) || current?.rowCapabilities?.[id]?.delete === false), title: !capability('delete', current?.capabilities ?? table.capabilities) || [...selected].some(id => current?.rowCapabilities?.[id]?.delete === false) ? capabilityReason(current?.capabilities ?? table.capabilities) : [...selected].some(id => table.protectedIds?.includes(id)) ? 'The source website cannot be deleted from its own running instance.' : undefined }), button('↻ Refresh', () => loadGrid()));
     commands.append(button('Visualize this view', null, { disabled: true, title: 'Power BI is not supported locally.' }), button('Email a Link', null, { disabled: true, chevron: true, title: 'Email links are not supported locally.' }), button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }), button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }), button('More commands', null, { disabled: true, iconName: 'more', iconOnly: true, title: 'Additional ribbon commands are not supported locally.' }));
   }
   commands.append(button('Share', null, { disabled: true, className: 'share-command', chevron: true, title: 'Sharing is not supported locally.' }));
@@ -109,7 +143,7 @@ async function loadGrid() {
   const token = ++generation; selected = new Set(); renderCommands('grid'); $('#content').setAttribute('aria-busy', 'true');
   try {
     const result = await api(tablePath() + '?query=' + encodeURIComponent(JSON.stringify(query)));
-    if (token !== generation) return; current = result; renderGrid();
+    if (token !== generation) return; current = result; renderCommands('grid'); renderGrid();
   } finally { if (token === generation) $('#content').setAttribute('aria-busy', 'false'); }
 }
 function renderGrid() {
@@ -218,7 +252,7 @@ async function lookup(field) {
 async function loadRecord(id) {
   const token = ++generation; $('#content').setAttribute('aria-busy', 'true');
   const result = id ? await api(tablePath(table.entity, id)) : { row: Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, field.defaultValue])) };
-  if (token !== generation) return; record = result.row;
+  if (token !== generation) return; record = result.row; touchedFields = new Set(); recordCapabilities = result.capabilities ?? table.capabilities;
   if (!id) for (const [name, value] of new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? '')) {
     const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
     if (field && !field.isPrimaryId && field.validForCreate !== false && hasControl(field)) record[name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value;
@@ -272,14 +306,15 @@ function renderRecord() {
       if (cell.subgrid) { position(renderSubgrid(cell)); continue; }
       if (!cell.supported || !table.fields[cell.name]) { const unsupported = document.createElement('p'); unsupported.className = 'unsupported'; unsupported.textContent = `${cell.label ?? 'Control'}: ${cell.reason ?? 'Unsupported control'}`; position(unsupported); continue; }
       const field = { ...table.fields[cell.name], label: cell.label ?? table.fields[cell.name].label };
-      const disabled = cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false;
+      const mode = existing ? 'update' : 'create';
+      const disabled = cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false || !capability(mode) || recordCapabilities?.fields?.[field.name]?.[mode] === false;
       const wrapper = document.createElement('div'); wrapper.className = 'field'; const label = document.createElement('label'); label.htmlFor = 'field-' + field.name; label.textContent = field.label; if (field.required) { const required = document.createElement('span'); required.className = 'required'; required.setAttribute('aria-hidden', 'true'); required.textContent = '*'; label.append(required); }
       if (cell.showLabel === false) label.className = 'sr-only';
-      const control = renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup, formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'] }); wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, control, disabled });
+      const control = renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup, formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'], logicalName: record[field.name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] }); wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, control, disabled });
     }
     columns[Math.max(0, section.column ?? 0)]?.append(panel);
   }
-  const markDirty = () => { dirty = true; notice(''); $('#save-status').textContent = ' - Unsaved changes'; };
+  const markDirty = event => { const entry = controls.find(entry => entry.control.element === event.target || entry.control.element.contains(event.target)); if (!entry || entry.disabled || !entry.control.supported) return; touchedFields.add(entry.name); dirty = true; notice(''); $('#save-status').textContent = ' - Unsaved changes'; };
   form.addEventListener('input', markDirty); form.addEventListener('change', markDirty); content.append(form);
   recordCard.title = selectedForm.source === 'solution' ? 'Exported solution form · unsupported controls remain read-only.' : 'Form generated from available metadata.';
 }
@@ -300,7 +335,7 @@ function renderSubgrid(cell) {
   let page = 1, sort, direction = 'asc';
   const selectedRelated = new Set();
   const toolbar = document.createElement('div'), results = document.createElement('div'), footer = document.createElement('div'); footer.className = 'grid-footer'; results.className = 'related-results';
-  const newRelated = button(`New ${target.singular}`, () => navigate(target.entity, { id: 'new', defaults: { [field]: parentId } }), { iconName: 'add' }); newRelated.dataset.action = 'new-related';
+  const newRelated = button(`New ${target.singular}`, () => navigate(target.entity, { id: 'new', defaults: { [field]: parentId } }), { iconName: 'add', disabled: target.capabilities?.create === false, title: target.capabilities?.create === false ? capabilityReason(target.capabilities) : undefined }); newRelated.dataset.action = 'new-related';
   const deleteRelated = button('Delete', async () => {
     if (!await confirm('Delete local records', `Delete ${selectedRelated.size} selected related records from this Mirage instance?`, 'Delete')) return;
     for (const id of selectedRelated) {
@@ -329,7 +364,7 @@ function renderSubgrid(cell) {
     }
     head.append(headings); grid.append(head);
     const body = document.createElement('tbody');
-    const updateSelection = () => { deleteRelated.hidden = !selectedRelated.size; all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length); all.indeterminate = selectedRelated.size > 0 && !all.checked; };
+    const updateSelection = () => { deleteRelated.hidden = !selectedRelated.size; deleteRelated.disabled = result.capabilities?.delete === false || [...selectedRelated].some(id => result.rowCapabilities?.[id]?.delete === false || target.protectedIds?.includes(id)); deleteRelated.title = deleteRelated.disabled ? capabilityReason(result.capabilities ?? target.capabilities) : ''; all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length); all.indeterminate = selectedRelated.size > 0 && !all.checked; };
     for (const row of result.rows) {
       const tr = document.createElement('tr');
       const id = String(row[target.idColumn]), selection = document.createElement('td'); selection.className = 'selection';
@@ -349,19 +384,20 @@ function renderSubgrid(cell) {
 }
 function captureDraft() { for (const entry of controls) if (!entry.disabled && entry.control.supported) record[entry.name] = entry.control.read(); }
 async function saveRecord(close) {
-  if (pending || !$('#record-form').reportValidity()) return;
+  if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create') || !$('#record-form').reportValidity()) return;
   notice('');
   captureDraft();
   const existing = Boolean(record[table.idColumn]), values = {};
   // Send editable fields across all tabs; disabled/system fields never enter writes.
   const layoutFields = new Map(table.forms.find(form => form.id === formId)?.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(field => field.supported && !field.disabled).map(field => [field.name, field]) ?? []);
   for (const [name, value] of Object.entries(record)) {
-    const field = table.fields[name]; if (field && hasControl(field) && !field.isPrimaryId && field[existing ? 'validForUpdate' : 'validForCreate'] !== false && layoutFields.has(name)) values[name] = value;
+    const field = table.fields[name], mode = existing ? 'update' : 'create'; if ((!existing || touchedFields.has(name)) && field && hasControl(field) && !field.isPrimaryId && field[existing ? 'validForUpdate' : 'validForCreate'] !== false && recordCapabilities?.fields?.[name]?.[mode] !== false && layoutFields.has(name)) values[name] = value;
   }
+  if (existing && !Object.keys(values).length) { dirty = false; touchedFields.clear(); if (close) await navigate(table.entity); else notice('No record changes to save.'); return; }
   pending = true; $('#commands').classList.add('busy');
   try {
     const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), { method: existing ? 'PATCH' : 'POST', headers: existing ? { 'if-match': etag } : {}, body: JSON.stringify(values) });
-    dirty = false; record = result.row; etag = result.etag;
+    dirty = false; touchedFields.clear(); record = result.row; etag = result.etag;
     catalogue = await api(); table = catalogue.tables[table.entity];
     await navigate(table.entity, close ? {} : { id: record[table.idColumn], replace: true }); notice('Record saved locally.');
   } finally { pending = false; $('#commands').classList.remove('busy'); }
@@ -376,14 +412,14 @@ async function deleteRecords(rows) {
   } catch (error) { notice(`${deleted} records deleted. ${error.message}`, true); throw error; }
 }
 async function loadRoute() {
-  dirty = false; notice('');
+  dirty = false; touchedFields.clear(); notice('');
   const params = new URLSearchParams(location.search), application = params.get('appname') ?? params.get('appid');
   app = application ? catalogue.apps.find(app => app.id === application || app.uniqueName === application) : catalogue.apps.find(app => app.id === catalogue.defaultApp);
   if (!app) throw new Error('This application is not imported. Choose an available application above.');
   $('#apps').value = app.uniqueName ?? app.id; $('#source-label').textContent = app.name ?? app.uniqueName;
   const entity = params.get('etn') ?? firstEntity(app); table = catalogue.tables[entity];
   if (!table) throw new Error('No table metadata is available for this application. Import its solution and local mappings.');
-  renderNavigation(); record = null; etag = null;
+  renderNavigation(); record = null; recordCapabilities = undefined; current = null; etag = null;
   if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'));
   else {
     const view = params.get('viewid') ?? table.views.find(view => view.isDefault)?.id ?? table.views[0].id;
@@ -396,7 +432,23 @@ for (const element of document.querySelectorAll('[data-icon]')) element.innerHTM
 $('#apps').addEventListener('change', () => run(async () => { const destination = catalogue.apps.find(app => (app.uniqueName ?? app.id) === $('#apps').value); await navigate(firstEntity(destination), { application: destination }); }));
 window.addEventListener('popstate', () => run(async () => { if (await canLeave()) await loadRoute(); else history.forward(); }));
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
+$('#staff-profile').addEventListener('click', () => run(staffProfile));
+let checkingStaff = false;
+window.addEventListener('focus', () => run(async () => {
+  if (!catalogue || checkingStaff) return;
+  checkingStaff = true;
+  try {
+    const previous = JSON.stringify(staffSession?.current); await loadStaffSession();
+    if (previous === JSON.stringify(staffSession?.current)) return;
+    if (dirty) { for (const element of document.querySelectorAll('#record-form input,#record-form select,#record-form textarea,#record-form button,#commands button')) element.disabled = true; notice('The staff session changed in another tab. Reload or choose a profile to discard this draft before continuing.', true); return; }
+    $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
+    if (staffSession) { catalogue = await api(); await loadRoute(); }
+  } finally { checkingStaff = false; }
+}));
 await run(async () => {
+  await loadStaffSession();
+  const response = await fetch('/_sim/api/status');
+  if (response.ok) { const status = await response.json(); const portal = $('#open-portal'); portal.hidden = status.capabilities?.powerPages === false; if (status.links?.powerPages) portal.href = status.links.powerPages; }
   catalogue = await api();
   for (const application of catalogue.apps) $('#apps').add(new Option(application.name ?? application.uniqueName, application.uniqueName ?? application.id));
   await loadRoute();

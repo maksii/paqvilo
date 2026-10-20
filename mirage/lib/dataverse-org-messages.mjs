@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse organization, environment variable, license and deployment messages, through the registered operations.
 // Each answers from the store (organization row, solution, systemuser, workflow, environmentvariabledefinition and
 // environmentvariablevalue) or from a fixed stand-in where the simulator has no such fact: those are marked
@@ -53,7 +54,7 @@ const dv = (store) => (store.state.dataverse ??= {});
 const ADMIN = "System Administrator";
 const given = (value) => value !== undefined && value !== null && value !== "";
 const GUID_TEXT = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const orgIdOf = (store) => tableOf(store, "organization")[0]?.organizationid ?? ZERO_GUID;
+const orgIdOf = (store) => organizationRecord(store)?.organizationid ?? ZERO_GUID;
 const TIME = (value) => new Date(value).getTime();
 // The primary-key row of a table, or null.
 const rowNamed = (store, logical, id) => tableOf(store, logical).find((r) => sameId(r[`${logical}id`], id)) ?? null;
@@ -395,7 +396,7 @@ function operations(api) {
           throw invalid("SecretStore must be 0, the Key Vault store.");
         }
         if (args.Value !== undefined) need(c, ENV_VALUE, "Write");
-        const organizationId = tableOf(store, "organization")[0]?.organizationid ?? ZERO_GUID;
+        const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
         await write(() => {
           const definitions = tableOf(store, ENV_DEFINITION);
           let definition = definitionNamed(store, schemaName);
@@ -556,7 +557,7 @@ function operations(api) {
       handle: async (c) => {
         requireAdmin(c);
         await write(() => {
-          const org = tableOf(store, "organization")[0];
+          const org = organizationRecord(store);
           if (!org) throw notFound("organization", orgIdOf(store));
           if (org.sampledataimportid) throw invalid("Sample data is already installed.");
           org.sampledataimportid = uuidV5(orgIdOf(store), "sampledata");
@@ -570,7 +571,7 @@ function operations(api) {
       handle: async (c) => {
         requireAdmin(c);
         await write(() => {
-          const org = tableOf(store, "organization")[0];
+          const org = organizationRecord(store);
           if (!org?.sampledataimportid) throw invalid("Sample data is not installed.");
           org.sampledataimportid = null;
         });

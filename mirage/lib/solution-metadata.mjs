@@ -7,6 +7,7 @@ import {
   child,
   childText as text,
   label,
+  pickLabel,
   serializeXml as serialize,
 } from "./solution-xml.mjs";
 import {
@@ -208,8 +209,8 @@ export async function importSolutionMetadata(
     views = [];
   for (const layer of scan.layers) for (const document of layer.documents) {
     const components = document.facts.appComponents;
-    for (const form of components?.forms ?? []) if (!names || names.has(form.entity)) forms.push({ ...form, file: document.file });
-    for (const view of components?.views ?? []) if (!names || names.has(view.entity)) views.push({ ...view, file: document.file });
+    for (const form of components?.forms ?? []) if (!names || names.has(form.entity)) forms.push({ ...form, name: pickLabel(form.nameLabels, lcid) ?? form.name, file: document.file });
+    for (const view of components?.views ?? []) if (!names || names.has(view.entity)) views.push({ ...view, name: pickLabel(view.nameLabels, lcid) ?? view.name, file: document.file });
     if (components?.forms?.length || components?.views?.length || document.facts.apps?.length || document.facts.appMaps?.length) fingerprint.update(document.hash ?? '');
   }
   const entityDocs = new Map(
@@ -281,7 +282,8 @@ export async function importSolutionMetadata(
     forms: dedupe(forms, "form"),
     views: dedupe(views, "view"),
     sourceComponents: [...new Map(scan.layers.flatMap(layer => layer.documents.flatMap(document => document.facts.recordComponents ?? []))
-      .map(component => [`${component.kind}/${component.id}`, component])).values()],
+      .map(component => [`${component.kind}/${component.id}`, { ...component,
+        row: { ...component.row, name: pickLabel(component.labels, lcid) ?? component.row.name } }])).values()],
     plugins,
     diagnostics,
     filesRead: candidates.length,

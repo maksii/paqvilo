@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Webhooks (Learn: use-webhooks and register-web-hook). A plug-in step whose eventhandler is a service endpoint with contract 8
 // (Webhook) POSTs the RemoteExecutionContext JSON to the endpoint URL, with the headers and authentication Learn documents.
 //
@@ -57,7 +58,7 @@ function dataContract(value) {
 export function remoteExecutionContext(store, facts) {
   const { item, entity, operation, stage, target = {}, record, previous, identity, depth, correlationId, asyncExecution } = facts;
   const idColumn = store.resolveMapping(entity).idColumn;
-  const org = store.tableRows('organization')[0] ?? {};
+  const org = organizationRecord(store) ?? {};
   const initiating = identity?.systemUserId ?? identity?.id ?? null;
   const user = store.tableRows('systemuser').find((row) => same(row.systemuserid, initiating));
   const entityOf = (row, spec) => dataContract(recordToSdkEntity(store, entity, row, { allColumns: !spec.attributes?.length, columns: spec.attributes ?? [] }));
@@ -116,7 +117,7 @@ function authPairs(text) {
 // The POST for one step run: the URL with its query authentication, Learn's headers, and the JSON body.
 function requestOf(store, endpoint, facts) {
   const url = new URL(endpoint.url);
-  const org = store.tableRows('organization')[0] ?? {};
+  const org = organizationRecord(store) ?? {};
   const headers = {
     'content-type': 'application/json',
     'x-ms-dynamics-organization': String(org.domainname ?? org.name ?? ''), // Learn: the environment's domain name; unverified fallback to the organization name

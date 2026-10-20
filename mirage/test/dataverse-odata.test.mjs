@@ -263,6 +263,15 @@ test('preferenceApplied echoes only applied preferences, representation first; c
   assert.equal(preferenceApplied(parsePrefer('odata.maxpagesize=0'), { paged: false }), null);
 });
 
+test('the first return preference wins when duplicate values conflict', () => {
+  const minimal = parsePrefer('return=minimal,return=representation');
+  assert.equal(minimal.representation, false);
+  assert.equal(preferenceApplied(minimal), null);
+  const representation = parsePrefer('return=representation,return=minimal');
+  assert.equal(representation.representation, true);
+  assert.equal(preferenceApplied(representation), 'return=representation');
+});
+
 test('a validation fault adds TraceText for its operation step, and POST or GET adds the Api* details; a route or reader error has none', () => {
   const fault = new DataError('A validation error occurred.', 400, 'InvalidValue', { innerCode: '0x80044331' });
   const prefer = parsePrefer('odata.include-annotations="*"');

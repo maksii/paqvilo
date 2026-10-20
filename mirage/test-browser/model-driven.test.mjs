@@ -77,7 +77,8 @@ test('exported related subgrid filters by the current record and binds related c
   await page.locator('[data-action=new-related]').click();
   await page.getByLabel('Name', { exact: true }).fill('New related child');
   assert.equal(await page.getByLabel('Parent', { exact: true }).inputValue(), 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
-  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  const [createdResponse] = await Promise.all([page.waitForResponse(response => response.url().includes('/_apps/api/tables/x_child') && response.request().method() === 'POST'), page.getByRole('button', { name: 'Save', exact: true }).click()]);
+  assert.equal(createdResponse.status(), 201, await createdResponse.text());
   await page.getByRole('heading', { name: 'New related child', exact: true }).waitFor();
   const response = await fetch(origin + '/_apps/api/tables/x_child'); const result = await response.json();
   const created = result.rows.find(row => row.x_name === 'New related child');

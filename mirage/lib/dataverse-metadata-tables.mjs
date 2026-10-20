@@ -7,6 +7,7 @@
 // refresh keeps them. Shapes follow the Web API table and column articles; items marked unverified are
 // not confirmed against the service. Choice storage follows the canonical shape in dataverse-metadata-relationships.mjs.
 import { DataError } from "./data-error.mjs";
+import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import { createMetadataService } from "./dataverse-metadata.mjs";
 import { removeRelationshipsOf, assignValue, optionFrom, requireMetadataPrivilege, logMetadataChange, withSolutionMembership } from "./dataverse-metadata-relationships.mjs";
 import { grantTablePrivileges, revokeTablePrivileges, uuidV5 } from "./dataverse-security.mjs";
@@ -201,13 +202,7 @@ function customColumnOf(api, logical, mapping, name) {
 // Re-applies every stored custom column onto its table's mapping fields. Call after a Solution reload, inside a store
 // transaction: a reloaded mapping has its Solution fields only, and the custom columns come back from customColumns.
 export function reapplyCustomColumns(store) {
-  const state = store.state;
-  for (const [logical, bucket] of Object.entries(state.dataverse?.customColumns ?? {})) {
-    const mapping = state.mappings[logical];
-    if (!mapping) continue;
-    mapping.fields ??= {};
-    for (const [name, field] of Object.entries(bucket)) mapping.fields[name] = structuredClone(field);
-  }
+  applyCustomColumns(store.state);
 }
 
 // Adds one column to a mapping and returns its logical name. A File column also gets <col>_name.

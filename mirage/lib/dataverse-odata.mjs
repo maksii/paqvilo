@@ -358,6 +358,7 @@ export function parsePrefer(header) {
     respondAsync: false,
     raw: text,
   };
+  let returnSeen = false;
   for (const [, name, quoted, bare] of text.matchAll(/([A-Za-z][\w.-]*)(?:\s*=\s*(?:"([^"]*)"|([^,;\s"]*)))?/g)) {
     const value = (quoted ?? bare ?? "").trim();
     switch (name.toLowerCase()) {
@@ -373,7 +374,9 @@ export function parsePrefer(header) {
         else prefer.maxPageSizeZero = true;
         break;
       case "return":
-        if (value.toLowerCase() === "representation") prefer.representation = true;
+        // A conflicting duplicate does not override the first return preference.
+        if (!returnSeen) prefer.representation = value.toLowerCase() === "representation";
+        returnSeen = true;
         break;
       case "odata.continue-on-error":
         prefer.continueOnError = true;

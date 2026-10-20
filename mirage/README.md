@@ -2,13 +2,15 @@
 
 ![Mirage: a simulated portal shown as a solid page above its shifting reflection.](../docs/assets/mirage-visual.png)
 
-Mirage is Paqvilo's local-first Power Pages simulation engine. Run exported Liquid-based sites on your machine with simulated Dataverse, independent developer runtimes and repeatable test data.
+Mirage runs local Power Pages exports, solution-based model-driven apps and a simulated Dataverse organization API. Choose the surfaces your project needs, with independent developer runtimes and repeatable data.
 
 Mirage derives forms, lists, settings and permissions from exported sources and Solution metadata. Your project's registered data packs supply personas, datasets and simulated business rules.
 
 [Interactive demo](../docs/getting-started.md#try-the-demo) | [Configuration](../docs/configuration.md) | [Runtime reference](docs/README.md)
 
 ## Start your workspace
+
+For an app or API project without Power Pages, use the [standalone organization guide](docs/standalone-organization.md). It needs Solution exports and optional trusted packs, without a portal export or live environment. [Simulation levels](docs/simulation-levels.md) select memory-only edits, direct pack DATA updates, or schema-capable deep simulation. Configure these in `/_setup/`; changes apply after restart.
 
 Install Paqvilo and configure your export using [getting started](../docs/getting-started.md), then run from your portal project:
 

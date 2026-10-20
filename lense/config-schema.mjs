@@ -1,6 +1,8 @@
 import {contentPolicyDefaults} from '../mirage/lib/content-policy-defaults.mjs';
 import {identityProviderSettings} from '../mirage/lib/identity-provider-settings.mjs';
 import {dataverseSettings} from '../mirage/lib/dataverse-settings.mjs';
+import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
+import { simulationSettings } from '../mirage/lib/simulation-settings.mjs';
 // Validate configuration before it can become a browser URL, path, or routing rule.
 import { validateLocalOverrides } from '../mirage/lib/local-overrides.mjs';
 import { renderSettings } from '../mirage/lib/render-settings.mjs';
@@ -10,7 +12,7 @@ import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs
 const BLOCK_KINDS = ['page-js', 'page-css', 'basic-form-js', 'advanced-form-step-js', 'list-js'];
 const MARKUP_KINDS = ['web-template', 'content-snippet', 'page-copy', 'page-summary', 'metadata-markup'];
 const SITE_KEYS = ['source', 'defaultEnv', 'environments', 'startPath', 'webFiles', 'inline', 'markup', 'scope', 'routes', 'mirage'];
-const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'confinePortalPages', 'externalAssets', 'externalFrameOrigins', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider', 'dataverse'];
+const MIRAGE_KEYS = ['project', 'solutionRoots', 'solutionOrder', 'dataPacks', 'port', 'preset', 'presetMode', 'presetConfiguration', 'confinePortalPages', 'externalAssets', 'externalFrameOrigins', 'observed', 'dataModel', 'compat', 'head', 'render', 'deploymentProfiles', 'platform', 'personaContexts', 'identityProvider', 'dataverse', 'runtime', 'simulation'];
 const PACK_ID = /^[a-z0-9][a-z0-9._-]*$/;
 const PRESET_ID = /^[\w.-]+$/;
 
@@ -89,6 +91,8 @@ function array(value, name, allowed) {
  */
 export function mirageSettings(value, name) {
   keys(value, MIRAGE_KEYS, name);
+  if (value.runtime !== undefined) runtimeSettings(value.runtime, `${name}.runtime`);
+  if (value.simulation !== undefined) simulationSettings(value.simulation, `${name}.simulation`);
   if (value.deploymentProfiles !== undefined) resolveDeploymentProfiles(value.deploymentProfiles);
   validateLocalOverrides(value);
   if (value.project != null) string(value.project, `${name}.project`);

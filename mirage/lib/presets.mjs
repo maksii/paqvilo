@@ -178,7 +178,7 @@ export function bootstrapPresetLibrary({
     },
   };
   for (const pack of packs) {
-    if (!packMatches(pack, portal ?? {})) continue;
+    if (!packMatches(pack, portal)) continue;
     for (const [id, entry] of packPresetEntries(pack, { portal, metadata, options })) {
       if (Object.hasOwn(library, id))
         throw new Error(`Preset '${id}' from data pack ${pack.id} duplicates an existing preset`);

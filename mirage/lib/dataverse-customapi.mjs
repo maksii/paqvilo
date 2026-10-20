@@ -24,7 +24,7 @@ const FILE_KINDS = { 'customapi.xml': 'customapi', 'customapirequestparameter.xm
 const FIXED_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 
 const key = (value) => String(value ?? '').toLowerCase();
-const sameId = (a, b) => key(a) === key(b);
+const sameId = (a, b) => key(a?.id ?? a).replace(/[{}]/g, '') === key(b?.id ?? b).replace(/[{}]/g, '');
 const typeOf = (code) => TYPES[Number(code)];
 const isObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
 const num = (v) => typeof v === 'number' && Number.isFinite(v);
@@ -334,9 +334,10 @@ export function customApiHandlers(packs = []) {
 }
 
 /**
- * Seeds the customapi tables and registers every custom API row. Binding and kind are fixed after a row is
- * saved, so a registered name is never re-registered; deleted rows fail at call time with 0x8006088a.
- * Returns { sync, ready }: call sync when store.dataRevision() may have changed to register rows added since; await ready to persist the seed.
+ * Seeds the customapi tables and supplies their current operation definitions to
+ * the canonical registry. Row edits, signatures and deletions are visible on its
+ * next read. Small embedded registries can retain the legacy sync-on-revision adapter.
+ * Returns { sync, ready }; await ready to persist the seed.
  * options: handlers (from customApiHandlers), pluginTypes (the pack pluginTypes handlers keyed by typename, P4) and timeoutMs (the plug-in limit, default 2 minutes).
  */
 // seed runs now, so the mappings are in memory for the caller; ready persists them in a store transaction.
@@ -345,6 +346,10 @@ export function install(api, options = {}) {
   const resolved = { handlers: options.handlers ?? new Map(), pluginTypes: options.pluginTypes ?? new Map(), timeoutMs: options.timeoutMs ?? TIMEOUT_MS };
   seed(store);
   const ready = api.change(() => store.transact(() => seed(store)));
+  if (registry.setProvider) {
+    registry.setProvider('dataverse-customapi', () => store.tableRows('customapi').map(row => operationOf(api, row, resolved)));
+    return { sync: () => {}, ready };
+  }
   let seen = null;
   const sync = () => {
     const revision = store.dataRevision();

@@ -1,13 +1,13 @@
 import { DataStore } from '../data.mjs';
 import { parseSolutionXml, child, serializeXml } from '../solution-xml.mjs';
 import { managementOverlay } from './power-pages.mjs';
+import { controlDescriptor } from './control-descriptors.mjs';
 
 const invalid = (message, status = 400) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const node = (name, attrs = {}, children = []) => ({ name, attrs, children, text: '' });
 const admin = Object.freeze({ admin: true });
-const supportedTypes = new Set(['text', 'textarea', 'number', 'boolean', 'date', 'lookup', 'json']);
 export function writableField(field, operation) {
-  return !field.isPrimaryId && field[operation === 'create' ? 'validForCreate' : 'validForUpdate'] !== false && supportedTypes.has(field.type ?? 'text');
+  return controlDescriptor(field)[operation === 'create' ? 'create' : 'update'];
 }
 export function validateValues(table, values, operation) {
   if (!values || typeof values !== 'object' || Array.isArray(values)) throw invalid('Provide a values object.');
@@ -40,7 +40,7 @@ function projectedStore(table) {
 
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
-export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord }) {
+export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord, recordService }) {
   const tableFor = entity => {
     const tables = catalogue().tables;
     const table = Object.hasOwn(tables, entity) ? tables[entity] : null;
@@ -68,9 +68,14 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       return copy;
     });
   };
+  const capabilities = (entity, actor, id, fields = tableFor(entity).fields) => {
+    const rights = recordService?.capabilities?.(entity, actor, { id, fields });
+    return rights && id && tableFor(entity).protectedIds?.includes(id) ? { ...rights, delete: false } : rights;
+  };
   return {
     tableFor,
-    async list(entity, input = {}) {
+    capabilities,
+    async list(entity, input = {}, actor = {}) {
       return store.readOperation(async () => {
       const table = tableFor(entity);
       const view = table.views.find(view => view.id === input.view) ?? (!input.view ? table.views.find(view => view.isDefault) ?? table.views[0] : null);
@@ -105,28 +110,36 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       }
       if (!target.children.some(item => item.name === 'order')) target.children.push(node('order', { attribute: table.nameColumn }));
       const db = backend(table);
-      const result = db === store ? db.fetchXml(serializeXml(root), admin) : await db.readOperation(() => db.fetchXml(serializeXml(root), admin));
+      const secured = recordService ? await recordService.query(entity, serializeXml(root), actor) : null;
+      const result = secured ? null : db === store ? db.fetchXml(serializeXml(root), admin) : await db.readOperation(() => db.fetchXml(serializeXml(root), admin));
       const order = target.children.find(item => item.name === 'order');
-      return { rows: format(table, result.entities), total: result.total_record_count, more: result.more_records,
+      return { rows: secured?.rows ?? format(table, result.entities), total: secured?.total ?? result.total_record_count, more: secured?.more ?? result.more_records,
+        ...(recordService?.capabilities ? { capabilities: capabilities(entity, actor),
+          rowCapabilities: Object.fromEntries(secured.rows.map(row => { const id = row[table.idColumn]; return [id, capabilities(entity, actor, id, {})]; })) } : {}),
         page: Number(root.attrs.page), pageSize: Number(root.attrs.count), columns: fields, view: view.id,
         sort: order?.attrs.attribute, direction: order?.attrs.descending === 'true' ? 'desc' : 'asc' };
       });
     },
-    async get(entity, id) {
+    async get(entity, id, actor = {}) {
       return store.readOperation(async () => {
       const table = tableFor(entity), db = backend(table);
+      if (recordService) return { ...await recordService.get(entity, id, actor), capabilities: capabilities(entity, actor, id) };
       const row = db === store ? db.get(entity, id, admin) : await db.readOperation(() => db.get(entity, id, admin));
       if (!row) throw invalid('Record not found.', 404);
       return { row: format(table, [row])[0], etag: db.etag(row) };
       });
     },
-    async write(entity, id, values, { remove = false, etag } = {}) {
+    async write(entity, id, values, { remove = false, etag, ...actor } = {}) {
       const table = await store.readOperation(() => tableFor(entity)), db = backend(table), operation = id ? 'update' : 'create';
       if (remove && !id) throw invalid('A record ID is required.');
       const data = remove ? {} : validateValues(table, values, operation);
       // Require a version when editing existing data; stale tabs cannot silently overwrite.
       if (id && !etag) throw invalid('Reload the record before saving or deleting it.', 428);
       if (remove && table.protectedIds?.includes(id)) throw invalid('The source website cannot be deleted from its own running Mirage instance.', 501);
+      if (recordService) {
+        const saved = await recordService.write({ entity, id, values: data, remove, etag, ...actor });
+        return remove ? saved : { ...saved, capabilities: capabilities(entity, actor, saved.id) };
+      }
       if (writeRecord && db === store) {
         const result = await writeRecord({ entity, id, values: data, remove, etag });
         if (remove) return { deleted: true };

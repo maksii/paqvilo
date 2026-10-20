@@ -3,6 +3,7 @@
 // Invented schema and GUIDs only.
 import { DataError } from './data-error.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
+import { organizationRecord } from './organization-context.mjs';
 
 export const SYSTEM_ADMINISTRATOR_PROFILE_ID = '572329c1-a042-4e22-be47-367c6374ea45';
 // field_security_permission_type: 0 Not Allowed, 4 Allowed.
@@ -72,9 +73,8 @@ export function ensureFieldSecurity(store) {
 // IsSecured arrives as a bool, or as { Value } in the Web API; the dataverseMetadata flag overrides the columnMetadata one.
 const flag = (value) => (value !== null && typeof value === 'object' ? value.Value === true : value === true);
 export function isSecuredField(field) {
-  return flag(field?.dataverseMetadata?.IsSecured ?? field?.dataverseMetadata?.isSecured ?? field?.columnMetadata?.IsSecured ?? field?.columnMetadata?.isSecured);
+  return flag(field?.dataverseMetadata?.IsSecured ?? field?.dataverseMetadata?.isSecured ?? field?.columnMetadata?.IsSecured ?? field?.columnMetadata?.isSecured ?? field?.isSecured);
 }
-const securedNames = (mapping) => Object.entries(mapping?.fields ?? {}).filter(([, field]) => isSecuredField(field)).map(([name]) => name);
 // A link-entity or aggregate alias prefixes both the key and the id column.
 const idOf = (mapping, row, prefix = '') => row?.[`${prefix}${mapping.idColumn ?? `${mapping.logicalName}id`}`];
 
@@ -90,10 +90,16 @@ function denied(operation, user, name, entity) {
 }
 
 /** Pure factory over a store and principals. `organizationId()` returns the organization GUID that derives the column MetadataIds. */
-export function createFieldSecurity({ store, principals, organizationId }) {
+export function createFieldSecurity({ store, principals, organizationId, metadataFields = () => undefined }) {
   const rows = (logical) => store.tableRows(logical);
   const isAdmin = (user) => principals.roles(user).some((r) => r.name === ADMIN_ROLE);
-  const fieldOf = (logical, column) => store.state.mappings?.[logical]?.fields?.[column];
+  const mappingField = (mapping, name, source = metadataFields(mapping?.logicalName)) => ({ ...source?.[name], ...mapping?.fieldMetadata?.[name], ...mapping?.fields?.[name] });
+  const securedNames = mapping => {
+    const source = metadataFields(mapping?.logicalName) ?? null;
+    return [...new Set([...Object.keys(source ?? {}), ...Object.keys(mapping?.fieldMetadata ?? {}), ...Object.keys(mapping?.fields ?? {})])]
+      .filter(name => isSecuredField(mappingField(mapping, name, source)));
+  };
+  const fieldOf = (logical, column) => mappingField(store.state.mappings?.[logical], column);
 
   // The profiles a systemuser or team holds, and the principals a field share can name: the user (or team) and its teams.
   // A user reaches its own profiles and those of its teams.
@@ -196,7 +202,7 @@ export function createFieldSecurity({ store, principals, organizationId }) {
     /** Aggregates read the raw column, so a secured one the caller cannot read is refused. */
     assertAggregate(c, mapping, columns = []) {
       for (const name of columns) {
-        if (isSecuredField(mapping.fields?.[name]) && !accessOf(c.user, mapping.logicalName, name).read) throw denied('read', c.user, name, mapping.logicalName);
+        if (isSecuredField(mappingField(mapping, name)) && !accessOf(c.user, mapping.logicalName, name).read) throw denied('read', c.user, name, mapping.logicalName);
       }
     },
 
@@ -231,7 +237,7 @@ export const fieldSecurity = {
   install(api) {
     const { store, principals } = api;
     // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime (H6).
-    const fls = createFieldSecurity({ store, principals, organizationId: () => store.state.tables.organization?.[0]?.organizationid });
+    const fls = createFieldSecurity({ store, principals, metadataFields: logical => api.metadataFields?.(logical), organizationId: () => organizationRecord(store)?.organizationid });
     api.fieldSecurity = { mask: fls.mask, canRead: fls.canRead, canWrite: fls.canWrite, assertAggregate: fls.assertAggregate };
     for (const entity of ['systemuser', 'team']) {
       api.registry.register({

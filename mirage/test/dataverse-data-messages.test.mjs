@@ -476,7 +476,11 @@ describe("annotation and attachment blocks: chunked upload and download", () => 
   });
 
   it("an upload over organization.maxuploadfilesize answers the attachment size error", async () => {
-    h.store.state.tables.organization = [{ organizationid: ORG, maxuploadfilesize: 8 }];
+    const previous = h.store.state.tables.organization;
+    h.store.state.tables.organization = [
+      { organizationid: ORG, maxuploadfilesize: 1024 },
+      { organizationid: h.store.state.dataverse.organizationId, maxuploadfilesize: 8 },
+    ];
     const regarding = target("contoso_widget", "contoso_widgetid", WIDGET);
     const init = await h.send("POST", "/InitializeAttachmentBlocksUpload", { Target: regarding });
     const token = (await init.json()).FileContinuationToken;
@@ -485,7 +489,7 @@ describe("annotation and attachment blocks: chunked upload and download", () => 
     const error = (await block.json()).error;
     assert.equal(error.message, "Attachment file size is too big.");
     assert.equal(error.code, "0x80044a02");
-    delete h.store.state.tables.organization;
+    h.store.state.tables.organization = previous;
   });
 });
 

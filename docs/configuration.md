@@ -5,6 +5,8 @@ live environments and local runtimes. Start with [project scaffolding](project-s
 or run `paqvilo setup --open` to edit an existing or incomplete project in the local
 [setup workspace](setup.md).
 
+For model-driven apps or an API without Power Pages, use a version-2 Mirage project with top-level `runtime: { kind: model-driven }` or `{ kind: dataverse-api }`, `solutions` and optional explicit `dataPacks`. It needs no `portals` or reference origin. Configure `runtime.defaultApp` only for a model-driven surface. Select `simulation.level` as `dry-run`, `simulation` or `deep`; omission preserves existing ignored local-state behavior. A catalogue places these keys under `sites.<id>.mirage` or `defaults.mirage`. Runtime/level/listener changes apply on restart. See the [complete standalone example](../mirage/docs/standalone-organization.md) and [pack DATA ownership contract](../mirage/docs/simulation-levels.md).
+
 ## Select a catalogue
 
 Pass `--config <file>` when running outside your project. Otherwise Paqvilo uses the working

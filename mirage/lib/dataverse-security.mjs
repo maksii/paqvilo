@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse security model: organization, business units, roles, privileges
 // and the depth-based checks the Dataverse layer runs before it calls the store.
 import { createHash } from 'node:crypto';
@@ -125,6 +126,9 @@ const PLATFORM_NOUN = {
   savedquery: 'SavedQuery', userquery: 'UserQuery', teamtemplate: 'TeamTemplate',
   queueitem: 'QueueItem', environmentvariablevalue: 'EnvironmentVariableValue',
 };
+// Core-authored identity and platform state stays owned by the organization
+// even when a Solution/config supplied its mapping before bootstrap.
+export const isOrganizationTable = logical => Object.hasOwn(TABLE_DEFS, logical) || Object.hasOwn(PLATFORM_NOUN, logical);
 // Intersect tables own no privileges; Dataverse checks the parent table's (the table whose relationship they serve).
 // Activity parties follow their activity: the Activity privileges, tested against the activity row (see parentRowOf).
 // The other None-owned tables below take their parent's privileges too (Learn's table pages give OwnershipType None and the
@@ -564,7 +568,7 @@ function buildIndex(store) {
   }
   for (const s of store.tableRows('principalobjectaccess')) add(idx.shares, key(s.objectid), { principal: key(refId(s.principalid)), mask: Number(s.accessrightsmask) });
   // Org settings (hierarchySecurity) live on the organization row.
-  const org = store.tableRows('organization')[0], depth = Number(org?.hierarchysecuritydepth);
+  const org = organizationRecord(store), depth = Number(org?.hierarchysecuritydepth);
   idx.hierarchy = { enabled: org?.hierarchysecurityenabled === true, depth: Number.isInteger(depth) && depth > 0 ? depth : DEFAULT_HIERARCHY_DEPTH };
   return idx;
 }

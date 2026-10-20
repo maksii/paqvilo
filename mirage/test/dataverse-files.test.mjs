@@ -149,6 +149,8 @@ test("single upload stores the bytes, sets the name companion and downloads them
   assert.equal(get.headers["x-ms-file-size"], "11");
   assert.equal(get.headers["x-ms-file-name"], "report.pdf");
   assert.equal(get.headers["Access-Control-Expose-Headers"], "x-ms-file-size, x-ms-file-name, mimetype");
+  assert.ok(Object.hasOwn(get.headers, 'OData-Version'));
+  assert.equal(get.headers['OData-Version'], undefined, 'full file downloads omit the OData header; ranged downloads keep their explicit version');
 });
 
 test("chunked upload starts with a Location, takes Content-Range chunks and commits on the last one", async () => {

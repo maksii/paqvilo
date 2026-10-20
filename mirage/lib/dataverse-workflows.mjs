@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Workflows in the Dataverse API (briefs W1-W4): workflow rows from the Solution's Workflows folder with their activation
 // rows (W1), the activation rules on PATCH (W1), ExecuteWorkflow (W2), the run of a classic workflow (W3) and the classic
 // triggers on writes (W4: background jobs from committed writes, real-time runs inside the Web API write only).
@@ -59,7 +60,7 @@ const stateOf = (value) => {
   if (text === "suspended") return 2;
   return numeric(value, 0);
 };
-const organizationIdOf = (store) => store.state.tables?.organization?.[0]?.organizationid;
+const organizationIdOf = (store) => organizationRecord(store)?.organizationid;
 const rowsOf = (store, logical) => (store.state.tables[logical] ??= []);
 const workflowRow = (store, id) => rowsOf(store, "workflow").find((row) => sameId(row.workflowid, id)) ?? null;
 const activationOf = (store, id) => rowsOf(store, "workflow").find((row) => Number(row.type) === TYPE.activation && sameId(lookupId(row.parentworkflowid), id)) ?? null;

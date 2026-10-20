@@ -12,6 +12,7 @@
 import { randomUUID } from "node:crypto";
 import { DataError } from "./data-error.mjs";
 import { privilegeDeniedError, privilegeName, uuidV5 } from "./dataverse-security.mjs";
+import { organizationRecord } from './organization-context.mjs';
 import { contextUrl } from "./dataverse-odata.mjs";
 import { TIME_ZONE_DEFINITIONS, TIME_ZONE_IDS } from "./platform-time-zones.mjs";
 
@@ -131,7 +132,7 @@ function zoneOf(code) {
 // Seeds the timezonedefinition and timezonelocalizedname rows for the seeded subset. The rule table is deprecated by Learn, so
 // timezonerule has no rows.
 function seedTimeZones(store) {
-  const organizationId = tableOf(store, "organization")[0]?.organizationid ?? ZERO_GUID;
+  const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
   const definitions = tableOf(store, "timezonedefinition");
   const localized = tableOf(store, "timezonelocalizedname");
   definitions.length = 0;
@@ -139,7 +140,7 @@ function seedTimeZones(store) {
   for (const zone of ZONES) {
     const timezonedefinitionid = uuidV5(organizationId, `timezonedefinition:${zone.code}`);
     // unverified: live capture (bias sign). Bias is minutes west of UTC: the smaller of the January and July 2026 offsets, negated.
-    const bias = -Math.min(offsetMinutes(zone.iana, Date.UTC(2026, 0, 15)), offsetMinutes(zone.iana, Date.UTC(2026, 6, 15)));
+    const bias = -Math.min(offsetMinutes(zone.iana, Date.UTC(2026, 0, 15)), offsetMinutes(zone.iana, Date.UTC(2026, 6, 15))) || 0;
     definitions.push({
       timezonedefinitionid, timezonecode: zone.code, standardname: zone.standardName, userinterfacename: zone.userInterfaceName,
       bias, retiredorder: 0,
@@ -441,7 +442,7 @@ function seriesRule(fields, master) {
 
 // Creates a series: a rule row, a master row and its attendees. Returns the master row.
 function createSeries(store, fields, attendeeIds) {
-  const organizationId = tableOf(store, "organization")[0]?.organizationid ?? ZERO_GUID;
+  const organizationId = organizationRecord(store)?.organizationid ?? ZERO_GUID;
   const ruleid = randomUUID();
   const activityid = randomUUID();
   const master = {

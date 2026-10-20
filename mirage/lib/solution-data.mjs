@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { applyCustomColumns } from './dataverse-custom-columns.mjs';
 import {
   reconcilePermissionDiagnostics,
   compactBuiltinPresets,
@@ -449,5 +450,5 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
           };
         }
   }
-  return reconcilePermissionDiagnostics(result);
+  return reconcilePermissionDiagnostics(applyCustomColumns(result));
 }

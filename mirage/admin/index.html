@@ -14,7 +14,7 @@
       <aside class="sidebar" aria-label="Workspace navigation">
         <a class="brand" href="/__sim/"
           ><span class="brand-symbol" aria-hidden="true">P</span
-          ><span>Portal Studio<small>LOCAL SIMULATOR</small></span></a
+          ><span><span id="workspace-name">Mirage Studio</span><small>LOCAL SIMULATOR</small></span></a
         >
         <div class="nav-label">WORKSPACE</div>
         <nav id="navigation"></nav>
@@ -31,11 +31,11 @@
             <strong id="breadcrumb">Overview</strong></span
           >
           <div class="top-actions">
-            <a class="button" href="/main.aspx">Model-driven apps</a>
+            <a id="open-model-driven" class="button" href="/main.aspx">Model-driven apps</a>
             <a class="button" href="/_setup/" target="_blank" rel="noopener">Project setup</a>
             <button id="refresh" class="button quiet" type="button">
               ↻ Refresh</button
-            ><a class="button" href="/" target="_blank" rel="noopener"
+            ><a id="open-portal" class="button" href="/" target="_blank" rel="noopener"
               >Open portal <span aria-hidden="true">↗</span></a
             >
           </div>
@@ -48,7 +48,7 @@
           </div>
         </main>
         <footer>
-          Portal source + simulated services
+          Local sources + simulated organization services
           <span
             >Local rendering is verified through evidence, not
             configuration.</span

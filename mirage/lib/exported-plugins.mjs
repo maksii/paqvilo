@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 import { createHash, randomUUID } from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
@@ -226,7 +227,7 @@ function typedContext({ item, store, entity, operation, stage, target, targets, 
 // The row is written in the phase's own transaction, so a rolled-back write takes its trace with it.
 // ponytail: native keeps the trace of a rolled-back execution; this simulator does not.
 function writeTraceLog(store, { item, entity, operation, depth, asyncExecution, traces, started, startedAt, error }) {
-  const level = Number(store?.tableRows?.('organization')?.[0]?.plugintracelogsetting ?? 0);
+  const level = Number(organizationRecord(store)?.plugintracelogsetting ?? 0);
   if (!store?.state?.mappings?.plugintracelog || level === 0 || (level === 1 && !error)) return;
   store.insertRow('plugintracelog', store.state.tables.plugintracelog ??= [], {
     plugintracelogid: randomUUID(), typename: item.typeName ?? null, messagename: messageNameOf(operation), primaryentity: entity,

@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse file and image columns: single and chunked uploads, ranged
 // downloads, the block messages, and image value rules on record writes.
 // Upload sessions live in memory, so a restart drops in-flight uploads.
@@ -412,7 +413,7 @@ export function install(api) {
     const range = header(c, "range");
     // observed: parity case image.thumbnail; an image without size=full answers the thumbnail with no file headers at all.
     const thumbnail = kind === "image" && c.url.searchParams.get("size") !== "full";
-    if (range === undefined) return { status: 200, headers: thumbnail ? {} : base, body: bytes };
+    if (range === undefined) return { status: 200, headers: { ...(thumbnail ? {} : base), ...(kind === 'file' ? { 'OData-Version': undefined } : {}) }, body: bytes };
     const match = /^bytes=(\d+)-(\d*)$/.exec(String(range).trim());
     if (!match) throw plain(invalid("The Range header must be bytes=start-end."));
     const start = Number(match[1]);
@@ -525,7 +526,7 @@ export function install(api) {
 
   // Annotation and attachment block messages. The limit is organization.maxuploadfilesize (platform-settings default 5242880).
   // unverified: the limit is applied to raw bytes; the setting's own text says base64-encoded.
-  const uploadLimit = () => Number((store.state.tables.organization ?? [])[0]?.maxuploadfilesize ?? 5242880);
+  const uploadLimit = () => Number(organizationRecord(store)?.maxuploadfilesize ?? 5242880);
   // Learn: Initialize*BlocksUpload takes Target and answers a continuation token. Upload is create-only, so the
   // session names the table being created and the Target the new row regards. unverified: Target semantics.
   function initBlocksUpload(c, logical, name) {

@@ -20,6 +20,37 @@ const minimal = { sourceRoot: '.', defaultSite: 'portal', sites: { portal: { sou
 const set = (path, value) => ({ op: 'set', path, value });
 async function edit(store, layer, operations) { const { revision } = await store.snapshot(); return store.save({ revision, layer, operations }); }
 
+test('setup projects expose standalone runtime configuration without portal or environment findings', async t => {
+  const directory = await work(t), filename = path.join(directory, 'organization.json');
+  await fs.mkdir(path.join(directory, 'solution'));
+  await fs.writeFile(path.join(directory, 'pack.mjs'), "throw new Error('setup must not import trusted modules');");
+  const raw = { version: 2, runtime: { kind: 'model-driven', defaultApp: '11111111-2222-4333-8444-555555555555' }, simulation: { level: 'dry-run' }, solutions: [{ id: 'core', path: './solution' }], dataPacks: [{ id: 'seed', module: './pack.mjs' }], dataverse: { enabled: false } };
+  await fs.writeFile(filename, JSON.stringify(raw));
+  const store = new SetupStore({ directory, project: filename, processEnv: {} });
+  const snapshot = await store.snapshot();
+  assert.equal(snapshot.ready, true);
+  assert.deepEqual(snapshot.findings, []);
+  assert.deepEqual(snapshot.sites, []);
+  assert.equal(snapshot.settings.runtime.defaultApp, raw.runtime.defaultApp);
+  assert.equal(snapshot.settings.simulation.level, 'dry-run');
+  assert.equal(snapshot.settings.dataverse.enabled, false);
+  assert.deepEqual(snapshot.settings.solutions, [{ id: 'core', path: './solution' }]);
+  assert.equal(snapshot.solutions[0].exists, true);
+  const next = await edit(store, 'shared', [set(['simulation', 'level'], 'simulation'), set(['dataverse', 'enabled'], true)]);
+  assert.equal(next.settings.simulation.level, 'simulation');
+  assert.deepEqual(JSON.parse(await fs.readFile(filename, 'utf8')).dataPacks, raw.dataPacks);
+  await assert.rejects(edit(store, 'shared', [set(['simulation', 'level'], 'invalid')]));
+});
+
+test('setup retains omitted legacy simulation and validates standalone missing pack paths', async t => {
+  const directory = await work(t), filename = path.join(directory, 'organization.json');
+  await fs.writeFile(filename, JSON.stringify({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [], dataPacks: [{ id: 'seed', module: './missing.mjs' }] }));
+  const snapshot = await new SetupStore({ directory, project: filename, processEnv: {} }).snapshot();
+  assert.equal(snapshot.settings.simulation, null);
+  assert.equal(snapshot.settings.dataverse.enabled, true);
+  assert.deepEqual(snapshot.findings.map(item => item.code), ['missing-pack']);
+});
+
 test('setup starts in an empty directory without using the bundled catalogue; creates and repairs configuration', async t => {
   const directory = await work(t), store = new SetupStore({ directory, processEnv: {} });
   const empty = await store.snapshot();

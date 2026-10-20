@@ -24,6 +24,8 @@ import { resolveDeploymentProfiles } from '../mirage/lib/deployment-profiles.mjs
 import { detectFormat, portalSourceDir, unsupportedSourceLayout } from './portal-model.mjs';
 import { validateDebuggerMode } from './browser-profile.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
+import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
+import { simulationSettings } from '../mirage/lib/simulation-settings.mjs';
 
 /**
  * @typedef {object} RouteRule
@@ -244,6 +246,8 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
   if(value.identityProvider!==undefined)identityProviderAssets(identityProviderSettings(value.identityProvider),configDir);
   return {
     ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
+    ...(value.runtime !== undefined ? { runtime: runtimeSettings(value.runtime) } : {}),
+    ...(value.simulation !== undefined ? { simulation: simulationSettings(value.simulation) } : {}),
     ...(value.dataverse!==undefined?{dataverse:dataverseSettings(value.dataverse,'mirage.dataverse')}:{}),
     ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,
@@ -347,36 +351,7 @@ function resolveConfig(catalogue, opts, { initial = true, validSources = new Set
   startPath(resolvedSite.startPath);
   if (typeof resolvedSite.markup.baseline !== 'string' || !resolvedSite.markup.baseline.trim() || /[\x00-\x1f]/.test(resolvedSite.markup.baseline)) throw new Error('baseline must be a non-empty git ref');
 
-  const browser = { ...root.browser };
-  browser.channel = opts.browser ?? s.PAQVILO_BROWSER ?? browser.channel;
-  if (!['msedge', 'chrome', 'chromium'].includes(browser.channel)) throw new Error(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
-  if (s.PAQVILO_HEADLESS) browser.headless = bool(s.PAQVILO_HEADLESS, 'PAQVILO_HEADLESS');
-  if (opts.headless) browser.headless = true;
-  if (opts.headed) browser.headless = false;
-  if (opts.headless && opts.headed) throw new Error('--headless and --headed cannot be used together');
-  browser.cdpUrl = opts['cdp-url'] ?? s.PAQVILO_CDP_URL ?? browser.cdpUrl;
-  if (s.PAQVILO_BYPASS_CSP) browser.bypassCSP = bool(s.PAQVILO_BYPASS_CSP, 'PAQVILO_BYPASS_CSP');
-  if (s.PAQVILO_PROFILE_DIR) browser.profileDir = s.PAQVILO_PROFILE_DIR;
-  browser.profile = opts.profile ?? s.PAQVILO_PROFILE ?? browser.profile;
-  browser.userDataDir = opts['user-data-dir'] ?? s.PAQVILO_USER_DATA_DIR ?? browser.userDataDir;
-  browser.profileDirectory = opts['profile-directory'] ?? s.PAQVILO_PROFILE_DIRECTORY ?? browser.profileDirectory;
-  if (browser.profile !== null) { browserProfile(browser.profile); browser.profile = browser.profile.toLowerCase(); }
-  if (browser.userDataDir !== null) {
-    browserUserDataDir(browser.userDataDir);
-    browser.userDataDir = path.resolve(opts['user-data-dir'] !== undefined ? process.cwd() : configDir, browser.userDataDir);
-  }
-  if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
-  if (browser.profile !== null && browser.userDataDir !== null) throw new Error('browser.profile (--profile / PAQVILO_PROFILE) cannot be combined with browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR); choose a named toolkit profile or an existing browser root');
-  if (browser.profileDirectory !== null && browser.userDataDir === null) throw new Error('browser.profileDirectory (--profile-directory / PAQVILO_PROFILE_DIRECTORY) requires browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR)');
-  if (browser.cdpUrl && [browser.profile, browser.userDataDir, browser.profileDirectory].some((value) => value !== null)) throw new Error('browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile, browser.userDataDir or browser.profileDirectory; an attached browser already owns its profile');
-  const port = opts['debug-port'] ?? s.PAQVILO_DEBUG_PORT;
-  if (port != null) {
-    if (!/^\d+$/.test(String(port))) throw new Error(`debug port must be a number, not "${port}"`);
-    browser.debugPort = Number(port) || null;
-  }
-  browser.debugPort = debugPort(browser.debugPort);
-  if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
-  validateDebuggerMode(browser.cdpUrl, browser.debugPort);
+  const browser = browserSettings({ browser: root.browser, options: opts, settings: s, configDir });
 
   return {
     configFile,
@@ -435,4 +410,39 @@ export async function loadDevTargets(opts = {}, processEnv = process.env) {
   if(!targets.includes(initial))initial=targets[0];
   if(!initial)throw new Error('No non-caution targets are configured; select an environment explicitly or set includeCaution: true.');
   return { mode: 'all', initial, targets };
+}
+
+/** Browser selection independent of a portal/site catalogue, shared by standalone Mirage. */
+export function browserSettings({ browser: input, options: opts = {}, settings: s = {}, configDir = process.cwd() } = {}) {
+  const browser = { ...(input ?? ROOT_DEFAULTS.browser) };
+  browser.channel = opts.browser ?? s.PAQVILO_BROWSER ?? browser.channel;
+  if (!['msedge', 'chrome', 'chromium'].includes(browser.channel)) throw new Error(`browser must be 'msedge', 'chrome' or 'chromium', not "${browser.channel}"`);
+  if (s.PAQVILO_HEADLESS) browser.headless = bool(s.PAQVILO_HEADLESS, 'PAQVILO_HEADLESS');
+  if (opts.headless) browser.headless = true;
+  if (opts.headed) browser.headless = false;
+  if (opts.headless && opts.headed) throw new Error('--headless and --headed cannot be used together');
+  browser.cdpUrl = opts['cdp-url'] ?? s.PAQVILO_CDP_URL ?? browser.cdpUrl;
+  if (s.PAQVILO_BYPASS_CSP) browser.bypassCSP = bool(s.PAQVILO_BYPASS_CSP, 'PAQVILO_BYPASS_CSP');
+  if (s.PAQVILO_PROFILE_DIR) browser.profileDir = s.PAQVILO_PROFILE_DIR;
+  browser.profile = opts.profile ?? s.PAQVILO_PROFILE ?? browser.profile;
+  browser.userDataDir = opts['user-data-dir'] ?? s.PAQVILO_USER_DATA_DIR ?? browser.userDataDir;
+  browser.profileDirectory = opts['profile-directory'] ?? s.PAQVILO_PROFILE_DIRECTORY ?? browser.profileDirectory;
+  if (browser.profile !== null) { browserProfile(browser.profile); browser.profile = browser.profile.toLowerCase(); }
+  if (browser.userDataDir !== null) {
+    browserUserDataDir(browser.userDataDir);
+    browser.userDataDir = path.resolve(opts['user-data-dir'] !== undefined ? process.cwd() : configDir, browser.userDataDir);
+  }
+  if (browser.profileDirectory !== null) browserProfileDirectory(browser.profileDirectory);
+  if (browser.profile !== null && browser.userDataDir !== null) throw new Error('browser.profile (--profile / PAQVILO_PROFILE) cannot be combined with browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR); choose a named toolkit profile or an existing browser root');
+  if (browser.profileDirectory !== null && browser.userDataDir === null) throw new Error('browser.profileDirectory (--profile-directory / PAQVILO_PROFILE_DIRECTORY) requires browser.userDataDir (--user-data-dir / PAQVILO_USER_DATA_DIR)');
+  if (browser.cdpUrl && [browser.profile, browser.userDataDir, browser.profileDirectory].some((value) => value !== null)) throw new Error('browser.cdpUrl (--cdp-url / PAQVILO_CDP_URL) cannot be combined with browser.profile, browser.userDataDir or browser.profileDirectory; an attached browser already owns its profile');
+  const port = opts['debug-port'] ?? s.PAQVILO_DEBUG_PORT;
+  if (port != null) {
+    if (!/^\d+$/.test(String(port))) throw new Error(`debug port must be a number, not "${port}"`);
+    browser.debugPort = Number(port) || null;
+  }
+  browser.debugPort = debugPort(browser.debugPort);
+  if (browser.cdpUrl) httpUrl(browser.cdpUrl, 'browser.cdpUrl', ['http:', 'https:', 'ws:', 'wss:']);
+  validateDebuggerMode(browser.cdpUrl, browser.debugPort);
+  return browser;
 }

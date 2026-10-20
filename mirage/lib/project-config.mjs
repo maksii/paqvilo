@@ -13,12 +13,15 @@ import { applyObserved } from "./redirects.mjs";
 import { isTenantAuthority } from "./external-login.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 import { dataverseSettings } from './dataverse-settings.mjs';
+import { runtimeSettings } from './runtime-config.mjs';
+import { loadOrganizationSources } from './solution-runtime-source.mjs';
+import { simulationSettings } from './simulation-settings.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse", "runtime", "simulation",
 ]);
 
 function list(value, label) {
@@ -352,7 +355,8 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     for (const key of Object.keys(raw))
       if (!KNOWN_KEYS.has(key)) throw new Error(`Unknown project configuration key '${key}'`);
   const portalEntries = list(raw.portals, "portals").map(normalizePortal);
-  if (!portalEntries.length) throw new Error("At least one portal source is required");
+  const runtime = runtimeSettings(raw.runtime);
+  if (!portalEntries.length && runtime.kind === 'power-pages') throw new Error("At least one portal source is required");
   const solutionEntries = list(raw.solutions, "solutions").map(normalizeSolution);
   const unique = (entries, kind) => {
     const seen = new Set();
@@ -390,7 +394,10 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
       throw new Error(`Portal '${portal.id}' selects unknown reference '${portal.reference}'`);
     const selected = (solutionIds ?? solutions.map((solution) => solution.id)).map((solutionId) => byId.get(solutionId));
     if (portal.observed?.pluginSources) portal.observed.pluginSources = Object.fromEntries(Object.entries(portal.observed.pluginSources).map(([name, source]) => [name, { ...source, root: source.root ?? base }]));
-    const sourceDir = await resolveSource(portal.sourcePath, "Portal", portal.id);
+    // Standalone profiles retain portal selections for later use, without
+    // requiring that unused export to be present on this machine.
+    const sourceDir = runtime.kind === 'power-pages' ? await resolveSource(portal.sourcePath, "Portal", portal.id)
+      : path.resolve(base, portal.sourcePath);
     return {
       ...portal,
       ...contentPolicyDefaults(raw), ...contentPolicyDefaults(portal),
@@ -401,8 +408,8 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
       solutionRoots: selected.map((solution) => solution.root),
     };
   }));
-  const defaultPortal = raw.defaultPortal ?? raw.default_portal ?? portals[0].id;
-  if (!portals.some((portal) => portal.id === defaultPortal))
+  const defaultPortal = raw.defaultPortal ?? raw.default_portal ?? portals[0]?.id ?? null;
+  if (defaultPortal !== null && !portals.some((portal) => portal.id === defaultPortal))
     throw new Error(`defaultPortal '${defaultPortal}' is not configured`);
   const dataPacks = await Promise.all(list(raw.dataPacks ?? raw.presets, "dataPacks").map(normalizeDataPack).map(async (pack) => {
     const module = path.resolve(base, pack.modulePath);
@@ -415,7 +422,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     return { id: pack.id, module };
   }));
   unique(dataPacks, "data pack");
-  const lcid = raw.lcid ?? 1033;
+  const lcid = raw.lcid ?? raw.dataverse?.localeId ?? 1033;
   if (!Number.isInteger(lcid) || lcid <= 0) throw new Error("lcid must be a positive integer");
   if (raw.watch !== undefined && typeof raw.watch !== "boolean") throw new Error("watch must be a boolean");
   // Solution roots are a set layered in dependency order; "explicit" keeps the listed order.
@@ -434,6 +441,8 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     configFile: absoluteConfig,
     stateNamespace: createHash("sha256").update(absoluteConfig).update("\0").update(portals.map((p) => p.sourceDir).join("\0")).digest("hex").slice(0, 16),
     version: raw.version,
+    runtime,
+    simulation: simulationSettings(raw.simulation),
     defaultPortal,
     lcid,
     watch: raw.watch ?? null,
@@ -445,7 +454,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     references,
     defaultReference,
     dataPacks,
-    dataverse: dataverseSettings(raw.dataverse, "dataverse"),
+    dataverse: dataverseSettings(raw.dataverse ?? (runtime.kind === 'dataverse-api' ? { enabled: true } : undefined), "dataverse"),
     environmentVariables: Object.fromEntries(Object.entries(environmentVariables).map(([name, value]) => [name, String(value)])),
   };
 }
@@ -469,6 +478,8 @@ export function projectSummary(project, portalId = null) {
   return {
     configFile: project.configFile,
     version: project.version,
+    runtime: project.runtime ?? { kind: 'power-pages' },
+    simulation: project.simulation ?? null,
     portal: portalId,
     defaultPortal: project.defaultPortal,
     lcid: project.lcid,
@@ -489,6 +500,10 @@ export function projectSummary(project, portalId = null) {
 
 /** Import all configured sources locally and deterministically; this performs no network access. */
 export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, cacheFile } = {}) {
+  if (project.runtime?.kind && project.runtime.kind !== 'power-pages') {
+    const organization = await loadOrganizationSources({ solutionRoots: project.solutionRoots, solutionOrder: project.solutionOrder, lcid, cacheFile });
+    return { project, portals: [], solutionData: organization.solutionData, organization };
+  }
   const cache = await SolutionFileCache.open(cacheFile ?? null);
   // Duplicate-copy commit lookups of the portal exports, cached beside the solution cache.
   const portalCache = await SolutionFileCache.open(cacheFile ? path.join(path.dirname(cacheFile), "portal-sources.json") : null);

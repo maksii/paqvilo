@@ -4,37 +4,25 @@
 import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
-import { AsyncLocalStorage } from "node:async_hooks";
+import { organizationContext as inBatch, runAtomic } from "./dataverse-transaction-context.mjs";
+export { runAtomic } from "./dataverse-transaction-context.mjs";
+import { createOrganizationRuntime } from "./dataverse-organization.mjs";
+export { dataverseOrganizationId } from "./dataverse-organization.mjs";
 import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
+import { organizationPrincipalContext } from './dataverse-principal-context.mjs';
 import { gzipSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
-import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
+import { createAuthority, verifySecret } from "./dataverse-auth.mjs";
 import { executeBatch, parseBatch } from "./dataverse-batch.mjs";
-import { createChangeLog } from "./dataverse-changes.mjs";
-import {
-  createPrincipals,
-  dataverseIdentity,
-  ensureSecurityModel,
-  grantAccess,
-  modifyAccess,
-  parseAccessMask,
-  privilegeId,
-  revokeAccess,
-  syncGroupMembership,
-  uuidV5,
-} from "./dataverse-security.mjs";
-import { createMetadataService, objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
-import { standardGlobalOptionSets } from "./dataverse-standard.mjs";
+import { grantAccess, modifyAccess, parseAccessMask, privilegeId, revokeAccess, syncGroupMembership, uuidV5 } from "./dataverse-security.mjs";
+import { objectTypeCode as typeCodeOf } from "./dataverse-metadata.mjs";
 import { EXTENSIONS } from "./dataverse-extensions.mjs";
 import { runInBackground } from "./dataverse-async.mjs";
-import { seedManagedIdentityRows } from "./dataverse-managed-identity.mjs";
 import { AUDIT_ACTION, writeAudit } from "./dataverse-audit.mjs";
-import { createOperationRegistry } from "./dataverse-operations.mjs";
 import { createServiceProtection } from "./dataverse-limits.mjs";
 import { createDiscovery } from "./dataverse-discovery.mjs";
 import { handleSoap } from "./dataverse-soap.mjs";
 import { startDataverseTds } from "./dataverse-tds.mjs";
-import { fieldsWithStandard } from "./dataverse-standard.mjs";
 import {
   JSON_CONTENT_TYPE,
   baseHeaders,
@@ -52,8 +40,6 @@ import { stringifyExactJson } from "./exact-numeric.mjs";
 
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
 const GLOBAL_DISCO = "https://globaldisco.crm.dynamics.com";
-const DATAVERSE_NAMESPACE = uuidV5("6ba7b811-9dad-11d1-80b4-00c04fd430c8", "paqvilo-dataverse");
-export const dataverseOrganizationId = settings => (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
 const SYSTEMUSER_TYPE = typeCodeOf("systemuser");
 const TENANT = "(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|common|organizations|consumers)";
 const STS_PATH = new RegExp(
@@ -95,7 +81,6 @@ const PLAIN_INVALID_URL = "Bad Request - Invalid URL";
 // Names a browser or client may use for the listeners: the TLS certificate's subjectAltNames and the listener's own host.
 const TLS_HOST_NAMES = ["localhost", "127.0.0.1", "[::1]"];
 // Record writes made while a $batch runs share the batch's change slot: the server's queue is not re-entrant.
-const inBatch = new AsyncLocalStorage();
 
 const refOf = (value) => (value !== null && typeof value === "object" ? value.id : value) ?? undefined;
 const asJson = (result) => ({ ...result, headers: { "content-type": "application/json; charset=utf-8", ...(result.headers ?? {}) } });
@@ -222,6 +207,7 @@ function send(res, result, requestId, clientRequestId, { cors = false, gzip = fa
     headers["content-type"] ??= text ? "text/plain" : binary ? "application/octet-stream" : JSON_CONTENT_TYPE;
   }
   const status = result.status ?? 200;
+  if (status === 304) delete headers['odata-version'];
   // observed: parity cases, every native 200 that is not an octet-stream download is gzipped when the caller accepts it.
   if (status === 200 && gzip && payload !== undefined && headers["content-type"] !== "application/octet-stream") {
     payload = gzipSync(payload);
@@ -649,7 +635,7 @@ function unknownCaller(id, requestId) {
   const text = `Entity 'systemuser' With Id = ${id} Does Not Exist`;
   return {
     status: 404,
-    headers: { ...baseHeaders(requestId), "Content-Type": "application/json; charset=utf-8" },
+    headers: { ...baseHeaders(requestId), 'OData-Version': undefined, "Content-Type": "application/json; charset=utf-8" },
     body: {
       _error: {
         Code: "0x80040217",
@@ -737,13 +723,7 @@ async function authenticated(d, c, handle) {
       user = d.principals.effectivePrincipal(caller, target);
     }
 
-    const { hierarchy, userHierarchy, ...identityData } = dataverseIdentity(d.store, user);
-    // The two functions are non-enumerable: the store clones identity into committed events (structuredClone), which cannot clone a function.
-    const dataverse = Object.defineProperties(
-      { appId: verdict.claims.appid, accessMode: user.accessmode, callerId: caller.systemuserid, ...identityData },
-      { hierarchy: { value: hierarchy }, userHierarchy: { value: userHierarchy } },
-    );
-    const identity = { admin: true, id: user.systemuserid, systemUserId: user.systemuserid, businessUnitId: refOf(user.businessunitid), dataverse };
+    const { identity } = organizationPrincipalContext(d.store, user, { caller, appId: verdict.claims.appid });
     const bodyBuffer = BODY_METHODS.has(c.method) ? await readBody(req) : Buffer.alloc(0);
     return await handle({ user, caller, identity, bodyBuffer });
   } finally {
@@ -800,12 +780,12 @@ async function handleDataRequest(d, { method, url, route, headers = {}, bodyBuff
   switch (route.kind) {
     case "service":
       // Native omits Expires on the service document and $metadata (see baseHeaders).
-      return method === "GET" ? { status: 200, headers: { expires: undefined }, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
+      return method === "GET" ? { status: 200, headers: { expires: undefined, ETag: d.metadata.etag() }, body: d.metadata.serviceDocument(origin, route.version) } : methodNotAllowed(c);
     case "metadata":
       if (method !== "GET") return methodNotAllowed(c);
       return {
         status: 200,
-        headers: { "content-type": "application/xml", expires: undefined },
+        headers: { "content-type": "application/xml", expires: undefined, ETag: d.metadata.etag() },
         body: d.metadata.csdl(origin, { annotations: url.searchParams.get("annotations") === "true" || prefer.annotations === "*" }),
       };
     case "batch":
@@ -909,35 +889,9 @@ async function runOperation(d, op, route, paramsText, common, target) {
 }
 
 // The largest versionnumber any stored row holds (0 for none); a reset restores the org row version to it.
-function maxRowVersion(state) {
-  let max = 0;
-  for (const rows of Object.values(state.tables ?? {})) {
-    for (const row of Array.isArray(rows) ? rows : []) {
-      const version = Number(row?.versionnumber);
-      if (Number.isSafeInteger(version) && version > max) max = version;
-    }
-  }
-  return max;
-}
-
 // Runs fn as one unit: an isolated store transaction, so its writes stay private until fn returns and a throw discards them.
 // The change log is rewound to its revision on rollback. Usable by any caller that holds the api (a $batch changeset, a later
 // SOAP ExecuteTransaction); the caller holds the change slot. Plain store.transact calls made inside fn join this transaction.
-export async function runAtomic(api, fn) {
-  const revision = api.changes?.current();
-  const elasticSequence = api.store.elasticCommitSequence ?? 0;
-  try {
-    return await api.store.transact(fn, { isolated: true, cloneResult: false });
-  } catch (error) {
-    // The rolled-back writes' committed events must not survive in the change log (a DELETE would read as deleted).
-    await api.store.flushCommittedEvents?.();
-    // Standard writes roll back. Elastic writes have independent commit semantics;
-    // their preserved events are flushed by the store after restoring that state.
-    if ((api.store.elasticCommitSequence ?? 0) === elasticSequence) api.changes?.rewind(revision);
-    throw error;
-  }
-}
-
 // $batch: parts run in process under the caller verified for the batch; a changeset rolls back on failure (runAtomic).
 async function batchCall(d, c, common) {
   if (c.method !== "POST") return methodNotAllowed(c);
@@ -1120,40 +1074,6 @@ export function createDataverseHandler(deps) {
   };
 }
 
-function seedRegistrations(store, settings, ids, clock) {
-  const dv = (store.state.dataverse ??= {});
-  Object.assign(dv, {
-    tenantId: ids.tenantId,
-    organizationId: ids.organizationId,
-    uniqueName: settings.uniqueName,
-    friendlyName: settings.friendlyName,
-    version: settings.version,
-    environmentId: ids.environmentId,
-    datacenterId: ZERO_GUID,
-    geo: "NA",
-  });
-  dv.applications ??= [];
-  for (const app of settings.applications ?? []) {
-    const registration = {
-      publicClient: app.publicClient ?? false,
-      redirectUris: app.redirectUris ?? [],
-      // Stored as configured (short names); dataverse-settings grantAllowed maps them at the token endpoint.
-      allowedGrants: app.allowedGrants,
-      federatedCredentials: app.federatedCredentials ?? [],
-    };
-    let entry = dv.applications.find((item) => String(item.appId).toLowerCase() === app.appId);
-    if (!entry) {
-      entry = { appId: app.appId, displayName: app.displayName, createdOn: new Date(clock()).toISOString(), secrets: [], certificates: [], ...registration };
-      dv.applications.push(entry);
-    } else Object.assign(entry, registration);
-    entry.secrets ??= [];
-    const secret = app.secretEnvironmentVariable ? process.env[app.secretEnvironmentVariable] : undefined;
-    if (secret && !entry.secrets.some((item) => verifySecret(secret, item))) {
-      entry.secrets.push({ id: randomUUID(), ...hashSecret(secret), hint: secret.slice(0, 3), expiresOn: null });
-    }
-  }
-}
-
 function listen(server, port, host) {
   return new Promise((resolve, reject) => {
     server.once("error", reject);
@@ -1178,57 +1098,30 @@ export async function startDataverseApi({
   log = () => {},
   extensions = EXTENSIONS,
   managedIdentity = null,
+  organization = null,
+  beforeListen,
 }) {
-  void observed; // accepted for the documented signature; no router behaviour depends on it yet
-  // Standard table columns under the Solution's own fields (plan 3.2); the records and TDS layers both read this.
-  const solutionFields = metadataFields;
-  metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
-  const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
-  const organizationId = dataverseOrganizationId(settings);
-  const environmentId = `Default-${tenantId}`;
-  const applications = settings.applications ?? [];
-
-  const securitySettings = {
-    organizationId,
-    tenantId,
-    uniqueName: settings.uniqueName,
-    friendlyName: settings.friendlyName,
-    version: settings.version,
-    auditing: settings.auditing,
-    duplicateDetection: settings.duplicateDetection,
-    currencyCode: settings.currencyCode,
-    currencySymbol: settings.currencySymbol,
-    localeId: settings.localeId,
-    // A managed identity is an application user too: its token's appid is the clientId, and its roles are the user's roles.
-    applications: [
-      ...applications.map((app) => ({ appId: app.appId, displayName: app.displayName, roles: app.roles ?? [] })),
-      ...(settings.managedIdentities ?? []).map((identity) => ({ appId: identity.clientId, displayName: identity.displayName, roles: identity.roles ?? [] })),
-    ],
-    // Settings rows use domainname/fullname; the security model reads upn/displayName.
-    users: (settings.users ?? []).map((user) => ({ objectId: user.objectId, upn: user.domainname, displayName: user.fullname, roles: user.roles })),
-  };
-  const registerApplications = () => store.transact(() => {
-    seedRegistrations(store, settings, { tenantId, organizationId, environmentId }, clock);
-    seedManagedIdentityRows(store, { tenantId, identities: settings.managedIdentities ?? [] });
-  });
-  const seedSecurity = () => ensureSecurityModel(store, securitySettings, { schema });
-  await change(registerApplications);
-  await change(seedSecurity);
-  // Record writes from inside a $batch skip `change` (see inBatch); other record writes use the caller's change.
-  const recordChange = (fn) => (inBatch.getStore() ? fn() : change(fn));
-
-  const principals = createPrincipals(store, { organizationId, tenantId, objectTypeCode: typeCodeOf, schema });
-  // Extension operations (dataverse-operations.mjs) answer before the built-in functions and actions.
-  const operations = createOperationRegistry();
-  const metadata = createMetadataService({
-    organizationId,
-    schema,
-    mappings: () => store.state.mappings,
-    virtualTables: () => store.virtualTables?.() ?? {},
-    globalOptionSets: () => ({ ...standardGlobalOptionSets(), ...(store.state.dataverse?.globalOptionSets ?? {}) }),
-    changeLog: () => store.state.dataverse?.metadataLog ?? [],
-    extraCsdl: () => operations.csdlFragments(),
-  });
+  const ownsOrganization = !organization;
+  organization ??= await createOrganizationRuntime({ store, settings, change, schema, metadataFields, clock, records, log, extensions });
+  ({ store, settings, change, clock } = organization);
+  const { api, principals, metadata, changes, routes, limits, tenantId, organizationId, environmentId } = organization;
+  const operations = organization.registry, recordHandlers = organization.records;
+  metadataFields = api.metadataFields;
+  const servers = [];
+  let tds, closing;
+  const close = () => closing ??= (async () => {
+    const results = await Promise.allSettled([
+      Promise.resolve().then(() => tds?.close()),
+      ...servers.map(server => new Promise(resolve => {
+        server.closeAllConnections();
+        server.close(() => resolve());
+      })),
+    ]);
+    if (ownsOrganization) await organization.close();
+    const failures = results.filter(result => result.status === 'rejected').map(result => result.reason);
+    if (failures.length) throw new AggregateError(failures, 'Dataverse transport cleanup failed.');
+  })();
+  try {
   const authority = createAuthority({
     tenantId,
     applications: () => store.state.dataverse?.applications ?? [],
@@ -1244,90 +1137,6 @@ export async function startDataverseApi({
     },
     clock,
   });
-  // One change log per API: the record handlers read it, a rolled-back changeset rewinds it and a reset expires its tokens.
-  const changes = createChangeLog(store, { clock });
-  const { createRecordHandlers, createRecordHooks } = await import("./dataverse-records.mjs");
-  const recordHooks = createRecordHooks();
-  // fieldSecurity is read per request: the fls extension sets api.fieldSecurity when it installs, after the handlers exist.
-  const recordHandlers =
-    records ??
-    createRecordHandlers({
-      store, change: recordChange, principals, metadata, metadataFields, objectTypeCode: typeCodeOf, clock, changes, hooks: recordHooks,
-      fieldSecurity: () => api.fieldSecurity,
-    });
-
-  // Extensions get the registry, the routes and the api object; security is re-seeded after they install, so tables
-  // they seed get privileges and role grants (seedSecurity is idempotent).
-  const routes = [];
-  // Shared by the HTTP router and the TDS endpoint, so both admit requests against the same windows.
-  const limits = createServiceProtection({ ...(settings.serviceProtection ?? {}), clock });
-  const api = {
-    store,
-    change: recordChange,
-    registry: operations,
-    principals,
-    metadata,
-    metadataFields,
-    records: recordHandlers,
-    recordHooks,
-    settings,
-    schema,
-    changes,
-    clock,
-    limits,
-    tdsPort: null,
-    log,
-    addRoute: (match, handler, { anonymous = false } = {}) => {
-      routes.push({ match, handler, anonymous });
-    },
-    // A changeset or a SOAP transaction runs fn as one unit against this api's store and change log (see runAtomic).
-    runAtomic: (fn) => runAtomic(api, fn),
-    dataRevision: () => store.dataRevision?.(),
-  };
-  // Metadata functions over the metadata service's response builders.
-  const metadataFunction = (name, respond, csdl) =>
-    operations.register({
-      name, kind: "function", binding: "unbound", csdl,
-      handle: (c) => {
-        const response = respond(c.params);
-        if (!response) throw new DataError(`${name} does not find the requested metadata.`, 404, "NotFound");
-        return { status: 200, body: { "@odata.context": contextUrl(c.origin, c.version, `Microsoft.Dynamics.CRM.${name}Response`), ...response } };
-      },
-    });
-  // unverified: the response property types (the metadata CSDL's ComplexEntityMetadata and ComplexAttributeMetadata); the
-  // EntityFilters flags are Edm.Int32 here, not the mscrm enum.
-  metadataFunction("RetrieveEntity", (p) => metadata.retrieveEntityResponse(p.LogicalName ?? p.MetadataId ?? null, p.EntityFilters ?? null), `<ComplexType Name="RetrieveEntityResponse">
-  <Property Name="EntityMetadata" Type="mscrm.ComplexEntityMetadata" />
-</ComplexType>
-<Function Name="RetrieveEntity">
-  <Parameter Name="EntityFilters" Type="Edm.Int32" />
-  <Parameter Name="LogicalName" Type="Edm.String" />
-  <Parameter Name="MetadataId" Type="Edm.Guid" />
-  <Parameter Name="RetrieveAsIfPublished" Type="Edm.Boolean" />
-  <ReturnType Type="mscrm.RetrieveEntityResponse" Nullable="false" />
-</Function>`);
-  metadataFunction("RetrieveAllEntities", (p) => ({
-    EntityMetadata: metadata.entities().map((e) => metadata.retrieveEntityResponse(e.LogicalName, p.EntityFilters ?? null).EntityMetadata),
-    Timestamp: metadata.versionStamp(),
-  }), `<ComplexType Name="RetrieveAllEntitiesResponse"><Property Name="EntityMetadata" Type="Collection(mscrm.ComplexEntityMetadata)" /><Property Name="Timestamp" Type="Edm.String" /></ComplexType>
-<Function Name="RetrieveAllEntities"><Parameter Name="EntityFilters" Type="Edm.Int32" /><Parameter Name="RetrieveAsIfPublished" Type="Edm.Boolean" /><ReturnType Type="mscrm.RetrieveAllEntitiesResponse" Nullable="false" /></Function>`);
-  metadataFunction("RetrieveAttribute", (p) => metadata.retrieveAttributeResponse(p.EntityLogicalName ?? null, p.LogicalName ?? p.MetadataId ?? null), `<ComplexType Name="RetrieveAttributeResponse">
-  <Property Name="AttributeMetadata" Type="mscrm.ComplexAttributeMetadata" />
-</ComplexType>
-<Function Name="RetrieveAttribute">
-  <Parameter Name="EntityLogicalName" Type="Edm.String" />
-  <Parameter Name="LogicalName" Type="Edm.String" />
-  <Parameter Name="MetadataId" Type="Edm.Guid" />
-  <ReturnType Type="mscrm.RetrieveAttributeResponse" Nullable="false" />
-</Function>`);
-  for (const extension of extensions) {
-    if (typeof extension?.install !== "function") throw new Error("A Dataverse API extension needs an install(api) function.");
-    await extension.install(api);
-  }
-  if (extensions.length) await change(seedSecurity);
-  // H6: the organization the seeded organization row carries (settings.organizationId is null at runtime).
-  const organizationRow = store.tableRows("organization").find((row) => String(row.organizationid).toLowerCase() === organizationId);
-  api.settings = { ...settings, organizationId: organizationRow?.organizationid ?? organizationId };
 
   const requests = [];
   const handle = createDataverseHandler({
@@ -1353,8 +1162,9 @@ export async function startDataverseApi({
     limits,
   });
 
+  await beforeListen?.(organization);
   const httpServer = http.createServer({ maxHeaderSize: MAX_HEADER_SIZE }, handle);
-  const servers = [httpServer];
+  servers.push(httpServer);
   await listen(httpServer, settings.port ?? 0, host);
   const origin = listenerOrigin("http", host, httpServer.address().port);
   let tlsOrigin = null;
@@ -1367,7 +1177,7 @@ export async function startDataverseApi({
   // On by default (Enable TDS endpoint); port 0 is ephemeral. Started last: the STS URL needs the HTTPS origin.
   // Listens even when disabled: the endpoint then refuses every login (tds.enabled false).
   const tdsSettings = settings.tds ?? { enabled: true, port: 0 };
-  const tds = await startDataverseTds({
+  tds = await startDataverseTds({
     store, authority, principals, records: recordHandlers, limits, metadataFields, clock, origin, tlsOrigin, tenantId,
     version: settings.version, tls, host, port: tdsSettings.port, enabled: tdsSettings.enabled,
   });
@@ -1383,42 +1193,23 @@ export async function startDataverseApi({
     servers,
     // Re-seeds the registrations and security rows after a store reset. Runs store transactions only, never `change`,
     // so it can be called from inside the server's change queue (its /reset handler does).
-    reseed: async () => {
-      await registerApplications();
-      for (const extension of extensions) await extension.reset?.(api);
-      await seedSecurity();
-      // The row version restarts at the largest version a row holds, so the next write takes a value above every row's.
-      await store.transact(() => {
-        store.state.rowVersion = maxRowVersion(store.state);
-      });
-      // The seeding writes are not changes a client should see: flush them, then expire every token issued before the reset.
-      await store.flushCommittedEvents?.();
-      changes.reset();
-    },
+    organization,
+    reseed: organization.reseed,
     requests: () => requests.map((entry) => ({ ...entry })),
     issueManagedIdentityToken: authority.issueManagedIdentityToken,
     // Called by the local administration shell while it owns the host's change
     // queue. Reuse the record pipeline without entering that queue a second time.
     writeLocalRecord: createModelDrivenRecordService({
+      organization,
       store, records: recordHandlers, origin: () => origin,
       principal: () => principals.byId(uuidV5(organizationId, 'systemuser:SYSTEM')),
       run: fn => inBatch.run(true, () => runAtomic(api, fn)),
     }),
-    close: () => {
-      recordHandlers.close?.();
-      changes.close();
-      return Promise.all([
-        ...extensions.map((extension) => extension.close?.(api)),
-        tds?.close(),
-        ...servers.map(
-          (server) =>
-            new Promise((resolve) => {
-              server.closeAllConnections();
-              server.close(() => resolve());
-            }),
-        ),
-      ]).then(() => undefined);
-    },
+    close,
     handle,
   };
+  } catch (error) {
+    await close().catch(cleanup => log('transport-cleanup', cleanup));
+    throw error;
+  }
 }

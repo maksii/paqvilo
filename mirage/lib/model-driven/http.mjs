@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 
-const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
+const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
-const metadataOnly = catalogue => ({ ...catalogue, tables: Object.fromEntries(Object.entries(catalogue.tables).map(([name, { rows: _rows, ...table }]) => [name, table])) });
+const metadataOnly = (catalogue, data, actor) => ({ ...catalogue, tables: Object.fromEntries(Object.entries(catalogue.tables).map(([name, { rows: _rows, ...table }]) => [name, { ...table, capabilities: data.capabilities?.(name, actor) }])) });
 
-export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn() }) {
+export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}) }) {
   return async (req, res, url) => {
     const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
     const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
@@ -30,26 +30,27 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       const method = req.method;
       if (!['GET', 'POST', 'PATCH', 'DELETE'].includes(method)) throw fail('Method not allowed.', 405);
       if (method !== 'GET' && req.headers['x-sim-csrf'] !== csrf()) throw fail('Missing simulator CSRF token.', 403);
+      const actor = principal(req);
       if (!api[1]) {
         if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
-        json(res, 200, await read(() => metadataOnly(catalogue()))); return true;
+        json(res, 200, await read(() => metadataOnly(catalogue(), data, actor))); return true;
       }
       const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
       if (!route) throw fail('Model-driven endpoint not found.', 404);
       const [, entity, encodedId] = route, id = encodedId ? decodeURIComponent(encodedId) : null;
       if (id && (!/^[\w{}-]{1,128}$/.test(id))) throw fail('Invalid record ID.', 400);
       if (method === 'GET') {
-        if (id) json(res, 200, await data.get(entity, id));
+        if (id) json(res, 200, await data.get(entity, id, actor));
         else {
           let query;
           try { query = JSON.parse(url.searchParams.get('query') ?? '{}'); } catch { throw fail('Invalid grid query JSON.', 400); }
           if (!query || typeof query !== 'object' || Array.isArray(query)) throw fail('Provide a grid query object.', 400);
-          json(res, 200, await data.list(entity, query));
+          json(res, 200, await data.list(entity, query, actor));
         }
       } else {
         if (method === 'POST' && id || method !== 'POST' && !id) throw fail('Invalid record operation.', 405);
         const values = method === 'DELETE' ? {} : await readBody(req);
-        const result = await change(() => data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'] }));
+        const result = await change(() => data.write(entity, id, values, { remove: method === 'DELETE', etag: req.headers['if-match'], ...actor }));
         json(res, method === 'POST' ? 201 : 200, result);
       }
     } catch (error) {

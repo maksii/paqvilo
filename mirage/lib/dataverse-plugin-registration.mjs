@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Plug-in registration through the Dataverse API (Learn: plug-in registration tables). Seeds sdkmessage and
 // sdkmessagefilter, mirrors the Solution's registrations into rows, and checks writes to the registration tables with
 // the documented errors. A row runs nothing by itself: overlayRegisteredSteps decides which steps join the pipeline. Seeding is insert-or-replace
@@ -47,7 +48,7 @@ const required = (column) => fail(`The '${column}' attribute is required.`, '0x8
 const notFound = (logical, id) => new DataError(`Entity '${logical}' With Id = ${id} Does Not Exist`, 404, 'NotFound', { innerCode: '0x80040217' });
 // ponytail: a linear scan per lookup; index the registration tables by id if their row counts grow.
 const rowById = (store, logical, column, id) => (id == null ? null : store.tableRows(logical).find((row) => same(row[column], id)) ?? null);
-const organizationOf = (store) => String(store.tableRows('organization')[0]?.organizationid ?? '').toLowerCase();
+const organizationOf = (store) => String(organizationRecord(store)?.organizationid ?? '').toLowerCase();
 const idOf = (bind) => String(bind).match(/\(([^()]*)\)\s*$/)?.[1].replace(/[{}]/g, '').toLowerCase() ?? null;
 
 // A lookup's id: the nav@odata.bind the write carries, else the column (data first, then the existing row).

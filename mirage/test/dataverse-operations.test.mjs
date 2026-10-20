@@ -16,6 +16,28 @@ const API = "/api/data/v9.2/";
 // Routes the stubbed record handler was asked to answer (the real records module is covered in dataverse-routing-errors.test.mjs).
 const handledRoutes = [];
 
+it('mutable operation providers follow live definitions without replacing immutable static registrations', () => {
+  const registry = createOperationRegistry(), platform = () => 'platform', dynamic = () => 'dynamic';
+  const staticDefinition = { name: 'Stable', kind: 'action', binding: 'unbound', handle: platform };
+  registry.register(staticDefinition);
+  staticDefinition.name = 'ChangedCallerObject';
+  let name = 'new_First';
+  registry.setProvider('invented', () => [
+    { name: 'Stable', kind: 'action', binding: 'unbound', handle: dynamic },
+    { name: 'WhoAmI', kind: 'action', binding: 'unbound', handle: dynamic },
+    { name, kind: 'action', binding: 'unbound', handle: dynamic, signature: { params: [['Value', 'Edm.String']] } },
+  ]);
+  assert.equal(registry.find({ name: 'Stable', kind: 'action', binding: 'unbound' }).handle(), 'platform');
+  assert.equal(registry.find({ name: 'WhoAmI', kind: 'action', binding: 'unbound' }), null, 'A provider cannot shadow a built-in implemented by the HTTP router.');
+  assert.ok(registry.csdlFragments().includes('Name="new_First"'));
+  name = 'new_Second';
+  assert.equal(registry.has('new_First'), false);
+  assert.equal(registry.has('new_Second'), true);
+  assert.ok(!registry.csdlFragments().includes('Name="new_First"'));
+  registry.setProvider('invented', () => []);
+  assert.deepEqual(registry.names(), ['Stable']);
+});
+
 function fixtureState() {
   const state = emptyState();
   state.mappings = {

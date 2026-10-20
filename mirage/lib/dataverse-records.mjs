@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Record handlers for the simulated Dataverse Web API: collections, single rows,
 // properties, navigation, $ref and collection-bound actions. The Dataverse layer
 // authorizes each call here before the store runs under the bypass identity.
@@ -325,7 +326,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     throw invalid(`Error identified in Payload provided by the user for Entity :'${set}'  ---->  InnerException : A request body is required.`, "0x80048d19");
   };
   // The organization's base currency seeded by the security model, found by the organization row's id; null when the Dataverse tables are absent.
-  const baseCurrency = () => baseCurrencyRow(store, store.state.tables.organization?.[0]?.organizationid);
+  const baseCurrency = () => baseCurrencyRow(store, organizationRecord(store)?.organizationid);
   const isMoney = (mapping, key) => fieldKind(readDefinition(mapping, key)) === "money";
   // No $select (or $select=*) answers every column, the currency lookup included; a $select list answers it only when named.
   const currencySelected = (c) => {
@@ -475,7 +476,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     delete formatted[`_owninguser_value${FORMATTED}`];
     delete formatted[`_owninguser_value${NAVIGATION}`];
     // Organization-owned rows always answer the organization lookup, selected or not (observed: seed.child, relationships.parent).
-    const organizationId = store.state.tables.organization?.[0]?.organizationid;
+    const organizationId = organizationRecord(store)?.organizationid;
     const selected = parseSelect(c.url.searchParams.get("$select"));
     if (organizationId && (!c.navigation || selected == null || selected.includes("_organizationid_value")) && formatted._organizationid_value === undefined && ownershipOf(mapping.logicalName, undefined, mapping) === "org") {
       formatted._organizationid_value = organizationId;
@@ -638,7 +639,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     if (item.select) return;
     const target = store.resolveMapping(rel.entity);
     for (const name of columnNamesOf(target).names) if (!(name in child)) child[name] = null;
-    const organizationId = store.state.tables.organization?.[0]?.organizationid;
+    const organizationId = organizationRecord(store)?.organizationid;
     if (organizationId && child._organizationid_value === undefined && ownershipOf(target.logicalName, undefined, target) === "org") child._organizationid_value = organizationId;
   }
 
@@ -1383,7 +1384,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
 
   function readProperty(c, mapping, id, segment) {
     // A path segment that names no column is a missing resource (404 0x80060888), not a bad query option.
-    if (!hasProperty(mapping, segment)) throw new DataError(`Resource not found for the segment '${segment}'`, 404, "UnknownEntity", { httpStatus: 404, innerCode: "0x80060888" });
+    if (!hasProperty(mapping, segment)) throw new DataError(`Resource not found for the segment '${segment}'`, 404, "UnknownEntity", { httpStatus: 404, innerCode: "0x80060888", route: true });
     const params = new URLSearchParams({ $select: segment });
     const projected = store.query(mapping.logicalName, params, c.identity, undefined, secured(c, { id })).value[0];
     return projected?.[segment] ?? null;
@@ -1632,7 +1633,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   // A verb a record does not take. PUT and POST on a record have their own native 0x80060888 messages; others are the generic 405.
   const unsupportedVerbError = (c) => {
     if (c.route.kind === "entity" && c.method === "PUT") {
-      return new DataError(`Operation not supported on ${c.mapping.logicalName}`, 405, "MethodNotAllowed", { httpStatus: 405, innerCode: "0x80060888" });
+      return new DataError(`Operation not supported on ${c.mapping.logicalName}`, 405, "MethodNotAllowed", { httpStatus: 405, innerCode: "0x80060888", route: true });
     }
     if (c.route.kind === "entity" && c.method === "POST") {
       return new DataError("Unmapped Request found, PathTemplate:~/entityset/key, HttpVerb:POST", 405, "MethodNotAllowed", { httpStatus: 405, innerCode: "0x80060888" });

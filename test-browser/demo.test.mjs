@@ -259,7 +259,10 @@ test('demo command opens a populated browser, supports the walkthrough and stops
   await admin.getByRole('heading', { name: 'Simulation presets', exact: true }).waitFor();
   await evidence('demo-admin', admin);
   await admin.locator('[data-apply="example-empty"]').click();
+  const presetApplied = admin.waitForResponse(response => response.request().method() === 'POST' && /^\/(?:_sim|__sim)\/api\/presets\/example-empty\/apply$/.test(new URL(response.url()).pathname));
   await admin.locator('#confirm-submit').click();
+  const presetResponse = await presetApplied;
+  assert.equal(presetResponse.status(), 200, await presetResponse.text());
   await admin.getByText('Preset applied.', { exact: true }).waitFor();
   await page.reload();
   await page.locator('[data-account-empty]').waitFor({ state: 'visible' });

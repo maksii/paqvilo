@@ -687,13 +687,14 @@ function normalizeState(state, presetLibrary = builtinPresets, platform = state?
 }
 
 export class DataStore {
-  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence } = {}) {
+  constructor({ file = null, state = emptyState(), presetLibrary = builtinPresets, platform = state?.simulator?.platformDefaults, persistence, storageAdapter = null } = {}) {
     this.file = file;
     this.presetLibrary = presetLibrary;
     this.platformConfig = platformConfig(platform);
     this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
     this.persistedDigest = null;
     this.persistenceOptions = persistence;
+    this.storageAdapter = storageAdapter;
     this.storage = file ? new StateStorage(file, persistence) : null;
     this.queue = Promise.resolve();
     // Advances with every committed change (transact), so consumers such as OData
@@ -729,6 +730,10 @@ export class DataStore {
     return `${this.revision}.${this.siteRevision ?? 0}`;
   }
   async init() {
+    if (this.storageAdapter) {
+      this.state = normalizeState(await this.storageAdapter.load(this.state), this.presetLibrary, this.platformConfig, true);
+      return this;
+    }
     if (this.file) {
       this.ensureStorage();
       try {
@@ -815,6 +820,23 @@ export class DataStore {
     return selected;
   }
   async save() {
+    try { return await this.#saveState(); }
+    catch (error) {
+      // A failed publication is never a business rejection. In particular it
+      // must not retry and retain elastic/independent writes in the catch path.
+      if (error && typeof error === 'object' && Object.isExtensible(error)) {
+        error.persistenceFailure = true; throw error;
+      }
+      throw Object.assign(new Error(error?.message ?? String(error), { cause: error }), { persistenceFailure: true });
+    }
+  }
+  async #saveState() {
+    if (this.storageAdapter) {
+      const started = performance.now();
+      await this.storageAdapter.save(this.state);
+      this.recordSave(performance.now() - started, 'simulation');
+      return;
+    }
     if (!this.file) return;
     this.ensureStorage();
     const saveStarted = performance.now();
@@ -901,6 +923,7 @@ export class DataStore {
     if (!this.rowTransaction) return;
     const transaction = this.rowTransaction;
     this.pluginRollbackBoundary.backup = transaction.rollback(clone(this.state));
+    this.pluginRollbackBoundary.persistenceBackup ??= this.pluginRollbackBoundary.backup;
     transaction.promoted = true; this.rowTransaction = null;
   }
   /**
@@ -932,9 +955,11 @@ export class DataStore {
       const rowTransaction = incremental ? new RowTransaction(this) : null;
       const previousRows = this.rowTransaction; this.rowTransaction = rowTransaction;
       const boundary = { backup: lazyReadSnapshot || rowTransaction ? null : clone(this.state), independentCommit: false,eventCount:0 };
+      boundary.persistenceBackup = boundary.backup;
       if (lazyReadSnapshot) boundary.ensureSnapshot = () => {
         if (boundary.backup !== null) return;
         boundary.backup = clone(this.state);
+        boundary.persistenceBackup = boundary.backup;
       };
       const previousBoundary=this.pluginRollbackBoundary,previousTransaction=this.pluginInTransaction;
       boundary.parent = previousBoundary;
@@ -955,23 +980,40 @@ export class DataStore {
       } catch (error) {
         if (!rowTransaction?.promoted) rowTransaction?.rollback();
         this.rowIndexes = null;
-        if (boundary.backup !== null) this.state = boundary.backup;
+        const rollback = error.persistenceFailure ? boundary.persistenceBackup : boundary.backup;
+        if (rollback !== null) this.state = clone(rollback);
         // Elastic main operations commit independently, even inside a failed changeset or a failed PostOperation.
         // Restore only those rows after rollback: earlier standard-table writes remain transactional.
-        if (boundary.elasticWrites?.size) {
-          for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
-            const rows = (this.state.tables[mapping.logicalName] ??= []);
-            const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
-            if (removed) { if (index >= 0) rows.splice(index, 1); }
-            else if (index >= 0) rows[index] = clone(row);
-            else rows.push(clone(row));
+        if (!error.persistenceFailure && boundary.elasticWrites?.size) {
+          const retentionBackup = clone(this.state);
+          try {
+            for (const { mapping, row, removed } of boundary.elasticWrites.values()) {
+              const rows = (this.state.tables[mapping.logicalName] ??= []);
+              const index = this.rowIndex(mapping, rows, recordKey(mapping, row));
+              if (removed) { if (index >= 0) rows.splice(index, 1); }
+              else if (index >= 0) rows[index] = clone(row);
+              else rows.push(clone(row));
+            }
+            this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
+            await this.save(); this.revision++;
+            if (isolated) this._state = frame.working;
+            const retained = boundary.independentCommit && !isolated ? this.committedEventCandidates.slice(0, boundary.eventCount) : [];
+            this.dispatchCommittedEvents([...new Set([...retained, ...(boundary.elasticEvents ?? [])])]);
+          } catch (saveError) {
+            this.state = boundary.persistenceBackup ?? retentionBackup;
+            this.rowIndexes = null;
+            throw saveError;
           }
-          this.state.rowVersion = Math.max(this.state.rowVersion ?? 0, boundary.elasticVersion ?? 0);
-          if (isolated) this._state = frame.working;
-          await this.save(); this.revision++;
-          const retained = boundary.independentCommit && !isolated ? this.committedEventCandidates.slice(0, boundary.eventCount) : [];
-          this.dispatchCommittedEvents([...new Set([...retained, ...(boundary.elasticEvents ?? [])])]);
-        } else if(boundary.independentCommit&&!isolated){await this.save();this.revision++;this.dispatchCommittedEvents(this.committedEventCandidates.slice(0,boundary.eventCount));}
+        } else if (!error.persistenceFailure && boundary.independentCommit && !isolated) {
+          try {
+            await this.save(); this.revision++;
+            this.dispatchCommittedEvents(this.committedEventCandidates.slice(0, boundary.eventCount));
+          } catch (saveError) {
+            if (boundary.persistenceBackup !== null) this.state = boundary.persistenceBackup;
+            this.rowIndexes = null;
+            throw saveError;
+          }
+        }
         throw error;
       } finally {
         if (rowTransaction?.promoted || !rowTransaction && (!skipSaveIfUnchanged || boundary.backup !== null)) this.rowIndexes = null;

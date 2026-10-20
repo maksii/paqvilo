@@ -10,6 +10,8 @@ import { readLocalFile } from '../local-file.mjs';
 import { detectFormat, portalSourceDir } from '../portal-model.mjs';
 import { observedConfig, resolveProjectConfig, projectOrigin } from '../../mirage/lib/project-config.mjs';
 import { detectSourceDialect } from '../../mirage/lib/source-dialect.mjs';
+import { runtimeSettings } from '../../mirage/lib/runtime-config.mjs';
+import { simulationSettings } from '../../mirage/lib/simulation-settings.mjs';
 
 const run = promisify(execFile);
 const LIMIT = 256 * 1024;
@@ -18,7 +20,7 @@ export const setupError = (message, status = 400) => Object.assign(new Error(mes
 const docs = JSON.parse(await fs.readFile(new URL('../../package.json', import.meta.url), 'utf8'));
 export const setupVersion = docs.version;
 const docRoot = docs.repository.url.replace(/^git\+/, '').replace(/\.git$/, '') + '/blob/main/';
-export const setupDocs = Object.fromEntries(Object.entries({ setup: 'docs/getting-started.md', configuration: 'docs/configuration.md', sources: 'docs/project-extensions.md', lense: 'docs/lense.md', mirage: 'mirage/README.md', packs: 'mirage/docs/data-packs.md' }).map(([key, value]) => [key, docRoot + value]));
+export const setupDocs = Object.fromEntries(Object.entries({ setup: 'docs/getting-started.md', configuration: 'docs/configuration.md', sources: 'docs/project-extensions.md', lense: 'docs/lense.md', mirage: 'mirage/README.md', packs: 'mirage/docs/data-packs.md', simulation: 'mirage/docs/simulation-levels.md', identity: 'mirage/docs/dataverse-api.md' }).map(([key, value]) => [key, docRoot + value]));
 
 async function textFile(file) {
   await assertScaffoldPath(file);
@@ -112,13 +114,19 @@ export class SetupStore {
       if (files.shared === null) return result;
       const valid = await this.validate(files.shared, files.personal);
       if (this.kind === 'project') {
-        result.settings = { defaultSite: valid.defaultPortal, sourceRoot: this.directory };
+        const authored = document(files.shared, 'Project configuration').raw;
+        result.settings = { defaultSite: valid.defaultPortal, sourceRoot: this.directory, runtime: valid.runtime,
+          simulation: valid.simulation, dataverse: valid.dataverse, solutions: valid.solutions.map(item => ({ id: item.id, path: item.sourcePath })),
+          solutionEntries: authored.solutions ?? [], dataPackEntries: authored.dataPacks ?? authored.presets ?? [],
+          dataPacks: valid.dataPacks, solutionRoots: valid.solutionRoots };
+        result.solutions = await Promise.all(valid.solutionRoots.map(folder => inspectSource(folder)));
+        result.packs = await Promise.all(valid.dataPacks.map(async pack => ({ id: pack.id, path: pack.module, exists: await fs.stat(pack.module).then(stat => stat.isFile(), () => false) })));
         const packs = await Promise.all(valid.dataPacks.map(async pack => ({ id: pack.id, path: pack.module, exists: await fs.stat(pack.module).then(stat => stat.isFile(), () => false) })));
         result.sites = await Promise.all(valid.portals.map(async site => {
           const origin = projectOrigin(valid, site);
           return { id: site.id, source: site.sourcePath, packs,
             sourceStatus: await inspectSource(site.sourceDir, { portal: true }), environments: origin ? { reference: { url: origin } } : {},
-            mirage: { solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => inspectSource(folder))) };
+            runtime: valid.runtime, mirage: { runtime: valid.runtime, simulation: valid.simulation, dataverse: valid.dataverse, solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => inspectSource(folder))) };
         }));
       } else {
         const catalogue = loadCatalogue({ config: this.file }, this.processEnv);
@@ -127,29 +135,38 @@ export class SetupStore {
           defaultSite: catalogue.root.defaultSite ?? '', browser: catalogue.root.browser, portals: catalogue.root.portals,
           liveReload: catalogue.root.liveReload, panel: catalogue.root.panel,
           solutionRoots: catalogue.root.defaults?.mirage?.solutionRoots ?? [],
+          runtime: runtimeSettings(catalogue.root.defaults?.mirage?.runtime), simulation: simulationSettings(catalogue.root.defaults?.mirage?.simulation),
+          dataverse: catalogue.root.defaults?.mirage?.dataverse ?? {},
           effective: Object.fromEntries(['PAQVILO_SITE', 'PAQVILO_ENV', 'PAQVILO_BROWSER', 'PAQVILO_REPO', 'PAQVILO_SCOPE', 'PAQVILO_BASELINE'].filter(key => values[key]).map(key => [key, { value: values[key], origin: origin[key] }])),
           provenance: catalogue.provenance };
         result.sites = await Promise.all(Object.entries(catalogue.sites).map(async ([id, site]) => {
           const mirage = resolveMirageConfig(site.mirage, catalogue);
           return { id, source: site.source ?? '', defaultEnv: site.defaultEnv ?? '', environments: site.environments,
             startPath: site.startPath, scope: site.scope, routes: site.routes, mirage: site.mirage ?? {},
+            runtime: mirage.runtime ?? runtimeSettings(), effectiveMirage: mirage,
             sourceStatus: await inspectSource(site.sourceDir, { portal: true }),
             solutions: await Promise.all(mirage.solutionRoots.map(folder => inspectSource(folder))),
             packs: await Promise.all(mirage.dataPacks.map(async pack => ({ id: pack.id, path: pack.module, exists: await fs.stat(pack.module).then(stat => stat.isFile(), () => false) }))),
           };
         }));
       }
-      if (!result.sites.length) result.findings.push({ code: 'no-sites', message: 'Add a portal and select its local export folder.' });
+      const standalone = this.kind === 'project' && result.settings.runtime?.kind !== 'power-pages';
+      if (!result.sites.length && !standalone) result.findings.push({ code: 'no-sites', message: 'Add a target and select its local sources.' });
       if (result.settings.defaultSite && !result.sites.some(site => site.id === result.settings.defaultSite)) result.findings.push({ code: 'default-site', message: 'Choose a default portal that exists.' });
       for (const site of result.sites) {
         const add = (code, message) => result.findings.push({ code, site: site.id, message });
-        if (!site.sourceStatus.exists) add('missing-source', 'Select an existing local export folder.');
-        else if (!site.sourceStatus.format) add('source-layout', 'This folder is not a recognized portal export. Select the export inside the checkout.');
-        if (this.kind === 'catalogue' && !Object.keys(site.environments).length) add('no-environments', 'Add an environment for catalogue workflows. Local Mirage targets can use a loopback origin.');
-        if (site.defaultEnv && !site.environments[site.defaultEnv]) add('default-env', 'Choose a default environment that exists.');
-        for (const [env, setting] of Object.entries(site.environments)) if (placeholder(setting.url)) add('placeholder-origin', `${env}: replace the placeholder before connecting Lense.`);
+        const portal = (site.runtime?.kind ?? 'power-pages') === 'power-pages';
+        if (portal && !site.sourceStatus.exists) add('missing-source', 'Select an existing local export folder.');
+        else if (portal && !site.sourceStatus.format) add('source-layout', 'This folder is not a recognized portal export. Select the export inside the checkout.');
+        if (portal && this.kind === 'catalogue' && !Object.keys(site.environments).length) add('no-environments', 'Add an environment for catalogue workflows. Local Mirage targets can use a loopback origin.');
+        if (portal && site.defaultEnv && !site.environments[site.defaultEnv]) add('default-env', 'Choose a default environment that exists.');
+        if (portal) for (const [env, setting] of Object.entries(site.environments)) if (placeholder(setting.url)) add('placeholder-origin', `${env}: replace the placeholder before connecting Lense.`);
         for (const solution of site.solutions) if (!solution.exists) add('missing-solution', `Solution folder does not exist: ${solution.path}`);
         for (const pack of site.packs ?? []) if (!pack.exists) add('missing-pack', `Pack module does not exist: ${pack.path}`);
+      }
+      if (standalone) {
+        for (const solution of result.solutions) if (!solution.exists) result.findings.push({ code: 'missing-solution', message: `Solution folder does not exist: ${solution.path}` });
+        for (const pack of result.packs) if (!pack.exists) result.findings.push({ code: 'missing-pack', message: `Pack module does not exist: ${pack.path}` });
       }
       if (result.settings.portals === 'all') {
         const origins = new Map(), ports = new Map();

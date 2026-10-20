@@ -7,6 +7,8 @@ The enhanced model projects `mspp_*` management tables; standard exports use
 `adx_*`. Only the selected source website and locally created configuration are
 present. This is not an inventory of the connected organization.
 
+A [standalone model-driven runtime](standalone-organization.md) imports Solution apps without a portal or website. Its organization core remains available when the public HTTP API is disabled. Configure the runtime surface, default imported app and [simulation level](simulation-levels.md) in `/_setup/`; restart to apply changes.
+
 App definitions from configured `solutionRoots` appear in the application picker.
 The importer reads `AppModules/**.xml`, `AppModuleSiteMaps/**.xml`, and app
 components embedded in `Customizations.xml`, including solution archives. Later
@@ -33,13 +35,15 @@ from a live environment or a deployment commit.
   related record, search/sort the grid, create one with its parent prefilled, or
   select and delete local related rows. Ambiguous/missing
   relationships and unsupported many-to-many controls remain explicit placeholders.
-- Edit portal customization without editing the export: record overlays persist
-  in the runtime state under `simulator.modelDriven.records`. Mirage runs the
+- Edit portal customization without editing the export: sparse record overlays
+  under `simulator.modelDriven.records` feed the portal projection. Mirage runs the
   regular portal compiler again, so settings, snippets, templates, page hierarchy,
   forms and permissions use the updated local records. A source reload reapplies
   these sparse overlays, preserving later source edits to untouched fields;
-  restarting with the same state retains them. Resetting runtime
-  state also resets these changes.
+  persistence/restart behavior follows the selected simulation level. Legacy
+  local-state retains overlays across restart; dry run keeps edits in memory.
+  Explicit file-backed modes require declared pack DATA ownership. Resetting runtime
+  state restores its configured inputs.
 - New website records are local configuration records. They do not provision a
   hosted site, attach a new source checkout, or switch the runtime's source
   website. Deleting the source website from its own running instance is disabled.
@@ -48,9 +52,11 @@ Power BI visualization, charts, reports, flows, sharing, email links, global
 search, quick create, Advanced Find and classic advanced settings are disabled.
 Solution JavaScript/events, business process flows, custom controls, dashboards,
 and unsupported subgrids are not executed. This baseline does not claim full
-model-driven or Dynamics client parity. It does not emulate Dataverse security
-roles for staff users: this is a local administration surface like `/_sim/`.
-Portal visitor identity and table permissions remain separate.
+model-driven or Dynamics client parity.
+
+The top-right profile avatar opens **Staff profile**. Select an eligible interactive organization user to apply canonical staff roles, row access and field security to grids, lookup candidates, forms and mutations. **Local administrator** is an explicit development bypass, selected only when no staff cookie exists or you explicitly choose it. Invalid, disabled, deleted or expired staff selections fail instead of escalating. Manage users, roles and application credentials under `/_sim/#dataverse`. Portal visitor identity/table permissions and token-authenticated application identities remain separate.
+
+Create, update and delete commands follow the backend's table/row/field capabilities and DATA ownership. Unsupported operations and read-only fields are disabled with the reported reason. The backend enforces the same checks. File-backed simulation/deep modes require a declared pack DATA owner; dry run permits record edits in memory. Persistence level and exact target files are shown in Administration, with configuration changes applied only after restart.
 
 ## Architecture and extension boundaries
 
@@ -60,15 +66,7 @@ facts. `catalogue.mjs` builds the versioned data-only app/table/form/view contra
 organization names, URLs and captured metadata must stay in the owning project.
 Exported metadata takes precedence over generated field descriptions.
 
-`data.mjs` is the shell's local data interface (`list`, `get`, `write`). With the
-Dataverse API enabled, ordinary and Power Pages management tables share its
-canonical `DataStore` and write pipeline, including rules, plugins, audit values
-and optimistic concurrency. Management writes persist sparse source overlays;
-Mirage recompiles the portal from committed records. API writes become visible
-in the shell and portal, and shell writes are visible through the API. Without
-the API, the management adapter validates a projected local store and saves
-overlays through the same state replacement/recompile boundary. Queries use the
-existing FetchXML engine; catalogue and record reads wait for pending writes.
+`data.mjs` is the shell's data interface (`list`, `get`, `write`). Ordinary and Power Pages management tables use the shared organization core's canonical `DataStore` and record pipeline, including staff authorization, field security, rules, plugins, audit values and optimistic concurrency. The core remains active when the public HTTP listener is off. Management writes update sparse source overlays; Mirage recompiles the portal after committed records. API writes become visible in the shell and portal, and shell writes are visible through the enabled API. Queries use the existing FetchXML engine; catalogue and record reads wait for pending writes.
 The model-driven UI has no live-bridge path. Keep future organization-service
 adapters behind this interface.
 
@@ -84,9 +82,9 @@ The host retains its Host/Origin/cross-site checks. The shell uses same-origin
 assets and a restrictive CSP. No solution URL, script, web resource, or external
 navigation is executed as part of importing an app.
 
-`controls.mjs` registers controls by metadata type; unknown types remain explicit
-placeholders. Add richer controls, command eligibility, related grids, staff
-authorization, client API/event execution and business process flows as separate
+`control-descriptors.mjs` defines shared data-only control capabilities consumed by the catalogue, HTTP validation and browser registry. `controls.mjs` renders those types; unknown types remain explicit placeholders. Polymorphic lookups preserve the selected table alongside the ID and canonical logical-name annotation. A manually entered ID with multiple targets requires an explicit lookup selection. Existing-record PATCH requests contain only fields touched by actual control events, preserving untouched relationships and hidden values across tab changes. Create requests include editable rendered values.
+
+Add richer controls, command eligibility, related grids, client API/event execution and business process flows as separate
 capabilities. Extend the bounded related-grid adapter for richer relationships.
 Do not enable a command until its implementation and regression
 coverage exist. Preserve source provenance and report unsupported components.

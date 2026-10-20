@@ -96,9 +96,9 @@ export function operationCatalogue({ portal, workflows = new Map(), handlers, ov
       configuration: overrides[key] ?? null,
     });
   };
-  for (const record of portal.serverLogics ?? []) add('server-logic', record);
+  for (const record of portal?.serverLogics ?? []) add('server-logic', record);
   const linked = new Set();
-  for (const record of portal.cloudFlows ?? []) {
+  for (const record of portal?.cloudFlows ?? []) {
     linked.add(canonical(record.processId));
     add('cloud-flow', record, workflows.get(canonical(record.processId)));
   }

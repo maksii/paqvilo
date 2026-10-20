@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 // Simulated Dataverse duplicate detection: duplicate rules (duplicaterule and duplicaterulecondition
 // tables), the create and update check gated by MSCRM.SuppressDuplicateDetection, and the
 // PublishDuplicateRule, UnpublishDuplicateRule and RetrieveDuplicates operations. Invented schema only.
@@ -162,7 +163,7 @@ const detectionRequested = (c) => Object.entries(c.headers ?? {}).some(([name, v
 function beforeWrite(store, c, mapping, { operation, data, existing }) {
   if ((operation !== 'create' && operation !== 'update') || !detectionRequested(c)) return;
   // The organization's isduplicatedetectionenabled switches detection off for the whole organization (a missing row or flag leaves it on).
-  const enabled = store.tableRows('organization')[0]?.isduplicatedetectionenabled;
+  const enabled = organizationRecord(store)?.isduplicatedetectionenabled;
   if (enabled === false || enabled === 0) return;
   const selfId = operation === 'update' ? existing?.[mapping.idColumn] : undefined;
   const base = { ...existing, ...data };

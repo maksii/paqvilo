@@ -23,8 +23,8 @@ const views = [
   ["operations", "Backend operations", ""],
   ["mappings", "Entity mappings", "◇"],
   ["plugins", "Plugins & presets", "⌘"],
-  ["access", "Identity & permissions", "♙"],
-  ["dataverse", "Dataverse API", "⬡"],
+  ["access", "Portal identity & permissions", "♙"],
+  ["dataverse", "Organization identity & API", "⬡"],
   ["scenarios", "Scenarios", "▶"],
   ["environment", "Environment", "⚙"],
   ["connection", "Live connection", "↗"],
@@ -34,6 +34,42 @@ const views = [
   ["logs", "Live logs", "☰"],
 ];
 let state;
+const capabilities = () => state?.capabilities ?? state?.status?.capabilities ?? {};
+const powerPages = () => capabilities().powerPages !== false;
+const availableViews = () => powerPages() ? views : views.filter(([id]) => ['overview', 'records', 'dataverse', 'runtime'].includes(id));
+const runtimeLinks = () => state?.links ?? state?.status?.links ?? {};
+const recordAccess = () => (state?.recordCapabilities ?? state?.status?.recordCapabilities)?.[selectedEntity] ?? {};
+const disabledRecordAction = operation => recordAccess()[operation] === false ? ` disabled title="${escape(recordAccess().reason ?? 'No pack DATA owner is declared for this table.')}"` : '';
+let staffSession, staffSessionError = '';
+async function loadStaffSession() {
+  try { staffSession = await request('/dataverse/session'); staffSessionError = ''; }
+  catch (error) { staffSession = undefined; staffSessionError = error.message; }
+}
+document.addEventListener('submit', async event => {
+  if (event.target.id !== 'staff-session-form') return;
+  event.preventDefault(); const button = event.submitter; button.disabled = true;
+  try { staffSession = await request('/dataverse/session', { method: 'POST', body: JSON.stringify({ userId: $('#staff-user').value }) }); staffSessionError = ''; drafts.delete('staff-session-form'); render(); notify('Staff session changed. Reload open model-driven tabs to use this identity.'); }
+  catch (error) { notify(error.message, true); }
+  finally { button.disabled = false; }
+});
+document.addEventListener('click', async event => {
+  const button = event.target.closest('[data-action="staff-reset"]'); if (!button) return;
+  button.disabled = true;
+  try { staffSession = await request('/dataverse/session', { method: 'DELETE' }); staffSessionError = ''; render(); notify('Local administrator selected. Reload open model-driven tabs to use this identity.'); }
+  catch (error) { notify(error.message, true); }
+  finally { button.disabled = false; }
+});
+function staffSessionPanel() {
+  if (capabilities().modelDriven === false) return '';
+  const current = staffSession?.current;
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>Model-driven staff session</h2>${badge(current?.kind === 'staff' ? 'Staff user' : current ? 'Local administrator' : 'Session unavailable', current?.kind === 'staff' ? '' : 'amber')}</div><p class="muted">This browser's model-driven reads, lookups and writes use the selected organization's staff roles and field security. Portal visitor personas and API application tokens have separate identities. The local administrator is an explicit development bypass.</p>${staffSessionError ? `<div class="notice warning">${escape(staffSessionError)}</div>` : ''}${current ? `<p><strong>${escape(current.name)}</strong> · ${escape((current.roles ?? []).join(', ') || 'No roles')}</p>` : ''}<form id="staff-session-form" class="form-grid"><div><label for="staff-user">Staff user</label><select id="staff-user" ${staffSession?.users?.length ? '' : 'disabled'}>${(staffSession?.users ?? []).map(user => `<option value="${escape(user.id)}" ${current?.id === user.id ? 'selected' : ''}>${escape(user.name)} · ${escape((user.roles ?? []).join(', ') || 'No roles')}</option>`).join('') || '<option>No eligible staff users; create an interactive user below.</option>'}</select></div><div class="toolbar"><button type="submit" class="button primary" ${staffSession?.users?.length ? '' : 'disabled'}>Use staff user</button><button type="button" class="button" data-action="staff-reset">Use local administrator</button></div></form></section>`;
+}
+function simulationPanel() {
+  const policy = state?.simulation ?? state?.status?.simulation;
+  if (!policy) return '';
+  const labels = { 'dry-run': 'Dry run', simulation: 'Simulation', deep: 'Deep simulation', 'local-state': 'Legacy local state' };
+  return `<section class="panel section-gap"><div class="panel-heading"><h2>Runtime & persistence</h2>${badge(labels[policy.level] ?? policy.level, policy.level === 'dry-run' ? 'green' : 'amber')}</div><div class="detail-list"><div class="row"><span class="row-title">Surface</span><span>${escape(state?.runtime?.kind ?? state?.status?.runtime?.kind ?? 'power-pages')}</span></div><div class="row"><span class="row-title">Business records</span><span>${escape(policy.recordPersistence)}</span></div><div class="row"><span class="row-title">Identity and credentials</span><span>${escape(policy.controlPlanePersistence ?? (policy.level === 'dry-run' ? 'memory' : 'private-local-state'))}</span></div><div class="row"><span class="row-title">Schema changes</span><span>${policy.schemaChanges ? 'Allowed' : 'Disabled'}</span></div></div>${policy.level === 'dry-run' ? '<p class="muted">Record edits stay in memory and disappear when this runtime stops. Schema changes are disabled.</p>' : policy.legacy ? '<p class="muted">This configuration retains ignored local-state persistence. Choose an explicit level in Project setup for pack DATA ownership.</p>' : '<p class="muted">Business writes update the declared existing pack DATA files below. Tables without a DATA owner are read-only. Credentials stay in private local state.</p>'}<div class="detail-list">${(policy.targets ?? []).map(target => `<div class="row"><div><strong>${escape(target.packId)}</strong><div class="source-path">${escape(target.file)}</div><div class="row-detail">${escape(Array.isArray(target.tables) ? target.tables.join(', ') : JSON.stringify(target.tables ?? []))}${target.schema ? ' · schema destination' : ''}</div></div></div>`).join('') || '<p class="muted">No pack DATA destinations declared.</p>'}</div>${policy.ready === false ? '<div class="notice warning">Persistence is not ready. Review declared DATA files before writing.</div>' : ''}<p class="muted">${Number(policy.dirtyRecords ?? 0)} changed records${policy.dirtyTables?.length ? ` · ${escape(policy.dirtyTables.join(', '))}` : ''}. Level and surface changes apply after restart; changing configuration never flushes in-memory edits.</p><a class="button" href="/_setup/#runtime-configuration">Configure runtime & persistence</a></section>`;
+}
 // Deep links are #view or #view?name=value: records (entity, id), audit filters,
 // portal items (kind, name), access (contact) and logs (type).
 const parseHash = () => {
@@ -148,7 +184,7 @@ let recordResult,
 async function loadRecords() {
   if (state?.data && !state.summaryMode) return;
   const names = entities();
-  if (!names.includes(selectedEntity)) selectedEntity = names[0] || "";
+  if (!names.includes(selectedEntity)) selectedEntity = preferredEntity(names);
   if (!selectedEntity) return;
   const generation = ++recordGeneration,
     settings = browserFor("records");
@@ -237,7 +273,7 @@ async function loadView() {
   }
   if (activeView === "portal") await loadAccessRules();
   if (activeView === "environment") await loadEnvironment();
-  if (activeView === "dataverse") await loadDataverse();
+  if (activeView === "dataverse") { if (capabilities().modelDriven !== false) await loadStaffSession(); await loadDataverse(); }
   if (activeView === "logs") connectLogs();
   await followRoute();
 }
@@ -397,14 +433,26 @@ const entities = () =>
         .filter(Boolean),
     ]),
   ].sort();
+const preferredEntity = (names) => {
+  if (powerPages()) {
+    const authored = new Set(
+      collection("mappings")
+        .filter((item) => !item.dataverseOnly && !item.modelDrivenSource)
+        .map((item) => item.logicalName || item.entity),
+    );
+    const name = names.find((item) => authored.has(item));
+    if (name) return name;
+  }
+  return names[0] || "";
+};
 const heading = (title, description, action = "") =>
   `<div class="page-heading"><div><span class="eyebrow">SIMULATOR WORKSPACE</span><h1>${escape(title)}</h1><p>${escape(description)}</p></div>${action}</div>`;
 const addButton = (name, label) =>
-  `<button class="button primary" type="button" data-add="${name}" aria-label="${escape(label)}">+ ${escape(label)}</button>`;
+  `<button class="button primary" type="button" data-add="${name}" aria-label="${escape(label)}"${name === 'records' ? disabledRecordAction('create') : ''}>+ ${escape(label)}</button>`;
 const empty = (title, description, action = "") =>
   `<div class="empty"><div class="empty-icon" aria-hidden="true">◇</div><h2>${escape(title)}</h2><p>${escape(description)}</p>${action}</div>`;
 const rowActions = (name, id) =>
-  `<button class="button small" type="button" data-edit="${name}" data-id="${escape(id)}">Edit</button><button class="button small quiet" type="button" data-delete="${name}" data-id="${escape(id)}" aria-label="Delete ${escape(id)}">Delete</button>`;
+  `<button class="button small" type="button" data-edit="${name}" data-id="${escape(id)}"${name === 'records' ? disabledRecordAction('update') : ''}>Edit</button><button class="button small quiet" type="button" data-delete="${name}" data-id="${escape(id)}" aria-label="Delete ${escape(id)}"${name === 'records' ? disabledRecordAction('delete') : ''}>Delete</button>`;
 const objectValue = (value) =>
   value === undefined || value === null
     ? "—"
@@ -608,8 +656,10 @@ async function refresh({ announce = false } = {}) {
   refreshButton.disabled = true;
   try {
     state = await request("/state?summary=1");
-    state.summaryMode = !state.data;
-    await loadSession();
+    state.summaryMode = state.summaryMode === true || !state.data;
+    if (powerPages()) await loadSession();
+    else browserSession = undefined;
+    if (!availableViews().some(([id]) => id === activeView)) activeView = 'overview';
     personaCatalogue = undefined;
     recordResult = undefined;
     $("#connection-dot").className = "status-dot ready";
@@ -633,6 +683,7 @@ async function refresh({ announce = false } = {}) {
 }
 
 function overview() {
+  if (!powerPages()) return heading('Your local organization workspace', 'Run solution-based apps and integrations against one local organization. Configure staff identities, application credentials and declared DATA persistence.') + simulationPanel() + `<section class="panel section-gap"><h2>Start working</h2><div class="toolbar">${runtimeLinks().modelDriven ? `<a class="button primary" href="${escape(runtimeLinks().modelDriven)}">Open model-driven apps</a>` : ''}<button class="button" data-view="dataverse">Organization identity & API</button><button class="button" data-view="records">Manage data records</button><a class="button" href="/_setup/">Project setup</a></div><p class="muted">This runtime has no Power Pages rendering or portal visitor personas.</p></section>`;
   const rows = Object.values(
     state.status?.tableCounts ||
       Object.fromEntries(
@@ -672,7 +723,7 @@ function overview() {
       "Your local portal workspace",
       "Render portal sources and test configured data and backend rules.",
     ) +
-    `<div class="cards">${metrics.map(([label, value, detail, icon]) => `<div class="metric"><span class="metric-icon" aria-hidden="true">${icon}</span><div class="metric-label">${label}</div><div class="metric-value">${escape(value)}</div><div class="metric-detail">${escape(detail)}</div></div>`).join("")}</div>` +
+    simulationPanel() + `<div class="cards">${metrics.map(([label, value, detail, icon]) => `<div class="metric"><span class="metric-icon" aria-hidden="true">${icon}</span><div class="metric-label">${label}</div><div class="metric-value">${escape(value)}</div><div class="metric-detail">${escape(detail)}</div></div>`).join("")}</div>` +
     `<div class="grid-two"><section class="panel tall-panel"><div class="panel-heading"><h2>Workspace configuration</h2>${badge(config().mode === "live" ? "Live data" : "Local data", config().mode === "live" ? "amber" : "green")}</div>
       <div class="row"><div><div class="row-title">Page rendering</div><div class="row-detail">${config().pageMode === "live" ? "Pages from the connected environment" : "Liquid and portal metadata from local sources"}</div></div>${badge(config().pageMode === "live" ? "Live" : "Local")}</div>
       <div class="row"><div><div class="row-title">Data provider</div><div class="row-detail">${config().mode === "live" ? escape(config().live?.origin || "Live environment selected") : "Persistent mock data and configurable plugin rules"}</div></div><button class="button small" data-view="connection">Configure</button></div>
@@ -712,7 +763,7 @@ function overview() {
 
 function records() {
   const names = entities();
-  if (!names.includes(selectedEntity)) selectedEntity = names[0] || "";
+  if (!names.includes(selectedEntity)) selectedEntity = preferredEntity(names);
   const all = state.summaryMode
     ? recordResult?.items || []
     : state.data?.[selectedEntity] || [];
@@ -1473,6 +1524,7 @@ function environment() {
 
 function runtimeState() {
   const status = state.status || {};
+  if (!powerPages()) return heading('Runtime state', 'The active organization, imported Solutions and administration capabilities.') + `<section class="panel"><div class="detail-list"><div class="row"><span class="row-title">Runtime revision</span><span>${escape(status.revision ?? 'Not reported')}</span></div><div class="row"><span class="row-title">Solution roots</span><span class="source-path">${escape((status.solutionRoots ?? []).join(', ') || 'None')}</span></div></div>${lazyJson('Inspect runtime status', status)}<p class="muted">Change the runtime surface, imports and persistence level in Project setup, then restart. State import/reset and portal rendering controls are unavailable in this profile.</p><a class="button" href="/_setup/">Project setup</a></section>`;
   // status.bootstrap reports what the runtime loaded: Solution roots, layers in load order, timings.
   const bootstrap = status.bootstrap || {};
   const roots = Array.isArray(bootstrap.solutionRoots) && bootstrap.solutionRoots.length
@@ -1587,12 +1639,12 @@ async function loadDataverse() {
 const ACCESS_MODES = { 0: "Read-Write", 1: "Administrative", 2: "Read", 3: "Support user", 4: "Non-interactive", 5: "Delegated admin" };
 function dataverse() {
   const title = heading(
-    "Dataverse API",
-    "Simulated Dataverse Web API on its own loopback origin: token authority, application registrations, interactive users and recent requests. Nothing here reaches a real environment.",
+    "Organization identity & API",
+    "Local organization staff, simulated Entra application registrations, credentials and token authority. Staff sessions, application tokens and portal personas remain separate. Nothing here reaches a real environment.",
     '<button class="button" data-action="reload-dataverse">Refresh</button>',
   );
   if (dataverseDisabled)
-    return title + empty("Dataverse API is disabled for this runtime", "Enable it with dataverse.enabled: true under mirage in the catalogue, then restart mirage dev.");
+    return title + staffSessionPanel() + empty("Organization HTTP API is disabled", "Staff sessions can still serve model-driven apps. Enable the HTTP API in Project setup and restart to connect integration clients.", '<a class="button" href="/_setup/#runtime-configuration">Configure API</a>');
   if (dataverseError) return title + `<div class="notice warning">${escape(dataverseError)}</div>`;
   const result = dataverseResult;
   if (!result) return title + '<p role="status" class="muted">Loading Dataverse API status…</p>';
@@ -1608,7 +1660,7 @@ function dataverse() {
   const secretPanel = dataverseSecret
     ? `<section class="panel section-gap one-time-secret" aria-live="polite"><div class="panel-heading"><h2>${escape(dataverseSecret.label)}</h2>${badge("Shown once", "amber")}</div><div class="notice warning">Copy this secret now. It is stored hashed and is not shown again; later listings show only its first characters.</div><code id="dv-secret">${escape(dataverseSecret.secret)}</code><div class="toolbar"><button class="button small" type="button" data-copy-text="${escape(dataverseSecret.secret)}">Copy secret</button><button class="button small quiet" type="button" data-action="dismiss-dataverse-secret">Dismiss</button></div></section>`
     : "";
-  const status = `<section class="panel"><div class="panel-heading"><h2>Status</h2>${badge("Listening", "green")}</div><div class="detail-list">${[
+  const status = `<section class="panel"><div class="panel-heading"><h2>Status</h2>${badge(result.enabled === false ? 'HTTP API disabled · organization available' : 'Listening', result.enabled === false ? '' : 'green')}</div><div class="detail-list">${[
     ["HTTPS origin", result.tlsOrigin],
     ["Authority", result.authority],
     ["Tenant id", result.tenantId],
@@ -1618,12 +1670,14 @@ function dataverse() {
   ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div></section>`;
   // Clients connect to the origin; the Origin itself is listed here rather than in Status.
   const tdsEnabled = result.tdsPort !== null && result.tdsPort !== undefined;
+  const customServiceClientPort = (() => { try { const url = new URL(result.origin); return url.protocol === 'http:' && Boolean(url.port) && url.port !== '80'; } catch { return false; } })();
+  const serviceClientPortNote = customServiceClientPort ? '<p class="notice" data-serviceclient-port>Microsoft.PowerPlatform.Dataverse.Client drops custom HTTP ports. <a href="/_setup/#runtime-configuration">Configure the organization API port as 80</a>, then restart Mirage before using these ServiceClient connection strings.</p>' : '';
   const connect = `<section class="panel section-gap"><div class="panel-heading"><h2>Connect</h2>${badge(tdsEnabled ? "TDS enabled" : "TDS disabled", tdsEnabled ? "green" : "")}</div><p class="muted">Addresses for clients and tools. Each application signs in with its own client secret, which is shown only once when it is created, so the connection strings keep a placeholder.</p><div class="detail-list">${[
     ["Org URL", result.origin],
     ["Token endpoint", result.authority ? `${result.authority}/oauth2/v2.0/token` : null],
     ["Scope", result.origin ? `${result.origin}/.default` : null],
     ["TDS endpoint", tdsEnabled ? `127.0.0.1,${result.tdsPort}` : null],
-  ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div><h3>ServiceClient connection strings</h3>${(result.applications ?? []).map((app) => `<div class="row-detail"><code>${escape(`AuthType=ClientSecret;Url=${result.origin};ClientId=${app.appId};ClientSecret=<client secret>`)}</code></div>`).join("") || '<p class="muted">Register an application to get a connection string.</p>'}</section>`;
+  ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div><h3>ServiceClient connection strings</h3>${serviceClientPortNote}${(result.applications ?? []).map((app) => `<div class="row-detail"><code>${escape(`AuthType=ClientSecret;Url=${result.origin};ClientId=${app.appId};ClientSecret=<client secret>`)}</code></div>`).join("") || '<p class="muted">Register an application to get a connection string.</p>'}</section>`;
   const applications =`<section class="panel section-gap"><div class="panel-heading"><h2>Applications</h2>${badge(`${(result.applications ?? []).length} registered`)}</div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Secrets</th><th>Certificates</th><th>Grants</th><th>Actions</th></tr></thead><tbody>${(result.applications ?? []).map((app) => `<tr><td class="item-title">${escape(app.displayName)}<div class="row-detail"><code>${escape(app.appId)}</code></div>${app.systemuserid ? `<div class="row-detail">User ${escape(app.systemuserid)}</div>` : ""}${(app.redirectUris ?? []).map((uri) => `<div class="row-detail">Redirect <code>${escape(uri)}</code></div>`).join("")}</td><td>${(app.secrets ?? []).map((secret) => `<div class="row-detail"><code>${escape(secret.hint)}…</code> expires ${escape(String(secret.expiresOn ?? "").slice(0, 10))} <button class="button small quiet" type="button" data-dv-delete-secret="${escape(secret.id)}" data-dv-app="${escape(app.appId)}">Remove</button></div>`).join("") || "None"}</td><td>${(app.certificates ?? []).map((certificate) => `<div class="row-detail"><code>SHA-1 ${escape(certificate.thumbprint)}</code> <button class="button small quiet" type="button" data-dv-remove-cert="${escape(certificate.thumbprint)}" data-dv-app="${escape(app.appId)}" aria-label="Remove certificate ${escape(certificate.thumbprint)}">Remove</button></div><div class="row-detail"><code>SHA-256 ${escape(certificate.thumbprint256)}</code></div>`).join("") || "None"}</td><td>${escape((app.allowedGrants ?? []).join(", "))}${app.publicClient ? ` ${badge("Public client")}` : ""}</td><td class="actions"><button class="button small quiet" type="button" data-dv-edit-app="${escape(app.appId)}">Edit</button><button class="button small" type="button" data-dv-add-secret="${escape(app.appId)}">Add secret</button><button class="button small quiet" type="button" data-dv-remove-app="${escape(app.appId)}" data-dv-name="${escape(app.displayName)}">Remove</button></td></tr>${dataverseEditing === app.appId ? editRow(app) : ""}`).join("") || '<tr><td colspan="5">No application registered yet.</td></tr>'}</tbody></table></div></section>`;
   const users = `<section class="panel section-gap"><div class="panel-heading"><h2>Users</h2>${badge(`${(result.users ?? []).length} users`)}</div><p class="muted">Security roles decide what a token holder can read or change through this API. They never apply to the portal.</p><div class="table-wrap"><table><thead><tr><th>User</th><th>Access mode</th><th>State</th><th>Roles</th><th>Actions</th></tr></thead><tbody>${(result.users ?? []).map((user) => `<tr><td class="item-title">${escape(user.fullname)}<div class="row-detail">${escape(user.domainname || (user.applicationid ? `Application ${user.applicationid}` : ""))}</div><div class="row-detail"><code>${escape(user.systemuserid)}</code></div></td><td>${escape(ACCESS_MODES[user.accessmode] ?? String(user.accessmode))}</td><td>${badge(user.isdisabled ? "Disabled" : "Enabled", user.isdisabled ? "red" : "green")}${user.passwordSet ? ` ${badge("Password set")}` : ""}</td><td><form id="dv-roles-${escape(user.systemuserid)}" class="dv-roles" data-dv-user="${escape(user.systemuserid)}">${roleChoices(`dv-roles-${user.systemuserid}`, user.roles ?? [])}<button class="button small" type="submit">Save roles</button></form></td><td class="actions"><button class="button small" type="button" data-dv-toggle-user="${escape(user.systemuserid)}" data-dv-disabled="${user.isdisabled ? "false" : "true"}">${user.isdisabled ? "Enable" : "Disable"}</button><form id="dv-password-${escape(user.systemuserid)}" class="dv-password" data-dv-password="${escape(user.systemuserid)}"><input type="password" autocomplete="new-password" minlength="8" maxlength="256" required aria-label="New password for ${escape(user.fullname)}" placeholder="New password"> <button class="button small" type="submit">${user.passwordSet ? "Replace password" : "Set password"}</button></form>${user.passwordSet ? `<button class="button small quiet" type="button" data-dv-clear-password="${escape(user.systemuserid)}" data-dv-name="${escape(user.fullname)}">Clear password</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
   const forms = `<div class="grid-two"><section class="panel section-gap"><div class="panel-heading"><h2>Register an application</h2></div><form id="dv-app-form" class="form-grid"><div><label for="dv-app-name">Display name</label><input id="dv-app-name" required></div><div><label for="dv-app-id">Application id (optional GUID)</label><input id="dv-app-id" placeholder="Generated when empty"></div><div><label>Roles for the application user</label>${roleChoices("dv-app-role", ["System Administrator"])}</div><div><label>Allowed grants</label>${grantChoices("dv-app-grant", ["client_credentials"])}</div><div><label class="checkbox-label"><input id="dv-app-public" type="checkbox"> Public client (no secret)</label><p class="field-help">A public client gets no secret; it signs in with a grant such as authorization_code and a redirect URI.</p></div><div><label for="dv-app-redirect">Redirect URIs (one per line)</label><textarea id="dv-app-redirect" rows="3" spellcheck="false" placeholder="https://client.example.test/callback"></textarea></div><div><button class="button primary" type="submit">Register application</button></div></form></section><section class="panel section-gap"><div class="panel-heading"><h2>Create an interactive user</h2></div><form id="dv-user-form" class="form-grid"><div><label for="dv-user-name">Full name</label><input id="dv-user-name" required></div><div><label for="dv-user-domain">Sign-in name (domainname)</label><input id="dv-user-domain" placeholder="maker@example.test" required></div><div><label for="dv-user-object">Entra object id (optional GUID)</label><input id="dv-user-object" placeholder="Generated when empty"></div><div><label for="dv-user-password">Password for ROPC sign-in (optional, 8 to 256 characters)</label><input id="dv-user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><p class="field-help">Stored hashed and never shown. Leave empty to refuse the password grant for this user.</p></div><div><label>Roles</label>${roleChoices("dv-user-role", ["Basic User"])}</div><div><button class="button primary" type="submit">Create user</button></div></form></section></div><section class="panel section-gap"><div class="panel-heading"><h2>Add a certificate</h2></div><form id="dv-cert-form" class="form-grid"><div><label for="dv-cert-app">Application</label><select id="dv-cert-app" required ${appOptions ? "" : "disabled"}>${appOptions || "<option value=''>Register an application first</option>"}</select></div><div><label for="dv-cert-pem">Certificate or public key (PEM)</label><textarea id="dv-cert-pem" class="code-editor" rows="6" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" required></textarea><p class="field-help">Paste the certificate (recommended, its SHA-1 and SHA-256 fingerprints become the x5t and x5t#S256 thumbprints MSAL sends) or a bare public key. Only public material is stored; the client signs its assertion with the matching private key.</p></div><div><button class="button" type="submit" ${appOptions ? "" : "disabled"}>Add certificate</button></div></form></section>`;
@@ -1634,7 +1688,7 @@ function dataverse() {
   const identityRows = (result.managedIdentities ?? []).map((identity) => `<tr><td class="item-title">${escape(identity.displayName)}<div class="row-detail"><code>${escape(identity.clientId)}</code></div></td><td><code>${escape(identity.principalId ?? "")}</code></td><td>${escape((identity.roles ?? []).join(", "))}</td><td>${identity.source === "settings" ? badge("From settings") : badge("Added here", "green")}</td><td class="actions">${identity.source === "settings" ? "" : `<button class="button small quiet" type="button" data-dv-remove-identity="${escape(identity.clientId)}" data-dv-name="${escape(identity.displayName)}">Remove</button>`}</td></tr>`);
   const identities = `<section class="panel section-gap"><div class="panel-heading"><h2>Managed identities</h2>${badge(`${identityRows.length} identities`)}</div><p class="muted">Azure-hosted identities that obtain tokens from this simulator's managed identity endpoints. Each becomes an application user; identities from the settings are removed there.</p><div class="table-wrap"><table><thead><tr><th>Identity</th><th>Principal id</th><th>Roles</th><th>Source</th><th>Actions</th></tr></thead><tbody>${identityRows.join("") || '<tr><td colspan="5">No managed identity yet.</td></tr>'}</tbody></table></div><form id="dv-identity-form" class="form-grid section-gap"><div><label for="dv-identity-name">Identity name</label><input id="dv-identity-name" required></div><div><label for="dv-identity-client">Client id (optional GUID)</label><input id="dv-identity-client" placeholder="Generated when empty"></div><div><label for="dv-identity-principal">Principal id (optional GUID)</label><input id="dv-identity-principal" placeholder="Generated when empty"></div><div><label>Roles</label>${roleChoices("dv-identity-role", ["Basic User"])}</div><div><button class="button" type="submit">Add managed identity</button></div></form></section>`;
   const requests = `<section class="panel section-gap"><div class="panel-heading"><h2>Recent requests</h2>${badge("Ring buffer")}</div><p class="muted">Last requests on the Dataverse origin. Tokens, secrets and bodies are never recorded.</p><div class="table-wrap"><table><thead><tr><th>Time</th><th>Request</th><th>Status / duration</th><th>Caller</th></tr></thead><tbody>${[...(result.requests ?? [])].reverse().map((entry) => `<tr><td>${escape(new Date(entry.at).toISOString())}</td><td><strong>${escape(entry.method)}</strong> <code>${escape(entry.path)}</code></td><td>${badge(entry.status, entry.status >= 400 ? "red" : "green")}<div class="row-detail">${escape(Number(entry.ms || 0).toFixed(1))} ms</div></td><td>${escape(entry.appId || entry.userId || "Anonymous")}${entry.grant ? `<div class="row-detail">${escape(entry.grant)}</div>` : ""}</td></tr>`).join("") || '<tr><td colspan="4">No request has reached the Dataverse origin yet.</td></tr>'}</tbody></table></div></section>`;
-  const reset = `<section class="panel section-gap"><div class="panel-heading"><h2>Reset</h2>${badge("Local state change", "amber")}</div><p class="muted">Reset the workspace to its imported defaults. Application registrations and user passwords are kept; the security tables are seeded again, so runtime-created users are removed.</p><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>`;
+  const reset = powerPages() ? `<section class="panel section-gap"><div class="panel-heading"><h2>Reset</h2>${badge("Local state change", "amber")}</div><p class="muted">Reset the workspace to its imported defaults. Application registrations and user passwords are kept; the security tables are seeded again, so runtime-created users are removed.</p><button class="button danger" data-action="reset-workspace">Reset to imported defaults</button></section>` : '';
   // Runtime settings the API reads per request, then the values only a restart can change.
   const env = result.environment ?? null;
   const restart = env?.restartRequired ?? {};
@@ -1649,7 +1703,7 @@ function dataverse() {
       ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div></section>`
     : "";
   const workflows = workflowsPanel(result.workflows ?? []);
-  return title + secretPanel + status + connect + applications + users + workflows + environment + forms + federated + identities + requests + reset;
+  return title + staffSessionPanel() + secretPanel + status + (result.enabled === false ? '<p class="notice">The organization core serves model-driven apps. Enable the HTTP API in <a href="/_setup/#runtime-configuration">Project setup</a> and restart for token-based integration clients.</p>' : connect) + applications + users + workflows + environment + forms + federated + identities + requests + reset;
 }
 // Classic workflows: the run mode each one takes when it starts. XAML is never executed; the mock result is used by a mock run only.
 const WORKFLOW_MODES = { handler: "Pack handler, else placeholder", placeholder: "Placeholder", mock: "Mock result", disabled: "Disabled" };
@@ -1664,6 +1718,7 @@ const dvGrants = (form) => [...form.querySelectorAll("[data-dv-grant]:checked")]
 const dvLines = (value) => value.split("\n").map((line) => line.trim()).filter(Boolean);
 async function dataverseWrite(path, options, done) {
   const result = await request(path, options);
+  if (capabilities().modelDriven !== false) await loadStaffSession();
   await loadDataverse();
   if (done) notify(done);
   return result;
@@ -1814,7 +1869,7 @@ function renderView(view) {
     case 'environment': return environment();
     case 'dataverse': return dataverse();
     case 'connection': return connection();
-    case 'runtime': return runtimeState();
+    case 'runtime': return simulationPanel() + runtimeState();
     case 'evidence': return evidence();
     case 'audit': return audit();
     case 'logs': return logs();
@@ -1833,7 +1888,13 @@ function render() {
   const selection = { start: focused?.selectionStart, end: focused?.selectionEnd, direction: focused?.selectionDirection };
   const scroll = { top: focused?.scrollTop, left: focused?.scrollLeft };
   lazyValues.clear();
-  $("#navigation").innerHTML = views
+  const links = runtimeLinks();
+  for (const [selector, key] of [['#open-portal', 'powerPages'], ['#open-model-driven', 'modelDriven']]) {
+    const anchor = $(selector); if (anchor) { anchor.hidden = key === 'powerPages' ? !powerPages() : capabilities().modelDriven === false; if (links[key]) anchor.href = links[key]; }
+  }
+  const brand = $('#workspace-name'); if (brand) brand.textContent = powerPages() ? 'Portal Studio' : 'Mirage Studio';
+  document.title = `${powerPages() ? 'Portal' : 'Mirage'} Studio · Local simulator`;
+  $("#navigation").innerHTML = availableViews()
     .map(
       ([id, label, icon]) =>
         `<a class="nav-item ${activeView === id ? "active" : ""}" href="#${id}" ${activeView === id ? 'aria-current="page"' : ""}><span class="nav-icon" aria-hidden="true">${icon}</span>${label}</a>`,
@@ -1869,6 +1930,7 @@ function render() {
 }
 
 async function openEditor(name, id) {
+  if (name === 'records' && recordAccess()[id === undefined ? 'create' : 'update'] === false) { notify(recordAccess().reason ?? 'This table has no declared pack DATA owner and is read-only.', true); return; }
   let item;
   let help;
   let title;
@@ -2573,7 +2635,7 @@ $("#refresh").addEventListener("click", () => refresh({ announce: true }));
 const FRESH_VIEWS = ["overview", "environment", "runtime", "evidence"];
 window.addEventListener("hashchange", () => {
   const { view, params } = parseHash();
-  if (!views.some(([id]) => id === view)) return;
+  if (!availableViews().some(([id]) => id === view)) { if (!powerPages()) { activeView = 'overview'; render(); } return; }
   const entered = view !== activeView;
   if (entered) {
     drafts.clear();

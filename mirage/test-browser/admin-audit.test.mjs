@@ -94,6 +94,8 @@ test(
     await page
       .getByRole("link", { name: "Data records", exact: false })
       .click();
+    assert.equal(await page.getByLabel("Entity", { exact: true }).inputValue(), "contact");
+    await page.getByLabel("Entity", { exact: true }).selectOption("contact");
     await page.waitForFunction(
       () => document.querySelectorAll("tbody tr").length === 20,
     );

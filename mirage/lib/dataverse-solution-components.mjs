@@ -34,19 +34,19 @@ export function ensureSolutionComponentMapping(state, component, definitionOf) {
 }
 
 /** Source-defined record components with their actual exported GUIDs. */
-export function solutionDocumentComponents(xml, { name = '', entityDir, entity: enclosingEntity } = {}) {
+export function solutionDocumentComponents(xml, { name = '', entityDir, entity: enclosingEntity, lcid = 1033 } = {}) {
   const root = typeof xml === 'string' ? parseSolutionXml(xml) : xml;
   const out = [];
-  const add = (kind, id, row, entity) => {
+  const add = (kind, id, row, entity, labels) => {
     id = guid(id);
     if (!validId(id)) return;
-    out.push({ kind, id, type: PAYLOAD_COMPONENTS[kind], logical: kind, name: id, entity, row: { ...row, [kind === 'systemform' ? 'formid' : `${kind}id`]: id } });
+    out.push({ kind, id, type: PAYLOAD_COMPONENTS[kind], logical: kind, name: id, entity, ...(labels ? { labels } : {}), row: { ...row, [kind === 'systemform' ? 'formid' : `${kind}id`]: id } });
   };
-  const title = node => pickLabel(labelsOf(child(node, 'LocalizedNames')), 1033) ?? value(node, 'Name', 'name') ?? '';
+  const title = node => pickLabel(labelsOf(child(node, 'LocalizedNames')), lcid) ?? value(node, 'Name', 'name') ?? '';
   for (const node of [...nodes(root, 'AppModule'), ...nodes(root, 'appmodule')]) {
     const appId = guid(value(node, 'AppModuleId', 'appmoduleid'));
     add('appmodule', appId, { uniquename: value(node, 'UniqueName', 'uniquename'), name: title(node), appmodulexml: serializeXml(node),
-      ...(validId(guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique'))) ? { appmoduleidunique: guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique')) } : {}) });
+      ...(validId(guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique'))) ? { appmoduleidunique: guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique')) } : {}) }, undefined, labelsOf(child(node, 'LocalizedNames')));
     const app = out.findLast(component => component.kind === 'appmodule' && component.id === appId);
     if (app) app.members = [...descendants(node, 'AppModuleComponent'), ...descendants(node, 'appmodulecomponent')].map(member => ({
       type: Number(member.attrs.type ?? member.attrs.componenttype), objectId: guid(member.attrs.id ?? member.attrs.objectid),
@@ -55,7 +55,7 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
     }));
   }
   for (const node of nodes(root, 'AppModuleSiteMap'))
-    add('sitemap', value(node, 'SiteMapId', 'SiteMapIdUnique', 'sitemapid'), { sitemapxml: serializeXml(node), appmoduleuniquename: value(node, 'AppModuleUniqueName', 'UniqueName'), appmoduleid: guid(value(node, 'AppModuleId')), name: title(node) });
+    add('sitemap', value(node, 'SiteMapId', 'SiteMapIdUnique', 'sitemapid'), { sitemapxml: serializeXml(node), appmoduleuniquename: value(node, 'AppModuleUniqueName', 'UniqueName'), appmoduleid: guid(value(node, 'AppModuleId')), name: title(node) }, undefined, labelsOf(child(node, 'LocalizedNames')));
   const entities = nodes(root, 'Entity');
   const containers = entities.length ? entities.map(node => ({ node, entity: lower(value(child(child(node, 'EntityInfo'), 'entity') ?? node, 'Name') || child(node, 'Name')?.attrs.OriginalName || childText(node, 'Name')) }))
     : [{ node: root, entity: lower(enclosingEntity ?? entityDir ?? /(?:^|\/)Entities\/([^/]+)\//i.exec(name)?.[1]) }];
@@ -63,11 +63,11 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
     for (const node of nodes(container, 'systemform')) add('systemform', value(node, 'formid', 'FormId'), {
       formid: guid(value(node, 'formid', 'FormId')), name: title(node), objecttypecode: entity, formxml: child(node, 'form') ? serializeXml(child(node, 'form')) : childText(node, 'formxml'),
       type: Number(value(node, 'type') ?? 2), formactivationstate: Number(value(node, 'FormActivationState') ?? 1),
-    }, entity);
+    }, entity, labelsOf(child(node, 'LocalizedNames')));
     for (const node of nodes(container, 'savedquery')) add('savedquery', value(node, 'savedqueryid'), {
       name: title(node), returnedtypecode: entity, fetchxml: xmlOf(child(node, 'fetchxml')), layoutxml: xmlOf(child(node, 'layoutxml')),
       querytype: Number(value(node, 'querytype') ?? 0), isdefault: value(node, 'isdefault') === '1',
-    }, entity);
+    }, entity, labelsOf(child(node, 'LocalizedNames')));
   }
   for (const node of [...nodes(root, 'Workflow'), ...nodes(root, 'workflow')]) add('workflow', value(node, 'WorkflowId', 'workflowid'), {
     name: title(node), primaryentity: lower(value(node, 'PrimaryEntity', 'primaryentity')), xaml: xmlOf(child(node, 'Xaml') ?? child(node, 'xaml')),
@@ -75,7 +75,7 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
     // Imported definitions are preserved. Activation/execution still uses the
     // supported workflow interpreter; arbitrary opaque XAML is not executable.
     statecode: 0, statuscode: 1,
-  });
+  }, undefined, labelsOf(child(node, 'LocalizedNames')));
   for (const node of [...nodes(root, 'WebResource'), ...nodes(root, 'webresource')]) add('webresource', value(node, 'WebResourceId', 'webresourceid'), {
     name: value(node, 'Name', 'name'), displayname: value(node, 'DisplayName', 'displayname'), webresourcetype: Number(value(node, 'WebResourceType', 'webresourcetype') ?? 0),
   });

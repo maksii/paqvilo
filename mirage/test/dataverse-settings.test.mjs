@@ -15,6 +15,42 @@ test("grantAllowed maps short grant names onto OAuth grant_type values and accep
 const APP = "22222222-2222-2222-2222-222222222222";
 const USER_OBJECT = "33333333-3333-3333-3333-333333333333";
 
+test('enabled project settings normalize idempotently across JSON and runtime boundaries', () => {
+  const cases = [true, { enabled: true, tls: false, tds: { enabled: false } }, { enabled: false },
+    { enabled: true, applications: [{ appId: APP, displayName: 'No configured secret' }],
+      managedIdentities: [{ clientId: USER_OBJECT, displayName: 'Default principal' }], serviceProtection: {} },
+    { enabled: true, serviceProtection: { executionTimeMsPer300s: 7000 } },
+    { enabled: true, port: 12345, tls: true, tlsPort: 12346, tenantId: APP.toUpperCase(), organizationId: USER_OBJECT.toUpperCase(),
+      uniqueName: 'configured', friendlyName: 'Configured organization', version: '9.2.1.2', gitRemoteDirectory: 'C:/invented/git',
+      applications: [{ appId: APP, displayName: 'Configured application', secretEnvironmentVariable: 'INVENTED_CLIENT_SECRET', roles: ['System Administrator'],
+        publicClient: true, redirectUris: ['http://127.0.0.1/callback'], allowedGrants: ['device_code', 'client_credentials'],
+        federatedCredentials: [{ issuer: 'https://issuer.example.test', subject: 'invented-subject' }] }],
+      users: [{ domainname: 'staff@example.test', fullname: 'Staff' }],
+      managedIdentities: [{ clientId: APP, principalId: USER_OBJECT, displayName: 'Configured identity', roles: [] }],
+      federatedIssuers: [{ issuer: 'https://issuer.example.test', jwks: { keys: [{ kty: 'RSA', kid: 'invented', n: 'AQAB', e: 'AQAB' }] } }],
+      serviceProtection: { requestsPer300s: 100, concurrentRequests: 3 }, auditing: true, duplicateDetection: false,
+      pluginTimeoutSeconds: 15, currencyCode: 'EUR', currencySymbol: '€', localeId: 1036, tds: { enabled: false, port: 15432 } },
+  ];
+  for (const raw of cases) {
+    const normalized = dataverseSettings(raw), original = structuredClone(normalized);
+    assert.deepEqual(dataverseSettings(normalized), normalized);
+    assert.deepEqual(dataverseSettings(JSON.parse(JSON.stringify(normalized))), normalized);
+    assert.deepEqual(normalized, original, 'A later normalization must not mutate the previous settings.');
+  }
+});
+
+test('nullable optional defaults do not weaken required values or invalid-type validation', () => {
+  const nullable = dataverseSettings({ gitRemoteDirectory: null, applications: [{ appId: APP, displayName: 'Optional secret', secretEnvironmentVariable: null }],
+    serviceProtection: { requestsPer300s: null, executionMsPer300s: null, concurrentRequests: null } });
+  assert.equal(nullable.gitRemoteDirectory, null);
+  assert.equal(nullable.applications[0].secretEnvironmentVariable, null);
+  assert.deepEqual(nullable.serviceProtection, { requestsPer300s: null, executionMsPer300s: null, concurrentRequests: null });
+  for (const raw of [{ gitRemoteDirectory: '' }, { gitRemoteDirectory: false }, { friendlyName: null }, { localeId: null },
+    { applications: [{ appId: null, displayName: 'Missing app ID' }] }, { managedIdentities: [{ clientId: null, displayName: 'Missing client ID' }] },
+    { applications: [{ appId: APP, displayName: null }] }, { applications: [{ appId: APP, displayName: 'Invalid', secretEnvironmentVariable: 12 }] },
+    { serviceProtection: { concurrentRequests: '' } }, { serviceProtection: { requestsPer300s: 0 } }]) assert.throws(() => dataverseSettings(raw));
+});
+
 test("absent and false disable the simulator; true enables defaults", () => {
   assert.deepEqual(dataverseSettings(undefined), { enabled: false });
   assert.deepEqual(dataverseSettings(false), { enabled: false });

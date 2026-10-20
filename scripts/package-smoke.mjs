@@ -81,13 +81,86 @@ try {
   for (const asset of ['', 'app.mjs', 'style.css']) if (!(await fetch(session.url + '/_setup/' + asset)).ok) throw new Error(`Installed setup asset is missing: ${asset}`);
   const appShell = await fetch(session.url + '/main.aspx');
   if (!appShell.ok || !(await appShell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed model-driven shell is missing.');
-  for (const asset of ['app.mjs', 'controls.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
+  for (const asset of ['app.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
   const apps = await fetch(session.url + '/_apps/api').then(response => response.json());
   if (apps.version !== 1 || !apps.apps.some(app => app.id === apps.defaultApp && app.name === 'Power Pages Management')) throw new Error('Installed default management application is unavailable.');
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }
 if (cli('mirage', 'status', '--json').sessions.some((item) => item.processAlive)) throw new Error('Installed lifecycle left an owned runtime running.');
+// A separate consumer folder deliberately has no portal export or catalogue.
+// Exercise installed entry points and dynamically imported platform/UI modules,
+// rather than relying on package file presence or checkout-only host tests.
+const standalone = path.join(work, 'standalone');
+const appId = '77777777-7777-4777-8777-777777777777';
+const solutionFiles = {
+  'solution/Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>InventedInstalled</UniqueName><Version>1.0.0.0</Version></SolutionManifest></ImportExportXml>',
+  'solution/Entities/x_item/Entity.xml': '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><EntitySetName>x_items</EntitySetName><PrimaryIdAttribute>x_itemid</PrimaryIdAttribute><PrimaryNameAttribute>x_name</PrimaryNameAttribute><attributes><attribute PhysicalName="x_itemid"><Name>x_itemid</Name><Type>primarykey</Type></attribute><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
+  'solution/AppModules/x_workspace/AppModule.xml': `<AppModule><AppModuleId>${appId}</AppModuleId><UniqueName>x_workspace</UniqueName><LocalizedNames><LocalizedName languagecode="1033" description="Installed workspace"/></LocalizedNames><AppModuleComponents><AppModuleComponent type="1" schemaName="x_item"/></AppModuleComponents></AppModule>`,
+};
+for (const [relative, contents] of Object.entries(solutionFiles)) {
+  const file = path.join(standalone, relative); fs.mkdirSync(path.dirname(file), { recursive: true }); fs.writeFileSync(file, contents);
+}
+for (const kind of ['dataverse-api', 'model-driven']) {
+  const file = path.join(standalone, `${kind}.project.json`);
+  const configuration = JSON.stringify({ version: 2, runtime: { kind, ...(kind === 'model-driven' ? { defaultApp: appId } : {}) },
+    simulation: { level: 'dry-run' }, solutions: kind === 'model-driven' ? [{ id: 'core', path: './solution' }] : [],
+    dataverse: { enabled: kind === 'dataverse-api', tls: false, tds: { enabled: false } } });
+  fs.writeFileSync(file, configuration);
+  const standaloneCli = (command, ...args) => {
+    const result = spawnSync(process.execPath, [installed, 'mirage', command, '--project', file, '--json', ...args],
+      { cwd: standalone, encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 4 * 1024 * 1024 });
+    if (result.status !== 0) throw new Error(`Installed standalone ${kind} ${command} failed:\n${result.stdout}\n${result.stderr}`);
+    return JSON.parse(result.stdout);
+  };
+  const inspect = standaloneCli('inspect');
+  if (inspect.runtime.kind !== kind || inspect.portals.length) throw new Error('Installed standalone inspection invented a portal.');
+  let local;
+  try {
+    local = standaloneCli('start', '--port', '0');
+    if (!standaloneCli('status').sessions.some(item => item.pid === local.pid && item.ready)) throw new Error('Installed standalone status did not find its runtime.');
+    const status = await fetch(local.url + '/_sim/api/status').then(response => response.json());
+    if (status.runtime.kind !== kind || !status.capabilities.organization || status.capabilities.powerPages || status.links.powerPages !== null
+      || status.capabilities.modelDriven !== (kind === 'model-driven') || status.capabilities.dataverseApi !== (kind === 'dataverse-api'))
+      throw new Error('Installed standalone capabilities do not match the selected surface.');
+    for (const asset of ['', 'app.mjs', 'persona-manager.mjs', 'persona-picker.mjs', 'persona-picker-view.mjs', 'persona-search.mjs'])
+      if (!(await fetch(local.url + '/_sim/' + asset)).ok) throw new Error(`Installed standalone admin asset is missing: ${asset}`);
+    const setup = await fetch(local.url + '/_setup/api/status').then(response => response.json());
+    if (setup.kind !== 'project' || setup.layers.shared.file !== file) throw new Error('Installed standalone setup did not retain the selected project.');
+    if (kind === 'dataverse-api') {
+      if (status.links.modelDriven !== null || !status.links.dataverseApi || (await fetch(local.url + '/main.aspx')).status !== 404
+        || (await fetch(local.url + '/_apps/api')).status !== 404) throw new Error('Installed API-only runtime exposed an unavailable app surface.');
+      const metadata = await fetch(status.links.dataverseApi + '/api/data/v9.2/$metadata');
+      if (metadata.status !== 401) throw new Error('Installed organization listener did not require an API identity.');
+    } else {
+      if (status.links.modelDriven !== '/main.aspx' || status.links.dataverseApi !== null) throw new Error('Installed model-only runtime links are incorrect.');
+      const shell = await fetch(local.url + status.links.modelDriven);
+      if (!shell.ok || !(await shell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed source-only model shell is unavailable.');
+      for (const asset of ['app.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css'])
+        if (!(await fetch(local.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed standalone model asset is missing: ${asset}`);
+      const catalogue = await fetch(local.url + '/_apps/api').then(response => response.json());
+      if (catalogue.defaultApp !== appId || catalogue.apps.length !== 1 || catalogue.apps[0].name !== 'Installed workspace' || !catalogue.tables.x_item)
+        throw new Error('Installed source-only app catalogue did not derive the selected Solution.');
+      const created = await fetch(local.url + '/_apps/api/tables/x_item', { method: 'POST',
+        headers: { 'content-type': 'application/json', 'x-sim-csrf': status.csrf }, body: JSON.stringify({ x_name: 'Installed record' }) });
+      const result = await created.json();
+      if (created.status !== 201 || result.row?.x_name !== 'Installed record') throw new Error('Installed model-only record service did not create a row.');
+      const read = await fetch(local.url + '/_apps/api/tables/x_item/' + result.row.x_itemid).then(response => response.json());
+      if (read.row?.x_name !== 'Installed record') throw new Error('Installed model-only record service did not read its created row.');
+    }
+    if (fs.existsSync(local.stateFile)) throw new Error('Installed standalone dry run wrote a runtime checkpoint.');
+  } finally {
+    if (local) {
+      const stopped = standaloneCli('stop');
+      if (!stopped.stopped.some(item => item.pid === local.pid)) throw new Error('Installed standalone stop did not stop its owned runtime.');
+    }
+  }
+  if (standaloneCli('status').sessions.some(item => item.processAlive)) throw new Error('Installed standalone lifecycle left an owned runtime running.');
+  if (fs.readFileSync(file, 'utf8') !== configuration) throw new Error('Installed lifecycle changed the standalone project configuration.');
+}
+for (const [relative, contents] of Object.entries(solutionFiles))
+  if (fs.readFileSync(path.join(standalone, relative), 'utf8') !== contents) throw new Error('Installed standalone runtime changed Solution sources.');
+console.log('Installed standalone smoke passed: API-only and source-only model-driven CLI, capabilities, assets and local records.');
 const tests = run(['test'], project);
 console.log(tests.trim());
 const workspace = spawnSync(process.execPath, ['--test', path.join(root, 'test-browser/demo-workspace.test.mjs')], { cwd: root, env: { ...process.env, PAQVILO_DEMO_CLI: installed }, encoding: 'utf8', windowsHide: true, timeout: 120_000, maxBuffer: 1024 * 1024 });

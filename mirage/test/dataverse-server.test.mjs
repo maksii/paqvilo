@@ -240,13 +240,16 @@ test("the portal origin does not answer Dataverse Web API routes", async (t) => 
   assert.equal(text.includes("UserId"), false);
 });
 
-test("disabled runtime reports disabled and refuses Dataverse admin routes", async (t) => {
+test("disabled HTTP transport keeps the headless organization available to local administration", async (t) => {
   const { app, admin } = await start(t);
   assert.equal(app.state().dataverse.enabled, false);
   assert.equal(app.dataverse, null);
   const response = await admin("/dataverse");
-  assert.equal(response.status, 404);
-  assert.equal(response.body.error.code, "DATAVERSE_DISABLED");
+  assert.equal(response.status, 200);
+  assert.equal(response.body.enabled, false);
+  assert.equal(response.body.organizationAvailable, true);
+  assert.ok(response.body.users.some(user => user.fullname === 'SYSTEM'));
+  assert.ok(response.body.roles.some(role => role.name === 'System Administrator'));
 });
 
 test("close stops the Dataverse listener", async (t) => {

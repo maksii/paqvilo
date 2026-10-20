@@ -1,3 +1,4 @@
+import { organizationRecord } from './organization-context.mjs';
 import { DataError } from './data-error.mjs';
 
 const learn='https://learn.microsoft.com/en-us/';
@@ -44,7 +45,7 @@ export function platformSettingEntries(state){
  const overrides=validatePlatformOverrides(state.simulator?.platformOverrides);
  const {evidence:configuredEvidence,...configured}=state.simulator?.platformDefaults??{};
  validatePlatformOverrides(configured);
- const rows=state.tables?.organization??[],org=rows.length===1?rows[0]:{};
+ const org=organizationRecord(state)??{};
  return PLATFORM_SETTINGS.map(d=>{
   const local=Object.hasOwn(overrides,d.key),catalogued=Object.hasOwn(configured,d.key),fromOrganization=d.column&&Object.hasOwn(org,d.column)&&org[d.column]!=null,fromSetting=d.stateSetting&&state.settings?.[d.stateSetting]!=null,source=catalogued?configured[d.key]:fromOrganization?org[d.column]:fromSetting?state.settings[d.stateSetting]:d.defaultValue;
   return {...d,sourceValue:source,value:local?overrides[d.key]:source,overridden:local,origin:local?'Instance override':catalogued?'Catalogue':fromOrganization?'Organization row':fromSetting?'Existing simulator setting':'Default / not configured',...(catalogued?{configuredEvidence,source:'catalogue'}:{})};

@@ -1,4 +1,4 @@
-import { descendants, child, childText, label, parseSolutionXml, serializeXml } from '../solution-xml.mjs';
+import { descendants, child, childText, label, labelsOf, parseSolutionXml, serializeXml } from '../solution-xml.mjs';
 
 const id = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const nodes = (root, name) => root.name === name ? [root] : descendants(root, name);
@@ -7,6 +7,8 @@ const title = (node, lcid) => {
   return (titles.find(row => Number(row.attrs.LCID) === Number(lcid)) ?? titles[0])?.attrs.Title
     ?? label(child(node, 'LocalizedNames'), lcid) ?? node.attrs.Title;
 };
+const titleLabels = node => Object.fromEntries(descendants(node, 'Title').filter(row => row.attrs.LCID && row.attrs.Title)
+  .map(row => [row.attrs.LCID, row.attrs.Title]));
 
 /** Data-only navigation. URLs, scripts and resource IDs are never executed as app code. */
 export function parseSiteMap(root, { lcid = 1033 } = {}) {
@@ -14,11 +16,11 @@ export function parseSiteMap(root, { lcid = 1033 } = {}) {
   const map = nodes(root, 'SiteMap')[0];
   if (!map) return [];
   return nodes(map, 'Area').map(area => ({
-    id: area.attrs.Id, title: title(area, lcid) ?? area.attrs.Id,
+    id: area.attrs.Id, title: title(area, lcid) ?? area.attrs.Id, titleLabels: titleLabels(child(area, 'Titles')),
     groups: (area.children ?? []).filter(node => node.name === 'Group').map(group => ({
-      id: group.attrs.Id, title: title(group, lcid) ?? group.attrs.Id,
+      id: group.attrs.Id, title: title(group, lcid) ?? group.attrs.Id, titleLabels: titleLabels(child(group, 'Titles')),
       items: (group.children ?? []).filter(node => node.name === 'SubArea').map(item => ({
-        id: item.attrs.Id, title: title(item, lcid), entity: item.attrs.Entity?.toLowerCase(),
+        id: item.attrs.Id, title: title(item, lcid), titleLabels: titleLabels(child(item, 'Titles')), entity: item.attrs.Entity?.toLowerCase(),
         // Non-table destinations have no renderer yet. Keep their place and explain it.
         supported: Boolean(item.attrs.Entity), reason: item.attrs.Entity ? undefined : 'This navigation type is not supported locally yet.',
       })),
@@ -32,6 +34,7 @@ export function parseAppDefinitions(root, { lcid = 1033 } = {}) {
     id: id(childText(node, 'AppModuleId') ?? childText(node, 'appmoduleid') ?? node.attrs.AppModuleId),
     uniqueName: childText(node, 'UniqueName') ?? childText(node, 'uniquename') ?? node.attrs.UniqueName,
     name: label(child(node, 'LocalizedNames'), lcid) ?? childText(node, 'Name') ?? childText(node, 'name'),
+    nameLabels: labelsOf(child(node, 'LocalizedNames')),
     components: [...descendants(node, 'AppModuleComponent'), ...descendants(node, 'appmodulecomponent')].map(component => ({
       type: Number(component.attrs.type ?? component.attrs.componenttype),
       id: id(component.attrs.id ?? component.attrs.objectid),
@@ -59,12 +62,12 @@ export function embeddedAppComponents(root, { entity: enclosingEntity, lcid = 10
     for (const systemform of nodes(node, 'systemform')) {
       const form = child(systemform, 'form'); if (!form) continue;
       const type = childText(systemform, 'type');
-      forms.push({ id: id(childText(systemform, 'formid')), entity, name: label(child(systemform, 'LocalizedNames'), lcid) ?? '', xml: serializeXml(form), active: childText(systemform, 'FormActivationState') !== '0', file,
+      forms.push({ id: id(childText(systemform, 'formid')), entity, name: label(child(systemform, 'LocalizedNames'), lcid) ?? '', nameLabels: labelsOf(child(systemform, 'LocalizedNames')), xml: serializeXml(form), active: childText(systemform, 'FormActivationState') !== '0', file,
         ...(type !== undefined ? { systemFormType: Number(type) } : {}) });
     }
     for (const view of nodes(node, 'savedquery')) {
       const fetch = child(view, 'fetchxml'), inline = child(fetch, 'fetch');
-      views.push({ id: id(childText(view, 'savedqueryid')), entity, name: label(child(view, 'LocalizedNames'), lcid) ?? '', queryType: Number(childText(view, 'querytype')) || 0,
+      views.push({ id: id(childText(view, 'savedqueryid')), entity, name: label(child(view, 'LocalizedNames'), lcid) ?? '', nameLabels: labelsOf(child(view, 'LocalizedNames')), queryType: Number(childText(view, 'querytype')) || 0,
         isDefault: childText(view, 'isdefault') === '1', fetchXml: inline ? serializeXml(inline) : fetch?.text.trim() ?? '',
         fields: descendants(child(view, 'layoutxml'), 'cell').filter(cell => cell.attrs.ishidden !== '1').map(cell => ({ name: cell.attrs.name, width: Number(cell.attrs.width) || 180 })), file });
     }
@@ -76,6 +79,11 @@ export function compileForm(form, fields, lcid = 1033) {
   if (!form?.xml) return null;
   const root = parseSolutionXml(form.xml);
   const custom = new Set(descendants(root, 'controlDescription').filter(description => descendants(description, 'customControl').length).map(description => id(description.attrs.forControl)));
+  const bindings = new Map(descendants(root, 'controlDescription').map(description => [id(description.attrs.forControl),
+    descendants(description, 'customControl').map(control => ({ attributes: { ...control.attrs }, xml: serializeXml(control) }))]));
+  const sourceControl = control => ({ id: control.attrs.id ?? null, uniqueId: control.attrs.uniqueid ?? null,
+    classId: control.attrs.classid ?? null, attributes: { ...control.attrs }, xml: serializeXml(control),
+    customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [] });
   const tabs = descendants(root, 'tab').map(tab => ({
     id: tab.attrs.name ?? tab.attrs.id, label: label(child(tab, 'labels'), lcid) ?? tab.attrs.name ?? 'General',
     visible: tab.attrs.visible !== 'false',
@@ -94,12 +102,12 @@ export function compileForm(form, fields, lcid = 1033) {
           colspan: Number(cell.attrs.colspan) || 1, showLabel: cell.attrs.showlabel !== 'false' };
         if (id(control.attrs.classid) === 'e7a81278-8635-4d9e-8d4d-59480b391c5b') {
           const parameter = name => descendants(control, name)[0]?.text.trim();
-          return [{ ...position, label: label(child(cell, 'labels'), lcid) ?? control.attrs.id, visible: cell.attrs.visible !== 'false',
+          return [{ ...position, sourceControl: sourceControl(control), label: label(child(cell, 'labels'), lcid) ?? control.attrs.id, visible: cell.attrs.visible !== 'false',
             supported: true, subgrid: { entity: parameter('TargetEntityType')?.toLowerCase(), view: id(parameter('ViewId')), relationship: parameter('RelationshipName'),
               pageSize: Number(parameter('RecordsPerPage')) || 10, searchEnabled: parameter('EnableQuickFind') === 'true' } }];
         }
         const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
-        return [{ ...position, name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
+        return [{ ...position, sourceControl: sourceControl(control), name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
           visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true',
           supported: Boolean(name && fields[name] && !isCustom),
           reason: isCustom ? 'This custom control is not supported locally yet.' : name ? 'Column metadata is unavailable.' : 'This control is not supported locally yet.' }];
@@ -108,5 +116,7 @@ export function compileForm(form, fields, lcid = 1033) {
   }));
   return { id: form.id, name: form.name, tabs, source: 'solution',
     hasScripts: descendants(root, 'Library').length > 0 || descendants(root, 'event').length > 0,
+    dependencies: { libraries: descendants(root, 'Library').map(node => ({ attributes: { ...node.attrs }, xml: serializeXml(node) })),
+      events: descendants(root, 'event').map(node => ({ attributes: { ...node.attrs }, xml: serializeXml(node) })) },
     xml: undefined };
 }

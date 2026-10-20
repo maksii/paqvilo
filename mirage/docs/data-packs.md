@@ -9,6 +9,8 @@ All project data, personas, generators, backend rules, acceptance fixtures and t
 
 Register trusted modules explicitly in `sites.<id>.mirage.dataPacks`, `defaults.mirage.dataPacks`, Mirage project `dataPacks`, or direct CLI `--pack-module`. Catalogue modules resolve from the catalogue directory; project modules resolve from the project file. Embedded `createSimulator({ dataPacks })` and `discoverPacks({ explicit })` accept explicit modules as well. Loading a module executes JavaScript.
 
+Packs also support solution-only app/API projects; their matching logic must tolerate an absent portal. In explicit simulation/deep levels, persistence requires declared existing `dataFiles` destinations. A preset alone does not declare file ownership, and unowned business tables remain read-only. Dry run keeps record edits in memory. See the [DATA manifest and transactional write contract](simulation-levels.md) and [standalone setup](standalone-organization.md).
+
 ```js
 export default {
   id: 'customer-demo',
@@ -33,6 +35,10 @@ A trusted pack may provide `webApiErrorTemplates: { version: 1, evidence, templa
 This capability applies only with site evidence and both `observed.webApiErrorDetails: "odata-wrapper"` and `observed.webApiErrorStacks: "response-template"`. Source `Webapi/error/innererror` must also enable the inner message. Unsupported reader descriptors keep the existing diagnostic. Templates alter the Web API error message only; they do not execute CLR code, qualify native exception generation or permission behavior, alter accepted writes, or appear in SDK/flow errors. Default mode is `diagnostic`. Keep real captured suffixes and all response comparisons in the external project. Entire JSON serialization and current POST/PATCH variation evidence remain separate from suffix equality.
 
 Presets can return bodies or `{ name, description, load() }` descriptors. Body generation is memoized and listing does not generate rows. Stored builtin descriptors resolve using the explicitly supplied portal library. An unavailable project descriptor is reported, never silently replaced. Do not import `data.mjs` or `presets.mjs` at pack module top level if that creates a registry cycle; generators may import runtime utilities lazily.
+
+Applying a portal's business-data preset preserves omitted organization-owned tables,
+staff grants, credentials and imported schema. Explicit table or mapping entries
+in the preset still replace those targets. Reset remains a separate operation.
 
 Expression operators extend declarative local backend rules. Pack endpoints are validated under the local `/__sim/` namespace; they cannot replace live provider authorization. Shell conventions specify project banner/notification rules. Parity fixtures specify project-specific comparison scenarios and denied routes. Keep all these definitions and their tests with the project.
 

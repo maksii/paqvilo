@@ -32,8 +32,12 @@ async function fixture(t, options = {}) {
 test("registering an application shows its secret once and later reads carry only the hint", { timeout: 60_000 }, async (t) => {
   const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
   await page.goto(app.adminUrl + "#dataverse");
-  await page.getByRole("heading", { name: "Dataverse API" }).waitFor();
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
   await page.getByText(app.state().dataverse.origin, { exact: true }).waitFor();
+  assert.notEqual(new URL(app.state().dataverse.origin).port, '80');
+  const portNote = page.locator('[data-serviceclient-port]');
+  await portNote.waitFor(); assert.match(await portNote.innerText(), /port as 80.*restart Mirage/);
+  assert.equal(await portNote.getByRole('link').getAttribute('href'), '/_setup/#runtime-configuration');
   await page.getByLabel("Display name", { exact: true }).fill("Browser client");
   await page.getByRole("button", { name: "Register application" }).click();
   const secret = (await page.locator("#dv-secret").textContent()).trim();
@@ -61,11 +65,11 @@ test("registering an application shows its secret once and later reads carry onl
   assert.deepEqual(errors, []);
 });
 
-test("a runtime without the Dataverse API renders the disabled state", { timeout: 60_000 }, async (t) => {
+test("a runtime without the HTTP API retains organization identity administration", { timeout: 60_000 }, async (t) => {
   const { app, page, errors } = await fixture(t);
   await page.goto(app.adminUrl + "#dataverse");
-  await page.getByText("Dataverse API is disabled for this runtime", { exact: true }).waitFor();
-  assert.equal(await page.locator("#dv-app-form").count(), 0);
+  await page.getByText("HTTP API disabled · organization available", { exact: true }).waitFor();
+  assert.equal(await page.locator("#dv-app-form").count(), 1);
   assert.deepEqual(errors, []);
 });
 
@@ -74,7 +78,7 @@ test("user, role, secret and certificate forms round-trip through the admin endp
   const { generateKeyPairSync } = await import("node:crypto");
   const { publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   await page.goto(app.adminUrl + "#dataverse");
-  await page.getByRole("heading", { name: "Dataverse API" }).waitFor();
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
   await page.getByLabel("Full name", { exact: true }).fill("Maker User");
   await page.getByLabel("Sign-in name (domainname)", { exact: true }).fill("maker@example.test");
   await page.getByLabel(/Password for ROPC sign-in/).fill("correct horse battery");
@@ -127,7 +131,7 @@ test("a certificate PEM shows its SHA-256 fingerprint in the table", { timeout: 
   const { cert } = createSelfSignedCertificate();
   const fingerprint256 = new X509Certificate(cert).fingerprint256.replaceAll(":", "");
   await page.goto(app.adminUrl + "#dataverse");
-  await page.getByRole("heading", { name: "Dataverse API" }).waitFor();
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
   await page.getByLabel("Display name", { exact: true }).fill("Pem client");
   await page.getByRole("button", { name: "Register application" }).click();
   await page.getByRole("button", { name: "Dismiss" }).click();
@@ -148,7 +152,7 @@ test("a certificate PEM shows its SHA-256 fingerprint in the table", { timeout: 
 test("the registration, edit, federated credential and managed identity forms round-trip through the admin endpoints", { timeout: 60_000 }, async (t) => {
   const { app, page, errors } = await fixture(t, { dataverse: { enabled: true } });
   await page.goto(app.adminUrl + "#dataverse");
-  await page.getByRole("heading", { name: "Dataverse API" }).waitFor();
+  await page.getByRole("heading", { name: "Organization identity & API" }).waitFor();
   await page.getByRole("heading", { name: "Connect", exact: true }).waitFor();
   await page.getByLabel("Display name", { exact: true }).fill("Grant client");
   await page.locator("#dv-app-public").check();

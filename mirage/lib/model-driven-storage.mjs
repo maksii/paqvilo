@@ -6,6 +6,13 @@ import { DataError } from './data-error.mjs';
 
 const copy = value => structuredClone(value);
 const system = name => /^__sim/.test(name) || /^(?:createdon|createdby|createdonbehalfby|modifiedon|modifiedby|modifiedonbehalfby|versionnumber|ownerid|owninguser|owningteam|owningbusinessunit)$/.test(name);
+const lookupIdentity = (field, value) => {
+  if (!['lookup', 'owner', 'customer'].includes(String(field?.dataverseType ?? field?.type).toLowerCase())) return undefined;
+  if (value == null) return null;
+  const id = value?.id ?? value?.value ?? value;
+  const target = value?.logical_name ?? value?.logicalName ?? value?.entity ?? (field.targets?.length === 1 ? field.targets[0] : null);
+  return { id: String(id).replace(/[{}]/g, '').toLowerCase(), target: target?.toLowerCase() ?? null };
+};
 
 export function createModelDrivenStorage({ store, tables, overlayOf }) {
   const owns = entity => store.state.mappings[entity]?.modelDrivenSource === true;
@@ -41,6 +48,9 @@ export function createModelDrivenStorage({ store, tables, overlayOf }) {
     }
     for (const [entity, table] of Object.entries(projections)) {
       if (!table.projected) continue;
+      // The organization create pipeline supplies a default status reason even
+      // for a thin portal export that declares only statecode.
+      const preserve = name => system(name) || name === 'statuscode' && !Object.hasOwn(table.fields, name);
       const previousMapping = state.mappings[entity] ?? {};
       const relationships = { ...previousMapping.relationships };
       for (const field of Object.values(table.fields)) {
@@ -60,8 +70,13 @@ export function createModelDrivenStorage({ store, tables, overlayOf }) {
       const previous = new Map((state.tables[entity] ?? []).map(row => [row[table.idColumn], row]));
       state.tables[entity] = table.rows.map(source => {
         const before = previous.get(source[table.idColumn]);
-        const row = { ...copy(source), ...Object.fromEntries(Object.entries(before ?? {}).filter(([name]) => system(name))) };
-        if (before && !isDeepStrictEqual(Object.fromEntries(Object.entries(before).filter(([name]) => !system(name))), Object.fromEntries(Object.entries(row).filter(([name]) => !system(name))))) {
+        const row = { ...copy(source), ...Object.fromEntries(Object.entries(before ?? {}).filter(([name]) => preserve(name))) };
+        for (const [name, field] of Object.entries(table.fields)) {
+          if (!before || !Object.hasOwn(before, name) || !Object.hasOwn(row, name)) continue;
+          const identity = lookupIdentity(field, row[name]);
+          if (identity !== undefined && isDeepStrictEqual(identity, lookupIdentity(field, before[name]))) row[name] = copy(before[name]);
+        }
+        if (before && !isDeepStrictEqual(Object.fromEntries(Object.entries(before).filter(([name]) => !preserve(name))), Object.fromEntries(Object.entries(row).filter(([name]) => !preserve(name))))) {
           state.rowVersion = Math.max(state.rowVersion ?? 0, Number(before.__simVersion ?? 0)) + 1;
           row.__simVersion = state.rowVersion;
           if (before.versionnumber !== undefined) row.versionnumber = state.rowVersion;

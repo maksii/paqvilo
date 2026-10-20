@@ -11,6 +11,9 @@ import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { shareSolutionParses } from "./lib/solution-cache.mjs";
 import { runtimePort } from "./lib/runtime-port.mjs";
+import { runtimeSettings } from './lib/runtime-config.mjs';
+import { simulationSettings } from './lib/simulation-settings.mjs';
+import { loadOrganizationSources } from './lib/solution-runtime-source.mjs';
 import { bootstrapProject, loadProjectConfig, projectOrigin, projectStateFile, projectSummary } from "./lib/project-config.mjs";
 import { resolveDeploymentProfiles, loadDeploymentProfiles, deploymentProfilesSummary } from './lib/deployment-profiles.mjs';
 import { MIRAGE_COMMANDS, MIRAGE_CORE_COMMANDS, unknownMirageCommand } from './tool-registry.mjs';
@@ -22,6 +25,8 @@ try {
     allowPositionals: true,
     options: {
       source: { type: "string" },
+      runtime: { type: 'string' },
+      simulation: { type: 'string' },
       repo: { type: "string" },
       // The toolkit catalogue file (lense/config.mjs), as the toolkit's own --config.
       config: { type: "string" },
@@ -93,7 +98,7 @@ Commands: ${MIRAGE_COMMANDS.join(', ')}
     portal: [--site SITE --env ENV --repo PATH] | --project FILE [--portal ID] | --source PORTAL_DIR [--solution-root DIR ...]
     [--count NAME=N ...] [--pack-module PATH] [--materialize-persona-memberships]
 
-Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
+Options: --state FILE, --preset NAME, --preset-mode bootstrap|always, --apply-configuration (apply the selected data preset’s configuration), --no-watch, --cdp URL, --solution-root PATH (repeatable), --solution-order derived|explicit, --project FILE, --portal ID, --runtime power-pages|model-driven|dataverse-api, --simulation dry-run|simulation|deep, --deployment-profile NAME, --config FILE (toolkit catalogue for --site), --repo DIR, --allow-live-writes (permits live create, update and delete requests; the /__sim/ live writes switch still decides, off by default), --data-model standard|enhanced (the data model of a YAML source; a .powerpages-site export defaults to enhanced)
 Solution roots (--solution-root, else the catalogue site's mirage solutionRoots, else unpacked solution repositories discovered next to the portal repository) are a set layered definition-before-extension; --solution-order explicit (or solutionOrder: explicit in the catalogue site or project file) keeps the listed order.
 Admin: /__sim/. New workspaces use local data/page modes; saved modes persist.
 Default state and evidence paths are under .paqvilo. Map deploymentProfiles in config and pin locally in /_sim/ → Environment; legacy exported Pages profiles use --deployment-profile.
@@ -133,6 +138,14 @@ try {
     process.exitCode = result.passed ? 0 : 1;
   } else {
     const project = args.project ? await loadProjectConfig(args.project) : null;
+    let profileMirage;
+    if (args.site) {
+      const { loadCatalogue, resolveMirageConfig } = await import('../lense/config.mjs');
+      const catalogue = loadCatalogue(args), selected = catalogue.sites[args.site];
+      if (selected) profileMirage = resolveMirageConfig(selected.mirage, { configDir: catalogue.configDir, sourceRoot: catalogue.sourceRoot });
+    }
+    const runtime = runtimeSettings(args.runtime ? { kind: args.runtime } : project?.runtime ?? profileMirage?.runtime);
+    const simulation = simulationSettings(args.simulation ? { level: args.simulation } : project?.simulation ?? profileMirage?.simulation);
     if (project && args.source)
       throw new Error("Use either --project or --source, not both.");
     if (project && args["solution-root"]?.length)
@@ -145,7 +158,38 @@ try {
       throw new Error("--data-model must be standard or enhanced.");
     if (project && args.portal && !project.portals.some((p) => p.id === args.portal))
       throw new Error(`Portal '${args.portal}' is not configured in ${project.configFile}`);
-    if (project && command === "inspect") {
+    if (runtime.kind !== 'power-pages') {
+      if (!['serve', 'inspect'].includes(command)) throw new Error(`${command} requires a Power Pages runtime.`);
+      if (args.source || args.portal || args.cdp) throw new Error('Standalone runtimes select a project or solution roots without a portal, source, or live browser.');
+      const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
+      if (command === 'inspect') {
+        const source = await loadOrganizationSources({ solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'], lcid: project?.lcid });
+        console.log(JSON.stringify({ runtime, simulation, portals: [], solutions: roots, applications: source.metadata.modelDrivenApps,
+          entities: Object.keys(source.metadata.entities), diagnostics: [...source.metadata.diagnostics, ...source.solutionData.diagnostics] }, null, 2));
+      } else {
+        const stateFile = path.resolve(args.state ?? (project ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects')) : path.join(stateDir, 'simulator', runtime.kind, 'state.json')));
+        let stop;
+        const simulator = await createSimulator({ runtime, simulation, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
+          stateFile, port: runtimePort(args.port), project: project && projectSummary(project), dataverse: project?.dataverse ?? profileMirage?.dataverse,
+          projectRoot: project ? path.dirname(project.configFile) : args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),
+          dataPacks: [...profileMirage?.dataPacks ?? [], ...(args['pack-module'] ?? []).map(module => ({ module }))],
+          setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : undefined, environmentVariables: project?.environmentVariables,
+          preset: args.preset, presetMode: args['preset-mode'], watch: !args['no-watch'] && project?.watch !== false,
+          onShutdown: () => stop?.() });
+        const discovery = path.join(stateDir, 'simulator', `session-${process.pid}.json`);
+        await fs.mkdir(path.dirname(discovery), { recursive: true });
+        await fs.writeFile(discovery, JSON.stringify({ pid: process.pid, runtime, project: project?.configFile ?? null,
+          sourceDir: null, stateFile, url: simulator.url, adminUrl: simulator.adminUrl, discovery }, null, 2));
+        console.log(JSON.stringify({ pid: process.pid, runtime, simulation: simulator.status().simulation, url: simulator.url,
+          adminUrl: simulator.adminUrl, dataverse: simulator.status().dataverse, discovery }, null, 2));
+        let stopped = false;
+        stop = async () => { if (stopped) return; stopped = true; await simulator.close(); await fs.rm(discovery, { force: true }); };
+        process.once('SIGINT', () => stop().then(() => process.exit(0)));
+        process.once('SIGTERM', () => stop().then(() => process.exit(0)));
+        process.stdin.on('data', data => { if (String(data).trim() === 'stop') stop().then(() => process.exit(0)); });
+      }
+    }
+    else if (project && command === "inspect") {
       const selected = args.portal
         ? project.portals.filter((p) => p.id === args.portal)
         : project.portals;
@@ -423,6 +467,7 @@ try {
         personaContexts: siteMirage?.personaContexts,
         identityProvider: siteMirage?.identityProvider,
         dataverse: siteMirage?.dataverse,
+        runtime, simulation,
         projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
         platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),
