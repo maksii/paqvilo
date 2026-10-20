@@ -13,6 +13,8 @@ import {
 } from "./solution-xml.mjs";
 import { SolutionFileCache, fileStamp, mapLimit } from "./solution-cache.mjs";
 import { parsePluginDocument } from './exported-plugins.mjs';
+import { parseAppDefinitions, embeddedAppComponents } from './model-driven/solution.mjs';
+import { solutionDocumentComponents } from './dataverse-solution-components.mjs';
 import {
   standardTable,
   standardOptionSet,
@@ -23,12 +25,12 @@ import {
 } from "./solution-standard.mjs";
 
 /** Bump when parsed facts change shape so cached results are never reused. */
-export const SCHEMA_PARSER_ID = "schema@12";
+export const SCHEMA_PARSER_ID = "schema@17";
 const IO_CONCURRENCY = 24;
 const XML_LIMIT = 128 * 1024 * 1024;
 const SKIP_DIRS = new Set([".git", "node_modules", "bin", "obj", ".paqvilo"]);
 // Directories of an unpacked solution tree that carry table metadata.
-const TREE_DIRS = /^(?:entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
+const TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|workflows|entities|other|optionsets|environmentvariabledefinitions|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
 // Every standard Dataverse table owns these columns; a definition that exports its
 // primary key and all of them is a full table export rather than a column patch.
 const STANDARD_COLUMNS = ["createdon", "createdby", "modifiedon", "modifiedby", "statecode", "statuscode"];
@@ -52,6 +54,8 @@ const deepText = (node, name) => childText(node, name) ?? descendants(node, name
 export function classifySolutionPath(relative) {
   const p = String(relative).replace(/\\/g, "/");
   let m;
+  if (/(?:^|\/)(?:AppModules|AppModuleSiteMaps|SiteMaps)\/.+\.xml$/i.test(p)) return { kind: 'app' };
+  if (/(?:^|\/)Workflows\/.+\.xml$/i.test(p)) return { kind: 'workflow' };
   if (/(?:^|\/)(?:PluginAssemblies|PluginTypes|SdkMessageProcessingSteps|SdkMessages)\/.+\.xml$/i.test(p)) return { kind: 'plugin' };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/Entity\.xml$/i.exec(p))) return { kind: "entity", entityDir: m[1] };
   if ((m = /(?:^|\/)Entities\/([^/]+)\/FormXml\/.+\.xml$/i.exec(p))) return { kind: "form", entityDir: m[1] };
@@ -66,7 +70,7 @@ export function classifySolutionPath(relative) {
     return { kind: "envvalue", envDir: m[1] };
   return null;
 }
-const SCHEMA_KINDS = new Set(["entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
+const SCHEMA_KINDS = new Set(["app", "form", "view", "workflow", "entity", "relationships", "customizations", "optionset", "solution", "envdef", "envvalue", "xml", "plugin"]);
 
 async function manifestOf(dir) {
   let entries;
@@ -149,12 +153,13 @@ function optionSetFacts(node) {
     type: norm(childText(node, "OptionSetType")) || undefined,
     isGlobal: bit(childText(node, "IsGlobal")),
     introducedVersion: childText(node, "IntroducedVersion") || undefined,
-    isCustomizable: bit(childText(node, "IsCustomizable")),
+    isCustomizable: flag(childText(node, "IsCustomizable")),
     displayLabels: labelsOf(child(node, "displaynames")),
     descriptionLabels: descriptionsOf(node),
-    options: descendants(node, "option").map((o) =>
-      compact({ value: Number(o.attrs.value), labels: labelsOf(o), externalValue: o.attrs.ExternalValue, color: o.attrs.Color, descriptionLabels: descriptionsOf(o) }),
-    ),
+    options: descendants(node, "option").map((o) => ({
+      ...compact({ value: Number(o.attrs.value), labels: labelsOf(o), color: o.attrs.Color, descriptionLabels: descriptionsOf(o), isHidden: flag(o.attrs.IsHidden) }),
+      ...(Object.hasOwn(o.attrs, 'ExternalValue') ? { externalValue: o.attrs.ExternalValue } : {}),
+    })),
     states: descendants(node, "state").map((o) =>
       compact({
         value: Number(o.attrs.value),
@@ -270,6 +275,11 @@ function entityFacts(node, info) {
     primaryIdAttribute: norm(h("PrimaryIdAttribute")) || primaryKey,
     primaryNameAttribute: norm(h("PrimaryNameAttribute")) || primaryName,
     ownership: h("OwnershipTypeMask"),
+    tableType: h("TableType") || undefined,
+    dataSourceId: h("DataSourceId") ? norm(h("DataSourceId")).replace(/[{}]/g, '') : undefined,
+    dataProviderId: h("DataProviderId") ? norm(h("DataProviderId")).replace(/[{}]/g, '') : undefined,
+    changeTrackingEnabled: flag(h("ChangeTrackingEnabled")),
+    isOptimisticConcurrencyEnabled: flag(h("IsOptimisticConcurrencyEnabled")),
     isActivity: bit(h("IsActivity")),
     // Document management (SharePoint document locations) enabled for the table.
     documentManagement: bit(h("IsDocumentManagementEnabled")),
@@ -280,10 +290,10 @@ function entityFacts(node, info) {
     collectionLabels: labelsOf(child(header, "LocalizedCollectionNames")),
     // Virtual tables (a data source, e.g. SharePoint through the virtual connector) have
     // no standard system columns: their definition is complete with the primary key.
-    isVirtual: h("DataSourceId") ? true : undefined,
+    isVirtual: h("TableType") ? /^virtual$/i.test(h("TableType")) : h("DataSourceId") ? true : undefined,
     // A table a solution includes unmodified exports no columns (<entity unmodified="1">).
     unmodified: header?.attrs?.unmodified === "1" && !attributes.length ? true : undefined,
-    fullDefinition: Boolean(primaryKey) && (Boolean(h("DataSourceId")) || STANDARD_COLUMNS.every((column) => names.has(column))),
+    fullDefinition: Boolean(primaryKey) && (Boolean(h("DataSourceId")) || /^virtual$/i.test(h("TableType") ?? '') || STANDARD_COLUMNS.every((column) => names.has(column))),
     attributes,
     keys: keys.length ? keys : undefined,
   });
@@ -312,6 +322,23 @@ function relationshipFacts(node) {
   if (!valid(schemaName) || !node.children.length) return null;
   const t = (name) => deepText(node, name);
   const type = norm(t("EntityRelationshipType"));
+  const common = compact({
+    introducedVersion: childText(node, 'IntroducedVersion'), isCustomizable: flag(childText(node, 'IsCustomizable')),
+    isManaged: flag(childText(node, 'IsManaged')), isCustomRelationship: flag(childText(node, 'IsCustomRelationship')),
+    isValidForAdvancedFind: flag(childText(node, 'IsValidForAdvancedFind')), relationshipBehavior: num(childText(node, 'RelationshipBehavior')),
+    securityTypes: childText(node, 'SecurityTypes'),
+  });
+  const menu = role => {
+    const labels = Object.fromEntries((child(role, 'CustomLabels')?.children ?? []).filter(label => label.name === 'CustomLabel' && label.attrs.description !== undefined)
+      .map(label => [label.attrs.languagecode, label.attrs.description]));
+    const facts = compact({ behavior: childText(role, 'NavPaneDisplayOption'), group: childText(role, 'NavPaneArea'), order: num(childText(role, 'NavPaneOrder')),
+      ...(Object.keys(labels).length ? { labels } : {}), isCustomizable: flag(childText(role, 'IsCustomizable')) });
+    if (!Object.keys(facts).length) return undefined;
+    // Exported menu configuration follows the relationship's explicit
+    // customizability unless the role declares a more specific value.
+    if (facts.isCustomizable === undefined && common.isCustomizable !== undefined) facts.isCustomizable = common.isCustomizable;
+    return facts;
+  };
   const roles = (child(node, "EntityRelationshipRoles")?.children ?? [])
     .filter((item) => item.name === "EntityRelationshipRole")
     .map((role) =>
@@ -321,6 +348,7 @@ function relationshipFacts(node) {
         navigation: childText(role, "NavigationPropertyName"),
         entity: norm(childText(role, "EntityName")) || undefined,
         attribute: norm(childText(role, "IntersectAttribute")) || undefined,
+        menu: menu(role),
       }),
     );
   if (type === "onetomany") {
@@ -339,6 +367,7 @@ function relationshipFacts(node) {
       rollupView: t("CascadeRollupView") || undefined,
     });
     const facts = compact({
+      ...common,
       schemaName,
       type: "one-to-many",
       referencingEntity: norm(t("ReferencingEntityName") || t("ReferencingEntity")),
@@ -350,6 +379,7 @@ function relationshipFacts(node) {
       referencedNavigation: roles.find((r) => r.roleType === "0")?.navigation,
       isHierarchical: bit(t("IsHierarchical")),
       cascade: Object.keys(cascade).length ? cascade : undefined,
+      associatedMenu: roles.find(role => role.roleType === '1')?.menu ?? roles.find(role => role.roleType === '0')?.menu,
     });
     return valid(facts.referencingEntity) && valid(facts.referencedEntity) && valid(facts.referencingAttribute)
       ? facts
@@ -360,6 +390,7 @@ function relationshipFacts(node) {
     const first = byOrdinal(1, 0),
       second = byOrdinal(2, 1);
     const facts = compact({
+      ...common,
       schemaName,
       type: "many-to-many",
       intersectEntity: norm(t("IntersectEntityName")),
@@ -369,6 +400,8 @@ function relationshipFacts(node) {
       attribute2: norm(t("Entity2IntersectAttribute") || t("SecondEntityIntersectAttribute") || second?.attribute) || undefined,
       navigation1: first?.navigation,
       navigation2: second?.navigation,
+      menu1: first?.menu,
+      menu2: second?.menu,
     });
     return valid(facts.intersectEntity) && valid(facts.entity1) && valid(facts.entity2) ? facts : null;
   }
@@ -443,6 +476,9 @@ export function parseSchemaDocument(text, info = {}) {
   }
   if (/<!DOCTYPE|<!ENTITY/i.test(text)) throw new Error("XML external declarations are not supported");
   const root = parseSolutionXml(text, { recover: true });
+  Object.assign(facts, parseAppDefinitions(root));
+  facts.appComponents = embeddedAppComponents(root, { entity: info.entityDir });
+  facts.recordComponents = solutionDocumentComponents(root, { ...info, name: info.name ?? info.path ?? '', entityDir: info.entityDir });
   if (/<(?:PluginAssembly|PluginType|SdkMessageProcessingStep|SdkMessage)[\s>]/i.test(text)) facts.plugins = parsePluginDocument(text);
   if (root.recovered) facts.recovered = root.recovered;
   if (info.kind === "solution" || root.name === "ImportExportXml" && child(root, "SolutionManifest"))
@@ -501,7 +537,7 @@ export function readSolutionZip(buffer) {
     if (name.startsWith("/") || name.split("/").includes("..") || /^[a-z]:/i.test(name))
       throw new Error("Solution ZIP contains a traversal path.");
     const classified = classifySolutionPath(name);
-    if (!classified || !SCHEMA_KINDS.has(classified.kind)) continue;
+    if (!classified || !SCHEMA_KINDS.has(classified.kind) && !['form', 'view'].includes(classified.kind)) continue;
     if (flags & 1) throw new Error("Encrypted solution XML entries are not supported.");
     if (uncompressed > XML_LIMIT || size > XML_LIMIT || localOffset + 30 > buffer.length || buffer.readUInt32LE(localOffset) !== 0x04034b50)
       throw new Error("Invalid or oversized solution XML entry.");
@@ -800,6 +836,8 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           table.primaryNameFile = doc.file;
         }
         if (entity.ownership) table.ownership = entity.ownership;
+        for (const name of ['tableType', 'dataSourceId', 'dataProviderId', 'changeTrackingEnabled', 'isOptimisticConcurrencyEnabled'])
+          if (entity[name] !== undefined) table[name] = entity[name];
         if (entity.isActivity !== undefined) table.isActivity = entity.isActivity;
         if (entity.documentManagement !== undefined) {
           table.documentManagement = entity.documentManagement;
@@ -810,7 +848,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
           table.relatedNotesFile = doc.file;
         }
         if (entity.isIntersect) table.isIntersect = true;
-        if (entity.isVirtual) table.isVirtual = true;
+        if (entity.isVirtual !== undefined) table.isVirtual = entity.isVirtual;
         Object.assign(table.labels, entity.labels);
         Object.assign(table.collectionLabels, entity.collectionLabels);
         if (entity.fullDefinition && !table.completeFile) table.completeFile = doc.file;

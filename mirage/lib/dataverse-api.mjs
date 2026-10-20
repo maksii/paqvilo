@@ -5,6 +5,7 @@ import http from "node:http";
 import https from "node:https";
 import { randomUUID } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
+import { createModelDrivenRecordService } from './dataverse-model-driven.mjs';
 import { gzipSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
 import { createAuthority, hashSecret, verifySecret } from "./dataverse-auth.mjs";
@@ -52,6 +53,7 @@ import { stringifyExactJson } from "./exact-numeric.mjs";
 const ZERO_GUID = "00000000-0000-0000-0000-000000000000";
 const GLOBAL_DISCO = "https://globaldisco.crm.dynamics.com";
 const DATAVERSE_NAMESPACE = uuidV5("6ba7b811-9dad-11d1-80b4-00c04fd430c8", "paqvilo-dataverse");
+export const dataverseOrganizationId = settings => (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
 const SYSTEMUSER_TYPE = typeCodeOf("systemuser");
 const TENANT = "(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|common|organizations|consumers)";
 const STS_PATH = new RegExp(
@@ -1182,7 +1184,7 @@ export async function startDataverseApi({
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));
   const tenantId = (settings.tenantId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:tenant`)).toLowerCase();
-  const organizationId = (settings.organizationId ?? uuidV5(DATAVERSE_NAMESPACE, `${settings.uniqueName}:organization`)).toLowerCase();
+  const organizationId = dataverseOrganizationId(settings);
   const environmentId = `Default-${tenantId}`;
   const applications = settings.applications ?? [];
 
@@ -1395,6 +1397,13 @@ export async function startDataverseApi({
     },
     requests: () => requests.map((entry) => ({ ...entry })),
     issueManagedIdentityToken: authority.issueManagedIdentityToken,
+    // Called by the local administration shell while it owns the host's change
+    // queue. Reuse the record pipeline without entering that queue a second time.
+    writeLocalRecord: createModelDrivenRecordService({
+      store, records: recordHandlers, origin: () => origin,
+      principal: () => principals.byId(uuidV5(organizationId, 'systemuser:SYSTEM')),
+      run: fn => inBatch.run(true, () => runAtomic(api, fn)),
+    }),
     close: () => {
       recordHandlers.close?.();
       changes.close();

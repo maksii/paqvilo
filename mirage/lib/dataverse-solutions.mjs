@@ -13,16 +13,21 @@
 // A managed import records the managed layer of each table and column it brings (managedLayers, dataverse-solution-messages.mjs).
 // Each component the import introduces records its solution (componentOrigin), so uninstall and upgrade remove only what a removed
 // managed solution introduced. HoldingSolution imports stage an upgrade. Not modelled: ExportComponentsParams and the Export*Settings
-// flags (ignored), workflows (PublishWorkflows is accepted and ignored), alternate keys, cascade configuration of imported
-// relationships, and the ImportJobKey lookup beyond the importjob id. Error messages and statuses not confirmed on Learn are unverified.
+// flags (ignored), workflow activation (PublishWorkflows is accepted and ignored), and the ImportJobKey lookup beyond the
+// importjob id. App/form/view/workflow definitions and opaque asset bytes
+// persist in bounded, per-solution transport layers; metadata rows share the record store and export retains current edits.
+// Error messages and statuses not confirmed on Learn are unverified.
 import { randomUUID } from "node:crypto";
 import { deflateRawSync } from "node:zlib";
 import { DataError } from "./data-error.mjs";
 import { contextUrl } from "./dataverse-odata.mjs";
 import { readSolutionZip, parseSchemaDocument } from "./solution-schema.mjs";
 import { parseSolutionXml, child, childText, labelsOf, pickLabel } from "./solution-xml.mjs";
-import { createTable, createColumn } from "./dataverse-metadata-tables.mjs";
-import { installSolutionMessages, entriesOfSolution, holdingArchive, assertStageable, metadataIdOf } from "./dataverse-solution-messages.mjs";
+import { createTable, createColumn, createKey } from "./dataverse-metadata-tables.mjs";
+import { readSolutionAssetEntries, appendSolutionAssetLayer, latestSolutionAssetEntries, solutionAssetLayers } from "./dataverse-solution-assets.mjs";
+import { solutionDocumentComponents, applySolutionPayloads, mergeSolutionCustomizationEntries } from "./dataverse-solution-components.mjs";
+import { standardTableDef } from './dataverse-standard.mjs';
+import { installSolutionMessages, entriesOfSolution, holdingArchive, assertStageable, metadataIdOf, componentsOf, addMemberRows } from "./dataverse-solution-messages.mjs";
 import { registerInternalMessage } from "./dataverse-addon-common.mjs";
 import {
   createOneToMany, createManyToMany, createGlobalSet, requireMetadataPrivilege, addSolutionComponents, assertUnpatched, componentObjectId,
@@ -192,7 +197,13 @@ function entityXml(mapping, logical, names) {
     labelRows("LocalizedCollectionNames", labels.DisplayCollectionName, "LocalizedName"),
     labelRows("Descriptions", {}, "Description"),
     `<attributes>${attributes.join("")}</attributes>`,
+    `<EntityKeys>${(mapping.alternateKeys ?? []).filter(key => !key.builtIn).map(key => `<EntityKey>${el("Name", key.schemaName ?? key.name)}${el("LogicalName", key.name)}${labelRows("displaynames", key.labels, "displayname")}<EntityKeyAttributes>${key.attributes.map(name => el("AttributeName", name)).join("")}</EntityKeyAttributes></EntityKey>`).join("")}</EntityKeys>`,
     el("EntitySetName", mapping.entitySet),
+    el("TableType", mapping.tableType ?? dm.TableType),
+    el("DataSourceId", dm.DataSourceId),
+    el("DataProviderId", dm.DataProviderId),
+    typeof dm.ChangeTrackingEnabled === 'boolean' ? el('ChangeTrackingEnabled', dm.ChangeTrackingEnabled ? 1 : 0) : '',
+    typeof dm.IsOptimisticConcurrencyEnabled === 'boolean' ? el('IsOptimisticConcurrencyEnabled', dm.IsOptimisticConcurrencyEnabled ? 1 : 0) : '',
     el("OwnershipTypeMask", mapping.ownership ?? "OrganizationOwned"),
     el("IsActivity", dm.IsActivity === true ? 1 : 0),
     el("HasRelatedNotes", dm.HasNotes === true ? 1 : 0),
@@ -222,6 +233,7 @@ function relationshipXml(state, schemaName, sides) {
     ];
     return `<EntityRelationship Name="${esc(schemaName)}">${[
       el("EntityRelationshipType", "ManyToMany"),
+      relationshipFactsXml(rel),
       el("IntersectEntityName", rel.intersect.entity),
       el("Entity1LogicalName", first.entity),
       el("Entity2LogicalName", second.entity),
@@ -229,6 +241,7 @@ function relationshipXml(state, schemaName, sides) {
       el("Entity2IntersectAttribute", second.attribute),
       `<EntityRelationshipRoles>${[first, second].map((role, index) => `<EntityRelationshipRole>${[
         el("AssociationRoleOrdinal", index + 1), el("EntityName", role.entity), el("NavigationPropertyName", role.navigation), el("IntersectAttribute", role.attribute),
+        menuXml(index === 0 ? rel.menu1 : rel.menu2),
       ].join("")}</EntityRelationshipRole>`).join("")}</EntityRelationshipRoles>`,
     ].join("")}</EntityRelationship>`;
   }
@@ -239,24 +252,40 @@ function relationshipXml(state, schemaName, sides) {
   // reader and createOneToMany take the referenced column from it.
   return `<EntityRelationship Name="${esc(schemaName)}">${[
     el("EntityRelationshipType", "OneToMany"),
-    el("IsCustomizable", 1),
+    relationshipFactsXml(rel),
     el("IsHierarchical", rel.hierarchical ? 1 : 0),
     el("ReferencingEntityName", logical),
     el("ReferencedEntityName", rel.entity),
     el("ReferencingAttributeName", lookupSchema),
     el("ReferencedAttributeName", rel.to),
-    `<EntityRelationshipRoles><EntityRelationshipRole>${el("NavigationPropertyName", nav)}${el("RelationshipRoleType", 1)}</EntityRelationshipRole><EntityRelationshipRole>${el("NavigationPropertyName", rel.partner)}${el("RelationshipRoleType", 0)}</EntityRelationshipRole></EntityRelationshipRoles>`,
+    ...Object.entries(rel.cascade ?? {}).map(([key, value]) => el(`Cascade${key[0].toUpperCase()}${key.slice(1)}`, value)),
+    `<EntityRelationshipRoles><EntityRelationshipRole>${el("NavigationPropertyName", nav)}${el("RelationshipRoleType", 1)}${menuXml(rel.associatedMenu)}</EntityRelationshipRole><EntityRelationshipRole>${el("NavigationPropertyName", rel.partner)}${el("RelationshipRoleType", 0)}</EntityRelationshipRole></EntityRelationshipRoles>`,
   ].join("")}</EntityRelationship>`;
+}
+
+function relationshipFactsXml(rel) {
+  return [el('IntroducedVersion', rel.introducedVersion),
+    ...Object.entries({ isCustomizable: 'IsCustomizable', isManaged: 'IsManaged', isCustomRelationship: 'IsCustomRelationship', isValidForAdvancedFind: 'IsValidForAdvancedFind' })
+      .map(([key, name]) => typeof rel[key] === 'boolean' ? el(name, rel[key] ? 1 : 0) : ''),
+    el('RelationshipBehavior', rel.relationshipBehavior), el('SecurityTypes', rel.securityTypes)].join('');
+}
+
+function menuXml(menu) {
+  if (!menu) return '';
+  return [el('NavPaneDisplayOption', menu.behavior), el('NavPaneArea', menu.group), el('NavPaneOrder', menu.order),
+    typeof menu.isCustomizable === 'boolean' ? el('IsCustomizable', menu.isCustomizable ? 1 : 0) : '',
+    menu.labels ? labelRows('CustomLabels', menu.labels, 'CustomLabel') : ''].join('');
 }
 
 function optionSetXml(set) {
   return `<optionset Name="${esc(set.name)}">${[
     el("OptionSetType", "picklist"),
     el("IsGlobal", 1),
-    el("IsCustomizable", 1),
+    el("IsCustomizable", set.isCustomizable === false ? 0 : 1),
+    el('IntroducedVersion', set.introducedVersion),
     labelRows("displaynames", set.displayLabels, "displayname"),
     labelRows("Descriptions", set.descriptionLabels, "Description"),
-    `<options>${(set.options ?? []).map((o) => `<option value="${Number(o.value)}">${labelRows("labels", o.labels, "label")}</option>`).join("")}</options>`,
+    `<options>${(set.options ?? []).map((o) => `<option value="${Number(o.value)}"${o.externalValue === undefined ? '' : ` ExternalValue="${esc(o.externalValue)}"`}${o.isHidden === undefined ? '' : ` IsHidden="${o.isHidden ? 1 : 0}"`}>${labelRows("labels", o.labels, "label")}</option>`).join("")}</options>`,
   ].join("")}</optionset>`;
 }
 
@@ -295,6 +324,10 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
       roots.push(`<RootComponent type="9" schemaName="${esc(set.name)}" behavior="0" />`);
     }
   }
+  for (const member of state.tables.solutioncomponent ?? []) {
+    if (!sameGuid(member.solutionid, row.solutionid) || ![26, 29, 60, 61, 62, 80].includes(member.componenttype)) continue;
+    roots.push(`<RootComponent type="${member.componenttype}" id="{${esc(member.objectid)}}" behavior="0" />`);
+  }
   // The root attributes, the SolutionManifest members (Publisher members too) and MissingDependencies are as a Dataverse export
   // writes them. MissingDependencies stays empty: no dependency is computed at export (RetrieveMissingDependencies does that).
   const manifest = `${XML_HEAD}<ImportExportXml version="9.2.0.0" SolutionPackageVersion="9.2" languagecode="${DEFAULT_LCID}" generatedBy="Mirage" xmlns:xsi="${XSI}" OrganizationVersion="${ORG_VERSION}" OrganizationSchemaType="Standard" CRMServerServiceabilityVersion="${ORG_VERSION}"><SolutionManifest>${[
@@ -327,10 +360,14 @@ function buildSolutionArchive(state, row, { managed = false } = {}) {
     `<Languages><Language>${DEFAULT_LCID}</Language></Languages>`,
   ].join("")}</ImportExportXml>`;
   const types = `${XML_HEAD}<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="xml" ContentType="application/xml" /></Types>`;
+  latestSolutionAssetEntries(state, row.solutionid); // verify every persisted entry before exporting
+  const payload = solutionAssetLayers(state, { solutionIds: [row.solutionid] }).flatMap(layer => layer.entries.map(entry => ({ name: entry.name, data: Buffer.from(entry.content, 'base64') })))
+    .filter(entry => !/^(?:solution\.xml|\[Content_Types\]\.xml|Other\/Solution\.xml)$/i.test(entry.name));
+  const files = mergeSolutionCustomizationEntries(payload, customizations, state);
   return zipOf([
     { name: "[Content_Types].xml", data: Buffer.from(types, "utf8") },
     { name: "solution.xml", data: Buffer.from(manifest, "utf8") },
-    { name: "customizations.xml", data: Buffer.from(customizations, "utf8") },
+    ...files,
   ]);
 }
 
@@ -342,13 +379,21 @@ const blockOf = (labels) => ({ LocalizedLabels: Object.entries(labels ?? {}).map
 
 function readArchive(base64) {
   if (typeof base64 !== "string" || !base64.trim()) throw invalid("CustomizationFile is required and must be a base64 solution zip.");
-  let docs;
+  let docs, assetEntries;
   try {
-    docs = readSolutionZip(Buffer.from(base64, "base64"));
+    const bytes = Buffer.from(base64, "base64");
+    assetEntries = readSolutionAssetEntries(bytes);
+    docs = readSolutionZip(bytes);
   } catch (error) {
     throw new DataError("The solution file is invalid. The compressed file must contain the following files at its root: solution.xml, customizations.xml, and [Content_Types].xml.", 400, "0x80048060"); // Learn: ImportCustomizationsBadZipFileError
   }
-  const archive = { manifest: null, entities: [], relationships: [], optionSets: [] };
+  const archive = { manifest: null, entities: [], relationships: [], optionSets: [], assetEntries, payloadComponents: [] };
+  for (const entry of assetEntries) {
+    // Binary web resources and plug-in assemblies remain opaque. Only XML
+    // component declarations are read; declarations/entities are rejected.
+    if (/(?:^|\/)(?:customizations\.xml|Entities\/.*\.xml|AppModules\/.*\.xml|AppModuleSiteMaps\/.*\.xml|Workflows\/.*\.xml|WebResources\/[^/]+\.xml)$/i.test(entry.name))
+      archive.payloadComponents.push(...solutionDocumentComponents(entry.data.toString('utf8'), entry));
+  }
   for (const doc of docs) {
     const facts = parseSchemaDocument(doc.xml, doc);
     if (facts.solution) archive.manifest = { solution: facts.solution, xml: doc.xml };
@@ -417,7 +462,7 @@ function entityBody(entity, attributes) {
   const others = attributes.filter((a) => a.name !== primaryFact.name).map((a) => attributeBody(a, false));
   return {
     "@odata.type": "#Microsoft.Dynamics.CRM.EntityMetadata",
-    SchemaName: entity.logicalName,
+    SchemaName: entity.schemaName ?? entity.logicalName,
     DisplayName: blockOf(NS_NAME(entity.labels, entity.logicalName)),
     DisplayCollectionName: blockOf(NS_NAME(entity.collectionLabels ?? entity.labels, entity.logicalName)),
     Description: blockOf({}),
@@ -451,6 +496,7 @@ function relationshipBodies(rel) {
         ReferencedEntityNavigationPropertyName: rel.referencedNavigation,
         ReferencingEntityNavigationPropertyName: rel.referencingNavigation,
         IsHierarchical: rel.isHierarchical === true,
+        ...(rel.cascade ? { CascadeConfiguration: rel.cascade } : {}),
         Lookup: { SchemaName: rel.referencingAttributeSchemaName ?? rel.referencingAttribute, LogicalName: rel.referencingAttribute },
       },
       entity: rel.referencingEntity,
@@ -496,6 +542,15 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
     if (existing) log.push({ kind: "optionset", name: set.name, action: "kept" });
     else {
       createGlobalSet(api, globalSetBody(set));
+      // The metadata writer validates the supported writable contract; exported source facts
+      // also survive transport without treating read-only metadata as API create parameters.
+      const stored = state.dataverse.globalOptionSets[set.name];
+      for (const key of ['introducedVersion', 'isCustomizable', 'externalTypeName', 'parentOptionSetName'])
+        if (set[key] !== undefined) stored[key] = structuredClone(set[key]);
+      for (const option of stored.options) {
+        const source = set.options.find(item => item.value === option.value);
+        for (const key of ['externalValue', 'isHidden']) if (source?.[key] !== undefined) option[key] = source[key];
+      }
       log.push({ kind: "optionset", name: set.name, action: "created" });
     }
     members.push({ kind: "optionset", logical: set.name, name: null, created: !existing });
@@ -528,6 +583,33 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
       }
     }
     members.push({ kind: "entity", logical, name: null, created: !existed });
+    const mapping = state.mappings[logical];
+    if (!existed || overwrite) {
+      if (entity.tableType !== undefined) mapping.tableType = entity.tableType;
+      if (entity.isVirtual !== undefined) mapping.isVirtual = entity.isVirtual;
+      for (const [source, property] of Object.entries({ dataSourceId: 'DataSourceId', dataProviderId: 'DataProviderId', changeTrackingEnabled: 'ChangeTrackingEnabled', isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled' }))
+        if (entity[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = entity[source];
+    }
+    if (!existed) {
+      if (entity.entitySetName) {
+        if (Object.entries(state.mappings).some(([name, other]) => name !== logical && lower(other.entitySet) === lower(entity.entitySetName)))
+          throw invalid(`The entity set ${entity.entitySetName} already exists.`);
+        mapping.entitySet = entity.entitySetName;
+      }
+      if (entity.primaryIdAttribute) mapping.idColumn = entity.primaryIdAttribute;
+    }
+    for (const source of attributes) {
+      if (outcome.get(source.name) === 'kept') continue;
+      const field = mapping.fields[source.name];
+      field.columnMetadata = { ...field.columnMetadata, ...structuredClone(source) };
+      const bucket = (((state.dataverse ??= {}).customColumns ??= {})[logical] ??= {});
+      bucket[source.name] = structuredClone(field);
+    }
+    for (const sourceKey of entity.keys ?? []) {
+      const exists = (mapping.alternateKeys ?? []).some(key => lower(key.name) === lower(sourceKey.name));
+      if (!exists) createKey(c, key, { SchemaName: sourceKey.schemaName ?? sourceKey.name, KeyAttributes: sourceKey.attributes, DisplayName: blockOf(sourceKey.labels) });
+      members.push({ kind: "key", logical, name: sourceKey.name, created: !exists });
+    }
     for (const a of attributes) members.push({ kind: "attribute", logical, name: a.name, created: outcome.get(a.name) === "created" });
     if (archive.solution.managed === true) {
       const primary = (a) => a.name === entity.primaryNameAttribute || a.isPrimaryName === true; // the primary name column is never removed
@@ -545,6 +627,9 @@ function apply(api, archive, { overwrite, origin, version, caller }, log) {
     } else {
       if (kind === "one-to-many") createOneToMany(api, body);
       else createManyToMany(api, body);
+      for (const side of relationshipSides(state, rel.schemaName))
+        for (const key of ['introducedVersion', 'isCustomizable', 'isManaged', 'isCustomRelationship', 'isValidForAdvancedFind', 'relationshipBehavior', 'securityTypes', 'associatedMenu', 'menu1', 'menu2', 'cascade'])
+          if (rel[key] !== undefined) side.rel[key] = structuredClone(rel[key]);
       log.push({ kind: "relationship", name: rel.schemaName, action: "created" });
     }
     members.push({ kind: "relationship", logical: entity, name: rel.schemaName, created: !existed });
@@ -590,6 +675,8 @@ function recordSolution(api, archive, members) {
     createdon: row.createdon ?? stamp(api),
   });
   addSolutionComponents(api, info.uniqueName, members);
+  const keyIds = new Set(members.filter(member => member.kind === 'key').map(componentObjectId));
+  addMemberRows(store, row.solutionid, componentsOf(store.state).filter(component => keyIds.has(component.id)));
   // A created component records the solution that introduced it (the base layer an uninstall or upgrade removes). The managed
   // layers this import recorded take the solution too.
   const dv = (store.state.dataverse ??= {});
@@ -633,7 +720,9 @@ async function importArchive(api, archive, { overwrite, jobId, origin, version, 
   try {
     await api.change(() => api.store.transact(() => {
       const members = apply(api, archive, { overwrite, origin, version, caller }, log);
-      recordSolution(api, archive, members);
+      const solution = recordSolution(api, archive, members);
+      appendSolutionAssetLayer(api.store.state, solution.solutionid, archive.assetEntries ?? [], archive.solution);
+      applySolutionPayloads(api.store.state, solution.solutionid, archive.payloadComponents ?? [], { overwrite, definitionOf: standardTableDef, entityId: logical => metadataIdOf(api, 'entity', logical) });
       writeJob(api, { jobId, archive, log, progress: 100 });
     }, { isolated: true }));
   } catch (error) {

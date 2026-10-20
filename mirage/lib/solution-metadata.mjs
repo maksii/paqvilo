@@ -206,6 +206,12 @@ export async function importSolutionMetadata(
   await mapLimit(candidates.filter((f) => f.kind !== "entity"), IO_CONCURRENCY, parse);
   const forms = [],
     views = [];
+  for (const layer of scan.layers) for (const document of layer.documents) {
+    const components = document.facts.appComponents;
+    for (const form of components?.forms ?? []) if (!names || names.has(form.entity)) forms.push({ ...form, file: document.file });
+    for (const view of components?.views ?? []) if (!names || names.has(view.entity)) views.push({ ...view, file: document.file });
+    if (components?.forms?.length || components?.views?.length || document.facts.apps?.length || document.facts.appMaps?.length) fingerprint.update(document.hash ?? '');
+  }
   const entityDocs = new Map(
     scan.layers.flatMap((layer) => layer.documents.map((doc) => [doc.file, doc.hash])),
   );
@@ -221,10 +227,18 @@ export async function importSolutionMetadata(
     if (!table.layers?.length && table.origin !== "dataverse-reference") continue;
     tables[name] = {
       entity: name,
+      label: table.labels?.[String(lcid)] ?? Object.values(table.labels ?? {})[0],
+      collectionLabel: table.collectionLabels?.[String(lcid)] ?? Object.values(table.collectionLabels ?? {})[0],
       fields: tableFields(schema, name, { lcid, diagnostics }),
       sources: [...table.sources],
       entitySet: table.entitySet,
       entitySetSource: table.entitySetSource,
+      ownership: table.ownership,
+      tableType: table.tableType,
+      dataSourceId: table.dataSourceId,
+      dataProviderId: table.dataProviderId,
+      changeTrackingEnabled: table.changeTrackingEnabled,
+      isOptimisticConcurrencyEnabled: table.isOptimisticConcurrencyEnabled,
       primaryIdAttribute: table.primaryIdAttribute,
       primaryNameAttribute: table.primaryNameAttribute,
       schemaComplete: table.schemaComplete,
@@ -266,6 +280,8 @@ export async function importSolutionMetadata(
     entities: tables,
     forms: dedupe(forms, "form"),
     views: dedupe(views, "view"),
+    sourceComponents: [...new Map(scan.layers.flatMap(layer => layer.documents.flatMap(document => document.facts.recordComponents ?? []))
+      .map(component => [`${component.kind}/${component.id}`, component])).values()],
     plugins,
     diagnostics,
     filesRead: candidates.length,

@@ -47,6 +47,7 @@ export function createModelDrivenStorage({ store, tables, overlayOf }) {
         entitySet: table.entitySet ?? previousMapping.entitySet ?? `${entity}s`,
         idColumn: table.idColumn, nameColumn: table.nameColumn,
         ownership: table.ownership ?? previousMapping.ownership ?? 'OrganizationOwned',
+        ...(table.tableType ? { tableType: table.tableType } : {}),
         fields: { ...previousMapping.fields, ...copy(table.fields) }, relationships,
         columnDefaults: { ...previousMapping.columnDefaults, ...Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, copy(field.defaultValue)])) },
       };

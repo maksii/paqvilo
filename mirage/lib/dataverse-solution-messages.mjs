@@ -22,6 +22,8 @@ import {
   DEFAULT_SOLUTION, assertUnpatched, boundFields, dropGlobalSet, dropRelationship, lastMetadataSeq,
 } from "./dataverse-metadata-relationships.mjs";
 import { createColumn, dropColumn, dropTable, updateTable } from "./dataverse-metadata-tables.mjs";
+import { removeSolutionAssetLayers, reassignSolutionAssetLayers } from './dataverse-solution-assets.mjs';
+import { payloadComponentsOf, PAYLOAD_COMPONENTS, removeSolutionPayloads, reassignSolutionPayloads } from './dataverse-solution-components.mjs';
 
 const lower = (value) => String(value ?? "").toLowerCase();
 const DEPENDENCY_TYPE_INTERNAL = 1; // dependency table: "Solution Internal"
@@ -38,12 +40,13 @@ export function componentsOf(state) {
     const key = `${entry.kind}|${lower(entry.logical)}|${lower(entry.name ?? "")}`;
     if (seen.has(key)) return;
     seen.add(key);
-    out.push({ ...entry, key, id: componentObjectId(entry), type: SOLUTION_COMPONENT_TYPE[entry.kind] });
+    out.push({ ...entry, key, id: entry.id ?? componentObjectId(entry), type: entry.type ?? SOLUTION_COMPONENT_TYPE[entry.kind] ?? PAYLOAD_COMPONENTS[entry.kind] });
   };
   for (const [logical, mapping] of Object.entries(state.mappings ?? {})) {
     if (SOLUTION_TABLES.has(logical)) continue; // the solution service tables are not solution components
     push({ kind: "entity", logical, name: null });
     for (const name of Object.keys(mapping.fields ?? {})) if (name !== mapping.idColumn) push({ kind: "attribute", logical, name });
+    for (const key of mapping.alternateKeys ?? []) if (!key.builtIn) push({ kind: 'key', logical, name: key.name, attributes: key.attributes });
     for (const [nav, rel] of Object.entries(mapping.relationships ?? {})) {
       if (rel.many !== false && !rel.intersect) continue; // a 1:N relationship is written once, from its referencing side
       const schemaName = rel.schemaName ?? (rel.intersect ? rel.intersect.entity : `${logical}_${nav}`);
@@ -51,6 +54,7 @@ export function componentsOf(state) {
     }
   }
   for (const name of Object.keys(state.dataverse?.globalOptionSets ?? {})) push({ kind: "optionset", logical: name, name: null });
+  for (const component of payloadComponentsOf(state)) push(component);
   return out;
 }
 
@@ -70,6 +74,11 @@ export function dependenciesOf(state, components = componentsOf(state)) {
       link(c, at("entity", c.logical));
       link(c, at("entity", c.rel.entity));
       if (c.rel.from && !c.rel.intersect) link(c, at("attribute", c.logical, c.rel.from));
+    } else if (c.kind === 'key') {
+      link(c, at('entity', c.logical));
+      for (const name of c.attributes ?? []) link(c, at('attribute', c.logical, name));
+    } else if (c.entity) {
+      link(c, at('entity', c.entity));
     }
   }
   return edges;
@@ -186,7 +195,7 @@ export function entriesOfSolution(state, solutionid) {
 }
 
 // solutioncomponent rows for a solution id (a patch or a holding solution as well as a base solution).
-function addMemberRows(store, solutionid, components) {
+export function addMemberRows(store, solutionid, components) {
   const rows = tableOf(store, "solutioncomponent");
   for (const component of components) {
     const objectid = lower(component.id);
@@ -329,6 +338,10 @@ function applyRemoval(api, plan) {
   removeWhere(tableOf(store, "solution"), (s) => plan.removing.has(lower(s.solutionid)));
   const removed = [...plan.removedIds].map((id) => plan.byId.get(id)).filter(Boolean);
   const dropping = new Set(removed.filter((c) => c.kind === "entity").map((c) => lower(c.logical)));
+  removeSolutionPayloads(state, plan.removing);
+  removeSolutionAssetLayers(state, [...plan.removing]);
+  for (const c of removed) if (c.kind === 'key' && state.mappings[c.logical])
+    state.mappings[c.logical].alternateKeys = (state.mappings[c.logical].alternateKeys ?? []).filter(key => lower(key.name) !== lower(c.name));
   for (const c of removed) if (c.kind === "relationship") dropRelationship(api, c.name);
   for (const c of removed) if (c.kind === "attribute" && !dropping.has(lower(c.logical)) && state.mappings[c.logical]?.fields?.[c.name]) dropColumn(api, c.logical, c.name);
   for (const c of removed) if (c.kind === "entity" && state.mappings[c.logical]) dropTable(api, c.logical);
@@ -343,6 +356,11 @@ function promote(api, uniquename) {
   const { base, holding } = promotable(store, uniquename);
   const removing = new Set([base, ...patchesOf(store, base.solutionid)].map((s) => lower(s.solutionid)));
   applyRemoval(api, planRemoval(store, removing, heldBy(store, holding.solutionid)));
+  // Retained components now belong to the promoted managed layer. Keeping the
+  // deleted base owner would strand their definitions on a later uninstall.
+  const origin = store.state.dataverse?.componentOrigin ?? {};
+  const held = heldBy(store, holding.solutionid);
+  for (const id of held) if (removing.has(lower(origin[id]))) origin[id] = holding.solutionid;
   holding.uniquename = base.uniquename;
   holding.modifiedon = stampOf(api);
   return holding.solutionid;
@@ -430,6 +448,8 @@ function lifecycleOperations(api, tools) {
           held.add(key);
         }
         removeWhere(members, (r) => patchIds.has(lower(r.solutionid)));
+        reassignSolutionAssetLayers(store.state, [...patchIds], parent.solutionid);
+        reassignSolutionPayloads(store.state, patchIds, parent.solutionid);
         removeWhere(tableOf(store, "solution"), (s) => patchIds.has(lower(s.solutionid)));
         // The transaction works on its own copy: update the row as it is inside it, not the one read before it.
         const row = rowsOf(store, "solution").find((s) => s.solutionid === parent.solutionid);

@@ -44,6 +44,11 @@ function mappingFor(schema, name) {
   };
   // The table's SchemaName (privilege nouns, metadata SchemaName) travels with the mapping, so the store resolves it without the schema.
   if (table.schemaName) mapping.dataverseMetadata = { schemaName: table.schemaName };
+  if (table.ownership !== undefined) mapping.ownership = table.ownership;
+  if (table.tableType !== undefined) mapping.tableType = table.tableType;
+  if (table.isVirtual !== undefined) mapping.isVirtual = table.isVirtual;
+  for (const [source, property] of Object.entries({ dataSourceId: 'DataSourceId', dataProviderId: 'DataProviderId', changeTrackingEnabled: 'ChangeTrackingEnabled', isOptimisticConcurrencyEnabled: 'IsOptimisticConcurrencyEnabled' }))
+    if (table[source] !== undefined) (mapping.dataverseMetadata ??= {})[property] = table[source];
   mapping.inferred =mapping.entitySetInferred || mapping.idColumnInferred;
   if (table.primaryNameAttribute) {
     mapping.nameColumn = table.primaryNameAttribute;

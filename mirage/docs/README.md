@@ -12,6 +12,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Source import, Solutions and bootstrap | [Bootstrap and sources](bootstrap-and-sources.md) |
 | Several portals and state isolation | [Multi-portal projects](multi-portal.md) |
 | Local administration and sign-in | [Simulation administration](sim-administration.md) |
+| Solution-based model-driven apps and Power Pages Management | [Model-driven apps](model-driven-apps.md) |
 | Grouped personas, custom sign-in and isolated scenarios | [Persona catalogues](persona-catalog.md) |
 | Exported environment settings and local profile selection | [Deployment profiles](deployment-profiles.md) |
 | Platform rules, site overrides and configuration presets | [Configuration experiments](configuration-experiments.md) |
@@ -19,6 +20,7 @@ For setup, use [getting started](../../docs/getting-started.md). For daily work,
 | Liquid behavior and conformance | [Liquid](liquid-parity.md), [conformance](liquid-conformance.md) |
 | Queries, Web API and permissions | [Dataverse](dataverse-parity.md) |
 | Dataverse Web API, OAuth tokens and application users | [Dataverse API](dataverse-api.md) |
+| Record and replay explicit Web API request plans | [Dataverse parity suite](dataverse-parity-suite.md) |
 | Native forms, lists and client behavior | [Forms and lists](forms-lists-parity.md) |
 | Standard PCF field and dataset controls | [Code components](code-components.md) |
 | Exported server logic, cloud flows and local mocks | [Operations](operations.md) |

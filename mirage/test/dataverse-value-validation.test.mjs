@@ -134,6 +134,24 @@ test("DateOnly columns take Edm.Date text only: timestamps and impossible dates 
   assert.equal(portalError(t, { contoso_name: "Day", contoso_day: "2020-01-15T23:00:00-08:00" }), null);
 });
 
+test("non-string DateOnly writes report Edm.Date for API create and patch while instant and portal diagnostics retain their types", async () => {
+  const t = await setup();
+  const expected = "Cannot convert the literal '0' to the expected type 'Edm.Date'.";
+  const created = await failure(t.send("POST", `/api/data/${VERSION}/${SET}`, { contoso_name: "Day", contoso_day: 0 }));
+  assert.equal(created.status, 400);
+  assert.equal(created.details.innerCode, "0x80048d19");
+  assert.equal(created.message, expected);
+  assert.equal(t.store.state.tables.contoso_widget.length, 0);
+  const id = await create(t, { contoso_name: "Day", contoso_day: "2020-01-15" });
+  const patched = await failure(t.send("PATCH", rowPath(id), { contoso_day: 0 }));
+  assert.equal(patched.message, expected);
+  assert.equal((await t.send("GET", `${rowPath(id)}?$select=contoso_day`)).body.contoso_day, "2020-01-15");
+  t.store.state.mappings.contoso_widget.fields.contoso_instant = { dataverseType: "datetime", dateTimeBehavior: "UserLocal" };
+  const instant = await failure(t.send("PATCH", rowPath(id), { contoso_instant: 0 }));
+  assert.equal(instant.message, "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'.");
+  assert.equal(portalError(t, { contoso_name: "Day", contoso_day: 0 }).message, "Cannot convert the literal '0' to the expected type 'Edm.DateTimeOffset'.");
+});
+
 test("multiselect takes a comma-separated string of option values", async () => {
   const t = await setup();
   const empty = await failure(t.send("POST", `/api/data/${VERSION}/${SET}`, { contoso_name: "Tags", contoso_tags: "" }));

@@ -32,6 +32,8 @@ test('release allowlist includes Mirage runtime and excludes tests, state, profi
     assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   }
   assert.throws(() => validateReleaseFiles(required.slice(1)), /Required release file/);
+  assert.throws(() => validateReleaseFiles(required.filter(file => file.path !== 'mirage/lib/model-driven/icons.mjs')), /Required release file/);
+  for (const file of ['mirage/lib/model-driven/unreviewed.mjs', 'mirage/lib/model-driven/reference.json', 'mirage/lib/model-driven/screenshot.png']) assert.throws(() => validateReleaseFiles([...required, { path: file }]), /Unexpected release file/);
   for (const file of ['examples/company-operations/.paqvilo/dataverse/connection.json','examples/company-operations/.paqvilo/dataverse/remote-plan.json','lense/dataverse/private-credential.json','examples/company-operations/plugins/bin/QueryObservation.dll','examples/company-operations/plugins/obj/assets.json','examples/company-operations/forms/native-live-export.xml','examples/company-operations/portal-security/actual-tester-overlay.json','examples/company-operations/portal-harness/native-capture.json','examples/company-operations/portal-harness/native-connection.mjs','examples/company-operations/plugins/mirage-native-captures.json']) {
     assert.throws(()=>validateReleaseFiles([...required,{path:file}]),/Unexpected release file/);
   }

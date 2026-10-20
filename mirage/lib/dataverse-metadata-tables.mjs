@@ -436,7 +436,7 @@ export function dropColumn(api, logical, name) {
   logMetadataChange(api, "delete", "attribute", logical, name);
 }
 
-function createKey(c, key, body) {
+export function createKey(c, key, body) {
   const { api } = c;
   const { logical, mapping } = userTable(api, key);
   if (isElastic(mapping)) assertElasticKey();

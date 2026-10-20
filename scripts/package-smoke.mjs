@@ -79,6 +79,11 @@ try {
   const setupStatus = await fetch(session.url + '/_setup/api/status').then(response => response.json());
   if (setupStatus.kind !== 'catalogue' || setupStatus.layers.shared.file !== path.join(project, 'paqvilo.config.yml') || setupStatus.sites[0]?.id !== 'example') throw new Error('Installed setup did not use the consumer catalogue.');
   for (const asset of ['', 'app.mjs', 'style.css']) if (!(await fetch(session.url + '/_setup/' + asset)).ok) throw new Error(`Installed setup asset is missing: ${asset}`);
+  const appShell = await fetch(session.url + '/main.aspx');
+  if (!appShell.ok || !(await appShell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed model-driven shell is missing.');
+  for (const asset of ['app.mjs', 'controls.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
+  const apps = await fetch(session.url + '/_apps/api').then(response => response.json());
+  if (apps.version !== 1 || !apps.apps.some(app => app.id === apps.defaultApp && app.name === 'Power Pages Management')) throw new Error('Installed default management application is unavailable.');
 } finally {
   if (session) cli('mirage', 'stop', '--site', 'example', '--json');
 }

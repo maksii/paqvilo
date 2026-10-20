@@ -77,6 +77,13 @@ import { pageAccess } from "./lib/page-access.mjs";
 import { sourceFingerprint, cachedSourceFingerprint, observedEvidence, implementationEvidence } from "./lib/evidence.mjs";
 import { verificationWitness, verificationTableSelection } from './lib/verification-witness.mjs';
 import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
+import { appCatalogue, solutionApps } from './lib/model-driven/catalogue.mjs';
+import { createModelDrivenData } from './lib/model-driven/data.mjs';
+import { createModelDrivenHandler } from './lib/model-driven/http.mjs';
+import { powerPagesTables, managementOverlay } from './lib/model-driven/power-pages.mjs';
+import { createModelDrivenStorage } from './lib/model-driven-storage.mjs';
+import { createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
+import { createSourceSolutionComponentStorage } from './lib/dataverse-source-components.mjs';
 import { importSolutionData, applySolutionData } from "./lib/solution-data.mjs";
 import { scanSolutionSources, buildSolutionSchema } from "./lib/solution-schema.mjs";
 import { SolutionFileCache, sourceDirectoryDigest } from "./lib/solution-cache.mjs";
@@ -84,7 +91,7 @@ import { resolveUnmatchedRoute, deniedPageRoute, languageRoute, siteMarkerRoute,
 import { authCookieName, createAuthSessions, authRoute, safeReturnUrl, returnUrlParameter, signInContent } from "./lib/auth-session.mjs";
 import { createExternalSignIn } from "./lib/sign-in-flow.mjs";
 import { authenticationSettings } from "./lib/external-login.mjs";
-import { startDataverseApi } from './lib/dataverse-api.mjs';
+import { startDataverseApi, dataverseOrganizationId } from './lib/dataverse-api.mjs';
 import { dataverseSettings, dataverseStatus, GRANT_TYPES } from './lib/dataverse-settings.mjs';
 import { createApplicationUser, assignRoles, uuidV5 } from './lib/dataverse-security.mjs';
 import { hashSecret, newClientSecret, certificateThumbprints } from './lib/dataverse-auth.mjs';
@@ -390,11 +397,11 @@ export async function createSimulator({
   // Portal imports keep duplicate-copy commit lookups beside the state file
   // (cache/portal-sources.json), so a restart does not ask git again for unchanged files.
   const portalCacheFile = stateFile ? path.join(path.dirname(path.resolve(stateFile)), "cache", "portal-sources.json") : null;
-  const importSource = async () => {
+  const importSource = async (recordOverrides = {}) => {
     const cache = await SolutionFileCache.open(portalCacheFile);
     const imported = applyObserved(await importPortal(sourceDir, {
       deploymentProfile: activeProfiles.pagesFile ? activeProfiles.profile : deploymentProfile,
-      deploymentProfileFile: activeProfiles.pagesFile, dataModel, cache,
+      deploymentProfileFile: activeProfiles.pagesFile, dataModel, cache, recordOverrides,
     }), observed);
     await cache.save();
     bootstrapTimings.portalCache = { ...cache.stats, file: portalCacheFile };
@@ -437,9 +444,10 @@ export async function createSimulator({
     solutionOperations = await importSolutionOperationSources(scan.layers, portal.website);
     codeComponents = await importCodeComponents(scan.layers);
     [solutionMetadata, solutionData] = await Promise.all([
-      importSolutionMetadata(solutionRoots, { portal, scan, schema, observed }),
+      importSolutionMetadata(solutionRoots, { portal, entities: Object.keys(schema.tables), scan, schema, observed }),
       reuseImported && importedSources?.solutionData && importedSources.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema }),
     ]);
+    solutionMetadata.modelDrivenApps = solutionApps(scan);
     await cache.save();
     bootstrapTimings.solutionsMs = Math.round(performance.now() - started);
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
@@ -512,9 +520,11 @@ export async function createSimulator({
     };
   };
   // Every replacement keeps solution-derived mappings, column metadata and seeded rows current.
-  const replaceCompiledState = async (state) => {
+  const replaceCompiledState = async (state, { expectedRevision = store.snapshotRevision(state) ?? store.revision } = {}) => {
     const candidate = compilePermissions(applySolutions(state));
-    await store.replaceState(candidate.state);
+    sourceComponentStorage?.materialize(candidate.state);
+    managementStorage?.materialize(candidate.state);
+    await store.replaceState(candidate.state, { expectedRevision });
     appliedPermissionModel = candidate.model;
   };
   if (!['data-only', 'apply'].includes(presetConfiguration)) throw new Error('presetConfiguration must be data-only or apply');
@@ -530,6 +540,8 @@ export async function createSimulator({
       contentPolicySource: !explicitPolicy && Object.keys(policyDefaults).length ? 'project defaults' : 'runtime state' };
     return state;
   };
+  const solutionMetadataOverlay = createSolutionMetadataOverlay({ appsOf: solutionApps });
+  const modelMetadata = () => solutionMetadataOverlay(solutionMetadata, store.state);
   const store = new DataStore({
     file: stateFile,
     persistence,
@@ -548,6 +560,9 @@ export async function createSimulator({
   // Validate new state before init writes it, and loaded state before any enrichment saves.
   if (!stateExisted) validateStartupConfiguration();
   await store.init();
+  if (Object.keys(store.state.simulator?.modelDriven?.records ?? {}).length) {
+    sourcePortal = await importSource(store.state.simulator.modelDriven.records);
+  }
   store.state.simulator.contentPolicySource = policyOrigin(store.state.simulator.contentPolicySource);
   if (stateExisted) validateStartupConfiguration();
   if (personaInstance) Object.assign(store.state.simulator, {mode:'local',pageMode:'local',live:{enabled:false}});
@@ -560,6 +575,14 @@ export async function createSimulator({
   const managedIdentityMode = managedIdentityOption?.mode ?? "appservice";
   if (!["appservice", "imds", "arc"].includes(managedIdentityMode)) throw new Error("dataverse.managedIdentity.mode must be appservice, imds or arc");
   const dataverseConfig = dataverseSettings(dataverseInput ? dataverseRest : (dataverseOption ?? undefined));
+  const managementStorage = dataverseConfig.enabled ? createModelDrivenStorage({
+    store, tables: () => powerPagesTables(portal, modelMetadata()), overlayOf: managementOverlay,
+  }) : null;
+  const sourceComponentStorage = dataverseConfig.enabled ? createSourceSolutionComponentStorage({
+    store, components: () => solutionMetadata.sourceComponents,
+    entityId: (logical, state) => state.mappings[logical] ? uuidV5(dataverseOrganizationId(dataverseConfig), `entity:${logical}`) : null,
+  }) : null;
+  let appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
   let dataverse = null;
   // Managed identity endpoints (lib/dataverse-managed-identity.mjs): created once the listener has its origin.
   let managedIdentity = null;
@@ -743,6 +766,8 @@ export async function createSimulator({
       // The local identity provider lives and ends with its runtime.
       await attempt(() => externalSignIn?.close());
       await attempt(() => dataverse?.close());
+      managementStorage?.close();
+      sourceComponentStorage?.close();
       server.closeAllConnections();
       await new Promise((resolve) => server.close(resolve));
       if (failures.length) throw new AggregateError(failures, 'Runtime shutdown completed with cleanup failures.');
@@ -1400,17 +1425,28 @@ export async function createSimulator({
     };
   };
   const change = (fn) => {
-    const next = mutation.then(fn);
+    const next = mutation.then(async () => {
+      const result = await fn();
+      if (managementStorage) {
+        try { await refreshManagementSource(); }
+        catch (cause) { recordDiagnostic({ code: 'MODEL_DRIVEN_SOURCE_REFRESH', message: cause.message }); }
+      }
+      return result;
+    });
     mutation = next.catch(() => {});
     return next;
   };
   const saveState = async (state, { reload = true } = {}) => {
+    // Keep the snapshot's original revision across source/profile I/O. SDK
+    // transactions can commit outside the host mutation queue during that work.
+    const expectedRevision = store.snapshotRevision(state) ?? store.revision;
     const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets };
     const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
     try {
-      if (pinChanged) {
+      const recordsChanged = !isDeepStrictEqual(state.simulator?.modelDriven?.records, config().modelDriven?.records);
+      if (pinChanged || recordsChanged || managementStorage && !isDeepStrictEqual(state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)) {
         activeProfiles = await loadDeploymentProfiles(profileConfig, state.simulator?.deploymentProfilePin ?? null);
-        sourcePortal = await importSource();
+        sourcePortal = await importSource(state.simulator?.modelDriven?.records);
         if (requirePortalSource) assertPortalSource(sourcePortal);
       }
       portal = applyPortalOverrides(sourcePortal, state.simulator?.portalOverrides);
@@ -1421,7 +1457,7 @@ export async function createSimulator({
         store.presetLibrary = generatedPresets;
         fingerprint = await calculateFingerprint();
       }
-      await replaceCompiledState(state);
+      await replaceCompiledState(state, { expectedRevision });
     } catch (cause) {
       ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets } = previous);
       store.presetLibrary = generatedPresets;
@@ -1435,6 +1471,41 @@ export async function createSimulator({
       for (const event of events)
         event.write(`event: reload\ndata: ${revision}\n\n`);
     }
+    appliedManagementRecords = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
+  };
+  // Source import happens after the record transaction commits. The short
+  // publication transaction checks its overlay snapshot again, so background
+  // SDK writes during source I/O cannot be overwritten by rematerialization.
+  const refreshManagementSource = async () => {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const records = structuredClone(store.state.simulator?.modelDriven?.records ?? {});
+      if (isDeepStrictEqual(records, appliedManagementRecords)) return;
+      const imported = await importSource(records);
+      const nextPortal = applyPortalOverrides(imported, config().portalOverrides);
+      const dependencies = { ...await discoverSourceDependencies(nextPortal), compat: localOverrides.compat };
+      const previous = { portal, sourcePortal, sourceDependencies, appliedPermissionModel };
+      let published = false;
+      try {
+        await store.transact(async () => {
+          if (!isDeepStrictEqual(records, store.state.simulator?.modelDriven?.records ?? {})) return;
+          sourcePortal = imported;
+          portal = nextPortal;
+          sourceDependencies = dependencies;
+          await replaceCompiledState(store.snapshot());
+          published = true;
+        }, { isolated: true });
+      } catch (cause) {
+        ({ portal, sourcePortal, sourceDependencies, appliedPermissionModel } = previous);
+        throw cause;
+      }
+      if (!published) continue;
+      appliedManagementRecords = records;
+      renderer = buildRenderer();
+      revision++;
+      for (const event of events) event.write(`event: reload\ndata: ${revision}\n\n`);
+      return;
+    }
+    throw error('Source records changed repeatedly while compiling the local portal. Refresh will retry on the next request.', 409, 'SourceRefreshConflict');
   };
   const applySelectedPreset = async (name, adjust, { applyConfiguration = false } = {}) => {
     const state = store.snapshot(),
@@ -2441,23 +2512,36 @@ export async function createSimulator({
       const item = operations().find(item => item.key === key);
       if (!item) throw error('This operation is not in the current source exports.', 404);
       if (!item.configurable) throw error(item.kind === 'plugin-step' ? item.unsupported || 'This plugin registration is disabled in the export.' : 'This workflow has no exported portal consumer or trigger route. Add its consumer to the portal sources first.', 409);
-      const state = store.snapshot();
-      state.simulator ??= config();
-      state.simulator.operations = { ...(state.simulator.operations ?? {}) };
       const previousRuntime = registeredPluginRuntimes.get(item.id);
-      let preparedRuntime;
-      if (method === 'DELETE') delete state.simulator.operations[key];
-      else {
-        const value = await jsonObjectBody(req);
+      let preparedRuntime, value;
+      if (method !== 'DELETE') {
+        value = await jsonObjectBody(req);
         validateOperationOverrides({ [key]: value },{pluginStep:item.kind==='plugin-step'?item:undefined});
         if (value.mode === 'handler' && !item.registered) throw error('No trusted project handler is registered for this operation.', 409);
         if(value.mode==='clr'){if(!item.clrAvailable)throw error('No explicitly trusted CLR descriptor is registered for this exact exported plugin step/type.',409);if(item.unsupported)throw error(item.unsupported,409);if(!previousRuntime)preparedRuntime=await prepareClrRuntime(registeredPluginDescriptors.get(item.id));}
         if(value.mode==='handler'&&item.unsupported)throw error(item.unsupported,409);
         if (value.mode === 'exported' && !item.definitionAvailable) throw error('The selected sources do not include this operation definition.', 409);
-        state.simulator.operations[key] = value;
       }
+      // Reading the body and preparing a trusted runtime can complete pending
+      // SDK work. Apply this configuration delta to a fresh snapshot afterwards.
       if(preparedRuntime)registeredPluginRuntimes.set(item.id,preparedRuntime);
-      try { await saveState(state); }
+      let state;
+      try {
+        for (let attempt = 0; ; attempt++) {
+          state = store.snapshot();
+          state.simulator ??= config();
+          state.simulator.operations = { ...(state.simulator.operations ?? {}) };
+          if (method === 'DELETE') delete state.simulator.operations[key];
+          else state.simulator.operations[key] = value;
+          try { await saveState(state); break; }
+          catch (cause) {
+            // A committed asynchronous plug-in job may advance the store while
+            // this replacement queues. Retry only this operation-key delta on
+            // fresh state, retaining the job's writes and the revision guard.
+            if (cause.code !== 'StateConflict' || attempt >= 2) throw cause;
+          }
+        }
+      }
       catch(cause){
         if(preparedRuntime){registeredPluginRuntimes.delete(item.id);closeClrHostPool({runtime:preparedRuntime,diagnostic:recordDiagnostic});}
         throw cause;
@@ -3528,6 +3612,27 @@ export async function createSimulator({
     renderPage: renderAccountPage,
     readBody: rawBody,
   });
+  let modelDrivenCache;
+  const modelDrivenCatalogue = () => {
+    const metadata = modelMetadata();
+    if (modelDrivenCache?.portal !== portal || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== store.revision) {
+      modelDrivenCache = { portal, metadata, storeRevision: store.revision,
+        value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings }) };
+    }
+    return modelDrivenCache.value;
+  };
+  const modelDrivenData = createModelDrivenData({ store, catalogue: modelDrivenCatalogue, portal: () => portal,
+    writeRecord: dataverseConfig.enabled ? input => dataverse.writeLocalRecord(input) : null,
+    saveOverlay: async (key, value) => {
+      const state = store.snapshot();
+      state.simulator.modelDriven ??= {};
+      state.simulator.modelDriven.records = { ...state.simulator.modelDriven.records,
+        [key]: value === null ? null : { ...state.simulator.modelDriven.records?.[key], ...value } };
+      await saveState(state);
+    },
+  });
+  const modelDrivenHandler = createModelDrivenHandler({ catalogue: modelDrivenCatalogue, data: modelDrivenData,
+    csrf: () => csrf, json, readBody: jsonObjectBody, change, read: fn => store.readOperation(fn) });
   async function handle(req, res) {
     // Normalize the admin alias before security checks so rejected requests
     // keep the same JSON error contract for both spellings.
@@ -3541,6 +3646,8 @@ export async function createSimulator({
     if (req.headers["sec-fetch-site"] === "cross-site" && isWrite(req.method))
       throw error("Cross-site writes are not allowed.", 403);
     const url = requestTargetUrl(req.url, localOrigin);
+    if (managementStorage && !isDeepStrictEqual(store.state.simulator?.modelDriven?.records ?? {}, appliedManagementRecords)) await change(async () => {});
+    if (await modelDrivenHandler(req, res, url)) return;
     if(req.headers['x-paqvilo-local-only']==='true'&&(config().mode==='live'||config().pageMode==='live'||(config().endpoints??[]).some(endpoint=>endpoint.enabled!==false&&endpoint.path===url.pathname&&endpoint.mode==='live')))
       throw error('This visitor requires local Mirage execution.',409,'LocalRuntimeRequired');
     if (frameReadiness.handle(req, res, url)) return;
@@ -4647,7 +4754,7 @@ export async function createSimulator({
       store, change, settings: liveDataverseSettings, host,
       tls: dataverseCertificate ? { key: dataverseCertificate.key, cert: dataverseCertificate.cert } : null,
       schema: () => solutionData?.schema ?? null,
-      metadataFields: (logical) => solutionMetadata?.entities?.[logical]?.fields,
+      metadataFields: (logical) => modelMetadata()?.entities?.[logical]?.fields,
       observed,
       log: (...args) => recordDiagnostic({ code: "DATAVERSE_API", message: String(args[0]?.message ?? args[0]) }),
       // The plug-in registrations of the Solution (rows mirror them; P3 reads them). After the custom API extension: its messages must exist.
@@ -4711,7 +4818,7 @@ export async function createSimulator({
           const changed = [...changedPaths].sort();
           changedPaths.clear();
           activeProfiles = await loadDeploymentProfiles(profileConfig, config().deploymentProfilePin ?? null);
-          sourcePortal = await importSource();
+          sourcePortal = await importSource(config().modelDriven?.records);
           if (requirePortalSource) assertPortalSource(sourcePortal);
           portal = applyPortalOverrides(sourcePortal, config().portalOverrides);
           sourceDependencies = { ...await discoverSourceDependencies(portal), compat: localOverrides.compat };

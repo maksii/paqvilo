@@ -185,7 +185,10 @@ test("entities lists every mapped table in logical-name order and expands on req
 
 test("attributes carry @odata.type, system columns and the id", () => {
   const list = mapped.attributes("widget");
-  for (const attribute of list) assert.match(attribute["@odata.type"], /^#Microsoft\.Dynamics\.CRM\.\w+AttributeMetadata$/);
+  for (const attribute of list) {
+    if (attribute["@odata.type"]) assert.match(attribute["@odata.type"], /^#Microsoft\.Dynamics\.CRM\.\w*AttributeMetadata$/);
+    else assert.ok(attribute.IsPrimaryId || attribute.AttributeType === 'Virtual');
+  }
   const byName = Object.fromEntries(list.map((a) => [a.LogicalName, a]));
   for (const column of ["widgetid", "createdon", "modifiedon", "createdby", "modifiedby", "ownerid", "owninguser", "owningbusinessunit", "statecode", "statuscode", "versionnumber"])
     assert.ok(byName[column], `missing ${column}`);

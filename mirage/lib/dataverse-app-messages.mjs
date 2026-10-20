@@ -89,6 +89,9 @@ function operations(api) {
             const row = { appmodulecomponentid: uuidV5(appUnique, `${selectedComponent.componenttype}:${selectedComponent.objectid}`), appmoduleidunique: appUnique, ...selectedComponent };
             tableOf(store, "appmodulecomponent").push(row);
             existing.push(row);
+            const source = store.state.dataverse?.sourceSolutionComponents;
+            const sourceKey = `appmodulecomponent/${key(row.appmodulecomponentid)}`;
+            if (source?.baseline[sourceKey]) source.overlays[sourceKey] = { values: {}, unset: [] };
           }
         });
         return { status: 204 };
@@ -135,7 +138,12 @@ function operations(api) {
           const rows = tableOf(store, "appmodulecomponent");
           for (let i = rows.length - 1; i >= 0; i -= 1) {
             if (!sameId(idOf(rows[i].appmoduleidunique), uniqueOf(app))) continue;
-            if (ids.has(key(rows[i].appmodulecomponentid)) || ids.has(key(rows[i].objectid))) rows.splice(i, 1);
+            if (ids.has(key(rows[i].appmodulecomponentid)) || ids.has(key(rows[i].objectid))) {
+              const source = store.state.dataverse?.sourceSolutionComponents;
+              const sourceKey = `appmodulecomponent/${key(rows[i].appmodulecomponentid)}`;
+              if (source?.baseline[sourceKey]) source.overlays[sourceKey] = null;
+              rows.splice(i, 1);
+            }
           }
         });
         return { status: 204 };

@@ -743,7 +743,11 @@ export class DataStore {
     return this;
   }
   snapshot(projection) {
-    if (projection === undefined) return clone(this.state);
+    if (projection === undefined) {
+      const snapshot = clone(this.state);
+      (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+      return snapshot;
+    }
     if (
       !projection ||
       typeof projection !== "object" ||
@@ -770,8 +774,12 @@ export class DataStore {
         }
       }
     }
-    return clone(selected);
+    const snapshot = clone(selected);
+    (this.snapshotRevisions ??= new WeakMap()).set(snapshot, this.revision);
+    return snapshot;
   }
+  // Provenance is local to this store and never serialized into state files.
+  snapshotRevision(snapshot) { return this.snapshotRevisions?.get(snapshot); }
   snapshotDigest() { return stateDigest(this.state); }
   summary() {
     const selected = this.snapshot({
@@ -1094,8 +1102,10 @@ export class DataStore {
     delivery=new Promise(resolve=>queueMicrotask(()=>{for(const provider of providers)try{provider(clone(captured),{sequence});}catch(error){this.committedEventErrors??=[];this.committedEventErrors.push({code:error.code??'CommittedEventConsumerError',message:error.message,sequence});if(this.committedEventErrors.length>50)this.committedEventErrors.shift();}resolve();})).finally(()=>this.committedEventDispatches.delete(delivery));this.committedEventDispatches.add(delivery);
   }
   async flushCommittedEvents(){while(this.committedEventDispatches?.size)await Promise.all([...this.committedEventDispatches]);}
-  async replaceState(state, { expectedSnapshot, expectedDigest } = {}) {
+  async replaceState(state, { expectedSnapshot, expectedDigest, expectedRevision } = {}) {
     return this.transact(() => {
+      if (expectedRevision !== undefined && this.revision !== expectedRevision)
+        throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       if (expectedDigest !== undefined && this.snapshotDigest() !== expectedDigest)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
@@ -3789,7 +3799,7 @@ function coerceValue(entity, attribute, value, definition, options = {}) {
       return value;
     }
     case "datetime": {
-      if (typeof value !== "string") throw conversion("Edm.DateTimeOffset");
+      if (typeof value !== "string") throw conversion(options.dataverseWebApi && isDateOnlyField(definition) ? "Edm.Date" : "Edm.DateTimeOffset");
       // observed: a DateOnly column reads only Edm.Date (yyyy-MM-dd); timestamps and impossible dates fail the OData reader (parity case family values.dateonly).
       if (options.dataverseWebApi && isDateOnlyField(definition) && (!/^\d{4}-\d{2}-\d{2}$/.test(value) || !parseDateValue(value)))
         throw conversion("Edm.Date");

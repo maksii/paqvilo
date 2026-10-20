@@ -45,7 +45,7 @@ function render() {
   const portalUrl = runtime?.portalUrl ?? (runtime?.product === 'Mirage' ? '/' : null);
   const simUrl = runtime?.portalUrl ? new URL('/_sim/', new URL(runtime.portalUrl, location.href)).href : '/_sim/';
   navigation.hidden = !portalUrl;
-  navigation.innerHTML = portalUrl ? `<a href="${esc(portalUrl)}">← Back to portal</a>${runtime.product === 'Mirage' ? `<a href="${esc(simUrl)}">Manage data and personas</a>` : ''}` : '';
+  navigation.innerHTML = portalUrl ? `<a href="${esc(portalUrl)}">← Back to portal</a>${runtime.product === 'Mirage' ? `<a href="${esc(simUrl)}">Manage data and personas</a><a href="${esc(new URL('/main.aspx', new URL(portalUrl, location.href)).href)}">Model-driven apps</a>` : ''}` : '';
   $('#scope').textContent = state.directory;
   const count = state.findings.length;
   const personal = state.layers.personal;

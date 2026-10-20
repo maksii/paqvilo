@@ -237,7 +237,7 @@ function withKeyViolation(mapping, data, fn) {
 // and an undefined flag keeps tracking allowed.
 // fieldSecurity is a getter for api.fieldSecurity (dataverse-fls): the extension installs after the handlers exist. Absent or
 // undefined, no column is hidden.
-export function createRecordHandlers({ store, change, principals, metadataFields = () => undefined, clock = () => Date.now(), changes = createChangeLog(store, { clock }), changeTrackingEnabled, hooks = createRecordHooks(), fieldSecurity }) {
+export function createRecordHandlers({ store, change, principals, metadata, metadataFields = () => undefined, clock = () => Date.now(), changes = createChangeLog(store, { clock }), changeTrackingEnabled, hooks = createRecordHooks(), fieldSecurity }) {
   const authorize = (c, entity, operation, mapping, row) => principals.authorize({ user: c.user, entity, operation, row, mapping });
   const hookList = (name) => hooks.list?.(name) ?? [];
   const runHooks = (name, ...args) => { for (const hook of hookList(name)) hook(...args); };
@@ -285,7 +285,23 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     return Object.fromEntries(Object.entries(names).map(([n, targets]) => [n, { dataverseType: n === "ownerid" ? "owner" : "lookup", targets }]));
   };
   const fieldsOf = (logical) => ({ ...systemFields(logical), ...(metadataFields(logical) ?? {}) });
-  const queryOptions = (extra = {}) => ({ dialect: "dataverse", metadata: fieldsOf, includeKeys: true, ...extra });
+  const readFieldsOf = logical => {
+    const definitions = metadata?.recordFields?.(logical);
+    if (!definitions) return fieldsOf(logical);
+    // Metadata controls which structural properties exist. Preserve the record pipeline's source/observed
+    // formatting facts for those properties instead of replacing option labels with synthesized defaults.
+    return Object.fromEntries(Object.entries(definitions).map(([name, definition]) => {
+      const source = store.fieldDefinition(logical, name, fieldsOf);
+      const field = source ? { ...definition, ...source } : definition;
+      const options = field.options ?? field.statuses ?? field.states;
+      return [name, options ? { ...field, options } : field];
+    }));
+  };
+  const readDefinition = (mapping, name) => {
+    const fields = metadata?.recordFields ? readFieldsOf(mapping.logicalName) : null;
+    return fields ? fields[/^_(.+)_value$/.exec(name)?.[1] ?? name] : store.fieldDefinition(mapping.logicalName, name, fieldsOf);
+  };
+  const queryOptions = (extra = {}) => ({ dialect: "dataverse", metadata: readFieldsOf, includeKeys: true, ...extra });
   // dataverseWebApi: the Dataverse Web API's stricter value rules (lib/data.mjs coerceValue); the portal /_api never sets it.
   const writeOptions = (extra = {}) => ({ coerce: true, metadata: fieldsOf, dataverseWebApi: true, ...extra });
   const runWrite = (fn) => change(() => store.transact(fn, { incremental: true }));
@@ -309,7 +325,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   };
   // The organization's base currency seeded by the security model, found by the organization row's id; null when the Dataverse tables are absent.
   const baseCurrency = () => baseCurrencyRow(store, store.state.tables.organization?.[0]?.organizationid);
-  const isMoney = (mapping, key) => fieldKind(store.fieldDefinition(mapping.logicalName, key, fieldsOf)) === "money";
+  const isMoney = (mapping, key) => fieldKind(readDefinition(mapping, key)) === "money";
   // No $select (or $select=*) answers every column, the currency lookup included; a $select list answers it only when named.
   const currencySelected = (c) => {
     const select = parseSelect(c.url.searchParams.get("$select"));
@@ -421,7 +437,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (filter) {
       const expression = parseODataExpression(filter, {
         dialect: "dataverse", aliases, rejectNotOnQueryFunctions: true,
-        strictEdm: true, columnDefinition: (name) => store.fieldDefinition(mapping.logicalName, name, fieldsOf),
+        strictEdm: true, columnDefinition: (name) => readDefinition(mapping, name),
       });
       for (const [head] of expressionPaths(expression)) {
         if (!head || head.startsWith("@")) continue;
@@ -449,7 +465,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     // The stored base currency (currencyOnWrite) answers as the _transactioncurrencyid_value lookup, never as a raw column (the currency table's own key excepted).
     if (mapping.idColumn !== "transactioncurrencyid") delete formatted.transactioncurrencyid;
     // A selected currency lookup the row does not carry projects as null; shapeMoney supplies the base currency instead.
-    if (formatted[CURRENCY] === null) delete formatted[CURRENCY];
+    if (formatted[CURRENCY] === null && !(metadata?.recordFields && parseSelect(c.url.searchParams.get("$select"))?.includes(CURRENCY))) delete formatted[CURRENCY];
     for (const field of OWNER_FIELDS) {
       const key = `_${field}_value`;
       if (formatted[key] != null && formatted[`${key}${NAVIGATION}`] === undefined) formatted[`${key}${NAVIGATION}`] = field;
@@ -466,7 +482,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     // A picklist value with no option still answers its FormattedValue, as null (observed: a picklist value of -1).
     for (const key of Object.keys(formatted)) {
       if (key.includes("@") || formatted[key] == null) continue;
-      if (fieldKind(store.fieldDefinition(mapping.logicalName, key, fieldsOf)) === "choice" && formatted[`${key}${FORMATTED}`] === undefined) {
+      if (fieldKind(readDefinition(mapping, key)) === "choice" && formatted[`${key}${FORMATTED}`] === undefined) {
         formatted[`${key}${FORMATTED}`] = null;
       }
     }
@@ -474,11 +490,44 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     // The base currency lookup is answered only for a row that holds one (currencyOnWrite). A selected lookup the row does not hold is null.
     const held = currencyHeld(c, mapping, row[mapping.idColumn]);
     shapeMoney(mapping, formatted, { currencyWanted: held && (currencySelected(c) || named), named });
+    selectedSystemValues(c, mapping, row, formatted);
     if (!held && formatted[CURRENCY] === undefined && currencySelected(c) && Object.keys(formatted).some((key) => !key.includes("@") && isMoney(mapping, key))) formatted[CURRENCY] = null;
     if (options?.allColumns) fillColumns(c, mapping, formatted);
     if (options?.expand?.length) pageExpansions(c, mapping, row, formatted, options.expand, { collection: options.single !== true });
     projectRow(c, mapping, formatted, options?.expand);
     return formatted;
+  }
+
+  function selectedSystemValues(c, mapping, projected, formatted) {
+    if (!metadata?.recordFields) return;
+    const selected = parseSelect(c.url.searchParams.get("$select"));
+    if (!selected) return;
+    const definitions = readFieldsOf(mapping.logicalName);
+    const source = store.tableRows(mapping.logicalName).find(row => sameId(row[mapping.idColumn], projected[mapping.idColumn])
+      && (!isElastic(mapping) || samePartition(row.partitionid, c.partitionId)));
+    if (!source) return;
+    const readable = name => security()?.canRead(c.user, mapping.logicalName, name) !== false;
+    // The same observed stamp that an unselected full row receives must survive selecting the stamp alone.
+    if (selected.includes('timezoneruleversionnumber') && formatted.timezoneruleversionnumber == null
+      && columnNamesOf(mapping).dateColumns.some(name => source[name] != null && readable(name))) {
+      formatted.timezoneruleversionnumber = 4;
+      formatted[`timezoneruleversionnumber${FORMATTED}`] = formattedValue(4, { dataverseType: 'int' }, store.state.settings);
+    }
+    const base = baseCurrency();
+    const currency = source.transactioncurrencyid?.id ?? source.transactioncurrencyid;
+    if (!base || !sameId(currency, base.transactioncurrencyid)) return;
+    // The existing base-currency projection uses rate 1. Do not infer a rate or converted amount for another currency.
+    if (selected.includes('exchangerate') && formatted.exchangerate == null) {
+      formatted.exchangerate = 1;
+      formatted[`exchangerate${FORMATTED}`] = '1.000000000000';
+    }
+    for (const name of selected) {
+      if (!name.endsWith('_base') || formatted[name] != null || fieldKind(definitions[name]) !== 'money') continue;
+      const amount = name.slice(0, -5);
+      if (source[amount] == null || !readable(amount) || !readable(name)) continue;
+      formatted[name] = fixedScaleNumeric(source[amount], MONEY_SCALE);
+      formatted[`${name}${FORMATTED}`] = formattedValue(source[amount], definitions[name], store.state.settings);
+    }
   }
 
   // A read with no $select list (or $select=*) answers every column of the table, unset ones as null (lookups as _x_value).
@@ -503,13 +552,17 @@ export function createRecordHandlers({ store, change, principals, metadataFields
 
   // Every column name a read of the table answers (system columns, lookups as _x_value, money companions, file parts), with money and date columns that imply a time-zone rule stamp.
   function columnNamesOf(mapping) {
-    const names = [mapping.idColumn, ...TABLE_COLUMNS];
+    const names = [mapping.idColumn, ...(metadata?.recordFields ? [] : TABLE_COLUMNS)];
     const moneys = [];
     const dateColumns = [];
-    for (const [name, definition] of Object.entries(store.fieldDefinitions(mapping.logicalName, fieldsOf))) {
+    // Readable system companions include audit timestamps. Their mere presence must not infer a time-zone
+    // stamp: retain the original, source-declared date candidates used before implicit read admission.
+    const sourceDates = store.fieldDefinitions(mapping.logicalName, fieldsOf);
+    for (const [name, definition] of Object.entries(metadata?.recordFields ? readFieldsOf(mapping.logicalName) : store.fieldDefinitions(mapping.logicalName, fieldsOf))) {
       const kind = fieldKind(definition);
       if (kind === "virtual" || kind === "partylist") continue;
-      if (kind === "datetime" && ((dateTimeBehavior(definition) || "userlocal") === "userlocal" || isDateOnlyField(definition))) dateColumns.push(name);
+      const sourceDate = sourceDates[name];
+      if (fieldKind(sourceDate) === "datetime" && ((dateTimeBehavior(sourceDate) || "userlocal") === "userlocal" || isDateOnlyField(sourceDate))) dateColumns.push(name);
       if (kind === "lookup") names.push(`_${name}_value`);
       else names.push(name);
       // A money column has a base-currency companion; the companion is money-typed and has no companion of its own.
@@ -531,14 +584,15 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // W/"n" and versionnumber agree. A non-null UserLocal or DateOnly value implies timezoneruleversionnumber 4,
   // including a DateOnly-only row and a row whose UserLocal value was cleared while its DateOnly value remains.
   function stampSystemValues(mapping, formatted, dateColumns) {
-    if (hasStateColumns(mapping)) {
+    const declared = metadata?.recordFields?.(mapping.logicalName);
+    if (hasStateColumns(mapping) && (!declared || declared.statecode || declared.statuscode)) {
       if (formatted.statecode == null) formatted.statecode = mapping.recordDefaults?.statecode ?? 0;
       const status = mapping.stateStatusDefaults?.[formatted.statecode] ?? mapping.recordDefaults?.statuscode ?? (Number(formatted.statecode) === 0 ? 1 : undefined);
       if (formatted.statuscode == null && status !== undefined) formatted.statuscode = status;
     }
     const etagNumber = /^W\/"(\d+)"$/.exec(formatted["@odata.etag"] ?? "");
-    if (formatted.versionnumber == null && etagNumber) formatted.versionnumber = Number(etagNumber[1]);
-    if (formatted.timezoneruleversionnumber == null && dateColumns.some((name) => formatted[name] != null)) formatted.timezoneruleversionnumber = 4;
+    if ((!declared || declared.versionnumber) && formatted.versionnumber == null && etagNumber) formatted.versionnumber = Number(etagNumber[1]);
+    if ((!declared || declared.timezoneruleversionnumber) && formatted.timezoneruleversionnumber == null && dateColumns.some((name) => formatted[name] != null)) formatted.timezoneruleversionnumber = 4;
     if (typeof formatted.timezoneruleversionnumber === "number")
       formatted[`timezoneruleversionnumber${FORMATTED}`] ??= formattedValue(formatted.timezoneruleversionnumber, { dataverseType: "int" }, store.state.settings);
   }
@@ -589,6 +643,11 @@ export function createRecordHandlers({ store, change, principals, metadataFields
 
   // project hooks see the row, then each expanded row under it (in its own table, with its own nested expansions).
   function projectRow(c, mapping, formatted, expand = []) {
+    const all = metadata?.recordFields?.(mapping.logicalName, { includeNonOData: true });
+    if (all) for (const [name, field] of Object.entries(all)) {
+      if ((field.dataverseMetadata?.IsValidODataAttribute ?? field.columnMetadata?.isValidODataAttribute) !== false) continue;
+      for (const key of Object.keys(formatted)) if (key === name || key.startsWith(`${name}@`)) delete formatted[key];
+    }
     runHooks("project", c, mapping, formatted);
     for (const spec of expand) {
       const rel = navigationOf(mapping, spec.navigation);
@@ -741,7 +800,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // The ids whose masked row satisfies the filter: the store's own predicate, run over each row with its hidden columns nulled.
   function maskedIds(c, mapping, ast) {
     const logical = mapping.logicalName;
-    const ctx = store.queryContext(c.identity, { metadata: fieldsOf, backendRowsFilter: rowsFilterOf(c), dialect: "dataverse" });
+    const ctx = store.queryContext(c.identity, { metadata: readFieldsOf, backendRowsFilter: rowsFilterOf(c), dialect: "dataverse" });
     const predicate = compileODataPredicate(ast, mapping, ctx);
     return store.query(logical, new URLSearchParams(), c.identity, undefined, secured(c)).value
       .filter((row) => predicate(security().mask(c.user, logical, row)))
@@ -886,7 +945,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // An aggregate alias (a number with no field definition) gets a formatted value in the organization number format, as FetchXML aggregates do.
   function aggregateValues(mapping, row, formatted) {
     for (const [key, value] of Object.entries(row)) {
-      if (typeof value !== "number" || key.includes("@") || store.fieldDefinition(mapping.logicalName, key, fieldsOf)) continue;
+      if (typeof value !== "number" || key.includes("@") || readDefinition(mapping, key)) continue;
       formatted[`${key}${FORMATTED}`] = formattedValue(value, { dataverseType: Number.isInteger(value) ? "int" : "decimal" }, store.state.settings);
     }
     return formatted;
@@ -925,7 +984,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     if (security() && /<fetch\b[^>]*\baggregate\s*=\s*["']true["']/i.test(xml)) {
       for (const frame of fetchFrames(xml)) security().assertAggregate(c, store.resolveMapping(frame.entity), frame.attributes);
     }
-    const fetched = store.fetchXml(xml, c.identity, { metadata: fieldsOf, backendRowsFilter: rowsFilterOf(c) });
+    const fetched = store.fetchXml(xml, c.identity, { metadata: readFieldsOf, backendRowsFilter: rowsFilterOf(c) });
     const info = fetched.columns;
     const columns = (info.columns ?? []).filter((col) => col.alias == null && !col.aliased && !col.aggregate).map((col) => col.attribute);
     if (!info.aggregate && !info.distinct && !columns.includes(mapping.idColumn)) columns.push(mapping.idColumn);
@@ -1271,7 +1330,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
     const target = store.resolveMapping(rel.entity);
     const wanted = segmentKey ? parseKey(segmentKey)?.id : null;
     const rows = store
-      .queryContext(c.identity, { metadata: fieldsOf, backendRowsFilter: rowsFilterOf(c) })
+      .queryContext(c.identity, { metadata: readFieldsOf, backendRowsFilter: rowsFilterOf(c) })
       .related(row, rel)
       .filter((item) => !wanted || sameId(item[target.idColumn], wanted));
     return { target, rows };
@@ -1302,7 +1361,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
   // The currency lookup is a property of any table with a money column (its value comes from shapeMoney).
   const hasProperty = (mapping, segment) =>
     segment === mapping.idColumn ||
-    Boolean(store.fieldDefinition(mapping.logicalName, segment, fieldsOf)) ||
+    Boolean(readDefinition(mapping, segment)) ||
     (segment === CURRENCY && Object.keys(mapping.fields ?? {}).some((key) => isMoney(mapping, key)));
   function assertProperty(mapping, segment) {
     if (hasProperty(mapping, segment)) return;
@@ -1620,7 +1679,7 @@ export function createRecordHandlers({ store, change, principals, metadataFields
         formatter: createWebApiFormatter({
           store,
           identity: ctx.identity,
-          metadata: fieldsOf,
+          metadata: readFieldsOf,
           formatting: { ...store.state.settings, currencySymbol: baseCurrency()?.currencysymbol ?? store.state.settings.currencySymbol ?? "$" },
         }),
       };
