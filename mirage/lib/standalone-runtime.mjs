@@ -61,7 +61,7 @@ async function readBody(req) {
 
 export async function createStandaloneRuntime(options = {}) {
   const startedAt = performance.now(), bootstrapTimings = {};
-  const startupPhase = phase => { try { options.onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) }); } catch { /* progress observer only */ } };
+  const startupPhase = phase => { try { Promise.resolve(options.onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) })).catch(() => {}); } catch { /* progress observer only */ } };
   startupPhase('configuration');
   const runtime = runtimeSettings(options.runtime), simulation = simulationSettings(options.simulation);
   const modelDriven = modelDrivenSettings(options.modelDriven);

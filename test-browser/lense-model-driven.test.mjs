@@ -88,6 +88,12 @@ test('public model-driven Lense overlays native scripts and reloads on source sa
   while (seen.length === observations && Date.now() < mapDeadline && child.exitCode == null) await new Promise(resolve => setTimeout(resolve, 50));
   assert.ok(seen.length > observations, `Explicit resource map change did not reload: ${output}`);
   assert.equal(await exited, 0, output);
+  assert.match(output, /startup\s+configuration/);
+  assert.match(output, /startup\s+source discovery and Solution resources/);
+  assert.match(output, /startup\s+document navigation/);
+  assert.match(output, /startup\s+page resources/);
+  assert.match(output, /Sign-in and native application readiness remain unverified/);
+  assert.doesNotMatch(output, /Model-driven overlay ready\.|application and initial view usable/);
   const report = JSON.parse(await fs.readFile(reportFile, 'utf8'));
   assert.ok(report.applied >= 3); assert.equal(report.revision >= 3, true); assert.equal(report.resources[0].name, 'x_script.js');
   assert.ok(report.resources[0].paths.includes(nativeResourcePath));

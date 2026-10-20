@@ -106,6 +106,18 @@ aggregate limits above; exceeding them disables the complete catalogue, includin
 earlier layers. Missing or escaped declared dependencies are reported and never
 served. Local watchers include the selected client sources.
 
+A named PCF declaration supersedes an earlier control even if its new manifest or
+dependencies are invalid; that failure cannot reactivate the earlier executable.
+A later valid declaration can replace it. An unreadable exported PCF identity
+disables the PCF catalogue with `PCF_IDENTITY_UNRESOLVED`, since its override target
+cannot be established safely; independent WebResources remain available.
+
+These selections and aggregate budgets govern the model-driven client catalogue.
+Power Pages Liquid and native-form PCF use their separate Solution-backed import;
+`modelDriven.clientSources`, including `[]`, does not remove those portal controls.
+That portal import still reads its declared PCF resources during startup and is
+not covered by the model-driven catalogue's aggregate budget.
+
 ## PCF inputs and limits
 
 Select an unpacked Solution containing `Controls/<name>/ControlManifest.xml`, its

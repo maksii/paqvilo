@@ -10,6 +10,7 @@ import { createSimulator } from '../server.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
 import { importModelDrivenProject } from '../../lense/model-driven.mjs';
+import { importCodeComponents } from '../lib/code-components.mjs';
 
 const descriptor = (name, file) => `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 async function fixture(t, files) {
@@ -90,7 +91,7 @@ test('explicit client sources are independent of metadata, ordered, confined and
   assert.ok(organization.metadata.entities.x_item); assert.equal(organization.clientResources.resources.length, 1);
   assert.deepEqual(overlay.resources, organization.clientResources.resources);
   assert.equal(organization.clientResources.assets.get(organization.clientResources.resources[0].url).data.toString(), 'window.Selected = 2;');
-  assert.equal(organization.clientResources.resources[0].source, path.join(override, 'WebResources/events.js'));
+  assert.equal(organization.clientResources.resources[0].source, await fs.realpath(path.join(override, 'WebResources/events.js')));
   assert.ok(organization.clientResources.diagnostics.some(item => item.code === 'MODEL_WEBRESOURCE_UNRESOLVED'));
   const layers = [{ type: 'directory', dir: metadata }];
   assert.equal((await importModelDrivenResources(layers, { limits: { entries: 8 } })).diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
@@ -127,6 +128,95 @@ test('PCF client budgets include manifests, RESX and images and reuse the admitt
   await fs.writeFile(path.join(root, 'Controls/Budget/ControlManifest.xml'), files['Controls/Budget/ControlManifest.xml'] + ' '.repeat(20000));
   const manifest = await importModelDrivenResources([], { clientSources: [root], limits: { bytes: 1024 } });
   assert.equal(manifest.assets.size, 0); assert.equal(manifest.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
+test('PCF overriding declarations remove stale executables, preserve unrelated controls and allow later valid recovery', async t => {
+  const files = (directory, name, source) => ({
+    [`Controls/${directory}/ControlManifest.xml`]: '<manifest><control namespace="fx" constructor="Widget" control-type="standard"><resources><code path="bundle.js"/></resources></control></manifest>',
+    [`Controls/${directory}/ControlManifest.xml.data.xml`]: `<CustomControl><Name>${name}</Name></CustomControl>`,
+    [`Controls/${directory}/bundle.js`]: source,
+  });
+  const base = await fixture(t, { ...files('base-folder', 'fx.Widget', 'window.Base = true;'), ...files('other-folder', 'fx.Other', 'window.Other = true;'),
+    'WebResources/events.js': 'window.Events = true;', 'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js') });
+  const override = await fixture(t, files('different-folder', 'fx.Widget', 'window.Override = true;'));
+  const recovered = await fixture(t, files('recovery-folder', 'fx.Widget', 'window.Recovered = true;'));
+  const load = (...clientSources) => importModelDrivenResources([], { clientSources });
+  const bodies = result => [...result.assets.values()].map(asset => asset.data.toString());
+  const selected = await load(base, override);
+  assert.deepEqual(selected.pcf.controls.map(control => control.name).sort(), ['fx.Other', 'fx.Widget']);
+  assert.ok(bodies(selected).includes('window.Override = true;')); assert.ok(!bodies(selected).includes('window.Base = true;'));
+  const direct = await importCodeComponents([base, override].map(dir => ({ type: 'directory', dir })));
+  assert.deepEqual([...direct.assets.values()].map(asset => asset.file).sort(), (await Promise.all([path.join(base, 'Controls/other-folder/bundle.js'), path.join(override, 'Controls/different-folder/bundle.js')].map(file => fs.realpath(file)))).sort());
+  const manifest = path.join(await fs.realpath(override), 'Controls/different-folder/ControlManifest.xml');
+  const validManifest = await fs.readFile(manifest, 'utf8');
+  const brokenCases = [
+    async () => fs.rm(path.join(override, 'Controls/different-folder/bundle.js')),
+    async () => fs.writeFile(manifest, '<manifest>'),
+    async () => fs.writeFile(manifest, '<manifest/>'),
+    async () => fs.rm(manifest),
+  ];
+  for (const breakSource of brokenCases) {
+    await fs.writeFile(manifest, validManifest); await fs.writeFile(path.join(override, 'Controls/different-folder/bundle.js'), 'window.Override = true;');
+    await breakSource();
+    const rejected = await load(base, override);
+    assert.deepEqual(rejected.pcf.controls.map(control => control.name), ['fx.Other']);
+    assert.ok(bodies(rejected).includes('window.Other = true;')); assert.ok(bodies(rejected).includes('window.Events = true;'));
+    assert.ok(!bodies(rejected).some(body => /window\.(?:Base|Override) =/.test(body)));
+    assert.ok(rejected.diagnostics.some(item => item.code === 'PCF_IMPORT_FAILED' && item.file === manifest));
+    const directRejected = await importCodeComponents([base, override].map(dir => ({ type: 'directory', dir })));
+    assert.equal(directRejected.assets.size, 1, 'The Power Pages asset map also drops the superseded bundle.');
+    const fixed = await load(base, override, recovered);
+    assert.deepEqual(fixed.pcf.controls.map(control => control.name).sort(), ['fx.Other', 'fx.Widget']);
+    assert.ok(bodies(fixed).includes('window.Recovered = true;')); assert.ok(!bodies(fixed).includes('window.Base = true;'));
+  }
+  const exhausted = await importModelDrivenResources([], { clientSources: [base, recovered], limits: { bytes: 32 } });
+  assert.equal(exhausted.assets.size, 0); assert.equal(exhausted.pcf.controls.length, 0); assert.equal(exhausted.resources.length, 0);
+  assert.ok(exhausted.diagnostics.some(item => item.code === 'MODEL_CLIENT_IMPORT_LIMIT'));
+});
+
+test('unresolved PCF identities disable the PCF catalogue without guessing a key or disabling independent WebResources', async t => {
+  const manifest = '<manifest><control namespace="fx" constructor="Widget" control-type="standard"><resources><code path="bundle.js"/></resources></control></manifest>';
+  const base = await fixture(t, {
+    'Controls/Widget/ControlManifest.xml': manifest, 'Controls/Widget/ControlManifest.xml.data.xml': '<CustomControl><Name>fx.Widget</Name></CustomControl>', 'Controls/Widget/bundle.js': 'window.Base = true;',
+    'WebResources/events.js': 'window.Events = true;', 'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+  });
+  const override = await fixture(t, { 'Controls/Widget/ControlManifest.xml': manifest, 'Controls/Widget/bundle.js': 'window.Override = true;' });
+  const identity = path.join(override, 'Controls/Widget/ControlManifest.xml.data.xml');
+  for (const value of [undefined, '<CustomControl>', '<CustomControl/>', '<CustomControl><Name>../Widget</Name></CustomControl>']) {
+    if (value === undefined) await fs.rm(identity, { force: true }); else await fs.writeFile(identity, value);
+    const result = await importModelDrivenResources([], { clientSources: [base, override] });
+    assert.equal(result.pcf.controls.length, 0); assert.equal(result.resources.length, 1);
+    assert.deepEqual([...result.assets.values()].map(asset => asset.data.toString()), ['window.Events = true;']);
+    assert.ok(result.diagnostics.some(item => item.code === 'PCF_IDENTITY_UNRESOLVED'));
+  }
+  await fs.writeFile(identity, '<CustomControl><Name>fx.Widget</Name></CustomControl>');
+  const repaired = await importModelDrivenResources([], { clientSources: [base, override] });
+  assert.equal(repaired.pcf.controls.length, 1); assert.deepEqual(repaired.diagnostics, []);
+  assert.ok([...repaired.assets.values()].some(asset => asset.data.toString() === 'window.Override = true;'));
+});
+
+test('an empty model-driven client allowlist preserves the separate Power Pages PCF source surface', async t => {
+  const solution = await fixture(t, {
+    'Controls/Widget/ControlManifest.xml': '<manifest><control namespace="fx" constructor="Widget" control-type="standard"><resources><code path="bundle.js"/></resources></control></manifest>',
+    'Controls/Widget/ControlManifest.xml.data.xml': '<CustomControl><Name>fx.Widget</Name></CustomControl>',
+    'Controls/Widget/bundle.js': 'window.PortalWidget = true;',
+  });
+  const portal = await fixture(t, {
+    'website.yml': 'adx_websiteid: invented\nadx_name: Invented\n',
+    'web-pages/Home.webpage.yml': 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main\n',
+    'Main.pagetemplate.yml': 'adx_pagetemplateid: main\nadx_webtemplateid: main\n',
+    'Main.webtemplate.yml': 'adx_webtemplateid: main\nadx_name: Main\n',
+    'Main.webtemplate.source.html': '<html><body>{% codecomponent name:"fx.Widget" %}</body></html>',
+  });
+  const runtime = await createSimulator({ sourceDir: portal, solutionRoots: [solution], modelDriven: { trustedExtensions: false, clientSources: [] }, watch: false, port: 0 });
+  t.after(() => runtime.close());
+  const catalogue = await fetch(runtime.url + '/_apps/api').then(response => response.json());
+  assert.equal(catalogue.clientExtensions.trusted, false); assert.deepEqual(catalogue.clientExtensions.pcf.controls, []);
+  const home = await fetch(runtime.url).then(response => response.text());
+  assert.match(home, /data-pcf-schema="fx.Widget"/);
+  const asset = /\/__sim-static\/pcf\/[a-f0-9]+\/bundle\.js/.exec(home)?.[0];
+  assert.ok(asset, 'The portal mount retains its explicitly declared bundle.');
+  assert.equal(await fetch(runtime.url + asset).then(response => response.text()), 'window.PortalWidget = true;');
 });
 
 test('a changed PCF resource is reported without rejecting organization import or exposing a partial control', async t => {

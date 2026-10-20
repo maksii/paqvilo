@@ -23,28 +23,37 @@ export function standaloneCatalogueConfiguration(catalogue, name, args = {}) {
 }
 
 /** Open the local application directly. No portal overlay or source model is created. */
-export async function developStandalone(cfg, args, session) {
+export async function developStandalone(cfg, args, session, { open = openBrowser } = {}) {
   const progress = args.startup ?? startupProgress();
   progress.phase('browser setup');
-  const { context, close, attached } = await openBrowser({ ...cfg, origin: session.url }, { debugPort: cfg.browser.debugPort });
-  let stop;
+  const { context, close, attached } = await open({ ...cfg, origin: session.url }, { debugPort: cfg.browser.debugPort });
+  let stop, page, failure;
   const stopped = new Promise(resolve => { stop = resolve; });
   const browser = context.browser();
   context.once('close', stop); browser?.once('disconnected', stop);
   process.once('SIGINT', stop); process.once('SIGTERM', stop);
   try {
-    const page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
+    page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
+    // Observe this owned tab before navigation/readiness can yield. In an
+    // attached browser its closure does not close the user-owned context.
+    if (attached) page.once('close', stop);
     const destination = args.path ?? (cfg.runtime.kind === 'model-driven' ? '/main.aspx' : '/_sim/');
     if (!destination.startsWith('/') || destination.startsWith('//') || destination.includes('\\')) throw new Error('The starting path must be local to this runtime.');
     console.log(`Opening ${session.url}${destination}. Close the dedicated browser or press Ctrl+C to stop.`);
     await waitForStartupPage(page, session.url + destination, { progress, stopped, modelDriven: cfg.runtime.kind === 'model-driven' });
-    if (attached) page.once('close', stop);
     await stopped;
-    if (attached && !page.isClosed()) await page.close();
+  } catch (error) {
+    failure = error;
+    throw error;
   } finally {
     progress.close();
     process.off('SIGINT', stop); process.off('SIGTERM', stop); context.off('close', stop); browser?.off('disconnected', stop);
-    await close();
+    page?.off('close', stop);
+    const errors = [];
+    for (const cleanup of [() => attached && page && !page.isClosed() ? page.close() : undefined, close]) {
+      try { await cleanup(); } catch (error) { errors.push(error); }
+    }
+    if (!failure && errors.length) throw new AggregateError(errors, 'Standalone browser cleanup failed.');
   }
   return 0;
 }

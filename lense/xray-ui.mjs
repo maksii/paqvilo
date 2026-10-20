@@ -29,6 +29,7 @@ export function xrayUi(data) {
   const watchFrame=doc=>{
     if(frameViews.has(doc))return;const controller=new AbortController();
     for(const [type,fn,options] of viewListeners)doc.defaultView.addEventListener(type,fn,{...options,signal:controller.signal});
+    const release=hookAnimationView(doc.defaultView);if(release)controller.signal.addEventListener('abort',release,{once:true});
     frameViews.set(doc,controller);
   };
   const releaseFrames=()=>{for(const controller of frameViews.values())controller.abort();frameViews.clear();};
@@ -236,7 +237,9 @@ export function xrayUi(data) {
     const selectedRect=visibleRect(selected)??selected.getBoundingClientRect();
     if(selectedRect.left+selectedRect.width>innerWidth-434&&selectedRect.left<innerWidth-12){card.style.left='12px';card.style.right='auto';}else{card.style.left='auto';card.style.right='12px';}
     card.innerHTML=`<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName==='iframe'?'<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>':''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(selected).map((node,index)=>`<button class="crumb" data-action="ancestor" data-index="${index}" style="padding-left:${7+Math.min(index,6)*8}px">${index?'↳ ':''}${esc(label(node))}</button>`).join('')}${selected.localName==='iframe'?'<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>':''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected)||own(parent(selected))?'disabled':''}>↑ Parent</button><button data-action="child" ${!child(selected)?'disabled':''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
-    for(const item of card.querySelectorAll('details'))if(open.includes(item.querySelector('summary')?.textContent))item.open=true;const body=card.querySelector('.content');if(body)body.scrollTop=scroll;
+    // New content already starts at zero. Writing scrollTop=0 would force its first
+    // layout during selection even though there is no scroll position to restore.
+    for(const item of card.querySelectorAll('details'))if(open.includes(item.querySelector('summary')?.textContent))item.open=true;const body=card.querySelector('.content');if(body&&scroll)body.scrollTop=scroll;
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
   function visibleRect(node) {
@@ -291,10 +294,13 @@ export function xrayUi(data) {
   }
   function watchAnimations(){
     if(releaseAnimationHook)return;
-    const descriptor=Object.getOwnPropertyDescriptor(Element.prototype,'animate');if(!descriptor?.value||!descriptor.configurable)return;
+    releaseAnimationHook=hookAnimationView(window);
+  }
+  function hookAnimationView(view){
+    const prototype=view.Element.prototype,descriptor=Object.getOwnPropertyDescriptor(prototype,'animate');if(!descriptor?.value||!descriptor.configurable)return null;
     const wrapped=function(...args){const result=descriptor.value.apply(this,args);if(enabled&&!disposed&&!own(this))animate();return result;};
-    Object.defineProperty(Element.prototype,'animate',{...descriptor,value:wrapped});
-    releaseAnimationHook=()=>{if(Object.getOwnPropertyDescriptor(Element.prototype,'animate')?.value===wrapped)Object.defineProperty(Element.prototype,'animate',descriptor);};
+    Object.defineProperty(prototype,'animate',{...descriptor,value:wrapped});
+    return ()=>{if(Object.getOwnPropertyDescriptor(prototype,'animate')?.value===wrapped)Object.defineProperty(prototype,'animate',descriptor);};
   }
   const scan=()=>{
     // Rebuild observed roots so detached components are not retained indefinitely.
@@ -318,6 +324,8 @@ export function xrayUi(data) {
     candidates=[...visible,...fallback].slice(0,800);candidateLimit=observed>800;
     root.querySelector('.legend .hint').textContent=' · click to select · Esc back'+(candidateLimit?' · Candidate limit reached (800)':'');
     needsScan=false;
+    // Frame animations may already be running when their documents are discovered.
+    animate();
   };
   const paint=()=>{
     frame=0;if(!enabled||disposed||document.hidden)return;if(warmup){warmup=false;schedule();return;}geometryCache=new WeakMap();styleCache=new WeakMap();

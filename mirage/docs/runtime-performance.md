@@ -6,7 +6,7 @@ Both portal and standalone hosts decide `presetMode: 'bootstrap'` from whether t
 
 Model-driven catalogue field capabilities resolve imported metadata once per table and reuse the staff profile grants within that calculation. They retain record rights, field-security precedence and sharing checks. Catalogue construction and its HTTP projection yield between tables after approximately 8 ms of work, while keeping their serialized read boundary. That projection reuses its immutable metadata inputs within the read epoch. Grid and record reads can also reuse those inputs until a potentially mutating read plug-in captures its rollback snapshot; reuse stops before arbitrary plug-in code runs. Staff grants and field-security results are not cached across requests. Writes wait for the read boundary; unrelated status requests can continue. Disconnecting a consumer stops remaining catalogue work, and completed epochs release their metadata references.
 
-`status.bootstrap.timings` reports source/cache, state restore/composition, preset and organization costs, state-file size/format, and memory snapshots. `startupMs` and `listenerMs` measure the runtime call through initial listener/watcher setup; portal `sourceBootstrapMs` separately measures its earlier source/state composition milestone. A listener is not proof that the browser has loaded its application. Optional embedded `onStartup({ phase, elapsedMs })` observes phase starts and `listener-ready`; observer exceptions do not change runtime behavior.
+`status.bootstrap.timings` reports source/cache, state restore/composition, preset and organization costs, state-file size/format, and memory snapshots. `startupMs` and `listenerMs` measure the runtime call through initial listener/watcher setup; portal `sourceBootstrapMs` separately measures its earlier source/state composition milestone. A listener is not proof that the browser has loaded its application. Optional embedded `onStartup({ phase, elapsedMs })` observes phase starts and `listener-ready`; synchronous exceptions and rejected promises/thenables do not fail startup. Observer results are not awaited, so a pending observer cannot block listener readiness.
 
 Run the bounded invented-data probe from the toolkit checkout:
 
@@ -55,3 +55,24 @@ The final portal and standalone runs retained all **10,240 forms and 20,000 reco
 The final portal receipt was collected under the initial wider startup investigation thresholds (120 s fresh / 90 s restart); its actual elapsed measurements were subsequently independently checked against the tightened **30 s** target, and each passed. The standalone receipt declared 30 s before execution. Both final runs had zero status/request findings at the original **1 s** heartbeat target. Warm Solution imports had 20,738 parser-cache hits and zero misses; forms have both schema and form-parser entries. Preset body generation was again 1/0/0 across fresh/unchanged/grown phases. Portal source input was 19,005,007 bytes, with a 61,031,963-byte initial checkpoint. The portal before/after source-volume runs used identical generated XML/data recipes, independently created fresh state, and different temporary directories; they are not the identical-checkpoint comparison above.
 
 Final post-request RSS snapshots ranged from approximately 1.2 to 2.5 GB across these sequential stress runs, so memory consumption remains material. These snapshots include native buffers, allocator retention and GC history and do not prove a peak-memory bound. The fixtures establish bounded behavior for this declared source volume and preserve input completeness; the private consumer's exact export/persona and browser-ready latency remain unmeasured.
+
+The independent feedback audit repeated both complete large-mode matrices after
+the follow-up fixes. Every run again retained 10,498 XML files, 10,240 forms and
+20,000 records, preserved the journal edit, generated preset bodies only on fresh
+state, and returned no timing/request findings at the declared 30 s startup and
+1 s heartbeat/data-read budgets:
+
+| Surface and phase | Startup | Cold / warm catalogue | Maximum status | First grid / record |
+| --- | ---: | ---: | ---: | ---: |
+| Portal fresh | 11,210 ms | 2,215 / 808 ms | 415 ms | 150 / 28 ms |
+| Portal unchanged | 10,158 ms | 2,318 / 849 ms | 402 ms | 154 / 28 ms |
+| Portal grown journal | 9,245 ms | 2,270 / 783 ms | 427 ms | 134 / 28 ms |
+| Standalone fresh | 10,083 ms | 902 / 813 ms | 421 ms | 158 / 21 ms |
+| Standalone unchanged | 10,572 ms | 832 / 851 ms | 418 ms | 170 / 24 ms |
+| Standalone grown journal | 10,370 ms | 799 / 752 ms | 387 ms | 126 / 19 ms |
+
+These are further sequential single-host samples, not tighter guarantees. RSS
+snapshots again reached about 2.6 GB; the memory and embedded-cancellation limits
+above still apply. The separate Power Pages PCF preload is not part of the
+model-driven client catalogue's aggregate import budget; see
+[client source selection](model-driven-customizations.md).

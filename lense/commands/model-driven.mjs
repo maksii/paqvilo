@@ -9,6 +9,7 @@ import { interceptOrigin } from '../intercept.mjs';
 import { refreshUrl } from '../navigation.mjs';
 import { startModelDrivenInspector } from '../model-driven-inspector.mjs';
 import { createModelDrivenOverlay, importModelDrivenProject, modelDrivenOrigin, readModelDrivenResourceMap } from '../model-driven.mjs';
+import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
 
 const cleanError = error => String(error.message).replace(/https?:\/\/[^\s<>"']+/g, value => {
   try { const url = new URL(value); return `${url.origin}${url.pathname}${url.search ? '?[redacted]' : ''}`; } catch { return '[redacted URL]'; }
@@ -47,11 +48,21 @@ export function publishModelDrivenReload(overlay, next, mappings) {
 }
 
 export default async function run(_cfg, args, [action = 'dev'] = []) {
+  const progress = action === 'dev' ? args.startup ?? startupProgress() : null;
+  try { return await runModelDriven(args, action, progress); }
+  catch (error) { progress?.fail(cleanError(error)); throw error; }
+  finally { progress?.close(); }
+}
+
+async function runModelDriven(args, action, progress) {
   if (!['inspect', 'dev'].includes(action)) throw new Error('model-driven accepts inspect or dev.');
   if (!args.project) throw new Error('model-driven requires --project with selected Solution sources.');
   if (args.json && action !== 'inspect') throw new Error('--json is supported by model-driven inspect. Use --output for a dev session report.');
+  progress?.phase('configuration');
   const origin = modelDrivenOrigin(args.url), project = await loadProjectConfig(args.project);
+  progress?.phase('source discovery and Solution resources');
   let imported = await importModelDrivenProject(project);
+  progress?.phase('resource mappings');
   const mappings = await readModelDrivenResourceMap(args['resource-map']);
   let page, inspector;
   const overlay = createModelDrivenOverlay({ origin, imported, mappings, ownsRequest: request => request.frame?.().page?.() === page,
@@ -69,6 +80,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   const timeout = args.timeout == null ? null : Number(args.timeout);
   if (timeout != null && (!Number.isInteger(timeout) || timeout < 1 || timeout > 3600000)) throw new Error('--timeout must be 1..3600000 milliseconds.');
   const cfg = { ...standaloneMirageConfiguration(project, args), origin };
+  progress?.phase('browser setup');
   const { context, close, attached, debugPort } = await openBrowser(cfg, { debugPort: cfg.browser.debugPort });
   let release, watcher, timer, reloadTimer, reloads, stopping = false, stop;
   const stopped = new Promise(resolve => { stop = resolve; });
@@ -78,10 +90,12 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
   try {
     page = attached ? await context.newPage() : context.pages()[0] ?? await context.newPage();
     page.once('close', stop);
+    progress?.phase('interception and inspector setup');
     release = await interceptOrigin(context, origin, route => overlay.handle(route), { bypassCSP: cfg.browser.bypassCSP, ownsPage: candidate => candidate === page, onError });
     inspector = await startModelDrivenInspector({ context, page, overlay, cfg, imported, attached, stop,
       runtime: { watching: !args['no-reload'], debugPort: debugPort ?? null } });
     if (!args['no-reload']) {
+      progress?.phase('source watcher setup');
       const mapFile = args['resource-map'] ? path.resolve(args['resource-map']) : null;
       const clientSources = project.modelDriven?.clientSources ?? [], sourceRoots = [...project.solutionRoots, ...clientSources];
       const watchFilter = () => solutionWatchFilter({ roots: sourceRoots, layers: [...imported.layers, ...clientSources.map(dir => ({ type: 'directory', dir }))] });
@@ -123,9 +137,10 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
     if (timeout) timer = setTimeout(stop, timeout);
     console.log(`Opening model-driven app at ${origin}. Local scripts are overlaid in this browser; app actions use the selected environment.`);
     console.log('Close the dedicated browser or press Ctrl+C to stop. Resource queries and credentials are omitted from the report.');
-    try { await page.goto(url.href, { waitUntil: 'domcontentloaded' }); }
+    let loaded;
+    try { loaded = await waitForStartupPage(page, url.href, { progress, stopped }); }
     catch (error) { throw new Error(`Could not open the model-driven app: ${cleanError(error)}`); }
-    console.log('Model-driven overlay ready. Edit a declared Solution webresource or mapped PCF resource to reload.');
+    if (loaded) console.log('Model-driven overlay installed; document and initial resources loaded. Sign-in and native application readiness remain unverified. Edit a declared Solution webresource or mapped PCF resource to reload.');
     await stopped;
   } finally {
     stopping = true; clearTimeout(timer); clearTimeout(reloadTimer);

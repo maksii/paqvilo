@@ -683,7 +683,7 @@ export async function resolveTargets(options) {
     // source-only inventory stages deliberately remain independent diagnostics.
     let boundContext;
     const createRuntime = async settings => {
-      boundContext ??= (await import('./lib/mirage-context.mjs')).createMirageContext({ config: cfg.configFile, site: cfg.siteName, repo: cfg.sourceRoot });
+      boundContext ??= (await import('./lib/mirage-context.mjs')).createMirageContext({ config: cfg.configFile, site: cfg.siteName, env: cfg.envName, repo: cfg.sourceRoot });
       return (await boundContext).createSimulator({ stateFile: settings.stateFile, watch: settings.watch, port: settings.port });
     };
     targets.push({

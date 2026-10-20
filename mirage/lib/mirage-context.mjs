@@ -15,7 +15,7 @@ import { loadCatalogue, resolveMirageConfig } from '../../lense/config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 
 /** Bind trusted project packs once. No implicit adjacent module discovery. */
-export async function createMirageContext({ packs = [], config, site, repo, portal, metadata, ...options } = {}) {
+export async function createMirageContext({ packs = [], config, site, env, repo, portal, metadata, ...options } = {}) {
   if (config instanceof URL) config = fileURLToPath(config);
   // A catalogue without a selected site is a pack binding for project tests. Do not
   // import an arbitrary default portal or require its checkout to exist.
@@ -31,13 +31,13 @@ export async function createMirageContext({ packs = [], config, site, repo, port
       }
     }
   }
-  const cfg = config && site !== undefined ? await loadConfig({ config, site, ...(repo ? { repo } : {}) }, process.env) : null;
+  const cfg = config && site !== undefined ? await loadConfig({ config, site, ...(env !== undefined ? { env } : {}), ...(repo ? { repo } : {}) }, process.env) : null;
   const project = cfg?.mirageConfig.project ? await loadProjectConfig(cfg.mirageConfig.project) : null;
   const selected = project?.portals.find(item => item.sourceDir === cfg.sourceDir) ?? project?.portals.find(item => item.id === project.defaultPortal);
   const sourceDir = selected?.sourceDir ?? cfg?.sourceDir;
   const solutionRoots = selected?.solutionRoots ?? (cfg ? (await resolveSolutionRoots({ sourceDir, catalogue: cfg.mirageConfig })).roots : []);
   const solutionOrder = project?.solutionOrder ?? cfg?.mirageConfig.solutionOrder ?? 'derived';
-  const configuredOrigin = project ? projectOrigin(project, selected) ?? cfg.origin : cfg?.origin;
+  const configuredOrigin = env !== undefined ? cfg?.origin : project ? projectOrigin(project, selected) ?? cfg.origin : cfg?.origin;
   // A local-only catalogue target is not a live reference (same rule as mirage/cli.mjs).
   const origin = /^https:\/\//i.test(configuredOrigin ?? '') ? configuredOrigin : null;
   metadata ??= solutionRoots.length ? await importSolutionData(solutionRoots, { order: solutionOrder }) : undefined;

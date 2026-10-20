@@ -93,6 +93,54 @@ test('frame scrolling follows controls and clips highlights to the visible embed
   assert.equal(await page.evaluate(()=>window.actions),0);
 });
 
+test('frame highlights follow existing and newly started Web Animations and restore animation hooks',async t=>{
+  const {page}=await fixture(t),inner=page.frameLocator('#first');
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.toggle(false));
+  await inner.locator('#title').evaluate(node=>{
+    window.originalAnimate=Element.prototype.animate;
+    window.movement=node.animate([{transform:'translateX(0)'},{transform:'translateX(120px)'}],{duration:2000,iterations:Infinity,direction:'alternate'});
+  });
+  await page.evaluate(()=>{
+    const api=document.getElementById('paqvilo-xray').__px;api.toggle(true);
+    api.select(document.querySelector('#first').contentDocument.querySelector('#title'));
+  });
+  const follows=async()=>{
+    for(let sample=0;sample<2;sample++){
+      const start=await inner.locator('#title').evaluate(node=>node.getBoundingClientRect().x);
+      await page.waitForFunction(start=>{
+        const frame=document.querySelector('#first'),node=frame.contentDocument.querySelector('#title');
+        const mark=document.getElementById('paqvilo-xray').shadowRoot.querySelector('.mark.selected');if(!mark)return false;
+        const local=node.getBoundingClientRect(),outer=frame.getBoundingClientRect(),actual=mark.getBoundingClientRect();
+        return Math.abs(local.x-start)>20&&Math.abs(actual.x-(outer.x+frame.clientLeft+local.x))<3;
+      },start);
+    }
+  };
+  await follows();
+  await inner.locator('#title').evaluate(node=>{window.movement.cancel();node.style.transform='translateX(0)';});
+  await page.waitForFunction(()=>{
+    const frame=document.querySelector('#first'),node=frame.contentDocument.querySelector('#title');
+    const mark=document.getElementById('paqvilo-xray').shadowRoot.querySelector('.mark.selected');
+    return Math.abs(mark.getBoundingClientRect().x-(frame.getBoundingClientRect().x+frame.clientLeft+node.getBoundingClientRect().x))<3;
+  });
+  // A later Web Animation has no CSS animationstart/transitionrun event.
+  await inner.locator('#title').evaluate(node=>{window.movement=node.animate([{transform:'translateX(0)'},{transform:'translateX(120px)'}],{duration:2000,iterations:Infinity,direction:'alternate'});});
+  await follows();
+  await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.toggle(false));
+  assert.equal(await inner.locator('body').evaluate(()=>Element.prototype.animate===window.originalAnimate),true);
+  assert.equal(await page.evaluate(()=>window.actions),0);
+});
+
+test('source-card refresh restores a nonzero existing content scroll position',async t=>{
+  const {page,data,report}=await fixture(t);
+  const elementSources=Array.from({length:16},(_,index)=>({selector:'#title',matchKind:'id',kind:'template',name:'Invented source '+index,ref:'sources/'+index+'.html',sourceFile:'/sources/'+index+'.html'}));
+  await page.evaluate(({data,report,elementSources})=>document.getElementById('paqvilo-xray').__px.update(data,{...report,elementSources}),{data,report,elementSources});
+  await pick(page,page.frameLocator('#first').locator('#title'));
+  const scroll=await page.locator('#paqvilo-xray .card .content').evaluate(node=>{node.scrollTop=120;return node.scrollTop;});
+  assert.equal(scroll,120);
+  await page.evaluate(({data,report,elementSources})=>document.getElementById('paqvilo-xray').__px.update(data,{...report,elementSources}),{data,report,elementSources});
+  assert.equal(await page.locator('#paqvilo-xray .card .content').evaluate(node=>node.scrollTop),120);
+});
+
 
 test('selected frame assets resolve relative URLs against the embedded document base',async t=>{
   const {page,data,report}=await fixture(t);

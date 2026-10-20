@@ -9,6 +9,7 @@ import path from 'node:path';
 import { spawn, spawnSync, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
+import { setTimeout as delay } from 'node:timers/promises';
 import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
@@ -37,6 +38,15 @@ export function validateMirageAction(action) {
 }
 const PROJECT_ID = /^[a-z0-9][a-z0-9._-]*$/i;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+const abortable = (promise, signal) => {
+  if (!signal) return promise;
+  signal.throwIfAborted();
+  return new Promise((resolve, reject) => {
+    const abort = () => reject(signal.reason);
+    signal.addEventListener('abort', abort, { once: true });
+    Promise.resolve(promise).then(resolve, reject).finally(() => signal.removeEventListener('abort', abort));
+  });
+};
 
 const resolved = (value) => value ? path.resolve(value) : null;
 export const samePath = (a, b) => {
@@ -119,7 +129,16 @@ const executeFile = promisify(execFile);
 export async function processIdentityAsync(pid, { signal } = {}) {
   if (signal?.aborted) return null;
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  if (process.platform !== 'win32') return processIdentity(pid);
+  if (process.platform !== 'win32') {
+    try {
+      const stat = await fs.readFile(`/proc/${pid}/stat`, { encoding: 'utf8', signal });
+      return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] ?? null;
+    } catch { if (signal?.aborted) return null; }
+    try {
+      const { stdout } = await executeFile('ps', ['-o', 'lstart=', '-p', String(pid)], { windowsHide: true, timeout: 3000, encoding: 'utf8', signal });
+      return stdout.trim() || null;
+    } catch { return null; }
+  }
   for (let attempt = 0; attempt < 3; attempt++) {
     try {
       const { stdout } = await executeFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`], { windowsHide: true, timeout: 15000, encoding: 'utf8', signal });
@@ -156,11 +175,12 @@ const OWNERSHIP_LOCK_STALE = 10_000;
  * Runs `action` holding the ownership lock (`<sessions file>.lock`, created exclusively), so
  * toolkit commands in other processes cannot interleave their read-modify-write with this one.
  */
-async function withOwnershipLock(paths, action) {
+async function withOwnershipLock(paths, action, { signal } = {}) {
   const lock = `${paths.ownershipFile}.lock`;
   await fs.mkdir(path.dirname(lock), { recursive: true });
   const deadline = Date.now() + 3 * OWNERSHIP_LOCK_STALE;
   for (;;) {
+    signal?.throwIfAborted();
     try {
       const handle = await fs.open(lock, 'wx');
       await handle.writeFile(String(process.pid)).finally(() => handle.close());
@@ -171,10 +191,11 @@ async function withOwnershipLock(paths, action) {
         if (Date.now() - (await fs.stat(lock)).mtimeMs > OWNERSHIP_LOCK_STALE) await fs.rm(lock, { force: true });
       } catch { /* released meanwhile */ }
       if (Date.now() > deadline) throw new Error(`The Mirage ownership records stayed locked: ${lock}`);
-      await sleep(20 + Math.floor(Math.random() * 40));
+      await delay(20 + Math.floor(Math.random() * 40), undefined, { signal });
     }
   }
   try {
+    signal?.throwIfAborted();
     return await action();
   } finally {
     await fs.rm(lock, { force: true }).catch(() => {});
@@ -187,40 +208,47 @@ async function withOwnershipLock(paths, action) {
  * one command or several, must not lose a record.
  */
 const ownershipUpdates = new Map();
-export async function updateOwnedSessions(paths, change) {
+export async function updateOwnedSessions(paths, change, { signal } = {}) {
   const key = path.resolve(paths.ownershipFile);
-  const run = (ownershipUpdates.get(key) ?? Promise.resolve()).then(() => withOwnershipLock(paths, async () => {
+  const previous = ownershipUpdates.get(key) ?? Promise.resolve();
+  const run = abortable(previous, signal).then(() => withOwnershipLock(paths, async () => {
     const next = change(await ownedSessions(paths));
     await saveOwnedSessions(paths, next);
     return next;
-  }));
-  ownershipUpdates.set(key, run.catch(() => {}));
+  }, { signal }));
+  // A cancelled queued caller returns promptly, but later updates must still
+  // wait for its predecessor rather than overtaking an active publication.
+  ownershipUpdates.set(key, Promise.allSettled([previous, run]).then(() => {}));
   return run;
 }
 
 // ------------------------------------------------------------------------------ discovery records
-async function discoveryRecords(paths) {
+async function discoveryRecords(paths, { signal } = {}) {
+  signal?.throwIfAborted();
   let names = [];
-  try { names = await fs.readdir(paths.discoveryRoot); } catch { return []; }
+  try { names = await fs.readdir(paths.discoveryRoot); } catch { signal?.throwIfAborted(); return []; }
+  signal?.throwIfAborted();
   const records = [];
   for (const name of names.filter((item) => /^session-\d+\.json$/.test(item)).sort()) {
+    signal?.throwIfAborted();
     const file = path.join(paths.discoveryRoot, name);
     try {
-      const record = JSON.parse(await fs.readFile(file, 'utf8'));
+      const record = JSON.parse(await fs.readFile(file, { encoding: 'utf8', signal }));
       if (!Number.isInteger(record.pid) || (!record.url && !Array.isArray(record.portals))) continue;
       records.push({ record, file });
-    } catch { /* incomplete discovery file */ }
+    } catch { signal?.throwIfAborted(); /* incomplete discovery file */ }
   }
   return records;
 }
 
-async function readRuntime(url, fallbackSite = null) {
+async function readRuntime(url, fallbackSite = null, { signal } = {}) {
+  signal?.throwIfAborted();
   if (!url || !loopbackUrl(url)) return null;
   // The light status endpoint first; older runtimes answer 404 there and expose the state summary.
   for (const pathname of ['/_sim/api/status', '/_sim/api/state?summary=1', '/__sim/api/state?summary=1']) {
     let response;
-    try { response = await fetch(new URL(pathname, url), { signal: AbortSignal.timeout(2500) }); }
-    catch { return null; }
+    try { response = await fetch(new URL(pathname, url), { signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(2500)]) : AbortSignal.timeout(2500) }); }
+    catch { signal?.throwIfAborted(); return null; }
     if (response.status === 404) continue;
     if (!response.ok) return null;
     try {
@@ -236,21 +264,23 @@ async function readRuntime(url, fallbackSite = null) {
         runtime: status.runtime ?? { kind: 'power-pages' }, capabilities: status.capabilities ?? null,
         links: status.links ?? null, simulation: status.simulation ?? null,
       };
-    } catch { return null; }
+    } catch { signal?.throwIfAborted(); return null; }
   }
   return null;
 }
 
 /** Discovered Mirage portals; `probe` asks each live process whether its runtime answers. */
-export async function discoveries(paths = DEFAULT_PATHS, { probe = true } = {}) {
+export async function discoveries(paths = DEFAULT_PATHS, { probe = true, signal } = {}) {
   const sessions = [];
-  for (const { record, file } of await discoveryRecords(paths)) {
+  for (const { record, file } of await discoveryRecords(paths, { signal })) {
+    signal?.throwIfAborted();
     const processAlive = isAlive(record.pid);
     if (!processAlive && !isAlive(record.pid)) { await fs.rm(file,{force:true}).catch(()=>{}); continue; }
     const { portals, ...base } = record;
     const entries = Array.isArray(portals) ? portals.map((portal) => ({ ...base, ...portal, id: portal.id })) : [base];
     for (const entry of entries) {
-      const runtime = processAlive && probe ? await readRuntime(entry.url, entry.id ?? null) : null;
+      signal?.throwIfAborted();
+      const runtime = processAlive && probe ? await readRuntime(entry.url, entry.id ?? null, { signal }) : null;
       sessions.push({ ...entry, discovery: file, processAlive, ready: Boolean(runtime), runtime });
     }
   }
@@ -550,7 +580,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
   const controller = new AbortController();
   const interrupt = () => {
     interrupted = true;
-    controller.abort();
+    controller.abort(new Error('Mirage startup was interrupted; the starting process was stopped.'));
     if (child && child.exitCode === null && !child.killed) { try { child.kill('SIGTERM'); } catch { /* already exited */ } }
   };
   process.on('SIGINT', interrupt);
@@ -563,6 +593,7 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
     // yet be read. Do not leave a detached importer after early cancellation.
     if (child && child.exitCode === null && !child.killed) { try { child.kill('SIGTERM'); } catch { /* already exited */ } }
     await cleanup?.();
+    if (interrupted) throw Object.assign(new Error('Mirage startup was interrupted; the starting process was stopped.'), { writesFiles: error.writesFiles });
     throw error;
   } finally {
     process.off('SIGINT', interrupt);
@@ -594,15 +625,22 @@ async function startRuntime(cfg, args, paths, startup) {
   startup.check();
   args.startup?.phase('existing runtime and ownership', cfg.siteName);
   const owned = await ownedSessions(paths);
-  const candidates = (await discoveries(paths)).filter((session) => session.processAlive && session.ready
+  // Listing local records is cheap. Probe only runtimes eligible for this
+  // launch; unrelated listeners can each consume the full probe timeout.
+  const candidates = (await discoveries(paths, { probe: false, signal: startup.signal })).filter((session) => session.processAlive
     && (identity.sourceDir ? samePath(session.sourceDir, identity.sourceDir) : !session.sourceDir)
     && owned.some((item) => item.pid === session.pid && item.discovery === session.discovery
       && identityMatches(item.identity, identity)));
+  startup.check();
   let existing;
   for (const session of candidates) {
     const currentIdentity = await processIdentityAsync(session.pid, { signal: startup.signal });
     startup.check();
-    if (currentIdentity && owned.some(item => item.pid === session.pid && item.processIdentity === currentIdentity)) { existing = session; break; }
+    if (currentIdentity && owned.some(item => item.pid === session.pid && item.discovery === session.discovery && item.processIdentity === currentIdentity && identityMatches(item.identity, identity))) {
+      const runtime = await readRuntime(session.url, session.id ?? null, { signal: startup.signal });
+      startup.check();
+      if (runtime) { existing = { ...session, ready: true, runtime }; break; }
+    }
   }
   if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
   if (Date.now() >= started + timeout) throw new Error(`Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`);
@@ -621,9 +659,13 @@ async function startRuntime(cfg, args, paths, startup) {
   await logHandle.close();
   child.unref();
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
+  let registered = false;
   startup.cleanup(async () => {
     await fs.rm(discovery, { force: true }).catch(() => {});
-    await updateOwnedSessions(paths, sessions => sessions.filter(item => item.pid !== child.pid)).catch(() => {});
+    // No ownership entry was published if cancellation interrupted its lock
+    // acquisition. Published records get a bounded best-effort cleanup; a
+    // contended foreign lock must not hold the cancelled command open.
+    if (registered) await updateOwnedSessions(paths, sessions => sessions.filter(item => item.pid !== child.pid), { signal: AbortSignal.timeout(1000) }).catch(() => {});
   });
   args.startup?.phase('process ownership', cfg.siteName);
   const childIdentity = await processIdentityAsync(child.pid, { signal: startup.signal });
@@ -633,13 +675,16 @@ async function startRuntime(cfg, args, paths, startup) {
   await updateOwnedSessions(paths, (sessions) => [...sessions.filter((item) => item.pid !== child.pid), {
     pid: child.pid, processIdentity: childIdentity, sourceDir: identity.sourceDir, project: identity.project, portal: identity.portal,
     discovery, url: null, stateFile: identity.stateFile, identity, log, ready: false, startedAt: new Date().toISOString(),
-  }]);
+  }], { signal: startup.signal });
+  registered = true;
+  startup.check();
   const abandon = async () => {
-    if (childIdentity && isAlive(child.pid) && await processIdentityAsync(child.pid) === childIdentity) {
+    startup.check();
+    if (childIdentity && isAlive(child.pid) && await processIdentityAsync(child.pid, { signal: startup.signal }) === childIdentity) {
       try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }
     }
     await fs.rm(discovery, { force: true }).catch(() => {});
-    await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => !(item.pid === child.pid && item.processIdentity === childIdentity))).catch(() => {});
+    await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => !(item.pid === child.pid && item.processIdentity === childIdentity)), { signal: startup.signal }).catch(() => {});
   };
   const deadline = started + timeout;
   args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
@@ -658,22 +703,23 @@ async function startRuntime(cfg, args, paths, startup) {
         const portal = Array.isArray(record.portals) ? record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0] : null;
         const { portals: ignoredPortals, ...base } = record;
         const session = { ...base, ...(portal ?? {}), id: portal?.id, discovery, processAlive: true, ready: false, runtime: null };
-        session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName);
+        session.runtime = await readRuntime(session.url, session.id ?? cfg.siteName, { signal: startup.signal });
         session.ready = Boolean(session.runtime);
         if (session.ready) {
           await updateOwnedSessions(paths, (sessions) => [...sessions.filter((item) => item.pid !== session.pid), {
             pid: session.pid, processIdentity: childIdentity, sourceDir: session.sourceDir, project: identity.project, portal: session.id ?? identity.portal,
             discovery, url: session.url, stateFile: session.stateFile, identity, log, ready: true, startedAt: new Date(started).toISOString(),
-          }]);
+          }], { signal: startup.signal });
+          startup.check();
           return { ...session, owned: true, started: true, launch, writesFiles: [identity.stateFile, discovery, log, paths.ownershipFile].filter(file => file && fsSync.existsSync(file)) };
         }
-      } catch { /* server has not written its discovery file yet */ }
+      } catch { startup.check(); /* server has not written its discovery file yet */ }
       if (!isAlive(child.pid)) {
         await abandon();
         const output = await fs.readFile(log, 'utf8').catch(() => '');
         throw new Error(`Mirage exited before it became ready. See startup log: ${log}${output.trim() ? `\n${output.trim().slice(-3000)}` : ''}`);
       }
-      await sleep(150);
+      await delay(150, undefined, { signal: startup.signal });
     }
     await abandon();
     startup.check();

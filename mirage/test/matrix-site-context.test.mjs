@@ -58,3 +58,34 @@ test('matrix runtimes retain site-bound platform, observations, profiles and exp
     assert.equal((await inspect(restarted)).joins, expected);
   }
 });
+
+test('matrix and public site contexts retain the explicitly selected environment and its runtime origin', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-matrix-env-'));
+  t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const write = async (name, value) => { const file = path.join(root, name); await fs.mkdir(path.dirname(file), { recursive: true }); await fs.writeFile(file, value); return file; };
+  await write('portal/website.yml', 'adx_websiteid: invented\nadx_name: Invented\n');
+  await write('portal/web-pages/Home.webpage.yml', 'adx_webpageid: home\nadx_name: Home\nadx_partialurl: /\nadx_pagetemplateid: main\n');
+  await write('portal/Main.pagetemplate.yml', 'adx_pagetemplateid: main\nadx_webtemplateid: main\n');
+  await write('portal/Main.webtemplate.yml', 'adx_webtemplateid: main\nadx_name: Main\n');
+  await write('portal/Main.webtemplate.source.html', '<html><body>Only local source bytes</body></html>');
+  // The fake reference URLs are configuration values only. This test requests
+  // local administration and rendered content; no reference origin is contacted.
+  const first = 'https://first.example.invalid', second = 'https://second.example.invalid';
+  const config = await write('catalogue.json', JSON.stringify({ sourceRoot: root, sites: { invented: { source: 'portal', defaultEnv: 'first',
+    environments: { first, second }, mirage: { solutionRoots: [], observed: { headers: { page: { 'x-invented-local': 'retained' } }, evidence: 'Synthetic local response fixture' } } } } }));
+  const opened = []; t.after(async () => { for (const runtime of opened) await runtime.close(); });
+  const open = async (context, state) => { const runtime = await context.createSimulator({ stateFile: path.join(root, state), watch: false, port: 0 }); opened.push(runtime); return runtime; };
+  const { targets: [target] } = await resolveTargets({ config, sites: ['invented'], env: { invented: 'second' } });
+  assert.equal(target.label, 'invented/second'); assert.equal(target.reference, 'second'); assert.equal(target.origin, second);
+  const matrix = await target.createRuntime({ stateFile: path.join(root, 'matrix.json'), watch: false, port: 0 }); opened.push(matrix);
+  const direct = await open(await createMirageContext({ config, site: 'invented', env: 'second' }), 'direct.json');
+  const defaultRuntime = await open(await createMirageContext({ config, site: 'invented' }), 'default.json');
+  for (const [runtime, origin] of [[matrix, second], [direct, second], [defaultRuntime, first]]) {
+    assert.equal(runtime.live.status().origin, origin);
+    assert.equal(runtime.store.state.simulator.live.origin, origin);
+    const state = await fetch(runtime.url + '/_sim/api/state').then(response => response.json());
+    assert.equal(state.config.live.origin, origin);
+    const home = await fetch(runtime.url); assert.equal(home.headers.get('x-invented-local'), 'retained'); assert.match(await home.text(), /Only local source bytes/);
+  }
+  await assert.rejects(createMirageContext({ config, site: 'invented', env: 'absent' }), /Unknown environment/);
+});

@@ -2142,5 +2142,26 @@
         "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/174"
       }
     ]
+  },
+  "standaloneArcTestReview": {
+    "reviewedAt": "2026-10-20",
+    "sourceHead": "2c4a931c84b15f73b88caa0742241590e591f131",
+    "reviewStatus": "Independent review covers only the guarded standalone Arc challenge-file-to-Authorization regression below, not a runtime exception or a blanket query waiver. The complete staged validation gate must pass before alert triage. After commit, the exact validated fixed SHA and Security outcome will be recorded in the GitHub alert comment. No alert dismissal has been performed during this source review.",
+    "entries": [
+      {
+        "number": 219,
+        "rule": "js/file-access-to-http",
+        "securitySeverity": "medium",
+        "originalLocation": {
+          "path": "mirage/test/standalone-runtime.test.mjs",
+          "start_line": 192,
+          "end_line": 192
+        },
+        "disposition": "false-positive",
+        "evidence": "The standalone Arc regression intentionally reads the one-time proof file created by its owned simulator and sends that exact proof as Basic Authorization to the same owned identity listener. The original candidate lacked explicit read confinement and redirect rejection in this test, so the fixture was hardened before proposing triage. It now accepts only an anchored Basic realm header naming identity-<12 lowercase hex>.key directly inside the test's mkdtemp project .paqvilo/mirage directory; canonical root, directory and file checks reject prefix siblings and symlink/junction escapes. readLocalFile confines the descriptor to that canonical directory, caps the read at 64 bytes and checks file identity; the proof must contain exactly 64 lowercase hexadecimal characters. The request URL is constructed from literal http://127.0.0.1 plus the port of the test's actual listening server, uses the fixed identity route and refuses redirects. No arbitrary local file, external URL, reference origin or production credential is selected. The file-to-header flow remains visible because it is the protocol under test; production runtime code and its options are unchanged.",
+        "verification": "From the mirage working directory, eight focused identity/guard regressions passed and the complete standalone-runtime.test.mjs suite passed 19/19. All six API/model-driven managed-identity mode cases retain real Arc challenge-file redemption, token-authenticated reads, single-use proof removal and shutdown cleanup. Dedicated negative regressions reject outside/prefix-sibling/malformed/oversized/linked proof files, remote and unowned destinations, and credential-bearing redirects. The complete staged gate (npm run validate and the repository commit-hook validation on its isolated staged snapshot) must still pass before triage; this record does not claim that unrun outcome.",
+        "alertUrl": "https://github.com/maksii/paqvilo/security/code-scanning/219"
+      }
+    ]
   }
 }

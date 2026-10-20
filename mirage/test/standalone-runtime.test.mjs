@@ -5,12 +5,46 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import http from 'node:http';
 import { createSimulator } from '../server.mjs';
 import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
 import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
+import { readLocalFile } from '../../lense/local-file.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
+
+// Arc proves access to a fresh local challenge file. Keep that intentional
+// file-to-Authorization protocol visible while confining both ends to this test.
+function identityEndpoint(api, mode, params) {
+  const origin = new URL(api.origin), port = Number(origin.port);
+  if (!['appservice', 'imds', 'arc'].includes(mode) || origin.protocol !== 'http:' || origin.hostname !== '127.0.0.1'
+    || !Number.isInteger(port) || port < 1 || port > 65535 || origin.username || origin.password || origin.pathname !== '/' || origin.search || origin.hash
+    || !api.servers.some(server => server.listening && server.address()?.address === '127.0.0.1' && server.address().port === port))
+    throw new Error('Identity requests require the exact owned HTTP loopback listener.');
+  const endpoint = new URL(mode === 'appservice' ? '/msi/token' : '/metadata/identity/oauth2/token', `http://127.0.0.1:${port}`);
+  endpoint.search = params.toString();
+  return endpoint.href;
+}
+const requestIdentity = (endpoint, headers) => fetch(endpoint, { headers, redirect: 'error', signal: AbortSignal.timeout(10000) });
+
+async function ownedArcChallenge(header, root) {
+  const prefix = 'Basic realm=';
+  if (typeof header !== 'string' || !header.startsWith(prefix)) throw new Error('Expected an Arc Basic realm challenge.');
+  const file = header.slice(prefix.length), directory = path.resolve(root, '.paqvilo', 'mirage');
+  if (!path.isAbsolute(file) || path.dirname(path.resolve(file)) !== directory || !/^identity-[a-f0-9]{12}\.key$/.test(path.basename(file)))
+    throw new Error('Arc challenge must name a direct file in the exact owned identity directory.');
+  const canonicalRoot = await fs.realpath(root), canonicalDirectory = await fs.realpath(directory), canonicalFile = await fs.realpath(file);
+  if (canonicalDirectory !== path.join(canonicalRoot, '.paqvilo', 'mirage') || canonicalFile !== path.join(canonicalDirectory, path.basename(file)))
+    throw new Error('Arc challenge escaped the owned directory through a link.');
+  return { file, directory: canonicalDirectory };
+}
+
+async function readOwnedArcSecret(challenge) {
+  const secret = await readLocalFile(challenge.file, { root: challenge.directory, maxBytes: 64, encoding: 'utf8' });
+  if (!/^[a-f0-9]{64}$/.test(secret)) throw new Error('Arc challenge must contain exactly the generated 64 hexadecimal characters.');
+  return secret;
+}
 async function fixture(t, options, sourceOverrides = {}) {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-organization-'));
   t.after(() => fs.rm(root, { recursive: true, force: true }));
@@ -184,24 +218,64 @@ for (const kind of ['dataverse-api', 'model-driven']) for (const mode of ['appse
   assert.equal(sim.status().dataverse.managedIdentity.header, null);
   assert.equal((await body(await fetch(sim.url + '/_sim/api/dataverse'))).managedIdentity.header, null);
   const params = new URLSearchParams({ resource: sim.dataverse.origin, 'api-version': '2019-08-01' });
-  const endpoint = sim.dataverse.origin + (mode === 'appservice' ? '/msi/token?' : '/metadata/identity/oauth2/token?') + params;
+  const endpoint = identityEndpoint(sim.dataverse, mode, params);
   const headers = mode === 'appservice' ? { 'x-identity-header': info.header } : { metadata: 'true' };
-  let response = await fetch(endpoint, { headers });
+  let response = await requestIdentity(endpoint, headers);
   if (mode === 'arc') {
-    assert.equal(response.status, 401); const challenge = response.headers.get('www-authenticate').replace(/^Basic realm=/, '');
-    response = await fetch(endpoint, { headers: { ...headers, authorization: 'Basic ' + await fs.readFile(challenge, 'utf8') } });
+    assert.equal(response.status, 401);
+    const challenge = await ownedArcChallenge(response.headers.get('www-authenticate'), root);
+    response = await requestIdentity(endpoint, { ...headers, authorization: 'Basic ' + await readOwnedArcSecret(challenge) });
+    await assert.rejects(fs.stat(challenge.file), { code: 'ENOENT' });
   }
   const token = await body(response);
   assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + token.access_token } })).status, 200);
   if (kind === 'dataverse-api' && mode === 'appservice') {
     const restricted = await body(await fetch(sim.url + '/_sim/api/dataverse/managed-identities', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ displayName: 'Restricted identity', roles: [] }) }), 201);
-    const limitedToken = await body(await fetch(endpoint + '&client_id=' + restricted.clientId, { headers }));
+    const limitedToken = await body(await requestIdentity(endpoint + '&client_id=' + restricted.clientId, headers));
     assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + limitedToken.access_token } })).status, 403);
   }
   if (mode === 'arc') {
-    const unused = await fetch(endpoint, { headers }); const file = unused.headers.get('www-authenticate').replace(/^Basic realm=/, '');
-    assert.ok(file.startsWith(root)); await fs.stat(file); await sim.close(); await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+    const unused = await requestIdentity(endpoint, headers);
+    const { file } = await ownedArcChallenge(unused.headers.get('www-authenticate'), root);
+    await fs.stat(file); await sim.close(); await assert.rejects(fs.stat(file), { code: 'ENOENT' });
   }
+});
+
+test('Arc fixture rejects outside, prefix-sibling, malformed, oversized and linked challenge files before redemption', async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'mirage-arc-guard-')); t.after(() => fs.rm(root, { recursive: true, force: true }));
+  const directory = path.join(root, '.paqvilo', 'mirage'); await fs.mkdir(directory, { recursive: true });
+  const name = 'identity-001122334455.key', file = path.join(directory, name), header = file => 'Basic realm=' + file;
+  await fs.writeFile(file, 'a'.repeat(64));
+  assert.equal(await readOwnedArcSecret(await ownedArcChallenge(header(file), root)), 'a'.repeat(64));
+  const sibling = path.join(root, '.paqvilo', 'mirage-sibling'); await fs.mkdir(sibling); await fs.writeFile(path.join(sibling, name), 'b'.repeat(64));
+  const outside = path.join(root, name); await fs.writeFile(outside, 'c'.repeat(64));
+  for (const value of [header(outside), header(path.join(sibling, name)), header(path.join(directory, 'unexpected.key')), header(name), file, null])
+    await assert.rejects(ownedArcChallenge(value, root));
+  await fs.writeFile(file, 'a'.repeat(65)); await assert.rejects(readOwnedArcSecret(await ownedArcChallenge(header(file), root)), /read limit/);
+  await fs.writeFile(file, 'not a generated hexadecimal proof'); await assert.rejects(readOwnedArcSecret(await ownedArcChallenge(header(file), root)), /64 hexadecimal/);
+  // Directory junctions exercise the canonical boundary on Windows without
+  // requiring the privilege needed to create a file symlink there.
+  await fs.rm(directory, { recursive: true });
+  await fs.symlink(sibling, directory, process.platform === 'win32' ? 'junction' : 'dir');
+  await assert.rejects(ownedArcChallenge(header(file), root), /through a link/);
+});
+
+test('identity fixture refuses remote or unowned destinations and never follows a credential-bearing redirect', async t => {
+  let forwarded = 0;
+  const receiver = http.createServer((_req, res) => { forwarded++; res.end('Must not receive identity requests.'); });
+  const redirector = http.createServer((_req, res) => { res.writeHead(302, { location: `http://127.0.0.1:${receiver.address().port}/elsewhere` }); res.end(); });
+  for (const server of [receiver, redirector]) {
+    await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise(resolve => { server.close(resolve); server.closeAllConnections(); }));
+  }
+  const port = redirector.address().port, api = { origin: `http://127.0.0.1:${port}`, servers: [redirector] };
+  const params = new URLSearchParams({ resource: api.origin, 'api-version': '2019-08-01' });
+  for (const origin of ['https://example.invalid', `http://localhost:${port}`, `http://127.0.0.1:${receiver.address().port}`, `http://user@127.0.0.1:${port}`, api.origin + '/other', api.origin + '?other=1'])
+    assert.throws(() => identityEndpoint({ ...api, origin }, 'arc', params), /exact owned HTTP loopback listener/);
+  const endpoint = identityEndpoint(api, 'arc', params);
+  assert.equal(new URL(endpoint).pathname, '/metadata/identity/oauth2/token');
+  await assert.rejects(requestIdentity(endpoint, { metadata: 'true', authorization: 'Basic invented-fixture-proof' }), /fetch failed/);
+  assert.equal(forwarded, 0);
 });
 
 test('independent client directory and ZIP sources reload without changing complete organization metadata', async t => {

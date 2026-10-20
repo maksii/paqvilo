@@ -90,6 +90,12 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
 export async function importCodeComponents(layers = [], { readFile = readLocalFile } = {}) {
   const controls = new Map(), assets = new Map(), diagnostics = [];
+  let unresolvedIdentity = false;
+  const forget = name => {
+    const previous = controls.get(name);
+    for (const resource of previous?.resources ?? []) assets.delete(resource.url);
+    controls.delete(name);
+  };
   for (const layer of layers) {
     if (!layer.dir) continue;
     if (layer.type && layer.type !== 'directory') continue;
@@ -100,16 +106,23 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
       const root = await fs.realpath(path.join(parent, name)).catch(() => null);
       if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) continue;
       const manifestFile = path.join(root, 'ControlManifest.xml');
+      const identityFile = path.join(root, 'ControlManifest.xml.data.xml');
+      if (!await fs.stat(manifestFile).catch(() => null) && !await fs.stat(identityFile).catch(() => null)) continue;
+      let identified = false;
       try {
-        if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024) continue;
-        const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
-        const control = descendants(parseSolutionXml(manifest), 'control')[0];
-        if (!control) continue;
-        const metadataFile = await fs.realpath(path.join(root, 'ControlManifest.xml.data.xml'));
-        if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024) continue;
+        const metadataFile = await fs.realpath(identityFile);
+        if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024) throw new Error('PCF identity metadata is outside its control or exceeds 1 MiB');
         const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
         const schemaName = childText(parseSolutionXml(metadata), 'Name');
-        if (!schemaName || !/^[\w.]+$/.test(schemaName)) continue;
+        if (!schemaName || !/^[\w.]+$/.test(schemaName)) throw new Error('PCF identity metadata has no valid exported Name');
+        identified = true;
+        // A declaration supersedes the earlier control even when its manifest or
+        // dependencies cannot be loaded. Never reactivate an older executable.
+        forget(schemaName);
+        if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024) throw new Error('PCF manifest is outside its control or exceeds 1 MiB');
+        const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+        const control = descendants(parseSolutionXml(manifest), 'control')[0];
+        if (!control) throw new Error('PCF manifest has no control declaration');
         const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
         const digest = createHash('sha256').update(manifest);
         const resources = [], stringResources = [], libraries = [], declaredAssets = new Map();
@@ -153,10 +166,14 @@ export async function importCodeComponents(layers = [], { readFile = readLocalFi
         for (const [url, asset] of declaredAssets) assets.set(url, asset);
       } catch (cause) {
         if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
-        if (cause.code !== 'ENOENT') diagnostics.push({ code: 'PCF_IMPORT_FAILED', file: manifestFile, message: cause.message });
+        if (!identified) unresolvedIdentity = true;
+        diagnostics.push({ code: identified ? 'PCF_IMPORT_FAILED' : 'PCF_IDENTITY_UNRESOLVED', file: manifestFile, message: cause.message });
       }
     }
   }
+  // An unreadable identity could supersede any earlier control. The independent
+  // WebResource catalogue remains usable, but no PCF fallback is safe to serve.
+  if (unresolvedIdentity) { controls.clear(); assets.clear(); }
   return { controls, assets, diagnostics };
 }
 

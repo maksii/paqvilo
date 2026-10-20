@@ -256,7 +256,7 @@ try {
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env)) throw new Error(`${command} --all cannot be combined with --site or --env`);
   const { load, needsSite } = commands[command];
-  if (command === 'dev' || command === 'mirage' && ['start', 'dev'].includes(positionals[1])) {
+  if (command === 'dev' || command === 'mirage' && ['start', 'dev'].includes(positionals[1]) || command === 'model-driven' && (positionals[1] ?? 'dev') === 'dev') {
     startup = startupProgress({ structured: values.json });
     values.startup = startup;
   }

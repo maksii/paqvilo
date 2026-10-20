@@ -4,6 +4,19 @@ import { startupProgress, waitForStartupPage, readStartupPhases } from '../lense
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import { fileURLToPath } from 'node:url';
+
+test('native model-driven dev emits startup before project configuration fails', async () => {
+  const cli = fileURLToPath(new URL('../bin/paqvilo.mjs', import.meta.url));
+  await assert.rejects(promisify(execFile)(process.execPath, [cli, 'lense', 'model-driven', 'dev', '--project',
+    path.join(os.tmpdir(), `paqvilo-missing-progress-${process.pid}-${Date.now()}.json`), '--url', 'http://127.0.0.1:1234'], { windowsHide: true }), error => {
+    assert.match(error.stderr.split(/\r?\n/)[0], /^startup\s+configuration.*0\.0s total/);
+    assert.match(error.stderr, /paqvilo:/);
+    return true;
+  });
+});
 
 test('runtime log progress is incremental and bounded without forwarding arbitrary log fields', async t => {
   const root = await fs.mkdtemp(path.join(os.tmpdir(), 'paq-startup-progress-'));

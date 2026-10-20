@@ -378,7 +378,7 @@ async function createPowerPagesSimulator({
   contentPolicyDefaults: policyDefaults = {},
 } = {}) {
   const startedAt = performance.now(), bootstrapTimings = {};
-  const startupPhase = phase => { try { onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) }); } catch { /* progress observer only */ } };
+  const startupPhase = phase => { try { Promise.resolve(onStartup?.({ phase, elapsedMs: Math.round(performance.now() - startedAt) })).catch(() => {}); } catch { /* progress observer only */ } };
   startupPhase('configuration');
   const simulation = simulationSettings(simulationOption ?? project?.simulation);
   // Dry run starts from source and pack DATA in memory. No state, asset, source
