@@ -1083,6 +1083,13 @@ export class DataStore {
     const observer = { fn, matches }; this.mutationObservers ??= new Set(); this.mutationObservers.add(observer);
     return () => this.mutationObservers.delete(observer);
   }
+  /** Synchronous delete admission runs before plug-ins and cascading writes, including SDK deletes. */
+  addDeleteGuard(fn) {
+    if (typeof fn !== 'function' || fn.constructor?.name === 'AsyncFunction')
+      throw new DataError('Delete guards must be synchronous functions.', 400, 'InvalidDeleteGuard');
+    this.deleteGuards ??= new Set(); this.deleteGuards.add(fn);
+    return () => this.deleteGuards.delete(fn);
+  }
   recordCommittedEvent(entity,operation,row,attributes,details={}) {
     if (!this.mutationObservers?.size && (!(this.committedEvents || this.committedEventConsumers?.size) || !this.committedEventCandidates)) return;
     const event = {entity,operation,row:clone(row),submittedAttributes:[...attributes],...clone(details),frame:clone(this.pluginFrames?.get(row)??{}),chain:this.flowChain?clone(this.flowChain):null};
@@ -3130,6 +3137,10 @@ export class DataStore {
   deleteRow(mapping, row, identity, deleting,options={}) {
     const key = `${mapping.logicalName}\u0000${recordKey(mapping, row)}`;
     if (deleting.has(key)) return row;
+    for (const guard of this.deleteGuards ?? []) {
+      const result = guard({ entity: mapping.logicalName, row: clone(row), identity: clone(identity) });
+      if (result && typeof result.then === 'function') { Promise.resolve(result).catch(()=>{}); throw new DataError('Delete guards cannot return a promise.', 500, 'InvalidDeleteGuard'); }
+    }
     deleting.add(key);
     const target = { [mapping.idColumn]: row[mapping.idColumn] }, attributes = Object.keys(target);
     this.exportedPluginPhase(mapping, 'delete', 10, target, row, row, identity, attributes,options);

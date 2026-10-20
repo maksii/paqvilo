@@ -288,10 +288,11 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
   const readFieldsOf = logical => {
     const definitions = metadata?.recordFields?.(logical);
     if (!definitions) return fieldsOf(logical);
+    const originalFields = fieldsOf(logical);
     // Metadata controls which structural properties exist. Preserve the record pipeline's source/observed
     // formatting facts for those properties instead of replacing option labels with synthesized defaults.
     return Object.fromEntries(Object.entries(definitions).map(([name, definition]) => {
-      const source = store.fieldDefinition(logical, name, fieldsOf);
+      const source = store.fieldDefinition(logical, name, () => originalFields);
       const field = source ? { ...definition, ...source } : definition;
       const options = field.options ?? field.statuses ?? field.states;
       return [name, options ? { ...field, options } : field];
@@ -1183,6 +1184,17 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     const ref = refOf(bind);
     return { id: ref.id, logical_name: mappingForSet(ref.set).logicalName };
   }
+  // Organization writes retain the rule version once a business date has been populated, including
+  // TimeZoneIndependent dates. Audit timestamps do not establish this history. Seeded rows without
+  // history are unchanged by reads; a later write can establish it from a currently populated date.
+  function timeZoneOnWrite(mapping, input) {
+    if (input.timezoneruleversionnumber != null || isElastic(mapping)
+      || mapping.isVirtual || mapping.tableType === 'Virtual') return {};
+    if (metadata?.recordFields && !metadata.recordFields(mapping.logicalName)?.timezoneruleversionnumber) return {};
+    const fields = store.fieldDefinitions(mapping.logicalName, fieldsOf);
+    return Object.entries(fields).some(([name, definition]) => !['createdon', 'modifiedon', OVERRIDDEN].includes(name)
+      && fieldKind(definition) === 'datetime' && input[name] != null) ? { timezoneruleversionnumber: 4 } : {};
+  }
   // Audit and ownership columns are written by the store after coercion, whether or not the mapping declares them.
   // The store calls this per row it writes, so a deep-inserted child gets the columns of its own table.
   // A created or updated row takes the next org-wide row version (state.rowVersion, persisted): its versionnumber, and the ETag W/"<versionnumber>".
@@ -1190,6 +1202,7 @@ export function createRecordHandlers({ store, change, principals, metadata, meta
     ...principals.systemColumns({ user: c.user, caller: c.caller, mapping, owner: ownerOf(input), create }),
     versionnumber: nextRowVersion(store),
     ...currencyOnWrite(mapping, input),
+    ...timeZoneOnWrite(mapping, input),
   });
   const createOptions = (c, extra = {}) => writeOptions({ ...extra, systemColumns: systemColumns(c, true), bypassCustomPlugins: c.bypassCustomPlugins === true });
   const updateOptions = (c, extra = {}) => writeOptions({ partitionId: c.partitionId, ...extra, systemColumns: systemColumns(c, false), bypassCustomPlugins: c.bypassCustomPlugins === true });

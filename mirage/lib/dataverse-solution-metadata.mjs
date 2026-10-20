@@ -1,10 +1,17 @@
 import { createHash } from 'node:crypto';
+import { isDeepStrictEqual } from 'node:util';
 import { classifySolutionPath, parseSchemaDocument, buildSolutionSchema, tableFields } from './solution-schema.mjs';
 import { parseSolutionXml, descendants, pickLabel } from './solution-xml.mjs';
 
 const id = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
 const mergeRows = (base, incoming) => [...new Map([...base, ...incoming].map(row => [row.uniqueName ?? `${row.entity ?? ''}/${row.id}`, structuredClone(row)])).values()];
 const metadataXml = name => /(?:^|\/)(?:customizations\.xml|Entities\/.*\.xml|AppModules\/.*\.xml|AppModuleSiteMaps\/.*\.xml|Other\/Solution\.xml|solution\.xml|OptionSets\/.*\.xml|Relationships\/.*\.xml)$/i.test(name);
+// Most component values are scalar strings, including potentially large XML.
+// Compare those values directly instead of serializing their contents on every
+// record-field lookup. Snapshot small structured values too so in-place edits
+// cannot reuse a stale catalogue simply because the row identity stayed equal.
+const rowStamp = row => Object.entries(row).map(([key, value]) => [key, typeof value,
+  value !== null && typeof value === 'object' ? JSON.stringify(value) : value]);
 
 /** Build one host-local overlay, never write exported files or run imported code.
  * Parsed documents are cached by immutable asset digest. Normal business-record
@@ -17,8 +24,9 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     const layers = state.dataverse?.solutionAssets?.layers ?? [];
     if (!layers.length && !Object.keys(state.dataverse?.sourceSolutionComponents?.baseline ?? {}).length) return base;
     const rows = Object.fromEntries(['systemform', 'savedquery', 'appmodule', 'sitemap'].map(table => [table, state.tables?.[table] ?? []]));
-    const key = JSON.stringify([layers.map(layer => [layer.id, layer.ownerSolutionId]), rows, state.dataverse?.metadataLog?.at(-1)?.seq ?? 0]);
-    if (previousBase === base && previousKey === key) return previous;
+    const key = [layers.map(layer => [layer.id, layer.ownerSolutionId]),
+      Object.entries(rows).map(([table, values]) => [table, values.map(rowStamp)]), state.dataverse?.metadataLog?.at(-1)?.seq ?? 0];
+    if (previousBase === base && isDeepStrictEqual(previousKey, key)) return previous;
     const active = new Set(layers.map(layer => layer.id));
     for (const digest of parsed.keys()) if (!active.has(digest)) parsed.delete(digest);
     const scan = { inputs: [], diagnostics: [], order: 'explicit', layers: layers.map((layer, index) => {

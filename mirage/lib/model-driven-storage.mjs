@@ -9,12 +9,18 @@ const system = name => /^__sim/.test(name) || /^(?:createdon|createdby|createdon
 
 export function createModelDrivenStorage({ store, tables, overlayOf }) {
   const owns = entity => store.state.mappings[entity]?.modelDrivenSource === true;
+  const assertDelete = (table, row) => {
+    if (table?.protectedIds?.includes(row[table.idColumn]))
+      throw new DataError('The active source website cannot be deleted from its running Mirage instance.', 501, 'NotImplemented');
+  };
+  const stopDeleteGuard = store.addDeleteGuard(event => {
+    if (owns(event.entity)) assertDelete(tables()[event.entity], event.row);
+  });
   const observe = event => {
     const table = tables()[event.entity];
     if (!table?.projected) throw new DataError('Source table projection is unavailable.', 409, 'SourceTableUnavailable');
     const id = event.row[table.idColumn];
-    if (event.operation === 'delete' && table.protectedIds?.includes(id))
-      throw new DataError('The active source website cannot be deleted from its running Mirage instance.', 501, 'NotImplemented');
+    if (event.operation === 'delete') assertDelete(table, event.row);
     const sourceFields = row => Object.fromEntries(Object.entries(row ?? {}).filter(([name]) => name === table.idColumn || table.fields[name] && !system(name)));
     store.state.simulator ??= {};
     const settings = store.state.simulator.modelDriven ??= {};
@@ -66,5 +72,5 @@ export function createModelDrivenStorage({ store, tables, overlayOf }) {
     store.rowIndexes = null;
     return state;
   };
-  return { owns, materialize, close: unsubscribe };
+  return { owns, materialize, close: () => { stopDeleteGuard(); unsubscribe(); } };
 }

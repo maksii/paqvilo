@@ -112,6 +112,29 @@ async function failure(promise) {
 }
 
 const lowerId = (value) => String(value?.id ?? value).toLowerCase();
+
+test('wide read definitions resolve original metadata once per list and retain observed option labels', async t => {
+  const fields = { widgetid: { dataverseType: 'uniqueidentifier' }, name: text,
+    statuscode: { dataverseType: 'status', options: [{ value: 1, label: 'Observed active' }] },
+    ...Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`extra${index}`, text])) };
+  let definitionsRead = 0, originalRead = 0;
+  const runtime = await setup({
+    metadata: { recordFields: () => { definitionsRead++; return fields; } },
+    metadataFields: () => { originalRead++; return fields; },
+  });
+  t.after(() => runtime.handlers.close());
+  const id = randomUUID();
+  runtime.store.state.tables.widget.push({ widgetid: id, name: 'Wide row', statuscode: 1,
+    ...Object.fromEntries(Array.from({ length: 80 }, (_, index) => [`extra${index}`, `Value ${index}`])) });
+  const result = await runtime.send('GET', `/api/data/${VERSION}/widgets(${id})`,
+    { headers: { Prefer: 'odata.include-annotations="OData.Community.Display.V1.FormattedValue"' } });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.statuscode, 1);
+  assert.equal(result.body['statuscode@OData.Community.Display.V1.FormattedValue'], 'Observed active');
+  assert.equal(result.body.extra79, 'Value 79');
+  assert.ok(definitionsRead > 0);
+  assert.ok(originalRead <= definitionsRead + 10, `${originalRead} source resolutions for ${definitionsRead} definition lists`);
+});
 const annotate = (name) => ({ prefer: `odata.include-annotations="${name}"` });
 
 test("collection GET returns context, etags, the id under $select and no annotations by default", async () => {
@@ -1654,6 +1677,61 @@ test("DateOnly values imply the time-zone rule stamp without a UserLocal value",
   assert.equal(clearLocal.body.duedate, "2026-10-20");
   const plain = await t.send("GET", `/api/data/${VERSION}/widgets(${onlyDate})`);
   assert.equal(Object.hasOwn(plain.body, key), false);
+});
+
+test('organization date writes persist their rule version across clearing every date and later unrelated patches', async t => {
+  const runtime = await setup(); t.after(() => runtime.handlers.close());
+  Object.assign(runtime.store.state.mappings.widget.fields, {
+    timezoneruleversionnumber: { dataverseType: 'int' },
+    independenton: { dataverseType: 'datetime', dateTimeBehavior: 'TimeZoneIndependent' },
+    localon: { dataverseType: 'datetime', dateTimeBehavior: 'UserLocal' },
+    dateonly: { dataverseType: 'datetime', dateTimeBehavior: 'DateOnly' },
+  });
+  const annotation = 'timezoneruleversionnumber@OData.Community.Display.V1.FormattedValue';
+  const headers = { prefer: 'return=representation,odata.include-annotations="*"' };
+  const stored = id => runtime.store.tableRows('widget').find(row => row.widgetid === id);
+  for (const [column, value] of Object.entries({ independenton: '2026-10-20T10:30:00', localon: '2026-10-20T10:30:00Z', dateonly: '2026-10-20' })) {
+    const id = await create(runtime, 'widgets', { name: column, [column]: value });
+    assert.equal(stored(id).timezoneruleversionnumber, 4, column);
+    for (const body of [{ [column]: null }, { name: 'Unrelated later change' }]) {
+      const patched = await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${id})`, { body, headers });
+      assert.equal(patched.status, 200);
+      assert.equal(patched.body.timezoneruleversionnumber, 4);
+      assert.equal(patched.body[annotation], '4');
+      assert.equal(stored(id)[column], null);
+      assert.equal(stored(id).timezoneruleversionnumber, 4);
+    }
+    const beforeRead = runtime.store.snapshot();
+    const read = await runtime.send('GET', `/api/data/${VERSION}/widgets(${id})?$select=timezoneruleversionnumber`, { headers: annotate('*') });
+    assert.equal(read.body.timezoneruleversionnumber, 4);
+    assert.equal(read.body[annotation], '4');
+    assert.deepEqual(runtime.store.snapshot(), beforeRead);
+  }
+  const textId = await create(runtime, 'widgets', { name: 'Only text' });
+  assert.equal(stored(textId).timezoneruleversionnumber, undefined);
+  await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${textId})`, { body: { name: 'Still only text' } });
+  assert.equal(stored(textId).timezoneruleversionnumber, undefined);
+  await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${textId})`, { body: { independenton: '2026-10-20T10:30:00' } });
+  assert.equal(stored(textId).timezoneruleversionnumber, 4);
+  await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${textId})`, { body: { independenton: null } });
+  assert.equal(stored(textId).timezoneruleversionnumber, 4);
+});
+
+test('legacy date rows acquire history only on organization writes and portal storage does not stamp it', async t => {
+  const runtime = await setup(); t.after(() => runtime.handlers.close());
+  runtime.store.state.mappings.widget.fields.localon = { dataverseType: 'datetime', dateTimeBehavior: 'UserLocal' };
+  const legacyId = randomUUID(), unknownId = randomUUID();
+  runtime.store.state.tables.widget.push({ widgetid: legacyId, name: 'Legacy populated date', localon: '2026-10-20T10:30:00Z' },
+    { widgetid: unknownId, name: 'Legacy unknown history', localon: null });
+  const beforeRead = runtime.store.snapshot();
+  assert.equal((await runtime.send('GET', `/api/data/${VERSION}/widgets(${legacyId})`)).body.timezoneruleversionnumber, 4);
+  assert.deepEqual(runtime.store.snapshot(), beforeRead);
+  await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${legacyId})`, { body: { name: 'Organization write' } });
+  assert.equal(runtime.store.tableRows('widget').find(row => row.widgetid === legacyId).timezoneruleversionnumber, 4);
+  await runtime.send('PATCH', `/api/data/${VERSION}/widgets(${unknownId})`, { body: { name: 'History remains unknown' } });
+  assert.equal(runtime.store.tableRows('widget').find(row => row.widgetid === unknownId).timezoneruleversionnumber, undefined);
+  const portal = await runtime.store.create('widget', { name: 'Portal date', localon: '2026-10-20T10:30:00Z' }, { admin: true });
+  assert.equal(portal.timezoneruleversionnumber, undefined);
 });
 
 test("Preference-Applied echoes the annotations preference on a single read and on a write", async () => {

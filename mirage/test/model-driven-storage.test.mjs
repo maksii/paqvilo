@@ -61,3 +61,29 @@ test('source model changes remove only obsolete source projections', t => {
   assert.equal(store.state.tables.invented_component, undefined);
   assert.equal(store.state.tables.unrelated.length, 1);
 });
+
+test('protected source deletes reject before root or child plug-ins, cascades and observers, including SDK writes', async t => {
+  const { store, adapter, source } = fixture(); t.after(() => adapter.close());
+  source.invented_component.protectedIds = [id];
+  store.state.mappings.invented_child = { logicalName: 'invented_child', idColumn: 'invented_childid',
+    fields: { parentid: { dataverseType: 'lookup' } },
+    relationships: { parentid: { entity: 'invented_component', from: 'parentid', to: 'invented_componentid', many: false, cascade: { delete: 'RemoveLink' } } } };
+  store.state.tables.invented_child = Array.from({ length: 512 }, (_, index) => ({ invented_childid: String(index), parentid: id }));
+  const before = store.snapshot();
+  let phases = 0, notifications = 0, cascades = 0;
+  store.exportedPluginPhase = () => { phases++; };
+  const referencesTo = store.referencesTo.bind(store);
+  store.referencesTo = (...args) => { cascades++; return referencesTo(...args); };
+  const stop = store.addMutationObserver(() => { notifications++; }); t.after(stop);
+  const protectedError = error => error.code === 'NotImplemented' && error.status === 501;
+  await assert.rejects(store.remove('invented_component', id, admin), protectedError);
+  assert.throws(() => store.sdkMutation(() => store.removeRecord('invented_component', id, admin)), protectedError);
+  assert.deepEqual({ phases, notifications, cascades }, { phases: 0, notifications: 0, cascades: 0 });
+  assert.deepEqual(store.snapshot(), before);
+  // Closing the projection removes both its early guard and mutation observer.
+  adapter.close();
+  await store.remove('invented_component', id, admin);
+  assert.equal(store.tableRows('invented_component').length, 0);
+  assert.equal(store.tableRows('invented_child').every(row => row.parentid === null), true);
+  assert.equal(store.state.simulator?.modelDriven, undefined);
+});
