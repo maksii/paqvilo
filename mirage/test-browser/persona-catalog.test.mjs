@@ -41,3 +41,22 @@ test('native grouped sign-in remains usable without JS; browser automation appli
   assert.notEqual(opened.origin,app.url);assert.deepEqual(opened.context.pages(),[]);
   const childPage=await opened.context.newPage();assert.deepEqual(childPage.viewportSize(),{width:1100,height:750});await childPage.goto(opened.url);assert.equal(await childPage.evaluate(()=>navigator.language),'fr-FR');assert.equal(await childPage.locator('h1').textContent(),'Context greeting');await opened.context.close();
 });
+
+
+test('a pending persona launch keeps the picker and its caption bound to the submitted persona', { timeout: 60000 }, async t => {
+  const { app } = await personaFixture(t);
+  const browser = await chromium.launch(browserLaunchOptions({ headless: true })); t.after(() => browser.close());
+  const page = await browser.newPage(); page.setDefaultTimeout(10000);
+  await page.goto(app.url + '/_sim/#identity');
+  const picker = page.locator('#browser-persona-picker'); await picker.locator('[data-persona-result-count]').waitFor();
+  const launch = page.locator('[data-persona-launch]'), key = await launch.getAttribute('data-persona-launch'), caption = await launch.innerText();
+  let release; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release()); let calls = 0;
+  await page.route('**/__sim/api/personas/launch', async route => { calls++; await gate; await route.fulfill({ status: 422, json: { error: { message: 'Fixture refused this launch.' } } }); });
+  await launch.click(); await page.locator('#persona-session-panel[data-pending-action]').waitFor();
+  assert.equal(await picker.locator('[data-persona-query]').isDisabled(), true);
+  await picker.evaluate(node => node.querySelector('[data-persona-choose]').dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  assert.equal(await launch.getAttribute('data-persona-launch'), key);
+  release(); await page.locator('#notification').filter({ hasText: 'Fixture refused this launch.' }).waitFor();
+  assert.equal(await launch.getAttribute('data-persona-launch'), key); assert.equal(await launch.innerText(), caption);
+  assert.equal(await picker.locator('[data-persona-query]').isDisabled(), false); assert.equal(calls, 1);
+});

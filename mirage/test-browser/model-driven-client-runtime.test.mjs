@@ -84,6 +84,30 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   assert.deepEqual(errors, []); assert.deepEqual(external, []);
 });
 
+test('retry recreates failed client initialization and clears its error after recovery', async t => {
+  const { page, errors } = await fixture(t);
+  await page.getByText('Exported OnLoad completed', { exact: true }).waitFor();
+  await page.evaluate(() => {
+    InventedClient.load = async executionContext => {
+      window.retryLoads = (window.retryLoads ?? 0) + 1;
+      if (window.retryLoads === 1) throw new Error('Invented first-load failure');
+      executionContext.getFormContext().ui.setFormNotification('Recovered form initialization', 'INFO', 'recovered');
+    };
+  });
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.getByRole('status').filter({ hasText: 'Invented first-load failure' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
+  await page.getByRole('button', { name: 'Try again', exact: true }).click();
+  await page.getByText('Recovered form initialization', { exact: true }).waitFor();
+  assert.equal(await page.evaluate(() => retryLoads), 2);
+  assert.equal(await page.locator('#notice').isVisible(), false);
+  assert.equal(await page.locator('#record-form').evaluate(node => node.inert), false);
+  await page.getByLabel('Name', { exact: true }).fill('Recovered editable record');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await page.getByRole('heading', { name: 'Recovered editable record', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
 test('a staff change in another tab revokes extension contexts while retaining the blocked draft', async t => {
   const { page, sim, errors } = await fixture(t);
   await page.getByText('Exported OnLoad completed', { exact: true }).waitFor();

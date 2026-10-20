@@ -4,12 +4,12 @@ import { personaFilters, personaRowKey } from './persona-search.mjs';
 
 export function personaSessionPanel(report, session, selectedKey) {
   const selected = [...report.personas,...report.other].find(p=>personaRowKey(p)===selectedKey) ?? report.personas.find(p=>p.contactId===session?.contactId) ?? report.personas.find(p=>p.default) ?? report.personas[0] ?? report.other[0];
-  return `<section class="panel"><h2>This browser's session</h2><p>${h(session?.signedIn ? session.name ?? session.contactId : 'Anonymous')} · ${h((session?.roles??[]).join(', ')||'No web roles')}</p><p class="muted">Choose a persona for this browser. Roles and account come from contact memberships. A configured context opens a separate local runtime; other visitors keep their setup.</p><div class="toolbar persona-launchbar"><span data-persona-launch-summary>Selected: ${h(selected?.label??selected?.name??'None')}</span><button type="button" class="button primary" data-persona-launch="${h(personaRowKey(selected??{}))}"${selected?'':' disabled'}>${selected?.context?'Open '+h(report.contexts.find(c=>c.id===selected.context)?.label??selected.context):'Sign in as '+h(selected?.label??selected?.name??'persona')}</button>${session?.signedIn?'<button class="button" data-action="session-sign-out">Sign out</button>':''}</div>${renderPersonaPicker(report,{id:'browser-persona-picker',enhanced:true,collapsed:true,selectedKey:selectedKey??personaRowKey(selected??{})})}<p data-persona-launch-result role="status"></p></section>`;
+  return `<section id="persona-session-panel" class="panel"><h2>This browser's session</h2><p>${h(session?.signedIn ? session.name ?? session.contactId : 'Anonymous')} · ${h((session?.roles??[]).join(', ')||'No web roles')}</p><p class="muted">Choose a persona for this browser. Roles and account come from contact memberships. A configured context opens a separate local runtime; other visitors keep their setup.</p><div class="toolbar persona-launchbar"><span data-persona-launch-summary>Selected: ${h(selected?.label??selected?.name??'None')}</span><button type="button" class="button primary" data-persona-launch="${h(personaRowKey(selected??{}))}"${selected?'':' disabled'}>${selected?.context?'Open '+h(report.contexts.find(c=>c.id===selected.context)?.label??selected.context):'Sign in as '+h(selected?.label??selected?.name??'persona')}</button>${session?.signedIn?'<button class="button" data-action="session-sign-out">Sign out</button>':''}</div>${renderPersonaPicker(report,{id:'browser-persona-picker',enhanced:true,collapsed:true,selectedKey:selectedKey??personaRowKey(selected??{})})}<p data-persona-launch-result role="status"></p></section>`;
 }
 
 export function personaManagementPanel(report) {
   const owner = report.contextRuntime ? `<section class="panel section-gap"><h2>Isolated setup: ${h(report.contextRuntime.label)}</h2><p>Changes here belong to this copy. <a href="${h(report.contextRuntime.ownerOrigin)}/_sim/#identity">Return to the parent runtime to launch another setup or stop this copy.</a></p></section>` : '';
-  return `${owner}<details class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section class="panel section-gap"><h2>Catalogue scenarios</h2><p class="muted">Launch a named persona and setup together. Preset and context changes run in an isolated copy.</p>${report.scenarios.length ? report.groups.map(group=>{const items=report.scenarios.filter(s=>s.group===group.id);return items.length?`<details><summary>${h(group.label)} (${items.length})</summary><ul class="persona-list">${items.map(s=>`<li class="persona-card"><div><strong>${h(s.label)}</strong><p>${h(s.description??'')}</p><small>${h(s.persona)} · ${h(s.context??'Default setup')} · ${h(s.startPath??'/')}</small></div><button class="button" data-persona-scenario="${h(s.id)}">Launch scenario</button></li>`).join('')}</ul></details>`:'';}).join(''):'<p>No catalogue scenarios. Add one in catalogue management or a data pack.</p>'}</section>${report.diagnostics.length?`<section class="panel section-gap"><h2>Catalogue diagnostics</h2><ul>${report.diagnostics.map(d=>`<li><code>${h(d.code)}</code> ${h(d.key)} (${h(d.source)})</li>`).join('')}</ul></section>`:''}`;
+  return `${owner}<details id="persona-management-panel" class="panel section-gap" data-persona-management><summary>Persona catalogue &amp; local runtimes</summary><div data-persona-management-body></div></details><section id="persona-scenarios-panel" class="panel section-gap"><h2>Catalogue scenarios</h2><p class="muted">Launch a named persona and setup together. Preset and context changes run in an isolated copy.</p>${report.scenarios.length ? report.groups.map(group=>{const items=report.scenarios.filter(s=>s.group===group.id);return items.length?`<details><summary>${h(group.label)} (${items.length})</summary><ul class="persona-list">${items.map(s=>`<li class="persona-card"><div><strong>${h(s.label)}</strong><p>${h(s.description??'')}</p><small>${h(s.persona)} · ${h(s.context??'Default setup')} · ${h(s.startPath??'/')}</small></div><button class="button" data-persona-scenario="${h(s.id)}">Launch scenario</button></li>`).join('')}</ul></details>`:'';}).join(''):'<p>No catalogue scenarios. Add one in catalogue management or a data pack.</p>'}</section>${report.diagnostics.length?`<section class="panel section-gap"><h2>Catalogue diagnostics</h2><ul>${report.diagnostics.map(d=>`<li><code>${h(d.code)}</code> ${h(d.key)} (${h(d.source)})</li>`).join('')}</ul></section>`:''}`;
 }
 
 function chooser(report, selectedContactId, choose) {
@@ -32,7 +32,7 @@ const fields={
 const rowId=(type,row)=>row[type==='personas'?'key':'id'];
 function maps(value={}) {return Object.entries(value).map(([name,value])=>`<div class="persona-map-row"><input data-map-name aria-label="Name" placeholder="Name" value="${h(name)}"><textarea data-map-value aria-label="JSON value" rows="2">${h(JSON.stringify(value))}</textarea><button type="button" class="button" data-remove-row aria-label="Remove value">Remove</button></div>`).join('');}
 
-export function mountPersonaAdministration(root, report, {request,refresh,notify,session,selectedKey,onSelected,onContact}={}) {
+export function mountPersonaAdministration(root, report, {request,refresh,notify,setButtonPending=(button,pending)=>{button.disabled=pending;},session,selectedKey,onSelected,onContact}={}) {
   administrations.get(root)?.abort();
   const controller = new AbortController(); administrations.set(root, controller);
   const picker=root.querySelector('#browser-persona-picker');
@@ -50,11 +50,13 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
   };
   root.addEventListener('click',async event=>{
     const button=event.target.closest('button');if(!button)return;
+    if(!button.dataset.personaLaunch&&!button.dataset.personaScenario&&!button.hasAttribute('data-persona-contact-chooser'))return;
+    setButtonPending(button,true);
     try {
       if(button.dataset.personaLaunch){const key=button.dataset.personaLaunch;if(key.startsWith('@contact:')){await request('/session/sign-in',{method:'POST',body:JSON.stringify({contactId:key.slice(9)})});rememberPersona(report,key);location.assign('/');}else await launch({personaKey:key});}
       if(button.dataset.personaScenario)await launch({scenario:button.dataset.personaScenario});
       if(button.hasAttribute('data-persona-contact-chooser'))chooser(report,button.dataset.contactId,onContact);
-    }catch(error){notify(error.message,true);}
+    }catch(error){setButtonPending(button,false,true);notify(error.message,true);}finally{setButtonPending(button,false);}
   }, {signal:controller.signal});
   const panel=root.querySelector('[data-persona-management]');
   if(!panel)return;
@@ -78,6 +80,7 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
     container.querySelector('[data-management-search]').oninput=event=>{search=event.target.value;page=0;renderList();};
     container.addEventListener('click',async event=>{
       const button=event.target.closest('button');if(!button)return;
+      setButtonPending(button,true);
       try {
         if(button.hasAttribute('data-prev')){page--;renderList();}
         if(button.hasAttribute('data-next')){page++;renderList();}
@@ -88,7 +91,7 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
         if(button.hasAttribute('data-import-save'))await save(JSON.parse(container.querySelector('[data-import]').value));
         if(button.hasAttribute('data-reset-catalog')){await request('/persona-catalog',{method:'DELETE',body:JSON.stringify({expectedDigest:report.catalogDigest})});await refresh();notify('State catalogue reset.');}
         if(button.dataset.stopRuntime){try{await request('/persona-runtimes/'+encodeURIComponent(button.dataset.stopRuntime),{method:'DELETE'});}finally{await refresh();}notify('Isolated runtime stopped and discarded.');}
-      }catch(error){notify(error.message,true);}
+      }catch(error){setButtonPending(button,false,true);notify(error.message,true);}finally{setButtonPending(button,false);}
     });renderList();
   }
 
@@ -108,7 +111,7 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
       return `<label>${h(label)}<input name="${name}" type="${kind==='number'?'number':'text'}"${kind==='contact'?' list="persona-contact-options"':''} value="${h(Array.isArray(value)?value.join(' '):value??'')}"${required?' required':''}${original[name]&&['key','id'].includes(name)?' readonly':''}></label>`;
     };
     const subgroup=s=>`<div class="persona-map-row"><input data-subgroup-id aria-label="Subgroup ID" placeholder="ID" value="${h(s.id??'')}"><input data-subgroup-label aria-label="Subgroup label" placeholder="Label" value="${h(s.label??'')}"><input type="number" data-subgroup-order aria-label="Subgroup order" placeholder="Order" value="${h(s.order??'')}"><button type="button" class="button" data-remove-row>Remove</button></div>`;
-    dialog.innerHTML=`<form><div class="persona-dialog-heading"><h2>${rowId(type,original)?'Edit':'Add'} ${h(type)}</h2><button type="button" class="button" data-close>Cancel</button></div><p>Local metadata only. Identity and permissions are read from contacts. Context overrides apply to isolated local copies.</p><div class="persona-editor-fields">${fields[type].map(field=>control(...field)).join('')}</div><datalist id="persona-contact-options">${report.contacts.map(c=>`<option value="${h(c.contactId)}">${h(c.name)}</option>`).join('')}</datalist><p class="form-error" role="alert" data-editor-error></p><div class="dialog-actions"><button type="submit" class="button primary">Save local metadata</button></div></form>`;
+    dialog.innerHTML=`<form id="persona-metadata-editor"><div class="persona-dialog-heading"><h2>${rowId(type,original)?'Edit':'Add'} ${h(type)}</h2><button type="button" class="button" data-close>Cancel</button></div><p>Local metadata only. Identity and permissions are read from contacts. Context overrides apply to isolated local copies.</p><div class="persona-editor-fields">${fields[type].map(field=>control(...field)).join('')}</div><datalist id="persona-contact-options">${report.contacts.map(c=>`<option value="${h(c.contactId)}">${h(c.name)}</option>`).join('')}</datalist><p class="form-error" role="alert" data-editor-error></p><div class="dialog-actions"><button type="submit" class="button primary">Save local metadata</button></div></form>`;
     document.body.append(dialog);dialog.querySelector('[data-close]').onclick=()=>dialog.close();dialog.addEventListener('close',()=>dialog.remove(),{once:true});
     dialog.addEventListener('click',event=>{const button=event.target.closest('button');if(!button)return;if(button.hasAttribute('data-remove-row'))button.parentElement.remove();if(button.hasAttribute('data-add-map'))button.previousElementSibling.insertAdjacentHTML('beforeend',maps({'': ''}));if(button.hasAttribute('data-add-subgroup'))button.previousElementSibling.insertAdjacentHTML('beforeend',subgroup({}));});
     dialog.querySelector('form').addEventListener('change',event=>{
@@ -118,6 +121,7 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
       select.innerHTML='<option value="">None</option>'+(group?.subgroups??[]).map(s=>`<option value="${h(s.id)}"${s.id===previous?' selected':''}>${h(s.label)}</option>`).join('');
     });
     dialog.querySelector('form').onsubmit=async event=>{event.preventDefault();const form=event.target,data=new FormData(form),row={};
+      const button=event.submitter??form.querySelector('button[type=submit]');setButtonPending(button,true);
       try{
         for(const [name,,kind]of fields[type]){const value=String(data.get(name)??'');if(kind==='map'){const map={};for(const node of form.querySelector(`[data-map="${name}"]`).querySelectorAll('.persona-map-row')){const key=node.querySelector('[data-map-name]').value.trim();if(!key)throw Error('Override names cannot be empty.');if(Object.hasOwn(map,key))throw Error('Duplicate override: '+key);Object.defineProperty(map,key,{value:JSON.parse(node.querySelector('[data-map-value]').value),enumerable:true,configurable:true,writable:true});}if(Object.keys(map).length)row[name]=map;}else if(kind==='subgroups'){row.subgroups=[...form.querySelectorAll('[data-subgroups] .persona-map-row')].map(node=>({id:node.querySelector('[data-subgroup-id]').value,label:node.querySelector('[data-subgroup-label]').value,...(node.querySelector('[data-subgroup-order]').value?{order:Number(node.querySelector('[data-subgroup-order]').value)}:{})}));}else if(value)row[name]=kind==='number'?Number(value):kind==='json'?JSON.parse(value):name==='tags'?value.trim().split(/\s+/):value;}
         if(type==='contexts'){
@@ -127,7 +131,7 @@ export function mountPersonaAdministration(root, report, {request,refresh,notify
           const browser={};for(const name of ['locale','timezoneId','colorScheme']){if(row[name])browser[name]=row[name];delete row[name];}if(row.width||row.height)browser.viewport={width:row.width,height:row.height};delete row.width;delete row.height;if(Object.keys(browser).length)row.browser=browser;
         }
         await save(row);dialog.close();
-      }catch(error){form.querySelector('[data-editor-error]').textContent=error.message;}
+      }catch(error){setButtonPending(button,false,true);form.querySelector('[data-editor-error]').textContent=error.message;}finally{setButtonPending(button,false);}
     };dialog.showModal();
   }
 }

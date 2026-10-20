@@ -117,6 +117,7 @@ export function panelUi(data) {
       .search kbd, .foot kbd { font: 11px Consolas, monospace; border: 1px solid var(--line); border-radius: 3px; padding: 0 4px; color: var(--muted); background: var(--bg); }
 
       .body { flex: 1; overflow: auto; padding: 0 10px 10px; overscroll-behavior: contain; }
+      button:disabled { opacity:.5;cursor:default; } button[aria-busy=true]{cursor:wait;} .working{display:flex;align-items:center;gap:8px;padding:8px 12px;border-bottom:1px solid var(--line);background:var(--tint);font-size:12px;color:var(--fg)}.spinner{display:inline-block;width:14px;height:14px;flex:none;border:2px solid var(--line);border-top-color:var(--primary);border-radius:50%;animation:panel-spin .9s linear infinite}.loading-state{display:flex;gap:10px;align-items:flex-start;padding:24px 10px;color:var(--muted)}.loading-state strong{display:block;color:var(--fg);margin-bottom:4px}.loading-state .spinner{margin-top:3px}@keyframes panel-spin{to{transform:rotate(360deg)}}@media(prefers-reduced-motion:reduce){.spinner{animation:none}}
       .foot { display: flex; gap: 10px; align-items: center; padding: 5px 12px; border-top: 1px solid var(--line); color: var(--muted); font-size: 11.5px; background: var(--tint); white-space: nowrap; overflow: hidden; }
 
       .card { padding: 2px 2px 8px; margin-bottom: 8px; border-bottom: 1px solid var(--line); }
@@ -271,6 +272,8 @@ export function panelUi(data) {
       first: true,
       q: '',
       catalog: null,
+      catalogLoading: null,
+      catalogError: null,
       diff: null,
       html: {},
       flashed: (() => { try { return Number(sessionStorage.getItem('paqvilo:last-change:' + data.token)) || 0; } catch { return 0; } })(),
@@ -280,6 +283,7 @@ export function panelUi(data) {
       inspect: null,
       inspectLoading: null,
       inspectRequest: 0,
+      completedInspectionLoadingId: 0,
       tweaks: null,
       tweaksLoading: null,
       defaults: {},
@@ -289,6 +293,7 @@ export function panelUi(data) {
       inspectSection: 'all',
       selectedElement: null,
       pickingElement: false,
+      pendingActions: new Map(),
     };
     const nativeFetch = window.fetch.bind(window);
     const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
@@ -329,16 +334,23 @@ export function panelUi(data) {
       return [(ext || 'FILE').slice(0, 4).toUpperCase(), '', 'web file'];
     };
 
-    const api = (name, body) =>
-      lifetime.signal.aborted ? Promise.resolve({ ok: false, error: 'the dev loop has stopped' }) :
-      nativeFetch('/__paqvilo/api/' + name, {
+    const api = async (name, body) => {
+      if(lifetime.signal.aborted)return {ok:false,error:'the dev loop has stopped'};
+      const controller=new AbortController();let timedOut=false;
+      const timeout=setTimeout(()=>{timedOut=true;controller.abort();},120_000);
+      const stop=()=>controller.abort();lifetime.signal.addEventListener('abort',stop,{once:true});
+      try{return await nativeFetch('/__paqvilo/api/' + name, {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-paqvilo-token': S.d.token },
         body: JSON.stringify(body ?? {}),
-        signal: lifetime.signal,
+        signal: controller.signal,
       })
-        .then((r) => r.json())
-        .catch(() => ({ ok: false, error: 'the dev loop does not answer (is it still running?)' }));
+        .then((r) => r.json());
+      }catch{
+        const writing=['mode','live','persona','signin','signout','permissions','preset','scenario','toggle','scope','rebaseline','clear','ui'].includes(name);
+        return {ok:false,error:lifetime.signal.aborted?'the dev loop has stopped':timedOut?(writing?'The request timed out. Its result is unknown; check the current state before retrying.':'The request timed out. Check the dev loop and retry.'):'the dev loop does not answer (is it still running?)'};
+      }finally{clearTimeout(timeout);lifetime.signal.removeEventListener('abort',stop);}
+    };
 
     host.style.cssText = 'position:fixed;z-index:2147483647;';
     const root = host.attachShadow({ mode: 'open' });
@@ -449,6 +461,15 @@ export function panelUi(data) {
     if (document.readyState === 'complete') readTheme();
     else window.addEventListener('load', readTheme, { once: true, signal: lifetime.signal });
     const el = { pill: $('.pill'), panel: $('.panel'), head: $('.head'), targets: $('.targets'), git: $('.gitline'), tabs: $('.tabs'), body: $('.body'), foot: $('.foot'), input: $('.search input'), toolbtns: $('.toolbtns'), toast: $('.toast'), float: $('.float') };
+    const working=document.createElement('div');working.className='working';working.hidden=true;working.setAttribute('role','status');working.setAttribute('aria-live','polite');el.body.before(working);
+    const actionLabels={'mode':'Switching source mode…','live':'Updating live reload…','persona':'Switching persona…','signin':'Signing in…','signout':'Signing out…','permissions':'Updating permissions…','confirm-yes':'Applying local setup…','open':'Opening the source editor…','toggle':'Updating override…','scope':'Updating source scope…','rebaseline':'Pinning the comparison baseline…','clear':'Clearing the list…'};
+    const mutationActions=new Set(['mode','live','persona','signin','signout','permissions','confirm-yes','toggle','scope','rebaseline']);
+    const pendingFeedback=()=>{
+      const jobs=[...S.pendingActions.values()];working.hidden=!jobs.length;
+      const message=jobs[0]?.label??'',html=`<span class="spinner" aria-hidden="true"></span><span>${esc(message)}</span>`;if(working.innerHTML!==html)working.innerHTML=html;
+      const mutating=jobs.some(job=>mutationActions.has(job.name));
+      for(const button of el.panel.querySelectorAll('[data-act]')){const busy=S.pendingActions.has(button.dataset.act)||mutating&&mutationActions.has(button.dataset.act);if(busy){if(!button.hasAttribute('data-paqvilo-busy'))button.dataset.paqviloBusy=String(button.disabled);button.disabled=true;button.setAttribute('aria-busy','true');}else if(button.hasAttribute('data-paqvilo-busy')){button.disabled=button.dataset.paqviloBusy==='true';delete button.dataset.paqviloBusy;button.removeAttribute('aria-busy');}}
+    };
 
     // ------------------------------------------------------------------------------ feedback
     let toastTimer = 0;
@@ -610,6 +631,10 @@ export function panelUi(data) {
       return `<div class="group"><button class="gh${closed ? '' : ' openg'}" data-act="fold" data-id="${id}" aria-expanded="${!closed}">${icon('right')}<span>${esc(title)}</span><span class="n dimn">${count ?? rows.length}</span><span class="line"></span></button>${closed ? '' : rows.join('')}</div>`;
     };
     const emptyState = (title, text) => `<div class="empty"><b>${esc(title)}</b>${text}</div>`;
+    const loadingState=(title,text)=>`<div class="loading-state" role="status"><span class="spinner" aria-hidden="true"></span><div><strong>${esc(title)}</strong>${esc(text)}</div></div>`;
+    // Loading epochs let a completed response retire a delayed progress push without
+    // hiding a newer background metadata refresh that retains the previous report.
+    const inspectionPending=inspection=>Boolean(inspection?.loading&&(Number.isSafeInteger(inspection.loadingId)?inspection.loadingId>S.completedInspectionLoadingId:!S.inspect?.report));
 
     const overridesHtml = () => {
       const d = S.d;
@@ -704,12 +729,13 @@ export function panelUi(data) {
 
     const runtimeHtml = () => {
       const runtime = S.d.inspection ?? S.d.mirage;
-      if (!runtime) return emptyState('Loading source inspection ...', 'The current address is being matched to the selected export.');
+      if (!runtime || inspectionPending(runtime)&&!(S.inspect?.report&&S.inspect.version>=runtime.version)) return loadingState('Reading local sources…', runtime?.phase ?? 'Matching the current address to the selected export.');
       if (!runtime?.active) return emptyState('Source inspection unavailable', esc(runtime?.error ?? 'The selected export could not be read.'));
       const live = runtime.mode === 'live-sources';
       let out = live ? `<div class="card"><div class="path">Live portal · local source inspection</div><div class="sub">${esc(S.d.site)} · ${esc(S.d.env)} · ${runtime.status?.solutionCount ?? 0} Solution roots</div><div class="sub">Source references describe the selected checkout. Live role membership and effective record access are unknown.</div></div>` : mirageStatusCard(runtime);
-      if (!S.inspect || S.inspect.version < runtime.version) return out + emptyState('Loading page inspection ...', '');
-      if (S.inspect.error && !S.inspect.report) return out + emptyState('Dependency inspection unavailable', esc(S.inspect.error));
+      if(inspectionPending(runtime)&&S.inspect?.report)out+=loadingState('Updating source inspection…', runtime.phase??'Previous source details remain visible until the update finishes.');
+      if (!S.inspect || S.inspect.version < runtime.version) return out + loadingState('Inspecting this page…', 'Matching templates, fields and controls to their local sources.');
+      if (S.inspect.error && !S.inspect.report) return out + emptyState('Dependency inspection unavailable', esc(S.inspect.error))+'<button class="btn" data-act="inspect-refresh">Retry inspection</button>';
       const report = S.inspect.report;
       if (!report) return out + emptyState('Dependency inspection unavailable', esc(runtime.error ?? 'No page report was returned.'));
       const sections = [['all', 'All'], ['source', 'Page & templates'], ['components', 'Forms & controls'], ['data', 'Tables & access'], ['assets', 'Files & snippets'], ['unresolved', 'Unresolved']];
@@ -906,8 +932,8 @@ export function panelUi(data) {
       if (S.d.mirageMode && !runtime) return emptyState('Connecting to the Mirage ...', '');
       if (!runtime?.active) return emptyState('Mirage is not active', runtime?.error ? esc(runtime.error) : 'Tweaks change the local Mirage runtime.');
       const t = S.tweaks;
-      if (!t) return emptyState('Loading Mirage tweaks ...', '');
-      if (!t.ok) return emptyState('Tweaks unavailable', esc(t.error ?? ''));
+      if (!t || S.tweaksLoading!==null) return loadingState('Loading local setup…', 'Reading personas, permissions and scenarios.');
+      if (!t.ok) return emptyState('Tweaks unavailable', esc(t.error ?? ''))+'<button class="btn" data-act="tweaks-retry">Retry</button>';
       let out = '';
       if (S.confirm) out += `<div class="banner"><span class="grow">${esc(S.confirm.text)}</span><button class="btn" data-act="confirm-yes">${esc(S.confirm.label)}</button><button class="f" data-act="confirm-no">Cancel</button></div>`;
       const option = (value, label, selected) => `<option value="${esc(value)}"${selected ? ' selected' : ''}>${esc(label)}</option>`;
@@ -995,7 +1021,9 @@ export function panelUi(data) {
     };
 
     const exploreHtml = () => {
-      if (!S.catalog) return emptyState('Loading ...', '');
+      if (S.catalogLoading!==null) return loadingState('Reading the source catalogue…', 'Finding pages, files, templates and snippets.');
+      if (S.catalogError) return emptyState('Source catalogue unavailable', esc(S.catalogError))+'<button class="btn" data-act="catalog-retry">Retry</button>';
+      if (!S.catalog) return loadingState('Reading the source catalogue…', '');
       const q = S.q.trim().toLowerCase();
       // an address or name that is exactly what was typed comes first, then the ones starting with it
       const rank = (c) => {
@@ -1025,7 +1053,7 @@ export function panelUi(data) {
 
     const diffHtml = () => {
       const f = S.diff;
-      if (f.loading) return `<div class="dhead"><button class="ib" data-act="closediff" title="Back">${icon('back')}</button><span class="t">${esc(baseName(f.rel))}</span></div>` + emptyState('Comparing ...', '');
+      if (f.loading) return `<div class="dhead"><button class="ib" data-act="closediff" title="Back">${icon('back')}</button><span class="t">${esc(baseName(f.rel))}</span></div>` + loadingState('Comparing sources…', 'You can go back while the comparison runs.');
       const head = `<div class="dhead"><button class="ib" data-act="closediff" title="Back (Esc)">${icon('back')}</button><span class="t" title="${esc(f.rel)}">${esc(baseName(f.rel))}</span>
         <span class="lbl2">local vs ${esc(f.against ?? '')}</span><span class="grow"></span>${f.ok ? `<b class="plus">+${f.added}</b> <b class="minus">&minus;${f.removed}</b>` : ''}
         <button class="ib" data-act="open" data-rel="${esc(f.rel)}" title="Open in the editor">${icon('code')}</button></div>`;
@@ -1096,7 +1124,7 @@ export function panelUi(data) {
       const xray = document.getElementById('paqvilo-xray')?.__px;
       const currentInspection=d.inspection??d.mirage;
       const inspected=currentInspection?.active&&S.inspect&&S.inspect.version>=currentInspection.version?S.inspect:null;
-      xray?.update({ ...d, ui, inspectionError: inspected?.error }, inspected?.report??null);
+      xray?.update({ ...d, ui, inspectionLoading: S.inspectLoading!==null||inspectionPending(currentInspection), inspectionError: inspected?.error }, inspected?.report??null);
       if (xray?.enabled) ensureInspect();
       if (!ui.open) {place();return;}
       set(
@@ -1118,7 +1146,7 @@ export function panelUi(data) {
         return options?`<optgroup label="${name}">${options}</optgroup>`:'';
       }).join('');
       const pendingTarget=S.pendingTarget;
-      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" ${S.targetSwitching?'disabled':''}>Go</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
+      set('targets', el.targets, `<label for="paqvilo-target">Portal / environment</label><select id="paqvilo-target" ${S.targets.length<2?'disabled':''}>${targetGroups}</select><button data-target-go class="btn" aria-busy="${Boolean(S.targetSwitching)}" ${S.targetSwitching?'disabled':''}>${S.targetSwitching?'Opening…':'Go'}</button>${pendingTarget?`<div class="target-confirm" role="alertdialog" aria-labelledby="paqvilo-target-title"><p id="paqvilo-target-title">Open ${esc(pendingTarget.siteName)} @ ${esc(pendingTarget.envName)}${pendingTarget.caution?' (REAL DATA)':''}? Browser actions can change live data.</p><button class="btn" data-target-cancel>Cancel</button> <button class="btn" data-target-confirm>Confirm</button></div>`:''}`);
       set('git', el.git, d.mirageMode ? '' : `<span class="branch${git.headMoved && git.baseline?.pinned ? ' moved' : ''}" title="${esc(gitTitle)}">${gitLabel ? `⎇ ${esc(gitLabel)} <span class="commit">@ ${esc((git.commit ?? '').slice(0, 7))}</span>` : 'Git HEAD unavailable'}</span><span class="commit" title="${esc(baselineText)}">${git.baseline?.available ? `baseline ${esc((git.baseline.commit ?? '').slice(0, 7))}` : 'baseline unavailable'}</span>`);
       set('tabs', el.tabs, TABS.filter(([id]) => !MIRAGE_TABS.includes(id) || d.mirageMode).map(([id, label]) => `<button class="tab${ui.tab === id ? ' on' : ''}" data-act="tab" data-v="${id}" id="paqvilo-tab-${id}" role="tab" aria-selected="${ui.tab===id}" aria-controls="paqvilo-tab-content" tabindex="${ui.tab===id?0:-1}">${label}${tabCount[id]}</button>`).join(''));
       el.body.setAttribute('aria-labelledby','paqvilo-tab-'+ui.tab);
@@ -1139,6 +1167,8 @@ export function panelUi(data) {
       const body = S.diff ? diffHtml() : ui.tab === 'runtime' ? runtimeHtml() : ui.tab === 'tweaks' ? tweaksHtml() : ui.tab === 'issues' ? issuesHtml() : ui.tab === 'activity' ? activityHtml() : ui.tab === 'explore' ? exploreHtml() : overridesHtml();
       const top = el.body.scrollTop;
       if (set('body', el.body, body)) el.body.scrollTop = S.keepScroll === false ? 0 : top;
+      el.body.setAttribute('aria-busy',String(Boolean(S.diff?.loading||ui.tab==='runtime'&&(S.inspectLoading!==null||inspectionPending(inspection))||ui.tab==='tweaks'&&S.tweaksLoading!==null||ui.tab==='explore'&&S.catalogLoading!==null)));
+      pendingFeedback();
       S.keepScroll = true;
       set(
         'foot',
@@ -1201,6 +1231,7 @@ export function panelUi(data) {
     const acceptInspection=(request,version,answer)=>{
       if(lifetime.signal.aborted||S.inspectRequest!==request)return false;
       S.inspectLoading=null;
+      if(Number.isSafeInteger(answer.loadingId))S.completedInspectionLoadingId=Math.max(S.completedInspectionLoadingId,answer.loadingId);
       const current=S.d?.inspection??S.d?.mirage,resultVersion=Math.max(version,answer.version??0);
       if(!current?.active||current.version>resultVersion){render();return false;}
       S.inspect=answer.ok?{version:resultVersion,report:answer.report,status:answer.status,error:answer.error}:{version,report:null,error:answer.error??'inspection failed'};
@@ -1208,7 +1239,7 @@ export function panelUi(data) {
     };
     const ensureInspect = () => {
       const c = S.d?.inspection ?? S.d?.mirage;
-      if (!c?.active || !c.version || (S.inspect && S.inspect.version >= c.version) || S.inspectLoading === c.version) return;
+      if (!c?.active || c.loading || !c.version || (S.inspect && S.inspect.version >= c.version) || S.inspectLoading === c.version) return;
       const version = c.version;
       const request=++S.inspectRequest;
       S.inspectLoading = version;
@@ -1222,7 +1253,7 @@ export function panelUi(data) {
       const version = c.version;
       S.tweaksLoading = version;
       api('tweaks').then((r) => {
-        if (S.tweaksLoading !== version) return;
+        if (lifetime.signal.aborted || S.tweaksLoading !== version) return;
         S.tweaksLoading = null;
         S.tweaks = { ...r, version, personas: r.personas ?? [], presets: r.presets ?? [], scenarios: r.scenarios ?? [], tables: r.tables ?? [] };
         render();
@@ -1230,9 +1261,13 @@ export function panelUi(data) {
     };
     const loadCatalog = async () => {
       const version = S.d.catalogVersion;
+      if(S.catalogLoading===version)return;
+      S.catalogLoading=version;S.catalogError=null;
       const r = await api('catalog');
-      if (S.d.catalogVersion !== version) return;
-      S.catalog = r.ok ? r.entries : [];
+      if (lifetime.signal.aborted || S.catalogLoading!==version) return;
+      S.catalogLoading=null;
+      if(S.d.catalogVersion!==version){if(S.ui.open&&S.ui.tab==='explore')void loadCatalog();return;}
+      S.catalog = r.ok ? r.entries : null;S.catalogError=r.ok?null:r.error??'No source catalogue was returned.';
       render();
     };
     const stopPicking = () => {
@@ -1252,7 +1287,7 @@ export function panelUi(data) {
       node.style.outlineOffset = '4px';
       setTimeout(() => { node.style.outline = prior.outline; node.style.outlineOffset = prior.offset; }, 2500);
     };
-    const act = async (name, t) => {
+    const performAction = async (name, t) => {
       const row = t.closest('[data-rel]');
       const rel = t.dataset.rel || row?.dataset.rel || '';
       const url = row?.dataset.url || '';
@@ -1283,6 +1318,7 @@ export function panelUi(data) {
           render();
           break;
         case 'inspect-refresh': {
+          if(S.inspectLoading!==null)break;
           const version=(S.d?.inspection??S.d?.mirage)?.version??0,request=++S.inspectRequest;
           S.inspect=null;S.inspectLoading=version;render();
           const answer = await api('inspect', { refresh: true });
@@ -1292,6 +1328,10 @@ export function panelUi(data) {
           }
           break;
         }
+        case 'catalog-retry':
+          void loadCatalog();render();break;
+        case 'tweaks-retry':
+          S.tweaks=null;ensureTweaks();render();break;
         case 'inspect-locate':
           locateElement(t.dataset.field);
           break;
@@ -1455,11 +1495,12 @@ export function panelUi(data) {
           break;
         }
         case 'mode':
-          if (!d.mirageMode) setMode(t.dataset.v === 'online');
+          if (!d.mirageMode) await setMode(t.dataset.v === 'online');
           break;
         case 'live': {
           const r = await api('live', { on: !d.live });
           if (r.ok) toast(`Live reload is ${d.live ? 'off' : 'on'}`);
+          else toast(r.error??'Could not update live reload',true);
           break;
         }
         case 'scope': {
@@ -1475,14 +1516,16 @@ export function panelUi(data) {
           else toast(r.error ?? 'Could not pin the baseline', true);
           break;
         }
-        case 'clear':
-          await api('clear', { what: t.dataset.v });
+        case 'clear': {
+          const r=await api('clear', { what: t.dataset.v });
+          toast(r.ok?'List cleared':r.error??'Could not clear the list',!r.ok);
           break;
+        }
         case 'diff': {
-          S.diff = { loading: true, rel };
+          const pending=S.diff = { loading: true, rel };
           fresh();
           const r = await api('diff', { rel, url });
-          if (S.diff?.rel === rel) S.diff = { ...r, rel };
+          if (S.diff===pending) S.diff = { ...r, rel };
           fresh();
           break;
         }
@@ -1491,6 +1534,14 @@ export function panelUi(data) {
           fresh();
           break;
       }
+    };
+    const act=async(name,target)=>{
+      const label=actionLabels[name];
+      if(!label)return performAction(name,target);
+      if(S.pendingActions.has(name)||mutationActions.has(name)&&[...S.pendingActions.values()].some(job=>mutationActions.has(job.name)))return;
+      S.pendingActions.set(name,{name,label});pendingFeedback();if(name==='open')document.getElementById('paqvilo-xray')?.__px?.status(label);
+      try{return await performAction(name,target);}catch(error){if(!lifetime.signal.aborted)toast(error.message??'The action could not finish.',true);}
+      finally{S.pendingActions.delete(name);if(!lifetime.signal.aborted)pendingFeedback();}
     };
 
     el.panel.addEventListener('click', (e) => {
@@ -1581,7 +1632,7 @@ export function panelUi(data) {
       // by key position, so it works on any keyboard layout
       if (e.code === S.d.keyCodes.hide) setHidden(!S.ui.hidden);
       else if (e.code === S.d.keyCodes.panel) setOpen(!S.ui.open || S.ui.hidden);
-      else if (e.code === S.d.keyCodes.mode && !S.d.mirageMode) setMode(!S.d.online);
+      else if (e.code === S.d.keyCodes.mode && !S.d.mirageMode) void act('mode',{dataset:{v:S.d.online?'local':'online'},closest:()=>null});
       else return;
       e.preventDefault();
       e.stopPropagation();

@@ -1,29 +1,69 @@
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-let state, layer = 'shared', dirty = false;
+let state, layer = 'shared', dirty = false, pending = false, pendingFocus;
 const field = (label, name, value, hint = '', type = 'text') => `<div class="field"><label>${esc(label)}${hint ? `<small>${esc(hint)}</small>` : ''}<input name="${esc(name)}" type="${type}" value="${esc(value)}"></label></div>`;
 const options = (values, chosen) => values.map(value => `<option value="${esc(value)}" ${value === chosen ? 'selected' : ''}>${esc(value)}</option>`).join('');
 const select = (label, name, values, chosen) => `<div class="field"><label>${esc(label)}<select name="${name}">${values.map(value => `<option value="${esc(value)}" ${value === chosen ? 'selected' : ''}>${esc(name === 'runtime-kind' ? runtimeName(value) : name === 'simulation-level' ? ({ 'local-state': 'Local state (existing compatibility)', 'dry-run': 'Dry run · memory edits', simulation: 'Simulation · pack DATA writes', deep: 'Deep simulation · DATA and schema' })[value] : value)}</option>`).join('')}</select></label></div>`;
 const source = site => `<div class="source"><strong>${site.sourceStatus.format ? `${esc(site.sourceStatus.layout?.dialect ?? site.sourceStatus.format)} export` : site.sourceStatus.exists ? 'Folder needs an export' : 'Source folder missing'}</strong><p class="path">${esc(site.sourceStatus.path || 'No source selected')}</p><span class="badge neutral">${site.sourceStatus.git ? `${esc(site.sourceStatus.git.branch)} · ${esc(site.sourceStatus.git.commit)}${site.sourceStatus.git.changed ? ' · tracked changes in this folder' : ''}` : ''}${site.sourceStatus.gitState === 'timeout' ? ' · Git status unavailable (timeout)' : site.sourceStatus.gitState === 'unavailable' ? ' · Git status unavailable' : !site.sourceStatus.git ? 'No committed Git checkout' : ''}</span></div>`;
-function notice(message, error = false) { const node = $('#notice'); node.hidden = false; node.className = error ? 'error' : ''; node.textContent = message; }
-async function request(url, options) {
-  const response = await fetch(url, options);
-  const data = await response.json();
-  if (!response.ok) throw new Error(data.error?.message ?? 'Setup request failed.');
-  return data;
+function notice(message, error = false) {
+  const node = $('#notice'); node.hidden = false; node.className = error ? 'error' : '';
+  node.setAttribute('role', error ? 'alert' : 'status'); node.textContent = message;
+}
+function beginOperation(message) {
+  pending = true;
+  pendingFocus = document.activeElement;
+  const controls = [...document.querySelectorAll('#content input, #content select, #content textarea, #content button, #refresh')].map(node => [node, node.disabled]);
+  for (const [node] of controls) node.disabled = true;
+  $('#content').setAttribute('aria-busy', 'true');
+  notice(message); $('#notice').className = 'pending';
+  return () => {
+    pending = false; pendingFocus = undefined; $('#content').removeAttribute('aria-busy');
+    for (const [node, disabled] of controls) if (node.isConnected) node.disabled = disabled;
+  };
+}
+function renderPreservingContext() {
+  const open = new Set([...document.querySelectorAll('#content details[data-section-key][open]')].map(node => node.dataset.sectionKey));
+  const focused = pendingFocus ?? document.activeElement, form = focused?.closest('form');
+  const focus = form ? { type: form.dataset.form, site: form.dataset.site, name: focused.name, submit: focused.type === 'submit' } : null;
+  render();
+  for (const node of document.querySelectorAll('#content details[data-section-key]')) node.open = open.has(node.dataset.sectionKey);
+  if (focus) {
+    const replacement = [...document.querySelectorAll('#content form')].find(node => node.dataset.form === focus.type && node.dataset.site === focus.site);
+    const control = focus.submit ? replacement?.querySelector('button[type=submit]') : [...(replacement?.elements ?? [])].find(node => node.name === focus.name);
+    control?.focus({ preventScroll: true });
+  }
+}
+async function request(url, options = {}) {
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 120_000);
+  try {
+    const signal = options.signal ? AbortSignal.any([options.signal, deadline.signal]) : deadline.signal;
+    const response = await fetch(url, { ...options, signal });
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error?.message ?? 'Setup request failed.');
+    return data;
+  } catch (error) {
+    if (deadline.signal.aborted) throw new Error(options.method && options.method !== 'GET'
+      ? 'The configuration request timed out. Its result may be unknown; refresh and check the configuration before retrying.'
+      : 'Loading configuration timed out. Try Refresh to reconnect.');
+    throw error;
+  } finally { clearTimeout(timer); }
 }
 async function load() {
-  try { state = await request('/_setup/api/status'); dirty = false; $('#notice').hidden = true; render(); }
+  if (pending) return;
+  const finish = beginOperation(state ? 'Refreshing project configuration…' : 'Loading project configuration…');
+  try { state = await request('/_setup/api/status'); dirty = false; renderPreservingContext(); notice('Project configuration is up to date.'); }
   catch (error) { notice(error.message, true); }
+  finally { finish(); }
 }
 async function save(payload) {
-  $('#notice').hidden = true;
-  const buttons = [...document.querySelectorAll('button[type=submit]')]; buttons.forEach(button => { button.disabled = true; });
+  if (pending) return;
+  const finish = beginOperation('Validating and saving configuration…');
   try {
     state = await request('/_setup/api/config', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Paqvilo-Setup-CSRF': state.csrf }, body: JSON.stringify({ ...payload, layer, revision: state.revision }) });
-    dirty = false; render(); notice(state.runtime ? 'Saved. Restart the preview to apply configuration changes.' : 'Saved. Your next preview will use these settings.');
+    dirty = false; renderPreservingContext(); notice(state.runtime ? 'Saved. Restart the preview to apply configuration changes.' : 'Saved. Your next preview will use these settings.');
   } catch (error) { notice(error.message, true); }
-  finally { buttons.forEach(button => { button.disabled = false; }); }
+  finally { finish(); }
 }
 const operation = (path, value) => ({ op: 'set', path, value });
 const runtimeName = kind => ({ 'power-pages': 'Power Pages + model-driven apps', 'model-driven': 'Model-driven apps', 'dataverse-api': 'Dataverse API only' })[kind] ?? kind;
@@ -49,7 +89,7 @@ function siteEditor(site) {
     <div class="field"><label>Solution export folders<small>One path per line, relative to the source root. Leave empty when this portal needs none.</small><textarea name="solutions">${esc((site.mirage.solutionRoots ?? []).join('\n'))}</textarea></label></div>
     <div class="field"><label>Scenario preset<small>Optional ID supplied by a trusted project pack.</small><input name="preset" value="${esc(site.mirage.preset ?? '')}"></label></div>
     <h3>Environments</h3><div data-environments>${Object.entries(site.environments).map(([id, settings]) => envRow(id, settings)).join('')}</div><button type="button" class="secondary" data-add-env>Add environment</button>
-    <details><summary>Preview rules</summary>${select('Source scope', 'scope', ['all', 'changed'], site.scope ?? 'all')}<div class="field"><label>Route rules (YAML)<small>Explicit file, directory or passthrough mappings. Other inline/markup settings are in Configuration below.</small><textarea name="routes" class="mono">${esc(JSON.stringify(site.routes ?? [], null, 2))}</textarea></label></div></details>
+    <details data-section-key="preview-${esc(site.id)}"><summary>Preview rules</summary>${select('Source scope', 'scope', ['all', 'changed'], site.scope ?? 'all')}<div class="field"><label>Route rules (YAML)<small>Explicit file, directory or passthrough mappings. Other inline/markup settings are in Configuration below.</small><textarea name="routes" class="mono">${esc(JSON.stringify(site.routes ?? [], null, 2))}</textarea></label></div></details>
     <div class="actions"><button type="submit">Save portal</button><span class="hint">Writes the ${layer} configuration.</span></div></form>`;
 }
 function render() {
@@ -69,9 +109,9 @@ function render() {
     ${!state.layers.shared.exists ? `<div class="intro"><strong>Choose your local runtime</strong><p>Connect local exports and trusted data packs. Use <code>paqvilo init</code> first if you also want project scripts, tests and agent instructions.</p></div><form data-form="create">${select('Runtime surface', 'runtime-kind', ['power-pages', 'model-driven', 'dataverse-api'], 'power-pages')}<div class="grid">${field('Target name', 'id', 'portal')}${field('Source root', 'root', './sources', 'Folder holding local exports; a portal is required only for Power Pages.')}</div><button type="submit">Create ${state.kind === 'project' ? 'Mirage project' : 'catalogue'}</button></form>` : ''}
     <ul class="findings">${state.findings.map(item => `<li>${item.site ? `<strong>${esc(item.site)}</strong> · ` : ''}${esc(item.message)} <a href="${item.code === 'configuration' ? '#advanced' : '#portals'}">Review</a></li>`).join('')}</ul><p class="hint">Readiness checks local configuration and folders. It does not prove browser coverage or a deployed commit.</p></section>
     <section id="edit-layer"><div class="section-head"><div><h2>Where should changes be saved?</h2><p>Shared settings belong to the project. Personal overrides stay on this computer.</p></div>${personal ? `<select id="layer" aria-label="Configuration layer">${options(['shared', 'personal'], layer)}</select>` : '<span class="badge neutral">Shared project</span>'}</div><p class="path">${esc(state.layers[layer].file)}</p>${layer === 'personal' ? '<p class="hint">Personal overrides merge with shared settings. Removing an override reveals its shared value. Ignore paqvilo.config.local.yml in Git before using personal settings.</p>' : ''}</section>
-    <section id="runtime-configuration"><div class="section-head"><div><span class="eyebrow">RUNTIME + PERSISTENCE</span><h2>Runtime configuration</h2><p>Choose the surfaces and write behavior for the next start.</p></div></div>${state.layers.shared.exists && state.kind === 'project' ? runtimeEditor(state.settings) : state.sites.map(site => `<details><summary>${esc(site.id)} · ${esc(runtimeName(site.runtime?.kind ?? 'power-pages'))}</summary>${runtimeEditor(site.effectiveMirage ?? site.mirage, site)}</details>`).join('')}${(state.solutions ?? []).map(item => `<p class="path">${esc(item.path)} · ${item.exists ? 'Found' : 'Missing'}</p>`).join('')}</section>
-    <section id="portals"><div class="section-head"><div><span class="eyebrow">LOCAL EXPORTS + ENVIRONMENTS</span><h2>Targets & sources</h2><p>Power Pages targets use portal exports. Standalone apps and APIs use Solution exports and packs.</p></div></div><div class="portals">${state.sites.map(site => `<article class="card" id="portal-${esc(site.id)}"><div class="card-head"><h3>${esc(site.id)}</h3><span class="badge ${site.runtime?.kind !== 'power-pages' || site.sourceStatus.format ? '' : 'warn'}">${esc(runtimeName(site.runtime?.kind ?? 'power-pages'))}</span></div>${site.runtime?.kind && site.runtime.kind !== 'power-pages' ? '' : source(site)}${Object.entries(site.environments).map(([id, settings]) => `<div class="env"><div><strong>${esc(id)}</strong><div class="path">${esc(settings.url)}</div></div><span class="badge ${settings.caution ? 'warn' : 'neutral'}">${settings.caution ? 'REAL DATA' : 'Environment'}</span></div>`).join('')}${site.solutions.length ? `<p class="hint">${site.solutions.length} Solution folder(s) · ${site.solutions.filter(item => item.exists).length} found</p>` : ''}${site.packs?.length ? `<p class="hint">${site.packs.length} explicit pack module(s) · ${site.packs.filter(item => item.exists).length} found. Modules are not executed by setup.</p>` : ''}<details><summary>Edit source settings</summary>${siteEditor(site)}</details></article>`).join('')}</div>
-    ${state.kind === 'catalogue' && state.layers.shared.exists ? `<details><summary>Add a target</summary><form data-form="add">${select('Runtime surface', 'runtime-kind', ['power-pages', 'model-driven', 'dataverse-api'], 'power-pages')}<div class="grid">${field('Target name', 'id', '')}${field('Portal export folder', 'source', '', 'Required only for Power Pages; relative to the source root.')}</div><button type="submit">Add target</button></form></details>` : ''}</section>
+    <section id="runtime-configuration"><div class="section-head"><div><span class="eyebrow">RUNTIME + PERSISTENCE</span><h2>Runtime configuration</h2><p>Choose the surfaces and write behavior for the next start.</p></div></div>${state.layers.shared.exists && state.kind === 'project' ? runtimeEditor(state.settings) : state.sites.map(site => `<details data-section-key="runtime-${esc(site.id)}"><summary>${esc(site.id)} · ${esc(runtimeName(site.runtime?.kind ?? 'power-pages'))}</summary>${runtimeEditor(site.effectiveMirage ?? site.mirage, site)}</details>`).join('')}${(state.solutions ?? []).map(item => `<p class="path">${esc(item.path)} · ${item.exists ? 'Found' : 'Missing'}</p>`).join('')}</section>
+    <section id="portals"><div class="section-head"><div><span class="eyebrow">LOCAL EXPORTS + ENVIRONMENTS</span><h2>Targets & sources</h2><p>Power Pages targets use portal exports. Standalone apps and APIs use Solution exports and packs.</p></div></div><div class="portals">${state.sites.map(site => `<article class="card" id="portal-${esc(site.id)}"><div class="card-head"><h3>${esc(site.id)}</h3><span class="badge ${site.runtime?.kind !== 'power-pages' || site.sourceStatus.format ? '' : 'warn'}">${esc(runtimeName(site.runtime?.kind ?? 'power-pages'))}</span></div>${site.runtime?.kind && site.runtime.kind !== 'power-pages' ? '' : source(site)}${Object.entries(site.environments).map(([id, settings]) => `<div class="env"><div><strong>${esc(id)}</strong><div class="path">${esc(settings.url)}</div></div><span class="badge ${settings.caution ? 'warn' : 'neutral'}">${settings.caution ? 'REAL DATA' : 'Environment'}</span></div>`).join('')}${site.solutions.length ? `<p class="hint">${site.solutions.length} Solution folder(s) · ${site.solutions.filter(item => item.exists).length} found</p>` : ''}${site.packs?.length ? `<p class="hint">${site.packs.length} explicit pack module(s) · ${site.packs.filter(item => item.exists).length} found. Modules are not executed by setup.</p>` : ''}<details data-section-key="source-${esc(site.id)}"><summary>Edit source settings</summary>${siteEditor(site)}</details></article>`).join('')}</div>
+    ${state.kind === 'catalogue' && state.layers.shared.exists ? `<details data-section-key="add-target"><summary>Add a target</summary><form data-form="add">${select('Runtime surface', 'runtime-kind', ['power-pages', 'model-driven', 'dataverse-api'], 'power-pages')}<div class="grid">${field('Target name', 'id', '')}${field('Portal export folder', 'source', '', 'Required only for Power Pages; relative to the source root.')}</div><button type="submit">Add target</button></form></details>` : ''}</section>
     <section id="settings"><div class="section-head"><div><span class="eyebrow">PROJECT DEFAULTS</span><h2>Project settings</h2></div></div>${state.kind === 'catalogue' && state.layers.shared.exists && state.settings.browser ? `<form data-form="settings"><div class="grid">${field('Source root', 'sourceRoot', state.settings.sourceRoot, 'Relative to the catalogue directory. Exports remain outside the toolkit.')}${select('Default portal', 'defaultSite', ['', ...state.sites.map(site => site.id)], state.settings.defaultSite)}</div><div class="grid">${select('Browser', 'browser', ['msedge', 'chrome', 'chromium'], state.settings.browser.channel)}${select('Development targets', 'portals', ['selected', 'all'], state.settings.portals)}</div><div class="row"><label class="checkbox"><input name="liveReload" type="checkbox" ${state.settings.liveReload ? 'checked' : ''}>Reload on save</label><label class="checkbox"><input name="panel" type="checkbox" ${state.settings.panel ? 'checked' : ''}>Development panel</label></div><div class="actions"><button type="submit">Save defaults</button></div></form>` : '<p>Edit the project document in Configuration below.</p>'}
     ${state.settings.resolvedSourceRoot ? `<p class="path">Effective source root: ${esc(state.settings.resolvedSourceRoot)} (${esc(state.settings.provenance?.sourceRoot)})</p>` : ''}${Object.entries(state.settings.effective ?? {}).map(([key, setting]) => `<p class="hint"><code>${esc(key)}</code> = ${esc(setting.value)} · ${esc(setting.origin)} overrides file defaults</p>`).join('')}</section>
     <section id="advanced"><div class="section-head"><div><span class="eyebrow">ADVANCED + RECOVERY</span><h2>Configuration & rules</h2><p>Use the full document for inline mapping, observations with evidence, packs and other supported settings.</p></div><a href="${state.docs.configuration}" target="_blank" rel="noreferrer">Settings reference ↗</a></div><form data-form="yaml"><label> ${esc(layer)} configuration<textarea name="yaml" class="mono yaml" spellcheck="false">${esc(state.layers[layer].text || '{}\n')}</textarea></label><div class="actions"><button type="submit">Validate & save document</button><span class="hint">Invalid changes stay here until corrected. Unrelated configuration is preserved by guided forms.</span></div></form></section>
@@ -98,6 +138,7 @@ $('#content').addEventListener('click', event => {
 });
 $('#content').addEventListener('submit', async event => {
   event.preventDefault();
+  if (pending) return;
   const form = event.target, data = new FormData(form), value = name => String(data.get(name) ?? '').trim();
   const type = form.dataset.form, id = form.dataset.site, site = state.sites.find(site => site.id === id);
   const edits = [], set = (path, v) => edits.push(operation(path, v));

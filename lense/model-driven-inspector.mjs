@@ -27,7 +27,7 @@ export async function startModelDrivenInspector({ context, page, overlay, cfg, i
   const session = Object.assign(new EventEmitter(), { cfg, rel: file => String(file) });
   const token = randomBytes(12).toString('hex');
   let catalogue = modelDrivenInspectionCatalogue(imported), sources = new Map([...imported.assets.values()].map(asset => [asset.name, asset.file]));
-  let latestContext = null, observedAt = null, timer, busy = false, dirty = false, closed = false, agent;
+  let latestContext = null, observedAt = null, timer, busy = false, dirty = false, closed = false, agent, inspectionError = '';
   const problems = [], removers = [], requestDocuments = new WeakMap();
   let documentRevision = 0;
   const on = (target, name, handler) => { target.on(name, handler); removers.push(() => target.off(name, handler)); };
@@ -41,22 +41,28 @@ export async function startModelDrivenInspector({ context, page, overlay, cfg, i
     return { token, origin: cfg.origin, revision: report.revision, resourceCount: report.resources.length, applied: report.applied, currentRevisionApplied: report.currentRevisionApplied,
       resources, diagnostics,
       problems: problems.slice(), catalogue, context: latestContext, observedAt,
-      pendingInspection: busy,
+      pendingInspection: busy || dirty, inspectionError,
       truncated: report.resources.length > resources.length || resources.some(resource => resource.pathsTruncated) || report.diagnostics.length > diagnostics.length || catalogue.limits.truncated,
     };
   };
   const update = async () => {
     timer = undefined;
     if (busy || !active()) return;
-    busy = true; dirty = false;
+    busy = true; dirty = false; inspectionError = '';
     const revision = documentRevision;
     try {
+      // Install the panel before reading native context so a slow/paused app
+      // exposes progress immediately instead of appearing ready with empty data.
+      if (cfg.panel !== false) await page.evaluate(modelDrivenInspectorUi, snapshot());
       const observed = await page.evaluate(inspectModelDrivenContext, cfg.origin);
       if (!active() || revision !== documentRevision) return;
       latestContext = observed; observedAt = new Date().toISOString();
-      if (cfg.panel !== false) await page.evaluate(modelDrivenInspectorUi, snapshot());
-    } catch { /* Navigation/paused debugger must not break interception or watcher cleanup. */ }
-    finally { busy = false; if (dirty) refresh(); }
+    } catch { inspectionError = 'App context could not be refreshed. Try Refresh after the app finishes navigating or the debugger resumes.'; }
+    finally {
+      busy = false;
+      if (active() && revision === documentRevision && cfg.panel !== false) await page.evaluate(modelDrivenInspectorUi, snapshot()).catch(() => {});
+      if (dirty) refresh();
+    }
   };
   const refresh = next => {
     if (closed) return;
@@ -99,7 +105,7 @@ export async function startModelDrivenInspector({ context, page, overlay, cfg, i
       ownsPage: candidate => candidate === page,
       sessionState: () => {
         const state = snapshot();
-        return { kind: 'model-driven', browserScope: { mode: 'dedicated-app-tab', stopScope: 'browser', origin: cfg.origin }, overlay: { revision: state.revision, applied: state.applied, currentRevisionApplied: state.currentRevisionApplied, resourceCount: state.resourceCount, resources: state.resources, diagnostics: state.diagnostics, truncated: state.truncated }, inspection: { context: latestContext, observedAt, pending: busy, limits: { maxItems: MAX_ITEMS, maxSectionBytes: MAX_SECTION_BYTES } } };
+        return { kind: 'model-driven', browserScope: { mode: 'dedicated-app-tab', stopScope: 'browser', origin: cfg.origin }, overlay: { revision: state.revision, applied: state.applied, currentRevisionApplied: state.currentRevisionApplied, resourceCount: state.resourceCount, resources: state.resources, diagnostics: state.diagnostics, truncated: state.truncated }, inspection: { context: latestContext, observedAt, pending: state.pendingInspection, error: inspectionError || undefined, limits: { maxItems: MAX_ITEMS, maxSectionBytes: MAX_SECTION_BYTES } } };
       },
       pageState: () => { const { token: _token, ...state } = snapshot(); return { kind: 'model-driven', ...state }; },
     } });

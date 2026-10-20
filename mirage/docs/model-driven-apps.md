@@ -63,6 +63,8 @@ The top-right profile avatar opens **Staff profile**. Select an eligible interac
 
 Create, update and delete commands follow the backend's table/row/field capabilities and DATA ownership. Unsupported operations and read-only fields are disabled with the reported reason. The backend enforces the same checks. File-backed simulation/deep modes require a declared pack DATA owner; dry run permits record edits in memory. Persistence level and exact target files are shown in Administration, with configuration changes applied only after restart.
 
+The shell displays progress while loading apps, records, lookups and related grids. Loading content stays unavailable for editing until it is current; failed reads offer a retry. Save commands show pending feedback and lock the form through event handlers and persistence, preventing duplicate saves. Failed saves retain the draft and explain the error. Loading animations respect reduced-motion preferences.
+
 ## Architecture and extension boundaries
 
 `lib/model-driven/solution.mjs` normalizes solution AppModule, sitemap and form

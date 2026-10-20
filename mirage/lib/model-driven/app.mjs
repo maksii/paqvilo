@@ -13,11 +13,23 @@ let catalogue, app, table, current, query = {}, selected = new Set(), record, re
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
 let clientRuntime, clientReady = Promise.resolve(), clientChanges = Promise.resolve(), requestingSave = false;
-let gridSearchTimer, dialogLifetime;
+let gridSearchTimer, dialogLifetime, formLifetime;
 const clientControlState = new Map();
 const disposeControls = () => { for (const entry of controls) entry.control.destroy?.(); controls = []; };
-function disposeClient() { clearTimeout(gridSearchTimer); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
+function disposeClient() { clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
+function contentLoading(text) {
+  notice('');
+  let status = $('#app-loading');
+  if (!status) { status = document.createElement('div'); status.id = 'app-loading'; status.className = 'app-loading'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); $('#workspace').append(status); }
+  status.textContent = text;
+  $('#content').setAttribute('aria-busy', 'true'); $('#content').inert = true; $('#commands').inert = true; $('#commands').classList.remove('busy'); $('#commands').setAttribute('aria-busy', 'true');
+}
+function contentLoaded() { $('#app-loading')?.remove(); $('#content').setAttribute('aria-busy', 'false'); $('#content').inert = false; $('#commands').inert = false; $('#commands').setAttribute('aria-busy', 'false'); }
+function loadFailed(error, retry) {
+  contentLoaded(); $('#content').inert = true; $('#commands').inert = true;
+  notice(error.message, true); $('#notice').append(document.createTextNode(' '), button('Try again', retry));
+}
 async function api(path = '', options = {}) {
   const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
   const body = await response.json(); if (!response.ok) throw new Error(body.error?.message ?? `Request failed (${response.status}).`); return body;
@@ -72,7 +84,14 @@ function button(label, action, { disabled = false, title, className = '', iconNa
   const element = document.createElement('button'); element.type = 'button'; element.innerHTML = (graphic ? icon(graphic) : '') + (iconOnly ? '' : `<span>${esc(text)}</span>`) + (chevron ? icon('chevron', 'chevron') : '');
   if (iconOnly) element.setAttribute('aria-label', text);
   element.disabled = disabled; element.className = className; if (title) element.title = title;
-  if (action) element.addEventListener('click', () => run(action)); return element;
+  if (action) element.addEventListener('click', () => runButton(element, action)); return element;
+}
+async function runButton(element, action) {
+  if (element.disabled || element.getAttribute('aria-busy') === 'true') return;
+  const wasDisabled = element.disabled;
+  element.disabled = true; element.setAttribute('aria-busy', 'true');
+  try { await run(action); }
+  finally { element.removeAttribute('aria-busy'); if (element.isConnected) element.disabled = wasDisabled; }
 }
 async function run(action) { try { await action(); } catch (error) { notice(error.message, true); } }
 function dialog(title, content, actions) {
@@ -178,11 +197,12 @@ function display(value, field, row, name) {
   return String(value);
 }
 async function loadGrid() {
-  const token = ++generation; selected = new Set(); renderCommands('grid'); $('#content').setAttribute('aria-busy', 'true');
+  const token = ++generation; selected = new Set(); renderCommands('grid'); contentLoading('Loading records…');
   try {
     const result = await api(tablePath() + '?query=' + encodeURIComponent(JSON.stringify(query)));
     if (token !== generation) return; current = result; renderCommands('grid'); renderGrid();
-  } finally { if (token === generation) $('#content').setAttribute('aria-busy', 'false'); }
+    contentLoaded();
+  } catch (error) { if (token === generation) loadFailed(error, loadGrid); }
 }
 function renderGrid() {
   clearTimeout(gridSearchTimer);
@@ -279,31 +299,41 @@ async function lookup(field) {
     const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Search records'; search.setAttribute('aria-label', 'Search lookup records');
     const results = document.createElement('div'); results.className = 'lookup-results'; body.append(target, search, results);
     const element = dialog(`Look up ${field.label}`, body, [['Cancel', () => { resolve(null); closeDialog(); }]]); onDialogCancel(element, () => resolve(null));
-    let timer, sequence = 0;
+    let timer, sequence = 0; const lifetime = dialogLifetime;
+    lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); sequence++; }, { once: true });
     async function load() {
-      const token = ++sequence, destination = catalogue.tables[target.value]; const found = await api(tablePath(target.value) + '?query=' + encodeURIComponent(JSON.stringify({ search: search.value, columns: [destination.nameColumn], pageSize: 50, view: destination.views.find(view => view.id === 'all')?.id })));
-      if (token !== sequence) return; results.replaceChildren();
-      for (const row of found.rows) results.append(button(display(row[destination.nameColumn]) || '(No name)', () => { resolve({ id: row[destination.idColumn], entity: destination.entity, name: display(row[destination.nameColumn]) }); closeDialog(); }));
-      if (!found.rows.length) results.textContent = 'No matching local records.';
+      if (lifetime.signal.aborted || !results.isConnected) return;
+      const token = ++sequence, destination = catalogue.tables[target.value];
+      results.setAttribute('aria-busy', 'true'); results.textContent = 'Searching local records…';
+      try {
+        const found = await api(tablePath(target.value) + '?query=' + encodeURIComponent(JSON.stringify({ search: search.value, columns: [destination.nameColumn], pageSize: 50, view: destination.views.find(view => view.id === 'all')?.id })));
+        if (token !== sequence || lifetime.signal.aborted) return; results.replaceChildren();
+        for (const row of found.rows) results.append(button(display(row[destination.nameColumn]) || '(No name)', () => { resolve({ id: row[destination.idColumn], entity: destination.entity, name: display(row[destination.nameColumn]) }); closeDialog(); }));
+        if (!found.rows.length) results.textContent = 'No matching local records.';
+      } catch (error) { if (token === sequence && !lifetime.signal.aborted) { results.textContent = error.message + ' '; results.append(button('Try again', load)); } }
+      finally { if (token === sequence && !lifetime.signal.aborted) results.setAttribute('aria-busy', 'false'); }
     }
     target.addEventListener('change', () => run(load)); search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(load), 250); }); run(load);
   });
 }
 async function loadRecord(id) {
-  const token = ++generation; $('#content').setAttribute('aria-busy', 'true');
-  const result = id ? await api(tablePath(table.entity, id)) : { row: Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, field.defaultValue])) };
-  if (token !== generation) return; record = result.row; touchedFields = new Set(); recordCapabilities = result.capabilities ?? table.capabilities;
-  if (!id) for (const [name, value] of new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? '')) {
-    const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
-    if (field && !field.isPrimaryId && field.validForCreate !== false && hasControl(field)) record[name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value;
-  }
-  etag = result.etag; formId = appForms()[0]?.id; activeTab = null; await renderRecord();
-  if (token !== generation) return;
-  if (id) remember({ label: record[table.nameColumn] ?? table.singular, url: location.pathname + location.search, app: app.uniqueName });
-  $('#content').setAttribute('aria-busy', 'false');
+  const token = ++generation; contentLoading(id ? 'Loading record and form…' : 'Preparing new record…');
+  try {
+    const result = id ? await api(tablePath(table.entity, id)) : { row: Object.fromEntries(Object.values(table.fields).filter(field => field.defaultValue !== undefined).map(field => [field.name, field.defaultValue])) };
+    if (token !== generation) return; record = result.row; touchedFields = new Set(); recordCapabilities = result.capabilities ?? table.capabilities;
+    if (!id) for (const [name, value] of new URLSearchParams(new URLSearchParams(location.search).get('extraqs') ?? '')) {
+      const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
+      if (field && !field.isPrimaryId && field.validForCreate !== false && hasControl(field)) record[name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value;
+    }
+    etag = result.etag; formId = appForms()[0]?.id; activeTab = null; await renderRecord();
+    if (token !== generation) return;
+    if (id) remember({ label: record[table.nameColumn] ?? table.singular, url: location.pathname + location.search, app: app.uniqueName });
+    contentLoaded();
+  } catch (error) { if (token === generation) loadFailed(error, () => { disposeClient(); dirty = false; return loadRecord(id); }); }
 }
 async function renderRecord() {
   const renderGeneration = generation;
+  formLifetime?.abort(); formLifetime = new AbortController();
   tabObserver?.disconnect();
   disposeControls();
   const content = $('#content'); content.replaceChildren(); content.className = 'record-content';
@@ -439,7 +469,9 @@ function renderSubgrid(cell) {
   const field = candidates[0].name;
   const view = target.views.find(view => view.id === cell.subgrid.view);
   if (!view) return unavailable('The exported subgrid view is unavailable.');
-  let page = 1, sort, direction = 'asc';
+  let page = 1, sort, direction = 'asc', sequence = 0, timer;
+  const lifetime = formLifetime;
+  lifetime.signal.addEventListener('abort', () => { clearTimeout(timer); sequence++; }, { once: true });
   const selectedRelated = new Set();
   const toolbar = document.createElement('div'), results = document.createElement('div'), footer = document.createElement('div'); footer.className = 'grid-footer'; results.className = 'related-results';
   const newRelated = button(`New ${target.singular}`, () => navigate(target.entity, { id: 'new', defaults: { [field]: parentId } }), { iconName: 'add', disabled: target.capabilities?.create === false, title: target.capabilities?.create === false ? capabilityReason(target.capabilities) : undefined }); newRelated.dataset.action = 'new-related';
@@ -453,38 +485,45 @@ function renderSubgrid(cell) {
   }); deleteRelated.hidden = true;
   toolbar.append(newRelated, deleteRelated, button('Refresh', load, { iconName: 'refresh' }), button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }), button('More commands', null, { disabled: true, iconOnly: true, iconName: 'more' })); headingRow.append(toolbar);
   const search = document.createElement('input'); search.type = 'search'; search.placeholder = 'Filter by keyword'; search.setAttribute('aria-label', `Filter ${label} by keyword`);
-  if (cell.subgrid.searchEnabled) { const searchRow = document.createElement('div'); searchRow.className = 'subgrid-search'; const searchBox = document.createElement('div'); searchBox.className = 'search-box'; searchBox.innerHTML = icon('search'); searchBox.append(search); searchRow.append(searchBox); panel.append(searchRow); let timer; search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(load), 250); }); }
+  if (cell.subgrid.searchEnabled) { const searchRow = document.createElement('div'); searchRow.className = 'subgrid-search'; const searchBox = document.createElement('div'); searchBox.className = 'search-box'; searchBox.innerHTML = icon('search'); searchBox.append(search); searchRow.append(searchBox); panel.append(searchRow); search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(() => run(load), 250); }); }
   panel.append(results, footer);
   async function load() {
-    const result = await api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify({ view: view.id, search: search.value, filters: [{ field, operator: 'eq', value: parentId }], pageSize: cell.subgrid.pageSize, page, sort, direction })));
-    if (!panel.isConnected) return;
-    selectedRelated.clear(); deleteRelated.hidden = true;
-    results.replaceChildren(); const grid = document.createElement('table'); grid.setAttribute('aria-label', label);
-    const columnGroup = document.createElement('colgroup'), selectionColumn = document.createElement('col'); selectionColumn.className = 'selection-column'; columnGroup.append(selectionColumn);
-    const weights = result.columns.map(name => view.fields.find(field => field.name === name)?.width ?? 150), total = weights.reduce((sum, width) => sum + width, 0);
-    for (const width of weights) { const column = document.createElement('col'); column.style.width = `${width / total * 100}%`; columnGroup.append(column); } grid.append(columnGroup);
-    const head = document.createElement('thead'), headings = document.createElement('tr'), selectHeading = document.createElement('th'); selectHeading.className = 'selection';
-    const all = document.createElement('input'); all.type = 'checkbox'; all.setAttribute('aria-label', `Select all ${label}`); selectHeading.append(all); headings.append(selectHeading);
-    for (const name of result.columns) {
-      const th = document.createElement('th'), arrow = result.sort === name ? result.direction === 'desc' ? ' ↓' : ' ↑' : '';
-      th.append(button((target.fields[name]?.label ?? name) + arrow, () => { direction = result.sort === name && result.direction !== 'desc' ? 'desc' : 'asc'; sort = name; return load(); }, { chevron: true, disabled: !target.fields[name] })); headings.append(th);
-    }
-    head.append(headings); grid.append(head);
-    const body = document.createElement('tbody');
-    const updateSelection = () => { deleteRelated.hidden = !selectedRelated.size; deleteRelated.disabled = result.capabilities?.delete === false || [...selectedRelated].some(id => result.rowCapabilities?.[id]?.delete === false || target.protectedIds?.includes(id)); deleteRelated.title = deleteRelated.disabled ? capabilityReason(result.capabilities ?? target.capabilities) : ''; all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length); all.indeterminate = selectedRelated.size > 0 && !all.checked; };
-    for (const row of result.rows) {
-      const tr = document.createElement('tr');
-      const id = String(row[target.idColumn]), selection = document.createElement('td'); selection.className = 'selection';
-      const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
-      checkbox.addEventListener('change', () => { if (checkbox.checked) selectedRelated.add(id); else selectedRelated.delete(id); tr.classList.toggle('selected', checkbox.checked); updateSelection(); }); selection.append(checkbox); tr.append(selection);
-      for (const [index, name] of result.columns.entries()) { const td = document.createElement('td'), text = display(row[name], target.fields[name], row, name); if (name === target.nameColumn || index === 0) td.append(button(text || '(No name)', () => navigate(target.entity, { id: row[target.idColumn] }), { className: 'link' })); else td.textContent = text; tr.append(td); }
-      body.append(tr);
-    }
-    all.addEventListener('change', () => { selectedRelated.clear(); for (const [index, row] of result.rows.entries()) { if (all.checked) selectedRelated.add(String(row[target.idColumn])); const tr = body.children[index]; tr.classList.toggle('selected', all.checked); tr.querySelector('input').checked = all.checked; } updateSelection(); });
-    if (!result.rows.length) { const empty = document.createElement('p'); empty.textContent = 'No related records.'; results.append(empty); }
-    else { grid.append(body); results.append(grid); }
-    footer.replaceChildren(document.createTextNode(`Rows: ${result.total >= 0 ? result.total : result.rows.length}`));
-    if (result.more || page > 1) footer.append(button('‹ Previous related records', () => { page--; return load(); }, { disabled: page === 1 }), button('Next related records ›', () => { page++; return load(); }, { disabled: !result.more }));
+    const token = ++sequence;
+    if (!panel.isConnected || lifetime.signal.aborted) return;
+    results.setAttribute('aria-busy', 'true'); results.inert = true;
+    footer.textContent = 'Loading related records…';
+    try {
+      const result = await api(tablePath(target.entity) + '?query=' + encodeURIComponent(JSON.stringify({ view: view.id, search: search.value, filters: [{ field, operator: 'eq', value: parentId }], pageSize: cell.subgrid.pageSize, page, sort, direction })));
+      if (!panel.isConnected || token !== sequence) return;
+      selectedRelated.clear(); deleteRelated.hidden = true;
+      results.replaceChildren(); const grid = document.createElement('table'); grid.setAttribute('aria-label', label);
+      const columnGroup = document.createElement('colgroup'), selectionColumn = document.createElement('col'); selectionColumn.className = 'selection-column'; columnGroup.append(selectionColumn);
+      const weights = result.columns.map(name => view.fields.find(field => field.name === name)?.width ?? 150), total = weights.reduce((sum, width) => sum + width, 0);
+      for (const width of weights) { const column = document.createElement('col'); column.style.width = `${width / total * 100}%`; columnGroup.append(column); } grid.append(columnGroup);
+      const head = document.createElement('thead'), headings = document.createElement('tr'), selectHeading = document.createElement('th'); selectHeading.className = 'selection';
+      const all = document.createElement('input'); all.type = 'checkbox'; all.setAttribute('aria-label', `Select all ${label}`); selectHeading.append(all); headings.append(selectHeading);
+      for (const name of result.columns) {
+        const th = document.createElement('th'), arrow = result.sort === name ? result.direction === 'desc' ? ' ↓' : ' ↑' : '';
+        th.append(button((target.fields[name]?.label ?? name) + arrow, () => { direction = result.sort === name && result.direction !== 'desc' ? 'desc' : 'asc'; sort = name; return load(); }, { chevron: true, disabled: !target.fields[name] })); headings.append(th);
+      }
+      head.append(headings); grid.append(head);
+      const body = document.createElement('tbody');
+      const updateSelection = () => { deleteRelated.hidden = !selectedRelated.size; deleteRelated.disabled = result.capabilities?.delete === false || [...selectedRelated].some(id => result.rowCapabilities?.[id]?.delete === false || target.protectedIds?.includes(id)); deleteRelated.title = deleteRelated.disabled ? capabilityReason(result.capabilities ?? target.capabilities) : ''; all.checked = Boolean(result.rows.length && selectedRelated.size === result.rows.length); all.indeterminate = selectedRelated.size > 0 && !all.checked; };
+      for (const row of result.rows) {
+        const tr = document.createElement('tr');
+        const id = String(row[target.idColumn]), selection = document.createElement('td'); selection.className = 'selection';
+        const checkbox = document.createElement('input'); checkbox.type = 'checkbox'; checkbox.setAttribute('aria-label', `Select ${display(row[target.nameColumn]) || id}`);
+        checkbox.addEventListener('change', () => { if (checkbox.checked) selectedRelated.add(id); else selectedRelated.delete(id); tr.classList.toggle('selected', checkbox.checked); updateSelection(); }); selection.append(checkbox); tr.append(selection);
+        for (const [index, name] of result.columns.entries()) { const td = document.createElement('td'), text = display(row[name], target.fields[name], row, name); if (name === target.nameColumn || index === 0) td.append(button(text || '(No name)', () => navigate(target.entity, { id: row[target.idColumn] }), { className: 'link' })); else td.textContent = text; tr.append(td); }
+        body.append(tr);
+      }
+      all.addEventListener('change', () => { selectedRelated.clear(); for (const [index, row] of result.rows.entries()) { if (all.checked) selectedRelated.add(String(row[target.idColumn])); const tr = body.children[index]; tr.classList.toggle('selected', all.checked); tr.querySelector('input').checked = all.checked; } updateSelection(); });
+      if (!result.rows.length) { const empty = document.createElement('p'); empty.textContent = 'No related records.'; results.append(empty); }
+      else { grid.append(body); results.append(grid); }
+      footer.replaceChildren(document.createTextNode(`Rows: ${result.total >= 0 ? result.total : result.rows.length}`));
+      if (result.more || page > 1) footer.append(button('‹ Previous related records', () => { page--; return load(); }, { disabled: page === 1 }), button('Next related records ›', () => { page++; return load(); }, { disabled: !result.more }));
+    } catch (error) { if (panel.isConnected && token === sequence) { footer.textContent = error.message + ' '; footer.append(button('Try again', load)); } }
+    finally { if (panel.isConnected && token === sequence) { results.setAttribute('aria-busy', 'false'); results.inert = false; } }
   }
   queueMicrotask(() => run(load));
   return panel;
@@ -493,7 +532,20 @@ function captureDraft() { for (const entry of controls) if (!entry.disabled && e
 async function saveRecord(close) {
   if (requestingSave) return;
   requestingSave = true;
-  try { await persistRecord(close); } finally { requestingSave = false; }
+  const form = $('#record-form'), status = $('#save-status'), saveGeneration = generation;
+  if (form) form.inert = true;
+  if (status) { status.textContent = ' - Saving…'; status.setAttribute('role', 'status'); }
+  $('#commands').classList.add('busy');
+  $('#commands').setAttribute('aria-busy', 'true');
+  try { await persistRecord(close); }
+  finally {
+    requestingSave = false;
+    if (saveGeneration === generation) {
+      $('#commands').classList.remove('busy'); $('#commands').setAttribute('aria-busy', 'false');
+      if (form?.isConnected) form.inert = false;
+      if (status?.isConnected) status.textContent = ' - ' + (dirty ? 'Unsaved changes' : record?.[table.idColumn] ? 'Saved' : 'New record');
+    }
+  }
 }
 async function persistRecord(close) {
   const saveGeneration = generation;
@@ -501,7 +553,10 @@ async function persistRecord(close) {
   if (saveGeneration !== generation) return;
   const save = await clientRuntime?.dispatch('onsave', undefined, close ? 2 : 1); if (save?.prevented) { notice('Save cancelled by the exported form event.'); return; }
   if (saveGeneration !== generation) return;
-  if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create') || !$('#record-form').reportValidity()) return;
+  if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create')) return;
+  const form = $('#record-form'); form.inert = false;
+  if (!form.reportValidity()) return;
+  form.inert = true;
   notice('');
   captureDraft();
   const existing = Boolean(record[table.idColumn]), values = {};
@@ -519,18 +574,20 @@ async function persistRecord(close) {
     const refreshed = await api(); if (saveGeneration !== generation) return;
     catalogue = refreshed; table = catalogue.tables[table.entity];
     await navigate(table.entity, close ? {} : { id: record[table.idColumn], replace: true }); notice('Record saved locally.');
-  } finally { pending = false; $('#commands').classList.remove('busy'); }
+  } finally { pending = false; }
 }
 async function deleteRecords(rows) {
-  if (!rows.length) return;
+  if (!rows.length || pending || requestingSave) return;
   const entity = table.entity, deleteGeneration = generation;
   if (!await confirm('Delete local records', `Delete ${rows.length} selected record${rows.length === 1 ? '' : 's'} from this Mirage instance?`, 'Delete')) return;
-  let deleted = 0;
+  if (deleteGeneration !== generation) return;
+  let deleted = 0; pending = true; contentLoading(`Deleting ${rows.length} local record${rows.length === 1 ? '' : 's'}…`);
   try {
     for (const row of rows) { await api(tablePath(entity, row.id), { method: 'DELETE', headers: { 'if-match': row.etag } }); deleted++; }
     if (deleteGeneration !== generation) return;
     dirty = false; catalogue = await api(); table = catalogue.tables[table.entity]; await navigate(table.entity); notice(`${deleted} record${deleted === 1 ? '' : 's'} deleted locally.`);
-  } catch (error) { notice(`${deleted} records deleted. ${error.message}`, true); throw error; }
+  } catch (error) { throw new Error(`${deleted} record${deleted === 1 ? '' : 's'} deleted. ${error.message}`); }
+  finally { pending = false; if (deleteGeneration === generation) contentLoaded(); }
 }
 async function loadRoute() {
   disposeClient();
@@ -555,7 +612,7 @@ for (const element of document.querySelectorAll('[data-icon]')) element.innerHTM
 $('#apps').addEventListener('change', () => run(async () => { const destination = catalogue.apps.find(app => (app.uniqueName ?? app.id) === $('#apps').value); await navigate(firstEntity(destination), { application: destination }); }));
 window.addEventListener('popstate', () => run(async () => { if (await canLeave()) await loadRoute(); else history.forward(); }));
 window.addEventListener('beforeunload', event => { if (dirty) { event.preventDefault(); event.returnValue = ''; } });
-$('#staff-profile').addEventListener('click', () => run(staffProfile));
+$('#staff-profile').addEventListener('click', () => runButton($('#staff-profile'), staffProfile));
 let checkingStaff = false;
 window.addEventListener('focus', () => run(async () => {
   if (!catalogue || checkingStaff) return;
@@ -569,11 +626,16 @@ window.addEventListener('focus', () => run(async () => {
     if (staffSession) { catalogue = await api(); await loadRoute(); }
   } finally { checkingStaff = false; }
 }));
-await run(async () => {
-  await loadStaffSession();
-  const response = await fetch('/_sim/api/status');
-  if (response.ok) { const status = await response.json(); const portal = $('#open-portal'); portal.hidden = status.capabilities?.powerPages === false; if (status.links?.powerPages) portal.href = status.links.powerPages; }
-  catalogue = await api();
-  for (const application of catalogue.apps) $('#apps').add(new Option(application.name ?? application.uniqueName, application.uniqueName ?? application.id));
-  await loadRoute();
-});
+async function initialize() {
+  contentLoading('Loading application and staff identity…');
+  try {
+    await loadStaffSession();
+    const response = await fetch('/_sim/api/status');
+    if (response.ok) { const status = await response.json(); const portal = $('#open-portal'); portal.hidden = status.capabilities?.powerPages === false; if (status.links?.powerPages) portal.href = status.links.powerPages; }
+    catalogue = await api();
+    $('#apps').replaceChildren();
+    for (const application of catalogue.apps) $('#apps').add(new Option(application.name ?? application.uniqueName, application.uniqueName ?? application.id));
+    await loadRoute();
+  } catch (error) { loadFailed(error, initialize); }
+}
+await initialize();

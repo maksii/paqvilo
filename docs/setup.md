@@ -22,6 +22,10 @@ The document editor supports all existing settings and repairs invalid YAML. Gui
 
 Saves ensure project ignore rules for `.env`, personal configuration and local runtime state. A personal file already tracked in Git must be untracked before the page will save private overrides. Existing ignore-file content is preserved.
 
+Reads, validation and saves display an accessible progress status. Controls stay locked during those operations to prevent overlapping requests or edits being replaced by a refresh. Failed saves keep the entered values available for correction and retry; successful saves retain open sections and keyboard focus where possible. Mirage administration uses the same visible request feedback for its reads and writes.
+
+Tooling requests have a two-minute deadline. If a write times out, check the refreshed configuration or workspace before retrying: the server may have completed it after the browser stopped waiting. Timed-out writes are never retried automatically.
+
 Mirage serves the workspace at `/_setup/` on each runtime and links to it from `/_sim/`. The development browser's Paqvilo panel also links to setup. Lense prints a separate loopback setup URL and links it from the panel; the workspace is never mounted on a live portal origin. If development cannot start, use the independent `paqvilo setup` command to repair the project.
 
 Saves apply on the next preview start. The workspace identifies the running source and reports when project configuration has changed since startup. Restart to apply changes; saving cannot silently redirect a running browser, reset simulator data or change source watchers. Refresh status to see external changes.

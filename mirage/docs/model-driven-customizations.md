@@ -149,6 +149,11 @@ an unresolved native element stays unresolved. The inspector does not read field
 values or infer that a delivered bundle's constructor executed. Power Pages
 retains its existing source inspector and Liquid provenance.
 
+Inspection shows its pending state before reading app context, including a
+reduced-motion-aware scan when X-ray is active. Refresh keeps previous results
+labelled while loading and reports failures with an available Refresh action.
+Closing the inspector or leaving selection mode remains available during a read.
+
 Owned browsers also expose the existing authenticated, loopback
 [agent API](../../docs/lense.md#agent-api-reference). The command prints the
 discovery **path**; keep its contents private. Use that path with:

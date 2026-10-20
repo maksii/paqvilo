@@ -47,17 +47,17 @@ async function loadStaffSession() {
 }
 document.addEventListener('submit', async event => {
   if (event.target.id !== 'staff-session-form') return;
-  event.preventDefault(); const button = event.submitter; button.disabled = true;
+  event.preventDefault(); const button = event.submitter; if (!setButtonPending(button, true)) return;
   try { staffSession = await request('/dataverse/session', { method: 'POST', body: JSON.stringify({ userId: $('#staff-user').value }) }); staffSessionError = ''; drafts.delete('staff-session-form'); render(); notify('Staff session changed. Reload open model-driven tabs to use this identity.'); }
-  catch (error) { notify(error.message, true); }
-  finally { button.disabled = false; }
+  catch (error) { setButtonPending(button, false, true); notify(error.message, true); }
+  finally { setButtonPending(button, false); }
 });
 document.addEventListener('click', async event => {
   const button = event.target.closest('[data-action="staff-reset"]'); if (!button) return;
-  button.disabled = true;
+  if (!setButtonPending(button, true)) return;
   try { staffSession = await request('/dataverse/session', { method: 'DELETE' }); staffSessionError = ''; render(); notify('Local administrator selected. Reload open model-driven tabs to use this identity.'); }
-  catch (error) { notify(error.message, true); }
-  finally { button.disabled = false; }
+  catch (error) { setButtonPending(button, false, true); notify(error.message, true); }
+  finally { setButtonPending(button, false); }
 });
 function staffSessionPanel() {
   if (capabilities().modelDriven === false) return '';
@@ -464,42 +464,163 @@ const previewValue = (value) => {
   return text.length > 140 ? text.slice(0, 137) + "…" : text;
 };
 
-async function request(path, options = {}) {
-  const response = await fetch(`${API}${path}`, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.method && options.method !== "GET" && state?.csrf
-        ? { "X-Sim-CSRF": state.csrf }
-        : {}),
-      ...options.headers,
-    },
-    cache: "no-store",
+// Keep feedback outside the rendered panel so lazy loading and chained saves do not
+// erase it. Counts represent actual outstanding requests, including overlapping reads.
+let pendingRequests = 0, pendingWrites = 0;
+function beginRequest(options) {
+  const writing = options.method && !['GET', 'HEAD'].includes(options.method.toUpperCase());
+  pendingRequests++; if (writing) pendingWrites++;
+  const update = () => {
+    const feedback = $('#activity-feedback');
+    feedback.hidden = pendingRequests === 0;
+    const message = pendingWrites ? 'Applying local changes…' : pendingRequests ? 'Loading workspace data…' : '';
+    if (feedback.textContent !== message) feedback.textContent = message;
+    $('#content').setAttribute('aria-busy', String(pendingRequests > 0));
+  };
+  update();
+  return () => { pendingRequests--; if (writing) pendingWrites--; update(); };
+}
+const pendingButtons = new WeakMap(), pendingScopes = new Map();
+const operationScope = node => {
+  const scope = node?.closest('form, [data-operation-scope], #persona-session-panel, #persona-management-panel, #persona-scenarios-panel');
+  // Row actions and their nested role/password forms share one mutation boundary.
+  return scope?.closest('[data-operation-scope]') ?? scope;
+};
+const intersectsPendingScope = scope => Boolean(scope && [...pendingScopes.values()].some(operation => {
+  const pending = operation.id ? document.getElementById(operation.id) : operation.currentScope;
+  return pending && (scope.contains(pending) || pending.contains(scope));
+}));
+const controlIdentity = (node, index) => node.id || JSON.stringify([node.localName, node.name, node.type, { ...node.dataset }, index]);
+const controlValue = node => ({ value: node.value, checked: node.checked,
+  ...(node.localName === 'select' ? { selected: [...node.selectedOptions].map(option => ({ value: option.value, text: option.textContent, data: { ...option.dataset }, index: option.index })) } : {}),
+});
+const applyControlValue = (node, value) => {
+  if (!value || node.type === 'file') return;
+  if (node.localName === 'select' && Array.isArray(value.selected)) {
+    const options = [...node.options], used = new Set();
+    const sameData = (left, right) => Object.keys(left).length === Object.keys(right).length && Object.entries(left).every(([key, item]) => right[key] === item);
+    const selected = value.selected.map(saved => {
+      const candidates = options.filter(option => !used.has(option) && option.value === saved.value);
+      const match = candidates.find(option => sameData(saved.data, option.dataset) && option.textContent === saved.text)
+        ?? candidates.find(option => sameData(saved.data, option.dataset))
+        ?? candidates.find(option => option.textContent === saved.text)
+        ?? candidates.find(option => option.index === saved.index) ?? candidates[0];
+      if (match) used.add(match); return match;
+    }).filter(Boolean);
+    if (selected.length || value.selected.length === 0) {
+      if (node.multiple) for (const option of options) option.selected = used.has(option);
+      else node.selectedIndex = selected[0]?.index ?? -1;
+    }
+  } else if (typeof value.value === 'string') node.value = value.value;
+  if (typeof value.checked === 'boolean') node.checked = value.checked;
+};
+function lockOperationScope(operation) {
+  const scope = operation.id ? document.getElementById(operation.id) : operation.scope;
+  if (!scope?.isConnected) return;
+  if (operation.currentScope === scope) return;
+  const controls = [...scope.querySelectorAll('input, textarea, select, button')];
+  operation.current = controls.map((node, index) => {
+    const key = controlIdentity(node, index), previous = { node, disabled: node.disabled, value: controlValue(node), text: node.textContent };
+    applyControlValue(node, operation.values.get(key)); node.disabled = true;
+    if (key === operation.buttonKey) { node.textContent = 'Working…'; node.setAttribute('aria-busy', 'true'); }
+    return { ...previous, key };
   });
-  const text = await response.text();
-  let result;
+  operation.currentScope = scope;
+  scope.dataset.pendingAction = 'true'; scope.setAttribute('aria-busy', 'true');
+}
+function restorePendingScopes() {
+  for (const operation of pendingScopes.values()) lockOperationScope(operation);
+}
+function setButtonPending(button, pending, failed = false) {
+  if (!button) return true;
+  if (pending) {
+    if (pendingButtons.has(button)) return false;
+    const scope = operationScope(button), controls = scope ? [...scope.querySelectorAll('input, textarea, select, button')] : [button];
+    if (intersectsPendingScope(scope)) return false;
+    const values = new Map(controls.map((node, index) => [controlIdentity(node, index), controlValue(node)]));
+    const operation = { scope: scope ?? button, id: scope?.id, buttonKey: controlIdentity(button, controls.indexOf(button)), values, current: [], focused: document.activeElement };
+    pendingButtons.set(button, operation);
+    if (operation.id) pendingScopes.set(operation.id, operation);
+    if (scope) lockOperationScope(operation);
+    else { operation.current = [{ node: button, disabled: button.disabled, text: button.textContent }]; button.disabled = true; button.textContent = 'Working…'; button.setAttribute('aria-busy', 'true'); }
+  } else {
+    const operation = pendingButtons.get(button); if (!operation) return;
+    for (const previous of operation.current) {
+      const { node } = previous; if (!node.isConnected) continue;
+      node.disabled = previous.disabled;
+      applyControlValue(node, failed ? operation.values.get(previous.key) : previous.value);
+      if (node.localName === 'button') { node.textContent = previous.text; node.removeAttribute('aria-busy'); }
+    }
+    const scope = operation.currentScope;
+    if (scope) { delete scope.dataset.pendingAction; scope.removeAttribute('aria-busy'); }
+    if (operation.id) pendingScopes.delete(operation.id);
+    pendingButtons.delete(button);
+    if (document.activeElement === document.body) {
+      const focus = operation.focused?.isConnected ? operation.focused : operation.current.find(item => item.key === operation.buttonKey)?.node;
+      if (focus?.isConnected && !focus.disabled) focus.focus({ preventScroll: true });
+    }
+  }
+  return true;
+}
+
+document.addEventListener('submit', event => {
+  if (event.target.closest('[data-pending-action]') || intersectsPendingScope(operationScope(event.target))) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
+document.addEventListener('click', event => {
+  if (event.target.closest('[data-pending-action]') || intersectsPendingScope(operationScope(event.target))) { event.preventDefault(); event.stopImmediatePropagation(); }
+}, true);
+document.addEventListener('cancel', event => {
+  if (event.target.matches('dialog') && event.target.querySelector('[data-pending-action]')) event.preventDefault();
+}, true);
+
+async function request(path, options = {}) {
+  const finish = beginRequest(options);
+  const deadline = AbortSignal.timeout(120_000);
+  const signal = options.signal ? AbortSignal.any([options.signal, deadline]) : deadline;
   try {
-    result = text ? JSON.parse(text) : {};
-  } catch {
-    throw new Error(`Simulator returned invalid JSON (${response.status}).`);
-  }
-  if (!response.ok) {
-    const error = new Error(
-      typeof result.error === "string"
-        ? result.error
-        : result.error?.message ||
-            result.message ||
-            `Request failed (${response.status}).`,
-    );
-    error.details = result;
+    const response = await fetch(`${API}${path}`, {
+      ...options,
+      signal,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.method && options.method !== "GET" && state?.csrf
+          ? { "X-Sim-CSRF": state.csrf }
+          : {}),
+        ...options.headers,
+      },
+      cache: "no-store",
+    });
+    const text = await response.text();
+    let result;
+    try {
+      result = text ? JSON.parse(text) : {};
+    } catch {
+      throw new Error(`Simulator returned invalid JSON (${response.status}).`);
+    }
+    if (!response.ok) {
+      const error = new Error(
+        typeof result.error === "string"
+          ? result.error
+          : result.error?.message ||
+              result.message ||
+              `Request failed (${response.status}).`,
+      );
+      error.details = result;
+      throw error;
+    }
+    return result;
+  } catch (error) {
+    if (deadline.aborted) throw new Error(options.method && !['GET', 'HEAD'].includes(options.method.toUpperCase())
+      ? 'The local operation timed out. Its result may be unknown; refresh the workspace and check before retrying.'
+      : 'The local request timed out. Refresh the workspace to try again.');
     throw error;
-  }
-  return result;
+  } finally { finish(); }
 }
 
 function notify(message, error = false) {
   clearTimeout(toastTimer);
   const el = $("#notification");
+  el.setAttribute("role", error ? "alert" : "status");
   el.textContent = message;
   el.classList.toggle("error", error);
   el.hidden = false;
@@ -651,9 +772,7 @@ function sessionPanel() {
       : `<div class="notice section-gap">No local contacts to sign in as yet: create a persona below.</div>${signOut ? `<div class="toolbar">${signOut}</div>` : ""}`
   }</section>`;
 }
-async function refresh({ announce = false } = {}) {
-  const refreshButton = $("#refresh");
-  refreshButton.disabled = true;
+async function refreshOnce() {
   try {
     state = await request("/state?summary=1");
     state.summaryMode = state.summaryMode === true || !state.data;
@@ -666,7 +785,7 @@ async function refresh({ announce = false } = {}) {
     $("#connection-label").textContent = "Simulator connected";
     render();
     await loadView();
-    if (announce) notify("Workspace refreshed.");
+    return true;
   } catch (error) {
     $("#connection-dot").className = "status-dot error";
     $("#connection-label").textContent = "Connection interrupted";
@@ -677,9 +796,20 @@ async function refresh({ announce = false } = {}) {
         '<button class="button primary" data-action="retry">Try again</button>',
       );
     notify(error.message, true);
-  } finally {
-    refreshButton.disabled = false;
+    return false;
   }
+}
+let refreshInFlight, refreshAgain = false, refreshAnnounce = false;
+function refresh({ announce = false } = {}) {
+  refreshAgain = true; refreshAnnounce ||= announce;
+  if (refreshInFlight) return refreshInFlight;
+  $('#refresh').disabled = true;
+  refreshInFlight = (async () => {
+    let success;
+    do { refreshAgain = false; success = await refreshOnce(); } while (refreshAgain);
+    if (success && refreshAnnounce) notify('Workspace refreshed.');
+  })().finally(() => { refreshInFlight = undefined; refreshAnnounce = false; $('#refresh').disabled = false; });
+  return refreshInFlight;
 }
 
 function overview() {
@@ -1403,7 +1533,7 @@ function portalValuePanels(overridesOnly) {
         if (kind !== "portal-roles") return String(row.value ?? "").slice(0, 160);
         return [row.value?.authenticatedUsersRole && "Signed-in contacts", row.value?.anonymousUsersRole && "Anonymous visitors"].filter(Boolean).join(", ") || "Assigned through contact memberships";
       };
-      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Effective value"}</th><th>Source value</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+      return `<section class="panel section-gap"><div class="panel-heading"><h2>${title}</h2><button class="button" data-add="${kind}">Add ${title === "Site settings" ? "setting" : title === "Web roles" ? "role" : "snippet"}</button></div>${tableTools(kind, page.total, page.pages)}<div class="table-wrap"><table><thead><tr><th>Name</th><th>${kind === "portal-roles" ? "Membership" : "Effective value"}</th><th>Source value</th><th>Origin</th><th>Actions</th></tr></thead><tbody>${page.items.map(row => `<tr id="portal-value-${escape(kind)}-${escape(row.id)}" data-operation-scope><td>${escape(row.name)}</td><td>${escape(displayValue(row))}</td><td>${escape(typeof row.sourceValue==='object'?JSON.stringify(row.sourceValue):String(row.sourceValue??'Not in source')).slice(0,300)}</td><td>${badge(row.overridden ? "Local override" : "Exported source")}</td><td>${kind!=="portal-roles"&&!row.deleted&&/^(true|false)$/i.test(String(row.value))?`<button class="button small" data-portal-toggle="${escape(row.id)}" data-portal-kind="${kind}" data-portal-value="${String(row.value).toLowerCase()==="true"?"False":"True"}">Set ${String(row.value).toLowerCase()==="true"?"False":"True"}</button>`:""}<button class="button small" data-edit="${kind}" data-id="${escape(row.id)}">Edit</button>${row.overridden ? `<button class="button small" data-delete="${kind}" data-id="${escape(row.id)}">Reset</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
     }).join("");
 }
 
@@ -1411,11 +1541,11 @@ const experimentOwnership=p=>p.readOnly?'pack':p.builtin?'builtin':'saved';
 function selectedExperiment(){const select=document.querySelector('#experiment-select'),option=select?.selectedOptions[0];return config().experimentPresets?.find(p=>p.id===select?.value&&String(p.source??'')===option?.dataset.source&&experimentOwnership(p)===option?.dataset.ownership);}
 document.addEventListener('change',event=>{if(event.target.id!=='experiment-select')return;const selected=selectedExperiment(),button=document.querySelector('[data-experiment="delete"]'),apply=document.querySelector('[data-experiment="apply"]');if(button)button.disabled=!selected||selected.builtin||selected.readOnly;if(apply)apply.disabled=!selected||selected.shadowed===true;});
 function experimentPanel(){
- return `<section class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}" data-source="${escape(p.source??'')}" data-ownership="${experimentOwnership(p)}">${escape(p.name)}${p.shadowed ? " · saved collision (pack takes precedence)" : p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
+ return `<section id="configuration-presets-panel" data-operation-scope class="panel"><h2>Configuration presets</h2><p class="muted">Applying a preset replaces platform and setting/snippet overrides only. Records, personas, roles and source files stay intact. Each runtime stores its own presets and active values.</p><div class="toolbar"><select id="experiment-select" aria-label="Configuration preset">${(config().experimentPresets??[]).map(p=>`<option value="${escape(p.id)}" data-source="${escape(p.source??'')}" data-ownership="${experimentOwnership(p)}">${escape(p.name)}${p.shadowed ? " · saved collision (pack takes precedence)" : p.readOnly ? ` · pack: ${escape(p.source)}` : p.builtin ? " · built-in" : " · local"}</option>`).join('')}</select><button class="button" data-experiment="apply">Apply preset</button><button class="button" data-experiment="delete" disabled>Delete saved preset</button></div><div class="toolbar"><input id="experiment-name" aria-label="Preset name" placeholder="Scenario name"><input id="experiment-id" aria-label="Preset ID" placeholder="scenario-id"><button class="button" data-experiment="save">Save current overrides</button><button class="button" data-experiment="export">Export selected JSON</button></div><details><summary>Import preset JSON</summary><textarea id="experiment-import" aria-label="Preset JSON" rows="6"></textarea><button class="button" data-experiment="import">Import preset</button></details><p>Active: ${escape(config().activeExperiment?.name??'Custom / source defaults')}</p></section>`;
 }
 function platformRules(){
  const rows=config().platformSettings??[];
- return heading('Platform rules','Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+experimentPanel()+`<section class="panel section-gap"><div class="table-wrap"><table><thead><tr><th>Setting / documentation</th><th>Real administration</th><th>Simulation coverage</th><th>Source / effective value</th><th>Instance override</th></tr></thead><tbody>${rows.map(d=>`<tr><td><strong>${escape(d.key)}</strong><p class="row-detail">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
+ return heading('Platform rules','Local Dataverse/platform experiments. The access column describes real administration; coverage states exactly what Mirage enforces. No control updates a connected organization.')+experimentPanel()+`<section class="panel section-gap"><div class="table-wrap"><table><thead><tr><th>Setting / documentation</th><th>Real administration</th><th>Simulation coverage</th><th>Source / effective value</th><th>Instance override</th></tr></thead><tbody>${rows.map(d=>`<tr id="platform-rule-${escape(d.key)}" data-operation-scope><td><strong>${escape(d.key)}</strong><p class="row-detail">${escape(d.description)}</p>${d.source?`<a href="${escape(d.source)}" target="_blank" rel="noreferrer">Microsoft documentation</a>`:''}</td><td>${escape(d.access)}</td><td>${escape(d.coverage)}</td><td>${escape(d.origin)}<br>Source: ${escape(d.sourceValue??'Not configured')}<br>Effective: ${escape(d.value??'Not configured')}</td><td><label for="platform-${escape(d.key)}">${escape(d.key)}</label>${d.type==='boolean'?`<select id="platform-${escape(d.key)}"><option value="false" ${d.value!==true?'selected':''}>False</option><option value="true" ${d.value===true?'selected':''}>True</option></select>`:`<input id="platform-${escape(d.key)}" type="${d.type==='integer'?'number':'text'}" value="${escape(d.value??'')}" ${d.type==='integer'?`min="${d.min}" max="${d.max}"`:''}>`}<button class="button small" data-platform-save="${escape(d.key)}">Save override</button>${d.overridden?`<button class="button small" data-platform-reset="${escape(d.key)}">Use source/default</button>`:''}</td></tr>`).join('')}</tbody></table></div></section>`;
 }
 
 function accessRulesPanel() {
@@ -1678,11 +1808,11 @@ function dataverse() {
     ["Scope", result.origin ? `${result.origin}/.default` : null],
     ["TDS endpoint", tdsEnabled ? `127.0.0.1,${result.tdsPort}` : null],
   ].map(([label, text]) => `<div class="row"><div class="row-title">${escape(label)}</div><div class="row-detail">${value(text)}</div></div>`).join("")}</div><h3>ServiceClient connection strings</h3>${serviceClientPortNote}${(result.applications ?? []).map((app) => `<div class="row-detail"><code>${escape(`AuthType=ClientSecret;Url=${result.origin};ClientId=${app.appId};ClientSecret=<client secret>`)}</code></div>`).join("") || '<p class="muted">Register an application to get a connection string.</p>'}</section>`;
-  const applications =`<section class="panel section-gap"><div class="panel-heading"><h2>Applications</h2>${badge(`${(result.applications ?? []).length} registered`)}</div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Secrets</th><th>Certificates</th><th>Grants</th><th>Actions</th></tr></thead><tbody>${(result.applications ?? []).map((app) => `<tr><td class="item-title">${escape(app.displayName)}<div class="row-detail"><code>${escape(app.appId)}</code></div>${app.systemuserid ? `<div class="row-detail">User ${escape(app.systemuserid)}</div>` : ""}${(app.redirectUris ?? []).map((uri) => `<div class="row-detail">Redirect <code>${escape(uri)}</code></div>`).join("")}</td><td>${(app.secrets ?? []).map((secret) => `<div class="row-detail"><code>${escape(secret.hint)}…</code> expires ${escape(String(secret.expiresOn ?? "").slice(0, 10))} <button class="button small quiet" type="button" data-dv-delete-secret="${escape(secret.id)}" data-dv-app="${escape(app.appId)}">Remove</button></div>`).join("") || "None"}</td><td>${(app.certificates ?? []).map((certificate) => `<div class="row-detail"><code>SHA-1 ${escape(certificate.thumbprint)}</code> <button class="button small quiet" type="button" data-dv-remove-cert="${escape(certificate.thumbprint)}" data-dv-app="${escape(app.appId)}" aria-label="Remove certificate ${escape(certificate.thumbprint)}">Remove</button></div><div class="row-detail"><code>SHA-256 ${escape(certificate.thumbprint256)}</code></div>`).join("") || "None"}</td><td>${escape((app.allowedGrants ?? []).join(", "))}${app.publicClient ? ` ${badge("Public client")}` : ""}</td><td class="actions"><button class="button small quiet" type="button" data-dv-edit-app="${escape(app.appId)}">Edit</button><button class="button small" type="button" data-dv-add-secret="${escape(app.appId)}">Add secret</button><button class="button small quiet" type="button" data-dv-remove-app="${escape(app.appId)}" data-dv-name="${escape(app.displayName)}">Remove</button></td></tr>${dataverseEditing === app.appId ? editRow(app) : ""}`).join("") || '<tr><td colspan="5">No application registered yet.</td></tr>'}</tbody></table></div></section>`;
-  const users = `<section class="panel section-gap"><div class="panel-heading"><h2>Users</h2>${badge(`${(result.users ?? []).length} users`)}</div><p class="muted">Security roles decide what a token holder can read or change through this API. They never apply to the portal.</p><div class="table-wrap"><table><thead><tr><th>User</th><th>Access mode</th><th>State</th><th>Roles</th><th>Actions</th></tr></thead><tbody>${(result.users ?? []).map((user) => `<tr><td class="item-title">${escape(user.fullname)}<div class="row-detail">${escape(user.domainname || (user.applicationid ? `Application ${user.applicationid}` : ""))}</div><div class="row-detail"><code>${escape(user.systemuserid)}</code></div></td><td>${escape(ACCESS_MODES[user.accessmode] ?? String(user.accessmode))}</td><td>${badge(user.isdisabled ? "Disabled" : "Enabled", user.isdisabled ? "red" : "green")}${user.passwordSet ? ` ${badge("Password set")}` : ""}</td><td><form id="dv-roles-${escape(user.systemuserid)}" class="dv-roles" data-dv-user="${escape(user.systemuserid)}">${roleChoices(`dv-roles-${user.systemuserid}`, user.roles ?? [])}<button class="button small" type="submit">Save roles</button></form></td><td class="actions"><button class="button small" type="button" data-dv-toggle-user="${escape(user.systemuserid)}" data-dv-disabled="${user.isdisabled ? "false" : "true"}">${user.isdisabled ? "Enable" : "Disable"}</button><form id="dv-password-${escape(user.systemuserid)}" class="dv-password" data-dv-password="${escape(user.systemuserid)}"><input type="password" autocomplete="new-password" minlength="8" maxlength="256" required aria-label="New password for ${escape(user.fullname)}" placeholder="New password"> <button class="button small" type="submit">${user.passwordSet ? "Replace password" : "Set password"}</button></form>${user.passwordSet ? `<button class="button small quiet" type="button" data-dv-clear-password="${escape(user.systemuserid)}" data-dv-name="${escape(user.fullname)}">Clear password</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
+  const applications =`<section class="panel section-gap"><div class="panel-heading"><h2>Applications</h2>${badge(`${(result.applications ?? []).length} registered`)}</div><div class="table-wrap"><table><thead><tr><th>Application</th><th>Secrets</th><th>Certificates</th><th>Grants</th><th>Actions</th></tr></thead><tbody>${(result.applications ?? []).map((app) => `<tr id="dv-app-row-${escape(app.appId)}" data-operation-scope><td class="item-title">${escape(app.displayName)}<div class="row-detail"><code>${escape(app.appId)}</code></div>${app.systemuserid ? `<div class="row-detail">User ${escape(app.systemuserid)}</div>` : ""}${(app.redirectUris ?? []).map((uri) => `<div class="row-detail">Redirect <code>${escape(uri)}</code></div>`).join("")}</td><td>${(app.secrets ?? []).map((secret) => `<div class="row-detail"><code>${escape(secret.hint)}…</code> expires ${escape(String(secret.expiresOn ?? "").slice(0, 10))} <button class="button small quiet" type="button" data-dv-delete-secret="${escape(secret.id)}" data-dv-app="${escape(app.appId)}">Remove</button></div>`).join("") || "None"}</td><td>${(app.certificates ?? []).map((certificate) => `<div class="row-detail"><code>SHA-1 ${escape(certificate.thumbprint)}</code> <button class="button small quiet" type="button" data-dv-remove-cert="${escape(certificate.thumbprint)}" data-dv-app="${escape(app.appId)}" aria-label="Remove certificate ${escape(certificate.thumbprint)}">Remove</button></div><div class="row-detail"><code>SHA-256 ${escape(certificate.thumbprint256)}</code></div>`).join("") || "None"}</td><td>${escape((app.allowedGrants ?? []).join(", "))}${app.publicClient ? ` ${badge("Public client")}` : ""}</td><td class="actions"><button class="button small quiet" type="button" data-dv-edit-app="${escape(app.appId)}">Edit</button><button class="button small" type="button" data-dv-add-secret="${escape(app.appId)}">Add secret</button><button class="button small quiet" type="button" data-dv-remove-app="${escape(app.appId)}" data-dv-name="${escape(app.displayName)}">Remove</button></td></tr>${dataverseEditing === app.appId ? editRow(app) : ""}`).join("") || '<tr><td colspan="5">No application registered yet.</td></tr>'}</tbody></table></div></section>`;
+  const users = `<section class="panel section-gap"><div class="panel-heading"><h2>Users</h2>${badge(`${(result.users ?? []).length} users`)}</div><p class="muted">Security roles decide what a token holder can read or change through this API. They never apply to the portal.</p><div class="table-wrap"><table><thead><tr><th>User</th><th>Access mode</th><th>State</th><th>Roles</th><th>Actions</th></tr></thead><tbody>${(result.users ?? []).map((user) => `<tr id="dv-user-row-${escape(user.systemuserid)}" data-operation-scope><td class="item-title">${escape(user.fullname)}<div class="row-detail">${escape(user.domainname || (user.applicationid ? `Application ${user.applicationid}` : ""))}</div><div class="row-detail"><code>${escape(user.systemuserid)}</code></div></td><td>${escape(ACCESS_MODES[user.accessmode] ?? String(user.accessmode))}</td><td>${badge(user.isdisabled ? "Disabled" : "Enabled", user.isdisabled ? "red" : "green")}${user.passwordSet ? ` ${badge("Password set")}` : ""}</td><td><form id="dv-roles-${escape(user.systemuserid)}" class="dv-roles" data-dv-user="${escape(user.systemuserid)}">${roleChoices(`dv-roles-${user.systemuserid}`, user.roles ?? [])}<button class="button small" type="submit">Save roles</button></form></td><td class="actions"><button class="button small" type="button" data-dv-toggle-user="${escape(user.systemuserid)}" data-dv-disabled="${user.isdisabled ? "false" : "true"}">${user.isdisabled ? "Enable" : "Disable"}</button><form id="dv-password-${escape(user.systemuserid)}" class="dv-password" data-dv-password="${escape(user.systemuserid)}"><input type="password" autocomplete="new-password" minlength="8" maxlength="256" required aria-label="New password for ${escape(user.fullname)}" placeholder="New password"> <button class="button small" type="submit">${user.passwordSet ? "Replace password" : "Set password"}</button></form>${user.passwordSet ? `<button class="button small quiet" type="button" data-dv-clear-password="${escape(user.systemuserid)}" data-dv-name="${escape(user.fullname)}">Clear password</button>` : ""}</td></tr>`).join("")}</tbody></table></div></section>`;
   const forms = `<div class="grid-two"><section class="panel section-gap"><div class="panel-heading"><h2>Register an application</h2></div><form id="dv-app-form" class="form-grid"><div><label for="dv-app-name">Display name</label><input id="dv-app-name" required></div><div><label for="dv-app-id">Application id (optional GUID)</label><input id="dv-app-id" placeholder="Generated when empty"></div><div><label>Roles for the application user</label>${roleChoices("dv-app-role", ["System Administrator"])}</div><div><label>Allowed grants</label>${grantChoices("dv-app-grant", ["client_credentials"])}</div><div><label class="checkbox-label"><input id="dv-app-public" type="checkbox"> Public client (no secret)</label><p class="field-help">A public client gets no secret; it signs in with a grant such as authorization_code and a redirect URI.</p></div><div><label for="dv-app-redirect">Redirect URIs (one per line)</label><textarea id="dv-app-redirect" rows="3" spellcheck="false" placeholder="https://client.example.test/callback"></textarea></div><div><button class="button primary" type="submit">Register application</button></div></form></section><section class="panel section-gap"><div class="panel-heading"><h2>Create an interactive user</h2></div><form id="dv-user-form" class="form-grid"><div><label for="dv-user-name">Full name</label><input id="dv-user-name" required></div><div><label for="dv-user-domain">Sign-in name (domainname)</label><input id="dv-user-domain" placeholder="maker@example.test" required></div><div><label for="dv-user-object">Entra object id (optional GUID)</label><input id="dv-user-object" placeholder="Generated when empty"></div><div><label for="dv-user-password">Password for ROPC sign-in (optional, 8 to 256 characters)</label><input id="dv-user-password" type="password" autocomplete="new-password" minlength="8" maxlength="256"><p class="field-help">Stored hashed and never shown. Leave empty to refuse the password grant for this user.</p></div><div><label>Roles</label>${roleChoices("dv-user-role", ["Basic User"])}</div><div><button class="button primary" type="submit">Create user</button></div></form></section></div><section class="panel section-gap"><div class="panel-heading"><h2>Add a certificate</h2></div><form id="dv-cert-form" class="form-grid"><div><label for="dv-cert-app">Application</label><select id="dv-cert-app" required ${appOptions ? "" : "disabled"}>${appOptions || "<option value=''>Register an application first</option>"}</select></div><div><label for="dv-cert-pem">Certificate or public key (PEM)</label><textarea id="dv-cert-pem" class="code-editor" rows="6" spellcheck="false" placeholder="-----BEGIN CERTIFICATE-----" required></textarea><p class="field-help">Paste the certificate (recommended, its SHA-1 and SHA-256 fingerprints become the x5t and x5t#S256 thumbprints MSAL sends) or a bare public key. Only public material is stored; the client signs its assertion with the matching private key.</p></div><div><button class="button" type="submit" ${appOptions ? "" : "disabled"}>Add certificate</button></div></form></section>`;
   const federatedRows = (result.applications ?? []).flatMap((app) =>
-    (app.federatedCredentials ?? []).map((credential) => `<tr><td class="item-title">${escape(app.displayName)}</td><td><code>${escape(credential.issuer)}</code></td><td><code>${escape(credential.subject)}</code></td><td>${escape((credential.audiences ?? []).join(", "))}</td><td class="actions"><button class="button small quiet" type="button" data-dv-remove-federated data-dv-app="${escape(app.appId)}" data-dv-issuer="${escape(credential.issuer)}" data-dv-subject="${escape(credential.subject)}">Remove</button></td></tr>`),
+    (app.federatedCredentials ?? []).map((credential) => `<tr id="dv-federated-row-${escape(app.appId)}-${encodeURIComponent(credential.issuer)}-${encodeURIComponent(credential.subject)}" data-operation-scope><td class="item-title">${escape(app.displayName)}</td><td><code>${escape(credential.issuer)}</code></td><td><code>${escape(credential.subject)}</code></td><td>${escape((credential.audiences ?? []).join(", "))}</td><td class="actions"><button class="button small quiet" type="button" data-dv-remove-federated data-dv-app="${escape(app.appId)}" data-dv-issuer="${escape(credential.issuer)}" data-dv-subject="${escape(credential.subject)}">Remove</button></td></tr>`),
   );
   const federated = `<section class="panel section-gap"><div class="panel-heading"><h2>Federated credentials</h2>${badge(`${federatedRows.length} trusted`)}</div><p class="muted">Workload identity federation: tokens from an external issuer sign in as the application. Only the issuer's public keys are stored.</p><div class="table-wrap"><table><thead><tr><th>Application</th><th>Issuer</th><th>Subject</th><th>Audience</th><th>Actions</th></tr></thead><tbody>${federatedRows.join("") || '<tr><td colspan="5">No federated credential yet.</td></tr>'}</tbody></table></div><form id="dv-federated-form" class="form-grid section-gap"><div><label for="dv-fed-app">Application</label><select id="dv-fed-app" required ${appOptions ? "" : "disabled"}>${appOptions || "<option value=''>Register an application first</option>"}</select></div><div><label for="dv-fed-issuer">Issuer (https URL)</label><input id="dv-fed-issuer" type="url" placeholder="https://issuer.example.test/tenant" required></div><div><label for="dv-fed-subject">Subject</label><input id="dv-fed-subject" placeholder="repo:example/app:ref:refs/heads/main" required></div><div><label for="dv-fed-audience">Audience</label><input id="dv-fed-audience" value="api://AzureADTokenExchange" required></div><div><label for="dv-fed-jwks">Issuer JWKS (public keys, JSON)</label><textarea id="dv-fed-jwks" class="code-editor" rows="5" spellcheck="false" placeholder='{"keys":[]}' required></textarea><p class="field-help">The issuer's public JSON Web Key Set. A key with a private part is refused.</p></div><div><button class="button" type="submit" ${appOptions ? "" : "disabled"}>Add federated credential</button></div></form></section>`;
   const identityRows = (result.managedIdentities ?? []).map((identity) => `<tr><td class="item-title">${escape(identity.displayName)}<div class="row-detail"><code>${escape(identity.clientId)}</code></div></td><td><code>${escape(identity.principalId ?? "")}</code></td><td>${escape((identity.roles ?? []).join(", "))}</td><td>${identity.source === "settings" ? badge("From settings") : badge("Added here", "green")}</td><td class="actions">${identity.source === "settings" ? "" : `<button class="button small quiet" type="button" data-dv-remove-identity="${escape(identity.clientId)}" data-dv-name="${escape(identity.displayName)}">Remove</button>`}</td></tr>`);
@@ -1728,7 +1858,7 @@ document.addEventListener("submit", async (event) => {
   if (!/^dv-/.test(form.id ?? "")) return;
   event.preventDefault();
   const button = event.submitter;
-  if (button) button.disabled = true;
+  if (!setButtonPending(button, true)) return;
   try {
     if (form.id === "dv-app-form") {
       const created = await dataverseWrite("/dataverse/applications", {
@@ -1798,9 +1928,10 @@ document.addEventListener("submit", async (event) => {
       await dataverseWrite(`/dataverse/workflows/${encodeURIComponent(form.dataset.dvWorkflow)}`, { method: "PATCH", body: JSON.stringify({ mode, ...(mock ? { mock } : {}) }) }, "Run mode saved.");
     }
   } catch (error) {
+    setButtonPending(button, false, true);
     notify(error.message, true);
   } finally {
-    if (button) button.disabled = false;
+    if (button) setButtonPending(button, false);
   }
 });
 document.addEventListener("click", async (event) => {
@@ -1829,7 +1960,7 @@ document.addEventListener("click", async (event) => {
     return askConfirmation("Remove managed identity?", `Remove ${data.dvName} and its application user.`, async () => {
       await dataverseWrite(`/dataverse/managed-identities/${encodeURIComponent(data.dvRemoveIdentity)}`, { method: "DELETE" }, "Managed identity removed.");
     }, "Remove managed identity");
-  target.disabled = true;
+  if (!setButtonPending(target, true)) return;
   try {
     if (data.dvAddSecret !== undefined) {
       const created = await dataverseWrite(`/dataverse/applications/${encodeURIComponent(data.dvAddSecret)}/secrets`, { method: "POST", body: "{}" });
@@ -1847,9 +1978,9 @@ document.addEventListener("click", async (event) => {
     else if (data.dvRemoveFederated !== undefined)
       await dataverseWrite(`/dataverse/applications/${encodeURIComponent(data.dvApp)}/federated-credentials`, { method: "DELETE", body: JSON.stringify({ issuer: data.dvIssuer, subject: data.dvSubject }) }, "Federated credential removed.");
   } catch (error) {
-    notify(error.message, true);
+    setButtonPending(target, false, true); notify(error.message, true);
   } finally {
-    target.disabled = false;
+    setButtonPending(target, false);
   }
 });
 
@@ -1910,10 +2041,11 @@ function render() {
         observedStylesheetBaselines() +
         snippetCompositionControls(),
     );
-  if (personaCatalogue && ['access','scenarios'].includes(activeView)) mountPersonaAdministration($('#content'), personaCatalogue, {request, refresh, notify, session:browserSession, selectedKey:selectedPersonaKey,
+  if (personaCatalogue && ['access','scenarios'].includes(activeView)) mountPersonaAdministration($('#content'), personaCatalogue, {request, refresh, notify, setButtonPending, session:browserSession, selectedKey:selectedPersonaKey,
     onSelected:key=>{selectedPersonaKey=key;}, onContact:persona=>{selectedPersona=persona.contactId;render();}});
   restoreDrafts();
   syncConfinement();
+  restorePendingScopes();
   if (focusKey) {
     const replacement = $("#content").querySelector(focusKey);
     // Lazy data can arrive between focus and the next keystroke, before an input event saves a
@@ -2043,7 +2175,7 @@ async function saveConfig(patch, { form } = {}) {
 document.addEventListener("click", async (event) => {
   const control=event.target.closest('[data-platform-save],[data-platform-reset],[data-experiment],[data-portal-toggle]');
   if(control){
-    event.preventDefault();control.disabled=true;
+    event.preventDefault();if(!setButtonPending(control,true))return;
     try{
       if(control.dataset.portalToggle){await request('/'+control.dataset.portalKind+'/'+encodeURIComponent(control.dataset.portalToggle),{method:'PATCH',body:JSON.stringify({value:control.dataset.portalValue})});}
       else if(control.dataset.platformSave){const key=control.dataset.platformSave,d=config().platformSettings.find(d=>d.key===key),input=document.getElementById('platform-'+key);if(d.type==='integer'&&!input.value.trim())throw new Error('Enter an integer or use source/default.');const value=d.type==='integer'?Number(input.value):d.type==='boolean'?input.value==='true':input.value;await request('/platform-settings',{method:'PATCH',body:JSON.stringify({[key]:value})});}
@@ -2057,17 +2189,19 @@ document.addEventListener("click", async (event) => {
         else if(action==='export'){if(!preset)throw new Error('Select a preset.');const {builtin,source,readOnly,shadowed,diagnostics,...portable}=preset,url=URL.createObjectURL(new Blob([json(portable)],{type:'application/json'})),a=document.createElement('a');a.href=url;a.download=id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);notify('Configuration preset exported.');return;}
       }
       await refresh();notify('Local configuration updated.');
-    }catch(error){notify(error.message,true);}finally{control.disabled=false;}return;
+    }catch(error){setButtonPending(control,false,true);notify(error.message,true);}finally{setButtonPending(control,false);}return;
   }
   const target = event.target.closest("button");
   if (!target) return;
   if (target.dataset.operationReset) {
+    if (!setButtonPending(target, true)) return;
     try {
       await request(`/operations/${encodeURIComponent(target.dataset.operationReset)}`, { method: 'DELETE' });
       drafts.clear();
       await refresh();
       notify('Source operation default restored.');
-    } catch (error) { notify(error.message, true); }
+    } catch (error) { setButtonPending(target, false, true); notify(error.message, true); }
+    finally { setButtonPending(target, false); }
     return;
   }
   if (target.dataset.inspect !== undefined) {
@@ -2557,7 +2691,7 @@ document.addEventListener("input", (event) => {
 $("#editor-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter;
-  button.disabled = true;
+  if (!setButtonPending(button, true)) return;
   try {
     const body = JSON.parse($("#editor-json").value);
     if (!body || Array.isArray(body) || typeof body !== "object")
@@ -2607,24 +2741,26 @@ $("#editor-form").addEventListener("submit", async (event) => {
     await refresh();
     notify("Changes saved.");
   } catch (error) {
+    setButtonPending(button, false, true);
     $("#editor-error").textContent = error.message;
     $("#editor-error").hidden = false;
   } finally {
-    button.disabled = false;
+    setButtonPending(button, false);
   }
 });
 
 $("#confirm-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const button = event.submitter;
-  button.disabled = true;
+  if (!setButtonPending(button, true)) return;
   try {
     await confirmAction();
     $("#confirm").close();
   } catch (error) {
+    setButtonPending(button, false, true);
     notify(error.message, true);
   } finally {
-    button.disabled = false;
+    setButtonPending(button, false);
   }
 });
 for (const selector of ["#editor-close", "#editor-cancel"])
@@ -2649,7 +2785,7 @@ window.addEventListener("hashchange", () => {
     return;
   }
   render();
-  loadView();
+  loadView().catch(error => notify(error.message, true));
 });
 
 document.addEventListener(
@@ -2695,7 +2831,7 @@ document.addEventListener("submit", async (event) => {
     return;
   event.preventDefault();
   const button = event.submitter;
-  button.disabled = true;
+  if (!setButtonPending(button, true)) return;
   try {
     if (event.target.id === 'deployment-profile-form') {
       const pin = button.value === 'reset' ? null : {
@@ -2785,7 +2921,7 @@ document.addEventListener("submit", async (event) => {
           origin,
           fetchXmlPath: $("#fetchxml-path").value.trim() || null,
           // A runtime started without --allow-live-writes refuses true; its switch stays off.
-          allowWrites: !$("#live-writes").disabled && $("#live-writes").checked,
+          allowWrites: state.status?.liveWrites !== "disabled" && $("#live-writes").checked,
         },
       }, { form: "connection-form" });
     } else if (event.target.id === "scenario-form") {
@@ -2953,9 +3089,10 @@ document.addEventListener("submit", async (event) => {
       notify("Authenticated browser connected.");
     }
   } catch (error) {
+    setButtonPending(button, false, true);
     notify(error.message, true);
   } finally {
-    button.disabled = false;
+    setButtonPending(button, false);
   }
 });
 

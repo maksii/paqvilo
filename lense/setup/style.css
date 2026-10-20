@@ -100,3 +100,10 @@ header>div{min-width:0}
 header>button{flex-shrink:0}
 .section-head>div{min-width:0}
 .section-head>select{width:auto;max-width:45%}
+
+/* The status remains visible while long source/configuration reads complete. */
+#notice.pending{display:flex;align-items:center;gap:10px;background:#eef4ff;color:#234281}
+#notice.pending::before{content:'';width:16px;height:16px;border:2px solid #bccce8;border-top-color:currentColor;border-radius:50%;flex:none;animation:setup-spin .8s linear infinite}
+#content[aria-busy=true] button:disabled,#refresh:disabled{cursor:wait}
+@keyframes setup-spin{to{transform:rotate(360deg)}}
+@media(prefers-reduced-motion:reduce){#notice.pending::before{animation:none}}

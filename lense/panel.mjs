@@ -21,6 +21,7 @@ import { browserProfileInfo } from './browser-profile.mjs';
 import { createSourceInspector, inspectRenderedPage } from './source-inspection.mjs';
 import { observeHttpErrors } from './http-errors.mjs';
 import { consoleLocation } from './console-location.mjs';
+import { annotateRuntimeSources } from './runtime-sources.mjs';
 
 // Compose the two self-contained browser functions on the Node side. A redraw remains one
 // bounded browser evaluation, including when the tab is paused at a debugger breakpoint.
@@ -426,7 +427,9 @@ export function enablePanel(context, session, opts = {}) {
   // toolkit launched the Mirage with (portal source and Solution roots), so a report can never
   // widen what the editor action may open.
   let runtimeVersion = 0;
+  let inspectionSequence = 0;
   const runtimeJobs = new WeakMap();
+  const inspectionProgress = new WeakMap();
   const inside = (root, file) => {
     const delta = path.relative(root, file);
     return Boolean(delta) && delta !== '..' && !delta.startsWith(`..${path.sep}`) && !path.isAbsolute(delta);
@@ -440,44 +443,7 @@ export function enablePanel(context, session, opts = {}) {
     const configured = Array.isArray(cfg.mirageSourceRoots) && cfg.mirageSourceRoots.length ? cfg.mirageSourceRoots : Array.isArray(cfg.mirageConfig?.solutionRoots)?cfg.mirageConfig.solutionRoots:[];
     return [...new Set([cfg.sourceDir, ...configured].filter((value) => typeof value === 'string' && value).map(realNative))];
   };
-  /** Portal files keep their source-relative path; other roots are named after their folder. */
-  const runtimeRef = (file, roots) => {
-    const absolute = realNative(file);
-    const sourceRoot = roots[0];
-    if (inside(sourceRoot, absolute)) return path.relative(sourceRoot, absolute).replace(/\\/g, '/');
-    const index = roots.findIndex((root, position) => position > 0 && inside(root, absolute));
-    if (index < 0) return null;
-    const name = path.basename(roots[index]);
-    const duplicate = roots.slice(0, index).some((root) => path.basename(root) === name);
-    return `@${name}${duplicate ? `~${index}` : ''}/${path.relative(roots[index], absolute).replace(/\\/g, '/')}`;
-  };
-  /** Gives every reported source file a reference the panel can open, and indexes them. */
-  const annotateRuntime = (report, roots) => {
-    const files = new Map();
-    const reference = (file) => {
-      if (typeof file !== 'string' || !file) return null;
-      const ref = runtimeRef(file, roots);
-      if (ref) files.set(ref, realNative(file));
-      return ref ? { ref, path: realNative(file) } : null;
-    };
-    const visit = (value, depth) => {
-      if (!value || typeof value !== 'object' || depth > 8) return;
-      if (Array.isArray(value)) {
-        for (const item of value) visit(item, depth + 1);
-        return;
-      }
-      const absolute = typeof value.sourceFile === 'string' ? value.sourceFile
-        : typeof value.file === 'string' ? value.file
-          : typeof value.relativePath === 'string' ? path.resolve(cfg.sourceDir, value.relativePath)
-            : typeof value.rel === 'string' ? path.resolve(cfg.sourceDir, value.rel) : null;
-      const found = reference(absolute);
-      if (found) Object.assign(value, found);
-      if (Array.isArray(value.sourceFiles)) value.sourceRefs = value.sourceFiles.map(reference).filter(Boolean);
-      for (const [key, child] of Object.entries(value)) if (key !== 'sourceRefs' && child && typeof child === 'object') visit(child, depth + 1);
-    };
-    visit(report, 0);
-    return files;
-  };
+  const annotateRuntime = (report, roots) => annotateRuntimeSources(report, { sourceDir: cfg.sourceDir, roots });
   const mirageUrl = (route) => new URL(route, cfg.origin).href;
   /** GET a Mirage admin route, preferring the documented /_sim alias over /__sim. */
   const mirageGet = async (route, timeout, request = context.request) => {
@@ -636,13 +602,14 @@ export function enablePanel(context, session, opts = {}) {
     }
     job.running = (async () => {
       do {
+        job.id = ++inspectionSequence;
         job.again = false;
         const path = job.path;
         job.path = undefined;
         await loadRuntime(page, path);
         schedule(page);
       } while (job.again && !disposed && !page.isClosed());
-    })().finally(() => { job.running = null; });
+    })().finally(() => { job.running = null; schedule(page); });
     return job.running;
   };
   const publicStatus = (status) => {
@@ -653,14 +620,21 @@ export function enablePanel(context, session, opts = {}) {
   /** What every redraw carries: status and counts. The report itself is fetched by the Inspect tab. */
   const mirageSummary = (page) => {
     const runtime = runtimeByPage.get(page);
-    if (!runtime) return null;
-    if (!runtime.active) return { active: false, error: runtime.error };
+    const job = runtimeJobs.get(page), detail = inspectionProgress.get(page);
+    const progress = {
+      loading: Boolean(job?.running || detail),
+      loadingId: detail?.id ?? (job?.running ? job.id : null),
+      phase: detail?.phase ?? (job?.running ? cfg.mirage ? 'Reading local runtime metadata' : 'Reading local export and Solution metadata' : null),
+    };
+    if (!runtime) return progress.loading ? { active: true, version: 0, mode: cfg.mirage ? 'local-runtime' : 'live-sources', ...progress } : null;
+    if (!runtime.active) return { active: false, error: runtime.error, ...progress };
     const summary = runtime.summary;
     const counts = summary?.counts ? { ...summary.counts } : null;
     if (counts) counts.total = (counts.templates ?? 0) + (counts.snippets ?? 0) + (counts.settings ?? 0) + (counts.forms ?? 0) + (counts.views ?? 0) + (counts.tables ?? 0);
     const s = runtime.status ?? {};
     return {
       active: true,
+      ...progress,
       mode: runtime.mode ?? 'local-runtime',
       version: runtime.version,
       error: runtime.error,
@@ -1170,52 +1144,62 @@ export function enablePanel(context, session, opts = {}) {
     catalog: () => ({ ok: true, entries: catalog() }),
     // ---- Mirage inspection and tweaks (local runtime only)
     inspect: async (body, page) => {
-      if (body.refresh === true) sourceInspector.invalidate();
-      if (body.refresh === true || !runtimeByPage.get(page)) await refreshRuntime(page);
-      const runtime = runtimeByPage.get(page);
-      if (!runtime?.active) return { ok: false, error: runtime?.error ?? 'Source inspection is not available on this page.' };
-      if(!runtime.report&&!runtime.summary)return {ok:false,error:runtime.error??'Source inspection is not available on this page.'};
-      if (!runtime.report && runtime.summary) {
-        // Loaded once per page version, when the Inspect tab asks for it.
-        runtime.loading ??= (async () => {
-          const response = await mirageGet(`/page-resources?path=${encodeURIComponent(runtime.path)}`, 30_000, page.context().request);
-          if (!response.ok()) throw new Error(`Page inspection returned HTTP ${response.status()}.`);
-          const report = await response.json();
-          if(!validInspectionReport(report)||report.view==='summary')throw new Error('Page inspection returned an invalid full report.');
-          const files = annotateRuntime(report, runtime.roots);
-          runtime.report = report;
-          if (runtimeByPage.get(page) === runtime) runtimeFilesByPage.set(page, files);
-        })().finally(() => { runtime.loading = null; });
-        try {
-          await runtime.loading;
-        } catch (error) {
-          return { ok: false, error: error.message.split('\n')[0] };
+      const progress = { id: ++inspectionSequence, phase: 'Reading source dependencies' };
+      inspectionProgress.set(page, progress); schedule(page);
+      try {
+        if (body.refresh === true) sourceInspector.invalidate();
+        if (body.refresh === true) await refreshRuntime(page);
+        else if (!runtimeByPage.get(page)) await (runtimeJobs.get(page)?.running ?? refreshRuntime(page));
+        const runtime = runtimeByPage.get(page);
+        if (!runtime?.active) return { ok: false, error: runtime?.error ?? 'Source inspection is not available on this page.' };
+        if(!runtime.report&&!runtime.summary)return {ok:false,error:runtime.error??'Source inspection is not available on this page.'};
+        if (!runtime.report && runtime.summary) {
+          // Loaded once per page version, when the Inspect tab asks for it.
+          runtime.loading ??= (async () => {
+            const response = await mirageGet(`/page-resources?path=${encodeURIComponent(runtime.path)}`, 30_000, page.context().request);
+            if (!response.ok()) throw new Error(`Page inspection returned HTTP ${response.status()}.`);
+            const report = await response.json();
+            if(!validInspectionReport(report)||report.view==='summary')throw new Error('Page inspection returned an invalid full report.');
+            const files = annotateRuntime(report, runtime.roots);
+            runtime.report = report;
+            if (runtimeByPage.get(page) === runtime) runtimeFilesByPage.set(page, files);
+          })().finally(() => { runtime.loading = null; });
+          try {
+            await runtime.loading;
+          } catch (error) {
+            return { ok: false, error: error.message.split('\n')[0] };
+          }
         }
+        const current=()=>!disposed&&!page.isClosed()&&sameOrigin(page.url(),cfg.origin)&&runtimeByPage.get(page)===runtime&&pathOf(page.url()).replace(/\/+$/,'')===String(runtime.path).replace(/\/+$/,'');
+        if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
+        progress.phase = 'Matching rendered elements to local sources'; schedule(page);
+        const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
+        if (!cfg.mirage) {
+          const answer = await sourceInspector.inspect(runtime.path, rendered);
+          runtime.report = answer.report;
+          runtime.roots = answer.roots.map(realNative);
+        } else {
+          // Supplement runtime evidence with source paths without changing its access verdicts.
+          runtime.inspectionBase ??= structuredClone(runtime.report);
+          runtime.report = structuredClone(runtime.inspectionBase);
+          await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
+            (runtime.report.unresolved ??= []).push({ kind: 'source-inspection', reason: error.message.split('\n')[0] });
+          });
+          // Additional code roots come only from stat-validated mappings in this
+          // task's trusted configuration, never from a runtime's claimed paths.
+          const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
+          runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
+        }
+        if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
+        progress.phase = 'Linking source files'; schedule(page);
+        runtimeFilesByPage.set(page, annotateRuntime(runtime.report, runtime.roots));
+        // The flat dependency list repeats the typed groups; it stays indexed here for opening files.
+        const { dependencies, ...visible } = runtime.report ?? {};
+        return { ok: true, version: runtime.version, loadingId: progress.id, report: runtime.report ? visible : null, status: publicStatus(runtime.status), error: runtime.error };
+      } finally {
+        if (inspectionProgress.get(page) === progress) inspectionProgress.delete(page);
+        schedule(page);
       }
-      const current=()=>!disposed&&!page.isClosed()&&sameOrigin(page.url(),cfg.origin)&&runtimeByPage.get(page)===runtime&&pathOf(page.url()).replace(/\/+$/,'')===String(runtime.path).replace(/\/+$/,'');
-      if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
-      const rendered = await page.evaluate(inspectRenderedPage).catch(() => ({ assets: [], controls: [] }));
-      if (!cfg.mirage) {
-        const answer = await sourceInspector.inspect(runtime.path, rendered);
-        runtime.report = answer.report;
-        runtime.roots = answer.roots.map(realNative);
-      } else {
-        // Supplement runtime evidence with source paths without changing its access verdicts.
-        runtime.inspectionBase ??= structuredClone(runtime.report);
-        runtime.report = structuredClone(runtime.inspectionBase);
-        await sourceInspector.enrich(runtime.report, rendered).catch((error) => {
-          (runtime.report.unresolved ??= []).push({ kind: 'source-inspection', reason: error.message.split('\n')[0] });
-        });
-        // Additional code roots come only from stat-validated mappings in this
-        // task's trusted configuration, never from a runtime's claimed paths.
-        const pluginRoots = await sourceInspector.pluginSourceRoots(runtime.path).catch(() => []);
-        runtime.roots = [...new Set([...runtime.roots, ...pluginRoots.map(realNative)])];
-      }
-      if(!current())return {ok:false,error:'The page changed during source inspection. Refresh inspection for the current page.'};
-      runtimeFilesByPage.set(page, annotateRuntime(runtime.report, runtime.roots));
-      // The flat dependency list repeats the typed groups; it stays indexed here for opening files.
-      const { dependencies, ...visible } = runtime.report ?? {};
-      return { ok: true, version: runtime.version, report: runtime.report ? visible : null, status: publicStatus(runtime.status), error: runtime.error };
     },
     tweaks: async (body, page) => {
       if (!cfg.mirage) return { ok: false, error: 'Tweaks change the local Mirage runtime only.' };

@@ -111,3 +111,46 @@ test('model-driven X-ray binds fields, PCF, handlers and ribbon provenance; boun
   assert.equal(await page.locator('#paqvilo-model-inspector').count(), 0); await assert.rejects(fs.readFile(inspector.agent.discoveryFile));
   assert.equal(methods.some(method => method !== 'GET'), false);
 });
+
+test('model-driven X-ray reports delayed refresh, settles pending state and offers retry after inspection errors', { timeout: 30000 }, async t => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), 'model-inspector-feedback-'));
+  const server = http.createServer((_request, response) => response.writeHead(200, { 'content-type': 'text/html' }).end('<!doctype html><title>Invented app</title><input data-id="inv_title"/>'));
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const origin = `http://127.0.0.1:${server.address().port}`;
+  const browser = await chromium.launch({ channel: process.platform === 'win32' ? 'msedge' : undefined, headless: true });
+  const context = await browser.newContext({ reducedMotion: 'reduce' }), page = await context.newPage();
+  let inspector, release, fail = false, block = false;
+  t.after(async () => { release?.(); await inspector?.close(); await browser.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve)); await fs.rm(root, { recursive: true, force: true, maxRetries: 5 }); });
+  await page.goto(origin + '/main.aspx?etn=inv_item');
+  const evaluate = page.evaluate.bind(page);
+  page.evaluate = async (fn, argument) => {
+    if (fn.name === 'inspectModelDrivenContext') {
+      if (block) await new Promise(resolve => { release = resolve; });
+      if (fail) { fail = false; throw Error('Invented context unavailable'); }
+    }
+    return evaluate(fn, argument);
+  };
+  const sources = imported(), overlay = createModelDrivenOverlay({ origin, imported: sources });
+  inspector = await startModelDrivenInspector({ context, page, overlay, cfg: { origin, stateDir: root, sourceDir: root, siteName: 'invented', envName: 'loopback' }, imported: sources });
+  const host = page.locator('#paqvilo-model-inspector'); await host.waitFor();
+  await page.waitForFunction(() => document.querySelector('#paqvilo-model-inspector').shadowRoot.querySelector('.panel').getAttribute('aria-busy') === 'false');
+  block = true;
+  await page.getByRole('button', { name: 'Model-driven developer panel' }).click();
+  await host.locator('.status').filter({ hasText: 'Reading app context' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Refreshing…', exact: true }).isDisabled(), true);
+  await page.getByRole('button', { name: 'X-ray', exact: true }).click();
+  await host.locator('.scan.active').waitFor({ state: 'visible' });
+  assert.equal(await host.locator('.scan').evaluate(node => getComputedStyle(node).pointerEvents), 'none');
+  await page.waitForFunction(() => document.querySelector('#paqvilo-model-inspector').shadowRoot.querySelector('.bar-status').textContent === 'Inspecting app…');
+  while (!release) await new Promise(resolve => setTimeout(resolve, 10));
+  if (process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE) await page.screenshot({ path: process.env.PAQVILO_MODEL_FEEDBACK_EVIDENCE });
+  block = false; release();
+  await page.waitForFunction(() => document.querySelector('#paqvilo-model-inspector').shadowRoot.querySelector('.panel').getAttribute('aria-busy') === 'false');
+  assert.equal(inspector.snapshot().pendingInspection, false);
+  await page.keyboard.press('Escape');
+  fail = true; await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.getByRole('alert').filter({ hasText: 'App context could not be refreshed' }).waitFor();
+  assert.equal(await page.getByRole('button', { name: 'Refresh', exact: true }).isEnabled(), true);
+  await page.getByRole('button', { name: 'Refresh', exact: true }).click();
+  await page.waitForFunction(() => { const panel = document.querySelector('#paqvilo-model-inspector').shadowRoot.querySelector('.panel'); return panel.getAttribute('aria-busy') === 'false' && !panel.querySelector('[role=alert]'); });
+});

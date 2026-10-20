@@ -191,3 +191,66 @@ test('Lense dev exposes a setup panel link on a loopback fixture and closes its 
   if (process.env.PAQVILO_SETUP_SCREENSHOTS) await popup.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'lense-setup.png'), fullPage: true });
   assert.equal(await popup.locator('#paqvilo-panel').count(), 0);
 });
+
+
+test('setup shows real loading and save feedback, prevents duplicate writes and retains failed edits', { timeout: 60000 }, async t => {
+  const work = await temporary(t), demo = path.join(work, 'feedback'); await prepareDemo(demo);
+  const server = await startSetupServer({ directory: demo, processEnv: {} }); t.resources.push(() => server.close());
+  const browser = await chromium.launch(browserOptions); t.resources.push(() => browser.close());
+  const page = await browser.newPage({ viewport: { width: 1280, height: 900 }, reducedMotion: 'reduce' });
+  const errors = []; page.on('pageerror', error => errors.push(error.message));
+  let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());
+  await page.route('**/_setup/api/status', async route => { await reading; await route.continue(); });
+  await page.goto(server.url);
+  await page.locator('#notice.pending').filter({ hasText: 'Loading project configuration' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
+  assert.equal(await page.locator('#refresh').isDisabled(), true);
+  assert.equal(await page.locator('#notice').evaluate(node => getComputedStyle(node, '::before').animationName), 'none');
+  releaseRead(); await page.getByRole('heading', { name: 'Targets & sources', exact: true }).waitFor();
+  const form = page.locator('form[data-form=yaml]'), textarea = form.locator('textarea');
+  const original = await textarea.inputValue(), draft = original + '\n# retained unsaved draft\n';
+  await textarea.fill(draft);
+  let releaseSave, writes = 0; const saving = new Promise(resolve => { releaseSave = resolve; }); t.after(() => releaseSave());
+  await page.route('**/_setup/api/config', async route => { writes++; await saving; await route.fulfill({ status: 422, json: { error: { message: 'Fixture validation rejected the draft.' } } }); });
+  const disabled = page.locator('form[data-form=settings] button[type=submit]');
+  await disabled.evaluate(button => { button.disabled = true; });
+  await form.locator('button[type=submit]').click();
+  await page.locator('#notice.pending').filter({ hasText: 'Validating and saving' }).waitFor();
+  assert.equal(await textarea.isDisabled(), true);
+  assert.equal(await page.locator('#refresh').isDisabled(), true);
+  await form.evaluate(node => { node.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: node.querySelector('button[type=submit]') })); });
+  if (process.env.PAQVILO_SETUP_SCREENSHOTS) {
+    await fs.mkdir(path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS), { recursive: true });
+    await page.screenshot({ path: path.resolve(process.env.PAQVILO_SETUP_SCREENSHOTS, 'setup-saving.png') });
+  }
+  releaseSave();
+  await page.locator('#notice[role=alert]').filter({ hasText: 'Fixture validation rejected' }).waitFor();
+  assert.equal(writes, 1); assert.equal(await textarea.inputValue(), draft);
+  assert.equal(await textarea.isDisabled(), false); assert.equal(await disabled.isDisabled(), true);
+  assert.equal(await page.locator('#refresh').isDisabled(), false);
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), null);
+  // Successful saving returns focus to the same action and keeps the edited section open.
+  await page.unroute('**/_setup/api/config');
+  await page.locator('#portal-example summary').first().click();
+  const site = page.locator('form[data-form=site][data-site=example]'); await site.locator('[name=port]').fill('0');
+  await saveForm(page, site);
+  assert.equal(await page.locator('#portal-example details').first().evaluate(node => node.open), true);
+  assert.equal(await site.locator('button[type=submit]').evaluate(node => node === document.activeElement), true);
+  // A hung local write must release the editor without silently retrying an unknown outcome.
+  await page.clock.install();
+  let releaseTimeout, timeoutWrites = 0;
+  const timedOut = new Promise(resolve => { releaseTimeout = resolve; }); t.after(() => releaseTimeout());
+  await page.route('**/_setup/api/config', async route => { timeoutWrites++; await timedOut; await route.abort().catch(() => {}); });
+  const timeoutDraft = await textarea.inputValue() + '\n# timeout draft retained\n';
+  await textarea.fill(timeoutDraft);
+  const attempted = page.waitForRequest('**/_setup/api/config');
+  await form.locator('button[type=submit]').click(); await attempted;
+  await page.clock.fastForward(120_001);
+  await page.locator('#notice[role=alert]').filter({ hasText: 'result may be unknown' }).waitFor();
+  assert.equal(await textarea.inputValue(), timeoutDraft);
+  assert.equal(await textarea.isDisabled(), false);
+  assert.equal(await page.locator('#refresh').isDisabled(), false);
+  assert.equal(timeoutWrites, 1);
+  releaseTimeout();
+  assert.deepEqual(errors, []);
+});

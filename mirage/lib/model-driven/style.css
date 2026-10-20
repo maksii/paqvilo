@@ -843,3 +843,15 @@
 .global #staff-profile { width:32px; height:32px; min-height:32px; border:1px solid white; border-radius:50%; margin:0 8px; padding:0; font-size:12px; }
 .global #staff-profile:hover { background:#8b408b; }
 #staff-actor { width:100%; max-width:100%; }
+
+/* Scoped application feedback keeps the current view in place while data loads. */
+#workspace { position:relative; }
+.app-loading { position:absolute; z-index:4; top:62px; left:50%; transform:translateX(-50%); display:flex; align-items:center; gap:10px; max-width:calc(100% - 32px); padding:12px 18px; color:#005a9e; background:#fff; border:1px solid #c7e0f4; border-radius:6px; box-shadow:0 3px 14px #0002; pointer-events:none; }
+.app-loading::before, button[aria-busy="true"]::after { content:""; display:inline-block; flex:none; width:14px; height:14px; border:2px solid #0078d433; border-top-color:#0078d4; border-radius:50%; animation:app-spin .8s linear infinite; }
+button[aria-busy="true"] { cursor:progress; }
+button[aria-busy="true"]::after { margin-left:6px; }
+.global #staff-profile[aria-busy="true"] { font-size:0; }
+.global #staff-profile[aria-busy="true"]::after { margin-left:0; }
+.lookup-results[aria-busy="true"], .related-results[aria-busy="true"] { opacity:.65; }
+@keyframes app-spin { to { transform:rotate(360deg); } }
+@media(prefers-reduced-motion:reduce) { .app-loading::before, button[aria-busy="true"]::after { animation:none; } }

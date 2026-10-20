@@ -253,3 +253,137 @@ test('guided extension trust requires an explicit choice and survives setup refr
   }
   assert.deepEqual(errors, []);
 });
+
+
+test('administration shows outstanding work and keeps failed save input available for retry', { timeout: 60000 }, async t => {
+  const { page, sim, errors } = await organization(t, { runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  let releaseRead; const reading = new Promise(resolve => { releaseRead = resolve; }); t.after(() => releaseRead());
+  await page.route('**/__sim/api/state?summary=1', async route => { await reading; await route.continue(); });
+  await page.goto(sim.url + '/_sim/');
+  await page.locator('#activity-feedback').filter({ hasText: 'Loading workspace data' }).waitFor();
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'true');
+  assert.equal(await page.locator('#activity-feedback').evaluate(node => getComputedStyle(node, '::before').animationName), 'none');
+  releaseRead(); await page.getByRole('heading', { name: 'Your local organization workspace' }).waitFor();
+  await page.getByRole('link', { name: 'Organization identity & API', exact: true }).click();
+  await page.locator('#dv-app-form').waitFor();
+  const form = page.locator('#dv-app-form'); await page.locator('#dv-app-name').fill('Uncommitted application');
+  let releaseWrite, writes = 0; const writing = new Promise(resolve => { releaseWrite = resolve; }); t.after(() => releaseWrite());
+  await page.route('**/__sim/api/dataverse/applications', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    writes++; await writing; await route.fulfill({ status: 422, json: { error: { message: 'Fixture rejected this application.' } } });
+  });
+  const submit = form.locator('button[type=submit]'); await submit.click();
+  await page.locator('#activity-feedback').filter({ hasText: 'Applying local changes' }).waitFor();
+  assert.equal(await submit.innerText(), 'Working…'); assert.equal(await submit.isDisabled(), true);
+  assert.equal(await page.locator('#dv-app-name').isDisabled(), true);
+  await page.getByRole('button', { name: '↻ Refresh', exact: true }).click();
+  await page.locator('#refresh').waitFor({ state: 'visible' });
+  await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
+  assert.equal(await page.locator('#dv-app-name').isDisabled(), true, 'a workspace refresh cannot release an outstanding form operation');
+  assert.equal(await page.locator('#dv-app-name').inputValue(), 'Uncommitted application');
+  await form.evaluate(node => { node.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true, submitter: node.querySelector('button[type=submit]') })); });
+  await capture(page, 'admin-saving'); releaseWrite();
+  await page.locator('#notification[role=alert]').filter({ hasText: 'Fixture rejected' }).waitFor();
+  assert.equal(writes, 1); assert.equal(await page.locator('#dv-app-name').inputValue(), 'Uncommitted application');
+  assert.equal(await page.locator('#dv-app-name').isDisabled(), false);
+  assert.equal(await submit.isDisabled(), false); assert.notEqual(await submit.innerText(), 'Working…');
+  // Shorten only the production deadline in this browser, and honor its real AbortSignal.
+  await page.evaluate(() => {
+    const originalTimeout = AbortSignal.timeout, originalFetch = window.fetch;
+    window.__restoreAdminDeadlineFixture = () => { AbortSignal.timeout = originalTimeout; window.fetch = originalFetch; };
+    const timeout = originalTimeout.bind(AbortSignal), fetch = originalFetch.bind(window);
+    AbortSignal.timeout = milliseconds => timeout(milliseconds === 120000 ? 40 : milliseconds);
+    window.fetch = (url, options) => String(url).endsWith('/dataverse/applications') && options?.method === 'POST'
+      ? new Promise((resolve, reject) => options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true }))
+      : fetch(url, options);
+  });
+  await submit.click();
+  await page.locator('#notification[role=alert]').filter({ hasText: 'Its result may be unknown' }).waitFor();
+  assert.equal(await submit.isDisabled(), false); assert.equal(await page.locator('#dv-app-name').inputValue(), 'Uncommitted application');
+  assert.equal(writes, 1, 'timeouts never retry or dispatch a second application write');
+  await page.evaluate(() => { window.__restoreAdminDeadlineFixture(); delete window.__restoreAdminDeadlineFixture; });
+  await page.locator('#activity-feedback').waitFor({ state: 'hidden' });
+  assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
+  await page.getByRole('link', { name: 'Data records', exact: true }).click();
+  await page.getByLabel('Entity', { exact: true }).selectOption('x_item');
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  let releaseEdit; const editing = new Promise(resolve => { releaseEdit = resolve; }); t.after(() => releaseEdit());
+  await page.route('**/__sim/api/records/x_item/*', async route => {
+    if (route.request().method() !== 'PATCH') return route.continue();
+    await editing; await route.fulfill({ status: 422, json: { error: { message: 'Fixture rejected this record.' } } });
+  });
+  await page.locator('#editor-form button[type=submit]').click();
+  await page.locator('#editor-form[data-pending-action]').waitFor();
+  await page.keyboard.press('Escape');
+  assert.equal(await page.locator('#editor').evaluate(dialog => dialog.open), true, 'a dispatched save cannot silently dismiss its result');
+  releaseEdit(); await page.locator('#editor-error').filter({ hasText: 'Fixture rejected this record' }).waitFor();
+  assert.equal(await page.locator('#editor-json').isDisabled(), false);
+  assert.deepEqual(errors, []);
+});
+
+
+test('administration serializes overlapping refreshes and awaits a fresh round after a saved record', { timeout: 60000 }, async t => {
+  const { page, sim, errors } = await organization(t);
+  await page.goto(sim.url + '/_sim/#records');
+  await page.getByLabel('Entity', { exact: true }).selectOption('x_item');
+  await page.getByRole('cell', { name: 'Visible local row', exact: true }).waitFor();
+  await page.getByRole('button', { name: 'Edit', exact: true }).click();
+  const json = JSON.parse(await page.locator('#editor-json').inputValue()); json.x_name = 'Saved during refresh';
+  await page.locator('#editor-json').fill(JSON.stringify(json));
+  const gates = [], releases = []; for (let index = 0; index < 2; index++) gates.push(new Promise(resolve => { releases.push(resolve); }));
+  t.after(() => releases.forEach(resolve => resolve()));
+  let reads = 0, active = 0, maximum = 0, startedSecond;
+  const secondRead = new Promise(resolve => { startedSecond = resolve; });
+  await page.route('**/__sim/api/state?summary=1', async route => {
+    const index = reads++; active++; maximum = Math.max(maximum, active);
+    if (index === 1) startedSecond();
+    const response = await route.fetch(); if (index < gates.length) await gates[index];
+    active--; await route.fulfill({ response });
+  });
+  await page.locator('#refresh').evaluate(button => button.click());
+  await page.waitForFunction(() => document.querySelector('#refresh').disabled);
+  const saved = page.waitForResponse(response => response.request().method() === 'PATCH' && response.url().includes('/api/records/x_item/'));
+  await page.locator('#editor-form button[type=submit]').click(); await saved;
+  assert.equal(reads, 1, 'a save cannot start a racing state read');
+  releases[0]();
+  await page.waitForFunction(() => document.querySelector('#activity-feedback').textContent.includes('Loading'));
+  await secondRead;
+  assert.equal(await page.locator('#refresh').isDisabled(), true, 'the shared refresh remains pending until the fresh trailing round completes');
+  releases[1](); await page.locator('#notification').filter({ hasText: 'Changes saved.' }).waitFor();
+  assert.equal(reads, 2); assert.equal(maximum, 1);
+  assert.equal(await page.locator('#refresh').isDisabled(), false);
+  await page.getByRole('cell', { name: 'Saved during refresh', exact: true }).waitFor();
+  assert.deepEqual(errors, []);
+});
+
+
+test('organization row actions share one lock with nested role forms through refresh and failure', { timeout: 60000 }, async t => {
+  const { page, sim, errors } = await organization(t, { runtime: { kind: 'dataverse-api' }, dataverse: { enabled: true, tls: false, tds: { enabled: false } } });
+  await page.goto(sim.url + '/_sim/#dataverse');
+  await page.locator('#dv-user-name').fill('Pending roles fixture'); await page.locator('#dv-user-domain').fill('pending@example.test');
+  await page.locator('#dv-user-form button[type=submit]').click();
+  await page.locator('#notification').filter({ hasText: 'User created.' }).waitFor();
+  const row = page.locator('tr[id^=dv-user-row-]').filter({ hasText: 'Pending roles fixture' });
+  const roles = row.locator('form[data-dv-user]'); await roles.locator('[data-dv-role]').first().check();
+  const selected = await roles.locator('[data-dv-role]:checked').evaluateAll(nodes => nodes.map(node => node.dataset.dvRole));
+  let release, writes = 0; const gate = new Promise(resolve => { release = resolve; }); t.after(() => release());
+  await page.route('**/__sim/api/dataverse/users/*', async route => {
+    if (route.request().method() !== 'PATCH') return route.continue();
+    writes++; await gate; await route.fulfill({ status: 422, json: { error: { message: 'Fixture refused the role change.' } } });
+  });
+  await roles.getByRole('button', { name: 'Save roles', exact: true }).click();
+  await row.locator('button[aria-busy=true]').waitFor();
+  assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), true);
+  assert.equal(await row.locator('input[type=password]').isDisabled(), true);
+  await page.locator('#refresh').click(); await page.waitForFunction(() => !document.querySelector('#refresh').disabled);
+  assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), true);
+  await row.locator('[data-dv-toggle-user]').evaluate(button => button.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+  release(); await page.locator('#notification').filter({ hasText: 'Fixture refused the role change.' }).waitFor();
+  assert.equal(writes, 1, 'a sibling row action cannot overlap its role save');
+  assert.equal(await row.getByRole('button', { name: 'Disable', exact: true }).isDisabled(), false);
+  assert.equal(await row.locator('input[type=password]').isDisabled(), false);
+  assert.equal(await roles.getByRole('button', { name: 'Save roles', exact: true }).isDisabled(), false);
+  assert.deepEqual(await roles.locator('[data-dv-role]:checked').evaluateAll(nodes => nodes.map(node => node.dataset.dvRole)), selected);
+  assert.deepEqual(errors, []);
+});
