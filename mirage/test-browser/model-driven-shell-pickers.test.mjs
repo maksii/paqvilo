@@ -70,6 +70,19 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   const page = await browser.newPage({ viewport: { width: 1582, height: 1000 } });
   await page.goto(origin + '/main.aspx?appname=x_example&pagetype=entitylist&etn=x_item');
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
+  // Keep the old Copper row visible while a filtered refresh is in flight.
+  // Waiting for that row alone cannot prove the new grid was applied.
+  await page.route('**/_apps/api/tables/x_item?*', async route => {
+    const query = JSON.parse(new URL(route.request().url()).searchParams.get('query') ?? '{}');
+    if (query.filters?.some(filter => filter.value === 'Copper')) await new Promise(resolve => setTimeout(resolve, 150));
+    await route.continue();
+  });
+  const gridChange = async action => {
+    const response = page.waitForResponse(response => response.request().method() === 'GET' && new URL(response.url()).pathname === '/_apps/api/tables/x_item');
+    await action();
+    assert.equal((await response).status(), 200);
+    await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready');
+  };
   await page.getByRole('button', { name: 'Edit columns', exact: true }).click();
   const columns = page.getByRole('dialog', { name: /^Edit columns:/ });
   assert.deepEqual(await columns.evaluate(node => { const { x, y, width, height } = node.getBoundingClientRect(); return [x, y, width, height]; }), [1112, 0, 470, 1000]);
@@ -92,15 +105,15 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   const menu = page.getByRole('menu', { name: 'Name column options', exact: true });
   assert.equal(await menu.evaluate(node => node.getBoundingClientRect().width), 180);
   assert.equal(await menu.getByRole('menuitem', { name: 'Group by', exact: true }).isDisabled(), true);
-  await menu.getByRole('menuitemradio', { name: 'Z to A', exact: true }).click();
+  await gridChange(() => menu.getByRole('menuitemradio', { name: 'Z to A', exact: true }).click());
   await page.waitForFunction(() => document.querySelector('tbody tr button')?.textContent === 'Silver');
   assert.equal(await nameHeader.locator('..').getAttribute('aria-sort'), 'descending');
   await nameHeader.click(); await menu.getByRole('menuitem', { name: 'Column width', exact: true }).click();
   await page.getByRole('spinbutton', { name: 'Width (pixels)' }).fill('320');
-  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await gridChange(() => page.getByRole('button', { name: 'Apply', exact: true }).click());
   await nameHeader.waitFor();
   assert.equal(await page.locator('colgroup col').nth(1).evaluate(node => node.style.width), '320px');
-  await nameHeader.click(); await menu.getByRole('menuitem', { name: 'Move right', exact: true }).click();
+  await nameHeader.click(); await gridChange(() => menu.getByRole('menuitem', { name: 'Move right', exact: true }).click());
   await page.waitForFunction(() => document.querySelector('thead th:nth-child(2)')?.textContent.includes('Quantity'));
   await nameHeader.click();
   assert.equal(await menu.getByRole('menuitem', { name: 'Move right', exact: true }).isDisabled(), true);
@@ -108,7 +121,7 @@ test('column menu applies sorting, reordering, widths and column-specific filter
   assert.deepEqual(await page.getByRole('dialog', { name: /^Edit filters:/ }).evaluate(node => { const { x, y, width, height } = node.getBoundingClientRect(); return [x, y, width, height]; }), [606, 0, 976, 1000]);
   assert.equal(await page.getByRole('button', { name: 'Filter 1 column', exact: true }).textContent(), 'Name');
   await page.getByLabel('Filter 1 value').fill('Copper');
-  await page.getByRole('button', { name: 'Apply', exact: true }).click();
+  await gridChange(() => page.getByRole('button', { name: 'Apply', exact: true }).click());
   await page.getByRole('button', { name: 'Copper', exact: true }).waitFor();
   assert.equal(await page.getByRole('button', { name: 'Silver', exact: true }).count(), 0);
 });
