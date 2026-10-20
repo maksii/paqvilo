@@ -83,9 +83,11 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
       runtime: { watching: !args['no-reload'], debugPort: debugPort ?? null } });
     if (!args['no-reload']) {
       const mapFile = args['resource-map'] ? path.resolve(args['resource-map']) : null;
-      let ignoredSource = solutionWatchFilter({ roots: project.solutionRoots, layers: imported.layers });
+      const clientSources = project.modelDriven?.clientSources ?? [], sourceRoots = [...project.solutionRoots, ...clientSources];
+      const watchFilter = () => solutionWatchFilter({ roots: sourceRoots, layers: [...imported.layers, ...clientSources.map(dir => ({ type: 'directory', dir }))] });
+      let ignoredSource = watchFilter();
       let watchedLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
-      watcher = chokidar.watch([...project.solutionRoots, ...(mapFile ? [mapFile] : [])], { ignoreInitial: true,
+      watcher = chokidar.watch([...sourceRoots, ...(mapFile ? [mapFile] : [])], { ignoreInitial: true,
         ignored: (candidate, stats) => {
           const resolved = path.resolve(candidate);
           return mapFile && (resolved === mapFile || mapFile.startsWith(resolved + path.sep)) ? false : ignoredSource(candidate, stats);
@@ -103,7 +105,7 @@ export default async function run(_cfg, args, [action = 'dev'] = []) {
           const next = await importModelDrivenProject(project), map = await readModelDrivenResourceMap(args['resource-map']);
           publishModelDrivenReload(overlay, next, map); imported = next;
           inspector.refresh(next);
-          ignoredSource = solutionWatchFilter({ roots: project.solutionRoots, layers: imported.layers });
+          ignoredSource = watchFilter();
           const nextLayers = new Set(imported.layers.filter(layer => layer.type === 'directory').map(layer => layer.dir));
           const addedLayers = [...nextLayers].filter(dir => !watchedLayers.has(dir));
           if (addedLayers.length) watcher.add(addedLayers);

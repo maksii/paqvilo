@@ -50,6 +50,18 @@ npx --no-install paqvilo mirage stop --project ./mirage.project.yml
 
 For API only, set `runtime.kind: dataverse-api`. The HTTP API is enabled by default for that profile; explicitly disabling it is rejected. For model-driven apps without an external API listener, use `runtime.kind: model-driven` and `dataverse.enabled: false`. The shared organization core still handles the app's records and staff security. `runtime.defaultApp` can select an imported application's GUID for a model-driven surface; omit it to use the available default. The Power Pages Management provider is available on Power Pages runtimes and derives its records from the selected export.
 
+Standalone projects accept a root `platform` block, for example
+`{ QueryLinkEntityLimit: 50, evidence: "Invented approved organization setting" }`.
+Settings and evidence are validated before startup and compose the same organization
+store as programmatic `platform` options. `GET /_sim/api/platform-settings`, runtime
+status and configuration expose effective values and origins. Local instance
+overrides use `PATCH /_sim/api/platform-settings`; delete a named override to return
+to the project value. The organization HTTP listener also composes the documented
+`dataverse.managedIdentity.mode` adapters (`appservice`, `imds`, `arc`) on both
+standalone profiles. With that listener disabled, administration reports the
+managed identity adapter disabled. App Service secret headers are revealed only
+on the first identity administration read; routine status never discloses them.
+
 ## Configure through the browser
 
 1. Open `/_setup/` and choose the runtime surface, imported default app, simulation level, Solution folders and explicitly trusted packs. Existing configurations keep their omitted simulation setting until you change it. New guided configurations select dry run.

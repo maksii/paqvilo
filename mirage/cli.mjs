@@ -7,6 +7,7 @@ import { importPortal } from "./lib/importer.mjs";
 import { createPortalRenderer } from "./lib/liquid.mjs";
 import { assertPortalSource } from "./lib/source-dialect.mjs";
 import { createSimulator } from "./server.mjs";
+const reportStartup = event => console.error(JSON.stringify({ type: 'runtime-startup', ...event }));
 import { builtinPresets, presetDescriptor } from "./lib/presets.mjs";
 import { resolveSolutionRoots } from "./lib/solution-roots.mjs";
 import { shareSolutionParses } from "./lib/solution-cache.mjs";
@@ -163,7 +164,7 @@ try {
       if (args.source || args.portal || args.cdp) throw new Error('Standalone runtimes select a project or solution roots without a portal, source, or live browser.');
       const roots = project?.solutionRoots ?? args['solution-root'] ?? profileMirage?.solutionRoots ?? [];
       if (command === 'inspect') {
-        const source = await loadOrganizationSources({ solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'], lcid: project?.lcid });
+        const source = await loadOrganizationSources({ solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'], modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, lcid: project?.lcid });
         console.log(JSON.stringify({ runtime, simulation, portals: [], solutions: roots, applications: source.metadata.modelDrivenApps,
           modelDriven: project?.modelDriven ?? profileMirage?.modelDriven ?? { trustedExtensions: false },
           clientExtensions: { resources: source.clientResources.resources.map(({ name, type }) => ({ name, type })),
@@ -172,8 +173,8 @@ try {
       } else {
         const stateFile = path.resolve(args.state ?? (project ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects')) : path.join(stateDir, 'simulator', runtime.kind, 'state.json')));
         let stop;
-        const simulator = await createSimulator({ runtime, simulation, modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
-          stateFile, port: runtimePort(args.port), project: project && projectSummary(project), dataverse: project?.dataverse ?? profileMirage?.dataverse,
+        const simulator = await createSimulator({ onStartup: reportStartup, runtime, simulation, modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
+          stateFile, port: runtimePort(args.port), project: project && projectSummary(project), dataverse: project?.dataverse ?? profileMirage?.dataverse, platform: project?.platform ?? profileMirage?.platform,
           projectRoot: project ? path.dirname(project.configFile) : args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),
           dataPacks: [...profileMirage?.dataPacks ?? [], ...(args['pack-module'] ?? []).map(module => ({ module }))],
           setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : undefined, environmentVariables: project?.environmentVariables,
@@ -251,6 +252,7 @@ try {
               })()
             : projectStateFile(project, portal.id, path.join(stateDir, "simulator/projects"));
           const simulator = await createSimulator({
+            onStartup: reportStartup,
             setup: args.config ? { config: path.resolve(args.config) } : { project: project.configFile },
             sourceDir: portal.sourceDir,
             contentPolicyDefaults:portal,
@@ -461,6 +463,7 @@ try {
       const solutionRoots = resolvedRoots.roots;
       let stop;
       const simulator = await createSimulator({
+        onStartup: reportStartup,
         setup: args.config ? { config: path.resolve(args.config) } : project ? { project: project.configFile } : null,
               sourceDir,
         dataPacks: [...(siteMirage?.dataPacks ?? []), ...(args['pack-module'] ?? []).map((module) => ({ module }))],

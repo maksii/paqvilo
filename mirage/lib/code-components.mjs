@@ -88,24 +88,26 @@ function localizedStrings(control, selectedLanguage, defaultLanguage, diagnostic
 }
 
 /** Import standard controls and serve only resource paths explicitly declared in the manifest. */
-export async function importCodeComponents(layers = []) {
+export async function importCodeComponents(layers = [], { readFile = readLocalFile } = {}) {
   const controls = new Map(), assets = new Map(), diagnostics = [];
   for (const layer of layers) {
     if (!layer.dir) continue;
+    if (layer.type && layer.type !== 'directory') continue;
+    const layerRoot = await fs.realpath(layer.dir).catch(() => null);
     const parent = await fs.realpath(path.join(layer.dir, 'Controls')).catch(() => null);
-    if (!parent) continue;
+    if (!parent || !layerRoot || !contained(layerRoot, parent)) continue;
     for (const name of await fs.readdir(parent)) {
       const root = await fs.realpath(path.join(parent, name)).catch(() => null);
       if (!root || !contained(parent, root) || !(await fs.stat(root)).isDirectory()) continue;
       const manifestFile = path.join(root, 'ControlManifest.xml');
       try {
         if (!contained(root, await fs.realpath(manifestFile)) || (await fs.stat(manifestFile)).size > 1024 * 1024) continue;
-        const manifest = await readLocalFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+        const manifest = await readFile(manifestFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
         const control = descendants(parseSolutionXml(manifest), 'control')[0];
         if (!control) continue;
         const metadataFile = await fs.realpath(path.join(root, 'ControlManifest.xml.data.xml'));
         if (!contained(root, metadataFile) || (await fs.stat(metadataFile)).size > 1024 * 1024) continue;
-        const metadata = await readLocalFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
+        const metadata = await readFile(metadataFile, { root, maxBytes: 1024 * 1024, encoding: 'utf8' });
         const schemaName = childText(parseSolutionXml(metadata), 'Name');
         if (!schemaName || !/^[\w.]+$/.test(schemaName)) continue;
         const token = createHash('sha256').update(root).update(manifest).digest('hex').slice(0, 24);
@@ -119,7 +121,7 @@ export async function importCodeComponents(layers = []) {
           const file = await fs.realpath(path.resolve(root, relative)).catch(() => null);
           if (!file || !contained(root, file) || (await fs.stat(file)).size > 8 * 1024 * 1024) throw new Error('Declared PCF resource is missing, outside its control, or exceeds 8 MiB');
           const url = `/__sim-static/pcf/${token}/${relative.split('/').map(encodeURIComponent).join('/')}`;
-          const body = await readLocalFile(file, { root, maxBytes: 8 * 1024 * 1024 });
+          const body = await readFile(file, { root, maxBytes: 8 * 1024 * 1024 });
           digest.update(relative).update(body);
           declaredAssets.set(url, { file, root, kind: resource.name });
           // SDK bundles can export their constructor through a classic script
@@ -150,6 +152,7 @@ export async function importCodeComponents(layers = []) {
         controls.set(schemaName, { schemaName, constructor: `${control.attrs.namespace}.${control.attrs.constructor}`, type: control.attrs['control-type'], dataset: descendants(control, 'data-set').length > 0, datasets: descendants(control, 'data-set').map(node => ({ ...node.attrs })), properties: descendants(control, 'property').map(property => ({ ...property.attrs, types: typeGroups[property.attrs['of-type-group']] })), features, libraries, resources: resources.sort((a,b) => a.order - b.order), strings: {}, stringResources, file: manifestFile, fingerprint: digest.digest('hex') });
         for (const [url, asset] of declaredAssets) assets.set(url, asset);
       } catch (cause) {
+        if (cause.code === 'MODEL_CLIENT_IMPORT_LIMIT') throw cause;
         if (cause.code !== 'ENOENT') diagnostics.push({ code: 'PCF_IMPORT_FAILED', file: manifestFile, message: cause.message });
       }
     }

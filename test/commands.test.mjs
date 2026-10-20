@@ -99,6 +99,12 @@ test('Mirage start waits for runtime readiness and exposes page dependency conte
   // first, so a failed start stops its runtime instead of being killed and leaving it running.
   const started = runWithin(150_000, 'mirage', 'start', '--config', config, '--repo', fx.dir, '--port', '0', '--startup-timeout', '120000', '--json');
   assert.equal(started.status, 0, started.stdout + started.stderr);
+  const startupEvents = started.stderr.trim().split(/\r?\n/).filter(line => line.startsWith('{')).map(line => JSON.parse(line)).filter(event => event.type === 'startup');
+  assert.equal(startupEvents[0].phase, 'configuration');
+  assert.equal(startupEvents[0].status, 'started');
+  assert.equal(startupEvents.at(-1).status, 'complete');
+  assert.match(startupEvents.at(-1).detail, /runtime listening/);
+  assert.ok(startupEvents.every((event, index) => index === 0 || event.totalElapsedMs >= startupEvents[index - 1].totalElapsedMs));
   const session = JSON.parse(started.stdout);
   assert.equal(session.ok, true);
   assert.equal(session.ready, true);

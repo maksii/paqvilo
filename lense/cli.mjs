@@ -2,6 +2,7 @@
 import { parseArgs } from 'node:util';
 import path from 'node:path';
 import { loadConfig, loadCatalogue } from './config.mjs';
+import { startupProgress } from './startup-progress.mjs';
 
 const HELP = `paqvilo lense - work on Power Pages portal sources locally, laid over an online environment
 
@@ -228,6 +229,7 @@ if (!Object.hasOwn(commands, command)) {
 }
 
 let phase='arguments';
+let startup;
 try {
   if (!['use', 'agent', 'mirage', 'model-driven'].includes(command) && positionals.length > 1) throw new Error(`Unexpected argument "${positionals[1]}" for ${command}`);
   if (command === 'model-driven' && positionals.length > 2) throw new Error('model-driven accepts one action: inspect or dev');
@@ -254,6 +256,10 @@ try {
   if (values.headless && values.headed) throw new Error('--headless and --headed cannot be used together');
   if (values.all && (values.site || values.env)) throw new Error(`${command} --all cannot be combined with --site or --env`);
   const { load, needsSite } = commands[command];
+  if (command === 'dev' || command === 'mirage' && ['start', 'dev'].includes(positionals[1])) {
+    startup = startupProgress({ structured: values.json });
+    values.startup = startup;
+  }
   phase='configuration';
   let cfg = null;
   let standaloneProject = null;
@@ -291,9 +297,12 @@ try {
   // Let large JSON reports drain to piped stdout before exiting.
   if (typeof code === 'number') process.exitCode = code;
 } catch (err) {
+  startup?.fail(err.message);
   if (values.json || command === 'agent') console.log(JSON.stringify({ schemaVersion: 1, command, ok: false, writesFiles:err.writesFiles??[], error: { code: err.code??(phase==='arguments'?'invalid_argument':phase==='configuration'?'configuration_error':'command_failed'), message: err.message,...(err.status?{status:err.status}:{}) } }));
   else console.error(`paqvilo: ${err.message}`);
   if (!values.json && (command === 'dev' || command === 'mirage' && positionals[1] === 'dev')) console.error(`Configure this project with: paqvilo setup${values.config ? ` --config ${JSON.stringify(values.config)}` : values.project ? ` --project ${JSON.stringify(values.project)}` : ''}`);
   if (process.env.PAQVILO_DEBUG) console.error(err.stack);
   process.exitCode = 1;
+} finally {
+  startup?.close();
 }

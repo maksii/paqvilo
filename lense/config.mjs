@@ -249,7 +249,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
     ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
     ...(value.runtime !== undefined ? { runtime: runtimeSettings(value.runtime) } : {}),
     ...(value.simulation !== undefined ? { simulation: simulationSettings(value.simulation) } : {}),
-    ...(value.modelDriven !== undefined ? { modelDriven: modelDrivenSettings(value.modelDriven) } : {}),
+    ...(value.modelDriven !== undefined ? { modelDriven: modelDrivenSettings(value.modelDriven, 'mirage.modelDriven', configDir) } : {}),
     ...(value.dataverse!==undefined?{dataverse:dataverseSettings(value.dataverse,'mirage.dataverse')}:{}),
     ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,

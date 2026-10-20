@@ -121,7 +121,8 @@ export function createManagedIdentityEndpoints({ authority, settings, origin, se
 
   const env = () => ({ IDENTITY_ENDPOINT: `${origin}${APP_SERVICE_PATH}`, IDENTITY_HEADER: identityHeader, IMDS_ENDPOINT: origin });
 
-  return { handle, env };
+  const close = () => { for (const file of pending.values()) rmSync(file, { force: true }); pending.clear(); };
+  return { handle, env, close };
 }
 
 // The managedidentity table (Microsoft Learn: reference/entities/managedidentity). One row per configured identity; an

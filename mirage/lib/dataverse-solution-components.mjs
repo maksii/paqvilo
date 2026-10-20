@@ -100,6 +100,18 @@ const memberId = (namespace, name) => {
 };
 export function withSolutionAppMembers(components, state, entityId) {
   const out = [...components], referenceTables = { 26: 'savedquery', 29: 'workflow', 60: 'systemform', 62: 'sitemap', 61: 'webresource' };
+  const componentIds = new Set(), siteMaps = new Map(), tableIds = new Map();
+  for (const component of components) {
+    componentIds.add(`${component.logical}/${component.id}`);
+    if (component.kind === 'sitemap') {
+      const name = lower(component.row.appmoduleuniquename);
+      if (!siteMaps.has(name)) siteMaps.set(name, component.id);
+    }
+  }
+  const hasRow = (table, id) => {
+    if (!tableIds.has(table)) tableIds.set(table, new Set((state.tables?.[table] ?? []).map(row => guid(row[table === 'systemform' ? 'formid' : `${table}id`]))));
+    return tableIds.get(table).has(id);
+  };
   for (const app of components.filter(component => component.kind === 'appmodule')) {
     const appUnique = app.row.appmoduleidunique ?? app.id;
     for (const member of app.members ?? []) {
@@ -110,10 +122,9 @@ export function withSolutionAppMembers(components, state, entityId) {
       } else {
         const table = referenceTables[member.type];
         if (member.type === 62 && !validId(objectId) && member.entity)
-          objectId = components.find(component => component.kind === 'sitemap' && lower(component.row.appmoduleuniquename) === member.entity)?.id;
+          objectId = siteMaps.get(member.entity);
         if (!table || !validId(objectId)) continue;
-        const present = components.some(component => component.logical === table && component.id === objectId)
-          || state.tables?.[table]?.some(row => guid(row[table === 'systemform' ? 'formid' : `${table}id`]) === objectId);
+        const present = componentIds.has(`${table}/${objectId}`) || hasRow(table, objectId);
         if (!present) continue;
       }
       if (!validId(objectId)) continue;

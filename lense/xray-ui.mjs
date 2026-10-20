@@ -24,6 +24,14 @@ export function xrayUi(data) {
   const wash=document.createElement('div');wash.className='scan-wash';wash.hidden=true;wash.setAttribute('aria-hidden','true');ui.prepend(wash);
   const scanState=document.createElement('div');scanState.className='scan-state';scanState.hidden=true;scanState.setAttribute('role','status');scanState.setAttribute('aria-live','polite');ui.append(scanState);
   const lifetime = new AbortController(), listen = (target, type, fn, options = {}) => target.addEventListener(type, fn, { ...options, signal: lifetime.signal });
+  const viewListeners=[],frameViews=new Map();
+  const listenViews=(type,fn,options={})=>{listen(window,type,fn,options);viewListeners.push([type,fn,options]);};
+  const watchFrame=doc=>{
+    if(frameViews.has(doc))return;const controller=new AbortController();
+    for(const [type,fn,options] of viewListeners)doc.defaultView.addEventListener(type,fn,{...options,signal:controller.signal});
+    frameViews.set(doc,controller);
+  };
+  const releaseFrames=()=>{for(const controller of frameViews.values())controller.abort();frameViews.clear();};
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' })[c]);
   const norm = value => String(value ?? '').replace(/[{}]/g, '').toLowerCase();
   let geometryCache=null,styleCache=null;
@@ -41,8 +49,11 @@ export function xrayUi(data) {
   const own = node => node === host || node?.closest?.('#paqvilo-panel,#paqvilo-handle,#paqvilo-xray') || ['paqvilo-panel','paqvilo-handle','paqvilo-xray'].includes(node?.getRootNode?.()?.host?.id);
   const label = node => `${node.localName}${node.id ? '#' + node.id.slice(0,160) : ''}${!node.id && node.classList?.length ? '.' + [...node.classList].slice(0,2).join('.') : ''}`;
   const descent=new WeakMap();
-  const child = node => descent.get(node)?.isConnected&&parent(descent.get(node))===node?descent.get(node): [...(node?.shadowRoot?.children ?? node?.children ?? [])].find(item=>!item.matches('style,script,link')&&!own(item));
-  const parent = node => node?.assignedSlot ?? node?.parentElement ?? node?.getRootNode?.()?.host ?? null;
+  const child = node => descent.get(node)?.isConnected&&parent(descent.get(node))===node?descent.get(node):node?.localName==='iframe'?frameDocument(node)?.body:[...(node?.shadowRoot?.children ?? node?.children ?? [])].find(item=>!item.matches('style,script,link')&&!own(item));
+  const frameOf=doc=>{try{return doc?.defaultView?.frameElement??null;}catch{return null;}};
+  const frameDocument=node=>{try{const doc=node.contentDocument;return doc?.documentElement?doc:null;}catch{return null;}};
+  const liveNode=node=>{if(!node?.isConnected)return false;let doc=node.ownerDocument;for(let depth=0;doc!==document&&depth<40;depth++){const frame=frameOf(doc);if(!frame?.isConnected||frameDocument(frame)!==doc)return false;doc=frame.ownerDocument;}return doc===document;};
+  const parent = node => node?.assignedSlot ?? node?.parentElement ?? node?.getRootNode?.()?.host ?? frameOf(node?.ownerDocument) ?? null;
   const lineage = node => { const rows = []; for (let current = node; current; current = parent(current)) rows.push(current); return rows; };
   const labelledControl=node=>{
     const labelNode=lineage(node).find(item=>item.localName==='label');
@@ -52,6 +63,9 @@ export function xrayUi(data) {
   const binding = node => {
     const labelled=labelledControl(node);
     const chain=lineage(labelled??node);
+    // The containing frame may supply its form ID; host-page forms are a separate context.
+    if(node.ownerDocument!==document){const boundary=chain.findIndex(item=>item.localName==='iframe');if(boundary>=0)chain.splice(boundary+1);}
+    const documentForm=doc=>{try{const url=new URL(doc.URL);return url.origin===location.origin?url.searchParams.get('entityformid')??'':'';}catch{return '';}};
     const compact=value=>norm(value).replace(/-/g,'').replace(/[^a-z0-9_]/g,'_');
     const allForms=[...(report?.forms??[]),...(report?.componentIndex?.forms??[]).filter(form=>!(report?.forms??[]).some(known=>norm(known.id)===norm(form.id)))];
     const pageLists=(report?.components??[]).filter(item=>item.kind==='list'),allLists=[...pageLists,...(report?.componentIndex?.lists??[]).filter(list=>!pageLists.some(known=>norm(known.id??known.recordId)===norm(list.id??list.recordId)))];
@@ -62,9 +76,9 @@ export function xrayUi(data) {
       let shape={};try{const parsed=JSON.parse(current.getAttribute('data-form-layout')??current.querySelector(':scope > [data-form-layout]')?.getAttribute('data-form-layout')??'{}');if(parsed&&typeof parsed==='object'&&!Array.isArray(parsed))shape=parsed;}catch{}
       const value=name=>current.getAttribute(name)??'';
       const declared=value('data-entityname')||value('data-entity')||String(shape.EntityName??'');
-      let frameForm='';if(current.localName==='iframe'){try{const url=new URL(current.getAttribute('src'),location.href);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}}
-      const fallbackForm=/^EntityFormControl(?:_EntityFormView)?$/.test(current.id)?report?.page?.entityFormId??report?.page?.basicFormId??'':'';
-      const fallbackList=/^EntityListControl$/.test(current.id)?report?.page?.listId??'':'';
+      let frameForm='';if(current.localName==='iframe'){try{const url=new URL(current.getAttribute('src'),current.ownerDocument.baseURI);if(url.origin===location.origin)frameForm=(node.ownerDocument!==document&&current===frameOf(node.ownerDocument)?documentForm(node.ownerDocument):'')||url.searchParams.get('entityformid')||'';}catch{}}
+      const fallbackForm=/^EntityFormControl(?:_EntityFormView)?$/.test(current.id)?current.ownerDocument===document?report?.page?.entityFormId??report?.page?.basicFormId??'':documentForm(current.ownerDocument):'';
+      const fallbackList=current.ownerDocument===document&&/^EntityListControl$/.test(current.id)?report?.page?.listId??'':'';
       const fid=value('data-formid')||String(shape.Id??'')||frameForm||fallbackForm;
       let vid=value('data-viewid')||value('data-selected-view');
       if(!vid&&current.hasAttribute('data-view-layouts'))try{const layouts=JSON.parse(atob(value('data-view-layouts')));if(Array.isArray(layouts)&&layouts.length===1)vid=String(layouts[0].Id??layouts[0].id??'');}catch{}
@@ -113,19 +127,16 @@ export function xrayUi(data) {
     const code=(report?.codeComponents??[]).filter(item=>schema&&norm(item.schemaName)===norm(schema)||item.binding==='native-formxml'&&item.selectedDesktop&&item.enablement==='configured'&&ownerForms.some(form=>norm(form.id)===norm(item.formId))&&scope.some(node=>node.id==='PcfControl_'+item.field||node.getAttribute('data-pcf-native-field')===item.field));
     return {entity,fields,forms,views,lists,native,code,formId,viewId,listId,context,conflict,formCertain,listCertain};
   };
-  const framework=/^(?:form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/;
-  let rankingReport,frequencies,pageOwners,chainFrequencies;
+  const framework=/^(?:alert(?:-.+)?|message|form-control|btn(?:-.+)?|close|title|row|container(?:-fluid)?|col-(?:xs|sm|md|lg|xl|xxl)-\d+|modal(?:-.+)?|control-label|input-group(?:-.+)?|clearfix|pull-(?:left|right)|text-(?:left|right|center|muted)|hidden|show|active)$/;
+  let rankingReport,frequencies,pageOwners;
   const sourceMatches = node => {
-    const ancestors=lineage(node),rows=[];
-    const fullerClasses=new Map();
-    for(const target of ancestors){let longest=0;for(const item of report?.elementSources??[])if(item.matchKind==='class'&&item.tag===target.localName&&(item.classes??[]).every(name=>target.classList.contains(name)))longest=Math.max(longest,item.classes?.length??0);fullerClasses.set(target,longest);}
+    const ancestors=lineage(node).filter(item=>item.ownerDocument===node.ownerDocument),rows=[];
     if(rankingReport!==report||!frequencies){
       rankingReport=report;frequencies=new Map();pageOwners=new Set(['page']);
       for(const item of report?.elementSources??[])if(item.matchKind==='class'){let files=frequencies.get(item.selector);if(!files)frequencies.set(item.selector,files=new Set());files.add((item.ref??item.sourceFile)+'#'+(item.recordId??item.id??item.name??''));}
       const sources=[...(report?.webTemplates??[]).map(item=>({...item,owners:['web-template:'+norm(item.id),'web-template:'+item.name]})),...(report?.snippets??[]).map(item=>({...item,owners:['content-snippet:'+norm(item.id),'content-snippet:'+item.name]}))];
       let changed=true;
       while(changed){changed=false;for(const item of sources)if(!item.owners.every(owner=>pageOwners.has(owner))&&(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))){for(const owner of item.owners)pageOwners.add(owner);changed=true;}}
-      chainFrequencies=new Map();for(const item of report?.elementSources??[])if((item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))){let files=chainFrequencies.get(item.selector);if(!files)chainFrequencies.set(item.selector,files=new Set());files.add((item.ref??item.sourceFile)+'#'+(item.recordId??item.id??item.name??''));}
     }
     for(const item of report?.elementSources??[]){try{
       const exactDepth=ancestors.findIndex(ancestor=>ancestor.matches(item.selector));
@@ -144,21 +155,20 @@ export function xrayUi(data) {
       const pageChain=(item.includedBy??item.usedBy)?.some(owner=>owner.startsWith('page-template:')||pageOwners.has(owner))??false;
       const missing=declaredClasses.length-classes.length,targetClasses=[...target.classList].filter(name=>!framework.test(name)),coverage=targetClasses.length?meaningful.length/targetClasses.length:1;
       const rarity=report?.elementSourceFrequencies?.[item.selector]??frequencies.get(item.selector)?.size??1;
-      const fuller=(fullerClasses.get(target)??0)>declaredClasses.length;
       const contextual=contexts[0]?.contextual??0,contradictions=contexts[0]?.contradictions??0;
-      const frameworkOwner=item.matchKind==='class'&&!meaningful.length&&depth===0&&!fuller&&pageChain&&chainFrequencies.get(item.selector)?.size===1&&(item.occurrences??1)<=3;
-      const strong=tagMatch&&!missing&&!contradictions&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0||frameworkOwner));
+      // Static reachability and selector rarity cannot prove a conditional branch rendered.
+      const strong=tagMatch&&!missing&&!contradictions&&(item.matchKind==='id'||item.matchKind==='attribute'||item.matchKind==='class'&&(meaningful.length>0&&(coverage>=1||rarity<=2)||contextual>0||agreed>0&&meaningful.length>0));
       const attributeCount=Object.entries(contexts[0]?.attributes??item.attributes??{}).filter(([key,value])=>target.getAttribute(key)===value).length;
       // Prefer stronger evidence across adjacent regions, but do not let a distant
       // page-container ID eclipse the distinctive template immediately around a node.
-      const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20+contextual*20-contradictions*65-depth*40+coverage*15-missing*65+(frameworkOwner?40:0)-Math.min(10,Math.log2(Math.max(1,rarity))*2);
+      const score=attributeCount*5+(item.matchKind==='id'?110:item.matchKind==='attribute'?85:item.matchKind==='class'?35+classes.length*5+meaningful.length*10:20)+(tagMatch?10:-85)+agreed*20+contextual*20-contradictions*65-depth*40+coverage*15-missing*65-Math.min(10,Math.log2(Math.max(1,rarity))*2);
       const best=contexts.filter(location=>location.locationScore===contexts[0]?.locationScore);
-      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,frameworkOwner,
+      rows.push({...item,line:best[0]?.line??item.line,lines:best.map(location=>location.line).filter(Boolean),depth,score,strong,pageChain,
         evidenceLabel:`${item.kind==='script'?'Script reference':strong?'Markup match':'Possible match'}: ${item.selector}${depth?' on an enclosing element':''}${item.occurrences>1?' · '+item.occurrences+' locations in this source':''}`});
     }catch{}}
     // A page's include graph cannot disambiguate identical snippet markup.
     // Keep equally supported snippets as possibilities instead of choosing a name.
-    for(const row of rows)if(row.kind==='snippet'&&row.strong&&rows.some(other=>other!==row&&other.kind==='snippet'&&other.sourceFile!==row.sourceFile&&other.selector===row.selector&&other.depth===row.depth&&other.score-(other.frameworkOwner?40:0)===row.score-(row.frameworkOwner?40:0)))row.ambiguous=true;
+    for(const row of rows)if(row.kind==='snippet'&&row.strong&&rows.some(other=>other!==row&&other.kind==='snippet'&&other.sourceFile!==row.sourceFile&&other.selector===row.selector&&other.depth===row.depth&&other.score===row.score))row.ambiguous=true;
     for(const row of rows)if(row.ambiguous){row.strong=false;row.evidenceLabel=row.evidenceLabel.replace('Markup match:','Possible match:');}
     const ranked=rows.sort((a,b)=>Number(b.strong)-Number(a.strong)||b.score-a.score||a.depth-b.depth||Number(b.pageChain)-Number(a.pageChain));
     const result=ranked.slice(0,60);result.omitted=Math.max(0,ranked.length-result.length);return result;
@@ -203,12 +213,12 @@ export function xrayUi(data) {
       // remain inspectable beside a nearer class match from the same file.
       const files=[...new Map(markup.map(item=>[(item.ref??item.sourceFile)+'\u0000'+item.selector,item])).values()];
       const strong=files.filter(item=>item.strong),possible=files.filter(item=>!item.strong);
-      if(strong.length)out+=`<div class="section"><h3>Element source candidates <small>(${strong.length})</small></h3>${sourceRows(strong)}<p class="note">Matched against local markup. Multiple templates or conditional branches can share a match.</p></div>`;
+      if(strong.length)out+=`<div class="section"><h3>Element source candidates <small>(${strong.length})</small></h3>${sourceRows(strong)}<p class="note">Static selector candidates; rendered invocation is not verified. Multiple templates or conditional branches can share a match.</p></div>`;
       if(possible.length)out+=`<details open><summary>Possible matches (${possible.length})</summary>${sourceRows(possible)}<p class="note">Shared selectors alone do not identify an owner. Multiple templates or conditional branches can share a match.</p></details>`;
       const owners=[...new Set(files.flatMap(item=>item.includedBy??[]))].map(owner=>{const [kind,id]=owner.split(':');return kind==='web-template'?(report?.webTemplates??[]).find(item=>norm(item.id)===norm(id))?.name:report?.page?.name??report?.page?.pageName;}).filter(Boolean);
-      if(owners.length)out+=`<div class="note">Referenced by: ${esc([...new Set(owners)].join(', '))}</div>`;
+      if(owners.length)out+=`<div class="note">Statically referenced by: ${esc([...new Set(owners)].join(', '))}</div>`;
     }else if(!exact&&!componentSources.length&&!b.native.length&&!b.code.length)out+='<div class="section"><p class="note">No local markup or component binding identifies this element. Select an enclosing region or check the page sources below.</p></div>';
-    if(node.matches('img[src],link[href],script[src]')){let path;try{const url=new URL(node.getAttribute('src')??node.getAttribute('href'),location.href);if(url.origin===location.origin)path=url.pathname;}catch{}const assets=(report?.assets??[]).filter(item=>item.url===path);if(assets.length)out+=`<div class="section"><h3>Web file</h3>${sourceRows(assets,'Rendered resource URL')}</div>`;}
+    if(node.matches('img[src],link[href],script[src]')){let path;try{const url=new URL(node.getAttribute('src')??node.getAttribute('href'),node.ownerDocument.baseURI);if(url.origin===location.origin)path=url.pathname;}catch{}const assets=(report?.assets??[]).filter(item=>item.url===path);if(assets.length)out+=`<div class="section"><h3>Web file</h3>${sourceRows(assets,'Rendered resource URL')}</div>`;}
     if(report?.elementSourceLimits?.truncated)out+=`<p class="note">Source hint index truncated; some matches may be unavailable.${report.elementSourceLimits.markupOmittedSourceCount?' Export-wide markup index omitted '+esc(report.elementSourceLimits.markupOmittedSourceCount)+' oversized source'+(report.elementSourceLimits.markupOmittedSourceCount===1?'':'s')+(report.elementSourceLimits.markupOmittedSources?.length?': '+report.elementSourceLimits.markupOmittedSources.map(esc).join(', '):'')+(report.elementSourceLimits.markupOmittedSourcesTruncated?' (names limited)':'')+'. Omitted sources are not attributed to this element.':''}${report.elementSourceLimits.scriptTruncatedSources?.length?' Truncated scripts: '+report.elementSourceLimits.scriptTruncatedSources.map(esc).join(', ')+'.':''}</p>`;
     if(matches.omitted)out+=`<p class="note">Showing 60 source matches; ${matches.omitted} additional candidates are omitted from these details.</p>`;
     if(scripts.length)out+=`<details><summary>Related script references (${scripts.length})</summary>${sourceRows(scripts,'Literal selector reference; event ownership is not inferred')}</details>`;
@@ -223,25 +233,26 @@ export function xrayUi(data) {
     const scroll=card.querySelector('.content')?.scrollTop??0,open=preserve?[...card.querySelectorAll('details[open]')].map(item=>item.querySelector('summary')?.textContent):[];card.hidden=!details||!selected;
     if(!selected){card.innerHTML=`<div class="welcome"><div class="hero">Select a portal element</div><p class="note">Hover or click to identify its template, page source, form, view or Dataverse column.</p><p class="note">Hold <kbd>Ctrl</kbd> to interact with the portal. <kbd>Esc</kbd> clears selection, then exits.</p><p class="note counts">${report?`${(report.webTemplates??[]).length} templates · ${(report.forms??[]).length} forms · ${(report.views??[]).length} views · ${(report.columns??[]).length} columns`:esc(d.inspectionError||(d.inspection?.active===false?d.inspection.error:'')||'Loading source inspection…')}</p></div>`;return;}
     const identity=identify(selected);
-    const selectedRect=selected.getBoundingClientRect();
-    if(selectedRect.right>innerWidth-434&&selectedRect.left<innerWidth-12){card.style.left='12px';card.style.right='auto';}else{card.style.left='auto';card.style.right='12px';}
-    card.innerHTML=`<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName==='iframe'?'<p class=note>Frame boundary · select the inner document in its own tab for control details.</p>':''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(selected).map((node,index)=>`<button class="crumb" data-action="ancestor" data-index="${index}" style="padding-left:${7+Math.min(index,6)*8}px">${index?'↳ ':''}${esc(label(node))}</button>`).join('')}${selected.localName==='iframe'?'<p class="note">This is a frame boundary. Inner document source information is unavailable.</p>':''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected)||own(parent(selected))?'disabled':''}>↑ Parent</button><button data-action="child" ${!child(selected)?'disabled':''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
+    const selectedRect=visibleRect(selected)??selected.getBoundingClientRect();
+    if(selectedRect.left+selectedRect.width>innerWidth-434&&selectedRect.left<innerWidth-12){card.style.left='12px';card.style.right='auto';}else{card.style.left='auto';card.style.right='12px';}
+    card.innerHTML=`<div class="cardhead"><div class="grow"><div class="eyebrow">${esc(identity.kind)}</div><div class="title">${esc(identity.title)}</div></div><button data-action="dock" title="Move details to the other side" aria-label="Move details">⇄</button><button data-action="clear" aria-label="Clear selection">×</button></div><div class="content">${selected.localName==='iframe'?'<p class=note>Frame boundary · accessible same-origin controls can be selected directly; cross-origin and sandbox restrictions remain in force. Open an inaccessible inner document in its own tab for control details.</p><button data-action="frame-open">Open frame in new tab</button>':''}${sourcesHtml(selected)}<details class="ancestry"><summary>Element & ancestry</summary><div class="mono element-label">${esc(label(selected))}</div><p class="note">Select an enclosing element to inspect its source. [ and ] cycle overlapping elements.</p>${lineage(selected).map((node,index)=>`<button class="crumb" data-action="ancestor" data-index="${index}" style="padding-left:${7+Math.min(index,6)*8}px">${index?'↳ ':''}${esc(label(node))}</button>`).join('')}${selected.localName==='iframe'?'<p class="note">Frame boundary: inner inspection requires an accessible same-origin document; cross-origin and sandbox restrictions are preserved.</p>':''}</details></div><div class="status" role="status"></div><div class="foot"><button data-action="parent" ${!parent(selected)||own(parent(selected))?'disabled':''}>↑ Parent</button><button data-action="child" ${!child(selected)?'disabled':''}>↓ Child</button><button data-action="reveal">Reveal</button><span class="hint">Esc to release</span></div>`;
     for(const item of card.querySelectorAll('details'))if(open.includes(item.querySelector('summary')?.textContent))item.open=true;const body=card.querySelector('.content');if(body)body.scrollTop=scroll;
   };
   // Rectangles live outside portal layout. Clip to each scroll container without changing its CSS.
   function visibleRect(node) {
-    if (!node?.isConnected || own(node)) return null;
+    if (!liveNode(node) || own(node)) return null;
     if(geometryCache?.has(node))return geometryCache.get(node);
     const style = styleFor(node); if(style.display==='none'||style.visibility==='hidden'||style.visibility==='collapse'||style.opacity==='0')return null;
-    let rect=node.getBoundingClientRect(), left=Math.max(0,rect.left),top=Math.max(0,rect.top),right=Math.min(innerWidth,rect.right),bottom=Math.min(innerHeight,rect.bottom);
+    const doc=node.ownerDocument,view=doc.defaultView;
+    let rect=node.getBoundingClientRect(), left=Math.max(0,rect.left),top=Math.max(0,rect.top),right=Math.min(view.innerWidth,rect.right),bottom=Math.min(view.innerHeight,rect.bottom);
     if(!rect.width||!rect.height)return null;
     const establishesFixed=css=>css.transform!=='none'||css.perspective!=='none'||css.filter!=='none'||css.backdropFilter&&css.backdropFilter!=='none'||/layout|paint|strict|content/.test(css.contain)||/transform|perspective|filter/.test(css.willChange);
     let escape=style.position==='fixed'?'fixed':style.position==='absolute'?'absolute':'';
-    for(const ancestor of lineage(parent(node))) {
+    for(const ancestor of lineage(parent(node)).filter(item=>item.ownerDocument===doc)) {
       const css=styleFor(ancestor);
       if(css.display==='none'||css.opacity==='0')return null;
       if(escape&&(establishesFixed(css)||escape==='absolute'&&css.position!=='static'))escape='';
-      if(!escape&&ancestor!==document.body&&ancestor!==document.documentElement){
+      if(!escape&&ancestor!==doc.body&&ancestor!==doc.documentElement){
         const r=ancestor.getBoundingClientRect(),sx=r.width/ancestor.offsetWidth||1,sy=r.height/ancestor.offsetHeight||1;
         if(/hidden|clip|auto|scroll/.test(css.overflowX)){left=Math.max(left,r.left+ancestor.clientLeft*sx);right=Math.min(right,r.left+(ancestor.clientLeft+ancestor.clientWidth)*sx);}
         if(/hidden|clip|auto|scroll/.test(css.overflowY)){top=Math.max(top,r.top+ancestor.clientTop*sy);bottom=Math.min(bottom,r.top+(ancestor.clientTop+ancestor.clientHeight)*sy);}
@@ -249,12 +260,26 @@ export function xrayUi(data) {
       // A positioned ancestor can itself escape clipping higher in the tree.
       if(css.position==='fixed')escape='fixed';else if(css.position==='absolute'&&!escape)escape='absolute';
     }
+    const embedding=frameOf(doc);
+    if(embedding){
+      const outer=visibleRect(embedding);
+      if(!outer)return null;
+      // visibleRect(embedding) is in the top viewport; retain the unclipped origin.
+      const origin=frameOrigin(embedding);
+      left=Math.max(outer.left,origin.x+left*origin.sx);right=Math.min(outer.left+outer.width,origin.x+right*origin.sx);
+      top=Math.max(outer.top,origin.y+top*origin.sy);bottom=Math.min(outer.top+outer.height,origin.y+bottom*origin.sy);
+    }
     const result=right>left&&bottom>top?{left,top,width:right-left,height:bottom-top}:null;geometryCache?.set(node,result);return result;
+  }
+  function frameOrigin(node){
+    const r=node.getBoundingClientRect(),sx=r.width/node.offsetWidth||1,sy=r.height/node.offsetHeight||1,outer=frameOf(node.ownerDocument);
+    const local={x:r.left+node.clientLeft*sx,y:r.top+node.clientTop*sy,sx,sy};
+    if(!outer)return local;const p=frameOrigin(outer);return {x:p.x+local.x*p.sx,y:p.y+local.y*p.sy,sx:sx*p.sx,sy:sy*p.sy};
   }
   const rectHtml=(node,kind,tone)=>{const r=visibleRect(node);return r?`<div class="mark ${kind}" style="left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px;--tone:${tone}"></div>`:'';};
   const backgroundClipped=node=>lineage(node).some(item=>{const css=styleFor(item);return css.clip!=='auto'&&css.clip!==''||css.clipPath!=='none'&&css.clipPath!=='';});
   const category=node=>node.matches('input,select,textarea,[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-th]')?'field':node.matches('form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-listid],[data-pcf-schema],.entity-grid')?'component':'content';
-  const isOccluded=(node,r)=>{const x=r.left+r.width/2,y=r.top+Math.min(r.height/2,30),top=document.elementsFromPoint(x,y).find(item=>!own(item));return top&&!lineage(node).includes(top)&&!lineage(top).includes(node);};
+  const isOccluded=(node,r)=>{const x=r.left+r.width/2,y=r.top+Math.min(r.height/2,30),top=hitStack(x,y)[0];return top&&!lineage(node).includes(top)&&!lineage(top).includes(node);};
   const discoveryCursors=new WeakMap(),shadowRoots=new Set();
   let releaseShadowHook=null,releaseAnimationHook=null;
   function watchShadowRoots(){
@@ -275,16 +300,20 @@ export function xrayUi(data) {
     // Rebuild observed roots so detached components are not retained indefinitely.
     observer.disconnect();observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
     const selector='input:not([type=hidden]),select,textarea,form,[data-formid],[data-form-layout],[data-viewid],[data-selected-view],[data-view-layouts],[data-listid],.entitylist,.entity-grid,[data-entityname],[data-field],[data-attribute],[data-fieldname],[data-pcf-native-field],[data-pcf-schema],[data-th],[role=dialog],dialog,iframe';
+    for(const [doc,controller] of frameViews)if(!frameOf(doc)?.isConnected||frameDocument(frameOf(doc))!==doc){controller.abort();frameViews.delete(doc);}
+    const hintSelectors=[...new Set((report?.elementSources??[]).map(hint=>hint.selector))];
     candidates=[];const seen=new Set(),visible=[],fallback=[];let observed=0,visibleOverflow=false;
-    const addCandidate=node=>{if(own(node)||seen.has(node))return;observed=Math.min(801,observed+1);const r=node.getBoundingClientRect();const inView=r.width>0&&r.height>0&&r.bottom>0&&r.right>0&&r.left<innerWidth&&r.top<innerHeight&&visibleRect(node)&&!backgroundClipped(node);const list=inView?visible:fallback;if(list.length<800){list.push(node);seen.add(node);}else if(inView)visibleOverflow=true;};
+    const addCandidate=node=>{if(own(node)||seen.has(node))return;observed=Math.min(801,observed+1);const local=node.getBoundingClientRect(),view=node.ownerDocument.defaultView;const r=local.width>0&&local.height>0&&local.bottom>0&&local.right>0&&local.left<view.innerWidth&&local.top<view.innerHeight&&visibleRect(node);const inView=r&&!backgroundClipped(node);const list=inView?visible:fallback;if(list.length<800){list.push(node);seen.add(node);}else if(inView)visibleOverflow=true;};
     for(const surface of shadowRoots)if(!surface.host.isConnected)shadowRoots.delete(surface);const roots=[document,...shadowRoots];
     for(let index=0;index<roots.length&&index<40;index++){
       const surface=roots[index];
+      if(surface!==document)observer.observe(surface.documentElement??surface,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
+      for(const embedding of surface.querySelectorAll('iframe')){const inner=frameDocument(embedding);if(inner&&!roots.includes(inner)){roots.push(inner);watchFrame(inner);}}
       if(!visibleOverflow)for(const node of surface.querySelectorAll(selector)){addCandidate(node);if(visibleOverflow)break;}
       const nodes=surface.querySelectorAll('*'),start=discoveryCursors.get(surface)??0,budget=Math.min(nodes.length,surface===document?4000:Math.max(100,Math.floor(4000/Math.max(1,roots.length-1))));
       for(let offset=0;offset<budget;offset++){const node=nodes[(start+offset)%nodes.length];if(node.shadowRoot&&!own(node)){if(!roots.includes(node.shadowRoot))roots.push(node.shadowRoot);shadowRoots.add(node.shadowRoot);observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});}}
       discoveryCursors.set(surface,nodes.length?(start+budget)%nodes.length:0);
-      for(const hint of (report?.elementSources??[])){if(visibleOverflow)break;try{for(const node of surface.querySelectorAll(hint.selector)){addCandidate(node);if(visibleOverflow)break;}}catch{}}
+      for(const hintSelector of hintSelectors){if(visibleOverflow)break;try{for(const node of surface.querySelectorAll(hintSelector)){addCandidate(node);if(visibleOverflow)break;}}catch{}}
     }
     candidates=[...visible,...fallback].slice(0,800);candidateLimit=observed>800;
     root.querySelector('.legend .hint').textContent=' · click to select · Esc back'+(candidateLimit?' · Candidate limit reached (800)':'');
@@ -292,7 +321,7 @@ export function xrayUi(data) {
   };
   const paint=()=>{
     frame=0;if(!enabled||disposed||document.hidden)return;if(warmup){warmup=false;schedule();return;}geometryCache=new WeakMap();styleCache=new WeakMap();
-    if(selected&&!selected.isConnected){const removed=label(selected);selected=null;renderCard();card.hidden=false;const welcome=card.querySelector('.hero');if(welcome)welcome.textContent='Element removed';const note=card.querySelector('.note');if(note)note.textContent=removed+' was replaced or removed. Click a rendered element to select it again.';}if(hover&&!hover.isConnected)hover=null;
+    if(selected&&!liveNode(selected)){const removed=label(selected);selected=null;renderCard();card.hidden=false;const welcome=card.querySelector('.hero');if(welcome)welcome.textContent='Element removed';const note=card.querySelector('.note');if(note)note.textContent=removed+' was replaced or removed. Click a rendered element to select it again.';}if(hover&&!liveNode(hover))hover=null;
     if(detailsDirty&&selected){detailsDirty=false;renderCard(true);notifySelection(true);}
     if(needsScan&&report)scan();
     let html='',count=0;
@@ -308,7 +337,9 @@ export function xrayUi(data) {
   const schedule=()=>{if(!host.isConnected){host.__px?.dispose();return;}if(enabled&&!document.hidden&&!frame)frame=requestAnimationFrame(paint);};
   const hitStack=(x,y)=>{
     const stack=[],seen=new Set();
-    const add=(node,depth=0)=>{if(own(node)||seen.has(node))return;seen.add(node);if(node.shadowRoot)observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});if(node.shadowRoot&&depth<40)for(const inner of node.shadowRoot.elementsFromPoint(x,y))if(inner.getRootNode()===node.shadowRoot)add(inner,depth+1);stack.push(node);};
+    const add=(node,depth=0,px=x,py=y)=>{if(own(node)||seen.has(node))return;seen.add(node);if(node.shadowRoot)observer.observe(node.shadowRoot,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});if(node.shadowRoot&&depth<40)for(const inner of node.shadowRoot.elementsFromPoint(px,py))if(inner.getRootNode()===node.shadowRoot)add(inner,depth+1,px,py);
+      if(node.localName==='iframe'&&depth<40){const doc=frameDocument(node),r=node.getBoundingClientRect(),sx=r.width/node.offsetWidth||1,sy=r.height/node.offsetHeight||1,ix=(px-r.left)/sx-node.clientLeft,iy=(py-r.top)/sy-node.clientTop;if(doc&&ix>=0&&iy>=0&&ix<node.clientWidth&&iy<node.clientHeight)for(const inner of doc.elementsFromPoint(ix,iy))add(inner,depth+1,ix,iy);}
+      stack.push(node);};
     for(const node of document.elementsFromPoint(x,y))add(node);
     return stack;
   };
@@ -318,15 +349,15 @@ export function xrayUi(data) {
   const mode=()=>{ui.classList.toggle('interact',interacting||ctrl);const button=root.querySelector('[data-action=mode]');button.setAttribute('aria-pressed',String(!interacting&&!ctrl));button.textContent=interacting||ctrl?'Interact':'Inspect';};
   const notifySelection=updated=>dispatch('selected',{element:{tag:selected.localName,id:selected.id.slice(0,160),name:(selected.getAttribute('name')??'').slice(0,160),classes:[...selected.classList].slice(0,5).join('.')},identity:selectionIdentity(selected),oneShot,updated});
   const select=node=>{if(!node||own(node))return;resizeObserver.disconnect();resizeObserver.observe(document.documentElement);resizeObserver.observe(node);selected=node;details=true;hover=node;renderCard();schedule();const once=oneShot;notifySelection(false);if(once)toggle(false);};
-  const toggle=value=>{const next=value??!enabled;if(next===enabled)return;enabled=next;warmup=enabled;ui.hidden=!enabled;mode();if(enabled){watchShadowRoots();watchAnimations();resizeObserver.observe(document.documentElement);needsScan=true;topLayer();renderCard();schedule();animate();}else{oneShot=false;releaseShadowHook?.();releaseShadowHook=null;releaseAnimationHook?.();releaseAnimationHook=null;resizeObserver.disconnect();observer.disconnect();selected=null;hover=null;ctrl=false;interacting=false;marks.innerHTML='';tip.hidden=true;try{host.hidePopover();}catch{}if(frame)cancelAnimationFrame(frame);frame=0;}dispatch('toggled',{enabled});};
+  const toggle=value=>{const next=value??!enabled;if(next===enabled)return;enabled=next;warmup=enabled;ui.hidden=!enabled;mode();if(enabled){watchShadowRoots();watchAnimations();resizeObserver.observe(document.documentElement);needsScan=true;topLayer();renderCard();schedule();animate();}else{oneShot=false;releaseShadowHook?.();releaseShadowHook=null;releaseAnimationHook?.();releaseAnimationHook=null;resizeObserver.disconnect();observer.disconnect();releaseFrames();selected=null;hover=null;ctrl=false;interacting=false;marks.innerHTML='';tip.hidden=true;try{host.hidePopover();}catch{}if(frame)cancelAnimationFrame(frame);frame=0;}dispatch('toggled',{enabled});};
   const identityAttributes=['class','style','hidden','open','id','for','role','type','src','data-th','data-form-layout','data-formid','data-viewid','data-selected-view','data-view-layouts','data-entityname','data-entity','name','data-field','data-fieldname','data-attribute','data-lookup-datafieldname','data-pcf-schema','data-pcf-native-field','data-listid','data-controlid','slot'];
   const observer=new MutationObserver(records=>{if(!host.isConnected){const existing=document.getElementById('paqvilo-xray');if(host.parentElement?.matches('dialog')&&document.body?.isConnected&&(!existing||existing===host)){topLayer(true);}else{host.__px?.dispose();return;}}if(!enabled)return;const external=records.filter(record=>!own(record.target)&&!(record.type==='childList'&&[...record.addedNodes,...record.removedNodes].every(node=>node===host)));if(!external.length)return;if(selected){const associated=labelledControl(selected);const related=[...lineage(selected),...lineage(associated)];if(external.some(record=>record.attributeName!=='style'&&(record.type==='childList'||related.includes(record.target)||lineage(record.target).includes(selected)||record.attributeName==='id'||record.target.localName==='slot')))detailsDirty=true;}needsScan=true;if(external.some(record=>record.type==='childList'||record.attributeName==='open'))topLayer();schedule();});
   listen(document,'toggle',event=>{if(event.target===host||!event.target.matches?.('dialog,[popover]'))return;if(event.target.matches('dialog:modal')){modalOrder=modalOrder.filter(node=>node!==event.target);modalOrder.push(event.target);}if(enabled){topLayer(event.newState==='open');schedule();}},{capture:true});
   observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,attributeFilter:identityAttributes});
-  listen(window,'pointermove',event=>{if(!enabled)return;pointer={x:event.clientX,y:event.clientY};if(drag){card.style.left=Math.max(8,Math.min(innerWidth-card.offsetWidth-8,event.clientX-drag.x))+'px';card.style.top=Math.max(74,Math.min(innerHeight-card.offsetHeight-8,event.clientY-drag.y))+'px';card.style.right='auto';card.style.bottom='auto';return;}const node=event.composedPath().find(item=>item instanceof Element);if(own(node)&&!node?.classList?.contains('shield'))return;hover=node?.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node;if(own(hover))hover=null;schedule();},{capture:true});
-  for(const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','click','dblclick','contextmenu','auxclick','touchstart','touchend','touchcancel','focus','focusin','focusout','blur'])listen(window,type,event=>{
+  listenViews('pointermove',event=>{if(!enabled)return;pointer={x:event.clientX,y:event.clientY};if(drag){card.style.left=Math.max(8,Math.min(innerWidth-card.offsetWidth-8,event.clientX-drag.x))+'px';card.style.top=Math.max(74,Math.min(innerHeight-card.offsetHeight-8,event.clientY-drag.y))+'px';card.style.right='auto';card.style.bottom='auto';return;}const node=event.composedPath().find(item=>item?.nodeType===1);if(own(node)&&!node?.classList?.contains('shield'))return;hover=node?.classList?.contains('shield')?underPointer(event.clientX,event.clientY):node;if(own(hover))hover=null;schedule();},{capture:true});
+  for(const type of ['pointerdown','pointerup','pointercancel','mousedown','mouseup','click','dblclick','contextmenu','auxclick','touchstart','touchend','touchcancel','focus','focusin','focusout','blur'])listenViews(type,event=>{
     if(!pickGesture&&(!enabled||interacting||ctrl||event.ctrlKey))return;
-    const node=event.composedPath().find(item=>item instanceof Element);
+    const node=event.composedPath().find(item=>item?.nodeType===1);
     if(!pickGesture&&(!node||(own(node)&&!node.classList?.contains('shield'))))return;
     event.preventDefault();event.stopImmediatePropagation();
     if(type==='pointerdown'||type==='touchstart'){
@@ -337,11 +368,11 @@ export function xrayUi(data) {
     if(['click','auxclick','contextmenu','touchend'].includes(type)&&pickGesture){const picked=pendingPick;if(oneShot)select(picked);pickGesture=false;pendingPick=null;}
     if(type==='pointercancel'||type==='touchcancel'){pickGesture=false;pendingPick=null;}
   },{capture:true,passive:false});
-  listen(window,'scroll',()=>{needsScan=true;schedule();},{capture:true,passive:true});listen(document,'load',schedule,{capture:true});listen(window,'resize',()=>{card.style.left='';card.style.top='';card.style.right='';card.style.bottom='';needsScan=true;schedule();},{passive:true});
-  listen(window,'keydown',event=>{
+  listenViews('scroll',()=>{needsScan=true;schedule();},{capture:true,passive:true});listenViews('load',()=>{needsScan=true;schedule();},{capture:true});listenViews('resize',()=>{card.style.left='';card.style.top='';card.style.right='';card.style.bottom='';needsScan=true;schedule();},{passive:true});
+  listenViews('keydown',event=>{
     if(event.altKey&&event.shiftKey&&event.code==='KeyX'){event.preventDefault();event.stopImmediatePropagation();toggle();return;}
     if(!enabled)return;if(event.key==='Control'){ctrl=true;mode();schedule();return;}
-    const node=event.composedPath().find(item=>item instanceof Element);if(event.key==='Tab'&&!interacting&&!ctrl){event.preventDefault();event.stopImmediatePropagation();const controls=[...root.querySelectorAll('button:not(:disabled),select')].filter(item=>item.getClientRects().length);const index=controls.indexOf(root.activeElement),direction=event.shiftKey?-1:1;controls[(index+direction+controls.length)%controls.length]?.focus({preventScroll:true});return;}
+    const node=event.composedPath().find(item=>item?.nodeType===1);if(event.key==='Tab'&&!interacting&&!ctrl){event.preventDefault();event.stopImmediatePropagation();const controls=[...root.querySelectorAll('button:not(:disabled),select')].filter(item=>item.getClientRects().length);const index=controls.indexOf(root.activeElement),direction=event.shiftKey?-1:1;controls[(index+direction+controls.length)%controls.length]?.focus({preventScroll:true});return;}
     if(own(node)&&node?.matches('input,select,textarea'))return;
     if((interacting||ctrl)&&!own(node))return;
     if(event.key==='Escape'){event.preventDefault();event.stopImmediatePropagation();if(selected){selected=null;renderCard();schedule();}else toggle(false);return;}
@@ -349,7 +380,7 @@ export function xrayUi(data) {
     // Do not let keyboard activation submit a focused portal form while inspecting.
     if(['ArrowUp','ArrowDown','[',']'].includes(event.key)||!own(node)&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();if(event.key==='ArrowUp'&&selected){const ancestor=parent(selected);if(ancestor)descent.set(ancestor,selected);select(ancestor);}if(event.key==='ArrowDown'&&selected)select(child(selected));if(event.key==='['||event.key===']'){const stack=hitStack(pointer.x,pointer.y),index=stack.indexOf(selected??hover),next=index<0?0:(index+(event.key===']'?1:-1)+stack.length)%stack.length;select(stack[next]);}}
   },{capture:true});
-  listen(window,'keyup',event=>{if(event.key==='Control'){ctrl=false;mode();schedule();}if(enabled&&!interacting&&!own(event.composedPath().find(item=>item instanceof Element))&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();}},{capture:true});
+  listenViews('keyup',event=>{if(event.key==='Control'){ctrl=false;mode();schedule();}if(enabled&&!interacting&&!own(event.composedPath().find(item=>item?.nodeType===1))&&['Enter',' '].includes(event.key)){event.preventDefault();event.stopImmediatePropagation();}},{capture:true});
   listen(document,'visibilitychange',()=>{ctrl=false;mode();schedule();});
   listen(root,'wheel',event=>{
     if(!event.target.classList?.contains('shield')||interacting||ctrl||event.ctrlKey)return;
@@ -363,7 +394,7 @@ export function xrayUi(data) {
       for(const current of lineage(node)){
         const css=getComputedStyle(current),vertical=axis==='y',overflow=vertical?css.overflowY:css.overflowX;
         const extent=vertical?current.scrollHeight-current.clientHeight:current.scrollWidth-current.clientWidth;
-        const rootScroller=current===document.scrollingElement;
+        const rootScroller=current===current.ownerDocument.scrollingElement;
         if((!/auto|scroll/.test(overflow)&&!rootScroller)||extent<=0)continue;
         const offset=vertical?current.scrollTop:current.scrollLeft;
         const rtl=!vertical&&css.direction==='rtl';
@@ -374,13 +405,14 @@ export function xrayUi(data) {
     }
     schedule();
   },{passive:false});
-  listen(window,'blur',()=>{ctrl=false;drag=null;mode();schedule();});
+  listenViews('blur',()=>{ctrl=false;drag=null;mode();schedule();});
   listen(root,'pointerdown',event=>{const header=event.target.closest('.cardhead');if(!header||event.target.closest('button'))return;const r=card.getBoundingClientRect();drag={x:event.clientX-r.left,y:event.clientY-r.top};header.setPointerCapture(event.pointerId);event.preventDefault();});
-  listen(window,'pointerup',()=>{drag=null;},{capture:true});
+  listenViews('pointerup',()=>{drag=null;},{capture:true});
   listen(root,'change',event=>{if(event.target.matches('select')){layer=event.target.value;schedule();}});
   listen(root,'click',async event=>{const button=event.target.closest('[data-action]');if(!button)return;const action=button.dataset.action;
     if(action==='refresh'&&!button.disabled){setStatus('Refreshing local source inspection…');dispatch('refresh');}if(action==='exit')toggle(false);if(action==='mode'){interacting=!interacting;mode();schedule();}if(action==='details'){details=!details;button.setAttribute('aria-pressed',String(details));renderCard();}
     if(action==='source-region'){let region;try{region=lineage(selected).find(node=>node.matches(button.dataset.selector));}catch{}if(region)select(region);else setStatus('This source region is no longer present. Select a rendered element again.');}if(action==='clear'){selected=null;renderCard();schedule();}if(action==='parent'){const ancestor=parent(selected);if(ancestor)descent.set(ancestor,selected);select(ancestor);}if(action==='child')select(child(selected));if(action==='ancestor')select(lineage(selected)[Number(button.dataset.index)]);
+    if(action==='frame-open'&&selected?.localName==='iframe'){try{const url=new URL(selected.getAttribute('src')??'',selected.ownerDocument.baseURI);if(!selected.getAttribute('src')||!['http:','https:'].includes(url.protocol))throw new Error();window.open(url.href,'_blank','noopener');}catch{setStatus('This embedded document has no standalone HTTP address.');}}
     if(action==='reveal'){selected?.scrollIntoView({block:'center',inline:'nearest'});schedule();}if(action==='dock'){const r=card.getBoundingClientRect();card.style.left=r.left>innerWidth/2?'20px':'auto';card.style.right=r.left>innerWidth/2?'auto':'20px';}
     if(action==='copy'){try{await navigator.clipboard.writeText(button.dataset.copy);setStatus('Source path copied.');}catch{setStatus('The browser could not copy the source path.');}}
     if(action==='open')dispatch('open',{ref:button.dataset.ref,line:Number(button.dataset.line)||undefined,find:button.dataset.find||undefined});
@@ -388,8 +420,8 @@ export function xrayUi(data) {
   // Follow active animations; idle documents never poll geometry.
   let animationFrame=0;
   const resizeObserver=new ResizeObserver(schedule);
-  const animate=()=>{cancelAnimationFrame(animationFrame);if(!enabled||disposed||document.hidden)return;if(document.getAnimations().some(animation=>animation.playState==='running'&&!own(animation.effect?.target))){schedule();animationFrame=requestAnimationFrame(animate);}};
-  listen(document,'animationstart',animate,{capture:true});listen(document,'transitionrun',animate,{capture:true});
+  const animate=()=>{cancelAnimationFrame(animationFrame);if(!enabled||disposed||document.hidden)return;if([document,...frameViews.keys()].some(doc=>doc.getAnimations().some(animation=>animation.playState==='running'&&!own(animation.effect?.target)))){schedule();animationFrame=requestAnimationFrame(animate);}};
+  listenViews('animationstart',animate,{capture:true});listenViews('transitionrun',animate,{capture:true});
   listen(document,'visibilitychange',()=>{if(document.hidden){cancelAnimationFrame(frame);frame=0;cancelAnimationFrame(animationFrame);}else{schedule();animate();}});
-  host.__px={toggle,select,identify,pickOnce(){oneShot=true;toggle(true);},selection(){return selectionIdentity(selected);},get token(){return d.token;},get enabled(){return enabled;},update(next,nextReport){const previousError=d.inspectionError;d=next;const theme=document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');if(theme){const style=getComputedStyle(theme);for(const key of ['--bg','--fg','--muted','--primary','--link','--on-primary','--radius','--line','--head-bg','--panel-line','--shadow','--font']){const value=style.getPropertyValue(key);if(value)ui.style.setProperty(key,value);}}const currentReport=next.inspectionError||(next.inspection??next.mirage)?.active===false?null:nextReport;if(currentReport!==undefined&&currentReport!==report){report=currentReport;needsScan=true;if(!report)candidates=[];renderCard();if(selected)notifySelection(true);schedule();}else if(previousError!==d.inspectionError)renderCard();if(enabled)renderProgress();if(next.ui?.hidden&&enabled)toggle(false);},status:setStatus,dispose(){disposed=true;releaseShadowHook?.();releaseAnimationHook?.();resizeObserver.disconnect();cancelAnimationFrame(animationFrame);cancelAnimationFrame(frame);observer.disconnect();lifetime.abort();host.remove();}};
+  host.__px={toggle,select,identify,pickOnce(){oneShot=true;toggle(true);},selection(){return selectionIdentity(selected);},get token(){return d.token;},get enabled(){return enabled;},update(next,nextReport){const previousError=d.inspectionError;d=next;const theme=document.getElementById('paqvilo-panel')?.shadowRoot?.querySelector('.wrap');if(theme){const style=getComputedStyle(theme);for(const key of ['--bg','--fg','--muted','--primary','--link','--on-primary','--radius','--line','--head-bg','--panel-line','--shadow','--font']){const value=style.getPropertyValue(key);if(value)ui.style.setProperty(key,value);}}const currentReport=next.inspectionError||(next.inspection??next.mirage)?.active===false?null:nextReport;if(currentReport!==undefined&&currentReport!==report){report=currentReport;needsScan=true;if(!report)candidates=[];renderCard();if(selected)notifySelection(true);schedule();}else if(previousError!==d.inspectionError)renderCard();if(enabled)renderProgress();if(next.ui?.hidden&&enabled)toggle(false);},status:setStatus,dispose(){disposed=true;releaseShadowHook?.();releaseAnimationHook?.();resizeObserver.disconnect();cancelAnimationFrame(animationFrame);cancelAnimationFrame(frame);observer.disconnect();releaseFrames();lifetime.abort();host.remove();}};
 }

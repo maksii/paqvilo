@@ -38,7 +38,7 @@ dataverse:
 | `tenantId` | Tenant in the token authority. Defaults to a GUID derived from the site id. |
 | `organizationId`, `uniqueName`, `friendlyName` | Organization identity returned by `WhoAmI` and `RetrieveCurrentOrganization`. |
 | `version` | Four-part version reported by `RetrieveVersion` and the SOAP organization detail. Default `9.2.25041.00000`. |
-| `managedIdentity` | Server key, outside the settings reader: `{ mode }` with `appservice` (default), `imds` or `arc`. Selects the managed identity token endpoint, see [Managed identity](#managed-identity-and-federated-credentials). |
+| `managedIdentity` | `{ mode }` with `appservice` (default), `imds` or `arc`, on portal and standalone hosts with the HTTP API enabled. Selects the managed identity token endpoint, see [Managed identity](#managed-identity-and-federated-credentials). |
 | `managedIdentities` | Managed identities `{ clientId, principalId?, displayName, roles }`. `roles` defaults to `Basic User`. Each becomes an application user. |
 | `federatedIssuers` | External issuers `{ issuer, jwks: { keys } }`, public keys only. They verify the RS256 client assertions of the applications' `federatedCredentials`. |
 | `auditing` | `true` sets `organization.isauditenabled`; a table and its columns are audited by their own flags. Default `false`. |
@@ -144,8 +144,8 @@ User-owned tables get `ownerid`, `owninguser` or `owningteam`, and `owningbusine
 
 ### Validation
 
-- An unknown payload property answers 400, error code `0x0`, with the documented "Invalid property" message.
-- An unknown property in `$select`, `$filter`, `$orderby` or `$expand` answers 400, `0x0`, "Could not find a property named ...".
+- An unknown payload property answers HTTP 400 with error code `0x80048d19` and an "Invalid property" message. Undeclared navigation bindings are payload validation errors too; relationship-specific validation may return a more specific code.
+- An unknown property in `$select`, `$filter`, `$orderby` or `$expand` answers HTTP 400 with `0x80060888` and a "Could not find a property named ..." message. These are the supported local organization Web API contracts; portal Web API wrappers and native platform parity are separate contracts.
 - Entity sets are matched case-sensitively by set name. A logical name answers 404 `0x8006088a`.
 - `$skip` and `$format` answer 400 `0x80060888`. `$search` answers 501 `0x8006088a`.
 - URLs up to 32,768 characters are accepted. A longer URL answers 400 `0x80060888`, "Invalid URI: The Uri string is too long."

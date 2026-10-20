@@ -15,7 +15,7 @@ const GRANTS = Object.keys(GRANT_TYPES);
 const USER_NAMESPACE = '6ba7b811-9dad-11d1-80b4-00c04fd430c8';
 // The audience a federated identity credential accepts (Microsoft Entra workload identity federation).
 const TOKEN_EXCHANGE_AUDIENCE = 'api://AzureADTokenExchange';
-const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory'];
+const TOP_KEYS = ['enabled', 'port', 'tls', 'tlsPort', 'tenantId', 'organizationId', 'uniqueName', 'friendlyName', 'version', 'applications', 'users', 'serviceProtection', 'managedIdentity', 'managedIdentities', 'federatedIssuers', 'auditing', 'duplicateDetection', 'pluginTimeoutSeconds', 'currencyCode', 'currencySymbol', 'localeId', 'tds', 'gitRemoteDirectory'];
 const APPLICATION_KEYS = ['appId', 'displayName', 'secretEnvironmentVariable', 'roles', 'publicClient', 'redirectUris', 'allowedGrants', 'federatedCredentials'];
 const USER_KEYS = ['domainname', 'fullname', 'objectId', 'roles'];
 const FEDERATED_CREDENTIAL_KEYS = ['issuer', 'subject', 'audiences'];
@@ -200,6 +200,11 @@ export function dataverseSettings(value, label = 'dataverse') {
   if (value === undefined || value === false) return { enabled: false };
   const input = value === true ? {} : plainObject(value, label);
   knownKeys(input, TOP_KEYS, label);
+  if (input.managedIdentity !== undefined) {
+    plainObject(input.managedIdentity, `${label}.managedIdentity`);
+    knownKeys(input.managedIdentity, ['mode'], `${label}.managedIdentity`);
+    if (!['appservice', 'imds', 'arc'].includes(input.managedIdentity.mode ?? 'appservice')) throw new Error(`${label}.managedIdentity.mode must be appservice, imds or arc`);
+  }
   const list = (items, name) => {
     if (items === undefined) return [];
     if (!Array.isArray(items)) throw new Error(`${label}.${name} must be an array`);
@@ -218,6 +223,7 @@ export function dataverseSettings(value, label = 'dataverse') {
     applications: list(input.applications, 'applications').map((item, index) => application(item, `${label}.applications[${index}]`)),
     users: list(input.users, 'users').map((item, index) => user(item, `${label}.users[${index}]`)),
     serviceProtection: serviceProtection(input.serviceProtection),
+    ...(input.managedIdentity !== undefined ? { managedIdentity: { mode: input.managedIdentity.mode ?? 'appservice' } } : {}),
     managedIdentities: list(input.managedIdentities, 'managedIdentities').map((item, index) => managedIdentity(item, `${label}.managedIdentities[${index}]`)),
     federatedIssuers: list(input.federatedIssuers, 'federatedIssuers').map((item, index) => federatedIssuer(item, `${label}.federatedIssuers[${index}]`)),
     // organization.isauditenabled, organization.isduplicatedetectionenabled and the base currency and locale of the organization.

@@ -78,6 +78,33 @@ shared Solution archive size and expansion checks. Exceeding an aggregate limit
 disables the client extension catalogue and reports `MODEL_CLIENT_IMPORT_LIMIT`;
 it never silently executes an earlier layer. A PCF file that disappears during
 import reports a component diagnostic without taking down the organization host.
+PCF manifests, identity metadata, localized RESX and image bytes count toward the
+same byte budget, even when only the declared JavaScript/CSS is served by the app.
+
+For large metadata compositions, `modelDriven.clientSources` can independently
+select an ordered list of local client-asset directories or Solution ZIP files:
+
+```yaml
+modelDriven:
+  trustedExtensions: false
+  clientSources:
+    - ./client-assets/base
+    - ./client-assets/overrides
+```
+
+Each directory uses the exported `WebResources`, `Controls`, `AppActions`,
+`Entities` and `Other/Customizations.xml` layout. Relative paths resolve from the
+project or catalogue file; programmatic options resolve from the working directory.
+The complete `solutions` / `solutionRoots` selection still supplies schema, apps,
+forms and views. Client sources are an explicit replacement for client discovery
+in those metadata layers, and later declared resources override earlier ones.
+Omitting `clientSources` preserves ordinary Solution discovery; `[]` imports no
+client extensions. Selection grants no execution trust. Imported WebResources
+retain their file provenance, and missing sources disable the complete client
+catalogue with `MODEL_CLIENT_SOURCE_INVALID`. All selected sources share the same
+aggregate limits above; exceeding them disables the complete catalogue, including
+earlier layers. Missing or escaped declared dependencies are reported and never
+served. Local watchers include the selected client sources.
 
 ## PCF inputs and limits
 

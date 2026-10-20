@@ -149,6 +149,18 @@ test('JSON batch dependencies are checked: unknown ids, cycles and a GET in a gr
   assert.throws(() => parseBatch('application/json', jsonBatch([{ id: 'a', method: 'GET', url: 'WhoAmI', atomicityGroup: 'g' }])), { ...check, message: 'GET requests are not allowed inside change sets.' });
 });
 
+test('JSON dependency ordering preserves whole transactions and rejects separated or cyclic groups before dispatch', () => {
+  const item = (id, group, dependsOn = []) => ({ id, atomicityGroup: group, dependsOn, method: 'PATCH', url: `${ODATA}/widgets` });
+  const parsed = parseBatch('application/json', jsonBatch([item('a', 'g'), item('b', 'g', ['external']), item('external')]));
+  assert.equal(parsed.parts.length, 2);
+  assert.equal(parsed.parts[0].refId, 'external');
+  assert.deepEqual(parsed.parts[1].requests.map(item => item.refId), ['a', 'b']);
+  for (const requests of [[item('a', 'g'), item('external'), item('b', 'g')],
+    [item('a', 'g'), item('b', 'g', ['external']), item('external', undefined, ['a'])],
+    [item('a', 'g', ['b']), item('b', 'g', ['a'])]])
+    assert.throws(() => parseBatch('application/json', jsonBatch(requests)), { status: 400, code: 'InvalidBatch' });
+});
+
 test('parts for an unmatched boundary are skipped and the batch answers 200 with nothing run', async () => {
   const { dispatch, calls } = fakeDispatch();
   const parsed = parseBatch('multipart/mixed; boundary=other', SAMPLE);

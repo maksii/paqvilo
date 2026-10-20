@@ -15,13 +15,13 @@ import { loadCatalogue, resolveMirageConfig } from '../../lense/config.mjs';
 import { resolveDeploymentProfiles, loadDeploymentProfiles } from './deployment-profiles.mjs';
 
 /** Bind trusted project packs once. No implicit adjacent module discovery. */
-export async function createMirageContext({ packs = [], config, site, portal, metadata, ...options } = {}) {
+export async function createMirageContext({ packs = [], config, site, repo, portal, metadata, ...options } = {}) {
   if (config instanceof URL) config = fileURLToPath(config);
   // A catalogue without a selected site is a pack binding for project tests. Do not
   // import an arbitrary default portal or require its checkout to exist.
   const allEntries = [];
   if (config && site === undefined) {
-    const catalogue = loadCatalogue({ config }, process.env);
+    const catalogue = loadCatalogue({ config, ...(repo ? { repo } : {}) }, process.env);
     for (const settings of Object.values(catalogue.sites)) {
       const mirage = resolveMirageConfig(settings.mirage, catalogue);
       allEntries.push(...mirage.dataPacks);
@@ -31,7 +31,7 @@ export async function createMirageContext({ packs = [], config, site, portal, me
       }
     }
   }
-  const cfg = config && site !== undefined ? await loadConfig({ config, site }, process.env) : null;
+  const cfg = config && site !== undefined ? await loadConfig({ config, site, ...(repo ? { repo } : {}) }, process.env) : null;
   const project = cfg?.mirageConfig.project ? await loadProjectConfig(cfg.mirageConfig.project) : null;
   const selected = project?.portals.find(item => item.sourceDir === cfg.sourceDir) ?? project?.portals.find(item => item.id === project.defaultPortal);
   const sourceDir = selected?.sourceDir ?? cfg?.sourceDir;
@@ -55,6 +55,10 @@ export async function createMirageContext({ packs = [], config, site, portal, me
     packs: Object.freeze([...loaded]), presetLibrary: library,
     DataStore: BoundDataStore,
     createSimulator: settings => createSimulator({
+      runtime: project?.runtime ?? cfg?.mirageConfig.runtime,
+      simulation: project?.simulation ?? cfg?.mirageConfig.simulation,
+      modelDriven: project?.modelDriven ?? cfg?.mirageConfig.modelDriven,
+      dataverse: project?.dataverse ?? cfg?.mirageConfig.dataverse,
       platform: cfg?.mirageConfig.platform ?? selected?.platform,
       render: cfg?.mirageConfig.render,
       dataModel: selected?.dataModel ?? cfg?.mirageConfig.dataModel,

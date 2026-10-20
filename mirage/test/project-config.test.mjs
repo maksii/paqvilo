@@ -27,6 +27,48 @@ async function workspace(t) {
   return root;
 }
 
+// Startup diagnostics belong to stderr. Keep stdout as one JSON document and
+// bound both readiness and cleanup so a broken CLI cannot hold the suite open.
+function jsonServer(cli, args, { startupTimeout = 20000, stopTimeout = 5000 } = {}) {
+  const child = spawn(process.execPath, [cli, ...args], { cwd: path.dirname(cli), stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  let stdout = '', stderr = '', startupTimer;
+  const exited = new Promise(resolve => child.once('exit', (code, signal) => resolve({ code, signal })));
+  child.stdout.setEncoding('utf8'); child.stderr.setEncoding('utf8');
+  child.stdin.on('error', () => {}); // a child may exit just before teardown writes
+  const started = new Promise((resolve, reject) => {
+    startupTimer = setTimeout(() => reject(new Error(`serve did not produce JSON within ${startupTimeout}ms. stderr: ${stderr}; stdout: ${stdout}`)), startupTimeout);
+    child.stdout.on('data', chunk => {
+      stdout += chunk;
+      try { const result = JSON.parse(stdout); clearTimeout(startupTimer); resolve(result); } catch { /* await complete JSON */ }
+    });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', error => { clearTimeout(startupTimer); reject(error); });
+    child.once('exit', (code, signal) => { clearTimeout(startupTimer); reject(new Error(`serve exited ${code ?? signal}: ${stderr}; stdout: ${stdout}`)); });
+  });
+  const waitForExit = async () => {
+    let timer;
+    try { return await Promise.race([exited.then(() => true), new Promise(resolve => { timer = setTimeout(() => resolve(false), stopTimeout); })]); }
+    finally { clearTimeout(timer); }
+  };
+  return { child, started, get stdout() { return stdout; }, get stderr() { return stderr; },
+    async stop() {
+      clearTimeout(startupTimer);
+      if (!child.pid) return;
+      if (child.exitCode !== null || child.signalCode !== null) return;
+      if (!child.stdin.destroyed) child.stdin.end('stop\n');
+      if (await waitForExit()) return;
+      child.kill('SIGKILL');
+      if (!await waitForExit()) throw new Error('The owned test CLI did not exit after forced cleanup.');
+    } };
+}
+
+function assertStartupStreams(server) {
+  assert.doesNotThrow(() => JSON.parse(server.stdout), 'stdout must remain a standalone JSON document');
+  const diagnostics = server.stderr.trim().split(/\r?\n/).filter(Boolean).map(line => JSON.parse(line));
+  assert.ok(diagnostics.length > 0, 'runtime startup must report diagnostics on stderr');
+  assert.ok(diagnostics.every(event => event.type === 'runtime-startup'), server.stderr);
+}
+
 test("project config resolves multiple portal and Solution source roots", async (t) => {
   const root = await workspace(t);
   const configPath = path.join(root, "mirage.project.yml");
@@ -91,23 +133,10 @@ test("project serve CLI starts isolated loopback servers for every portal", asyn
     "solutions: [solutions/base, solutions/site]", "",
   ].join("\n"));
   const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
-  const child = spawn(process.execPath, [cli, "serve", "--project", configPath, "--state", path.join(root, "state.json"), "--port", "0", "--no-watch"], {
-    cwd: path.dirname(cli), stdio: ["pipe", "pipe", "pipe"],
-  });
-  let output = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  const started = new Promise((resolve, reject) => {
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      try { resolve(JSON.parse(output)); } catch {}
-    });
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`serve exited ${code}: ${output}`)));
-  });
+  const server = jsonServer(cli, ["serve", "--project", configPath, "--state", path.join(root, "state.json"), "--port", "0", "--no-watch"]);
   try {
-    const result = await started;
+    const result = await server.started;
+    assertStartupStreams(server);
     assert.equal(result.portals.length, 2);
     assert.notEqual(new URL(result.portals[0].url).port, new URL(result.portals[1].url).port);
     // --state FILE gives every portal its own directory, so caches, assets and evidence are not shared.
@@ -117,16 +146,22 @@ test("project serve CLI starts isolated loopback servers for every portal", asyn
     );
     assert.equal(new Set(result.portals.map((portal) => path.dirname(portal.stateFile))).size, 2);
     for (const portal of result.portals) {
-      const response = await fetch(portal.adminUrl);
+      const response = await fetch(portal.adminUrl, { signal: AbortSignal.timeout(5000) });
       assert.equal(response.status, 200);
       assert.equal(await fs.stat(portal.stateFile).then((stat) => stat.isFile()), true);
     }
   } finally {
-    if (child.exitCode == null) {
-      child.stdin.write("stop\n");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
+    await server.stop();
   }
+});
+
+test('a CLI that never reports readiness times out and its owned process is forcibly cleaned up', async t => {
+  const root = await workspace(t), script = path.join(root, 'unready.mjs');
+  await fs.writeFile(script, "setInterval(() => {}, 1000); process.on('SIGTERM', () => {}); process.stdin.resume();");
+  const server = jsonServer(script, [], { startupTimeout: 100, stopTimeout: 100 });
+  try { await assert.rejects(server.started, /did not produce JSON within 100ms/); }
+  finally { await server.stop(); }
+  assert.ok(server.child.exitCode !== null || server.child.signalCode !== null);
 });
 
 test("invalid source references fail before import", async (t) => {
@@ -239,35 +274,19 @@ test("project serve exposes the resolved project and falls back to the default r
     "references: [{ id: dev, origin: 'https://dev.example.test', default: true }]", "stateDirectory: .state", "",
   ].join("\n"));
   const cli = fileURLToPath(new URL("../cli.mjs", import.meta.url));
-  const child = spawn(process.execPath, [cli, "serve", "--project", configPath, "--portal", "catalog", "--port", "0", "--no-watch"], {
-    cwd: path.dirname(cli), stdio: ["pipe", "pipe", "pipe"],
-  });
-  let output = "";
-  child.stdout.setEncoding("utf8");
-  child.stderr.setEncoding("utf8");
-  const started = new Promise((resolve, reject) => {
-    child.stdout.on("data", (chunk) => {
-      output += chunk;
-      try { resolve(JSON.parse(output)); } catch {}
-    });
-    child.stderr.on("data", (chunk) => { output += chunk; });
-    child.once("error", reject);
-    child.once("exit", (code) => reject(new Error(`serve exited ${code}: ${output}`)));
-  });
+  const server = jsonServer(cli, ["serve", "--project", configPath, "--portal", "catalog", "--port", "0", "--no-watch"]);
   try {
-    const result = await started;
+    const result = await server.started;
+    assertStartupStreams(server);
     assert.equal(result.stateFile, path.join(root, ".state", "catalog", "state.json"));
-    const state = await (await fetch(new URL("/__sim/api/state?summary=1", result.url))).json();
+    const state = await (await fetch(new URL("/__sim/api/state?summary=1", result.url), { signal: AbortSignal.timeout(5000) })).json();
     assert.equal(state.status.project.configFile, configPath);
     assert.equal(state.status.project.portal, "catalog");
     assert.deepEqual(state.status.project.solutions.map((solution) => solution.id), ["base"]);
     assert.equal(state.status.project.defaultReference, "dev");
     assert.equal(state.config.live.origin, "https://dev.example.test");
   } finally {
-    if (child.exitCode == null) {
-      child.stdin.write("stop\n");
-      await new Promise((resolve) => child.once("exit", resolve));
-    }
+    await server.stop();
   }
 });
 

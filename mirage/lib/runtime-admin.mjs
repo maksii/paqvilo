@@ -1,4 +1,5 @@
 // Generic local administration shared by portal and solution-only hosts.
+import { platformSettingEntries, validatePlatformOverrides } from './platform-settings.mjs';
 const error = (message, status = 400, code = 'INVALID_REQUEST') => Object.assign(new Error(message), { status, code });
 const decodeAdminIdentifier = value => { try { return decodeURIComponent(value); } catch { throw error('Administration identifier has invalid URL encoding.'); } };
 export function createRuntimeAdminRouter({ store, json, jsonObjectBody, change, csrf, status, state, configuration, configure, simulation, diagnostics, shutdown, dataverseAdmin, staffSession }) {
@@ -87,6 +88,18 @@ export function createRuntimeAdminRouter({ store, json, jsonObjectBody, change, 
     if (method === 'PATCH' && relative === '/config' && configure) return answer(change(async () => configure(await jsonObjectBody(req))));
     if (method === 'GET' && relative === '/simulation' && simulation) return answer(simulation());
     if (method === 'GET' && relative === '/diagnostics' && diagnostics) return answer(diagnostics());
+    if (relative === '/platform-settings' && method === 'GET') return answer(platformSettingEntries(store.state));
+    if (relative === '/platform-settings' && method === 'PATCH') return answer(change(async () => {
+      const patch = validatePlatformOverrides(await jsonObjectBody(req));
+      await store.transact(() => { store.state.simulator.platformOverrides = { ...store.state.simulator.platformOverrides, ...patch }; delete store.state.simulator.activeExperiment; });
+      return platformSettingEntries(store.state);
+    }));
+    if (relative.startsWith('/platform-settings/') && method === 'DELETE') return answer(change(async () => {
+      const key = decodeAdminIdentifier(relative.slice('/platform-settings/'.length));
+      if (!platformSettingEntries(store.state).some(item => item.key === key)) throw error('Unknown platform setting.', 404);
+      await store.transact(() => { delete (store.state.simulator.platformOverrides ?? {})[key]; delete store.state.simulator.activeExperiment; });
+      return { reset: key };
+    }));
     if (relative === '/dataverse' || relative.startsWith('/dataverse/')) {
       if (!dataverseAdmin) return false;
       await dataverseAdmin(req, res, relative); return true;

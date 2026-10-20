@@ -59,12 +59,14 @@ export function createModelDrivenRecordService({ organization, store = organizat
     const canUpdate = permits('update') && (!id || canRead) && storage.update !== false;
     const canDelete = permits('delete') && (!id || canRead) && storage.delete !== false;
     const fls = organization.api.fieldSecurity;
+    const names = Object.keys(fields);
+    const fieldRights = names.length ? fls?.capabilities?.(user, entity, names, id) : {};
     return { read: canRead, create: canCreate, update: canUpdate, delete: canDelete,
       ...(storage.reason ? { reason: storage.reason } : {}),
       fields: Object.fromEntries(Object.entries(fields).map(([name, field]) => [name, {
-        read: canRead && fls?.canRead(user, entity, name, id) !== false,
-        create: canCreate && !field.isPrimaryId && (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false && fls?.canWrite(user, entity, name, 'create') !== false,
-        update: canUpdate && !field.isPrimaryId && (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false && fls?.canWrite(user, entity, name, 'update', id) !== false,
+        read: canRead && (fieldRights ? fieldRights[name].read : fls?.canRead(user, entity, name, id) !== false),
+        create: canCreate && !field.isPrimaryId && (field.validForCreate ?? field.columnMetadata?.validForCreate) !== false && (fieldRights ? fieldRights[name].create : fls?.canWrite(user, entity, name, 'create') !== false),
+        update: canUpdate && !field.isPrimaryId && (field.validForUpdate ?? field.columnMetadata?.validForUpdate) !== false && (fieldRights ? fieldRights[name].update : fls?.canWrite(user, entity, name, 'update', id) !== false),
       }])) };
   };
   const write = async ({ entity, id, values = {}, remove = false, etag, principalId, kind }) => {

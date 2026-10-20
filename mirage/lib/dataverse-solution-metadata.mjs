@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { isDeepStrictEqual } from 'node:util';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import { classifySolutionPath, parseSchemaDocument, buildSolutionSchema, tableFields } from './solution-schema.mjs';
 import { parseSolutionXml, descendants, pickLabel } from './solution-xml.mjs';
 
@@ -26,14 +27,19 @@ const rowStamp = row => Object.entries(row).map(([key, value]) => [key, typeof v
  * catalogue's source parser, supplied by the host to keep this adapter acyclic. */
 export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument = parseSchemaDocument } = {}) {
   const parsed = new Map();
+  const readEpoch = new AsyncLocalStorage();
   let previousBase, previousKey, previous;
-  return (base = {}, state = {}) => {
+  const resolve = (base = {}, state = {}) => {
+    const epoch = readEpoch.getStore();
+    const reusable = epoch && !epoch.closed && epoch.valid();
+    if (reusable && epoch.resolved && epoch.base === base && epoch.state === state) return epoch.value;
+    const finish = value => { if (reusable) { epoch.resolved = true; epoch.base = base; epoch.state = state; epoch.value = value; } return value; };
     const layers = state.dataverse?.solutionAssets?.layers ?? [];
-    if (!layers.length && !Object.keys(state.dataverse?.sourceSolutionComponents?.baseline ?? {}).length) return base;
+    if (!layers.length && !Object.keys(state.dataverse?.sourceSolutionComponents?.baseline ?? {}).length) return finish(base);
     const rows = Object.fromEntries(['systemform', 'savedquery', 'appmodule', 'sitemap'].map(table => [table, state.tables?.[table] ?? []]));
     const key = [layers.map(layer => [layer.id, layer.ownerSolutionId]),
       Object.entries(rows).map(([table, values]) => [table, values.map(rowStamp)]), state.dataverse?.metadataLog?.at(-1)?.seq ?? 0];
-    if (previousBase === base && isDeepStrictEqual(previousKey, key)) return previous;
+    if (previousBase === base && isDeepStrictEqual(previousKey, key)) return finish(previous);
     const active = new Set(layers.map(layer => layer.id));
     for (const digest of parsed.keys()) if (!active.has(digest)) parsed.delete(digest);
     const scan = { inputs: [], diagnostics: [], order: 'explicit', layers: layers.map((layer, index) => {
@@ -127,6 +133,17 @@ export function createSolutionMetadataOverlay({ appsOf = () => [], parseDocument
     previousBase = base;
     previousKey = key;
     previous = { ...base, entities, forms, views, modelDrivenApps: apps, layers: [...(base.layers ?? []), ...schema.layers], importedSchema: schema };
-    return previous;
+    return finish(previous);
   };
+  // Hosts use this only for a read-only catalogue projection, inside their
+  // serialized store read. Retain that projection's first metadata snapshot
+  // across cooperative yields; the next request always establishes a new epoch.
+  // Staff grants and field permissions remain live checks, never epoch-cached.
+  return Object.assign(resolve, { withReadEpoch: (fn, { valid = () => true } = {}) => {
+    const epoch = { resolved: false, valid };
+    return readEpoch.run(epoch, async () => {
+      try { return await fn(); }
+      finally { epoch.closed = true; epoch.value = undefined; }
+    });
+  } });
 }

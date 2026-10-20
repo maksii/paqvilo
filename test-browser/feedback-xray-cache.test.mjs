@@ -28,7 +28,7 @@ async function fixture(t,html){
 
 test('script-rendered unreferenced snippets remain attributable with bounded page evidence and fast identification',async t=>{
   const markup='<aside id="dynamic-banner" class="notice dynamic"><span class="notice-message">Invented message</span></aside>';
-  const {fx,page,inspect}=await fixture(t,`<main></main><script>document.querySelector('main').innerHTML=${JSON.stringify(markup)};</script>`);
+  const {fx,page,inspector,inspect}=await fixture(t,`<main></main><script>document.querySelector('main').innerHTML=${JSON.stringify(markup)};</script>`);
   fs.writeFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.yml'),'adx_contentsnippetid: dynamic\nadx_name: Dynamic notice');
   fs.writeFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.value.html'),markup);
   const report=await inspect();
@@ -46,6 +46,11 @@ test('script-rendered unreferenced snippets remain attributable with bounded pag
   await page.locator('.notice-message').evaluate(node=>node.className='replacement-message');
   const after=await inspect();
   assert.ok(after.elementSources.some(row=>row.selector==='#dynamic-banner'),'the enclosing source ID survives script class changes');
+  fs.appendFileSync(path.join(fx.portal,'content-snippets/Dynamic.contentsnippet.value.html'),'<span id="edited-dynamic"></span>');
+  await page.locator('#dynamic-banner').evaluate(node=>node.insertAdjacentHTML('beforeend','<span id="edited-dynamic"></span>'));
+  inspector.invalidate();const edited=await inspect();
+  assert.ok(edited.elementSources.some(row=>row.selector==='#edited-dynamic'));
+  assert.equal(await page.evaluate(()=>document.getElementById('paqvilo-xray').__px.identify(document.querySelector('.replacement-message')).title),'Dynamic notice','one source edit preserves the script-rendered enclosing snippet match');
 });
 
 test('script truncation notes and displayed source rows agree on root-relative forward-slash paths',async t=>{

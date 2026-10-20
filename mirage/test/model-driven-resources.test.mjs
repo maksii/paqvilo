@@ -9,6 +9,7 @@ import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs'
 import { createSimulator } from '../server.mjs';
 import { loadOrganizationSources } from '../lib/solution-runtime-source.mjs';
 import { validateValues } from '../lib/model-driven/data.mjs';
+import { importModelDrivenProject } from '../../lense/model-driven.mjs';
 
 const descriptor = (name, file) => `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
 async function fixture(t, files) {
@@ -74,6 +75,58 @@ test('client import reads declared assets lazily and fails closed at aggregate l
   await fs.writeFile(zip, writeSolutionAssetEntries([{ name: 'WebResources/events.js', data: Buffer.alloc(512) }]));
   const zipped = await importModelDrivenResources([{ type: 'zip', dir: zip }], { limits: { bytes: 256 } });
   assert.equal(zipped.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+});
+
+test('explicit client sources are independent of metadata, ordered, confined and fail closed at their own budget', async t => {
+  const metadata = await fixture(t, { 'Other/Solution.xml': '<ImportExportXml><SolutionManifest><UniqueName>Complete</UniqueName><Version>1.0</Version></SolutionManifest></ImportExportXml>',
+    'Entities/x_item/Entity.xml': '<Entity><Name>x_item</Name><EntityInfo><entity Name="x_item"><attributes><attribute PhysicalName="x_name"><Name>x_name</Name><Type>nvarchar</Type></attribute></attributes></entity></EntityInfo></Entity>',
+    ...Object.fromEntries(Array.from({ length: 50 }, (_, i) => [`WebResources/unrelated${i}.png`, 'unrelated'])) });
+  const selected = await fixture(t, { 'WebResources/events.js': 'window.Selected = 1;', 'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js'),
+    'WebResources/missing.js.data.xml': descriptor('x_/missing.js', '../outside.js') });
+  const override = await fixture(t, { 'WebResources/events.js': 'window.Selected = 2;', 'WebResources/events.js.data.xml': descriptor('x_/events.js', 'WebResources/events.js') });
+  const settings = modelDrivenSettings({ clientSources: [selected, override] });
+  const organization = await loadOrganizationSources({ solutionRoots: [metadata], modelDriven: settings });
+  const overlay = await importModelDrivenProject({ solutionRoots: [metadata], solutionOrder: 'explicit', modelDriven: settings });
+  assert.ok(organization.metadata.entities.x_item); assert.equal(organization.clientResources.resources.length, 1);
+  assert.deepEqual(overlay.resources, organization.clientResources.resources);
+  assert.equal(organization.clientResources.assets.get(organization.clientResources.resources[0].url).data.toString(), 'window.Selected = 2;');
+  assert.equal(organization.clientResources.resources[0].source, path.join(override, 'WebResources/events.js'));
+  assert.ok(organization.clientResources.diagnostics.some(item => item.code === 'MODEL_WEBRESOURCE_UNRESOLVED'));
+  const layers = [{ type: 'directory', dir: metadata }];
+  assert.equal((await importModelDrivenResources(layers, { limits: { entries: 8 } })).diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+  const admitted = await importModelDrivenResources(layers, { clientSources: [override], limits: { entries: 3 } });
+  assert.equal(admitted.resources.length, 1, 'three entries exactly fit the independent source budget');
+  const rejected = await importModelDrivenResources(layers, { clientSources: [override], limits: { entries: 2 } });
+  assert.equal(rejected.resources.length, 0); assert.equal(rejected.assets.size, 0); assert.equal(rejected.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
+  const absent = await importModelDrivenResources(layers, { clientSources: [override, path.join(metadata, 'absent')] });
+  assert.equal(absent.assets.size, 0); assert.equal(absent.diagnostics[0].code, 'MODEL_CLIENT_SOURCE_INVALID');
+  assert.equal((await importModelDrivenResources(layers, { clientSources: [] })).resources.length, 0);
+  assert.deepEqual(modelDrivenSettings({ clientSources: ['./local'] }, 'modelDriven', metadata).clientSources, [path.join(metadata, 'local')]);
+  for (const clientSources of [true, [null], Array(129).fill(selected)]) assert.throws(() => modelDrivenSettings({ clientSources }));
+});
+
+test('PCF client budgets include manifests, RESX and images and reuse the admitted JS snapshot', async t => {
+  const files = {
+    'Controls/Budget/ControlManifest.xml': '<manifest><control namespace="fx" constructor="Budget" control-type="standard"><resources><code path="bundle.js"/><resx path="strings.1033.resx"/><img path="icon.png"/></resources></control></manifest>',
+    'Controls/Budget/ControlManifest.xml.data.xml': '<CustomControl><Name>fx.Budget</Name></CustomControl>',
+    'Controls/Budget/bundle.js': 'var Budget;',
+    'Controls/Budget/strings.1033.resx': '<root><data name="large"><value>' + 'x'.repeat(20000) + '</value></data></root>',
+    'Controls/Budget/icon.png': Buffer.alloc(1024),
+  };
+  const root = await fixture(t, files), bytes = Object.values(files).reduce((sum, data) => sum + Buffer.byteLength(data), 0);
+  const exact = await importModelDrivenResources([], { clientSources: [root], limits: { bytes } });
+  assert.equal(exact.pcf.controls.length, 1); assert.deepEqual(exact.diagnostics, []);
+  assert.equal(exact.pcf.controls[0].resources.resx.large.length, 20000);
+  assert.equal(exact.assets.size, 1, 'only executable JS/CSS are served even though every imported resource consumes budget');
+  assert.equal([...exact.assets.values()][0].data.toString(), 'var Budget;');
+  for (const budget of [512, bytes - 1]) {
+    const rejected = await importModelDrivenResources([], { clientSources: [root], limits: { bytes: budget } });
+    assert.equal(rejected.pcf.controls.length, 0); assert.equal(rejected.assets.size, 0);
+    assert.equal(rejected.diagnostics.some(item => item.code === 'MODEL_CLIENT_IMPORT_LIMIT'), true);
+  }
+  await fs.writeFile(path.join(root, 'Controls/Budget/ControlManifest.xml'), files['Controls/Budget/ControlManifest.xml'] + ' '.repeat(20000));
+  const manifest = await importModelDrivenResources([], { clientSources: [root], limits: { bytes: 1024 } });
+  assert.equal(manifest.assets.size, 0); assert.equal(manifest.diagnostics[0].code, 'MODEL_CLIENT_IMPORT_LIMIT');
 });
 
 test('a changed PCF resource is reported without rejecting organization import or exposing a partial control', async t => {

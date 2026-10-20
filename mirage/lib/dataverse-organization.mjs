@@ -60,7 +60,22 @@ function maxRowVersion(state) {
   return max;
 }
 
-export async function createOrganizationRuntime({ store, settings, change = fn => fn(), schema = () => null, metadataFields = () => undefined, clock = () => Date.now(), records = null, log = () => {}, extensions = EXTENSIONS }) {
+export async function createOrganizationRuntime(options) {
+  let organization;
+  try {
+    // All registration/security/extension seeders join this private startup
+    // transaction. Otherwise each installer clones and checkpoints the complete
+    // business dataset, even during an unchanged-state restart. No listener is
+    // published until this commits; failed composition restores the old state.
+    return await options.store.transact(async () => organization = await composeOrganizationRuntime(options),
+      { isolated: true, cloneResult: false, skipSaveIfUnchanged: true });
+  } catch (error) {
+    await organization?.close().catch(() => {});
+    throw error;
+  }
+}
+
+async function composeOrganizationRuntime({ store, settings, change = fn => fn(), schema = () => null, metadataFields = () => undefined, clock = () => Date.now(), records = null, log = () => {}, extensions = EXTENSIONS }) {
   // Standard table columns under the Solution's own fields (plan 3.2); the records and TDS layers both read this.
   const solutionFields = metadataFields;
   metadataFields = (logical) => fieldsWithStandard(store, logical, solutionFields(logical));

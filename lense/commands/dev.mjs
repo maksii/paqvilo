@@ -8,6 +8,7 @@ import { urlKey } from '../portal-model.mjs';
 import { compareWebFile } from '../online.mjs';
 import { gitDirectories } from '../git.mjs';
 import { panelVisibilityNotice } from '../panel.mjs';
+import { startupProgress, waitForStartupPage } from '../startup-progress.mjs';
 
 const time = () => new Date().toLocaleTimeString('en-GB');
 /** Lines of every activated portal share one terminal: say which one they belong to. */
@@ -408,11 +409,14 @@ export function watchSources(session, context, { reload = true, log = console.lo
 }
 
 export default async function dev(cfg, args) {
+  const progress = args.startup ?? startupProgress();
+  args = { ...args, startup: progress };
+  progress.phase('local setup');
   const { startSetupServer } = await import('../setup/server.mjs');
   const setup = await startSetupServer({ ...(args.project && !args.config ? { project: args.project } : { config: cfg.configFile }), runtime: { product: cfg.mirage ? 'Mirage' : 'Lense', site: cfg.siteName, sourceDir: cfg.sourceDir, portalUrl: cfg.origin } });
   console.log(`setup       ${setup.url}`);
   try { return await develop(cfg, args, setup); }
-  finally { await setup.close(); }
+  finally { progress.close(); await setup.close(); }
 }
 
 async function develop(cfg, args, setup) {
@@ -428,6 +432,7 @@ async function develop(cfg, args, setup) {
     console.log(`portals     all ${selection.targets.length} configured origins; activated on visit. Use the panel to switch, "paqvilo list" to inspect.`);
   }
   const wantedPort = cfg.browser.debugPort;
+  args.startup?.phase('browser setup');
   const { context, attached, close, debugPort, profile } = await openBrowser(cfg, { debugPort: wantedPort, cookieOrigins: selection.targets.map(target => target.origin) });
   console.log(`browser     ${attached ? 'attached browser' : cfg.browser.channel}; ${profile.kind === 'legacy' || profile.kind === 'named' ? 'toolkit' : profile.kind}${profile.name ? ` profile ${profile.name}` : ''}${profile.profileDirectory && profile.kind === 'external' ? ` (${profile.profileDirectory})` : ''}`);
   let stop;
@@ -440,6 +445,7 @@ async function develop(cfg, args, setup) {
   let runtime;
   try {
     if (debugPort) console.log(`debugger    port ${debugPort} (VS Code: "paqvilo: attach to running dev browser"${debugPort === 9222 ? '' : `; set its port to ${debugPort}`})`);
+    args.startup?.phase('source discovery and interception');
     runtime = await startDevSessions(context, selection, { args, attached, stop, debugPort });
     if (cfg.panel) {
       const panel = runtime.active.get(cfg.origin).panel;
@@ -450,8 +456,14 @@ async function develop(cfg, args, setup) {
     }
     const startUrl = cfg.origin + (cfg.site.startPath ?? '/');
     const page = attached ? await context.newPage() : (context.pages()[0] ?? (await context.newPage()));
-    console.log(`\nopening ${startUrl}\n${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
-    await Promise.race([stopped, page.goto(startUrl, { waitUntil: 'domcontentloaded' }).catch((err) => console.log(`could not open ${startUrl}: ${err.message}`))]);
+    console.log(`\nopening ${startUrl}`);
+    try {
+      const loaded = await waitForStartupPage(page, startUrl, { progress: args.startup, stopped });
+      if (loaded) console.log(`${DEV_READY} Browse pages and open tabs without restarting. Ctrl+C or close the browser to stop.${process.env.PAQVILO_DEBUG ? '' : ' (PAQVILO_DEBUG=1 lists every served file.)'}\n`);
+    } catch (error) {
+      args.startup?.fail(error.message);
+      console.error(`could not open ${startUrl}: ${error.message}. Inspect the browser and retry navigation; interception is installed.`);
+    }
 
     await stopped;
   } finally {

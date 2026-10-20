@@ -186,6 +186,7 @@ export async function importSolutionData(roots = [], { entities, cacheFile, cach
     layers: schema.layers,
     order: scan.order,
     fingerprint: schema.fingerprint,
+    contentFingerprint: schema.contentFingerprint,
     mappings: filtered,
     relationships,
     environmentVariables,
@@ -423,6 +424,7 @@ export function applySolutionData(state, metadata, { webApiTables, environmentVa
     roots: metadata.roots,
     stats: metadata.stats,
     fingerprint: metadata.fingerprint,
+    ...(metadata.contentFingerprint !== undefined ? { contentFingerprint: metadata.contentFingerprint } : {}),
     ...(Object.keys(seeded).length ? { seededRows: seeded } : {}),
   };
   // Solution diagnostics describe the current layers only; earlier imports are replaced.

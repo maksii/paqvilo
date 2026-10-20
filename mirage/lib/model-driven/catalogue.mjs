@@ -3,6 +3,7 @@ import { powerPagesProvider } from './providers.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
 import { pickLabel } from '../solution-xml.mjs';
 import { sourceRecordId } from '../source-record-id.mjs';
+import { setImmediate } from 'node:timers/promises';
 
 const friendly = name => String(name).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 export function solutionApps(scan, { lcid = 1033 } = {}) {
@@ -27,7 +28,7 @@ export function solutionApps(scan, { lcid = 1033 } = {}) {
 }
 
 /** Stable JSON contract consumed by the shell and future control/command registries. */
-export function appCatalogue({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions } = {}) {
+function* catalogueSteps({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions } = {}) {
   const tables = Object.assign({}, ...providers.filter(Boolean).map(provider => structuredClone(provider.tables ?? {})));
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
@@ -51,6 +52,7 @@ export function appCatalogue({ portal, metadata = {}, mappings = {}, providers =
     table.views = (metadata.views ?? []).filter(view => view.entity === table.entity && view.queryType === 0).map(view => ({ id: view.id, name: view.name, isDefault: view.isDefault, fields: view.fields, fetchXml: view.fetchXml, source: 'solution' }));
     if (!table.views.length) table.views = [{ id: 'active', name: `Active ${table.label}`, isDefault: true, source: 'generated', state: 0 }, { id: 'all', name: `All ${table.label}`, source: 'generated' }, { id: 'inactive', name: `Inactive ${table.label}`, source: 'generated', state: 1 }];
     for (const view of table.views) view.fields ??= [table.nameColumn, ...Object.keys(table.fields).filter(name => ![table.nameColumn, table.idColumn].includes(name)).slice(0, 5)].map(name => ({ name, width: 180 }));
+    yield;
   }
   const imported = structuredClone(metadata.modelDrivenApps ?? []);
   const apps = [];
@@ -76,4 +78,24 @@ export function appCatalogue({ portal, metadata = {}, mappings = {}, providers =
   return { version: 1, defaultApp: defaultApp?.id ?? null, apps, tables, ...(clientExtensions ? { clientExtensions } : {}),
     capabilities: { localCrud: true, views: true, search: true, filters: true, columns: true, solutionNavigation: true, relatedSubgrids: true,
       scripts: clientExtensions?.trusted === true, businessProcessFlows: false, customControls: clientExtensions?.trusted === true, reports: false, powerBi: false, flows: false, globalSearch: false, advancedFind: false, classicSettings: false } };
+}
+
+export function appCatalogue(options) {
+  const steps = catalogueSteps(options);
+  let current;
+  do { current = steps.next(); } while (!current.done);
+  return current.value;
+}
+
+/** Same complete catalogue contract with cooperative table construction. Hosts
+ * retain their serialized read and may cancel a disconnected HTTP consumer. */
+export async function appCatalogueAsync(options, { cancelled = () => false } = {}) {
+  const steps = catalogueSteps(options);
+  let yieldedAt = performance.now();
+  while (true) {
+    if (cancelled()) throw Object.assign(new Error('Catalogue request was cancelled.'), { status: 499, code: 'ModelDrivenRequestInvalid' });
+    const current = steps.next();
+    if (current.done) return current.value;
+    if (performance.now() - yieldedAt >= 8) { await setImmediate(); yieldedAt = performance.now(); }
+  }
 }

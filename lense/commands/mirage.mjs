@@ -6,11 +6,13 @@ import { renderSettings } from '../../mirage/lib/render-settings.mjs';
 import fsSync from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
-import { spawn, spawnSync } from 'node:child_process';
+import { spawn, spawnSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import YAML from 'yaml';
 import { loadCatalogue, loadConfig, loadDevTargets } from '../config.mjs';
 import { runtimePort } from '../../mirage/lib/runtime-port.mjs';
+import { readStartupPhases } from '../startup-progress.mjs';
 
 const TOOL_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const MIRAGE_ROOT = path.join(TOOL_ROOT, 'mirage');
@@ -109,6 +111,22 @@ export function processIdentity(pid) {
   } catch { /* macOS and other proc-less systems */ }
   const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', windowsHide: true, timeout: 3000 });
   return result.status === 0 ? result.stdout.trim() || null : null;
+}
+
+// Startup must keep its heartbeat and cancellation responsive while Windows
+// resolves process ownership. The synchronous public helper remains for callers.
+const executeFile = promisify(execFile);
+export async function processIdentityAsync(pid, { signal } = {}) {
+  if (signal?.aborted) return null;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  if (process.platform !== 'win32') return processIdentity(pid);
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      const { stdout } = await executeFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `(Get-Process -Id ${pid} -ErrorAction SilentlyContinue).StartTime.ToUniversalTime().Ticks`], { windowsHide: true, timeout: 15000, encoding: 'utf8', signal });
+      return stdout.trim() || null;
+    } catch (error) { if (!error.killed) return null; }
+  }
+  return null;
 }
 
 // ------------------------------------------------------------------------------ ownership records
@@ -486,6 +504,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
       runtime, simulation: args.simulation ? { level: args.simulation } : projectInfo?.simulation ?? null,
       modelDriven: projectInfo?.modelDriven ?? cfg.mirageConfig?.modelDriven ?? { trustedExtensions: false },
+      dataverse: projectInfo?.dataverse ?? cfg.mirageConfig?.dataverse ?? null,
       scope: cfg.configFile ? { configFile: resolved(cfg.configFile), siteName: cfg.siteName } : null,
       stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only', allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
@@ -494,7 +513,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
       render: renderSettings(cfg.mirageConfig?.render),
       personaContexts: cfg.mirageConfig?.personaContexts ?? {maxInstances:4},
       identityProvider: cfg.mirageConfig?.identityProvider ?? {},
-      platform: cfg.mirageConfig?.platform ?? projectInfo?.portals.find(item=>item.id===portalId)?.platform ?? null,
+      platform: cfg.mirageConfig?.platform ?? projectInfo?.portals.find(item=>item.id===portalId)?.platform ?? projectInfo?.platform ?? null,
       deploymentProfiles: cfg.mirageConfig?.deploymentProfiles && samePath(cfg.mirageConfig.project, projectInfo?.configFile)
         ? cfg.mirageConfig.deploymentProfiles
         : projectInfo?.portals.find(item => item.id === portalId)?.deploymentProfiles ?? cfg.mirageConfig?.deploymentProfiles ?? null,
@@ -512,6 +531,7 @@ function identityMatches(left, right) {
     && JSON.stringify(left.runtime ?? { kind: 'power-pages' }) === JSON.stringify(right.runtime ?? { kind: 'power-pages' })
     && JSON.stringify(left.simulation ?? null) === JSON.stringify(right.simulation ?? null)
     && JSON.stringify(left.modelDriven ?? { trustedExtensions: false }) === JSON.stringify(right.modelDriven ?? { trustedExtensions: false })
+    && JSON.stringify(left.dataverse ?? null) === JSON.stringify(right.dataverse ?? null)
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetConfiguration ?? 'data-only') === (right.presetConfiguration ?? 'data-only')
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')
@@ -526,6 +546,33 @@ function identityMatches(left, right) {
 
 // ------------------------------------------------------------------------------ start
 async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
+  let interrupted = false, child, cleanup;
+  const controller = new AbortController();
+  const interrupt = () => {
+    interrupted = true;
+    controller.abort();
+    if (child && child.exitCode === null && !child.killed) { try { child.kill('SIGTERM'); } catch { /* already exited */ } }
+  };
+  process.on('SIGINT', interrupt);
+  process.on('SIGTERM', interrupt);
+  const check = () => { if (interrupted) throw new Error('Mirage startup was interrupted; the starting process was stopped.'); };
+  try {
+    return await startRuntime(cfg, args, paths, { check, signal: controller.signal, cancelled: () => interrupted, child: value => { child = value; }, cleanup: value => { cleanup = value; } });
+  } catch (error) {
+    // The direct child handle is ours even if its OS start identity could not
+    // yet be read. Do not leave a detached importer after early cancellation.
+    if (child && child.exitCode === null && !child.killed) { try { child.kill('SIGTERM'); } catch { /* already exited */ } }
+    await cleanup?.();
+    throw error;
+  } finally {
+    process.off('SIGINT', interrupt);
+    process.off('SIGTERM', interrupt);
+  }
+}
+
+async function startRuntime(cfg, args, paths, startup) {
+  const started = Date.now() - (args.startup?.elapsedMs ?? 0);
+  args.startup?.phase('source discovery', cfg.siteName);
   const port = String(runtimePort(args.port, DEFAULT_PORT));
   const timeout = args['startup-timeout'] === undefined ? DEFAULT_STARTUP_TIMEOUT : Number(args['startup-timeout']);
   if (!Number.isInteger(timeout) || timeout < 1000 || timeout > 600_000) throw new Error('--startup-timeout must be an integer from 1000 to 600000 milliseconds');
@@ -544,47 +591,68 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
   }
   const { identity, solutionRoots } = await launchIdentity(cfg, { ...args, port }, projectInfo);
   const launch = { ...identity, solutionRoots };
+  startup.check();
+  args.startup?.phase('existing runtime and ownership', cfg.siteName);
   const owned = await ownedSessions(paths);
-  const existing = (await discoveries(paths)).find((session) => session.processAlive && session.ready
+  const candidates = (await discoveries(paths)).filter((session) => session.processAlive && session.ready
     && (identity.sourceDir ? samePath(session.sourceDir, identity.sourceDir) : !session.sourceDir)
     && owned.some((item) => item.pid === session.pid && item.discovery === session.discovery
-      && item.processIdentity && item.processIdentity === processIdentity(session.pid)
       && identityMatches(item.identity, identity)));
+  let existing;
+  for (const session of candidates) {
+    const currentIdentity = await processIdentityAsync(session.pid, { signal: startup.signal });
+    startup.check();
+    if (currentIdentity && owned.some(item => item.pid === session.pid && item.processIdentity === currentIdentity)) { existing = session; break; }
+  }
   if (existing) return { ...existing, owned: true, started: false, launch, writesFiles: [] };
+  if (Date.now() >= started + timeout) throw new Error(`Mirage startup exceeded ${timeout}ms during source discovery or ownership checks; no child was started.`);
   if (port !== '0' && !(await portAvailable(Number(port)))) throw new Error(`Port ${port} is already in use by another process or Mirage session with different settings. Pass --port 0 (any free port) or another --port, or stop that session first.`);
   const { cli, values } = cliArgs(cfg, 'serve', { ...args, port, state: identity.stateFile }, projectInfo);
   let child;
+  args.startup?.phase('process launch', identity.runtime?.kind ?? 'power-pages');
   await fs.mkdir(paths.logRoot, { recursive: true });
   const log = path.join(paths.logRoot, `startup-${Date.now()}-${Math.random().toString(16).slice(2)}.log`);
   const logHandle = await fs.open(log, 'a');
   try {
+    startup.check();
     child = spawn(process.execPath, [cli, ...values], { cwd: cfg.configDir ?? process.cwd(), detached: true, stdio: ['ignore', logHandle.fd, logHandle.fd], windowsHide: true });
+    startup.child(child);
   } catch (error) { await logHandle.close(); throw new Error(`Could not start Mirage: ${error.message}. Startup log: ${log}`); }
   await logHandle.close();
   child.unref();
   const discovery = path.join(paths.discoveryRoot, `session-${child.pid}.json`);
-  const childIdentity = processIdentity(child.pid);
+  startup.cleanup(async () => {
+    await fs.rm(discovery, { force: true }).catch(() => {});
+    await updateOwnedSessions(paths, sessions => sessions.filter(item => item.pid !== child.pid)).catch(() => {});
+  });
+  args.startup?.phase('process ownership', cfg.siteName);
+  const childIdentity = await processIdentityAsync(child.pid, { signal: startup.signal });
+  startup.check();
+  if (!childIdentity) throw new Error(`Could not verify the starting Mirage process ownership; the child was stopped. See startup log: ${log}`);
   // Recorded before readiness, so `mirage stop` can end a process that hangs while importing.
   await updateOwnedSessions(paths, (sessions) => [...sessions.filter((item) => item.pid !== child.pid), {
     pid: child.pid, processIdentity: childIdentity, sourceDir: identity.sourceDir, project: identity.project, portal: identity.portal,
     discovery, url: null, stateFile: identity.stateFile, identity, log, ready: false, startedAt: new Date().toISOString(),
   }]);
   const abandon = async () => {
-    if (isAlive(child.pid) && processIdentity(child.pid) === childIdentity) {
+    if (childIdentity && isAlive(child.pid) && await processIdentityAsync(child.pid) === childIdentity) {
       try { process.kill(child.pid, 'SIGTERM'); } catch { /* already exited */ }
     }
     await fs.rm(discovery, { force: true }).catch(() => {});
     await updateOwnedSessions(paths, (sessions) => sessions.filter((item) => !(item.pid === child.pid && item.processIdentity === childIdentity))).catch(() => {});
   };
-  let interrupted = false;
-  const interrupt = () => { interrupted = true; };
-  process.on('SIGINT', interrupt);
-  process.on('SIGTERM', interrupt);
-  const started = Date.now();
   const deadline = started + timeout;
-  let nextProgress = started + 15_000;
+  args.startup?.phase('import, state restore and presets', identity.runtime?.kind ?? 'power-pages');
+  let progressCursor;
   try {
-    while (Date.now() < deadline && !interrupted) {
+    while (Date.now() < deadline && !startup.cancelled()) {
+      if (args.startup) {
+        const progress = await readStartupPhases(log, progressCursor).catch(() => null);
+        if (progress) {
+          progressCursor = progress.cursor;
+          for (const event of progress.events) args.startup.phase(event.phase.replaceAll('-', ' '), `${cfg.siteName}; ${event.elapsedMs}ms runtime elapsed`);
+        }
+      }
       try {
         const record = JSON.parse(await fs.readFile(discovery, 'utf8'));
         const portal = Array.isArray(record.portals) ? record.portals.find((item) => item.id === (identity.portal ?? '')) ?? record.portals[0] : null;
@@ -605,18 +673,14 @@ async function start(cfg, args, { paths = miragePaths(cfg, args) } = {}) {
         const output = await fs.readFile(log, 'utf8').catch(() => '');
         throw new Error(`Mirage exited before it became ready. See startup log: ${log}${output.trim() ? `\n${output.trim().slice(-3000)}` : ''}`);
       }
-      if (Date.now() >= nextProgress) { console.error(`Mirage is still importing portal data (${Math.round((Date.now() - started) / 1000)}s elapsed)…`); nextProgress = Date.now() + 15_000; }
       await sleep(150);
     }
     await abandon();
-    if (interrupted) throw new Error('Mirage startup was interrupted; the starting process was stopped.');
+    startup.check();
     throw new Error(`Mirage did not become ready within ${timeout}ms${port === '0' ? '' : ` on port ${port}`}. See startup log: ${log}`);
   } catch (error) {
     error.writesFiles = [log, paths.ownershipFile].filter(file => fsSync.existsSync(file));
     throw error;
-  } finally {
-    process.off('SIGINT', interrupt);
-    process.off('SIGTERM', interrupt);
   }
 }
 
@@ -944,7 +1008,7 @@ function portClashes(plans) {
 export function catalogueStartPlans(entries, args, selected = null) {
   // Every runtime reads its site's mirage settings from the catalogue this command resolved,
   // and live writes are allowed for all of them or none.
-  const shared = pick(args, ['startup-timeout', 'config', 'repo', 'allow-live-writes']);
+  const shared = pick(args, ['startup-timeout', 'config', 'repo', 'allow-live-writes', 'startup']);
   // --port, --state, --preset and --solution-root belong to the selected site's runtime.
   const own = pick(args, SELECTED_SITE_OPTIONS);
   return entries.map((entry) => {
@@ -1034,6 +1098,8 @@ async function runPortals({ cfg, args, action, plans, paths, stop, initialSite }
     : { site: portal.site, error: portal.error?.message ?? String(portal.error), writesFiles: portal.error?.writesFiles ?? [] });
   if (action === 'start') {
     print({ action: 'start', portals: summary, stop }, args.json);
+    if (running.length === portals.length) args.startup?.complete('runtime listeners available; browser application readiness was not requested');
+    else args.startup?.fail('one or more runtime listeners failed; inspect per-site diagnostics');
     return running.length === portals.length ? 0 : 1;
   }
   for (const item of summary) console.log(item.error ? `mirage   ${item.site.padEnd(8)} FAILED: ${item.error}` : `mirage   ${item.site.padEnd(8)} ${item.url}  (${item.started ? 'started' : 'already running'}, pid ${item.pid})  admin ${item.adminUrl}  live writes ${item.liveWrites ?? 'not reported'}`);
@@ -1252,6 +1318,7 @@ export default async function mirage(cfg, args, positionals = []) {
     return exitCode;
   }
   const session = await start(cfg, effective, { paths });
+  args.startup?.phase('runtime listener', session.started ? 'listening; application readiness pending' : 'reused; application readiness pending');
   const { launch } = session;
   const adminUrl = adminUrlOf(session.url);
   const stateFile = session.stateFile ?? launch.stateFile;
@@ -1284,5 +1351,6 @@ export default async function mirage(cfg, args, positionals = []) {
     }
   }
   print({ action: 'start', ...session, adminUrl, stateFile, stop }, args.json);
+  args.startup?.complete('runtime listening; no browser application readiness was requested');
   return 0;
 }

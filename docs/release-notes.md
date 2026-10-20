@@ -2,11 +2,13 @@
 
 ## 0.9.6
 
-This release addresses feedback 176–205 on source inspection, local visitor tools,
+This release addresses feedback 176–218 on source inspection, local visitor tools,
 acceptance observation, offline diagnostics and consumer scaffolds. The changes use synthetic exports
 and loopback fixtures; they do not certify complete Power Pages parity.
 
 ### Changed
+
+- **Consumer follow-up (191, 206–218):** preserve JSON batch atomicity through dependency ordering; compose standalone managed identity and platform settings; correct field/validation diagnostics; expose relocation-stable Solution content fingerprints; retain configured site defaults in matrix runtimes; and scope client-extension sources independently of metadata. Organization startup shares one private seed transaction, bootstrap-only presets preserve restart edits, and catalogue security work yields between tables. Startup reports phases and separates listener, document and application readiness. X-ray keeps generic inactive-template matches uncertain and inspects individual accessible same-origin frame controls. See the [feedback review and regression map](consumer-feedback.md) and [measured loading improvements](../mirage/docs/runtime-performance.md).
 
 - **Consumer projects (194–205):** setup selects first install or frozen lockfile ci,
   and browser checks follow effective configuration. Separate completion, offline

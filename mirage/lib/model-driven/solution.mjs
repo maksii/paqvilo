@@ -117,10 +117,11 @@ export function compileForm(form, fields, lcid = 1033) {
         }
         const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
         const pcf = isCustom ? pcfBinding(control) : undefined;
+        const supported = Boolean(name && fields[name] && (!isCustom || pcf));
         return [{ ...position, sourceControl: sourceControl(control), name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
           visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true',
-          ...(pcf ? { pcf } : {}), supported: Boolean(name && fields[name] && (!isCustom || pcf)),
-          reason: isCustom ? 'This custom control is not supported locally yet.' : name ? 'Column metadata is unavailable.' : 'This control is not supported locally yet.' }];
+          ...(pcf ? { pcf } : {}), supported,
+          ...(!supported ? { reason: !name ? 'This control is not supported locally yet.' : !fields[name] ? 'Column metadata is unavailable.' : 'This custom control is not supported locally yet.' } : {}) }];
       }),
     })),
   }));

@@ -915,6 +915,12 @@ export class DataStore {
   readOperation(fn) {
     return this.transact(fn, { skipSaveIfUnchanged: true, cloneResult: false, lazyReadSnapshot: true });
   }
+  // A read hook that may run arbitrary plug-in code first captures its rollback
+  // snapshot. Metadata consumers may reuse read inputs only before that point.
+  isUnmodifiedRead() {
+    const frame = transactionFrames.getStore(), boundary = this.pluginRollbackBoundary;
+    return frame?.store === this && !frame.closed && typeof boundary?.ensureSnapshot === 'function' && boundary.backup === null;
+  }
   ensureReadSnapshot() {
     this.promoteRowTransaction();
     this.pluginRollbackBoundary?.ensureSnapshot?.();
@@ -1151,7 +1157,8 @@ export class DataStore {
     delivery=new Promise(resolve=>queueMicrotask(()=>{for(const provider of providers)try{provider(clone(captured),{sequence});}catch(error){this.committedEventErrors??=[];this.committedEventErrors.push({code:error.code??'CommittedEventConsumerError',message:error.message,sequence});if(this.committedEventErrors.length>50)this.committedEventErrors.shift();}resolve();})).finally(()=>this.committedEventDispatches.delete(delivery));this.committedEventDispatches.add(delivery);
   }
   async flushCommittedEvents(){while(this.committedEventDispatches?.size)await Promise.all([...this.committedEventDispatches]);}
-  async replaceState(state, { expectedSnapshot, expectedDigest, expectedRevision } = {}) {
+  /** Runtime composition may omit an unused result; inputs and default snapshots remain detached. */
+  async replaceState(state, { expectedSnapshot, expectedDigest, expectedRevision, returnSnapshot = true } = {}) {
     return this.transact(() => {
       if (expectedRevision !== undefined && this.revision !== expectedRevision)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
@@ -1160,8 +1167,8 @@ export class DataStore {
       if (expectedSnapshot !== undefined && JSON.stringify(this.snapshot()) !== expectedSnapshot)
         throw new DataError("Local state changed before replacement; no imported state was applied", 409, "StateConflict");
       this.state = normalizeState(state, this.presetLibrary, this.platformConfig);
-      return this.snapshot();
-    });
+      return returnSnapshot ? this.snapshot() : undefined;
+    }, { cloneResult: returnSnapshot });
   }
   /**
    * Read-only tables a host derives from the portal export (site components,

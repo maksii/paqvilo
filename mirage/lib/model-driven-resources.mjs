@@ -23,10 +23,10 @@ function importBudget(requested = {}) {
   return { remaining, take(key, count) { if (count > remaining[key]) { const error = new Error(`Solution client assets exceed the aggregate ${key} limit.`); error.code = 'MODEL_CLIENT_IMPORT_LIMIT'; throw error; } remaining[key] -= count; } };
 }
 
-async function readBudgetedFile(file, root, budget) {
+async function readBudgetedFile(file, root, budget, maximum = limit) {
   const size = (await fs.stat(file)).size;
   budget.take('bytes', size);
-  const data = await readLocalFile(file, { root, maxBytes: Math.min(limit, size) });
+  const data = await readLocalFile(file, { root, maxBytes: Math.min(maximum, limit, size) });
   // A file can grow between stat and open; readLocalFile enforces the admitted size.
   return data;
 }
@@ -47,7 +47,7 @@ async function layerEntries(layer, budget) {
       const file = path.join(dir, entry.name);
       if (entry.isSymbolicLink()) continue;
       if (entry.isDirectory()) {
-        if (!top || /^(?:webresources|entities|other|appactions)$/i.test(entry.name)) await visit(file);
+        if (!top || /^(?:webresources|entities|other|appactions|controls)$/i.test(entry.name)) await visit(file);
       } else if (entry.isFile()) {
         const name = path.relative(root, file).replaceAll('\\', '/');
         if (!/^(?:webresources\/|appactions\/.*\/appaction\.xml$|(?:other\/)?customizations\.xml$|entities\/.*ribbondiff\.xml$)/i.test(name)) continue;
@@ -66,12 +66,29 @@ async function layerEntries(layer, budget) {
 }
 
 /** Only selected Solution sources contribute executable code. No remote resolution or fallback. */
-export async function importModelDrivenResources(layers = [], { codeComponents, limits } = {}) {
+export async function importModelDrivenResources(layers = [], { codeComponents, limits, clientSources } = {}) {
   const resources = new Map(), assets = new Map(), ribbonDocuments = [], actionDocuments = [], diagnostics = [];
-  const budget = importBudget(limits);
+  const budget = importBudget(limits), fileReads = new Map();
+  // PCF discovery reads manifests and localized/image resources too. Admit every
+  // byte before reading, then reuse that exact snapshot when packaging JS/CSS.
+  const readFile = async (file, { root, maxBytes = limit, encoding } = {}) => {
+    if (!fileReads.has(file)) fileReads.set(file, readBudgetedFile(file, root, budget, maxBytes));
+    const data = await fileReads.get(file);
+    return encoding ? data.toString(encoding) : data;
+  };
   const limited = error => error.code === 'MODEL_CLIENT_IMPORT_LIMIT' || error.code === 'ArchiveLimit';
   const failLimit = (error, source) => ({ resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [],
     diagnostics: [...diagnostics, { code: 'MODEL_CLIENT_IMPORT_LIMIT', source, message: error.message }] });
+  if (clientSources !== undefined) {
+    try {
+      layers = await Promise.all(clientSources.map(async source => {
+        const dir = await fs.realpath(source), stat = await fs.stat(dir);
+        if (!stat.isDirectory() && !(stat.isFile() && /\.zip$/i.test(dir))) throw new Error('Client sources must be local directories or Solution ZIP files.');
+        return { type: stat.isDirectory() ? 'directory' : 'zip', dir };
+      }));
+      codeComponents = undefined;
+    } catch (error) { return { resources: [], pcf: { controls: [] }, assets: new Map(), ribbonDocuments: [], appActions: [], diagnostics: [{ code: 'MODEL_CLIENT_SOURCE_INVALID', message: error.message }] }; }
+  }
   for (const layer of layers) {
     let entries;
     try { budget.take('layers', 1); entries = await layerEntries(layer, budget); }
@@ -118,14 +135,14 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
         if (!entry) throw new Error('Declared WebResource file is missing or oversized.');
         const data = await readEntry(entry);
         if (data.length > limit) throw new Error('Declared WebResource file is missing or oversized.');
-        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: definition.type === 3 ? 'script' : 'style' });
+        resources.set(definition.name, { name: definition.name, id: definition.id?.replace(/[{}]/g, '').toLowerCase(), url, type: definition.type === 3 ? 'script' : 'style', source: entry.file ?? `${layer.dir}!/${entry.name}` });
         assets.set(url, { data, mime: definition.type === 3 ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8', file: entry.file, name: definition.name });
       } catch (error) { if (limited(error)) return failLimit(error, layer.dir); diagnostics.push({ code: 'MODEL_WEBRESOURCE_UNRESOLVED', name: definition.name, message: error.message }); }
     }
   }
   let components;
-  try { components = codeComponents ?? await importCodeComponents(layers); }
-  catch (error) { diagnostics.push({ code: 'MODEL_PCF_IMPORT_FAILED', message: error.message }); components = { controls: new Map(), assets: new Map(), diagnostics: [] }; }
+  try { components = codeComponents ?? await importCodeComponents(layers, { readFile }); }
+  catch (error) { if (limited(error)) return failLimit(error, 'PCF'); diagnostics.push({ code: 'MODEL_PCF_IMPORT_FAILED', message: error.message }); components = { controls: new Map(), assets: new Map(), diagnostics: [] }; }
   diagnostics.push(...components.diagnostics);
   const controls = [];
   for (const control of components.controls.values()) {
@@ -133,13 +150,18 @@ export async function importModelDrivenResources(layers = [], { codeComponents, 
     const controlAssets = new Map();
     try {
       budget.take('entries', 1);
+      if (control.file) {
+        const root = path.dirname(control.file);
+        await readFile(control.file, { root, maxBytes: 1024 * 1024 });
+        await readFile(path.join(root, 'ControlManifest.xml.data.xml'), { root, maxBytes: 1024 * 1024 });
+      }
       for (const resource of control.resources) {
         budget.take('entries', 1);
         const asset = components.assets.get(resource.url);
         if (!asset) continue;
         const url = resource.url.replace('/__sim-static/pcf/', '/_apps/controls/');
+        const data = await readFile(asset.file, { root: asset.root });
         if (['code', 'css'].includes(resource.kind)) {
-          const data = await readBudgetedFile(asset.file, asset.root, budget);
           controlAssets.set(url, { data, mime: mime(resource.path) ?? (resource.kind === 'code' ? 'text/javascript; charset=utf-8' : 'text/css; charset=utf-8'), file: asset.file, name: `${control.schemaName}/${resource.path}` });
           urls[resource.kind].push(url);
           if (resource.exportGlobal) urls.exports.push(resource.exportGlobal);

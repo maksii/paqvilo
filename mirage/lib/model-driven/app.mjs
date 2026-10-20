@@ -19,15 +19,17 @@ const disposeControls = () => { for (const entry of controls) entry.control.dest
 function disposeClient() { clearTimeout(gridSearchTimer); formLifetime?.abort(); tabObserver?.disconnect(); clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 function contentLoading(text) {
+  document.documentElement.dataset.mirageAppState = 'loading';
   notice('');
   let status = $('#app-loading');
   if (!status) { status = document.createElement('div'); status.id = 'app-loading'; status.className = 'app-loading'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite'); $('#workspace').append(status); }
   status.textContent = text;
   $('#content').setAttribute('aria-busy', 'true'); $('#content').inert = true; $('#commands').inert = true; $('#commands').classList.remove('busy'); $('#commands').setAttribute('aria-busy', 'true');
 }
-function contentLoaded() { $('#app-loading')?.remove(); $('#content').setAttribute('aria-busy', 'false'); $('#content').inert = false; $('#commands').inert = false; $('#commands').setAttribute('aria-busy', 'false'); }
+function contentLoaded() { document.documentElement.dataset.mirageAppState = 'ready'; $('#app-loading')?.remove(); $('#content').setAttribute('aria-busy', 'false'); $('#content').inert = false; $('#commands').inert = false; $('#commands').setAttribute('aria-busy', 'false'); }
 function loadFailed(error, retry) {
   contentLoaded(); $('#content').inert = true; $('#commands').inert = true;
+  document.documentElement.dataset.mirageAppState = 'error';
   notice(error.message, true); $('#notice').append(document.createTextNode(' '), button('Try again', retry));
 }
 async function api(path = '', options = {}) {

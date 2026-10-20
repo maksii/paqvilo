@@ -3,7 +3,11 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import { createSimulator } from '../server.mjs';
+import { loadProjectConfig, projectSummary } from '../lib/project-config.mjs';
+import { writeSolutionAssetEntries } from '../lib/dataverse-solution-assets.mjs';
 
 const APP = '77777777-7777-4777-8777-777777777777';
 const CLIENT = '99999999-9999-4999-8999-999999999999';
@@ -95,6 +99,145 @@ test('solution-only API runtime exposes administration and organization API with
   assert.equal((await body(await org('GET', `/x_items(${row.x_itemid})`))).x_name, 'API only');
 });
 
+test('JSON groups with a later external predecessor roll back creates, updates, versions and tracking', async t => {
+  const { sim } = await fixture(t, { runtime: { kind: 'dataverse-api' }, dataverse: { tls: false, tds: { enabled: false } } });
+  const org = await client(sim), created = await body(await org('POST', '/x_items', { x_name: 'Original' }), 201);
+  const before = await body(await org('GET', `/x_items(${created.x_itemid})`));
+  const tracking = await sim.organization.changes.since('x_item', 0), version = sim.store.state.rowVersion;
+  const batch = await org('POST', '/$batch', { requests: [
+    { id: 'create', method: 'POST', url: 'x_items', atomicityGroup: 'g', body: { x_name: 'Must roll back' } },
+    { id: 'update', method: 'PATCH', url: `x_items(${created.x_itemid})`, atomicityGroup: 'g', body: { x_name: 'Must roll back' } },
+    { id: 'fail', method: 'POST', url: 'x_items', atomicityGroup: 'g', dependsOn: ['external'], body: { unknown: true } },
+    { id: 'external', method: 'GET', url: 'WhoAmI' },
+  ] });
+  assert.equal(batch.status, 400, await batch.text());
+  assert.deepEqual(await body(await org('GET', `/x_items(${created.x_itemid})`)), before);
+  assert.deepEqual((await body(await org('GET', '/x_items'))).value.map(row => row.x_name), ['Original']);
+  assert.equal(sim.store.state.rowVersion, version);
+  assert.deepEqual(await sim.organization.changes.since('x_item', 0), tracking);
+});
+
+test('standalone validation responses agree with the documented payload and query codes', async t => {
+  const { sim } = await fixture(t, { runtime: { kind: 'dataverse-api' }, dataverse: { tls: false, tds: { enabled: false } } });
+  const org = await client(sim), documentation = await fs.readFile(new URL('../docs/dataverse-api.md', import.meta.url), 'utf8');
+  const payload = await body(await org('POST', '/x_items', { unknown: true }), 400);
+  assert.equal(payload.error.code, '0x80048d19'); assert.ok(documentation.includes('`0x80048d19`'));
+  for (const query of ['$select=unknown', "$filter=unknown eq 'x'", '$orderby=unknown', '$expand=unknown']) {
+    const result = await body(await org('GET', '/x_items?' + query), 400);
+    assert.equal(result.error.code, '0x80060888', query); assert.ok(documentation.includes('`0x80060888`'));
+  }
+});
+
+for (const kind of ['dataverse-api', 'model-driven']) test(`${kind} root platform configuration is retained, enforced and exposed through public administration`, async t => {
+  const { sim, root, solution } = await fixture(t, { runtime: { kind }, dataverse: { enabled: true, tls: false, tds: { enabled: false } }, platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } });
+  const file = path.join(root, 'project.json');
+  const config = { version: 2, runtime: { kind: 'dataverse-api' }, solutions: [{ id: 'schema', path: solution }], platform: { QueryLinkEntityLimit: 1, evidence: 'Invented organization limit' } };
+  await fs.writeFile(file, JSON.stringify(config));
+  const project = await loadProjectConfig(file); assert.deepEqual(projectSummary(project).platform, config.platform);
+  assert.deepEqual(project.platform, config.platform);
+  for (const platform of [{ QueryLinkEntityLimit: 0, evidence: 'Invalid' }, { QueryLinkEntityLimit: 50 }, { unknown: 1, evidence: 'Invalid' }]) {
+    await fs.writeFile(file, JSON.stringify({ ...config, platform })); await assert.rejects(loadProjectConfig(file));
+  }
+  const org = await client(sim);
+  const xml = '<fetch><entity name="x_item"><attribute name="x_itemid"/><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
+  assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
+  const admin = async (method = 'GET', suffix = '', values) => body(await fetch(sim.url + '/_sim/api/platform-settings' + suffix, { method,
+    headers: { 'x-sim-csrf': sim.state().csrf, 'content-type': 'application/json' }, ...(values ? { body: JSON.stringify(values) } : {}) }));
+  assert.equal((await admin()).find(item => item.key === 'QueryLinkEntityLimit').configuredEvidence, config.platform.evidence);
+  await admin('PATCH', '', { QueryLinkEntityLimit: 50 });
+  assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 200);
+  await admin('DELETE', '/QueryLinkEntityLimit');
+  assert.equal((await admin()).find(item => item.key === 'QueryLinkEntityLimit').value, 1);
+  assert.equal(sim.status().platformSettings.find(item => item.key === 'QueryLinkEntityLimit').value, 1);
+});
+
+test('standalone project CLI forwards organization platform settings into the actual query runtime', async t => {
+  const { root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
+  const file = path.join(root, 'cli-project.json');
+  await fs.writeFile(file, JSON.stringify({ version: 2, runtime: { kind: 'dataverse-api' }, solutions: [{ id: 'schema', path: solution }],
+    dataverse: { tls: false, tds: { enabled: false } }, platform: { QueryLinkEntityLimit: 1, evidence: 'Invented CLI organization' } }));
+  const toolkitRoot = fileURLToPath(new URL('../..', import.meta.url)), cli = fileURLToPath(new URL('../../bin/paqvilo.mjs', import.meta.url));
+  const child = spawn(process.execPath, [cli, 'mirage', 'serve', '--project', file, '--port', '0', '--state', path.join(root, 'cli-state.json'), '--no-watch', '--json'],
+    { cwd: toolkitRoot, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+  const exited = new Promise(resolve => child.once('exit', resolve));
+  t.after(async () => { if (child.exitCode === null) { child.stdin.write('stop\n'); const timer = setTimeout(() => child.kill(), 10000); await exited; clearTimeout(timer); } });
+  const started = await new Promise((resolve, reject) => {
+    let stdout = '', stderr = '';
+    const timeout = setTimeout(() => reject(new Error('Standalone CLI startup timed out: ' + stderr)), 20000);
+    child.stdout.on('data', chunk => { stdout += chunk; try { const report = JSON.parse(stdout); if (report.url) { clearTimeout(timeout); resolve(report); } } catch { /* await complete JSON */ } });
+    child.stderr.on('data', chunk => { stderr += chunk; });
+    child.once('error', error => { clearTimeout(timeout); reject(error); });
+    child.once('exit', code => { clearTimeout(timeout); reject(new Error(`Standalone CLI exited ${code}: ${stderr}`)); });
+  });
+  const status = await body(await fetch(started.url + '/_sim/api/status'));
+  assert.equal(status.platformSettings.find(item => item.key === 'QueryLinkEntityLimit').value, 1);
+  const org = await client({ url: started.url, dataverse: status.dataverse, state: () => ({ csrf: status.csrf }) });
+  const xml = '<fetch><entity name="x_item"><link-entity name="x_item" alias="a" from="x_itemid" to="x_itemid"/><link-entity name="x_item" alias="b" from="x_itemid" to="x_itemid"/></entity></fetch>';
+  assert.equal((await org('GET', '/x_items?fetchXml=' + encodeURIComponent(xml))).status, 400);
+});
+
+for (const kind of ['dataverse-api', 'model-driven']) for (const mode of ['appservice', 'imds', 'arc']) test(`${kind} composes ${mode} managed identity and cleans unused challenges`, async t => {
+  const { sim, root } = await fixture(t, { runtime: { kind }, dataverse: { enabled: true, tls: false, tds: { enabled: false }, managedIdentity: kind === 'dataverse-api' && mode === 'appservice' ? undefined : { mode },
+    managedIdentities: [{ clientId: CLIENT, displayName: 'Invented managed identity', roles: ['System Administrator'] }] } });
+  const listing = await body(await fetch(sim.url + '/_sim/api/dataverse'));
+  const info = listing.managedIdentity; assert.equal(info.mode, mode); assert.equal(info.enabled, true);
+  assert.equal(sim.status().dataverse.managedIdentity.header, null);
+  assert.equal((await body(await fetch(sim.url + '/_sim/api/dataverse'))).managedIdentity.header, null);
+  const params = new URLSearchParams({ resource: sim.dataverse.origin, 'api-version': '2019-08-01' });
+  const endpoint = sim.dataverse.origin + (mode === 'appservice' ? '/msi/token?' : '/metadata/identity/oauth2/token?') + params;
+  const headers = mode === 'appservice' ? { 'x-identity-header': info.header } : { metadata: 'true' };
+  let response = await fetch(endpoint, { headers });
+  if (mode === 'arc') {
+    assert.equal(response.status, 401); const challenge = response.headers.get('www-authenticate').replace(/^Basic realm=/, '');
+    response = await fetch(endpoint, { headers: { ...headers, authorization: 'Basic ' + await fs.readFile(challenge, 'utf8') } });
+  }
+  const token = await body(response);
+  assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + token.access_token } })).status, 200);
+  if (kind === 'dataverse-api' && mode === 'appservice') {
+    const restricted = await body(await fetch(sim.url + '/_sim/api/dataverse/managed-identities', { method: 'POST', headers: { 'content-type': 'application/json', 'x-sim-csrf': sim.state().csrf }, body: JSON.stringify({ displayName: 'Restricted identity', roles: [] }) }), 201);
+    const limitedToken = await body(await fetch(endpoint + '&client_id=' + restricted.clientId, { headers }));
+    assert.equal((await fetch(sim.dataverse.origin + '/api/data/v9.2/x_items', { headers: { authorization: 'Bearer ' + limitedToken.access_token } })).status, 403);
+  }
+  if (mode === 'arc') {
+    const unused = await fetch(endpoint, { headers }); const file = unused.headers.get('www-authenticate').replace(/^Basic realm=/, '');
+    assert.ok(file.startsWith(root)); await fs.stat(file); await sim.close(); await assert.rejects(fs.stat(file), { code: 'ENOENT' });
+  }
+});
+
+test('independent client directory and ZIP sources reload without changing complete organization metadata', async t => {
+  const { sim: initial, root, solution } = await fixture(t, { runtime: { kind: 'model-driven' } });
+  await initial.close();
+  const clientRoot = path.join(root, 'external-clients'), archive = path.join(root, 'external.zip');
+  await fs.mkdir(path.join(clientRoot, 'WebResources'), { recursive: true });
+  const descriptor = (name, file) => `<WebResource><Name>${name}</Name><WebResourceType>3</WebResourceType><FileName>${file}</FileName></WebResource>`;
+  await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 1;');
+  await fs.writeFile(path.join(clientRoot, 'WebResources/events.js.data.xml'), descriptor('x_/external.js', 'WebResources/events.js'));
+  const zip = value => writeSolutionAssetEntries([{ name: 'customizations.xml', data: Buffer.from(`<ImportExportXml><WebResources>${descriptor('x_/archive.js', 'WebResources/archive.js')}</WebResources></ImportExportXml>`) },
+    { name: 'WebResources/archive.js', data: Buffer.from(`window.Archive = ${value};`) }]);
+  await fs.writeFile(archive, zip(1));
+  const sim = await createSimulator({ runtime: { kind: 'model-driven' }, solutionRoots: [solution], projectRoot: root, simulation: { level: 'dry-run' },
+    modelDriven: { trustedExtensions: true, clientSources: [clientRoot, archive] }, watch: true });
+  t.after(() => sim.close());
+  const catalogue = await body(await ui(sim, 'GET'));
+  assert.ok(catalogue.tables.x_item);
+  const urls = Object.fromEntries(catalogue.clientExtensions.resources.map(resource => [resource.name, sim.url + resource.url]));
+  assert.equal(await (await fetch(urls['x_/external.js'])).text(), 'window.External = 1;');
+  assert.equal(await (await fetch(urls['x_/archive.js'])).text(), 'window.Archive = 1;');
+  const changed = async (url, expected) => {
+    const deadline = Date.now() + 10000;
+    while (Date.now() < deadline) {
+      if (await (await fetch(url)).text() === expected) return;
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    assert.fail('Selected client source was not reloaded: ' + expected);
+  };
+  await fs.writeFile(path.join(clientRoot, 'WebResources/events.js'), 'window.External = 2;');
+  await changed(urls['x_/external.js'], 'window.External = 2;');
+  await fs.writeFile(archive, zip(2));
+  await changed(urls['x_/archive.js'], 'window.Archive = 2;');
+  assert.ok((await body(await ui(sim, 'GET'))).tables.x_item);
+});
+
 test('selected Dataverse locale reaches source apps, navigation, forms, views and canonical source rows', async t => {
   const FORM = '55555555-5555-4555-8555-555555555555', VIEW = '66666666-6666-4666-8666-666666666666';
   const labels = (en, fr) => `<LocalizedNames><LocalizedName languagecode="1033" description="${en}"/><LocalizedName languagecode="1036" description="${fr}"/></LocalizedNames>`;
@@ -111,6 +254,7 @@ test('selected Dataverse locale reaches source apps, navigation, forms, views an
   assert.equal(catalogue.apps[0].navigation[0].groups[0].title, 'Travail');
   assert.equal(catalogue.apps[0].navigation[0].groups[0].items[0].title, 'Articles');
   assert.equal(catalogue.tables.x_item.forms[0].name, 'Informations');
+  assert.equal(Object.hasOwn(catalogue.tables.x_item.forms[0].tabs[0].sections[0].fields[0], 'reason'), false);
   assert.equal(catalogue.tables.x_item.views[0].name, 'Articles actifs');
   const org = await client(sim);
   const entity = await body(await org('GET', "/EntityDefinitions(LogicalName='x_item')?$select=DisplayName"));
@@ -122,6 +266,11 @@ test('selected Dataverse locale reaches source apps, navigation, forms, views an
   assert.equal((await body(await org('GET', `/savedqueries(${VIEW})?$select=name`))).name, 'Articles actifs');
   await body(await org('PATCH', `/appmodules(${APP})`, { name: 'Locally renamed' }));
   assert.equal((await body(await ui(sim, 'GET'))).apps[0].name, 'Locally renamed');
+  await body(await org('PATCH', `/systemforms(${FORM})`, { formxml: '<form><tabs><tab><columns><column><sections><section><rows><row><cell><control datafieldname="x_name"/></cell><cell><control datafieldname="x_missing"/></cell><cell><control id="unsupported"/></cell></row></rows></section></sections></column></columns></tab></tabs></form>' }));
+  const overlaidFields = (await body(await ui(sim, 'GET'))).tables.x_item.forms[0].tabs[0].sections[0].fields;
+  assert.equal(overlaidFields[0].supported, true); assert.equal(Object.hasOwn(overlaidFields[0], 'reason'), false);
+  assert.equal(overlaidFields[1].supported, false); assert.equal(overlaidFields[1].reason, 'Column metadata is unavailable.');
+  assert.equal(overlaidFields[2].supported, false); assert.equal(overlaidFields[2].reason, 'This control is not supported locally yet.');
   for (const [relative, content] of Object.entries(files)) assert.equal(await fs.readFile(path.join(solution, relative), 'utf8'), content);
 });
 

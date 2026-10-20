@@ -42,7 +42,8 @@ function projectedStore(table) {
 
 /** The shell consumes this interface, not HTTP OData or the live bridge. The
  * Dataverse HTTP host can use the same DataStore without coupling either UI to it. */
-export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord, recordService }) {
+export function createModelDrivenData({ store, catalogue, portal, saveOverlay, writeRecord, recordService, readMetadata = fn => fn() }) {
+  const readOperation = fn => store.readOperation(() => readMetadata(fn));
   const tableFor = entity => {
     const tables = catalogue().tables;
     const table = Object.hasOwn(tables, entity) ? tables[entity] : null;
@@ -78,7 +79,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
     tableFor,
     capabilities,
     async list(entity, input = {}, actor = {}) {
-      return store.readOperation(async () => {
+      return readOperation(async () => {
       const table = tableFor(entity);
       if (input.scope !== undefined && input.scope !== 'table') throw invalid('Unsupported query scope.');
       if (input.scope === 'table' && input.view) throw invalid('A table query cannot select a saved view.');
@@ -126,7 +127,7 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
       });
     },
     async get(entity, id, actor = {}) {
-      return store.readOperation(async () => {
+      return readOperation(async () => {
       const table = tableFor(entity), db = backend(table);
       if (recordService) return { ...await recordService.get(entity, id, actor), capabilities: capabilities(entity, actor, id) };
       const row = db === store ? db.get(entity, id, admin) : await db.readOperation(() => db.get(entity, id, admin));

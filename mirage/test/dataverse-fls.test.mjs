@@ -99,6 +99,27 @@ test('source-only secured metadata governs root, linked, aggregate and write pat
   assert.equal(t.api.fieldSecurity.canRead(basic, 'widget', 'secret'), true, 'Explicit runtime security overrides remain authoritative.');
 });
 
+test('catalogue field rights reuse one metadata snapshot and immediately recheck changed security', async () => {
+  let calls = 0;
+  const source = { source_secret: { isSecured: true } };
+  const f = await setup(() => { calls++; return source; });
+  const basic = f.user(BASIC_OID), admin = f.user(ADMIN_OID), fields = ['name', 'secret', 'grade', 'label', 'manager', 'source_secret'];
+  for (const user of [basic, admin]) {
+    calls = 0;
+    const bulk = f.api.fieldSecurity.capabilities(user, 'widget', fields, W1);
+    assert.equal(calls, 1, 'One table metadata read, irrespective of field count or rights.');
+    for (const name of fields) assert.deepEqual(bulk[name], { read: f.api.fieldSecurity.canRead(user, 'widget', name, W1),
+      create: f.api.fieldSecurity.canWrite(user, 'widget', name, 'create'), update: f.api.fieldSecurity.canWrite(user, 'widget', name, 'update', W1) });
+  }
+  await f.add('systemuserprofiles', { systemuserprofileid: randomUUID(), systemuserid: f.sid(BASIC_OID), fieldsecurityprofileid: PROFILE });
+  await f.grant({ canread: 4 });
+  assert.deepEqual(f.api.fieldSecurity.capabilities(basic, 'widget', ['secret']).secret, { read: true, create: false, update: false });
+  await f.store.transact(() => { f.store.state.tables.fieldpermission[0].canread = 0; });
+  assert.equal(f.api.fieldSecurity.capabilities(basic, 'widget', ['secret']).secret.read, false);
+  source.source_secret.isSecured = false;
+  assert.equal(f.api.fieldSecurity.capabilities(basic, 'widget', ['source_secret']).source_secret.read, true);
+});
+
 test("seeds dataverse-only field security mappings and the System Administrator profile once", async () => {
   const { store } = await setup();
   await ensureFieldSecurity(store);
@@ -122,7 +143,7 @@ test("install seeds the field security tables itself and exposes api.fieldSecuri
   assert.equal(store.state.mappings.fieldpermission.dataverseOnly, true);
   assert.equal(store.tableRows("fieldsecurityprofile").filter((p) => p.fieldsecurityprofileid === SYSTEM_ADMINISTRATOR_PROFILE_ID).length, 1);
   assert.deepEqual(ops.map((o) => o.entity).sort(), ["systemuser", "team"]);
-  assert.deepEqual(Object.keys(api.fieldSecurity).sort(), ["assertAggregate", "canRead", "canWrite", "mask"]);
+  assert.deepEqual(Object.keys(api.fieldSecurity).sort(), ["assertAggregate", "canRead", "canWrite", "capabilities", "mask"]);
 });
 
 test("IsSecured is read from either spelling and an { Value } wrapper; dataverseMetadata overrides columnMetadata", () => {

@@ -444,7 +444,8 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     version: raw.version,
     runtime,
     simulation: simulationSettings(raw.simulation),
-    modelDriven: modelDrivenSettings(raw.modelDriven),
+    modelDriven: modelDrivenSettings(raw.modelDriven, 'modelDriven', base),
+    platform: platformConfig(raw.platform, 'platform'),
     defaultPortal,
     lcid,
     watch: raw.watch ?? null,
@@ -483,6 +484,7 @@ export function projectSummary(project, portalId = null) {
     runtime: project.runtime ?? { kind: 'power-pages' },
     simulation: project.simulation ?? null,
     modelDriven: project.modelDriven ?? modelDrivenSettings(),
+    platform: project.platform ?? null,
     portal: portalId,
     defaultPortal: project.defaultPortal,
     lcid: project.lcid,
@@ -504,7 +506,7 @@ export function projectSummary(project, portalId = null) {
 /** Import all configured sources locally and deterministically; this performs no network access. */
 export async function bootstrapProject(project, { lcid = project.lcid ?? 1033, cacheFile } = {}) {
   if (project.runtime?.kind && project.runtime.kind !== 'power-pages') {
-    const organization = await loadOrganizationSources({ solutionRoots: project.solutionRoots, solutionOrder: project.solutionOrder, lcid, cacheFile });
+    const organization = await loadOrganizationSources({ solutionRoots: project.solutionRoots, solutionOrder: project.solutionOrder, modelDriven: project.modelDriven, lcid, cacheFile });
     return { project, portals: [], solutionData: organization.solutionData, organization };
   }
   const cache = await SolutionFileCache.open(cacheFile ?? null);

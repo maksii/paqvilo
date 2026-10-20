@@ -104,9 +104,8 @@ function parseSection(section, inChangeset) {
 
 // JSON batch: {"requests":[{id,method,url,headers?,body?,atomicityGroup?,dependsOn?}]}. Native answers 200 in the multipart form,
 // so the items run through the same dispatch as multipart parts. Items run in dependsOn order (array order otherwise).
-// A run of consecutive items sharing an atomicityGroup is one changeset; the id is the Content-ID reference for $<id>.
-// ponytail: an atomicityGroup whose members are not consecutive after ordering becomes separate changesets.
-// Ceiling: order the group's members together at the first member's position if that case matters.
+// Consecutive members of an atomicityGroup remain one changeset after dependency ordering.
+// Dependencies on any member constrain the complete transaction, never an individual commit.
 // unverified: the JSON form is not documented; malformed JSON and unknown dependsOn/cycle messages are assumed.
 function jsonItem(item) {
   if (!item || typeof item !== "object" || typeof item.method !== "string" || typeof item.url !== "string") throw invalid(JSON_BATCH);
@@ -136,15 +135,27 @@ function orderJson(items) {
     const missing = item.dependsOn.find((dep) => !ids.includes(dep));
     if (missing !== undefined) throw invalid(`The batch request depends on '${missing}', which is not in the batch.`); // unverified: message
   }
-  const done = new Set();
-  const ordered = [];
-  let pending = items;
+  const units = [], groups = new Map(), owners = new Map();
+  for (const item of items) {
+    let unit = item.group === null ? null : groups.get(item.group);
+    if (unit && unit !== units.at(-1)) throw invalid('Atomicity group members must be consecutive.');
+    if (!unit) { unit = { items: [] }; units.push(unit); if (item.group !== null) groups.set(item.group, unit); }
+    unit.items.push(item);
+    if (item.refId !== undefined) owners.set(item.refId, unit);
+  }
+  const ordered = [], completed = new Set();
+  let pending = units;
   while (pending.length) {
-    const next = pending.find((item) => item.dependsOn.every((dep) => done.has(dep)));
-    if (!next) throw invalid("The batch dependsOn ordering contains a cycle."); // unverified: message
-    ordered.push(next);
-    if (next.refId !== undefined) done.add(next.refId);
-    pending = pending.filter((item) => item !== next);
+    const unit = pending.find(unit => unit.items.every(item => item.dependsOn.every(dep => owners.get(dep) === unit || completed.has(owners.get(dep)))));
+    if (!unit) throw invalid('The batch dependsOn ordering contains a cycle.');
+    const done = new Set(); let members = unit.items;
+    while (members.length) {
+      const next = members.find(item => item.dependsOn.every(dep => owners.get(dep) !== unit || done.has(dep)));
+      if (!next) throw invalid('The batch dependsOn ordering contains a cycle.');
+      ordered.push(next); if (next.refId !== undefined) done.add(next.refId);
+      members = members.filter(item => item !== next);
+    }
+    completed.add(unit); pending = pending.filter(item => item !== unit);
   }
   return ordered;
 }

@@ -132,7 +132,9 @@ For linked worktrees, keep the catalogue, ignored `paqvilo.config.local.yml` and
 
 ## Pack authors and project test runners
 
-`createMirageContext({ config })` accepts a catalogue path or file URL. Omitting `site` binds packs explicitly registered across every catalogue site and its Mirage project, deduplicating repeated modules without importing portal exports or Solution metadata. Supply `sourceDir` to `createSimulator` or an imported portal to `initialState` in this project-wide binding. Pass `site` to import that site's source/metadata and bind its runtime defaults. Runtime pack activation still requires `matches({ portal })`; registering a pack for tests does not activate it on unrelated exports. See [project scaffold](project-scaffold.md).
+`createMirageContext({ config })` accepts a catalogue path or file URL. Omitting `site` binds packs explicitly registered across every catalogue site and its Mirage project, deduplicating repeated modules without importing portal exports or Solution metadata. Supply `sourceDir` to `createSimulator` or an imported portal to `initialState` in this project-wide binding. Pass `site` to import that site's source/metadata and bind its runtime defaults. Optional `repo` selects the portal checkout root using the same rules as CLI `--repo`. Runtime pack activation still requires `matches({ portal })`; registering a pack for tests does not activate it on unrelated exports. See [project scaffold](project-scaffold.md).
+
+`importSolutionData()` returns `contentFingerprint` alongside the existing location-bound `fingerprint`. Use the former for relocation-stable derived-fixture checks; its logical layer, relative path, byte and locale contract is described in [sources and bootstrap](../mirage/docs/bootstrap-and-sources.md). Neither fingerprint identifies deployed state.
 
 Use `paqvilo/mirage/packs` for `validatePack`, `presetDescriptor`, `defineLazyPreset`,
 `bootstrapPresetLibrary`, `compactBuiltinPresets`, `listPresets` and

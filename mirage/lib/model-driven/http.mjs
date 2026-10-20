@@ -1,8 +1,20 @@
 import fs from 'node:fs/promises';
+import { setImmediate } from 'node:timers/promises';
 
 const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
-const metadataOnly = (catalogue, data, actor) => ({ ...catalogue, tables: Object.fromEntries(Object.entries(catalogue.tables).map(([name, { rows: _rows, ...table }]) => [name, { ...table, capabilities: data.capabilities?.(name, actor) }])) });
+const metadataOnly = async (catalogue, data, actor, res) => {
+  const tables = {};
+  let yieldedAt = performance.now();
+  for (const [name, { rows: _rows, ...table }] of Object.entries(catalogue.tables)) {
+    if (res.destroyed) throw fail('Catalogue request was cancelled.', 499);
+    tables[name] = { ...table, capabilities: data.capabilities?.(name, actor, undefined, table.fields) };
+    // Keep the serialized read epoch across yields: writes cannot change the
+    // principal or field security halfway through the resulting catalogue.
+    if (performance.now() - yieldedAt >= 8) { await setImmediate(); yieldedAt = performance.now(); }
+  }
+  return { ...catalogue, tables };
+};
 
 export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}), clientAssets = () => new Map() }) {
   return async (req, res, url) => {
@@ -40,7 +52,8 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
       const actor = principal(req);
       if (!api[1]) {
         if (method !== 'GET') throw fail('Catalogue requires GET.', 405);
-        json(res, 200, await read(() => metadataOnly(catalogue(), data, actor))); return true;
+        const result = await read(async () => metadataOnly(await (catalogue.async?.({ cancelled: () => res.destroyed }) ?? catalogue()), data, actor, res));
+        if (!res.destroyed) json(res, 200, result); return true;
       }
       const route = /^tables\/([a-z][\w]*)(?:\/([^/]+))?$/i.exec(api[1]);
       if (!route) throw fail('Model-driven endpoint not found.', 404);
@@ -61,7 +74,7 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
         json(res, method === 'POST' ? 201 : 200, result);
       }
     } catch (error) {
-      json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
+      if (!res.destroyed) json(res, error.status ?? 500, { error: { message: error.message, code: error.code ?? 'ModelDrivenError' } });
     }
     return true;
   };

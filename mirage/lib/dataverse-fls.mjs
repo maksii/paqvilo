@@ -154,6 +154,26 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
     };
   }
 
+  // A catalogue asks for every field's three rights together. Resolve imported
+  // metadata and staff grants once for this table, within the caller's serialized
+  // read. Do not retain either across requests or security/source edits.
+  function capabilities(user, logical, columns, recordId) {
+    const mapping = store.state.mappings?.[logical];
+    const source = metadataFields(mapping?.logicalName ?? logical) ?? null;
+    let administrator, scope, grants;
+    return Object.fromEntries(columns.map(name => {
+      if (!isSecuredField(mappingField(mapping, name, source))) return [name, { read: true, create: true, update: true }];
+      administrator ??= isAdmin(user);
+      if (administrator) return [name, { read: true, create: true, update: true }];
+      scope ??= scopeOf('systemuser', user.systemuserid);
+      grants ??= grantsOf(scope.profiles);
+      const permission = grants.get(`${key(logical)}.${key(name)}`) ?? {};
+      const shared = sharedOf(scope.principals, recordId, attributeIdOf(organizationId(), logical, name));
+      return [name, { read: permission.canread === ALLOWED || shared.read, create: permission.cancreate === ALLOWED,
+        update: permission.canupdate === ALLOWED || shared.update }];
+    }));
+  }
+
   // Create checks cancreate; update checks canupdate or an update share on the record.
   function writable(user, logical, name, operation, recordId) {
     const access = accessOf(user, logical, name, recordId);
@@ -176,6 +196,7 @@ export function createFieldSecurity({ store, principals, organizationId, metadat
   }
 
   return {
+    capabilities,
     /** Projection hook: a secured column the caller may not read becomes null and loses its annotations. */
     project(c, mapping, formatted, { prefix = '' } = {}) {
       if (!securedNames(mapping).length) return;
@@ -238,7 +259,7 @@ export const fieldSecurity = {
     const { store, principals } = api;
     // The organization GUID comes from the organization row: api.settings.organizationId is null at runtime (H6).
     const fls = createFieldSecurity({ store, principals, metadataFields: logical => api.metadataFields?.(logical), organizationId: () => organizationRecord(store)?.organizationid });
-    api.fieldSecurity = { mask: fls.mask, canRead: fls.canRead, canWrite: fls.canWrite, assertAggregate: fls.assertAggregate };
+    api.fieldSecurity = { mask: fls.mask, canRead: fls.canRead, canWrite: fls.canWrite, capabilities: fls.capabilities, assertAggregate: fls.assertAggregate };
     for (const entity of ['systemuser', 'team']) {
       api.registry.register({
         name: 'RetrievePrincipalAttributePrivileges',

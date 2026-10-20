@@ -55,10 +55,11 @@ test('repeated ID branches score the classes and source line of their matching o
   const row=await identify('button');assert.equal(row.title,'Branches');assert.equal(row.matches[0].line,2);assert.equal(row.matches[0].strong,true);
 });
 
-test('framework-only evidence needs a unique small source in the page include chain',async t=>{
+test('framework-only evidence remains uncertain despite unique static include reachability',async t=>{
   const own=hints('<a class="btn btn-link">Go</a>','Page',{includedBy:['page']}),header=hints('<div class="container">Header</div>','Header');
   const {page,identify,data}=await fixture(t,'<div class="container"><a class="btn btn-link">Go</a></div>',{elementSources:[...header,...own]});
-  assert.equal((await identify('a')).title,'Page');
+  assert.equal((await identify('a')).title,'No reliable source');
+  assert.ok((await identify('a')).matches.every(item=>!item.strong));
   await page.evaluate(({data,report})=>document.getElementById('paqvilo-xray').__px.update(data,report),{data,report:{elementSources:[...own,...hints('<a class="btn btn-link">Go</a>','Other',{includedBy:['page']})]}});
   assert.equal((await identify('a')).title,'No reliable source');
 });
@@ -73,13 +74,13 @@ test('framework-only matches count sibling sources, reject class subsets and do 
 });
 
 test('snippet modifier classes on the nearest container resolve shared descendants independently of page chains',async t=>{
-  const source=modifier=>`<div class="alert ${modifier}"><div class="message">Notice</div><button class="close">Close</button></div>`;
+  const source=modifier=>`<div class="alert ${modifier} notice-${modifier}"><div class="message">Notice</div><button class="close">Close</button></div>`;
   const elementSources=['info','warning','danger','success','other'].flatMap(kind=>hints(source('alert-'+kind),kind,{kind:'snippet',usedBy:['page']}));
   const {page,identify,data}=await fixture(t,source('alert-warning'),{elementSources});
   for(const selector of ['.alert','.message','.close'])assert.equal((await identify(selector)).title,'warning',selector);
   await page.evaluate(({data,report})=>document.getElementById('paqvilo-xray').__px.update(data,report),{data,report:{elementSources:elementSources.map(item=>({...item,usedBy:['unrelated']}))}});
   for(const selector of ['.alert','.message','.close'])assert.equal((await identify(selector)).title,'warning',selector);
-  await page.locator('.alert').evaluate(node=>node.classList.remove('alert-warning'));
+  await page.locator('.alert').evaluate(node=>node.classList.remove('alert-warning','notice-alert-warning'));
   for(const selector of ['.alert','.message','.close']){const row=await identify(selector);assert.equal(row.title,'No reliable source',selector);assert.ok(row.matches.length>0);assert.ok(row.matches.every(item=>!item.strong));}
 });
 

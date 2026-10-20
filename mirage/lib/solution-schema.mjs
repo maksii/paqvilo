@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
 import { inflateRawSync } from "node:zlib";
 import {metadataNumeric} from './exact-numeric.mjs';
 import {
@@ -1141,6 +1142,7 @@ export function buildSolutionSchema(scan, { lcid = 1033 } = {}) {
     documentLocationRelationships: documentLocationCount,
     annotationRelationships: annotationCount,
     fingerprint: fingerprint.digest("hex"),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid }),
   };
 }
 

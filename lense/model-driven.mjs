@@ -32,7 +32,7 @@ export async function readModelDrivenResourceMap(file) {
 
 export async function importModelDrivenProject(project) {
   const scan = await scanSolutionSources(project.solutionRoots, { order: project.solutionOrder });
-  const imported = await importModelDrivenResources(scan.layers);
+  const imported = await importModelDrivenResources(scan.layers, { clientSources: project.modelDriven?.clientSources });
   return { ...imported, layers: scan.layers, diagnostics: [...scan.diagnostics, ...imported.diagnostics] };
 }
 

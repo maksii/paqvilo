@@ -1,5 +1,6 @@
 import path from "node:path";
 import { createHash } from "node:crypto";
+import { solutionContentFingerprint } from './solution-content-fingerprint.mjs';
 import { decodeXml, portalField as field } from "./importer.mjs";
 import {
   parseSolutionXml,
@@ -288,6 +289,7 @@ export async function importSolutionMetadata(
     diagnostics,
     filesRead: candidates.length,
     fingerprint: fingerprint.digest("hex"),
+    contentFingerprint: solutionContentFingerprint(scan.layers, { lcid, files: candidates }),
   };
   if (portal) {
     const applied = applySolutionMetadata(portal, metadata);

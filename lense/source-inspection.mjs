@@ -62,9 +62,10 @@ function exportIndex(portal,metadata,indexStore=null){
   let index=exportIndexes.get(portal);if(index?.metadata===metadata)return index;
   const language=norm(portal.language?.id??portalField(portal.website,'defaultlanguage'));
   const previous=indexStore?.get(language),relatedIndexes=[...(indexStore?.values()??[])].filter(value=>value!==previous),hintsBySource=new Map();
+  const sourceFiles=new Map(),sourceFile=(record,suffix)=>{const key=record?._file+'#'+suffix;if(!sourceFiles.has(key))sourceFiles.set(key,bodyFile(record,suffix));return sourceFiles.get(key);};
   const snippets=new Map();
   for(const row of (portal.records??[]).filter(row=>row.kind==='contentsnippet'&&Number(portalField(row,'statecode',0))!==1).sort((a,b)=>Number(norm(portalField(a,'contentsnippetlanguageid'))===language)-Number(norm(portalField(b,'contentsnippetlanguageid'))===language)))snippets.set(row.name,row);
-  const sources=[...(portal.pages??[]).map(page=>({body:page.html,id:page.id,sourceFile:bodyFile(page.metadata,'copy.html'),kind:'page',name:page.name})),...[...new Set(Object.values(portal.templates??{}))].map(template=>({body:template.source,id:template.id,sourceFile:bodyFile(template.metadata,'source.html'),kind:'template',name:template.name})),...[...snippets.values()].map(row=>({body:portal.snippets?.[row.name],id:row.id,sourceFile:bodyFile(row,'value.html'),kind:'snippet',name:row.name}))];
+  const sources=[...(portal.pages??[]).map(page=>({body:page.html,id:page.id,sourceFile:sourceFile(page.metadata,'copy.html'),kind:'page',name:page.name})),...[...new Set(Object.values(portal.templates??{}))].map(template=>({body:template.source,id:template.id,sourceFile:sourceFile(template.metadata,'source.html'),kind:'template',name:template.name})),...[...snippets.values()].map(row=>({body:portal.snippets?.[row.name],id:row.id,sourceFile:sourceFile(row,'value.html'),kind:'snippet',name:row.name}))];
   const frequencies=new Map();
   const byToken=new Map(),markupOmittedSources=[];let markupOmittedSourceCount=0;
   for(const {body,...source}of sources){
@@ -155,18 +156,19 @@ export function inspectRenderedPage() {
   const pathname = (value) => {
     try { const url = new URL(value, location.href); return url.origin === location.origin ? url.pathname : null; } catch { return null; }
   };
-  const assets = [...document.querySelectorAll('script[src],link[href],img[src]')].filter(own).slice(0, 300).map((node) => ({ kind: node.tagName.toLowerCase(), path: pathname(node.getAttribute('src') ?? node.getAttribute('href')) })).filter((row) => row.path);
-  const controls = [...document.querySelectorAll('input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe')].filter(own).slice(0, 300).map((node) => {
+  const assets=[],controls=[];let controlsSeen=0;
+  const controlSelector='input:not([type=hidden]):not([type=password]),select,textarea,[data-entityname],[data-entity],[data-formid],[data-viewid],[data-listid],[data-form-layout],[data-pcf-schema],[id^=EntityList],.entity-grid[data-selected-view],iframe';
+  const addControl=node=>{
     let layout = {};
     try { layout = JSON.parse(node.getAttribute('data-form-layout') ?? '{}'); } catch {}
-    let frameForm='';if(node.localName==='iframe')try{const url=new URL(node.getAttribute('src'),location.href);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}
+    let frameForm='';if(node.localName==='iframe')try{const url=new URL(node.getAttribute('src'),node.ownerDocument.baseURI);if(url.origin===location.origin)frameForm=url.searchParams.get('entityformid')??'';}catch{}
     return {
     tag: node.tagName.toLowerCase(), id: node.id.slice(0, 160), name: (node.getAttribute('name') ?? '').slice(0, 160), type: (node.getAttribute('type') ?? '').slice(0, 40),
     entity: String(node.getAttribute('data-entityname') ?? node.getAttribute('data-entity') ?? layout.EntityName ?? '').slice(0, 160),
     formId: String(node.getAttribute('data-formid') ?? layout.Id ?? frameForm).slice(0, 160), viewId: (node.getAttribute('data-viewid') ?? node.getAttribute('data-selected-view') ?? '').slice(0, 160), listId: (node.getAttribute('data-listid') ?? /^EntityList(?:Control_)?([0-9a-f]{32}|[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12})(?:$|_)/i.exec(node.id)?.[1] ?? '').slice(0, 160),
     gridId: node.classList.contains('entity-grid') ? (node.closest('.subgrid[id]')?.id ?? '').slice(0, 160) : '', controlId: (node.getAttribute('data-controlid') ?? '').slice(0, 160),
     schemaName: (node.getAttribute('data-pcf-schema') ?? '').slice(0, 160), nativeField: (node.closest('[data-pcf-native-field]')?.getAttribute('data-pcf-native-field') ?? '').slice(0, 160),
-  }; });
+  }; };
   const apiSets = [...new Set(performance.getEntriesByType('resource').slice(-300).flatMap((entry) => {
     const route = pathname(entry.name);
     const match = route && /^\/_api\/([a-z][\w]*)(?:\(|\/|$)/i.exec(route);
@@ -174,19 +176,24 @@ export function inspectRenderedPage() {
   }))];
   const attributes=['for','data-entityname','data-formid','data-viewid','data-listid','data-fieldname','data-field','data-attribute'];
   const shapeSelector='[id],[class],'+attributes.map(name=>'['+name+']').join(',');
-  const elements=[],pending=[...document.children].reverse();let scanned=0,traversalTruncated=false;
+  const elements=[],pending=[...document.children].reverse();let scanned=0,traversalTruncated=false,shapeOverflow=false;
   // Visit each light/open-shadow element once; slots' assigned light children
   // are already in the light tree. Never enter the inspector's own shadow roots.
-  while(pending.length&&scanned<8000&&elements.length<2000){
+  while(pending.length&&scanned<8000){
     const node=pending.pop();if(!own(node))continue;scanned++;
-    if(node.matches(shapeSelector))elements.push(node);
+    if(node.matches(shapeSelector)){if(elements.length<2000)elements.push(node);else shapeOverflow=true;}
+    if(node.matches('script[src],link[href],img[src]')&&assets.length<300){const raw=node.getAttribute('src')??node.getAttribute('href');try{const url=new URL(raw,node.ownerDocument.baseURI);if(url.origin===location.origin)assets.push({kind:node.localName,path:url.pathname});}catch{}}
+    if(node.matches(controlSelector)){controlsSeen++;if(controls.length<300){const control=addControl(node);
+      if(!control.formId)try{const url=new URL(node.ownerDocument.URL);if(url.origin===location.origin)control.formId=(url.searchParams.get('entityformid')??'').slice(0,160);}catch{}
+      controls.push(control);}}
+    if(node.localName==='iframe')try{const inner=node.contentDocument;if(inner?.documentElement)pending.push(inner.documentElement);}catch{}
     for(const children of [node.shadowRoot?.children??[],node.children]){
       const count=Math.min(children.length,8000-scanned-pending.length);
       if(count<children.length)traversalTruncated=true;
       for(let index=count-1;index>=0;index--)pending.push(children[index]);
     }
   }
-  const shapeTruncated=traversalTruncated||pending.length>0;
+  const shapeTruncated=shapeOverflow||traversalTruncated||pending.length>0;
   const ids=elements.filter(node=>node.hasAttribute('id')).map(node=>node.id).filter(id=>id.length<=160&&!/[\s?=&/{}%\x00-\x1f\x7f]/.test(id));
   const tokens=new Set();let tokenTruncated=false;
   const addToken=token=>{if(tokens.size>=8000&&!tokens.has(token)){tokenTruncated=true;return false;}tokens.add(token);return true;};
@@ -197,7 +204,7 @@ export function inspectRenderedPage() {
     for(const name of node.classList)if(staticValue(name)&&!addToken('class:'+node.localName+':'+name))break shapeLoop;
     for(const name of attributes){const value=node.getAttribute(name);if(staticValue(value)&&/^[a-zA-Z0-9_{}-]+$/.test(value)&&!addToken('attribute:'+node.localName+':'+name+':'+value))break shapeLoop;}
   }
-  return { assets, controls, apiSets, ids, markupTokens:[...tokens], truncated: document.querySelectorAll('input,select,textarea').length > 300 || shapeTruncated || tokenTruncated };
+  return { assets, controls, apiSets, ids, markupTokens:[...tokens], truncated: controlsSeen > 300 || shapeTruncated || tokenTruncated };
 }
 
 const pageSources = (portal, page) => {

@@ -227,3 +227,11 @@ test("pluginTimeoutSeconds defaults to the 2-minute sandbox limit and accepts wh
   assert.throws(() => dataverseSettings({ pluginTimeoutSeconds: 0 }), /dataverse\.pluginTimeoutSeconds must be an integer from 1 to 3600/);
   assert.throws(() => dataverseSettings({ pluginTimeoutSeconds: 1.5 }), /dataverse\.pluginTimeoutSeconds must be an integer/);
 });
+
+test('managed identity endpoint modes are validated and survive configuration normalization', () => {
+  for (const mode of ['appservice', 'imds', 'arc']) {
+    const settings = dataverseSettings({ managedIdentity: { mode } });
+    assert.deepEqual(dataverseSettings(settings).managedIdentity, { mode });
+  }
+  for (const managedIdentity of [null, true, [], { mode: 'remote' }, { unknown: true }]) assert.throws(() => dataverseSettings({ managedIdentity }));
+});

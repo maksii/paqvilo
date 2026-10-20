@@ -38,18 +38,39 @@ export function createSourceSolutionComponentStorage({ store, components, entity
   const materialize = (state = store.state) => {
     const settings = settingsOf(state), previous = settings.baseline;
     const selected = new Map(withSolutionAppMembers(components() ?? [], state, entityId).map(component => [keyOf(component.logical, component.id), component]));
+    const staleByTable = new Map();
     for (const [key, before] of Object.entries(previous)) {
       if (selected.has(key)) continue;
       // An explicitly imported solution layer can still own the same record.
       if (state.dataverse.solutionPayloads?.[lower(before.component.id)]?.layers.length) continue;
-      const table = before.component.logical, idColumn = idOf(table);
-      state.tables[table] = (state.tables[table] ?? []).filter(row => lower(row[idColumn]) !== lower(before.component.id));
+      const table = before.component.logical;
+      if (!staleByTable.has(table)) staleByTable.set(table, new Set());
+      staleByTable.get(table).add(lower(before.component.id));
     }
+    for (const [table, stale] of staleByTable) {
+      const idColumn = idOf(table);
+      state.tables[table] = (state.tables[table] ?? []).filter(row => !stale.has(lower(row[idColumn])));
+    }
+    // One index per metadata table avoids scanning every form/view for every
+    // component. Deletions are compacted after all keyed replacements, so their
+    // positions cannot invalidate later lookups or reorder retained local rows.
+    const indexes = new Map(), deleted = Symbol('deleted source component'), compact = new Set();
+    const indexOf = (table, rows, idColumn) => {
+      if (!indexes.has(table)) {
+        const index = new Map();
+        for (let offset = 0; offset < rows.length; offset++) {
+          const id = lower(rows[offset][idColumn]);
+          if (!index.has(id)) index.set(id, offset);
+        }
+        indexes.set(table, index);
+      }
+      return indexes.get(table);
+    };
     const next = {};
     for (const [key, component] of selected) {
       const table = component.logical, idColumn = idOf(table), id = lower(component.id);
       const source = { ...copy(component.row), [idColumn]: id };
-      const rows = (state.tables[table] ??= []), index = rows.findIndex(row => lower(row[idColumn]) === id), current = rows[index];
+      const rows = (state.tables[table] ??= []), positions = indexOf(table, rows, idColumn), index = positions.get(id), current = index === undefined ? undefined : rows[index];
       const before = previous[key];
       if (state.dataverse.solutionPayloads?.[id]?.layers.some(layer => layer.active)) {
         next[key] = { component: { ...copy(component), row: undefined }, row: source };
@@ -57,17 +78,21 @@ export function createSourceSolutionComponentStorage({ store, components, entity
         continue;
       }
       if (!own(settings.overlays, key) && current) settings.overlays[key] = deltaOf(before?.row ?? source, current, idColumn);
-      const row = applyDelta(source, settings.overlays[key]);
+      let row = applyDelta(source, settings.overlays[key]);
       if (row && current) for (const [name, value] of Object.entries(current)) if (system(name)) row[name] = copy(value);
       if (row && current && !isDeepStrictEqual(row, current)) {
         state.rowVersion = Math.max(state.rowVersion ?? 0, Number(current.__simVersion ?? 0)) + 1;
         row.__simVersion = state.rowVersion;
         if (current.versionnumber !== undefined) row.versionnumber = state.rowVersion;
-      }
-      if (index >= 0) rows.splice(index, 1, ...(row ? [row] : [])); else if (row) rows.push(row);
+      } else if (row && current) row = current;
+      if (index !== undefined) {
+        rows[index] = row ?? deleted;
+        if (!row) { compact.add(table); positions.delete(id); }
+      } else if (row) { positions.set(id, rows.length); rows.push(row); }
       ensureSolutionComponentMapping(state, component, standardTableDef);
       next[key] = { component: { ...copy(component), row: undefined }, row: source };
     }
+    for (const table of compact) state.tables[table] = state.tables[table].filter(row => row !== deleted);
     settings.baseline = next;
     store.rowIndexes = null;
     return state;

@@ -31,6 +31,19 @@ test('app members use known canonical targets, retain source reference provenanc
   assert.equal(JSON.stringify(components), snapshot);
 });
 
+test('large application memberships resolve each source or existing table key within a bounded read budget', () => {
+  const count = 2000, id = value => `${value.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+  let componentReads = 0, rowReads = 0;
+  const forms = Array.from({ length: count }, (_, index) => ({ logical: 'systemform', kind: 'systemform', get id() { componentReads++; return id(index + 1); }, row: {} }));
+  const rows = Array.from({ length: count }, (_, index) => ({ get savedqueryid() { rowReads++; return id(count + index + 1); } }));
+  const members = forms.map((form, index) => ({ type: 60, objectId: id(index + 1) })).concat(rows.map((row, index) => ({ type: 26, objectId: id(count + index + 1) })));
+  const app = { logical: 'appmodule', kind: 'appmodule', id: APP, row: {}, members };
+  const expanded = withSolutionAppMembers([...forms, app], { mappings: {}, tables: { savedquery: rows } });
+  assert.equal(expanded.filter(component => component.kind === 'appmodulecomponent').length, count * 2);
+  assert.ok(componentReads <= count * 3, `Repeated source component scans: ${componentReads}`);
+  assert.ok(rowReads <= count * 3, `Repeated existing-row scans: ${rowReads}`);
+});
+
 test('source metadata overlays are sparse, transactional and retain source siblings and deletion across restart', async t => {
   const store = new DataStore({ state: emptyState() });
   let components = source();
@@ -70,6 +83,42 @@ test('active API solution layer does not leak into source deltas or resurrect af
   applySolutionPayloads(store.state, solutionId, metadata, { definitionOf: standardTableDef });
   assert.equal(store.state.mappings.savedquery.entitySet, 'savedqueries');
   assert.equal(store.state.mappings.systemform.idColumn, 'formid');
+});
+
+test('large source tables reconcile with bounded key reads while preserving order, local edits, tombstones and row versions', t => {
+  const count = 2000, id = value => `${value.toString(16).padStart(8, '0')}-1111-4111-8111-111111111111`;
+  let components = Array.from({ length: count }, (_, index) => ({ logical: 'systemform', kind: 'systemform', id: id(index + 1), type: 60,
+    row: { formid: id(index + 1), name: `Source ${index}`, formxml: '<form/>' } }));
+  const rows = components.map(component => ({ ...component.row, __simVersion: 20, versionnumber: 20 }));
+  rows[3].name = 'Local form edit';
+  const local = { formid: id(count + 1), name: 'Local only form', formxml: '<form/>' }; rows.splice(1000, 0, local);
+  const state = emptyState(); state.tables.systemform = rows; state.rowVersion = 20;
+  const store = new DataStore({ state });
+  let keyReads = 0;
+  for (const row of store.state.tables.systemform) {
+    const value = row.formid;
+    Object.defineProperty(row, 'formid', { enumerable: true, configurable: true, get() { keyReads++; return value; } });
+  }
+  const adapter = createSourceSolutionComponentStorage({ store, components: () => components }); t.after(adapter.close);
+  adapter.materialize();
+  assert.ok(keyReads <= count * 8, `Unexpected repeated source-table scan: ${keyReads} key reads for ${count} rows.`);
+  assert.equal(store.state.rowVersion, 20);
+  assert.equal(store.state.tables.systemform[3].name, 'Local form edit');
+  const tombstone = `systemform/${id(6)}`;
+  store.state.dataverse.sourceSolutionComponents.overlays[tombstone] = null;
+  components = components.filter((_, index) => index % 2 === 1);
+  components[4] = { ...components[4], row: { ...components[4].row, name: 'Changed source form' } };
+  const added = { logical: 'systemform', kind: 'systemform', type: 60, id: id(count + 2), row: { formid: id(count + 2), name: 'Added source form', formxml: '<form/>' } };
+  components.push(added); keyReads = 0;
+  adapter.materialize();
+  assert.ok(keyReads <= count * 12, `Unexpected repeated removal scan: ${keyReads} key reads.`);
+  const expected = rows.filter(row => row === local || parseInt(row.formid.slice(0, 8), 16) % 2 === 0 && row.formid !== id(6)).map(row => row.formid).concat(added.id);
+  assert.deepEqual(store.state.tables.systemform.map(row => row.formid), expected);
+  assert.equal(store.state.tables.systemform.find(row => row.formid === id(4)).name, 'Local form edit');
+  assert.equal(store.state.dataverse.sourceSolutionComponents.overlays[tombstone], null);
+  assert.equal(store.state.rowVersion, 21);
+  assert.equal(store.state.tables.systemform.find(row => row.name === 'Changed source form').versionnumber, 21);
+  assert.equal(store.state.dataverse.sourceSolutionComponents.baseline[`systemform/${id(1)}`], undefined);
 });
 
 test('source flags retain explicit false through layers and expose source ownership/providers', async () => {

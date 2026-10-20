@@ -666,7 +666,7 @@ export async function resolveTargets(options) {
           deploymentProfiles: portal.deploymentProfiles,
           environmentVariables: project.environmentVariables ?? {},
           lcid: project.lcid ?? 1033,
-          simulatorOptions: { project: projectSummary(project, portal.id), deploymentProfiles: portal.deploymentProfiles, solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables },
+          simulatorOptions: { project: projectSummary(project, portal.id), projectRoot: path.dirname(project.configFile), modelDriven: project.modelDriven, dataverse: project.dataverse, simulation: project.simulation, platform: portal.platform, observed: portal.observed, dataModel: portal.dataModel, contentPolicyDefaults: portal, deploymentProfiles: portal.deploymentProfiles, solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables },
           sweepOptions: { project: project.configFile, portal: portal.id },
         })),
     };
@@ -679,6 +679,13 @@ export async function resolveTargets(options) {
   for (const site of options.sites) {
     const cfg = await loadConfig({ site, ...(options.config ? { config: options.config } : {}), ...(options.env?.[site] ? { env: options.env[site] } : {}), ...(options.repo ? { repo: options.repo } : {}) });
     const catalogued = cfg.mirageConfig?.solutionRoots ?? [];
+    // Bind the same site context as project consumers. Only runtime stages load it;
+    // source-only inventory stages deliberately remain independent diagnostics.
+    let boundContext;
+    const createRuntime = async settings => {
+      boundContext ??= (await import('./lib/mirage-context.mjs')).createMirageContext({ config: cfg.configFile, site: cfg.siteName, repo: cfg.sourceRoot });
+      return (await boundContext).createSimulator({ stateFile: settings.stateFile, watch: settings.watch, port: settings.port });
+    };
     targets.push({
       id: cfg.siteName,
       label: `${cfg.siteName}/${cfg.envName}`,
@@ -694,6 +701,7 @@ export async function resolveTargets(options) {
       environmentVariables: {},
       lcid: 1033,
       simulatorOptions: { deploymentProfiles: cfg.mirageConfig?.deploymentProfiles },
+      createRuntime,
       sweepOptions: { site: cfg.siteName, env: cfg.envName, ...(options.config ? { config: options.config } : {}), ...(options.repo ? { repo: options.repo } : {}) },
     });
   }
@@ -1043,7 +1051,7 @@ async function runtimeStage(target, context) {
   let simulator;
   try {
     let started = performance.now();
-    simulator = await createSimulator(options);
+    simulator = await (target.createRuntime ?? createSimulator)(options);
     result.coldStartMs = elapsed(started);
     result.stateBytesAfterStart = await fileSize(stateFile);
     const summary = simulator.state({ summary: true });
@@ -1080,7 +1088,7 @@ async function runtimeStage(target, context) {
     result.closeMs = elapsed(started);
     result.stateBytesAfterRun = await fileSize(stateFile);
     started = performance.now();
-    simulator = await createSimulator(options);
+    simulator = await (target.createRuntime ?? createSimulator)(options);
     result.warmStartMs = elapsed(started);
     result.warmBootstrapTimings = simulator.state({ summary: true }).status?.bootstrap?.timings ?? null;
     await simulator.close();
@@ -1210,7 +1218,7 @@ async function scaffoldStage(target, context) {
   let simulator;
   try {
     started = performance.now();
-    simulator = await createSimulator({ sourceDir: target.sourceDir, stateFile: runtimeState, origin: target.origin ?? undefined, solutionRoots: target.solutionRoots, deploymentProfile: target.deploymentProfile, watch: false, port: 0, ...target.simulatorOptions });
+    simulator = await (target.createRuntime ?? createSimulator)({ sourceDir: target.sourceDir, stateFile: runtimeState, origin: target.origin ?? undefined, solutionRoots: target.solutionRoots, deploymentProfile: target.deploymentProfile, watch: false, port: 0, ...target.simulatorOptions });
     result.startMs = elapsed(started);
     result.webApiProbe = { identity: "anonymous", ...(await probeWebApi(simulator)) };
     if (result.coverage.contactId && typeof simulator.signIn === "function") {
