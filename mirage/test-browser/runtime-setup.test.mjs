@@ -234,3 +234,22 @@ test('guided Solution path replacement and reordering keep referenced IDs and au
   assert.deepEqual(saved.portals, shorthand.portals);
   assert.deepEqual(errors, []);
 });
+
+test('guided extension trust requires an explicit choice and survives setup refresh', { timeout: 30000 }, async t => {
+  const { root, page, errors, resources } = await work(t), project = path.join(root, 'mirage.project.json');
+  await fs.writeFile(project, JSON.stringify({ version: 2, runtime: { kind: 'model-driven' }, solutions: [], dataverse: { enabled: false }, simulation: { level: 'dry-run' } }));
+  const setup = await startSetupServer({ directory: root, project, processEnv: {} }); resources.push(() => setup.close());
+  await page.goto(setup.url);
+  const trust = () => page.locator('form[data-form="runtime"] [name="trusted-extensions"]');
+  await trust().waitFor(); assert.equal(await trust().isChecked(), false);
+  for (const value of [true, false]) {
+    await trust().setChecked(value);
+    const [response] = await Promise.all([page.waitForResponse(response => response.url().endsWith('/_setup/api/config') && response.request().method() === 'POST'),
+      page.getByRole('button', { name: 'Save runtime configuration', exact: true }).click()]);
+    assert.equal(response.status(), 200, await response.text());
+    await page.locator('#notice').filter({ hasText: /^Saved\./ }).waitFor();
+    assert.equal(JSON.parse(await fs.readFile(project, 'utf8')).modelDriven.trustedExtensions, value);
+    await page.reload(); await trust().waitFor(); assert.equal(await trust().isChecked(), value);
+  }
+  assert.deepEqual(errors, []);
+});

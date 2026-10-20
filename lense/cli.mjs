@@ -21,6 +21,9 @@ Commands
   resources discover editable files, XML fields, pages and metadata relationships offline
   agent    inspect/control a running local session: sessions, status, pages, events, state,
            snapshot, screenshot, navigate, reload, viewport, stop (always JSON)
+  model-driven inspect|dev --project FILE --url ORIGIN
+           inspect or overlay exported Solution webresources and mapped PCF bundles;
+           dev reloads its own model-driven app tab when declared local sources change
   mirage init|start|dev|status|inspect|stop
            local Mirage runtime: init writes a project file from the catalogue site; dev opens
            the runtime with the paqvilo panel and stops it again when the browser closes; with
@@ -95,6 +98,8 @@ Agent session access
   --preset <name>   mirage: apply a scenario preset when starting (default: mirage.preset)
   --solution-root <dir> mirage: add a solution source root (repeatable; default:
                     mirage.solutionRoots, else unpacked solutions next to the portal repository)
+  --resource-map <file> model-driven: JSON version 1 resources [{path,resource}] binding
+                    observed native PCF paths to declared Solution component resources
   --startup-timeout <ms> mirage: readiness deadline (default: 120000)
   --allow-live-writes mirage dev/start: let the runtime send create, update and delete
                     requests to the live environment once _sim's live-writes switch is on
@@ -155,6 +160,7 @@ try {
       styles: { type: 'string' },
       'sign-in-timeout': { type: 'string' },
       project: { type: 'string' },
+      'resource-map': { type: 'string' },
       runtime: { type: 'string' },
       simulation: { type: 'string' },
       portal: { type: 'string' },
@@ -211,6 +217,7 @@ const commands = {
   audit: { load: () => import('./commands/audit.mjs'), needsSite: false },
   resources: { load: () => import('./commands/resources.mjs'), needsSite: true },
   agent: { load: () => import('./commands/agent.mjs'), needsSite: false },
+  'model-driven': { load: () => import('./commands/model-driven.mjs'), needsSite: false },
   mirage: { load: () => import('./commands/mirage.mjs'), needsSite: true },
 };
 
@@ -222,7 +229,8 @@ if (!Object.hasOwn(commands, command)) {
 
 let phase='arguments';
 try {
-  if (!['use', 'agent', 'mirage'].includes(command) && positionals.length > 1) throw new Error(`Unexpected argument "${positionals[1]}" for ${command}`);
+  if (!['use', 'agent', 'mirage', 'model-driven'].includes(command) && positionals.length > 1) throw new Error(`Unexpected argument "${positionals[1]}" for ${command}`);
+  if (command === 'model-driven' && positionals.length > 2) throw new Error('model-driven accepts one action: inspect or dev');
   if (command === 'use' && positionals.length > 3) throw new Error('use accepts only a site and an environment');
   if (command === 'mirage') (await import('./commands/mirage.mjs')).validateMirageAction(positionals[1] ?? 'status');
   if (command === 'agent' && positionals.length > 2) throw new Error('agent accepts only one action');
@@ -238,6 +246,7 @@ try {
     use: ['config', 'repo', 'site', 'env'],
     resources: [...selection, 'json', 'page', 'kind', 'search', 'changed', 'limit', 'offset'],
     agent: ['config', 'session', 'page-id', 'selector', 'limit', 'after', 'output', 'timeout', 'full-page', 'include-panel', 'width', 'height', 'styles', 'path', 'json'],
+    'model-driven': [...browserSelection, 'cdp-url', 'project', 'url', 'path', 'resource-map', 'headless', 'headed', 'no-reload', 'debug-port', 'timeout', 'output', 'json'],
     mirage: [...selection, ...browserSelection, 'cdp-url', 'portals', 'project', 'portal', 'port', 'state', 'preset', 'preset-mode', 'apply-configuration', 'solution-root', 'startup-timeout', 'allow-live-writes', 'headless', 'headed', 'no-reload', 'debug-port', 'out', 'force', 'json', 'runtime', 'simulation'],
   };
   for (const option of Object.keys(values)) if (!allowed[command].includes(option)) throw Object.assign(new Error(`--${option} is not supported by ${command}`),{code:'unsupported_option'});

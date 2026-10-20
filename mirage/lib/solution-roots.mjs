@@ -73,7 +73,7 @@ export async function resolveSolutionRoots({ sourceDir, explicitRoots, explicitO
   return { roots: await discoverSolutionRoots(sourceDir, { cacheFile }), order: "derived", source: "discovered" };
 }
 
-const RELEVANT_TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|entities|other|optionsets|environmentvariabledefinitions|controls|workflows|powerpagecomponents|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
+const RELEVANT_TREE_DIRS = /^(?:appmodules|appmodulesitemaps|sitemaps|entities|other|optionsets|environmentvariabledefinitions|controls|webresources|appactions|workflows|powerpagecomponents|pluginassemblies|plugintypes|sdkmessageprocessingsteps|sdkmessages)$/i;
 const SKIPPED = /(?:^|[\\/])(?:\.git|\.portalconfig|node_modules|bin|obj|\.paqvilo)(?:[\\/]|$)/i;
 
 /**
@@ -125,7 +125,7 @@ export function solutionWatchFilter({ sourceDir, roots = [], layers = [], exclud
       if (skipped(full, tree)) return true;
       const segments = full.slice(tree.length + 1).split(sep);
       if (!RELEVANT_TREE_DIRS.test(segments[0])) return true;
-      return Boolean(stats?.isFile()) && !(/^(?:controls)$/i.test(segments[0]) ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i : /^(?:powerpagecomponents)$/i.test(segments[0]) ? /\.(?:xml|js|sl)$/i : /\.(?:xml|json)$/i).test(full);
+      return Boolean(stats?.isFile()) && !(/^(?:controls|webresources)$/i.test(segments[0]) ? /\.(?:xml|json|js|css|resx|png|jpe?g|svg|woff2?)$/i : /^(?:powerpagecomponents)$/i.test(segments[0]) ? /\.(?:xml|js|sl)$/i : /\.(?:xml|json)$/i).test(full);
     }
     const root = rootKeys.find((dir) => within(full, dir));
     if (!root) return false;

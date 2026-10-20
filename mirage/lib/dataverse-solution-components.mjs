@@ -3,6 +3,7 @@
 // https://learn.microsoft.com/power-apps/developer/data-platform/reference/entities/solutioncomponent
 import { randomUUID, createHash } from 'node:crypto';
 import { parseSolutionXml, child, childText, descendants, labelsOf, pickLabel, serializeXml } from './solution-xml.mjs';
+import { sourceRecordId } from './source-record-id.mjs';
 
 const lower = value => String(value ?? '').toLowerCase();
 const guid = value => lower(value).replace(/[{}]/g, '');
@@ -33,7 +34,7 @@ export function ensureSolutionComponentMapping(state, component, definitionOf) {
   return mapping;
 }
 
-/** Source-defined record components with their actual exported GUIDs. */
+/** Source-defined records; an app without an exported GUID uses its stable local identity. */
 export function solutionDocumentComponents(xml, { name = '', entityDir, entity: enclosingEntity, lcid = 1033 } = {}) {
   const root = typeof xml === 'string' ? parseSolutionXml(xml) : xml;
   const out = [];
@@ -44,7 +45,8 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
   };
   const title = node => pickLabel(labelsOf(child(node, 'LocalizedNames')), lcid) ?? value(node, 'Name', 'name') ?? '';
   for (const node of [...nodes(root, 'AppModule'), ...nodes(root, 'appmodule')]) {
-    const appId = guid(value(node, 'AppModuleId', 'appmoduleid'));
+    const appName = value(node, 'UniqueName', 'uniquename');
+    const appId = guid(value(node, 'AppModuleId', 'appmoduleid')) || (appName ? sourceRecordId('appmodule', appName) : '');
     add('appmodule', appId, { uniquename: value(node, 'UniqueName', 'uniquename'), name: title(node), appmodulexml: serializeXml(node),
       ...(validId(guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique'))) ? { appmoduleidunique: guid(value(node, 'AppModuleIdUnique', 'appmoduleidunique')) } : {}) }, undefined, labelsOf(child(node, 'LocalizedNames')));
     const app = out.findLast(component => component.kind === 'appmodule' && component.id === appId);
@@ -54,8 +56,11 @@ export function solutionDocumentComponents(xml, { name = '', entityDir, entity: 
       id: guid(member.attrs.appmodulecomponentid ?? value(member, 'AppModuleComponentId')),
     }));
   }
-  for (const node of nodes(root, 'AppModuleSiteMap'))
-    add('sitemap', value(node, 'SiteMapId', 'SiteMapIdUnique', 'sitemapid'), { sitemapxml: serializeXml(node), appmoduleuniquename: value(node, 'AppModuleUniqueName', 'UniqueName'), appmoduleid: guid(value(node, 'AppModuleId')), name: title(node) }, undefined, labelsOf(child(node, 'LocalizedNames')));
+  for (const node of nodes(root, 'AppModuleSiteMap')) {
+    const mapName = value(node, 'AppModuleUniqueName', 'SiteMapUniqueName', 'UniqueName');
+    add('sitemap', value(node, 'SiteMapId', 'SiteMapIdUnique', 'sitemapid') || (mapName ? sourceRecordId('sitemap', mapName) : ''),
+      { sitemapxml: serializeXml(node), appmoduleuniquename: mapName, appmoduleid: guid(value(node, 'AppModuleId')), name: title(node) }, undefined, labelsOf(child(node, 'LocalizedNames')));
+  }
   const entities = nodes(root, 'Entity');
   const containers = entities.length ? entities.map(node => ({ node, entity: lower(value(child(child(node, 'EntityInfo'), 'entity') ?? node, 'Name') || child(node, 'Name')?.attrs.OriginalName || childText(node, 'Name')) }))
     : [{ node: root, entity: lower(enclosingEntity ?? entityDir ?? /(?:^|\/)Entities\/([^/]+)\//i.exec(name)?.[1]) }];
@@ -104,6 +109,8 @@ export function withSolutionAppMembers(components, state, entityId) {
         objectId = entityId?.(member.entity, state) ?? objectId;
       } else {
         const table = referenceTables[member.type];
+        if (member.type === 62 && !validId(objectId) && member.entity)
+          objectId = components.find(component => component.kind === 'sitemap' && lower(component.row.appmoduleuniquename) === member.entity)?.id;
         if (!table || !validId(objectId)) continue;
         const present = components.some(component => component.logical === table && component.id === objectId)
           || state.tables?.[table]?.some(row => guid(row[table === 'systemform' ? 'formid' : `${table}id`]) === objectId);

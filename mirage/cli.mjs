@@ -165,11 +165,14 @@ try {
       if (command === 'inspect') {
         const source = await loadOrganizationSources({ solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'], lcid: project?.lcid });
         console.log(JSON.stringify({ runtime, simulation, portals: [], solutions: roots, applications: source.metadata.modelDrivenApps,
-          entities: Object.keys(source.metadata.entities), diagnostics: [...source.metadata.diagnostics, ...source.solutionData.diagnostics] }, null, 2));
+          modelDriven: project?.modelDriven ?? profileMirage?.modelDriven ?? { trustedExtensions: false },
+          clientExtensions: { resources: source.clientResources.resources.map(({ name, type }) => ({ name, type })),
+            controls: source.clientResources.pcf.controls.map(({ name, controlType }) => ({ name, controlType })) },
+          entities: Object.keys(source.metadata.entities), diagnostics: [...source.metadata.diagnostics, ...source.solutionData.diagnostics, ...source.clientResources.diagnostics] }, null, 2));
       } else {
         const stateFile = path.resolve(args.state ?? (project ? projectStateFile(project, 'organization', path.join(stateDir, 'simulator/projects')) : path.join(stateDir, 'simulator', runtime.kind, 'state.json')));
         let stop;
-        const simulator = await createSimulator({ runtime, simulation, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
+        const simulator = await createSimulator({ runtime, simulation, modelDriven: project?.modelDriven ?? profileMirage?.modelDriven, solutionRoots: roots, solutionOrder: project?.solutionOrder ?? args['solution-order'],
           stateFile, port: runtimePort(args.port), project: project && projectSummary(project), dataverse: project?.dataverse ?? profileMirage?.dataverse,
           projectRoot: project ? path.dirname(project.configFile) : args.config ? path.dirname(path.resolve(args.config)) : process.cwd(),
           dataPacks: [...profileMirage?.dataPacks ?? [], ...(args['pack-module'] ?? []).map(module => ({ module }))],
@@ -467,7 +470,7 @@ try {
         personaContexts: siteMirage?.personaContexts,
         identityProvider: siteMirage?.identityProvider,
         dataverse: siteMirage?.dataverse,
-        runtime, simulation,
+        runtime, simulation, modelDriven: project?.modelDriven ?? siteMirage?.modelDriven,
         projectRoot: args.config ? path.dirname(path.resolve(args.config)) : project?.configFile ? path.dirname(project.configFile) : process.cwd(),
         platform: siteMirage?.platform ?? configuredPortal?.platform,
               ...(project ? { project: projectSummary(project, configuredPortal.id), solutionOrder: project.solutionOrder, environmentVariables: project.environmentVariables } : {}),

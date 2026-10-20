@@ -43,7 +43,7 @@ export function parseAppDefinitions(root, { lcid = 1033 } = {}) {
     navigation: parseSiteMap(node, { lcid }),
   })).filter(app => app.uniqueName || app.id);
   const maps = nodes(root, 'AppModuleSiteMap').map(node => ({
-    uniqueName: childText(node, 'AppModuleUniqueName') ?? childText(node, 'UniqueName'),
+    uniqueName: childText(node, 'AppModuleUniqueName') ?? childText(node, 'SiteMapUniqueName') ?? childText(node, 'UniqueName'),
     appId: id(childText(node, 'AppModuleId')),
     navigation: parseSiteMap(node, { lcid }),
   }));
@@ -81,6 +81,15 @@ export function compileForm(form, fields, lcid = 1033) {
   const custom = new Set(descendants(root, 'controlDescription').filter(description => descendants(description, 'customControl').length).map(description => id(description.attrs.forControl)));
   const bindings = new Map(descendants(root, 'controlDescription').map(description => [id(description.attrs.forControl),
     descendants(description, 'customControl').map(control => ({ attributes: { ...control.attrs }, xml: serializeXml(control) }))]));
+  const pcfBinding = control => {
+    const candidates = bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [];
+    // Desktop metadata is preferred; phone/tablet bindings stay preserved in sourceControl.
+    const candidate = candidates.find(entry => entry.attributes.formFactor === '0') ?? candidates.find(entry => entry.attributes.formFactor == null);
+    if (!candidate?.attributes.name) return undefined;
+    const node = parseSolutionXml(candidate.xml), parameters = child(node, 'parameters');
+    return { name: candidate.attributes.name, bindings: Object.fromEntries((parameters?.children ?? []).map(parameter => [parameter.name,
+      String(parameter.attrs.type).toLowerCase() === 'bound' ? { field: parameter.text.trim() } : { value: parameter.text.trim() }])) };
+  };
   const sourceControl = control => ({ id: control.attrs.id ?? null, uniqueId: control.attrs.uniqueid ?? null,
     classId: control.attrs.classid ?? null, attributes: { ...control.attrs }, xml: serializeXml(control),
     customBindings: bindings.get(id(control.attrs.uniqueid)) ?? bindings.get(id(control.attrs.id)) ?? [] });
@@ -107,16 +116,72 @@ export function compileForm(form, fields, lcid = 1033) {
               pageSize: Number(parameter('RecordsPerPage')) || 10, searchEnabled: parameter('EnableQuickFind') === 'true' } }];
         }
         const isCustom = custom.has(id(control.attrs.uniqueid)) || custom.has(id(control.attrs.id));
+        const pcf = isCustom ? pcfBinding(control) : undefined;
         return [{ ...position, sourceControl: sourceControl(control), name, label: label(child(cell, 'labels'), lcid) ?? fields[name]?.label ?? name ?? control.attrs.id,
           visible: cell.attrs.visible !== 'false' && control.attrs.visible !== 'false', disabled: control.attrs.disabled === 'true',
-          supported: Boolean(name && fields[name] && !isCustom),
+          ...(pcf ? { pcf } : {}), supported: Boolean(name && fields[name] && (!isCustom || pcf)),
           reason: isCustom ? 'This custom control is not supported locally yet.' : name ? 'Column metadata is unavailable.' : 'This control is not supported locally yet.' }];
       }),
     })),
   }));
   return { id: form.id, name: form.name, tabs, source: 'solution',
     hasScripts: descendants(root, 'Library').length > 0 || descendants(root, 'event').length > 0,
+    libraries: descendants(root, 'Library').map(node => node.attrs.name).filter(Boolean),
+    clientEvents: descendants(root, 'event').map(node => ({ name: String(node.attrs.name ?? '').toLowerCase(), attribute: node.attrs.attribute, active: node.attrs.active !== 'false',
+      handlers: descendants(node, 'Handler').map(handler => ({ library: handler.attrs.libraryName, functionName: handler.attrs.functionName,
+        enabled: handler.attrs.enabled !== 'false', passExecutionContext: handler.attrs.passExecutionContext === 'true', parameters: handler.attrs.parameters ?? '' })) })),
     dependencies: { libraries: descendants(root, 'Library').map(node => ({ attributes: { ...node.attrs }, xml: serializeXml(node) })),
       events: descendants(root, 'event').map(node => ({ attributes: { ...node.attrs }, xml: serializeXml(node) })) },
     xml: undefined };
+}
+
+/** Exported classic ribbon commands. Unsupported actions/rules remain visible and disabled. */
+export function parseRibbonCommands(root) {
+  if (typeof root === 'string') root = parseSolutionXml(root);
+  const definitions = new Map(nodes(root, 'CommandDefinition').map(node => [node.attrs.Id, node]));
+  const labels = new Map(nodes(root, 'LocLabel').map(node => [node.attrs.Id, descendants(node, 'Title').find(row => row.attrs.languagecode === '1033')?.attrs.description ?? descendants(node, 'Title')[0]?.attrs.description]));
+  const ruleDefinitions = new Map([...nodes(root, 'DisplayRule'), ...nodes(root, 'EnableRule')].filter(node => node.children.length).map(node => [node.attrs.Id, node]));
+  const rules = (definition, kind) => (child(definition, kind)?.children ?? []).map(reference => {
+    const rule = ruleDefinitions.get(reference.attrs.Id);
+    return rule ? { id: reference.attrs.Id, clauses: rule.children.map(clause => ({ type: clause.name, ...clause.attrs })) } : { id: reference.attrs.Id, clauses: [{ type: 'UnsupportedRule' }] };
+  });
+  return nodes(root, 'Button').filter(button => button.attrs.Command).map(button => {
+    const definition = definitions.get(button.attrs.Command), actionNodes = child(definition, 'Actions')?.children ?? [];
+    const actions = actionNodes.map(action => ({ type: action.name, library: action.attrs.Library, functionName: action.attrs.FunctionName,
+      parameters: action.children.map(parameter => ({ kind: parameter.name === 'CrmParameter' ? 'crm' : parameter.name === 'StringParameter' ? 'string' : parameter.name === 'IntParameter' || parameter.name === 'DecimalParameter' ? 'number' : parameter.name === 'BoolParameter' ? 'boolean' : 'unsupported', value: parameter.attrs.Value })) }));
+    const displayRules = rules(definition, 'DisplayRules'), enableRules = rules(definition, 'EnableRules');
+    const supportedRules = [...displayRules, ...enableRules].every(rule => rule.clauses.every(clause => ['FormStateRule', 'ValueRule', 'EntityRule', 'SelectionCountRule'].includes(clause.type)));
+    const supported = Boolean(actions.length && actions.every(action => action.type === 'JavaScriptFunction' && action.library && action.functionName && action.parameters.every(parameter => parameter.kind !== 'unsupported' && (parameter.kind !== 'crm' || ['PrimaryControl', 'SelectedControlSelectedItemIds', 'SelectedEntityTypeName'].includes(parameter.value)))) && supportedRules);
+    const rawLabel = button.attrs.LabelText ?? button.attrs.Id;
+    return { id: button.attrs.Id, label: rawLabel.startsWith('$LocLabels:') ? labels.get(rawLabel.slice(11)) ?? button.attrs.Id : rawLabel,
+      // Ribbon locations identify HomePageGrid, MainTab/Form or SubGrid. The latter is not yet hosted.
+      locations: /SubGrid/i.test(button.attrs.Id) ? [] : /HomePageGrid/i.test(button.attrs.Id) ? ['grid'] : /Form|MainTab/i.test(button.attrs.Id) ? ['form'] : ['form', 'grid'],
+      actions, displayRules, enableRules, supported, reason: supported ? undefined : 'This exported ribbon action or rule is outside the local client API support.' };
+  });
+}
+
+/** Modern command designer AppAction export, using declared local WebResource IDs. */
+export function parseAppActionCommand(root, { webresourcesById = new Map(), lcid = 1033 } = {}) {
+  if (typeof root === 'string') root = parseSolutionXml(root);
+  if (root.name !== 'appaction') return null;
+  const entity = childText(child(root, 'contextentity'), 'logicalname') ?? childText(root, 'contextvalue');
+  const resourceId = id(childText(child(root, 'onclickeventjavascriptwebresourceid'), 'webresourceid'));
+  const library = webresourcesById instanceof Map ? webresourcesById.get(resourceId) : webresourcesById[resourceId];
+  let parameters = [], parameterError = false;
+  try {
+    const source = JSON.parse(childText(root, 'onclickeventjavascriptparameters') || '[]');
+    if (!Array.isArray(source)) throw new Error('Expected parameter array');
+    parameters = source.map(parameter => {
+      // The captured exported contract uses 5 for PrimaryControl. Other modern
+      // parameter kinds require a verified mapping before they are admitted.
+      const kind = Number(parameter.type) === 5 ? 'crm' : 'unsupported';
+      return { kind, value: Number(parameter.type) === 5 ? 'PrimaryControl' : parameter.value };
+    });
+  } catch { parameterError = true; }
+  const location = Number(childText(root, 'location')), labelNode = child(root, 'buttonlabeltext');
+  const supported = Boolean(entity && library && childText(root, 'onclickeventjavascriptfunctionname') && childText(root, 'context') === '1' && childText(root, 'statecode') !== '1' && childText(root, 'onclickeventtype') === '2' && childText(root, 'type') === '0' && !parameterError && parameters.every(parameter => parameter.kind !== 'unsupported') && [0, 1].includes(location) && childText(root, 'isdisabled') !== '1');
+  return { entity: entity?.toLowerCase(), id: root.attrs.uniquename ?? childText(root, 'name'),
+    label: label(labelNode, lcid) ?? labelNode?.attrs.default ?? childText(root, 'name'), locations: childText(root, 'hidden') === '1' ? [] : location === 0 ? ['form'] : location === 1 ? ['grid'] : [],
+    supported, reason: supported ? undefined : 'This modern command requires a supported JavaScript action, parameter and local exported resource.',
+    actions: [{ type: 'JavaScriptFunction', library, functionName: childText(root, 'onclickeventjavascriptfunctionname'), parameters }], displayRules: [], enableRules: [], source: 'appaction' };
 }

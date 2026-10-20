@@ -1,5 +1,6 @@
 import { renderControl, hasControl } from './controls.mjs';
 import { icon, navigationIcon } from './icons.mjs';
+import { createFormClientRuntime, evaluateRibbonRules } from './client-runtime.mjs';
 
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
@@ -11,6 +12,10 @@ const storage = {
 let catalogue, app, table, current, query = {}, selected = new Set(), record, recordCapabilities, etag, formId, activeTab, controls = [], dirty = false, pending = false, generation = 0, tabObserver, staffIdentity, staffSession, staffSessionError = '';
 let recent = storage.get('recent', []), pinned = storage.get('pinned', []);
 let touchedFields = new Set();
+let clientRuntime, clientReady = Promise.resolve(), clientChanges = Promise.resolve(), requestingSave = false;
+const clientControlState = new Map();
+const disposeControls = () => { for (const entry of controls) entry.control.destroy?.(); controls = []; };
+function disposeClient() { clientRuntime?.destroy(); clientRuntime = undefined; clientControlState.clear(); disposeControls(); clientReady = Promise.resolve(); clientChanges = Promise.resolve(); }
 const notice = (text, error = false) => { const element = $('#notice'); element.textContent = text; element.hidden = !text; element.classList.toggle('error', error); };
 async function api(path = '', options = {}) {
   const response = await fetch('/_apps/api' + path, { ...options, headers: { 'content-type': 'application/json', 'x-sim-csrf': csrf, ...options.headers } });
@@ -48,6 +53,15 @@ async function staffProfile() {
 }
 const capability = (operation, source = recordCapabilities ?? table?.capabilities) => source?.[operation] !== false;
 const capabilityReason = source => source?.reason ?? 'Your staff role or the configured DATA ownership does not allow this operation.';
+const appComponents = (type, components) => { const ids = new Set((app?.components ?? []).filter(component => component.type === type).map(component => String(component.id ?? '').replace(/[{}]/g, '').toLowerCase())); const matching = components.filter(component => ids.has(String(component.id).replace(/[{}]/g, '').toLowerCase())); return matching.length ? matching : components; };
+const appForms = () => appComponents(60, table.forms);
+const appViews = () => appComponents(26, table.views);
+function commandUnavailable(command) {
+  if (!command.supported) return command.reason ?? 'This exported command is not supported locally.';
+  if (catalogue.clientExtensions?.trusted !== true) return 'Trust local Solution client extensions in configuration to run this command.';
+  const missing = command.actions?.find(action => !catalogue.clientExtensions.resources?.some(resource => resource.type === 'script' && resource.name === String(action.library ?? '').replace(/^\$webresource:/i, '')));
+  return missing ? `Import the command's JavaScript WebResource (${missing.library}) to run it locally.` : undefined;
+}
 const tablePath = (entity = table.entity, id) => '/tables/' + encodeURIComponent(entity) + (id ? '/' + encodeURIComponent(id) : '');
 function button(label, action, { disabled = false, title, className = '', iconName, iconOnly = false, chevron = false } = {}) {
   const iconForLabel = { '⌂  Home': 'home', '＋ New': 'add', '＋ New related record': 'add', '↻ Refresh': 'refresh', '↻ Refresh related records': 'refresh', '▣ Save': 'save', '← Back': 'back', '▥ Edit columns': 'columns', '▽ Edit filters': 'filter', 'Save & Close': 'saveClose', Delete: 'delete', 'Show Chart': 'chart', 'Visualize this view': 'powerbi', 'Email a Link': 'email', Flow: 'flow', 'Run Report': 'report', Share: 'share', Pin: 'pin', Unpin: 'pin' };
@@ -127,6 +141,22 @@ function renderCommands(mode) {
     commands.append(button('Visualize this view', null, { disabled: true, title: 'Power BI is not supported locally.' }), button('Email a Link', null, { disabled: true, chevron: true, title: 'Email links are not supported locally.' }), button('Flow', null, { disabled: true, chevron: true, title: 'Flow is not supported locally.' }), button('Run Report', null, { disabled: true, chevron: true, title: 'Reports are not supported locally.' }), button('More commands', null, { disabled: true, iconName: 'more', iconOnly: true, title: 'Additional ribbon commands are not supported locally.' }));
   }
   commands.append(button('Share', null, { disabled: true, className: 'share-command', chevron: true, title: 'Sharing is not supported locally.' }));
+  for (const command of table?.commands ?? []) {
+    if (!command.locations?.includes(mode)) continue;
+    const context = { mode, entity: table.entity, selection: [...selected], existing: Boolean(record?.[table.idColumn]), read: name => record?.[name] };
+    if (command.supported && !evaluateRibbonRules(command.displayRules, context)) continue;
+    const unavailable = commandUnavailable(command), disabled = Boolean(unavailable) || !evaluateRibbonRules(command.enableRules, context);
+    const entry = button(command.label, async () => { await clientReady; const runtime = clientRuntime ??= createShellClient({ clientEvents: [], tabs: [] }); await runtime.command(command, [...selected]); renderCommands(mode); }, { disabled, title: disabled ? unavailable ?? 'The exported enable rule is not satisfied.' : 'Exported Solution command · local data only' });
+    entry.dataset.solutionCommand = command.id; commands.insertBefore(entry, commands.lastChild);
+  }
+}
+function refreshCommandRules(mode) {
+  const context = { mode, entity: table.entity, selection: [...selected], existing: Boolean(record?.[table.idColumn]), read: name => record?.[name] };
+  for (const node of document.querySelectorAll('[data-solution-command]')) {
+    const command = table.commands?.find(command => command.id === node.dataset.solutionCommand); if (!command) continue;
+    node.hidden = command.supported && !evaluateRibbonRules(command.displayRules, context);
+    node.disabled = Boolean(commandUnavailable(command)) || !evaluateRibbonRules(command.enableRules, context);
+  }
 }
 const preferenceKey = () => `view.${app.uniqueName}.${table.entity}.${query.view}`;
 function savePreferences() { storage.set(preferenceKey(), { columns: query.columns, filters: query.filters }); }
@@ -152,7 +182,7 @@ function renderGrid() {
   const header = document.createElement('div'); header.className = 'grid-header';
   const views = document.createElement('select'); views.className = 'view-select'; views.setAttribute('aria-label', 'View');
   views.title = table.views.find(view => view.id === query.view)?.source === 'solution' ? 'Exported solution view' : 'Generated from available metadata';
-  for (const view of table.views) views.add(new Option(view.name, view.id)); views.value = query.view;
+  for (const view of appViews()) views.add(new Option(view.name, view.id)); views.value = query.view;
   views.addEventListener('change', () => run(() => navigate(table.entity, { view: views.value })));
   header.append(views, button('▥ Edit columns', editColumns), button('▽ Edit filters', editFilters));
   const search = document.createElement('input'); search.type = 'search'; search.className = 'search'; search.placeholder = 'Filter by keyword'; search.setAttribute('aria-label', 'Filter by keyword'); search.value = query.search ?? '';
@@ -257,26 +287,30 @@ async function loadRecord(id) {
     const field = Object.hasOwn(table.fields, name) ? table.fields[name] : null;
     if (field && !field.isPrimaryId && field.validForCreate !== false && hasControl(field)) record[name] = field.type === 'number' ? Number(value) : field.type === 'boolean' ? value === 'true' : value;
   }
-  etag = result.etag; formId = table.forms[0]?.id; activeTab = null; renderRecord();
+  etag = result.etag; formId = appForms()[0]?.id; activeTab = null; await renderRecord();
+  if (token !== generation) return;
   if (id) remember({ label: record[table.nameColumn] ?? table.singular, url: location.pathname + location.search, app: app.uniqueName });
   $('#content').setAttribute('aria-busy', 'false');
 }
-function renderRecord() {
+async function renderRecord() {
+  const renderGeneration = generation;
   tabObserver?.disconnect();
-  const content = $('#content'); content.replaceChildren(); content.className = 'record-content'; controls = [];
+  disposeControls();
+  const content = $('#content'); content.replaceChildren(); content.className = 'record-content';
   const existing = Boolean(record[table.idColumn]);
   document.title = `${existing ? record[table.nameColumn] ?? table.singular : 'New ' + table.singular} - ${app.name} · Mirage`;
   renderCommands('form');
   const recordCard = document.createElement('div'); recordCard.className = 'record-card'; content.append(recordCard);
   const header = document.createElement('div'); header.className = 'record-header'; header.innerHTML = `<div><div class="record-title"><h1>${esc(existing ? record[table.nameColumn] ?? '(No name)' : 'New ' + table.singular)}</h1><span class="record-saved" id="save-status"> - ${dirty ? 'Unsaved changes' : existing ? 'Saved' : 'New record'}</span></div><small>${esc(table.singular)}</small></div>`;
   recordCard.append(header);
-  let selectedForm = table.forms.find(form => form.id === formId) ?? table.forms[0];
-  if (table.forms.length > 1) { const chooser = document.createElement('select'); chooser.setAttribute('aria-label', 'Record form'); chooser.className = 'form-chooser'; for (const form of table.forms) chooser.add(new Option(form.name, form.id)); chooser.value = selectedForm.id; chooser.addEventListener('change', () => { captureDraft(); formId = chooser.value; renderRecord(); }); header.append(chooser); }
-  if (selectedForm.hasScripts) { const warning = document.createElement('span'); warning.className = 'script-indicator'; warning.textContent = 'Local scripts disabled'; warning.title = 'This exported form references scripts or events. Their behavior is not executed locally.'; header.append(warning); }
+  const availableForms = appForms();
+  let selectedForm = availableForms.find(form => form.id === formId) ?? availableForms[0];
+  if (availableForms.length > 1) { const chooser = document.createElement('select'); chooser.setAttribute('aria-label', 'Record form'); chooser.className = 'form-chooser'; for (const form of availableForms) chooser.add(new Option(form.name, form.id)); chooser.value = selectedForm.id; chooser.addEventListener('change', () => run(async () => { captureDraft(); disposeClient(); formId = chooser.value; await renderRecord(); })); header.append(chooser); }
+  if (selectedForm.hasScripts) { const warning = document.createElement('span'); warning.className = 'script-indicator'; warning.textContent = catalogue.clientExtensions?.trusted ? 'Local Solution scripts' : 'Local scripts disabled'; warning.title = catalogue.clientExtensions?.trusted ? 'Explicitly trusted exported scripts execute against the bounded local client API.' : 'Trust local Solution client extensions in configuration to run exported form events.'; header.append(warning); }
   const tabs = document.createElement('div'); tabs.className = 'tabs'; tabs.setAttribute('role', 'tablist');
   const availableTabs = selectedForm.tabs.filter(tab => tab.visible !== false);
   activeTab = availableTabs.some(tab => tab.id === activeTab) ? activeTab : availableTabs[0]?.id;
-  const chooseTab = tab => { captureDraft(); activeTab = tab.id; renderRecord(); };
+  const chooseTab = async tab => { captureDraft(); activeTab = tab.id; await renderRecord(); };
   for (const tab of availableTabs) { const tabButton = button(tab.label, () => chooseTab(tab)); tabButton.setAttribute('role', 'tab'); tabButton.setAttribute('aria-selected', String(tab.id === activeTab)); tabs.append(tabButton); }
   const tabButtons = [...tabs.children];
   const moreTabs = button('More tabs', () => { const list = document.createElement('div'); list.className = 'lookup-results'; for (const tab of availableTabs) list.append(button(tab.label, () => { closeDialog(); chooseTab(tab); })); dialog('Record tabs', list, [['Close', closeDialog]]); }, { iconName: 'more', iconOnly: true }); moreTabs.hidden = true;
@@ -301,8 +335,7 @@ function renderRecord() {
     const panel = document.createElement('section'); panel.className = 'form-section'; if (section.label && section.showLabel !== false) { const title = document.createElement('h2'); title.textContent = section.label; panel.append(title); }
     const fields = document.createElement('div'); fields.className = 'section-fields'; fields.dataset.columns = String(section.columns ?? 1); panel.append(fields);
     for (const cell of section.fields) {
-      if (cell.visible === false) continue;
-      const position = element => { if (cell.column !== undefined) element.style.gridColumn = `${cell.column + 1} / span ${Math.min(cell.colspan ?? 1, section.columns ?? 1)}`; if (cell.row !== undefined) element.style.gridRow = String(cell.row + 1); fields.append(element); };
+      const position = element => { element.hidden = clientControlState.get(cell.sourceControl?.id ?? cell.name)?.get('hidden') ?? cell.visible === false; if (cell.column !== undefined) element.style.gridColumn = `${cell.column + 1} / span ${Math.min(cell.colspan ?? 1, section.columns ?? 1)}`; if (cell.row !== undefined) element.style.gridRow = String(cell.row + 1); fields.append(element); };
       if (cell.subgrid) { position(renderSubgrid(cell)); continue; }
       if (!cell.supported || !table.fields[cell.name]) { const unsupported = document.createElement('p'); unsupported.className = 'unsupported'; unsupported.textContent = `${cell.label ?? 'Control'}: ${cell.reason ?? 'Unsupported control'}`; position(unsupported); continue; }
       const field = { ...table.fields[cell.name], label: cell.label ?? table.fields[cell.name].label };
@@ -310,13 +343,77 @@ function renderRecord() {
       const disabled = cell.disabled || field.isPrimaryId || field[existing ? 'validForUpdate' : 'validForCreate'] === false || !capability(mode) || recordCapabilities?.fields?.[field.name]?.[mode] === false;
       const wrapper = document.createElement('div'); wrapper.className = 'field'; const label = document.createElement('label'); label.htmlFor = 'field-' + field.name; label.textContent = field.label; if (field.required) { const required = document.createElement('span'); required.className = 'required'; required.setAttribute('aria-hidden', 'true'); required.textContent = '*'; label.append(required); }
       if (cell.showLabel === false) label.className = 'sr-only';
-      const control = renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup, formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'], logicalName: record[field.name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] }); wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, control, disabled });
+      const name = cell.sourceControl?.id ?? field.name;
+      const control = renderFieldControl(cell, field, disabled); wrapper.append(label, control.element); position(wrapper); controls.push({ name: field.name, controlName: name, cell, wrapper, label, control, disabled });
     }
     columns[Math.max(0, section.column ?? 0)]?.append(panel);
   }
   const markDirty = event => { const entry = controls.find(entry => entry.control.element === event.target || entry.control.element.contains(event.target)); if (!entry || entry.disabled || !entry.control.supported) return; touchedFields.add(entry.name); dirty = true; notice(''); $('#save-status').textContent = ' - Unsaved changes'; };
-  form.addEventListener('input', markDirty); form.addEventListener('change', markDirty); content.append(form);
+  form.addEventListener('input', markDirty); form.addEventListener('change', event => { markDirty(event); const entry = controls.find(entry => entry.control.element === event.target || entry.control.element.contains(event.target)); if (!entry || entry.disabled) return; const runtime = clientRuntime, ready = clientReady; clientChanges = clientChanges.catch(() => {}).then(async () => { await ready; if (runtime !== clientRuntime) return; captureDraft(); await runtime?.dispatch('onchange', entry.name); refreshCommandRules('form'); }); clientChanges.catch(error => notice(error.message, true)); }); content.append(form);
   recordCard.title = selectedForm.source === 'solution' ? 'Exported solution form · unsupported controls remain read-only.' : 'Form generated from available metadata.';
+  const initializing = !clientRuntime;
+  if (initializing) clientRuntime = createShellClient(selectedForm);
+  const runtime = clientRuntime;
+  const ready = Promise.all(controls.map(entry => entry.control.ready));
+  if (initializing && catalogue.clientExtensions?.trusted === true) clientReady = ready.then(() => runtime.prepare()).then(() => runtime.dispatch('onload'));
+  else await ready;
+  await clientReady;
+  if (runtime !== clientRuntime || renderGeneration !== generation) return;
+  for (const [name, states] of clientControlState) for (const [key, value] of states) applyControlState(name, key, value);
+  renderCommands('form');
+}
+function renderFieldControl(cell, field, disabled) {
+  return renderControl(field, record[field.name], { disabled, tables: catalogue.tables, lookup,
+    pcf: cell.pcf, clientExtensions: catalogue.clientExtensions, record, fields: table.fields, entity: table.entity, recordId: record[table.idColumn], webAPI: () => clientRuntime?.Xrm.WebApi,
+    formatted: record[field.name + '@OData.Community.Display.V1.FormattedValue'], logicalName: record[field.name + '@Microsoft.Dynamics.CRM.lookuplogicalname'] });
+}
+function applyControlState(name, key, value) {
+  const entry = controls.find(entry => entry.controlName === name); if (!entry) return;
+  if (key === 'hidden') entry.wrapper.hidden = value;
+  else if (key === 'label') { entry.label.textContent = value; (entry.control.primary ?? entry.control.element).setAttribute('aria-label', value); }
+  else if (key === 'focus') (entry.control.primary ?? entry.control.element).focus();
+  else if (key === 'required') (entry.control.primary ?? entry.control.element).required = value === 'required';
+  else if (key === 'disabled') {
+    // Client scripts can restrict a control, never enable a field denied by its source or staff policy.
+    entry.disabled = Boolean(value || entry.cell.disabled || table.fields[entry.name]?.isPrimaryId || !capability(record?.[table.idColumn] ? 'update' : 'create') || recordCapabilities?.fields?.[entry.name]?.[record?.[table.idColumn] ? 'update' : 'create'] === false || table.fields[entry.name]?.[record?.[table.idColumn] ? 'validForUpdate' : 'validForCreate'] === false);
+    if (entry.control.setDisabled) entry.control.setDisabled(entry.disabled);
+    else for (const node of [entry.control.element, ...entry.control.element.querySelectorAll('input,textarea,select,button')]) if ('disabled' in node) node.disabled = entry.disabled;
+  } else if (key.startsWith('notification:')) {
+    const id = key.slice(13); let message = [...entry.wrapper.querySelectorAll('[data-client-notification]')].find(element => element.dataset.clientNotification === id);
+    if (value == null) message?.remove(); else { if (!message) { message = document.createElement('p'); message.className = 'unsupported'; message.dataset.clientNotification = id; entry.wrapper.append(message); } message.textContent = value; }
+    const primary = entry.control.primary ?? (entry.control.element.matches('input,select,textarea') ? entry.control.element : entry.control.element.querySelector('input,select,textarea'));
+    const messages = [...clientControlState.get(name) ?? []].filter(([key, value]) => key.startsWith('notification:') && value != null).map(([, value]) => value);
+    primary?.setCustomValidity?.(messages.join('\n'));
+  }
+}
+function createShellClient(selectedForm) {
+  const cells = selectedForm.tabs.flatMap(tab => tab.sections.flatMap(section => section.fields)).filter(cell => cell.name && cell.supported);
+  const controlName = cell => cell.sourceControl?.id ?? cell.name;
+  const runtime = createFormClientRuntime({ table, tables: catalogue.tables, form: selectedForm, record: record ?? {}, extensions: catalogue.clientExtensions,
+    read: name => { const entry = controls.find(entry => entry.name === name); return entry?.control.supported ? entry.control.read() : record?.[name]; },
+    write: (name, value) => {
+      const field = table.fields[name], cell = cells.find(cell => cell.name === name), mode = record?.[table.idColumn] ? 'update' : 'create';
+      if (!record || !cell || cell.disabled || field.isPrimaryId || field[mode === 'update' ? 'validForUpdate' : 'validForCreate'] === false || !capability(mode) || recordCapabilities?.fields?.[name]?.[mode] === false) throw new Error(`Column ${name} cannot be changed by this client extension.`);
+      record[name] = value; touchedFields.add(name); dirty = true;
+      for (const entry of controls.filter(entry => entry.name === name)) {
+        if (entry.control.setValue) entry.control.setValue(value);
+        else { const replacement = renderFieldControl(entry.cell, { ...field, label: entry.cell.label ?? field.label }, entry.disabled); entry.control.element.replaceWith(replacement.element); entry.control.destroy?.(); entry.control = replacement; }
+        for (const [key, state] of clientControlState.get(entry.controlName) ?? []) applyControlState(entry.controlName, key, state);
+      }
+      if ($('#save-status')) $('#save-status').textContent = ' - Unsaved changes';
+    },
+    isDirty: name => name ? touchedFields.has(name) : dirty,
+    required: (name, value) => { const cell = cells.find(cell => cell.name === name), entry = controls.find(entry => entry.name === name), primary = entry?.control.primary ?? entry?.control.element; if (value !== undefined && cell) { const states = clientControlState.get(controlName(cell)) ?? new Map(); states.set('required', value); clientControlState.set(controlName(cell), states); applyControlState(controlName(cell), 'required', value); } const configured = cell && clientControlState.get(controlName(cell))?.get('required'); return configured !== undefined ? configured === 'required' : primary?.required ?? table.fields[name]?.required; },
+    controlNames: name => cells.filter(cell => !name || cell.name === name).map(controlName), controlField: name => cells.find(cell => controlName(cell) === name)?.name,
+    controlState: (name, key, value) => { const entry = controls.find(entry => entry.controlName === name); if (value === undefined) return clientControlState.get(name)?.get(key) ?? (key === 'disabled' ? entry?.disabled : key === 'hidden' ? entry?.wrapper.hidden : key === 'label' ? entry?.label.textContent : undefined); const states = clientControlState.get(name) ?? new Map(); states.set(key, value); clientControlState.set(name, states); applyControlState(name, key, value); return true; },
+    notification: (message, level, id) => { let element = [...document.querySelectorAll('[data-form-notification]')].find(element => element.dataset.formNotification === id); if (message == null) { element?.remove(); return; } if (!element) { element = document.createElement('p'); element.dataset.formNotification = id; element.setAttribute('role', 'status'); $('#content').prepend(element); } element.className = level === 'ERROR' ? 'unsupported' : 'source-info'; element.textContent = message; },
+    request: async (entity, id, options = {}) => { if (!Object.hasOwn(catalogue.tables, entity)) throw new Error(`Table ${entity} is not imported.`); return api(tablePath(entity, id ? String(id).replace(/[{}]/g, '') : undefined) + (options.query ? '?query=' + encodeURIComponent(JSON.stringify(options.query)) : ''), { method: options.method ?? 'GET', ...(options.etag ? { headers: { 'if-match': options.etag } } : {}), ...(options.data ? { body: JSON.stringify(options.data) } : {}) }); },
+    save: close => saveRecord(close), refresh: () => loadRoute(), close: () => navigate(table.entity),
+    openForm: options => { if (!options || !catalogue.tables[options.entityName]) throw new Error('The target form table is not imported.'); if (options.useQuickCreateForm || options.openInNewWindow) throw new Error('Quick create and separate form windows are not supported locally.'); return navigate(options.entityName, { id: options.entityId ?? 'new' }); },
+    alert: (text, title) => new Promise(resolve => { const body = document.createElement('p'); body.textContent = text; const element = dialog(title, body, [['OK', () => { closeDialog(); resolve(); }, true]]); element.addEventListener('cancel', () => resolve(), { once: true }); }),
+    confirm: (text, title) => confirm(title, text),
+  });
+  globalThis.Xrm = runtime.Xrm; return runtime;
 }
 function renderSubgrid(cell) {
   const panel = document.createElement('section'); panel.className = 'related-grid';
@@ -384,6 +481,16 @@ function renderSubgrid(cell) {
 }
 function captureDraft() { for (const entry of controls) if (!entry.disabled && entry.control.supported) record[entry.name] = entry.control.read(); }
 async function saveRecord(close) {
+  if (requestingSave) return;
+  requestingSave = true;
+  try { await persistRecord(close); } finally { requestingSave = false; }
+}
+async function persistRecord(close) {
+  const saveGeneration = generation;
+  await clientReady; await clientChanges;
+  if (saveGeneration !== generation) return;
+  const save = await clientRuntime?.dispatch('onsave', undefined, close ? 2 : 1); if (save?.prevented) { notice('Save cancelled by the exported form event.'); return; }
+  if (saveGeneration !== generation) return;
   if (pending || !capability(record?.[table.idColumn] ? 'update' : 'create') || !$('#record-form').reportValidity()) return;
   notice('');
   captureDraft();
@@ -397,21 +504,26 @@ async function saveRecord(close) {
   pending = true; $('#commands').classList.add('busy');
   try {
     const result = await api(tablePath(table.entity, existing ? record[table.idColumn] : undefined), { method: existing ? 'PATCH' : 'POST', headers: existing ? { 'if-match': etag } : {}, body: JSON.stringify(values) });
+    if (saveGeneration !== generation) return;
     dirty = false; touchedFields.clear(); record = result.row; etag = result.etag;
-    catalogue = await api(); table = catalogue.tables[table.entity];
+    const refreshed = await api(); if (saveGeneration !== generation) return;
+    catalogue = refreshed; table = catalogue.tables[table.entity];
     await navigate(table.entity, close ? {} : { id: record[table.idColumn], replace: true }); notice('Record saved locally.');
   } finally { pending = false; $('#commands').classList.remove('busy'); }
 }
 async function deleteRecords(rows) {
   if (!rows.length) return;
+  const entity = table.entity, deleteGeneration = generation;
   if (!await confirm('Delete local records', `Delete ${rows.length} selected record${rows.length === 1 ? '' : 's'} from this Mirage instance?`, 'Delete')) return;
   let deleted = 0;
   try {
-    for (const row of rows) { await api(tablePath(table.entity, row.id), { method: 'DELETE', headers: { 'if-match': row.etag } }); deleted++; }
+    for (const row of rows) { await api(tablePath(entity, row.id), { method: 'DELETE', headers: { 'if-match': row.etag } }); deleted++; }
+    if (deleteGeneration !== generation) return;
     dirty = false; catalogue = await api(); table = catalogue.tables[table.entity]; await navigate(table.entity); notice(`${deleted} record${deleted === 1 ? '' : 's'} deleted locally.`);
   } catch (error) { notice(`${deleted} records deleted. ${error.message}`, true); throw error; }
 }
 async function loadRoute() {
+  disposeClient();
   dirty = false; touchedFields.clear(); notice('');
   const params = new URLSearchParams(location.search), application = params.get('appname') ?? params.get('appid');
   app = application ? catalogue.apps.find(app => app.id === application || app.uniqueName === application) : catalogue.apps.find(app => app.id === catalogue.defaultApp);
@@ -422,7 +534,8 @@ async function loadRoute() {
   renderNavigation(); record = null; recordCapabilities = undefined; current = null; etag = null;
   if (params.get('pagetype') === 'entityrecord') await loadRecord(params.get('id'));
   else {
-    const view = params.get('viewid') ?? table.views.find(view => view.isDefault)?.id ?? table.views[0].id;
+    const availableViews = appViews(), requestedView = params.get('viewid');
+    const view = availableViews.find(view => view.id === requestedView)?.id ?? availableViews.find(view => view.isDefault)?.id ?? availableViews[0].id;
     query = { view, page: 1, pageSize: 50, ...storage.get(`view.${app.uniqueName}.${entity}.${view}`, {}) };
     await loadGrid(); remember({ label: table.label, app: app.uniqueName, url: targetUrl(entity, { view }) });
   }
@@ -440,7 +553,7 @@ window.addEventListener('focus', () => run(async () => {
   try {
     const previous = JSON.stringify(staffSession?.current); await loadStaffSession();
     if (previous === JSON.stringify(staffSession?.current)) return;
-    if (dirty) { for (const element of document.querySelectorAll('#record-form input,#record-form select,#record-form textarea,#record-form button,#commands button')) element.disabled = true; notice('The staff session changed in another tab. Reload or choose a profile to discard this draft before continuing.', true); return; }
+    if (dirty) { clientRuntime?.destroy(); clientRuntime = undefined; for (const element of document.querySelectorAll('#record-form input,#record-form select,#record-form textarea,#record-form button,#commands button')) element.disabled = true; notice('The staff session changed in another tab. Reload or choose a profile to discard this draft before continuing.', true); return; }
     $('#commands').replaceChildren(); $('#content').replaceChildren(); $('#navigation').replaceChildren();
     if (staffSession) { catalogue = await api(); await loadRoute(); }
   } finally { checkingStaff = false; }

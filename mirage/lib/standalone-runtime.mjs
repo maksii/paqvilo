@@ -29,6 +29,8 @@ import { createDataverseAdmin } from './dataverse-admin.mjs';
 import { stringifyExactJson } from './exact-numeric.mjs';
 import { uuidV5 } from './dataverse-security.mjs';
 import { runtimePort } from './runtime-port.mjs';
+import { modelDrivenSettings } from './model-driven-settings.mjs';
+import { clientExtensionCatalogue } from './model-driven-resources.mjs';
 import { pluginHandlers, pluginCatalogue } from './exported-plugins.mjs';
 import { pluginRuntimeDescriptors } from './plugin-clr.mjs';
 import { overlayRegisteredSteps } from './dataverse-plugin-registration.mjs';
@@ -57,6 +59,7 @@ async function readBody(req) {
 
 export async function createStandaloneRuntime(options = {}) {
   const runtime = runtimeSettings(options.runtime), simulation = simulationSettings(options.simulation);
+  const modelDriven = modelDrivenSettings(options.modelDriven);
   if (runtime.kind === 'power-pages') throw new Error('The standalone host requires a model-driven or dataverse-api runtime.');
   if (options.sourceDir) throw new Error('Standalone runtimes select solutionRoots without a Power Pages sourceDir.');
   const host = options.host ?? '127.0.0.1', port = runtimePort(options.port, 0);
@@ -145,14 +148,16 @@ export async function createStandaloneRuntime(options = {}) {
       const current = metadata();
       if (catalogueCache?.metadata !== current || catalogueCache?.revision !== store.revision)
         catalogueCache = { metadata: current, revision: store.revision,
-          value: appCatalogue({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp }) };
+          value: appCatalogue({ metadata: current, mappings: store.state.mappings, providers: [], defaultApp: runtime.defaultApp,
+            clientExtensions: clientExtensionCatalogue(sources.clientResources, modelDriven) }) };
       return catalogueCache.value;
     };
     // Validate an explicitly selected app before opening any listener.
     catalogue();
     const recordService = createModelDrivenRecordService({ organization, origin: () => localOrigin });
     const data = createModelDrivenData({ store, catalogue, recordService });
-    const model = createModelDrivenHandler({ catalogue, data, csrf: () => csrf, json, readBody, change, read: organization.read, principal: req => sessions.resolve(req) });
+    const model = createModelDrivenHandler({ catalogue, data, csrf: () => csrf, json, readBody, change, read: organization.read, principal: req => sessions.resolve(req),
+      clientAssets: () => modelDriven.trustedExtensions ? sources.clientResources.assets : new Map() });
     const dataverseAdmin = createDataverseAdmin({ store, getDataverse: () => dataverse ?? { ...organization, requests: () => [] },
       dataverseConfig: settings, dataverseSummary: dvSummary, json, jsonObjectBody: readBody, change });
     const admin = createRuntimeAdminRouter({ store, json, jsonObjectBody: readBody, change, csrf: () => csrf, status, state: exposed,

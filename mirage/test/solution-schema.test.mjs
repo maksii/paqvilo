@@ -461,7 +461,7 @@ test("the watch filter matches layers whose root was given in another spelling (
     const ignored = solutionWatchFilter({ sourceDir: path.join(real, "..", "portal-elsewhere"), roots: [root], layers: buildSolutionSchema(scan).layers });
     for (const spelling of [root, real]) {
       assert.equal(ignored(path.join(spelling, "Core", "Entities", "contact", "FormXml", "main", "form.xml"), { isFile: () => true }), false, spelling);
-      assert.equal(ignored(path.join(spelling, "Core", "WebResources", "x.js"), { isFile: () => true }), true, spelling);
+      assert.equal(ignored(path.join(spelling, "Core", "WebResources", "x.js"), { isFile: () => true }), false, spelling);
     }
   }
 });
@@ -482,7 +482,7 @@ test("the portal's own repository is not a sibling solution root when reached th
   }
 });
 
-test("watching includes selected metadata, PCF resources and workflow definitions", () => {
+test("watching includes selected metadata, client resources, commands and workflow definitions", () => {
   const sourceDir = path.resolve("C:/portal/site");
   const root = path.resolve("C:/solutions/repo");
   const ignored = solutionWatchFilter({ sourceDir, roots: [root], layers: [{ type: "directory", dir: path.join(root, "Core") }] });
@@ -491,7 +491,12 @@ test("watching includes selected metadata, PCF resources and workflow definition
   assert.equal(ignored(path.join(sourceDir, ".git", "HEAD")), true);
   assert.equal(ignored(at("Core", "Entities", "sample_item", "Entity.xml"), { isFile: () => true }), false);
   assert.equal(ignored(at("Core", "Other", "Relationships", "x.xml"), { isFile: () => true }), false);
-  assert.equal(ignored(at("Core", "WebResources")), true);
+  assert.equal(ignored(at("Core", "WebResources")), false);
+  assert.equal(ignored(at('Core', 'WebResources', 'x_', 'events.js'), { isFile: () => true }), false);
+  assert.equal(ignored(at('Core', 'WebResources', 'x_', 'events.js.data.xml'), { isFile: () => true }), false);
+  assert.equal(ignored(at('Core', 'WebResources', 'x_', 'style.css'), { isFile: () => true }), false);
+  assert.equal(ignored(at('Core', 'WebResources', 'x_', 'source.ts'), { isFile: () => true }), true);
+  assert.equal(ignored(at('Core', 'appactions', 'x_review', 'appaction.xml'), { isFile: () => true }), false);
   assert.equal(ignored(at('Core', 'Controls', 'tst_Synthetic.Editor', 'bundle.js'), { isFile: () => true }), false);
   assert.equal(ignored(at('Core', 'Controls', 'tst_Synthetic.Editor', 'source.ts'), { isFile: () => true }), true);
   assert.equal(ignored(at('Core', 'Workflows', 'sample.json'), { isFile: () => true }), false);

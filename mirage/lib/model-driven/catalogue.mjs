@@ -1,7 +1,8 @@
-import { compileForm } from './solution.mjs';
+import { compileForm, parseRibbonCommands } from './solution.mjs';
 import { powerPagesProvider } from './providers.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
 import { pickLabel } from '../solution-xml.mjs';
+import { sourceRecordId } from '../source-record-id.mjs';
 
 const friendly = name => String(name).replace(/_/g, ' ').replace(/\b\w/g, c => c.toUpperCase());
 export function solutionApps(scan, { lcid = 1033 } = {}) {
@@ -9,12 +10,14 @@ export function solutionApps(scan, { lcid = 1033 } = {}) {
   for (const layer of scan.layers ?? []) for (const document of layer.documents ?? []) {
     for (const app of document.facts.apps ?? []) {
       const key = app.uniqueName ?? app.id;
-      apps.set(key, { ...apps.get(key), ...app, source: 'solution', sourceFile: document.file });
+      apps.set(key, { ...apps.get(key), ...app, id: app.id || sourceRecordId('appmodule', app.uniqueName),
+        idSource: app.id ? 'exported' : 'derived-local', source: 'solution', sourceFile: document.file });
     }
     maps.push(...document.facts.appMaps ?? []);
   }
   for (const app of apps.values()) {
-    const map = maps.findLast(map => map.uniqueName === app.uniqueName || map.appId && map.appId === app.id);
+    const map = maps.findLast(map => map.uniqueName && app.uniqueName && map.uniqueName.toLowerCase() === app.uniqueName.toLowerCase() || map.appId && map.appId === app.id
+      || map.uniqueName && app.components?.some(component => component.type === 62 && component.entity === map.uniqueName.toLowerCase()));
     if (map) app.navigation = map.navigation;
   }
   const navigation = areas => (areas ?? []).map(area => ({ ...area, title: pickLabel(area.titleLabels, lcid) ?? area.title,
@@ -24,7 +27,7 @@ export function solutionApps(scan, { lcid = 1033 } = {}) {
 }
 
 /** Stable JSON contract consumed by the shell and future control/command registries. */
-export function appCatalogue({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault } = {}) {
+export function appCatalogue({ portal, metadata = {}, mappings = {}, providers = portal ? [powerPagesProvider(portal, metadata)] : [], defaultApp: selectedDefault, clientExtensions } = {}) {
   const tables = Object.assign({}, ...providers.filter(Boolean).map(provider => structuredClone(provider.tables ?? {})));
   for (const [entity, mapping] of Object.entries(mappings)) {
     if (tables[entity]) continue;
@@ -40,6 +43,10 @@ export function appCatalogue({ portal, metadata = {}, mappings = {}, providers =
     table.fields[table.nameColumn] ??= { name: table.nameColumn, label: 'Name', type: 'text' };
     const forms = (metadata.forms ?? []).filter(form => form.entity === table.entity && form.active !== false && (form.systemFormType === undefined || form.systemFormType === 2) && (!form.formType || form.formType === 'main'));
     table.forms = forms.map(form => compileForm(form, table.fields, metadata.lcid)).filter(Boolean);
+    table.commands = (metadata.modelDrivenRibbonDocuments ?? []).filter(document => document.entity === table.entity)
+      .flatMap(document => parseRibbonCommands(document.xml));
+    table.commands.push(...(metadata.modelDrivenAppActions ?? []).filter(command => command.entity === table.entity));
+    table.commands = [...new Map(table.commands.map(command => [command.id, command])).values()];
     if (!table.forms.length) table.forms = [{ id: 'generated', name: 'Information', source: 'generated', tabs: [{ id: 'general', label: 'General', visible: true, sections: [{ label: '', fields: Object.values(table.fields).filter(field => !field.isPrimaryId).map(field => ({ name: field.name, label: field.label, supported: true, visible: true })) }] }] }];
     table.views = (metadata.views ?? []).filter(view => view.entity === table.entity && view.queryType === 0).map(view => ({ id: view.id, name: view.name, isDefault: view.isDefault, fields: view.fields, fetchXml: view.fetchXml, source: 'solution' }));
     if (!table.views.length) table.views = [{ id: 'active', name: `Active ${table.label}`, isDefault: true, source: 'generated', state: 0 }, { id: 'all', name: `All ${table.label}`, source: 'generated' }, { id: 'inactive', name: `Inactive ${table.label}`, source: 'generated', state: 1 }];
@@ -66,7 +73,7 @@ export function appCatalogue({ portal, metadata = {}, mappings = {}, providers =
       item.title ??= tables[item.entity]?.label ?? item.entity ?? item.id;
     }
   }
-  return { version: 1, defaultApp: defaultApp?.id ?? null, apps, tables,
+  return { version: 1, defaultApp: defaultApp?.id ?? null, apps, tables, ...(clientExtensions ? { clientExtensions } : {}),
     capabilities: { localCrud: true, views: true, search: true, filters: true, columns: true, solutionNavigation: true, relatedSubgrids: true,
-      scripts: false, businessProcessFlows: false, customControls: false, reports: false, powerBi: false, flows: false, globalSearch: false, advancedFind: false, classicSettings: false } };
+      scripts: clientExtensions?.trusted === true, businessProcessFlows: false, customControls: clientExtensions?.trusted === true, reports: false, powerBi: false, flows: false, globalSearch: false, advancedFind: false, classicSettings: false } };
 }

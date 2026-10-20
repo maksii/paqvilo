@@ -81,7 +81,7 @@ try {
   for (const asset of ['', 'app.mjs', 'style.css']) if (!(await fetch(session.url + '/_setup/' + asset)).ok) throw new Error(`Installed setup asset is missing: ${asset}`);
   const appShell = await fetch(session.url + '/main.aspx');
   if (!appShell.ok || !(await appShell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed model-driven shell is missing.');
-  for (const asset of ['app.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
+  for (const asset of ['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css']) if (!(await fetch(session.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed model-driven asset is missing: ${asset}`);
   const apps = await fetch(session.url + '/_apps/api').then(response => response.json());
   if (apps.version !== 1 || !apps.apps.some(app => app.id === apps.defaultApp && app.name === 'Power Pages Management')) throw new Error('Installed default management application is unavailable.');
 } finally {
@@ -136,7 +136,7 @@ for (const kind of ['dataverse-api', 'model-driven']) {
       if (status.links.modelDriven !== '/main.aspx' || status.links.dataverseApi !== null) throw new Error('Installed model-only runtime links are incorrect.');
       const shell = await fetch(local.url + status.links.modelDriven);
       if (!shell.ok || !(await shell.text()).includes('/_apps/assets/app.mjs')) throw new Error('Installed source-only model shell is unavailable.');
-      for (const asset of ['app.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css'])
+      for (const asset of ['app.mjs', 'client-runtime.mjs', 'pcf-runtime.mjs', 'controls.mjs', 'control-descriptors.mjs', 'icons.mjs', 'style.css'])
         if (!(await fetch(local.url + '/_apps/assets/' + asset)).ok) throw new Error(`Installed standalone model asset is missing: ${asset}`);
       const catalogue = await fetch(local.url + '/_apps/api').then(response => response.json());
       if (catalogue.defaultApp !== appId || catalogue.apps.length !== 1 || catalogue.apps[0].name !== 'Installed workspace' || !catalogue.tables.x_item)

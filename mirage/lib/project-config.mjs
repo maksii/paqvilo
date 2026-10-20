@@ -16,12 +16,13 @@ import { dataverseSettings } from './dataverse-settings.mjs';
 import { runtimeSettings } from './runtime-config.mjs';
 import { loadOrganizationSources } from './solution-runtime-source.mjs';
 import { simulationSettings } from './simulation-settings.mjs';
+import { modelDrivenSettings } from './model-driven-settings.mjs';
 
 const VERSIONS = [1, 2];
 const idPattern = /^[a-z0-9][a-z0-9._-]*$/i;
 const KNOWN_KEYS = new Set([
   "version", "defaultPortal", "default_portal", "portals", "solutions", "references", "referenceEnvironments",
-  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse", "runtime", "simulation",
+  "dataPacks", "presets", "lcid", "watch", "stateDirectory", "state_directory", "solutionOrder", "environmentVariables", "deploymentProfiles", "platform", "confinePortalPages", "externalAssets", "externalFrameOrigins", "dataverse", "runtime", "simulation", "modelDriven",
 ]);
 
 function list(value, label) {
@@ -443,6 +444,7 @@ export async function resolveProjectConfig(raw, configFile, { checkSources = tru
     version: raw.version,
     runtime,
     simulation: simulationSettings(raw.simulation),
+    modelDriven: modelDrivenSettings(raw.modelDriven),
     defaultPortal,
     lcid,
     watch: raw.watch ?? null,
@@ -480,6 +482,7 @@ export function projectSummary(project, portalId = null) {
     version: project.version,
     runtime: project.runtime ?? { kind: 'power-pages' },
     simulation: project.simulation ?? null,
+    modelDriven: project.modelDriven ?? modelDrivenSettings(),
     portal: portalId,
     defaultPortal: project.defaultPortal,
     lcid: project.lcid,

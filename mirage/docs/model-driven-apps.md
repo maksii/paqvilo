@@ -16,7 +16,10 @@ selected solution layers win. Forms and saved queries come from the same metadat
 pipeline as portal forms. `main.aspx?appname=<UniqueName>&pagetype=entitylist&etn=<table>`
 opens a table; `pagetype=entityrecord&id=<record-id>` opens a record. Omit `id`
 for a new record. `appid` selects an imported app ID. Exported IDs are not inferred
-from a live environment or a deployment commit.
+from a live environment or a deployment commit. PAC exports can omit the app GUID;
+those apps receive a stable local GUID derived from their unique name, reported as
+`idSource: derived-local`. Use `appname` for a portable link, or the local catalogue's
+GUID for `runtime.defaultApp`. A generated local GUID is not the deployed app ID.
 
 ## Baseline behavior
 
@@ -50,9 +53,11 @@ from a live environment or a deployment commit.
 
 Power BI visualization, charts, reports, flows, sharing, email links, global
 search, quick create, Advanced Find and classic advanced settings are disabled.
-Solution JavaScript/events, business process flows, custom controls, dashboards,
-and unsupported subgrids are not executed. This baseline does not claim full
-model-driven or Dynamics client parity.
+Solution JavaScript/events, supported JavaScript command actions and standard
+field PCF controls can run through an explicitly enabled
+[trusted extension host](model-driven-customizations.md). Trust is off by default.
+Business process flows, dashboards and unsupported subgrids remain unavailable.
+This baseline does not claim full model-driven or Dynamics client parity.
 
 The top-right profile avatar opens **Staff profile**. Select an eligible interactive organization user to apply canonical staff roles, row access and field security to grids, lookup candidates, forms and mutations. **Local administrator** is an explicit development bypass, selected only when no staff cookie exists or you explicitly choose it. Invalid, disabled, deleted or expired staff selections fail instead of escalating. Manage users, roles and application credentials under `/_sim/#dataverse`. Portal visitor identity/table permissions and token-authenticated application identities remain separate.
 
@@ -74,13 +79,15 @@ Source app modules, sitemaps, forms, views and supported app membership referenc
 also materialize as local Dataverse records. Local API edits overlay source
 metadata without changing the exported files. Solution ZIP imports contribute
 the same metadata and preserve inert component assets for export. Scripts and
-custom controls remain data until a separate runtime capability implements them.
+custom controls remain inert unless the project explicitly trusts the supported
+extension host. Unsupported components retain their source provenance and reason.
 
 `http.mjs` confines app routes and assets to Mirage, validates methods and the
 existing simulator CSRF token, and returns metadata separately from record data.
 The host retains its Host/Origin/cross-site checks. The shell uses same-origin
 assets and a restrictive CSP. No solution URL, script, web resource, or external
-navigation is executed as part of importing an app.
+navigation is executed as part of importing an app. Explicitly trusted supported
+scripts and PCF resources load only through the local app resource allowlist.
 
 `control-descriptors.mjs` defines shared data-only control capabilities consumed by the catalogue, HTTP validation and browser registry. `controls.mjs` renders those types; unknown types remain explicit placeholders. Polymorphic lookups preserve the selected table alongside the ID and canonical logical-name annotation. A manually entered ID with multiple targets requires an explicit lookup selection. Existing-record PATCH requests contain only fields touched by actual control events, preserving untouched relationships and hidden values across tab changes. Create requests include editable rendered values.
 

@@ -89,6 +89,8 @@ import { importSolutionMetadata } from "./lib/solution-metadata.mjs";
 import { appCatalogue, solutionApps } from './lib/model-driven/catalogue.mjs';
 import { createModelDrivenData } from './lib/model-driven/data.mjs';
 import { createModelDrivenHandler } from './lib/model-driven/http.mjs';
+import { modelDrivenSettings } from './lib/model-driven-settings.mjs';
+import { importModelDrivenResources, clientExtensionCatalogue } from './lib/model-driven-resources.mjs';
 import { powerPagesTables, managementOverlay } from './lib/model-driven/power-pages.mjs';
 import { createModelDrivenStorage } from './lib/model-driven-storage.mjs';
 import { createSolutionMetadataOverlay } from './lib/dataverse-solution-metadata.mjs';
@@ -324,6 +326,7 @@ export async function createSimulator(options = {}) {
 
 async function createPowerPagesSimulator({
   runtime: runtimeOption,
+  modelDriven: modelDrivenOption,
   sourceDir,
   stateFile,
   persistence,
@@ -453,6 +456,8 @@ async function createPowerPagesSimulator({
   let operationWorkflows = new Map();
   let solutionOperations = { serverLogics: [], cloudFlows: [] };
   let codeComponents = { controls: new Map(), assets: new Map(), diagnostics: [] };
+  const modelDrivenSettingsValue = modelDrivenSettings(modelDrivenOption);
+  let clientResources = { resources: [], assets: new Map(), pcf: { controls: [] } };
   async function loadSolutions({ reuseImported = false } = {}) {
     if (!solutionRoots.length) return;
     const started = performance.now();
@@ -468,6 +473,9 @@ async function createPowerPagesSimulator({
       reuseImported && importedSources?.solutionData && importedSources.solutionOrder === solutionOrder && JSON.stringify(importedSources.solutionRoots) === JSON.stringify(solutionRoots) ? importedSources.solutionData : importSolutionData(solutionRoots, { scan, schema, lcid }),
     ]);
     solutionMetadata.modelDrivenApps = solutionApps(scan, { lcid });
+    clientResources = await importModelDrivenResources(scan.layers, { codeComponents });
+    solutionMetadata.modelDrivenRibbonDocuments = clientResources.ribbonDocuments;
+    solutionMetadata.modelDrivenAppActions = clientResources.appActions;
     await cache.save();
     bootstrapTimings.solutionsMs = Math.round(performance.now() - started);
     bootstrapTimings.solutionCache = { ...cache.stats, processHits: cache.processHits, file: solutionCacheFile };
@@ -1478,7 +1486,7 @@ async function createPowerPagesSimulator({
     // Keep the snapshot's original revision across source/profile I/O. SDK
     // transactions can commit outside the host mutation queue during that work.
     const expectedRevision = store.snapshotRevision(state) ?? store.revision;
-    const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets };
+    const previous = { portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets };
     const pinChanged = JSON.stringify(state.simulator?.deploymentProfilePin ?? null) !== JSON.stringify(config().deploymentProfilePin ?? null);
     try {
       const recordsChanged = !isDeepStrictEqual(state.simulator?.modelDriven?.records, config().modelDriven?.records);
@@ -1497,7 +1505,7 @@ async function createPowerPagesSimulator({
       }
       await replaceCompiledState(state, { expectedRevision });
     } catch (cause) {
-      ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, generatedPresets } = previous);
+      ({ portal, sourcePortal, activeProfiles, sourceDependencies, fingerprint, solutionMetadata, solutionData, operationWorkflows, solutionOperations, codeComponents, clientResources, generatedPresets } = previous);
       store.presetLibrary = generatedPresets;
       throw cause;
     }
@@ -3169,7 +3177,8 @@ async function createPowerPagesSimulator({
     const metadata = modelMetadata();
     if (modelDrivenCache?.portal !== portal || modelDrivenCache?.metadata !== metadata || modelDrivenCache?.storeRevision !== store.revision) {
       modelDrivenCache = { portal, metadata, storeRevision: store.revision,
-        value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp }) };
+        value: appCatalogue({ portal, metadata, mappings: store.snapshot({ sections: ['mappings'] }).mappings, defaultApp: runtimeOption.defaultApp,
+          clientExtensions: clientExtensionCatalogue(clientResources, modelDrivenSettingsValue) }) };
     }
     return modelDrivenCache.value;
   };
@@ -3185,6 +3194,7 @@ async function createPowerPagesSimulator({
     },
   });
   const modelDrivenHandler = createModelDrivenHandler({ catalogue: modelDrivenCatalogue, data: modelDrivenData,
+    clientAssets: () => modelDrivenSettingsValue.trustedExtensions ? clientResources.assets : new Map(),
     csrf: () => csrf, json, readBody: jsonObjectBody, change, read: fn => store.readOperation(fn),
     principal: req => staffSessions.resolve(req) });
   async function handle(req, res) {

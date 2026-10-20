@@ -1,7 +1,8 @@
 // Controls are registered by supported metadata type. Unknown controls are explicit
-// read-only placeholders; solution JavaScript is never evaluated by this registry.
+// read-only placeholders. Trusted Solution PCF bundles use a separate lifecycle.
 import { icon, navigationIcon } from './icons.mjs';
 import { controlDescriptor } from './control-descriptors.mjs';
+import { renderPcfControl } from './pcf-runtime.mjs';
 const registry = new Map();
 export const registerControl = (type, render) => registry.set(type, render);
 export const hasControl = field => controlDescriptor(field).supported && registry.has(field.type ?? 'text');
@@ -55,6 +56,7 @@ registerControl('lookup', (field, value, context) => {
 export function renderControl(field, value, context = {}) {
   const renderer = registry.get(field.type ?? 'text');
   if (!controlDescriptor(field).supported || !renderer) { const element = document.createElement('p'); element.className = 'unsupported'; element.textContent = 'This control is not supported locally yet.'; return { element, read: () => value, supported: false }; }
+  if (context.pcf) return renderPcfControl(field, value, context);
   const rendered = renderer(field, value, context), primary = rendered.primary ?? rendered.element;
   primary.name = field.name; primary.id = `field-${field.name}`;
   primary.setAttribute('aria-label', field.label ?? field.name);

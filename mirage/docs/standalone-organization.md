@@ -22,7 +22,7 @@ dataverse:
   tls: false
 ```
 
-Select existing exported Solution folders and explicitly trusted pack modules. Remove `dataPacks` if none are needed. Solutions supply table, relationship, form, view and app definitions; packs supply your local data and trusted handlers. Imports do not execute arbitrary Solution scripts or controls. No `portals`, website record, portal origin or live reference is required.
+Select existing exported Solution folders and explicitly trusted pack modules. Remove `dataPacks` if none are needed. Solutions supply table, relationship, form, view and app definitions; packs supply your local data and trusted handlers. To run supported form JavaScript, command actions and standard field PCF controls, explicitly enable [trusted Solution extensions](model-driven-customizations.md). No `portals`, website record, portal origin or live reference is required.
 
 ```sh
 npx --no-install paqvilo mirage inspect --project ./mirage.project.yml --json

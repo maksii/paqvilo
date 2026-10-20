@@ -37,6 +37,8 @@ test('grid runs saved FetchXML with search, filters, columns, sorting and paging
   const first = await list({ pageSize: 1, sort: 'x_quantity', direction: 'desc' });
   assert.equal(first.rows[0].x_name, 'Silver'); assert.equal(first.total, 2); assert.equal(first.more, true);
   const search = await list({ search: 'opp', columns: ['x_name'], filters: [{ field: 'x_quantity', operator: 'lt', value: 5 }] }); assert.equal(search.rows.length, 1); assert.equal(search.rows[0].x_name, 'Copper');
+  const raw = await list({ scope: 'table', columns: ['x_name'], filters: [{ field: 'x_quantity', operator: 'eq', value: 0 }] });
+  assert.equal(raw.rows.length, 1); assert.equal(raw.rows[0].x_name, 'Empty', 'Client API table queries do not inherit saved-view filters.');
   const invalid = await fetch(origin + '/_apps/api/tables/x_item?query=' + encodeURIComponent(JSON.stringify({ filters: [{ field: 'unknown', operator: 'eq', value: 1 }] }))); assert.equal(invalid.status, 400);
 });
 

@@ -1,10 +1,10 @@
 import fs from 'node:fs/promises';
 
-const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
+const assets = { 'app.mjs': 'text/javascript; charset=utf-8', 'client-runtime.mjs': 'text/javascript; charset=utf-8', 'pcf-runtime.mjs': 'text/javascript; charset=utf-8', 'controls.mjs': 'text/javascript; charset=utf-8', 'control-descriptors.mjs': 'text/javascript; charset=utf-8', 'icons.mjs': 'text/javascript; charset=utf-8', 'style.css': 'text/css; charset=utf-8' };
 const fail = (message, status) => Object.assign(new Error(message), { status, code: 'ModelDrivenRequestInvalid' });
 const metadataOnly = (catalogue, data, actor) => ({ ...catalogue, tables: Object.fromEntries(Object.entries(catalogue.tables).map(([name, { rows: _rows, ...table }]) => [name, { ...table, capabilities: data.capabilities?.(name, actor) }])) });
 
-export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}) }) {
+export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody, change, read = fn => fn(), principal = () => ({}), clientAssets = () => new Map() }) {
   return async (req, res, url) => {
     const shell = url.pathname === '/main.aspx' || /^\/_apps\/?$/.test(url.pathname);
     const asset = /^\/_apps\/assets\/([^/]+)$/.exec(url.pathname);
@@ -14,13 +14,20 @@ export function createModelDrivenHandler({ catalogue, data, csrf, json, readBody
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('x-frame-options', 'SAMEORIGIN');
     try {
+      if (url.pathname.startsWith('/_apps/resources/') || url.pathname.startsWith('/_apps/controls/')) {
+        if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
+        const resource = clientAssets().get(url.pathname);
+        if (!resource || url.search) throw fail('Trusted client asset not found.', 404);
+        res.setHeader('content-security-policy', "default-src 'none'; frame-ancestors 'none'");
+        res.writeHead(200, { 'content-type': resource.mime }); res.end(req.method === 'HEAD' ? undefined : resource.data); return true;
+      }
       if (shell || asset) {
         if (!['GET', 'HEAD'].includes(req.method)) throw fail('This resource requires GET.', 405);
         if (asset && !assets[asset[1]]) throw fail('Asset not found.', 404);
         const name = shell ? 'index.html' : asset[1];
         let content = await fs.readFile(new URL(name, import.meta.url), 'utf8');
         if (shell) content = content.replace('__MIRAGE_CSRF__', csrf());
-        // App code and assets are local. Solution scripts/URLs are data only.
+        // Only explicitly trusted local Solution scripts are served by the resource allowlist.
         res.setHeader('content-security-policy', "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; frame-ancestors 'self'");
         res.writeHead(200, { 'content-type': shell ? 'text/html; charset=utf-8' : assets[name] });
         res.end(req.method === 'HEAD' ? undefined : content);

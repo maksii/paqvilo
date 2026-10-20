@@ -485,6 +485,7 @@ async function launchIdentity(cfg, args, projectInfo = null) {
     identity: {
       sourceDir: resolved(sourceDir), project: resolved(projectInfo?.configFile), portal: portalId,
       runtime, simulation: args.simulation ? { level: args.simulation } : projectInfo?.simulation ?? null,
+      modelDriven: projectInfo?.modelDriven ?? cfg.mirageConfig?.modelDriven ?? { trustedExtensions: false },
       scope: cfg.configFile ? { configFile: resolved(cfg.configFile), siteName: cfg.siteName } : null,
       stateFile: resolved(stateFile), preset: args.preset ?? null, presetMode: args['preset-mode'] ?? 'always', presetConfiguration: args['apply-configuration'] === true ? 'apply' : 'data-only', allowLiveWrites: args['allow-live-writes'] === true,
       // Explicit layer order affects imported metadata; it is part of the reusable runtime identity.
@@ -510,6 +511,7 @@ function identityMatches(left, right) {
     && JSON.stringify(left.scope ?? null) === JSON.stringify(right.scope ?? null)
     && JSON.stringify(left.runtime ?? { kind: 'power-pages' }) === JSON.stringify(right.runtime ?? { kind: 'power-pages' })
     && JSON.stringify(left.simulation ?? null) === JSON.stringify(right.simulation ?? null)
+    && JSON.stringify(left.modelDriven ?? { trustedExtensions: false }) === JSON.stringify(right.modelDriven ?? { trustedExtensions: false })
     && (left.preset ?? null) === (right.preset ?? null)
     && (left.presetConfiguration ?? 'data-only') === (right.presetConfiguration ?? 'data-only')
     && (left.presetMode ?? 'always') === (right.presetMode ?? 'always')

@@ -116,7 +116,7 @@ export class SetupStore {
       if (this.kind === 'project') {
         const authored = document(files.shared, 'Project configuration').raw;
         result.settings = { defaultSite: valid.defaultPortal, sourceRoot: this.directory, runtime: valid.runtime,
-          simulation: valid.simulation, dataverse: valid.dataverse, solutions: valid.solutions.map(item => ({ id: item.id, path: item.sourcePath })),
+          simulation: valid.simulation, modelDriven: valid.modelDriven, dataverse: valid.dataverse, solutions: valid.solutions.map(item => ({ id: item.id, path: item.sourcePath })),
           solutionEntries: authored.solutions ?? [], dataPackEntries: authored.dataPacks ?? authored.presets ?? [],
           dataPacks: valid.dataPacks, solutionRoots: valid.solutionRoots };
         result.solutions = await Promise.all(valid.solutionRoots.map(folder => inspectSource(folder)));
@@ -126,7 +126,7 @@ export class SetupStore {
           const origin = projectOrigin(valid, site);
           return { id: site.id, source: site.sourcePath, packs,
             sourceStatus: await inspectSource(site.sourceDir, { portal: true }), environments: origin ? { reference: { url: origin } } : {},
-            runtime: valid.runtime, mirage: { runtime: valid.runtime, simulation: valid.simulation, dataverse: valid.dataverse, solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => inspectSource(folder))) };
+            runtime: valid.runtime, mirage: { runtime: valid.runtime, simulation: valid.simulation, modelDriven: valid.modelDriven, dataverse: valid.dataverse, solutionRoots: site.solutionRoots, dataPacks: valid.dataPacks }, solutions: await Promise.all(site.solutionRoots.map(folder => inspectSource(folder))) };
         }));
       } else {
         const catalogue = loadCatalogue({ config: this.file }, this.processEnv);
@@ -136,7 +136,7 @@ export class SetupStore {
           liveReload: catalogue.root.liveReload, panel: catalogue.root.panel,
           solutionRoots: catalogue.root.defaults?.mirage?.solutionRoots ?? [],
           runtime: runtimeSettings(catalogue.root.defaults?.mirage?.runtime), simulation: simulationSettings(catalogue.root.defaults?.mirage?.simulation),
-          dataverse: catalogue.root.defaults?.mirage?.dataverse ?? {},
+          dataverse: catalogue.root.defaults?.mirage?.dataverse ?? {}, modelDriven: catalogue.root.defaults?.mirage?.modelDriven ?? {},
           effective: Object.fromEntries(['PAQVILO_SITE', 'PAQVILO_ENV', 'PAQVILO_BROWSER', 'PAQVILO_REPO', 'PAQVILO_SCOPE', 'PAQVILO_BASELINE'].filter(key => values[key]).map(key => [key, { value: values[key], origin: origin[key] }])),
           provenance: catalogue.provenance };
         result.sites = await Promise.all(Object.entries(catalogue.sites).map(async ([id, site]) => {

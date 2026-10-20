@@ -26,6 +26,7 @@ import { validateDebuggerMode } from './browser-profile.mjs';
 import { validateCatalogue, normalizeCatalogue, httpUrl, startPath, debugPort, browserProfile, browserProfileDirectory, browserUserDataDir } from './config-schema.mjs';
 import { runtimeSettings } from '../mirage/lib/runtime-config.mjs';
 import { simulationSettings } from '../mirage/lib/simulation-settings.mjs';
+import { modelDrivenSettings } from '../mirage/lib/model-driven-settings.mjs';
 
 /**
  * @typedef {object} RouteRule
@@ -248,6 +249,7 @@ export function resolveMirageConfig(raw, { configDir, sourceRoot, sourceDir = so
     ...(value.identityProvider!==undefined?{identityProvider:identityProviderSettings(value.identityProvider)}:{}),
     ...(value.runtime !== undefined ? { runtime: runtimeSettings(value.runtime) } : {}),
     ...(value.simulation !== undefined ? { simulation: simulationSettings(value.simulation) } : {}),
+    ...(value.modelDriven !== undefined ? { modelDriven: modelDrivenSettings(value.modelDriven) } : {}),
     ...(value.dataverse!==undefined?{dataverse:dataverseSettings(value.dataverse,'mirage.dataverse')}:{}),
     ...contentPolicyDefaults(value),
     project: value.project ? path.resolve(configDir, value.project) : null,

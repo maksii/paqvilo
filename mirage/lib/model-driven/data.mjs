@@ -27,7 +27,9 @@ export function validateValues(table, values, operation) {
     result[name] = value;
   }
   if (operation === 'create') for (const field of Object.values(table.fields)) {
-    if (field.required && writableField(field, operation) && (result[field.name] == null || result[field.name] === '')) throw invalid(`${field.label} is required.`);
+    // Dataverse supplies omitted system-required values (owner, state and audit
+    // columns) in the canonical create pipeline. Explicit nulls still fail above.
+    if (field.required && String(field.requiredLevel ?? '').toLowerCase() !== 'systemrequired' && writableField(field, operation) && (result[field.name] == null || result[field.name] === '')) throw invalid(`${field.label} is required.`);
   }
   return result;
 }
@@ -78,14 +80,17 @@ export function createModelDrivenData({ store, catalogue, portal, saveOverlay, w
     async list(entity, input = {}, actor = {}) {
       return store.readOperation(async () => {
       const table = tableFor(entity);
-      const view = table.views.find(view => view.id === input.view) ?? (!input.view ? table.views.find(view => view.isDefault) ?? table.views[0] : null);
+      if (input.scope !== undefined && input.scope !== 'table') throw invalid('Unsupported query scope.');
+      if (input.scope === 'table' && input.view) throw invalid('A table query cannot select a saved view.');
+      const view = input.scope === 'table' ? { id: null, fields: Object.keys(table.fields).map(name => ({ name })) }
+        : table.views.find(view => view.id === input.view) ?? (!input.view ? table.views.find(view => view.isDefault) ?? table.views[0] : null);
       if (!view) throw invalid('View not found.', 404);
       const fields = input.columns ?? view.fields.map(field => field.name);
       if (!Array.isArray(fields) || !fields.length || fields.length > 100 || fields.some(name => !table.fields[name] && !view.fields.some(field => field.name === name))) throw invalid('Select known columns.');
       const root = view.fetchXml ? parseSolutionXml(view.fetchXml) : node('fetch', {}, [node('entity', { name: entity })]);
       const target = child(root, 'entity');
       if (root.name !== 'fetch' || target?.attrs.name !== entity) throw invalid('Saved view does not target this table.');
-      root.attrs.count = String(Math.max(1, Math.min(100, Number(input.pageSize) || 50)));
+      root.attrs.count = String(Math.max(1, Math.min(input.scope === 'table' ? 5000 : 100, Number(input.pageSize) || 50)));
       root.attrs.page = String(Math.max(1, Math.min(100000, Number(input.page) || 1)));
       root.attrs.returntotalrecordcount = 'true';
       delete root.attrs.top;
