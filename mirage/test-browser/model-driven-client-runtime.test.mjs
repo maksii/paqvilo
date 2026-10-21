@@ -96,6 +96,7 @@ test('Solution form events and ribbon JS run locally through the staff API with 
   await page.evaluate(() => { window.priorControl = Xrm.Page.getControl('x_name'); InventedClient.load = async () => { if (!window.didRedirect) { window.didRedirect = true; await Xrm.Navigation.openForm({ entityName: 'x_child', entityId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd' }); } }; });
   await (await formCommand(page, 'Refresh')).click();
   await page.getByRole('heading', { name: 'Copper child', exact: true }).waitFor();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
   assert.equal(await page.getByLabel('Name', { exact: true }).inputValue(), 'Copper child');
   assert.equal(await page.getByText('Exported OnLoad completed', { exact: true }).count(), 0, 'navigation disposes the previous form notifications');
   assert.match(await page.evaluate(() => { try { priorControl.setVisible(false); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
@@ -117,6 +118,7 @@ test('retry recreates failed client initialization and clears its error after re
   assert.equal(await page.locator('#content').getAttribute('aria-busy'), 'false');
   await page.getByRole('button', { name: 'Try again', exact: true }).click();
   await page.getByText('Recovered form initialization', { exact: true }).waitFor();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
   assert.equal(await page.evaluate(() => retryLoads), 2);
   assert.equal(await page.locator('#notice').isVisible(), false);
   assert.equal(await page.locator('#record-form').evaluate(node => node.inert), false);
@@ -309,8 +311,19 @@ test('a persisted inactive two-state record disables its default UI while explic
   // A disabled presentation does not remove independent staff Web API rights.
   await page.evaluate(async id => Xrm.WebApi.updateRecord('x_item', id, { statecode: 0 }), id);
   assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 4, 'the loaded form remains disabled until refreshed');
+  let releaseRead;
+  const holdRead = new Promise(resolve => { releaseRead = resolve; }), recordRead = sim.url + '/_apps/api/tables/x_item/' + id;
+  t.after(() => releaseRead());
+  await page.route(recordRead, async route => { await holdRead; await route.continue(); }, { times: 1 });
+  const readPending = page.waitForRequest(recordRead);
   await (await formCommand(page, 'Refresh')).click();
-  await page.getByLabel('Name', { exact: true }).waitFor();
+  await readPending;
+  assert.equal(await page.getByLabel('Name', { exact: true }).isVisible(), true, 'the old label stays visible while its form context is disposed');
+  assert.equal(await page.locator('#content').evaluate(node => node.inert), true);
+  assert.equal(await page.evaluate(() => document.documentElement.dataset.mirageAppState), 'loading');
+  assert.match(await page.evaluate(() => { try { Xrm.Page.ui.getFormType(); return 'unexpected'; } catch (error) { return error.message; } }), /disposed/);
+  releaseRead();
+  await page.waitForFunction(() => document.documentElement.dataset.mirageAppState === 'ready' && Boolean(globalThis.Xrm));
   assert.equal(await page.evaluate(() => Xrm.Page.ui.getFormType()), 2);
   assert.equal(await page.locator('#record-status').count(), 0, 'refreshing an activated record removes its old status strip');
   assert.equal(await page.getByLabel('Name', { exact: true }).isDisabled(), true, 'source-authored read-only presentation remains the default on an active form');
